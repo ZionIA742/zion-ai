@@ -37,6 +37,38 @@ function getCommercialSaveBlock(source: string) {
   return source.slice(start, end);
 }
 
+function getDiscountSaveBlock(source: string) {
+  const start = source.indexOf("  const handleDiscountEditSave = useCallback(async () => {");
+  assert.equal(start > -1, true, "handleDiscountEditSave not found");
+  const end = source.indexOf("  }, [", start);
+  assert.equal(end > start, true, "handleDiscountEditSave end not found");
+  return source.slice(start, end);
+}
+
+function getCreateCommercialDraftFromAnswersBlock(source: string) {
+  const start = source.indexOf("function createCommercialDraftFromAnswers(");
+  assert.equal(start > -1, true, "createCommercialDraftFromAnswers not found");
+  const end = source.indexOf("function createCommercialDraftFromAnswersWithPaymentSettings(", start);
+  assert.equal(end > start, true, "createCommercialDraftFromAnswers end not found");
+  return source.slice(start, end);
+}
+
+function getCommercialIdentityItemsBlock(source: string) {
+  const start = source.indexOf("  const commercialIdentityItems = useMemo(() => {");
+  assert.equal(start > -1, true, "commercialIdentityItems not found");
+  const end = source.indexOf("  const commercialAiSettingsInput = useMemo(", start);
+  assert.equal(end > start, true, "commercialIdentityItems end not found");
+  return source.slice(start, end);
+}
+
+function getCommercialEditFormBlock(source: string) {
+  const start = source.indexOf('{isCommercialEditing ? (');
+  assert.equal(start > -1, true, "commercial edit form not found");
+  const end = source.indexOf('<SummaryList items={commercialIdentityItems} />', start);
+  assert.equal(end > start, true, "commercial edit form end not found");
+  return source.slice(start, end);
+}
+
 function getChannelsSaveBlock(source: string) {
   const start = source.indexOf("  const handleChannelsEditSave = useCallback(async () => {");
   assert.equal(start > -1, true, "handleChannelsEditSave not found");
@@ -90,6 +122,22 @@ function getCreateDiscountDraftFromAnswersBlock(source: string) {
   assert.equal(start > -1, true, "createDiscountDraftFromAnswers not found");
   const end = source.indexOf("function createChannelDraftFromSources(", start);
   assert.equal(end > start, true, "createDiscountDraftFromAnswers end not found");
+  return source.slice(start, end);
+}
+
+function getDiscountItemsBlock(source: string) {
+  const start = source.indexOf("  const discountItems = useMemo(() => {");
+  assert.equal(start > -1, true, "discountItems not found");
+  const end = source.indexOf("  const channelsOverviewMetrics = useMemo(", start);
+  assert.equal(end > start, true, "discountItems end not found");
+  return source.slice(start, end);
+}
+
+function getDiscountEditFormBlock(source: string) {
+  const start = source.indexOf('{isDiscountEditing ? (');
+  assert.equal(start > -1, true, "discount edit form not found");
+  const end = source.indexOf('<SummaryList items={discountItems} />', start);
+  assert.equal(end > start, true, "discount edit form end not found");
   return source.slice(start, end);
 }
 
@@ -169,23 +217,75 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "commercial editor uses the canonical payment writer before shared legacy answer sync and keeps summary derived",
+    name: "commercial identity presentation reads strategy authority and never price policy fields",
+    run: () => {
+      const source = readPageSource();
+      const draftBlock = getCreateCommercialDraftFromAnswersBlock(source);
+      const identityBlock = getCommercialIdentityItemsBlock(source);
+
+      assert.equal(
+        draftBlock.includes("ai_presentation_mode: cleanText(answers.strategy_ai_presentation) || \"Não definido\""),
+        true,
+      );
+      assert.equal(identityBlock.includes("strategySettingsInput.strategyAiPresentation"), true);
+      assert.equal(identityBlock.includes("price_talk_mode"), false);
+      assert.equal(identityBlock.includes("price_answer_policy"), false);
+      assert.equal(identityBlock.includes("ai_can_send_price_directly"), false);
+      assert.equal(identityBlock.includes("price_needs_human_help"), false);
+      assert.equal(
+        identityBlock.includes("nao_falar_sozinha") || draftBlock.includes("nao_falar_sozinha"),
+        false,
+      );
+    },
+  },
+  {
+    name: "commercial edit form shows strategy presentation as read-only and falls back to Nao definido",
+    run: () => {
+      const source = readPageSource();
+      const draftBlock = getCreateCommercialDraftFromAnswersBlock(source);
+      const formBlock = getCommercialEditFormBlock(source);
+
+      assert.equal(draftBlock.includes('"Não definido"'), true);
+      assert.equal(formBlock.includes("value={commercialDraft.ai_presentation_mode} readOnly"), true);
+      assert.equal(
+        formBlock.includes('handleCommercialDraftChange("ai_presentation_mode"'),
+        false,
+      );
+    },
+  },
+  {
+    name: "commercial editor uses canonical payment and commercial writers before shared legacy answer sync",
     run: () => {
       const source = readPageSource();
       const block = getCommercialSaveBlock(source);
 
-      const canonicalSyncIndex = block.indexOf(
+      const paymentSyncIndex = block.indexOf(
         '"upsert_store_payment_settings_with_legacy_mirror_scoped"',
+      );
+      const commercialSyncIndex = block.indexOf(
+        '"upsert_store_commercial_ai_settings_with_legacy_mirror_scoped"',
       );
       const sharedLegacySyncIndex = block.indexOf("const saved = await upsertConfigAnswers(");
 
-      assert.equal(canonicalSyncIndex > -1, true);
+      assert.equal(paymentSyncIndex > -1, true);
+      assert.equal(commercialSyncIndex > -1, true);
       assert.equal(sharedLegacySyncIndex > -1, true);
-      assert.equal(canonicalSyncIndex < sharedLegacySyncIndex, true);
+      assert.equal(paymentSyncIndex < sharedLegacySyncIndex, true);
+      assert.equal(commercialSyncIndex < sharedLegacySyncIndex, true);
       assert.equal(
         block.includes("const derivedPaymentSummary = deriveStorePaymentSettingsSummary("),
         true,
       );
+      assert.equal(block.includes("price_talk_mode: commercialAiLegacyMirrors"), false);
+      assert.equal(block.includes("ai_can_send_price_directly: commercialAiLegacyMirrors"), false);
+      assert.equal(block.includes("price_needs_human_help: commercialAiLegacyMirrors"), false);
+      assert.equal(block.includes("price_must_understand_before: commercialAiLegacyMirrors"), false);
+      assert.equal(block.includes("price_direct_conditions: commercialAiLegacyMirrors"), false);
+      assert.equal(block.includes("price_direct_rule: commercialAiLegacyMirrors"), false);
+      assert.equal(block.includes("strategy_ai_presentation"), false);
+      assert.equal(block.includes("ai_presentation_mode"), false);
+      assert.equal(block.includes("p_price_answer_policy:"), true);
+      assert.equal(block.includes("p_price_context_requirements:"), true);
       assert.equal(
         block.includes("accepted_payment_methods_summary: derivedPaymentSummary"),
         true,
@@ -237,18 +337,27 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "simple page load reads canonical payment settings but does not call any payment writer",
+    name: "simple page load reads canonical payment and commercial AI settings but does not call their writers",
     run: () => {
       const source = readPageSource();
       const block = getFetchPageDataBlock(source);
 
       assert.equal(block.includes('.from("store_payment_settings")'), true);
+      assert.equal(block.includes('.from("store_commercial_ai_settings")'), true);
       assert.equal(
         block.includes("upsert_store_payment_settings_with_legacy_mirror_scoped"),
         false,
       );
       assert.equal(
         block.includes("upsert_store_payment_settings_scoped"),
+        false,
+      );
+      assert.equal(
+        block.includes("upsert_store_commercial_ai_settings_with_legacy_mirror_scoped"),
+        false,
+      );
+      assert.equal(
+        block.includes("upsert_store_commercial_ai_settings_scoped"),
         false,
       );
     },
@@ -461,31 +570,96 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "discount edit draft prefers structured human-help selection and only falls back to legacy fields last",
+    name: "discount draft binds special rules only to canonical discount settings input",
     run: () => {
       const source = readPageSource();
       const block = getCreateDiscountDraftFromAnswersBlock(source);
 
       assert.equal(
-        block.includes("parseArrayAnswer(answers.human_help_discount_cases_selected)"),
+        block.includes("special_discount_rules: discountInput.discountSpecialRules"),
+        true,
+      );
+      assert.equal(block.includes("price_direct_rule_other"), false);
+      assert.equal(block.includes("price_direct_rule"), false);
+      assert.equal(block.includes("price_must_understand_before"), false);
+      assert.equal(block.includes("negotiation_rules_summary"), false);
+      assert.equal(block.includes("sales_flow_notes"), false);
+      assert.equal(block.includes("human_help_general_summary"), false);
+    },
+  },
+  {
+    name: "discount edit form keeps human approval and approver as read-only derived fields",
+    run: () => {
+      const source = readPageSource();
+      const block = getDiscountEditFormBlock(source);
+
+      assert.equal(block.includes("Quando precisa aprovação humana"), true);
+      assert.equal(block.includes("Quem aprova desconto"), true);
+      assert.equal(
+        block.includes("value={discountDraft.human_help_discount_summary}"),
         true,
       );
       assert.equal(
-        block.includes("HUMAN_HELP_DISCOUNT_OPTIONS"),
+        block.includes("value={discountDraft.discount_approver}"),
         true,
       );
       assert.equal(
-        block.includes('"",'),
+        block.includes('handleDiscountDraftChange("human_help_discount_summary"'),
+        false,
+      );
+      assert.equal(
+        block.includes('handleDiscountDraftChange("discount_approver"'),
+        false,
+      );
+    },
+  },
+  {
+    name: "discount save writes special rules through canonical writer and does not write competing authorities",
+    run: () => {
+      const source = readPageSource();
+      const block = getDiscountSaveBlock(source);
+
+      assert.equal(
+        block.includes('"upsert_store_discount_settings_with_legacy_mirror_scoped"'),
+        true,
+      );
+      assert.equal(block.includes("p_default_discount_percent:"), true);
+      assert.equal(block.includes("p_max_discount_percent:"), true);
+      assert.equal(block.includes("p_allow_ask_above_max_discount:"), true);
+      assert.equal(block.includes("p_discount_autonomy_mode:"), true);
+      assert.equal(block.includes("p_discount_special_rules:"), true);
+      assert.equal(block.includes('"upsert_store_high_value_discount_settings_scoped"'), true);
+      assert.equal(block.includes("p_enabled:"), true);
+      assert.equal(block.includes("p_threshold_amount_cents:"), true);
+      assert.equal(block.includes("p_discount_percent:"), true);
+      assert.equal(block.includes("human_help_discount_cases:"), false);
+      assert.equal(block.includes("human_help_discount_cases_selected"), false);
+      assert.equal(block.includes("human_help_discount_cases_other"), false);
+      assert.equal(block.includes("discount_approver_name:"), false);
+      assert.equal(block.includes("discount_special_rules: discountDraft"), false);
+    },
+  },
+  {
+    name: "discount read-only summary uses canonical special rules and derived approval text",
+    run: () => {
+      const source = readPageSource();
+      const block = getDiscountItemsBlock(source);
+
+      assert.equal(
+        block.includes('label: "Regras especiais", value: discountPresentation.discountSpecialRules || "Nao definido"'),
         true,
       );
       assert.equal(
-        block.includes("cleanText(answers.human_help_discount_cases) ||"),
+        block.includes('label: "Quando precisa aprovação humana"'),
         true,
       );
       assert.equal(
-        block.includes("cleanText(answers.human_help_discount_cases_other)"),
+        block.includes("value: discountDraft.human_help_discount_summary || \"Não definido\""),
         true,
       );
+      assert.equal(block.includes("price_direct_rule"), false);
+      assert.equal(block.includes("price_must_understand_before"), false);
+      assert.equal(block.includes("negotiation_rules_summary"), false);
     },
   },
   {

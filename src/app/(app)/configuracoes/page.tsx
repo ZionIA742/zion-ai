@@ -6,6 +6,12 @@ import IntelligentCatalogImportPanel from "@/components/catalog/IntelligentCatal
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 import {
+  createStoreCommercialAiSettingsInputFromSources,
+  deriveStoreCommercialAiLegacyMirrors,
+  normalizeStoreCommercialAiSettingsInput,
+  type StoreCommercialAiSettingsRow,
+} from "@/lib/store-commercial-ai-settings";
+import {
   createStorePaymentPresentationFromSources,
   createStorePaymentSettingsInputFromSources,
   deriveStorePaymentSettingsSummary,
@@ -22,6 +28,7 @@ import {
   createStoreDiscountSettingsInputFromSources,
   formatStoreDiscountMoneyInput,
   formatStoreDiscountPercentInput,
+  getStoreDiscountAutonomyModeLabel,
   normalizeStoreDiscountSettingsInput,
   type StoreDiscountSettingsRow,
   type StoreHighValueDiscountSettingsRow,
@@ -343,6 +350,8 @@ type ScheduleSettingsRow = {
 type CommercialDraftState = {
   ai_display_name: string;
   ai_presentation_mode: string;
+  price_answer_policy: string;
+  price_context_requirements: string[];
   ai_tone_summary: string;
   ai_speaks_as: string;
   can_send_price_directly: string;
@@ -658,6 +667,19 @@ const PRICE_TALK_MODE_OPTIONS: Option[] = [
   { value: "quando_cliente_perguntar", label: "Quando o cliente perguntar" },
   { value: "so_quando_fizer_sentido", label: "Só quando fizer sentido" },
   { value: "com_contexto_antes", label: "Primeiro com contexto, depois preço" },
+];
+
+const PRICE_ANSWER_POLICY_OPTIONS: Option[] = [
+  { value: "direct_when_asked", label: "Preço/base/faixa confiável quando perguntarem" },
+  { value: "range_only_when_asked", label: "Somente faixa inicial" },
+  { value: "human_required_for_price", label: "Humano necessário para preço" },
+];
+
+const PRICE_CONTEXT_REQUIREMENT_OPTIONS: Option[] = [
+  { value: "need_summary", label: "Entender necessidade ou objetivo" },
+  { value: "interested_product_reference", label: "Entender produto ou tipo" },
+  { value: "space_or_measurements", label: "Entender espaço ou medidas" },
+  { value: "installation_scope", label: "Entender escopo de instalação" },
 ];
 
 const SALES_FLOW_FINAL_OPTIONS: Option[] = [
@@ -1163,10 +1185,7 @@ function createCommercialDraftFromAnswers(answers: AnswersMap): any {
 
   return {
     ai_display_name: cleanText(answers.store_display_name) || cleanText(answers.responsible_name),
-    ai_presentation_mode:
-      PRICE_TALK_MODE_OPTIONS.find((option) => option.value === cleanText(answers.price_talk_mode))?.label ||
-      cleanText(answers.price_talk_mode) ||
-      "Quando o cliente perguntar",
+    ai_presentation_mode: cleanText(answers.strategy_ai_presentation) || "Não definido",
     ai_tone_summary: tone || "Ainda não definido",
     ai_speaks_as: cleanText(answers.ai_identity_mode) || "Equipe da loja",
     can_send_price_directly: yesNoLabel(answers.ai_can_send_price_directly),
@@ -1193,8 +1212,19 @@ function createCommercialDraftFromAnswersWithPaymentSettings(
   paymentSettings?: StorePaymentSettingsRow | null,
   discountSettings?: StoreDiscountSettingsRow | null,
   highValueDiscountSettings?: StoreHighValueDiscountSettingsRow | null,
+  commercialAiSettings?: StoreCommercialAiSettingsRow | null,
 ): CommercialDraftState {
   const baseDraft = createCommercialDraftFromAnswers(answers);
+  const commercialAiSettingsInput =
+    createStoreCommercialAiSettingsInputFromSources({
+      answers,
+      settings: commercialAiSettings ?? null,
+    });
+  const normalizedCommercialAiSettings =
+    normalizeStoreCommercialAiSettingsInput(commercialAiSettingsInput);
+  const commercialAiLegacyMirrors = normalizedCommercialAiSettings.ok
+    ? deriveStoreCommercialAiLegacyMirrors(normalizedCommercialAiSettings.value)
+    : null;
   const paymentPresentation = createStorePaymentPresentationFromSources({
     answers,
     settings: paymentSettings ?? null,
@@ -1211,6 +1241,11 @@ function createCommercialDraftFromAnswersWithPaymentSettings(
 
   return {
     ...baseDraft,
+    price_answer_policy: commercialAiSettingsInput.priceAnswerPolicy,
+    price_context_requirements:
+      commercialAiSettingsInput.priceContextRequirements,
+    price_policy_summary:
+      commercialAiLegacyMirrors?.price_direct_rule || baseDraft.price_policy_summary,
     payment_methods_summary: paymentPresentation.paymentSummary,
     accepted_payment_methods: paymentSettingsInput.acceptedPaymentMethods,
     legacy_payment_condition_tags: paymentPresentation.legacyPaymentConditionTags,
@@ -1258,15 +1293,25 @@ function createDiscountDraftFromAnswers(
     high_value_threshold_amount: discountInput.highValueThresholdAmount,
     high_value_discount_percent: discountInput.highValueDiscountPercent,
     human_help_discount_summary:
-  joinSelectedLabels(
-    parseArrayAnswer(answers.human_help_discount_cases_selected),
-    HUMAN_HELP_DISCOUNT_OPTIONS,
-    "",
-  ) ||
-  cleanText(answers.human_help_discount_cases) ||
-  cleanText(answers.human_help_discount_cases_other),
-    discount_approver: cleanText(answers.discount_approver_name) || cleanText(answers.responsible_name) || "Responsável principal",
-    special_discount_rules: cleanText(answers.discount_special_rules) || cleanText(answers.price_direct_rule_other),
+      [
+        getStoreDiscountAutonomyModeLabel(discountInput.discountAutonomyMode),
+        discountInput.maxDiscountPercent
+          ? `Teto normal ${discountInput.maxDiscountPercent}%`
+          : "",
+        discountInput.allowAskAboveMaxDiscount
+          ? "Acima do teto: consultar humano antes de confirmar."
+          : "Acima do teto: não confirmar fora da política.",
+        discountInput.highValueEnabled
+          ? "Política de alto valor ativa."
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" | "),
+    discount_approver:
+      cleanText(answers.discount_approver_name) ||
+      cleanText(answers.responsible_name) ||
+      "Não definido",
+    special_discount_rules: discountInput.discountSpecialRules || "",
     discount_explanation: safeDiscountExplanation,
   };
 }
@@ -1724,6 +1769,8 @@ export default function ConfiguracoesPage() {
   const [strategySettings, setStrategySettings] = useState<StoreStrategySettingsRow | null>(null);
   const [channelSettings, setChannelSettings] = useState<StoreChannelSettingsRow | null>(null);
   const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettingsRow | null>(null);
+  const [commercialAiSettings, setCommercialAiSettings] =
+    useState<StoreCommercialAiSettingsRow | null>(null);
   const [discountSettings, setDiscountSettings] = useState<StoreDiscountSettingsRow | null>(null);
   const [highValueDiscountSettings, setHighValueDiscountSettings] =
     useState<StoreHighValueDiscountSettingsRow | null>(null);
@@ -2263,6 +2310,7 @@ export default function ConfiguracoesPage() {
       setScheduleSettings(null);
       setStrategySettings(null);
       setChannelSettings(null);
+      setCommercialAiSettings(null);
       setStoreBranding(null);
       setStoreLogoPreviewUrl(null);
       setStoreWhatsappStatus(null);
@@ -2288,6 +2336,7 @@ export default function ConfiguracoesPage() {
         strategySettingsResult,
         channelSettingsResult,
         paymentSettingsResult,
+        commercialAiSettingsResult,
         discountSettingsResult,
         highValueDiscountSettingsResult,
       ] = await Promise.all([
@@ -2340,9 +2389,17 @@ export default function ConfiguracoesPage() {
           .eq("store_id", activeStoreId)
           .maybeSingle(),
         supabase
+          .from("store_commercial_ai_settings")
+          .select(
+            "organization_id, store_id, price_answer_policy, price_context_requirements, created_at, updated_at",
+          )
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .maybeSingle(),
+        supabase
           .from("store_discount_settings")
           .select(
-            "organization_id, store_id, default_discount_percent, max_discount_percent, allow_ask_above_max_discount, discount_autonomy_mode, created_at, updated_at",
+            "organization_id, store_id, default_discount_percent, max_discount_percent, allow_ask_above_max_discount, discount_autonomy_mode, discount_special_rules, created_at, updated_at",
           )
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
@@ -2365,6 +2422,7 @@ export default function ConfiguracoesPage() {
       if (strategySettingsResult.error) throw strategySettingsResult.error;
       if (channelSettingsResult.error) throw channelSettingsResult.error;
       if (paymentSettingsResult.error) throw paymentSettingsResult.error;
+      if (commercialAiSettingsResult.error) throw commercialAiSettingsResult.error;
       if (discountSettingsResult.error) throw discountSettingsResult.error;
       if (highValueDiscountSettingsResult.error) throw highValueDiscountSettingsResult.error;
 
@@ -2488,6 +2546,9 @@ export default function ConfiguracoesPage() {
       setStrategySettings(nextStrategySettings);
       setChannelSettings((channelSettingsResult.data ?? null) as StoreChannelSettingsRow | null);
       setPaymentSettings((paymentSettingsResult.data ?? null) as StorePaymentSettingsRow | null);
+      setCommercialAiSettings(
+        (commercialAiSettingsResult.data ?? null) as StoreCommercialAiSettingsRow | null,
+      );
       setDiscountSettings((discountSettingsResult.data ?? null) as StoreDiscountSettingsRow | null);
       setHighValueDiscountSettings(
         (highValueDiscountSettingsResult.data ?? null) as StoreHighValueDiscountSettingsRow | null,
@@ -3179,20 +3240,56 @@ export default function ConfiguracoesPage() {
   const commercialIdentityItems = useMemo(() => {
     return buildBulletRows([
       { label: "Nome da IA no atendimento", value: cleanText(answers.store_display_name) || cleanText(answers.responsible_name) || "Não definido" },
-      { label: "Como a IA se apresenta", value: PRICE_TALK_MODE_OPTIONS.find((option) => option.value === cleanText(answers.price_talk_mode))?.label || cleanText(answers.price_talk_mode) || "Quando o cliente perguntar" },
+      { label: "Como a IA se apresenta", value: cleanText(strategySettingsInput.strategyAiPresentation) || "Não definido" },
       { label: "Tom comercial da IA", value: joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS], cleanText(answers.activation_preferences_other)) || "Ainda não definido" },
       { label: "Fala como", value: cleanText(answers.ai_identity_mode) || "Equipe da loja" },
     ]);
-  }, [answers]);
+  }, [answers, strategySettingsInput]);
+
+  const commercialAiSettingsInput = useMemo(
+    () =>
+      createStoreCommercialAiSettingsInputFromSources({
+        answers,
+        settings: commercialAiSettings,
+      }),
+    [answers, commercialAiSettings],
+  );
+
+  const commercialAiLegacyMirrors = useMemo(() => {
+    const normalized =
+      normalizeStoreCommercialAiSettingsInput(commercialAiSettingsInput);
+    return normalized.ok
+      ? deriveStoreCommercialAiLegacyMirrors(normalized.value)
+      : null;
+  }, [commercialAiSettingsInput]);
+
+  const commercialDraftPriceRulePreview = useMemo(() => {
+    const normalized = normalizeStoreCommercialAiSettingsInput({
+      priceAnswerPolicy: commercialDraft.price_answer_policy,
+      priceContextRequirements: commercialDraft.price_context_requirements,
+    });
+    return normalized.ok
+      ? deriveStoreCommercialAiLegacyMirrors(normalized.value).price_direct_rule
+      : commercialDraft.price_policy_summary;
+  }, [commercialDraft]);
 
   const commercialPriceItems = useMemo(() => {
+    const priceAnswerPolicyLabel =
+      PRICE_ANSWER_POLICY_OPTIONS.find(
+        (option) => option.value === commercialAiSettingsInput.priceAnswerPolicy,
+      )?.label || commercialAiSettingsInput.priceAnswerPolicy;
+    const priceContextRequirementsLabel =
+      joinSelectedLabels(
+        commercialAiSettingsInput.priceContextRequirements,
+        PRICE_CONTEXT_REQUIREMENT_OPTIONS,
+      ) || "Sem requisito configurado";
+
     return buildBulletRows([
-      { label: "Pode falar preço", value: yesNoLabel(answers.ai_can_send_price_directly) },
-      { label: "O que precisa entender antes", value: joinSelectedLabels(parseArrayAnswer(answers.price_must_understand_before), PRICE_DIRECT_BEFORE_OPTIONS, cleanText(answers.price_direct_rule_other)) || cleanText(answers.price_must_understand_before_summary) },
-      { label: "Regra principal de preço", value: cleanText(answers.price_direct_rule) || cleanText(answers.price_direct_rule_other) },
-      { label: "Modo de fala sobre preço", value: PRICE_TALK_MODE_OPTIONS.find((option) => option.value === cleanText(answers.price_talk_mode))?.label || cleanText(answers.price_talk_mode) },
+      { label: "Política de resposta de preço", value: priceAnswerPolicyLabel },
+      { label: "Requisitos antes de preço não-catalogado", value: priceContextRequirementsLabel },
+      { label: "Regra principal de preço", value: commercialAiLegacyMirrors?.price_direct_rule || cleanText(answers.price_direct_rule) },
     ]);
-  }, [answers]);
+  }, [answers, commercialAiLegacyMirrors, commercialAiSettingsInput]);
 
   const commercialHumanHelpItems = useMemo(() => {
     return buildBulletRows([
@@ -3267,7 +3364,14 @@ export default function ConfiguracoesPage() {
   }, [answers]);
 
   const commercialOverviewMetrics = useMemo(() => {
-    const canTalkPrice = yesNoLabel(answers.ai_can_send_price_directly);
+    const priceAnswerPolicy =
+      commercialAiSettingsInput.priceAnswerPolicy;
+    const canTalkPrice =
+      priceAnswerPolicy === "human_required_for_price"
+        ? "Humano"
+        : priceAnswerPolicy === "range_only_when_asked"
+          ? "Faixa"
+          : "Direto";
     const canDiscount = discountPresentation.canOfferDiscount ? "Sim" : "Nao";
     const rawTone =
       joinSelectedLabels(
@@ -3300,8 +3404,8 @@ export default function ConfiguracoesPage() {
       {
         label: "Preço direto",
         value: canTalkPrice,
-        tone: canTalkPrice === "Sim" ? ("green" as const) : canTalkPrice === "Não" ? ("amber" as const) : ("gray" as const),
-        hint: "Define se a IA pode falar preço sem chamar humano",
+        tone: priceAnswerPolicy === "human_required_for_price" ? ("amber" as const) : ("green" as const),
+        hint: "Política canonical de resposta de preço da IA",
       },
       {
         label: "Desconto",
@@ -3324,7 +3428,7 @@ export default function ConfiguracoesPage() {
         hint: humanCasesSummary ? summarizeMetricText(humanCasesSummary, 72) : "Desconto, projeto especial, pagamento e exceções",
       },
     ];
-  }, [answers, discountPresentation]);
+  }, [answers, commercialAiSettingsInput, discountPresentation]);
 
   const activationItems = useMemo(() => {
     const notificationCases = joinSelectedLabels(
@@ -3384,21 +3488,14 @@ export default function ConfiguracoesPage() {
           : "Desativada",
       },
       {
-  label: "Quando precisa aprovação humana",
-  value:
-    joinSelectedLabels(
-      parseArrayAnswer(answers.human_help_discount_cases_selected),
-      HUMAN_HELP_DISCOUNT_OPTIONS,
-      "",
-    ) ||
-    cleanText(answers.human_help_discount_cases) ||
-    cleanText(answers.human_help_discount_cases_other),
-},
-      { label: "Quem aprova", value: cleanText(answers.discount_approver_name) || cleanText(answers.responsible_name) || "Responsável principal" },
-      { label: "Regras especiais", value: cleanText(answers.discount_special_rules) || cleanText(answers.price_direct_rule_other) },
+        label: "Quando precisa aprovação humana",
+        value: discountDraft.human_help_discount_summary || "Não definido",
+      },
+      { label: "Quem aprova", value: discountDraft.discount_approver || "Não definido" },
+      { label: "Regras especiais", value: discountPresentation.discountSpecialRules || "Nao definido" },
       { label: "Como funciona", value: cleanText(answers.discount_explanation) || "A IA pode trabalhar com desconto apenas dentro da regra definida pela loja. Quando o pedido sai do limite ou exige condição especial, ela deve chamar aprovação humana antes de confirmar qualquer valor." },
     ]);
-  }, [answers, discountPresentation]);
+  }, [answers, discountDraft, discountPresentation]);
 
   const channelsOverviewMetrics = useMemo(() => {
     const integrationStatus =
@@ -3916,9 +4013,16 @@ export default function ConfiguracoesPage() {
         paymentSettings,
         discountSettings,
         highValueDiscountSettings,
+        commercialAiSettings,
       ),
     );
-  }, [answers, discountSettings, highValueDiscountSettings, paymentSettings]);
+  }, [
+    answers,
+    commercialAiSettings,
+    discountSettings,
+    highValueDiscountSettings,
+    paymentSettings,
+  ]);
 
   useEffect(() => {
     setPrimaryResponsibleDraft({
@@ -3970,6 +4074,19 @@ export default function ConfiguracoesPage() {
     });
   }, []);
 
+  const handleCommercialPriceContextRequirementToggle = useCallback((value: string) => {
+    setCommercialDraft((current) => {
+      const selectedValues = current.price_context_requirements.includes(value)
+        ? current.price_context_requirements.filter((item) => item !== value)
+        : [...current.price_context_requirements, value];
+
+      return {
+        ...current,
+        price_context_requirements: selectedValues,
+      };
+    });
+  }, []);
+
   const handleCommercialEditCancel = useCallback(() => {
     setCommercialDraft(
       createCommercialDraftFromAnswersWithPaymentSettings(
@@ -3977,10 +4094,17 @@ export default function ConfiguracoesPage() {
         paymentSettings,
         discountSettings,
         highValueDiscountSettings,
+        commercialAiSettings,
       ),
     );
     setIsCommercialEditing(false);
-  }, [answers, discountSettings, highValueDiscountSettings, paymentSettings]);
+  }, [
+    answers,
+    commercialAiSettings,
+    discountSettings,
+    highValueDiscountSettings,
+    paymentSettings,
+  ]);
 
   const handleCommercialEditSave = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -4006,6 +4130,17 @@ export default function ConfiguracoesPage() {
 
     if (!normalizedPaymentSettings.ok) {
       setErrorText(normalizedPaymentSettings.error);
+      setSuccessText(null);
+      return;
+    }
+    const normalizedCommercialAiSettings =
+      normalizeStoreCommercialAiSettingsInput({
+        priceAnswerPolicy: commercialDraft.price_answer_policy,
+        priceContextRequirements: commercialDraft.price_context_requirements,
+      });
+
+    if (!normalizedCommercialAiSettings.ok) {
+      setErrorText(normalizedCommercialAiSettings.error);
       setSuccessText(null);
       return;
     }
@@ -4045,16 +4180,31 @@ export default function ConfiguracoesPage() {
     }
 
     setPaymentSettings((savedPaymentSettings ?? null) as StorePaymentSettingsRow | null);
+    const { data: savedCommercialAiSettings, error: commercialAiSettingsError } =
+      await supabase.rpc("upsert_store_commercial_ai_settings_with_legacy_mirror_scoped", {
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_price_answer_policy:
+          normalizedCommercialAiSettings.value.priceAnswerPolicy,
+        p_price_context_requirements:
+          normalizedCommercialAiSettings.value.priceContextRequirements,
+      });
+
+    if (commercialAiSettingsError) {
+      setErrorText("Falha ao sincronizar as configuracoes canonicas comerciais.");
+      setSuccessText(null);
+      return;
+    }
+
+    setCommercialAiSettings(
+      (savedCommercialAiSettings ?? null) as StoreCommercialAiSettingsRow | null,
+    );
 
     const saved = await upsertConfigAnswers(
       {
         store_display_name: commercialDraft.ai_display_name,
-        price_talk_mode: commercialDraft.ai_presentation_mode,
         activation_preferences_other: commercialDraft.ai_tone_summary,
         ai_identity_mode: commercialDraft.ai_speaks_as,
-        ai_can_send_price_directly: commercialDraft.can_send_price_directly,
-        price_direct_rule_other: commercialDraft.price_before_summary,
-        price_direct_rule: commercialDraft.price_policy_summary,
         human_help_general_summary: commercialDraft.human_help_summary,
         accepted_payment_methods_summary: derivedPaymentSummary,
 
@@ -4113,6 +4263,7 @@ export default function ConfiguracoesPage() {
       maxDiscountPercent: discountDraft.max_discount_percent,
       allowAskAboveMaxDiscount: discountDraft.allow_ask_above_max_discount,
       discountAutonomyMode: discountDraft.discount_autonomy_mode,
+      discountSpecialRules: discountDraft.special_discount_rules,
       highValueEnabled: discountDraft.high_value_enabled,
       highValueThresholdAmount: discountDraft.high_value_threshold_amount,
       highValueDiscountPercent: discountDraft.high_value_discount_percent,
@@ -4135,6 +4286,8 @@ export default function ConfiguracoesPage() {
           normalizedDiscountSettings.value.allowAskAboveMaxDiscount,
         p_discount_autonomy_mode:
           normalizedDiscountSettings.value.discountAutonomyMode,
+        p_discount_special_rules:
+          normalizedDiscountSettings.value.discountSpecialRules,
       });
 
     if (discountSettingsError) {
@@ -4169,9 +4322,6 @@ export default function ConfiguracoesPage() {
 
     const saved = await upsertConfigAnswers(
       {
-        human_help_discount_cases: discountDraft.human_help_discount_summary,
-        discount_approver_name: discountDraft.discount_approver,
-        discount_special_rules: discountDraft.special_discount_rules,
         discount_explanation: discountDraft.discount_explanation,
       },
       "Alterações de descontos salvas com sucesso."
@@ -7375,7 +7525,7 @@ export default function ConfiguracoesPage() {
                 </label>
                 <label className="space-y-1">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a IA se apresenta</span>
-                  <input value={commercialDraft.ai_presentation_mode} onChange={(e)=>handleCommercialDraftChange("ai_presentation_mode", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  <input value={commercialDraft.ai_presentation_mode} readOnly className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none" />
                 </label>
                 <label className="space-y-1 md:col-span-2">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tom comercial da IA</span>
@@ -7386,16 +7536,34 @@ export default function ConfiguracoesPage() {
                   <input value={commercialDraft.ai_speaks_as} onChange={(e)=>handleCommercialDraftChange("ai_speaks_as", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pode falar preço</span>
-                  <select value={commercialDraft.can_send_price_directly} onChange={(e)=>handleCommercialDraftChange("can_send_price_directly", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Política de resposta de preço</span>
+                  <select value={commercialDraft.price_answer_policy} onChange={(e)=>handleCommercialDraftChange("price_answer_policy", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black">
+                    {PRICE_ANSWER_POLICY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
                 </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que precisa entender antes de falar preço</span>
-                  <textarea value={commercialDraft.price_before_summary} onChange={(e)=>handleCommercialDraftChange("price_before_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
+                <div className="space-y-3 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Requisitos antes de preço fechado/não-catalogado</span>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {PRICE_CONTEXT_REQUIREMENT_OPTIONS.map((option) => {
+                      const selected = commercialDraft.price_context_requirements.includes(option.value);
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => handleCommercialPriceContextRequirementToggle(option.value)}
+                          className={selected ? "rounded-xl border border-black bg-black px-3 py-2 text-sm font-medium text-white" : "rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700"}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
                 <label className="space-y-1 md:col-span-2">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra principal de preço</span>
-                  <textarea value={commercialDraft.price_policy_summary} onChange={(e)=>handleCommercialDraftChange("price_policy_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  <textarea value={commercialDraftPriceRulePreview} readOnly rows={3} className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none" />
                 </label>
                 <label className="space-y-1 md:col-span-2">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando deve chamar humano</span>
@@ -8086,10 +8254,9 @@ export default function ConfiguracoesPage() {
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando precisa aprovação humana</span>
                   <textarea
                     value={discountDraft.human_help_discount_summary}
-                    onChange={(e) => handleDiscountDraftChange("human_help_discount_summary", e.target.value)}
+                    readOnly
                     rows={3}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    placeholder="Ex.: pedido de desconto maior que o permitido, condição especial, cliente muito quente..."
+                    className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none"
                   />
                 </label>
 
@@ -8097,9 +8264,8 @@ export default function ConfiguracoesPage() {
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quem aprova desconto</span>
                   <input
                     value={discountDraft.discount_approver}
-                    onChange={(e) => handleDiscountDraftChange("discount_approver", e.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    placeholder="Nome do responsável"
+                    readOnly
+                    className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none"
                   />
                 </label>
 

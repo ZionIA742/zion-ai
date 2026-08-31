@@ -27,16 +27,19 @@ test(
         max_discount_percent: 28,
         allow_ask_above_max_discount: true,
         discount_autonomy_mode: "approval_required",
+        discount_special_rules: "Condição especial só com gerente.",
       },
       highValueSettings: null,
     });
 
     assert.equal(input.defaultDiscountPercent, "15");
     assert.equal(input.maxDiscountPercent, "28");
+    assert.equal(input.discountSpecialRules, "Condição especial só com gerente.");
 
     const presentation = createStoreDiscountPresentationFromSources({
       answers: {
         max_discount_percent: 18,
+        discount_special_rules: "Legado nao deve vencer canonical.",
       },
       settings: {
         organization_id: "org-1",
@@ -45,10 +48,12 @@ test(
         max_discount_percent: 28,
         allow_ask_above_max_discount: true,
         discount_autonomy_mode: "approval_required",
+        discount_special_rules: "Condição especial só com gerente.",
       },
     });
 
     assert.equal(presentation.hasHistoricalConflict, true);
+    assert.equal(presentation.discountSpecialRules, "Condição especial só com gerente.");
     assert.equal(
       presentation.historicalConflictSummary.includes("legado maximo 18%"),
       true,
@@ -65,6 +70,7 @@ test(
     const input = createStoreDiscountSettingsInputFromSources({
       answers: {
         max_discount_percent: 18,
+        discount_special_rules: "Cliente importante exige revisão humana.",
       },
       settings: null,
       highValueSettings: null,
@@ -72,6 +78,77 @@ test(
 
     assert.equal(input.defaultDiscountPercent, "");
     assert.equal(input.maxDiscountPercent, "18");
+    assert.equal(input.discountSpecialRules, "Cliente importante exige revisão humana.");
+  },
+);
+
+test(
+  "discount helper keeps canonical null special rules empty and ignores price legacy text",
+  async () => {
+    const {
+      createStoreDiscountPresentationFromSources,
+      createStoreDiscountSettingsInputFromSources,
+    } = await loadStoreDiscountSettingsModule();
+
+    const input = createStoreDiscountSettingsInputFromSources({
+      answers: {
+        discount_special_rules: "Legado correto sem canonical.",
+        price_direct_rule: "So depois de entender medidas.",
+        price_must_understand_before: ["so_apos_entender_medidas"],
+      },
+      settings: {
+        organization_id: "org-1",
+        store_id: "store-1",
+        default_discount_percent: 5,
+        max_discount_percent: 10,
+        allow_ask_above_max_discount: false,
+        discount_autonomy_mode: "approval_required",
+        discount_special_rules: null,
+      },
+      highValueSettings: null,
+    });
+
+    assert.equal(input.discountSpecialRules, "");
+
+    const presentation = createStoreDiscountPresentationFromSources({
+      answers: {
+        discount_special_rules: "Legado correto sem canonical.",
+        price_direct_rule: "So depois de entender medidas.",
+        price_must_understand_before: ["so_apos_entender_medidas"],
+      },
+      settings: {
+        organization_id: "org-1",
+        store_id: "store-1",
+        default_discount_percent: 5,
+        max_discount_percent: 10,
+        allow_ask_above_max_discount: false,
+        discount_autonomy_mode: "approval_required",
+        discount_special_rules: null,
+      },
+      highValueSettings: null,
+    });
+
+    assert.equal(presentation.discountSpecialRules, null);
+  },
+);
+
+test(
+  "discount helper uses only semantic discount legacy when canonical row is absent",
+  async () => {
+    const { createStoreDiscountSettingsInputFromSources } =
+      await loadStoreDiscountSettingsModule();
+
+    const input = createStoreDiscountSettingsInputFromSources({
+      answers: {
+        discount_special_rules: "Apenas gerente aprova excecao.",
+        price_direct_rule_other: "So depois de entender o que o cliente quer.",
+        negotiation_rules_summary: "Negociar depois de qualificar.",
+      },
+      settings: null,
+      highValueSettings: null,
+    });
+
+    assert.equal(input.discountSpecialRules, "Apenas gerente aprova excecao.");
   },
 );
 
@@ -87,6 +164,7 @@ test(
         maxDiscountPercent: "10",
         allowAskAboveMaxDiscount: false,
         discountAutonomyMode: "approval_required",
+        discountSpecialRules: "",
         highValueEnabled: false,
         highValueThresholdAmount: "",
         highValueDiscountPercent: "",
@@ -103,6 +181,7 @@ test(
         maxDiscountPercent: "20",
         allowAskAboveMaxDiscount: true,
         discountAutonomyMode: "within_policy_autonomous",
+        discountSpecialRules: "",
         highValueEnabled: true,
         highValueThresholdAmount: "",
         highValueDiscountPercent: "",
@@ -114,3 +193,50 @@ test(
     );
   },
 );
+
+test("discount normalization keeps special rules textual and blanks become null", async () => {
+  const { normalizeStoreDiscountSettingsInput } =
+    await loadStoreDiscountSettingsModule();
+
+  assert.deepEqual(
+    normalizeStoreDiscountSettingsInput({
+      defaultDiscountPercent: "5",
+      maxDiscountPercent: "10",
+      allowAskAboveMaxDiscount: true,
+      discountAutonomyMode: "within_policy_autonomous",
+      discountSpecialRules: "  Condição especial apenas com aprovação.  ",
+      highValueEnabled: false,
+      highValueThresholdAmount: "",
+      highValueDiscountPercent: "",
+    }),
+    {
+      ok: true,
+      value: {
+        defaultDiscountPercent: 5,
+        maxDiscountPercent: 10,
+        allowAskAboveMaxDiscount: true,
+        discountAutonomyMode: "within_policy_autonomous",
+        discountSpecialRules: "Condição especial apenas com aprovação.",
+        highValueEnabled: false,
+        highValueThresholdAmountCents: null,
+        highValueDiscountPercent: null,
+      },
+    },
+  );
+
+  const blankResult = normalizeStoreDiscountSettingsInput({
+    defaultDiscountPercent: "5",
+    maxDiscountPercent: "10",
+    allowAskAboveMaxDiscount: false,
+    discountAutonomyMode: "approval_required",
+    discountSpecialRules: "   ",
+    highValueEnabled: false,
+    highValueThresholdAmount: "",
+    highValueDiscountPercent: "",
+  });
+
+  assert.equal(blankResult.ok, true);
+  if (blankResult.ok) {
+    assert.equal(blankResult.value.discountSpecialRules, null);
+  }
+});

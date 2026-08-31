@@ -551,8 +551,11 @@ function createCommercialOpportunityStageSupabase(args?: {
 function createQualificationAutoProgressSupabaseHarness(args?: {
   stage?: string | null;
   canonicalWriterError?: { message: string } | null;
+  expectedCommercialOpportunityId?: string;
 }) {
   const scope = createAiWindowScopeSupabase();
+  const expectedCommercialOpportunityId =
+    args?.expectedCommercialOpportunityId ?? "opp-canonical";
   const requestRpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
   const systemRpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
   const createClientCalls: Array<{ url: string; key: string }> = [];
@@ -577,13 +580,13 @@ function createQualificationAutoProgressSupabaseHarness(args?: {
             );
             const storeFilter = filters.find((item) => item.column === "store_id");
 
-            assert.equal(idFilter?.value, "opp-canonical");
+            assert.equal(idFilter?.value, expectedCommercialOpportunityId);
             assert.equal(organizationFilter?.value, "org-canonical");
             assert.equal(storeFilter?.value, "store-canonical");
 
             return {
               data: {
-                id: "opp-canonical",
+                id: expectedCommercialOpportunityId,
                 stage: args?.stage ?? "novo_lead",
               },
               error: null,
@@ -622,7 +625,7 @@ function createQualificationAutoProgressSupabaseHarness(args?: {
 
       return {
         data: {
-          commercial_opportunity_id: "opp-canonical",
+          commercial_opportunity_id: expectedCommercialOpportunityId,
           stage: String(payload.p_target_stage || ""),
           lifecycle_cycle: 1,
           lifecycle_event_id: "event-1",
@@ -2382,6 +2385,85 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "commercial handoff uses resolved B instead of arrival A after CMIR",
+    run: async () => {
+      const sentMessages: string[] = [];
+      let receivedHandoff: CommercialHandoffContext | null = null;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () =>
+              createAiWindowScopeSupabase().client as never,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Resposta comercial",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    lastCustomerMessage:
+                      "Pode me colocar em contato com o responsavel?",
+                    leadName: "Cliente",
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                    resolvedCommercialOpportunityId: "opp-resolved-b",
+                    commercialHandoff: createHandoff({
+                      commercialOpportunityId: "opp-resolved-b",
+                    }),
+                    responseAnchorCommercialContext: {
+                      messageId: "msg-1",
+                      captureState: "captured",
+                      historicalContextStatus: "captured",
+                      conversationSessionId: "session-1",
+                      commercialSessionContextLinkId: "link-1",
+                      customerId: "customer-1",
+                      commercialOpportunityId: "opp-arrival-a",
+                      leadCustomerLinkId: "lead-link-1",
+                    },
+                  },
+                }) as never,
+              sendAiPanelMessage: async (args: { aiText: string }) => {
+                sentMessages.push(args.aiText);
+                return "msg-ai-1";
+              },
+              createCommercialAssistantHandoff: async (args: {
+                handoff: CommercialHandoffContext;
+              }) => {
+                receivedHandoff = args.handoff;
+                return ({
+                  created: false,
+                  skipped: true,
+                  reason: "handoff_not_requested",
+                }) as never;
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.deepEqual(sentMessages, ["Resposta comercial"]);
+        assert.equal(
+          receivedHandoff?.commercialOpportunityId,
+          "opp-resolved-b",
+        );
+        assert.equal(result.ok, true);
+assert.deepEqual(sentMessages, ["Resposta comercial"]);
+assert.equal(
+  receivedHandoff?.commercialOpportunityId,
+  "opp-resolved-b",
+);
+      });
+    },
+  },  {
     name: "qualification signal uses dedicated system client for canonical by_system writer and keeps explicit scope params",
     run: async () => {
       const harness = createQualificationAutoProgressSupabaseHarness();
@@ -2409,6 +2491,7 @@ const tests: TestCase[] = [
                       kind: "none",
                       reason: "none",
                     },
+                    resolvedCommercialOpportunityId: "opp-canonical",
                     responseAnchorCommercialContext: {
                       messageId: "msg-1",
                       captureState: "captured",
@@ -2460,7 +2543,82 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "qualification signal writer failure stays fail-closed and does not fall back to request-scoped by_system or by_user rpc",
+    name: "qualification auto progress uses resolved B instead of arrival A after CMIR",
+    run: async () => {
+      const harness = createQualificationAutoProgressSupabaseHarness({
+        expectedCommercialOpportunityId: "opp-resolved-b",
+      });
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Resposta comercial",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    lastCustomerMessage:
+                      "Agora quero comprar outra piscina para minha chacara",
+                    leadName: "Cliente",
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                    resolvedCommercialOpportunityId: "opp-resolved-b",
+                    responseAnchorCommercialContext: {
+                      messageId: "msg-1",
+                      captureState: "captured",
+                      historicalContextStatus: "captured",
+                      conversationSessionId: "session-1",
+                      commercialSessionContextLinkId: "link-1",
+                      customerId: "customer-1",
+                      commercialOpportunityId: "opp-arrival-a",
+                      leadCustomerLinkId: "lead-link-1",
+                    },
+                  },
+                }) as never,
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+
+        const canonicalCalls = harness.systemRpcCalls.filter(
+          (call) =>
+            call.fn ===
+            "transition_commercial_opportunity_stage_by_system",
+        );
+
+        assert.equal(canonicalCalls.length, 1);
+        assert.equal(
+          canonicalCalls[0]?.payload.p_commercial_opportunity_id,
+          "opp-resolved-b",
+        );
+        assert.equal(
+          canonicalCalls.some(
+            (call) =>
+              call.payload.p_commercial_opportunity_id ===
+              "opp-arrival-a",
+          ),
+          false,
+        );
+        assert.equal(
+          canonicalCalls[0]?.payload.p_evidence_message_id,
+          "msg-1",
+        );
+      });
+    },
+  },
+  {    name: "qualification signal writer failure stays fail-closed and does not fall back to request-scoped by_system or by_user rpc",
     run: async () => {
       const harness = createQualificationAutoProgressSupabaseHarness({
         canonicalWriterError: {
@@ -2491,6 +2649,7 @@ const tests: TestCase[] = [
                       kind: "none",
                       reason: "none",
                     },
+                    resolvedCommercialOpportunityId: "opp-canonical",
                     responseAnchorCommercialContext: {
                       messageId: "msg-1",
                       captureState: "captured",
@@ -2633,7 +2792,7 @@ const tests: TestCase[] = [
       const source = readFileSync(
         join(process.cwd(), "src/lib/server/generate-and-save-ai-sales-reply.ts"),
         "utf8",
-      );
+      ).replace(/\r\n/g, "\n");
 
       const helperIndex = source.indexOf(
         "async function maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical("

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import { getCanonicalCrmStage } from "@/config/crm";
@@ -5,6 +6,12 @@ import { isSellableInventoryState } from "../catalog/availability";
 import { buildBehaviorInstructionBlock } from "./ai-sales-behavior";
 import { buildSalesMethodologyInstructionBlock } from "./ai-sales-methodology";
 import { buildSalesResponseBrain } from "./ai-sales-response-brain";
+import {
+  createStoreCommercialAiSettingsInputFromSources,
+  deriveStoreCommercialAiLegacyMirrors,
+  normalizeStoreCommercialAiSettingsInput,
+  type StoreCommercialAiSettingsRow,
+} from "../store-commercial-ai-settings.js";
 import {
   buildQualificationWriterOperationKey,
   extractDeterministicQualificationCandidates,
@@ -94,6 +101,24 @@ export type ResponseAnchorCommercialContext = {
   customerId: string | null;
   commercialOpportunityId: string | null;
   leadCustomerLinkId: string | null;
+};
+
+export type CommercialMessageIntentDecisionKind =
+  | "continue_same_intent"
+  | "reopen_same_intent"
+  | "new_independent_opportunity"
+  | "repurchase"
+  | "addendum"
+  | "needs_clarification"
+  | "structural_ambiguity";
+
+export type CommercialMessageIntentResolutionContext = {
+  decisionKind: CommercialMessageIntentDecisionKind | null;
+  reasonCode: string | null;
+  resolvedCommercialOpportunityId: string | null;
+  relatedCommercialOpportunityId: string | null;
+  relationType: "repurchase_of" | "addendum_to" | null;
+  source: "current" | "writer" | "not_applicable";
 };
 
 export type MessageWithCommercialContext = MessageRow & {
@@ -591,6 +616,8 @@ export type GenerateAiSalesReplyResult =
         operationalFollowUpDecision: OperationalFollowUpDecision;
         commercialHandoff: CommercialHandoffContext | null;
         catalogPhotoAction: CatalogPhotoActionContext | null;
+        resolvedCommercialOpportunityId: string | null;
+        commercialMessageIntentResolution: CommercialMessageIntentResolutionContext | null;
         responseAnchorCommercialContext: ResponseAnchorCommercialContext | null;
       };
     }
@@ -7335,6 +7362,672 @@ function hasConfiguredDownPaymentRule(onboardingMap: Record<string, string>): bo
   });
 }
 
+const COMMERCIAL_MESSAGE_INTENT_DECISION_KINDS = new Set<CommercialMessageIntentDecisionKind>([
+  "continue_same_intent",
+  "reopen_same_intent",
+  "new_independent_opportunity",
+  "repurchase",
+  "addendum",
+  "needs_clarification",
+  "structural_ambiguity",
+]);
+
+function isCommercialMessageIntentDecisionKind(
+  value: unknown,
+): value is CommercialMessageIntentDecisionKind {
+  return (
+    typeof value === "string" &&
+    COMMERCIAL_MESSAGE_INTENT_DECISION_KINDS.has(
+      value as CommercialMessageIntentDecisionKind,
+    )
+  );
+}
+
+function cleanCommercialIntentText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.trim();
+  return cleaned ? cleaned : null;
+}
+
+function commercialIntentReasonCode(
+  decisionKind: CommercialMessageIntentDecisionKind,
+): string {
+  switch (decisionKind) {
+    case "continue_same_intent":
+      return "ai_same_intent";
+    case "reopen_same_intent":
+      return "ai_reopen_same_intent";
+    case "new_independent_opportunity":
+      return "ai_new_independent_opportunity";
+    case "repurchase":
+      return "ai_repurchase";
+    case "addendum":
+      return "ai_addendum";
+    case "needs_clarification":
+      return "ai_needs_clarification";
+    case "structural_ambiguity":
+      return "ai_structural_ambiguity";
+  }
+}
+
+function relationTypeForCommercialIntent(
+  decisionKind: CommercialMessageIntentDecisionKind,
+): "repurchase_of" | "addendum_to" | null {
+  if (decisionKind === "repurchase") return "repurchase_of";
+  if (decisionKind === "addendum") return "addendum_to";
+  return null;
+}
+
+function deterministicCommercialIntentOpportunityId(seed: string): string {
+  const hex = createHash("sha256").update(seed, "utf8").digest("hex").slice(0, 32);
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join("-");
+}
+
+function validateCommercialIntentEventShape(args: {
+  decisionKind: CommercialMessageIntentDecisionKind;
+  resolvedOpportunityId: string | null;
+  relatedOpportunityId: string | null;
+  relationType: string | null;
+}): boolean {
+  if (
+    args.decisionKind === "continue_same_intent" ||
+    args.decisionKind === "reopen_same_intent" ||
+    args.decisionKind === "new_independent_opportunity"
+  ) {
+    return (
+      Boolean(args.resolvedOpportunityId) &&
+      args.relatedOpportunityId === null &&
+      args.relationType === null
+    );
+  }
+
+  if (args.decisionKind === "repurchase") {
+    return (
+      Boolean(args.resolvedOpportunityId) &&
+      Boolean(args.relatedOpportunityId) &&
+      args.resolvedOpportunityId !== args.relatedOpportunityId &&
+      args.relationType === "repurchase_of"
+    );
+  }
+
+  if (args.decisionKind === "addendum") {
+    return (
+      Boolean(args.resolvedOpportunityId) &&
+      Boolean(args.relatedOpportunityId) &&
+      args.resolvedOpportunityId !== args.relatedOpportunityId &&
+      args.relationType === "addendum_to"
+    );
+  }
+
+  return (
+    args.resolvedOpportunityId === null &&
+    args.relatedOpportunityId === null &&
+    args.relationType === null
+  );
+}
+
+type LoadCurrentCommercialMessageIntentResolutionResult =
+  | {
+      ok: true;
+      current: CommercialMessageIntentResolutionContext | null;
+    }
+  | {
+      ok: false;
+      error: "LOAD_CANONICAL_INTENT_RESOLUTION_FAILED";
+      message: string;
+    };
+
+async function loadCurrentCommercialMessageIntentResolution(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  anchorMessageId: string;
+  customerId: string;
+  leadCustomerLinkId: string;
+}): Promise<LoadCurrentCommercialMessageIntentResolutionResult> {
+  const { data: currentRow, error: currentError } = await args.supabase
+    .from("commercial_message_intent_resolution_current")
+    .select(
+      "organization_id,store_id,anchor_message_id,current_event_id,last_operation_key,updated_at",
+    )
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("anchor_message_id", args.anchorMessageId)
+    .maybeSingle();
+
+  if (currentError) {
+    return {
+      ok: false,
+      error: "LOAD_CANONICAL_INTENT_RESOLUTION_FAILED",
+      message: currentError.message || "Falha ao ler a resoluÃ§Ã£o comercial atual.",
+    };
+  }
+
+  if (!currentRow) {
+    return { ok: true, current: null };
+  }
+
+  const currentEventId = cleanCommercialIntentText(currentRow.current_event_id);
+  if (!currentEventId) {
+    return {
+      ok: false,
+      error: "LOAD_CANONICAL_INTENT_RESOLUTION_FAILED",
+      message: "CMIR current sem current_event_id vÃ¡lido.",
+    };
+  }
+
+  const { data: eventRow, error: eventError } = await args.supabase
+    .from("commercial_message_intent_resolution_events")
+    .select(
+      "id,organization_id,store_id,anchor_message_id,customer_id,lead_customer_link_id,resolved_opportunity_id,related_opportunity_id,relation_type,decision_kind,reason_code,metadata",
+    )
+    .eq("id", currentEventId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("anchor_message_id", args.anchorMessageId)
+    .maybeSingle();
+
+  if (eventError || !eventRow) {
+    return {
+      ok: false,
+      error: "LOAD_CANONICAL_INTENT_RESOLUTION_FAILED",
+      message:
+        eventError?.message ||
+        "CMIR current aponta para um evento que nÃ£o pÃ´de ser provado no mesmo escopo.",
+    };
+  }
+
+  const decisionKind = cleanCommercialIntentText(eventRow.decision_kind);
+  const reasonCode = cleanCommercialIntentText(eventRow.reason_code);
+  const resolvedOpportunityId = cleanCommercialIntentText(
+    eventRow.resolved_opportunity_id,
+  );
+  const relatedOpportunityId = cleanCommercialIntentText(
+    eventRow.related_opportunity_id,
+  );
+  const relationType = cleanCommercialIntentText(eventRow.relation_type);
+
+  if (
+    eventRow.customer_id !== args.customerId ||
+    eventRow.lead_customer_link_id !== args.leadCustomerLinkId ||
+    !isCommercialMessageIntentDecisionKind(decisionKind) ||
+    !reasonCode ||
+    !validateCommercialIntentEventShape({
+      decisionKind,
+      resolvedOpportunityId,
+      relatedOpportunityId,
+      relationType,
+    })
+  ) {
+    return {
+      ok: false,
+      error: "LOAD_CANONICAL_INTENT_RESOLUTION_FAILED",
+      message: "CMIR current possui payload estruturalmente invÃ¡lido para a anchor.",
+    };
+  }
+
+  return {
+    ok: true,
+    current: {
+      decisionKind,
+      reasonCode,
+      resolvedCommercialOpportunityId: resolvedOpportunityId,
+      relatedCommercialOpportunityId: relatedOpportunityId,
+      relationType:
+        relationType === "repurchase_of" || relationType === "addendum_to"
+          ? relationType
+          : null,
+      source: "current",
+    },
+  };
+}
+
+type CommercialIntentOpenAiClient = {
+  responses: {
+    create(args: any): Promise<any>;
+  };
+};
+type SemanticCommercialMessageIntentResolutionResult =
+  | {
+      ok: true;
+      decisionKind: CommercialMessageIntentDecisionKind;
+      evidence: string[];
+      response: unknown;
+    }
+  | {
+      ok: false;
+      error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED";
+      message: string;
+      response?: unknown;
+    };
+
+async function resolveCommercialMessageIntentSemantically(args: {
+  openai: CommercialIntentOpenAiClient;
+  model: string;
+  lastCustomerMessage: string;
+  recentCommercialHistory: string;
+}): Promise<SemanticCommercialMessageIntentResolutionResult> {
+  let response: unknown;
+
+  try {
+    response = await args.openai.responses.create({
+      model: args.model,
+      instructions: `
+VocÃª Ã© um classificador comercial interno do ZION.
+Classifique SOMENTE a relaÃ§Ã£o da mensagem-Ã¢ncora atual com a venda que estava ligada a ela quando chegou.
+
+DecisÃµes permitidas:
+- continue_same_intent: continua a mesma compra/projeto em andamento.
+- reopen_same_intent: retoma explicitamente a mesma compra/projeto abandonado ou perdido.
+- new_independent_opportunity: inicia outra compra/projeto independente.
+- repurchase: nova compra claramente posterior/repetida ligada Ã  venda anterior, como "quero comprar outra", "mais uma" ou "comprar de novo".
+- addendum: expansÃ£o/aditivo claramente ligado Ã  venda anterior, sem ser mera continuaÃ§Ã£o normal.
+- needs_clarification: uma pergunta curta do cliente pode esclarecer com seguranÃ§a qual venda ele quer tratar.
+- structural_ambiguity: existem interpretaÃ§Ãµes comerciais incompatÃ­veis e nÃ£o hÃ¡ base segura para escolher.
+
+Regras:
+- Nunca forneÃ§a UUID, id tÃ©cnico ou escolha uma oportunidade pelo nome/ordem.
+- A venda anterior Ã© apenas "A".
+- Se nÃ£o houver prova suficiente para nova venda, recompra ou aditivo, nÃ£o invente.
+- Para repurchase/addendum, a relaÃ§Ã£o deve estar explÃ­cita no texto/contexto; se nÃ£o estiver, use needs_clarification ou structural_ambiguity.
+- Evidence deve conter somente trechos LITERAIS da mensagem atual do cliente.
+- Retorne JSON puro, sem markdown:
+{"decision_kind":"...","reason_code":"...","evidence":["..."]}
+`.trim(),
+      input: `
+HISTÃ“RICO COMERCIAL DA VENDA A:
+${args.recentCommercialHistory || "Sem histÃ³rico comercial adicional."}
+
+MENSAGEM-Ã‚NCORA ATUAL:
+${args.lastCustomerMessage}
+`.trim(),
+      max_output_tokens: 180,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Falha inesperada ao resolver a intenÃ§Ã£o comercial.",
+    };
+  }
+
+  const outputText = String((response as any)?.output_text || "").trim();
+  const firstBrace = outputText.indexOf("{");
+  const lastBrace = outputText.lastIndexOf("}");
+
+  if (firstBrace < 0 || lastBrace <= firstBrace) {
+    return {
+      ok: false,
+      error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+      message: "Resolvedor comercial retornou JSON ausente.",
+      response,
+    };
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(outputText.slice(firstBrace, lastBrace + 1));
+  } catch {
+    return {
+      ok: false,
+      error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+      message: "Resolvedor comercial retornou JSON invÃ¡lido.",
+      response,
+    };
+  }
+
+  const decisionKind = cleanCommercialIntentText(parsed?.decision_kind);
+  if (!isCommercialMessageIntentDecisionKind(decisionKind)) {
+    return {
+      ok: false,
+      error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+      message: "Resolvedor comercial retornou decision_kind invÃ¡lido.",
+      response,
+    };
+  }
+
+  const rawEvidence = Array.isArray(parsed?.evidence) ? parsed.evidence : [];
+  const evidence: string[] = Array.from(
+    new Set<string>(
+      rawEvidence
+        .map((value: unknown) => cleanCommercialIntentText(value))
+        .filter((value: string | null): value is string => Boolean(value))
+        .filter((value: string) => args.lastCustomerMessage.includes(value)),
+    ),
+  );
+
+  if (evidence.length === 0) {
+    return {
+      ok: false,
+      error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+      message:
+        "Resolvedor comercial nÃ£o apresentou evidÃªncia literal vÃ¡lida da mensagem-Ã¢ncora.",
+      response,
+    };
+  }
+
+  return {
+    ok: true,
+    decisionKind,
+    evidence,
+    response,
+  };
+}
+
+type WriteCommercialMessageIntentResolutionResult =
+  | {
+      ok: true;
+      context: CommercialMessageIntentResolutionContext;
+    }
+  | {
+      ok: false;
+      error: "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED";
+      message: string;
+    };
+
+async function writeCanonicalCommercialMessageIntentResolutionBySystem(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  anchorMessageId: string;
+  customerId: string;
+  leadCustomerLinkId: string;
+  operationKey: string;
+  decisionKind: CommercialMessageIntentDecisionKind;
+  resolvedOpportunityId: string | null;
+  relatedOpportunityId: string | null;
+  evidence: string[];
+}): Promise<WriteCommercialMessageIntentResolutionResult> {
+  const expectedRelationType = relationTypeForCommercialIntent(args.decisionKind);
+  const reasonCode = commercialIntentReasonCode(args.decisionKind);
+
+  const { data, error } = await args.supabase.rpc(
+    "write_commercial_message_intent_resolution_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_anchor_message_id: args.anchorMessageId,
+      p_customer_id: args.customerId,
+      p_lead_customer_link_id: args.leadCustomerLinkId,
+      p_operation_key: args.operationKey,
+      p_decision_kind: args.decisionKind,
+      p_reason_code: reasonCode,
+      p_resolved_opportunity_id: args.resolvedOpportunityId,
+      p_related_opportunity_id: args.relatedOpportunityId,
+      p_actor_type: "ai",
+      p_metadata: {
+        semantic_resolver_version: "p9_cmir_semantic_v1",
+        literal_anchor_evidence: args.evidence,
+      },
+      p_created_by: "sales_ai.intent_resolution",
+    },
+  );
+
+  if (error) {
+    return {
+      ok: false,
+      error: "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED",
+      message: error.message || "Falha ao persistir a resoluÃ§Ã£o comercial canÃ´nica.",
+    };
+  }
+
+  if (!Array.isArray(data) || data.length !== 1) {
+    return {
+      ok: false,
+      error: "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED",
+      message: "Writer CMIR retornou cardinalidade invÃ¡lida.",
+    };
+  }
+
+  const row = data[0] as any;
+  const decisionKind = cleanCommercialIntentText(row?.decision_kind);
+  const resolvedOpportunityId = cleanCommercialIntentText(
+    row?.resolved_opportunity_id,
+  );
+  const relatedOpportunityId = cleanCommercialIntentText(
+    row?.related_opportunity_id,
+  );
+  const relationType = cleanCommercialIntentText(row?.relation_type);
+
+  if (
+    decisionKind !== args.decisionKind ||
+    resolvedOpportunityId !== args.resolvedOpportunityId ||
+    relatedOpportunityId !== args.relatedOpportunityId ||
+    relationType !== expectedRelationType ||
+    !validateCommercialIntentEventShape({
+      decisionKind: args.decisionKind,
+      resolvedOpportunityId,
+      relatedOpportunityId,
+      relationType,
+    }) ||
+    typeof row?.replayed !== "boolean"
+  ) {
+    return {
+      ok: false,
+      error: "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED",
+      message: "Writer CMIR retornou payload estruturalmente invÃ¡lido.",
+    };
+  }
+
+  return {
+    ok: true,
+    context: {
+      decisionKind: args.decisionKind,
+      reasonCode,
+      resolvedCommercialOpportunityId: resolvedOpportunityId,
+      relatedCommercialOpportunityId: relatedOpportunityId,
+      relationType: expectedRelationType,
+      source: "writer",
+    },
+  };
+}
+
+type ResolveCanonicalCommercialMessageIntentResult =
+  | {
+      ok: true;
+      context: CommercialMessageIntentResolutionContext;
+      semanticResponse: unknown | null;
+    }
+  | {
+      ok: false;
+      error:
+        | "LOAD_CANONICAL_INTENT_RESOLUTION_FAILED"
+        | "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED"
+        | "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED";
+      message: string;
+      semanticResponse?: unknown | null;
+    };
+
+async function resolveCanonicalCommercialMessageIntent(args: {
+  supabase: any;
+  openai: CommercialIntentOpenAiClient;
+  model: string;
+  organizationId: string;
+  storeId: string;
+  anchorMessageId: string;
+  lastCustomerMessage: string;
+  recentCommercialHistory: string;
+  responseAnchorCommercialContext: ResponseAnchorCommercialContext | null;
+}): Promise<ResolveCanonicalCommercialMessageIntentResult> {
+  const anchorContext = args.responseAnchorCommercialContext;
+
+  if (!anchorContext || anchorContext.captureState !== "captured") {
+    return {
+      ok: true,
+      context: {
+        decisionKind: null,
+        reasonCode: null,
+        resolvedCommercialOpportunityId:
+          anchorContext?.commercialOpportunityId || null,
+        relatedCommercialOpportunityId: null,
+        relationType: null,
+        source: "not_applicable",
+      },
+      semanticResponse: null,
+    };
+  }
+
+  const customerId = cleanCommercialIntentText(anchorContext.customerId);
+  const leadCustomerLinkId = cleanCommercialIntentText(
+    anchorContext.leadCustomerLinkId,
+  );
+  const arrivalOpportunityId = cleanCommercialIntentText(
+    anchorContext.commercialOpportunityId,
+  );
+
+  if (!customerId || !leadCustomerLinkId || !arrivalOpportunityId) {
+    return {
+      ok: false,
+      error: "LOAD_CANONICAL_INTENT_RESOLUTION_FAILED",
+      message:
+        "Mensagem captured sem identidade comercial completa; resoluÃ§Ã£o CMIR bloqueada.",
+      semanticResponse: null,
+    };
+  }
+
+  const currentResult = await loadCurrentCommercialMessageIntentResolution({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    anchorMessageId: args.anchorMessageId,
+    customerId,
+    leadCustomerLinkId,
+  });
+
+  if (!currentResult.ok) {
+    return currentResult;
+  }
+
+  if (currentResult.current) {
+    return {
+      ok: true,
+      context: currentResult.current,
+      semanticResponse: null,
+    };
+  }
+
+  const semanticResult = await resolveCommercialMessageIntentSemantically({
+    openai: args.openai,
+    model: args.model,
+    lastCustomerMessage: args.lastCustomerMessage,
+    recentCommercialHistory: args.recentCommercialHistory,
+  });
+
+  if (!semanticResult.ok) {
+    return {
+      ok: false,
+      error: semanticResult.error,
+      message: semanticResult.message,
+      semanticResponse: semanticResult.response || null,
+    };
+  }
+
+  const decisionKind = semanticResult.decisionKind;
+  let resolvedOpportunityId: string | null = null;
+  let relatedOpportunityId: string | null = null;
+
+  if (
+    decisionKind === "continue_same_intent" ||
+    decisionKind === "reopen_same_intent"
+  ) {
+    resolvedOpportunityId = arrivalOpportunityId;
+  } else if (
+    decisionKind === "new_independent_opportunity" ||
+    decisionKind === "repurchase" ||
+    decisionKind === "addendum"
+  ) {
+    resolvedOpportunityId = deterministicCommercialIntentOpportunityId(
+      [
+        "zion",
+        "p9",
+        "cmir",
+        "v1",
+        args.organizationId,
+        args.storeId,
+        args.anchorMessageId,
+        "child",
+      ].join(":"),
+    );
+
+    if (decisionKind === "repurchase" || decisionKind === "addendum") {
+      relatedOpportunityId = arrivalOpportunityId;
+    }
+  }
+
+  const writeResult = await writeCanonicalCommercialMessageIntentResolutionBySystem({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    anchorMessageId: args.anchorMessageId,
+    customerId,
+    leadCustomerLinkId,
+    operationKey: `ai_sales_cmir:v1:${args.anchorMessageId}`,
+    decisionKind,
+    resolvedOpportunityId,
+    relatedOpportunityId,
+    evidence: semanticResult.evidence,
+  });
+
+  if (!writeResult.ok) {
+    return {
+      ...writeResult,
+      semanticResponse: semanticResult.response,
+    };
+  }
+
+  return {
+    ok: true,
+    context: writeResult.context,
+    semanticResponse: semanticResult.response,
+  };
+}
+
+function buildCommercialIntentResolutionInstructionBlock(
+  context: CommercialMessageIntentResolutionContext,
+): string {
+  if (context.decisionKind === "needs_clarification") {
+    return `
+RESOLUÃ‡ÃƒO DE INTENÃ‡ÃƒO COMERCIAL
+- esta mensagem ainda nÃ£o pode ser associada com seguranÃ§a a uma venda especÃ­fica
+- nÃ£o presuma que o cliente continua a venda anterior nem que iniciou outra
+- faÃ§a UMA pergunta curta e natural para esclarecer se ele estÃ¡ falando da compra/projeto atual ou de uma nova compra/projeto
+- nÃ£o exponha termos internos como opportunity, CMIR, stage ou ambiguidade
+`.trim();
+  }
+
+  if (context.decisionKind === "structural_ambiguity") {
+    return `
+RESOLUÃ‡ÃƒO DE INTENÃ‡ÃƒO COMERCIAL
+- existem interpretaÃ§Ãµes comerciais incompatÃ­veis para esta mensagem
+- nÃ£o escolha uma venda silenciosamente
+- responda de forma natural e faÃ§a UMA pergunta curta que diferencie claramente a compra/projeto atual de outra compra/projeto
+- nÃ£o exponha termos internos como opportunity, CMIR, stage ou ambiguidade
+`.trim();
+  }
+
+  return "";
+}
+
+function buildCommercialIntentClarificationQuestion(
+  context: CommercialMessageIntentResolutionContext,
+): string | null {
+  if (
+    context.decisionKind === "needs_clarification" ||
+    context.decisionKind === "structural_ambiguity"
+  ) {
+    return "VocÃª estÃ¡ falando desta compra que jÃ¡ estÃ¡vamos vendo ou de uma nova compra/projeto?";
+  }
+  return null;
+}
 function buildInstructions(args: {
   conversationPattern: ConversationPattern;
   paymentOrClosingSubtype?: PaymentOrClosingSubtype;
@@ -7959,6 +8652,24 @@ export async function generateAiSalesReply(
       };
     }
 
+    const { data: commercialAiSettings, error: commercialAiSettingsError } =
+      await supabase
+        .from("store_commercial_ai_settings")
+        .select(
+          "organization_id, store_id, price_answer_policy, price_context_requirements, created_at, updated_at",
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", resolvedStoreId)
+        .maybeSingle();
+
+    if (commercialAiSettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_COMMERCIAL_AI_SETTINGS_FAILED",
+        message: commercialAiSettingsError.message,
+      };
+    }
+
     const onboardingMap: Record<string, string> = {};
 
     for (const row of (onboardingAnswers || []) as StoreAnswerRow[]) {
@@ -7966,6 +8677,46 @@ export async function generateAiSalesReply(
       if (text) {
         onboardingMap[row.question_key] = text;
       }
+    }
+
+    const canonicalCommercialAiSettings =
+      (commercialAiSettings ?? null) as StoreCommercialAiSettingsRow | null;
+
+    if (canonicalCommercialAiSettings) {
+      const commercialAiSettingsInput =
+        createStoreCommercialAiSettingsInputFromSources({
+          answers: onboardingMap,
+          settings: canonicalCommercialAiSettings,
+        });
+      const normalizedCommercialAiSettings =
+        normalizeStoreCommercialAiSettingsInput(commercialAiSettingsInput);
+
+      if (!normalizedCommercialAiSettings.ok) {
+        return {
+          ok: false,
+          error: "INVALID_COMMERCIAL_AI_SETTINGS",
+          message: normalizedCommercialAiSettings.error,
+        };
+      }
+
+      const commercialAiLegacyMirrors = deriveStoreCommercialAiLegacyMirrors(
+        normalizedCommercialAiSettings.value,
+      );
+
+      onboardingMap.price_talk_mode = commercialAiLegacyMirrors.price_talk_mode;
+      onboardingMap.ai_can_send_price_directly = String(
+        commercialAiLegacyMirrors.ai_can_send_price_directly,
+      );
+      onboardingMap.price_needs_human_help =
+        commercialAiLegacyMirrors.price_needs_human_help;
+      onboardingMap.price_must_understand_before = JSON.stringify(
+        commercialAiLegacyMirrors.price_must_understand_before,
+      );
+      onboardingMap.price_direct_conditions = JSON.stringify(
+        commercialAiLegacyMirrors.price_direct_conditions,
+      );
+      onboardingMap.price_direct_rule =
+        commercialAiLegacyMirrors.price_direct_rule;
     }
 
     const { data: recentMessages, error: recentMessagesError } =
@@ -8032,14 +8783,51 @@ export async function generateAiSalesReply(
         commercialContextLinks: commercialSnapshotBatch.commercialContextLinks,
         resolutionFailed: commercialSnapshotBatch.resolutionFailed,
       });
+
+    const extractionUsages: GenerateAiSalesReplyUsage[] = [];
+    const intentResolutionMessages = selectMessagesForCurrentCommercialInference({
+      annotatedMessages,
+      responseAnchorCommercialContext,
+    });
+    const commercialIntentResolutionResult =
+      await resolveCanonicalCommercialMessageIntent({
+        supabase,
+        openai,
+        model,
+        organizationId,
+        storeId: resolvedStoreId,
+        anchorMessageId,
+        lastCustomerMessage,
+        recentCommercialHistory: formatRecentHistory(intentResolutionMessages),
+        responseAnchorCommercialContext,
+      });
+
+    if (commercialIntentResolutionResult.semanticResponse) {
+      extractionUsages.push(
+        extractOpenAiUsage(commercialIntentResolutionResult.semanticResponse, model),
+      );
+    }
+
+    if (!commercialIntentResolutionResult.ok) {
+      return {
+        ok: false,
+        error: commercialIntentResolutionResult.error,
+        message: commercialIntentResolutionResult.message,
+      };
+    }
+
+    const commercialMessageIntentResolution =
+      commercialIntentResolutionResult.context;
+    const resolvedCommercialOpportunityId =
+      commercialMessageIntentResolution.resolvedCommercialOpportunityId;
+
     const canonicalCommercialContextResult =
       await loadAnchoredCanonicalCommercialContext({
         supabase,
         organizationId,
         storeId: resolvedStoreId,
         leadState: lead.state,
-        anchoredCommercialOpportunityId:
-          responseAnchorCommercialContext?.commercialOpportunityId || null,
+        anchoredCommercialOpportunityId: resolvedCommercialOpportunityId,
       });
 
     if (!canonicalCommercialContextResult.ok) {
@@ -8053,11 +8841,8 @@ export async function generateAiSalesReply(
     let canonicalQualificationSnapshot =
       canonicalCommercialContextResult.canonicalQualificationSnapshot;
     const crmStageForReply = canonicalCommercialContextResult.crmStageForReply;
-    const anchoredCommercialOpportunityId =
-      responseAnchorCommercialContext?.commercialOpportunityId || null;
-    const extractionUsages: GenerateAiSalesReplyUsage[] = [];
 
-    if (anchoredCommercialOpportunityId) {
+    if (resolvedCommercialOpportunityId) {
       const deterministicCandidates = extractDeterministicQualificationCandidates(
         lastCustomerMessage,
       )
@@ -8082,7 +8867,7 @@ export async function generateAiSalesReply(
         console.warn("[generateAiSalesReply] structured qualification extraction dropped", {
           anchorMessageId,
           conversationId,
-          commercialOpportunityId: anchoredCommercialOpportunityId,
+          commercialOpportunityId: resolvedCommercialOpportunityId,
           reason: structuredExtraction.failureReason,
         });
       }
@@ -8104,7 +8889,7 @@ export async function generateAiSalesReply(
         console.info("[generateAiSalesReply] qualification candidate collision", {
           anchorMessageId,
           conversationId,
-          commercialOpportunityId: anchoredCommercialOpportunityId,
+          commercialOpportunityId: resolvedCommercialOpportunityId,
           discardedFactKeys: mergedCandidatesResult.discardedFactKeys,
           reason: "candidate_collision",
         });
@@ -8116,7 +8901,7 @@ export async function generateAiSalesReply(
             supabase,
             organizationId,
             storeId: resolvedStoreId,
-            commercialOpportunityId: anchoredCommercialOpportunityId,
+            commercialOpportunityId: resolvedCommercialOpportunityId,
             conversationId,
             anchorMessageId,
             candidate,
@@ -8136,7 +8921,7 @@ export async function generateAiSalesReply(
             supabase,
             organizationId,
             storeId: resolvedStoreId,
-            commercialOpportunityId: anchoredCommercialOpportunityId,
+            commercialOpportunityId: resolvedCommercialOpportunityId,
           });
 
         if (!postWriteQualificationResult.ok) {
@@ -8616,7 +9401,21 @@ export async function generateAiSalesReply(
       bestNamedPoolMatch,
     });
 
+    const commercialIntentResolutionInstructionBlock =
+      buildCommercialIntentResolutionInstructionBlock(
+        commercialMessageIntentResolution,
+      );
     const commercialObjectiveBlock = buildCommercialObjectiveBlock(commercialObjective);
+    const commercialObjectiveBlockWithIntentResolution = [
+      commercialIntentResolutionInstructionBlock,
+      commercialObjectiveBlock,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const effectiveNextBestQuestion =
+      buildCommercialIntentClarificationQuestion(
+        commercialMessageIntentResolution,
+      ) || commercialObjective.nextBestQuestion;
     const salesBrain = buildSalesResponseBrain({
       customerName: lead.name,
       crmStage: crmStageForReply,
@@ -8630,7 +9429,7 @@ export async function generateAiSalesReply(
       strongestPoolReferenceMatch,
       hasConfiguredPixKey: hasConfiguredPixKey(onboardingMap),
       offersTechnicalVisit: hasConfiguredTechnicalVisit(onboardingMap),
-      suggestedNextQuestion: commercialObjective.nextBestQuestion,
+      suggestedNextQuestion: effectiveNextBestQuestion,
       acceptedPaymentMethodsSummary:
         onboardingMap.accepted_payment_methods_summary ||
         onboardingMap.accepted_payment_methods ||
@@ -8673,7 +9472,7 @@ export async function generateAiSalesReply(
 
     const examplesBlock = buildExamplesBlock({
       intents: commercialObjective.intents,
-      nextBestQuestion: commercialObjective.nextBestQuestion,
+      nextBestQuestion: effectiveNextBestQuestion,
       explicitCatalogRequest,
     });
 
@@ -8711,14 +9510,14 @@ export async function generateAiSalesReply(
       behaviorInstructionBlock,
       salesMethodologyInstructionBlock,
       salesBrainPromptBlock: salesBrain.promptBlock,
-      commercialObjectiveBlock,
+      commercialObjectiveBlock: commercialObjectiveBlockWithIntentResolution,
       shouldLoadPools,
       lastAiMessage,
       lastAiListedPools,
       questionIntentCount,
       responseMode: commercialObjective.responseMode,
       intents: commercialObjective.intents,
-      nextBestQuestion: commercialObjective.nextBestQuestion,
+      nextBestQuestion: effectiveNextBestQuestion,
       explicitCatalogRequest,
       catalogEvidenceBlock,
       responsePriorityBlock,
@@ -8762,8 +9561,8 @@ export async function generateAiSalesReply(
       offersTechnicalVisit: hasConfiguredTechnicalVisit(onboardingMap),
       lastAiListedPools,
       recommendedModel: matchedPools[0]?.pool?.name || null,
-      commercialOpportunityId:
-        responseAnchorCommercialContext?.commercialOpportunityId || null,
+      commercialOpportunityId: resolvedCommercialOpportunityId,
+
     });
     const operationalFollowUpDecision = inferOperationalFollowUpDecision({
       lastCustomerMessage,
@@ -8813,6 +9612,8 @@ export async function generateAiSalesReply(
         operationalFollowUpDecision,
         commercialHandoff,
         catalogPhotoAction,
+        resolvedCommercialOpportunityId,
+        commercialMessageIntentResolution,
         responseAnchorCommercialContext,
       },
     };

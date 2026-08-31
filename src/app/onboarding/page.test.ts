@@ -106,27 +106,43 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "step 4 uses the canonical payment writer before remaining onboarding answers and does not write accepted_payment_methods directly",
+    name: "step 4 uses canonical payment and commercial writers before remaining onboarding answers",
     run: () => {
       const source = readPageSource();
       const block = getSaveStep4Block(source);
 
-      const canonicalSyncIndex = block.indexOf(
+      const paymentSyncIndex = block.indexOf(
         '"upsert_store_payment_settings_with_legacy_mirror_scoped"',
+      );
+      const commercialSyncIndex = block.indexOf(
+        '"upsert_store_commercial_ai_settings_with_legacy_mirror_scoped"',
       );
       const legacyAnswersIndex = block.indexOf('await supabase.rpc("onboarding_upsert_answer_scoped", {');
 
-      assert.equal(canonicalSyncIndex > -1, true);
+      assert.equal(paymentSyncIndex > -1, true);
+      assert.equal(commercialSyncIndex > -1, true);
       assert.equal(legacyAnswersIndex > -1, true);
-      assert.equal(canonicalSyncIndex < legacyAnswersIndex, true);
+      assert.equal(paymentSyncIndex < legacyAnswersIndex, true);
+      assert.equal(commercialSyncIndex < legacyAnswersIndex, true);
       assert.equal(
         block.includes('["accepted_payment_methods", step4Form.accepted_payment_methods]'),
         false,
       );
+      assert.equal(block.includes('["ai_can_send_price_directly"'), false);
+      assert.equal(block.includes('["price_direct_rule"'), false);
+      assert.equal(block.includes('["price_direct_conditions"'), false);
+      assert.equal(block.includes('["price_needs_human_help"'), false);
+      assert.equal(block.includes('["price_talk_mode"'), false);
+      assert.equal(block.includes('["price_must_understand_before"'), false);
+      assert.equal(block.includes('["price_direct_rule_other"'), false);
       assert.equal(
         block.includes(
           'throw new Error(\n          "Falha ao sincronizar as configuracoes canonicas de pagamento.",',
         ) || block.includes('"Falha ao sincronizar as configuracoes canonicas de pagamento."'),
+        true,
+      );
+      assert.equal(
+        block.includes('"Falha ao sincronizar as configuracoes canonicas comerciais."'),
         true,
       );
     },

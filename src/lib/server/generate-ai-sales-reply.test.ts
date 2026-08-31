@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
+  type CommercialMessageIntentDecisionKind,
   buildHistoricalCommercialContextBlock,
   buildModelInput,
   describeCanonicalKnownFact,
@@ -433,8 +435,18 @@ function createGenerateAiSalesReplySupabase(args?: {
   anchorMessageContent?: string;
   anchorMessageId?: string;
   commercialOpportunityId?: string | null;
+  onboardingAnswers?: Row[];
+  commercialAiSettings?: Row[];
   canonicalReaderResponses?: Array<{ data: unknown; error: { message: string } | null }>;
   writerResponse?: RpcMockEntry;
+  includeCurrentIntentResolution?: boolean;
+  additionalCommercialOpportunities?: Row[];
+  cmirWriterResponse?: RpcMockEntry;
+  commercialOpportunityStage?: string;
+  cmirReopenTargetStage?: string;
+  currentIntentDecisionKind?: CommercialMessageIntentDecisionKind;
+  currentIntentResolvedOpportunityId?: string | null;
+
 }) {
   const anchorMessageId = args?.anchorMessageId ?? "msg-anchor";
   const commercialOpportunityId = Object.prototype.hasOwnProperty.call(
@@ -443,12 +455,37 @@ function createGenerateAiSalesReplySupabase(args?: {
   )
     ? (args?.commercialOpportunityId ?? null)
     : "opp-1";
+  const currentIntentDecisionKind =
+    args?.currentIntentDecisionKind ?? "continue_same_intent";
+
+  const currentIntentResolvedOpportunityId =
+    Object.prototype.hasOwnProperty.call(
+      args ?? {},
+      "currentIntentResolvedOpportunityId",
+    )
+      ? (args?.currentIntentResolvedOpportunityId ?? null)
+      : commercialOpportunityId;
+
   const defaultReaderRow = createCanonicalQualificationReaderRow({
     commercialOpportunityId: commercialOpportunityId ?? "opp-none",
     knownFacts: [],
     missingFactGroups: [],
     canAskNextQuestion: true,
   });
+
+  const commercialOpportunities: Row[] = [
+    ...(commercialOpportunityId
+      ? [
+          {
+            id: commercialOpportunityId,
+            organization_id: "org-1",
+            store_id: "store-1",
+            stage: args?.commercialOpportunityStage ?? "qualificacao",
+          },
+        ]
+      : []),
+    ...(args?.additionalCommercialOpportunities ?? []),
+  ];
 
   return new FakeSupabase(
     {
@@ -478,7 +515,8 @@ function createGenerateAiSalesReplySupabase(args?: {
           name: "Loja 1",
         },
       ],
-      store_onboarding_answers: [],
+      store_onboarding_answers: args?.onboardingAnswers ?? [],
+      store_commercial_ai_settings: args?.commercialAiSettings ?? [],
       messages: [
         createMessage({
           id: anchorMessageId,
@@ -507,27 +545,88 @@ function createGenerateAiSalesReplySupabase(args?: {
               organization_id: "org-1",
               store_id: "store-1",
               conversation_session_id: "session-1",
-              customer_id: null,
+              customer_id: "customer-1",
               commercial_opportunity_id: commercialOpportunityId,
-              lead_customer_link_id: null,
+              lead_customer_link_id: "lead-customer-link-1",
               status: "active",
             },
           ]
         : [],
-      commercial_opportunities: commercialOpportunityId
+      commercial_opportunities: commercialOpportunities,
+      commercial_message_intent_resolution_current:
+        commercialOpportunityId && (args?.includeCurrentIntentResolution ?? true)
         ? [
             {
-              id: commercialOpportunityId,
               organization_id: "org-1",
               store_id: "store-1",
-              stage: "qualificacao",
+              anchor_message_id: anchorMessageId,
+              current_event_id: "cmir-event-1",
+              last_operation_key: `test-cmir:${anchorMessageId}`,
+              updated_at: "2026-08-24T10:00:00.500Z",
+            },
+          ]
+        : [],
+      commercial_message_intent_resolution_events:
+        commercialOpportunityId && (args?.includeCurrentIntentResolution ?? true)
+        ? [
+            {
+              id: "cmir-event-1",
+              organization_id: "org-1",
+              store_id: "store-1",
+              anchor_message_id: anchorMessageId,
+              customer_id: "customer-1",
+              lead_customer_link_id: "lead-customer-link-1",
+              resolved_opportunity_id: currentIntentResolvedOpportunityId,
+              related_opportunity_id: null,
+              relation_type: null,
+              decision_kind: currentIntentDecisionKind,
+              reason_code: "test_existing_resolution",
+              metadata: {},
             },
           ]
         : [],
     },
     {},
     {
-      read_commercial_opportunity_qualification_facts_by_system:
+      write_commercial_message_intent_resolution_by_system:
+        args?.cmirWriterResponse ??
+        ((payload: Record<string, unknown>) => {
+          if (
+            payload.p_decision_kind === "reopen_same_intent" &&
+            args?.cmirReopenTargetStage
+          ) {
+            const resolvedOpportunityId = String(
+              payload.p_resolved_opportunity_id ?? "",
+            ).trim();
+
+            const resolvedOpportunity = commercialOpportunities.find(
+              (opportunity) =>
+                String(opportunity.id ?? "") === resolvedOpportunityId,
+            );
+
+            if (resolvedOpportunity) {
+              resolvedOpportunity.stage = args.cmirReopenTargetStage;
+            }
+          }
+
+          return {
+            data: [
+              {
+                decision_kind: payload.p_decision_kind,
+                resolved_opportunity_id: payload.p_resolved_opportunity_id,
+                related_opportunity_id: payload.p_related_opportunity_id,
+                relation_type:
+                  payload.p_decision_kind === "repurchase"
+                    ? "repurchase_of"
+                    : payload.p_decision_kind === "addendum"
+                      ? "addendum_to"
+                      : null,
+                replayed: false,
+              },
+            ],
+            error: null,
+          };
+        }),      read_commercial_opportunity_qualification_facts_by_system:
         args?.canonicalReaderResponses ??
         [
           {
@@ -544,7 +643,7 @@ function createGenerateAiSalesReplySupabase(args?: {
         ((payload: Record<string, unknown>) => ({
           data: [
             {
-              commercial_opportunity_id: commercialOpportunityId ?? "opp-none",
+              commercial_opportunity_id: payload.p_commercial_opportunity_id,
               fact_key: payload.p_fact_key,
               event_id: "event-1",
               current_last_event_id: "event-1",
@@ -2589,6 +2688,76 @@ test("generateAiSalesReply writes canonical qualification facts, rereads snapsho
   );
 });
 
+test("generateAiSalesReply prefers canonical commercial AI settings over legacy price answers", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    onboardingAnswers: [
+      {
+        question_key: "ai_can_send_price_directly",
+        answer: true,
+      },
+      {
+        question_key: "price_needs_human_help",
+        answer: "nao",
+      },
+      {
+        question_key: "price_talk_mode",
+        answer: "quando_cliente_perguntar",
+      },
+      {
+        question_key: "price_direct_rule",
+        answer: "LEGACY_PRICE_RULE_SHOULD_NOT_WIN",
+      },
+    ],
+    commercialAiSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        price_answer_policy: "human_required_for_price",
+        price_context_requirements: ["installation_scope"],
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        candidates: [],
+      }),
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+      },
+    },
+    {
+      output_text: "Vou pedir para uma pessoa confirmar o valor.",
+      usage: {
+        input_tokens: 40,
+        output_tokens: 20,
+        total_tokens: 60,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(supabase.fromCalls.includes("store_commercial_ai_settings"), true);
+
+  const finalOpenAiCall = openai.calls[1] as Record<string, unknown>;
+  const finalPayload = JSON.stringify(finalOpenAiCall);
+
+  assert.equal(finalPayload.includes("A IA nao pode falar preco sem chamar uma pessoa da loja."), true);
+  assert.equal(finalPayload.includes("LEGACY_PRICE_RULE_SHOULD_NOT_WIN"), false);
+  assert.equal(finalPayload.includes("so_apos_entender_instalacao"), true);
+});
+
 test("generateAiSalesReply fails closed when canonical writer fails", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     writerResponse: {
@@ -2955,6 +3124,1246 @@ test("generateAiSalesReply returns null-safe partial usage aggregation", async (
   assert.equal(result.usage.costUsd, null);
   assert.equal(result.usage.inputTokenPriceUsdPer1M, 0.4);
   assert.equal(result.usage.outputTokenPriceUsdPer1M, 1.6);
+});
+
+test("CMIR new independent opportunity keeps arrival A historical and routes canonical qualification to resolved B", async () => {
+  const arrivalOpportunityId = "opp-1";
+  const seed = [
+    "zion",
+    "p9",
+    "cmir",
+    "v1",
+    "org-1",
+    "store-1",
+    "msg-anchor",
+    "child",
+  ].join(":");
+  const hex = createHash("sha256").update(seed, "utf8").digest("hex").slice(0, 32);
+  const resolvedOpportunityId = [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join("-");
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent:
+      "Agora quero comprar outra piscina para minha chacara, o espaco e 3x4.",
+    commercialOpportunityId: arrivalOpportunityId,
+    includeCurrentIntentResolution: false,
+    additionalCommercialOpportunities: [
+      {
+        id: resolvedOpportunityId,
+        organization_id: "org-1",
+        store_id: "store-1",
+        stage: "novo_lead",
+      },
+    ],
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: resolvedOpportunityId,
+            knownFacts: [],
+            missingFactGroups: [
+              createCanonicalMissingGroup({
+                groupKey: "space",
+                factKeys: ["space_text", "requested_area_m2"],
+              }),
+            ],
+            canAskNextQuestion: true,
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: resolvedOpportunityId,
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "space_text",
+                normalizedValueText: "3x4",
+                sourceType: "incoming_customer_message",
+              }),
+              createCanonicalKnownFact({
+                factKey: "requested_area_m2",
+                valueKind: "number",
+                value: 12,
+                state: "confirmed",
+                sourceType: "incoming_customer_message",
+              }),
+            ],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        decision_kind: "new_independent_opportunity",
+        reason_code: "model_reason_is_not_authority",
+        evidence: ["outra piscina"],
+      }),
+      usage: {
+        input_tokens: 5,
+        output_tokens: 2,
+        total_tokens: 7,
+      },
+    },
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 6,
+        output_tokens: 2,
+        total_tokens: 8,
+      },
+    },
+    {
+      output_text: "Claro, vamos tratar essa nova compra separadamente.",
+      usage: {
+        input_tokens: 20,
+        output_tokens: 10,
+        total_tokens: 30,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(
+    result.context.responseAnchorCommercialContext?.commercialOpportunityId,
+    arrivalOpportunityId,
+  );
+  assert.equal(result.context.resolvedCommercialOpportunityId, resolvedOpportunityId);
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.decisionKind,
+    "new_independent_opportunity",
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.resolvedCommercialOpportunityId,
+    resolvedOpportunityId,
+  );
+  assert.equal(result.context.commercialMessageIntentResolution?.source, "writer");
+
+  const cmirWriterCalls = supabase.rpcCalls.filter(
+    (call) => call.fn === "write_commercial_message_intent_resolution_by_system",
+  );
+  assert.equal(cmirWriterCalls.length, 1);
+  assert.equal(cmirWriterCalls[0]?.payload.p_anchor_message_id, "msg-anchor");
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_resolved_opportunity_id,
+    resolvedOpportunityId,
+  );
+  assert.equal(cmirWriterCalls[0]?.payload.p_related_opportunity_id, null);
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_decision_kind,
+    "new_independent_opportunity",
+  );
+  assert.deepEqual(
+    (cmirWriterCalls[0]?.payload.p_metadata as Record<string, unknown>)
+      ?.literal_anchor_evidence,
+    ["outra piscina"],
+  );
+
+  const qualificationReaderCalls = supabase.rpcCalls.filter(
+    (call) => call.fn === "read_commercial_opportunity_qualification_facts_by_system",
+  );
+  assert.deepEqual(
+    qualificationReaderCalls.map(
+      (call) => call.payload.p_commercial_opportunity_id,
+    ),
+    [resolvedOpportunityId, resolvedOpportunityId],
+  );
+
+  const qualificationWriterCalls = supabase.rpcCalls.filter(
+    (call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system",
+  );
+  assert.equal(qualificationWriterCalls.length > 0, true);
+  assert.equal(
+    qualificationWriterCalls.every(
+      (call) => call.payload.p_commercial_opportunity_id === resolvedOpportunityId,
+    ),
+    true,
+  );
+  assert.equal(
+    qualificationWriterCalls.some(
+      (call) => call.payload.p_commercial_opportunity_id === arrivalOpportunityId,
+    ),
+    false,
+  );
+
+  assert.equal(openai.calls.length, 3);
+  assert.equal(result.usage.tokensPrompt, 31);
+  assert.equal(result.usage.tokensCompletion, 14);
+  assert.equal(result.usage.totalTokens, 45);
+});
+
+test("CMIR ambiguity stays fail-closed and never qualifies the arrival opportunity", async () => {
+  const arrivalOpportunityId = "opp-1";
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent:
+      "Nao sei se quero continuar essa compra ou fazer outra piscina.",
+    commercialOpportunityId: arrivalOpportunityId,
+    includeCurrentIntentResolution: false,
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        decision_kind: "needs_clarification",
+        reason_code: "model_reason_is_not_authority",
+        evidence: ["continuar essa compra ou fazer outra piscina"],
+      }),
+      usage: {
+        input_tokens: 4,
+        output_tokens: 2,
+        total_tokens: 6,
+      },
+    },
+    {
+      output_text:
+        "Voce esta falando da compra atual ou de uma nova piscina?",
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(
+    result.context.responseAnchorCommercialContext?.commercialOpportunityId,
+    arrivalOpportunityId,
+  );
+  assert.equal(result.context.resolvedCommercialOpportunityId, null);
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.decisionKind,
+    "needs_clarification",
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution
+      ?.resolvedCommercialOpportunityId,
+    null,
+  );
+  assert.equal(result.context.commercialMessageIntentResolution?.source, "writer");
+
+  const cmirWriterCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_message_intent_resolution_by_system",
+  );
+
+  assert.equal(cmirWriterCalls.length, 1);
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_decision_kind,
+    "needs_clarification",
+  );
+  assert.equal(cmirWriterCalls[0]?.payload.p_resolved_opportunity_id, null);
+  assert.equal(cmirWriterCalls[0]?.payload.p_related_opportunity_id, null);
+
+  const qualificationReaderCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn ===
+      "read_commercial_opportunity_qualification_facts_by_system",
+  );
+  const qualificationWriterCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn ===
+      "write_commercial_opportunity_qualification_fact_by_system",
+  );
+
+  assert.equal(qualificationReaderCalls.length, 0);
+  assert.equal(qualificationWriterCalls.length, 0);
+
+  assert.equal(
+    supabase.rpcCalls.some(
+      (call) =>
+        call.payload.p_commercial_opportunity_id === arrivalOpportunityId &&
+        (call.fn ===
+          "read_commercial_opportunity_qualification_facts_by_system" ||
+          call.fn ===
+            "write_commercial_opportunity_qualification_fact_by_system"),
+    ),
+    false,
+  );
+
+  assert.equal(
+    result.aiText,
+    "Voce esta falando da compra atual ou de uma nova piscina?",
+  );
+  assert.equal(openai.calls.length, 2);
+  assert.equal(result.usage.tokensPrompt, 14);
+  assert.equal(result.usage.tokensCompletion, 7);
+  assert.equal(result.usage.totalTokens, 21);
+});
+test("CMIR structural ambiguity stays fail-closed and does not mutate arrival A", async () => {
+  const arrivalOpportunityId = "opp-1";
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent:
+      "Quero continuar vendo essa piscina, mas talvez seja para outro projeto.",
+    commercialOpportunityId: arrivalOpportunityId,
+    includeCurrentIntentResolution: false,
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        decision_kind: "structural_ambiguity",
+        evidence: ["talvez seja para outro projeto"],
+      }),
+      usage: {
+        input_tokens: 5,
+        output_tokens: 2,
+        total_tokens: 7,
+      },
+    },
+    {
+      output_text:
+        "Você está falando desta compra que já estávamos vendo ou de uma nova compra/projeto?",
+      usage: {
+        input_tokens: 20,
+        output_tokens: 10,
+        total_tokens: 30,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(
+    result.context.responseAnchorCommercialContext?.commercialOpportunityId,
+    arrivalOpportunityId,
+  );
+
+  assert.equal(result.context.resolvedCommercialOpportunityId, null);
+
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.decisionKind,
+    "structural_ambiguity",
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution
+      ?.resolvedCommercialOpportunityId,
+    null,
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution
+      ?.relatedCommercialOpportunityId,
+    null,
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.relationType,
+    null,
+  );
+
+  const cmirWriterCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_message_intent_resolution_by_system",
+  );
+
+  assert.equal(cmirWriterCalls.length, 1);
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_decision_kind,
+    "structural_ambiguity",
+  );
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_resolved_opportunity_id,
+    null,
+  );
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_related_opportunity_id,
+    null,
+  );
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_operation_key,
+    "ai_sales_cmir:v1:msg-anchor",
+  );
+
+  const qualificationReaderCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn ===
+      "read_commercial_opportunity_qualification_facts_by_system",
+  );
+  const qualificationWriterCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn ===
+      "write_commercial_opportunity_qualification_fact_by_system",
+  );
+
+  assert.equal(qualificationReaderCalls.length, 0);
+  assert.equal(qualificationWriterCalls.length, 0);
+
+  assert.equal(
+    supabase.rpcCalls.some(
+      (call) =>
+        call.payload.p_commercial_opportunity_id === arrivalOpportunityId &&
+        (call.fn ===
+          "read_commercial_opportunity_qualification_facts_by_system" ||
+          call.fn ===
+            "write_commercial_opportunity_qualification_fact_by_system"),
+    ),
+    false,
+  );
+
+  assert.equal(openai.calls.length, 2);
+  assert.equal(result.usage.totalTokens, 37);
+});
+
+test("CMIR reuses existing current resolution without semantic call or rewrite", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    commercialOpportunityId: "opp-1",
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        candidates: [],
+      }),
+      usage: {
+        input_tokens: 6,
+        output_tokens: 2,
+        total_tokens: 8,
+      },
+    },
+    {
+      output_text: "Podemos continuar com essa compra.",
+      usage: {
+        input_tokens: 12,
+        output_tokens: 5,
+        total_tokens: 17,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(
+    result.context.responseAnchorCommercialContext?.commercialOpportunityId,
+    "opp-1",
+  );
+  assert.equal(result.context.resolvedCommercialOpportunityId, "opp-1");
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.decisionKind,
+    "continue_same_intent",
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.source,
+    "current",
+  );
+
+  assert.equal(
+    supabase.fromCalls.includes(
+      "commercial_message_intent_resolution_current",
+    ),
+    true,
+  );
+  assert.equal(
+    supabase.fromCalls.includes(
+      "commercial_message_intent_resolution_events",
+    ),
+    true,
+  );
+
+  const cmirWriterCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn ===
+      "write_commercial_message_intent_resolution_by_system",
+  );
+
+  assert.equal(cmirWriterCalls.length, 0);
+
+  assert.equal(openai.calls.length, 2);
+
+  assert.equal(result.usage.tokensPrompt, 18);
+  assert.equal(result.usage.tokensCompletion, 7);
+  assert.equal(result.usage.totalTokens, 25);
+});
+
+test("CMIR existing current B overrides arrival A on retry without semantic rewrite", async () => {
+  const arrivalOpportunityId = "opp-1";
+  const resolvedOpportunityId = "opp-resolved-b";
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent:
+      "Quero continuar falando daquela outra piscina.",
+    commercialOpportunityId: arrivalOpportunityId,
+    currentIntentDecisionKind: "new_independent_opportunity",
+    currentIntentResolvedOpportunityId: resolvedOpportunityId,
+    additionalCommercialOpportunities: [
+      {
+        id: resolvedOpportunityId,
+        organization_id: "org-1",
+        store_id: "store-1",
+        stage: "qualificacao",
+      },
+    ],
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: resolvedOpportunityId,
+            knownFacts: [],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 6,
+        output_tokens: 2,
+        total_tokens: 8,
+      },
+    },
+    {
+      output_text: "Claro, seguimos com essa outra compra.",
+      usage: {
+        input_tokens: 12,
+        output_tokens: 5,
+        total_tokens: 17,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(
+    result.context.responseAnchorCommercialContext?.commercialOpportunityId,
+    arrivalOpportunityId,
+  );
+
+  assert.equal(
+    result.context.resolvedCommercialOpportunityId,
+    resolvedOpportunityId,
+  );
+
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.decisionKind,
+    "new_independent_opportunity",
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution
+      ?.resolvedCommercialOpportunityId,
+    resolvedOpportunityId,
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.source,
+    "current",
+  );
+
+  const cmirWriterCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_message_intent_resolution_by_system",
+  );
+
+  assert.equal(cmirWriterCalls.length, 0);
+
+  const qualificationReaderCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn ===
+      "read_commercial_opportunity_qualification_facts_by_system",
+  );
+
+  assert.equal(qualificationReaderCalls.length, 1);
+  assert.equal(
+    qualificationReaderCalls[0]?.payload.p_commercial_opportunity_id,
+    resolvedOpportunityId,
+  );
+
+  assert.equal(
+    qualificationReaderCalls.some(
+      (call) =>
+        call.payload.p_commercial_opportunity_id === arrivalOpportunityId,
+    ),
+    false,
+  );
+
+  assert.equal(openai.calls.length, 2);
+  assert.equal(result.usage.totalTokens, 25);
+});
+
+test("CMIR semantic continue keeps exact arrival A and ignores model supplied opportunity id", async () => {
+  const arrivalOpportunityId = "opp-1";
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent:
+      "Sim, e sobre essa mesma piscina. O espaco dela e 3x4.",
+    commercialOpportunityId: arrivalOpportunityId,
+    includeCurrentIntentResolution: false,
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: arrivalOpportunityId,
+            knownFacts: [],
+            missingFactGroups: [
+              createCanonicalMissingGroup({
+                groupKey: "space",
+                factKeys: ["space_text", "requested_area_m2"],
+              }),
+            ],
+            canAskNextQuestion: true,
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: arrivalOpportunityId,
+            knownFacts: [],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        decision_kind: "continue_same_intent",
+        reason_code: "model_reason_is_not_authority",
+        resolved_opportunity_id: "model-must-not-choose-this-id",
+        evidence: ["essa mesma piscina"],
+      }),
+      usage: {
+        input_tokens: 5,
+        output_tokens: 2,
+        total_tokens: 7,
+      },
+    },
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 6,
+        output_tokens: 2,
+        total_tokens: 8,
+      },
+    },
+    {
+      output_text: "Perfeito, seguimos com essa mesma piscina.",
+      usage: {
+        input_tokens: 20,
+        output_tokens: 10,
+        total_tokens: 30,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(
+    result.context.responseAnchorCommercialContext?.commercialOpportunityId,
+    arrivalOpportunityId,
+  );
+  assert.equal(
+    result.context.resolvedCommercialOpportunityId,
+    arrivalOpportunityId,
+  );
+
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.decisionKind,
+    "continue_same_intent",
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.resolvedCommercialOpportunityId,
+    arrivalOpportunityId,
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.relatedCommercialOpportunityId,
+    null,
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.relationType,
+    null,
+  );
+
+  const cmirWriterCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_message_intent_resolution_by_system",
+  );
+
+  assert.equal(cmirWriterCalls.length, 1);
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_decision_kind,
+    "continue_same_intent",
+  );
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_resolved_opportunity_id,
+    arrivalOpportunityId,
+  );
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_related_opportunity_id,
+    null,
+  );
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_operation_key,
+    "ai_sales_cmir:v1:msg-anchor",
+  );
+
+  assert.notEqual(
+    cmirWriterCalls[0]?.payload.p_resolved_opportunity_id,
+    "model-must-not-choose-this-id",
+  );
+
+  const qualificationWriterCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_opportunity_qualification_fact_by_system",
+  );
+
+  assert.equal(qualificationWriterCalls.length > 0, true);
+  assert.equal(
+    qualificationWriterCalls.every(
+      (call) =>
+        call.payload.p_commercial_opportunity_id === arrivalOpportunityId,
+    ),
+    true,
+  );
+
+  assert.equal(openai.calls.length, 3);
+  assert.equal(result.usage.totalTokens, 45);
+});
+
+test("CMIR semantic reopen restores exact lost arrival A without creating B", async () => {
+  const arrivalOpportunityId = "opp-1";
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent:
+      "Quero retomar aquele mesmo orcamento da piscina que a gente estava vendo.",
+    commercialOpportunityId: arrivalOpportunityId,
+    commercialOpportunityStage: "perdido",
+    cmirReopenTargetStage: "orcamento",
+    includeCurrentIntentResolution: false,
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: arrivalOpportunityId,
+            knownFacts: [],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        decision_kind: "reopen_same_intent",
+        evidence: ["retomar aquele mesmo orcamento"],
+      }),
+      usage: {
+        input_tokens: 5,
+        output_tokens: 2,
+        total_tokens: 7,
+      },
+    },
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 6,
+        output_tokens: 2,
+        total_tokens: 8,
+      },
+    },
+    {
+      output_text: "Claro, podemos retomar aquele mesmo orçamento.",
+      usage: {
+        input_tokens: 20,
+        output_tokens: 10,
+        total_tokens: 30,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(
+    result.context.responseAnchorCommercialContext?.commercialOpportunityId,
+    arrivalOpportunityId,
+  );
+  assert.equal(
+    result.context.resolvedCommercialOpportunityId,
+    arrivalOpportunityId,
+  );
+
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.decisionKind,
+    "reopen_same_intent",
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution
+      ?.resolvedCommercialOpportunityId,
+    arrivalOpportunityId,
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution
+      ?.relatedCommercialOpportunityId,
+    null,
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.relationType,
+    null,
+  );
+
+  const cmirWriterCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_message_intent_resolution_by_system",
+  );
+
+  assert.equal(cmirWriterCalls.length, 1);
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_decision_kind,
+    "reopen_same_intent",
+  );
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_resolved_opportunity_id,
+    arrivalOpportunityId,
+  );
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_related_opportunity_id,
+    null,
+  );
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_operation_key,
+    "ai_sales_cmir:v1:msg-anchor",
+  );
+
+  const qualificationReaderCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn ===
+      "read_commercial_opportunity_qualification_facts_by_system",
+  );
+
+  assert.equal(qualificationReaderCalls.length, 1);
+  assert.equal(
+    qualificationReaderCalls[0]?.payload.p_commercial_opportunity_id,
+    arrivalOpportunityId,
+  );
+
+  const reopenedRowResult = await supabase
+    .from("commercial_opportunities")
+    .select("id, stage")
+    .eq("id", arrivalOpportunityId)
+    .eq("organization_id", "org-1")
+    .eq("store_id", "store-1")
+    .maybeSingle();
+
+  assert.equal(reopenedRowResult.error, null);
+  assert.equal(reopenedRowResult.data?.id, arrivalOpportunityId);
+  assert.equal(reopenedRowResult.data?.stage, "orcamento");
+
+  assert.equal(openai.calls.length, 3);
+  assert.equal(result.usage.totalTokens, 45);
+});
+
+test("CMIR repurchase resolves child B and preserves exact arrival A as repurchase parent", async () => {
+  const arrivalOpportunityId = "opp-1";
+  const seed = [
+    "zion",
+    "p9",
+    "cmir",
+    "v1",
+    "org-1",
+    "store-1",
+    "msg-anchor",
+    "child",
+  ].join(":");
+  const hex = createHash("sha256").update(seed, "utf8").digest("hex").slice(0, 32);
+  const resolvedOpportunityId = [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join("-");
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent:
+      "Quero comprar outra piscina para minha chacara, o espaco e 4x5.",
+    commercialOpportunityId: arrivalOpportunityId,
+    commercialOpportunityStage: "concluido_sem_mais_acoes",
+    includeCurrentIntentResolution: false,
+    additionalCommercialOpportunities: [
+      {
+        id: resolvedOpportunityId,
+        organization_id: "org-1",
+        store_id: "store-1",
+        stage: "novo_lead",
+      },
+    ],
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: resolvedOpportunityId,
+            knownFacts: [],
+            missingFactGroups: [
+              createCanonicalMissingGroup({
+                groupKey: "space",
+                factKeys: ["space_text", "requested_area_m2"],
+              }),
+            ],
+            canAskNextQuestion: true,
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: resolvedOpportunityId,
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "space_text",
+                normalizedValueText: "4x5",
+                sourceType: "incoming_customer_message",
+              }),
+              createCanonicalKnownFact({
+                factKey: "requested_area_m2",
+                valueKind: "number",
+                value: 20,
+                state: "confirmed",
+                sourceType: "incoming_customer_message",
+              }),
+            ],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        decision_kind: "repurchase",
+        reason_code: "model_reason_is_not_authority",
+        evidence: ["comprar outra piscina"],
+      }),
+      usage: {
+        input_tokens: 5,
+        output_tokens: 2,
+        total_tokens: 7,
+      },
+    },
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 6,
+        output_tokens: 2,
+        total_tokens: 8,
+      },
+    },
+    {
+      output_text: "Claro, vamos tratar essa nova compra separadamente.",
+      usage: {
+        input_tokens: 20,
+        output_tokens: 10,
+        total_tokens: 30,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(
+    result.context.responseAnchorCommercialContext?.commercialOpportunityId,
+    arrivalOpportunityId,
+  );
+  assert.equal(result.context.resolvedCommercialOpportunityId, resolvedOpportunityId);
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.decisionKind,
+    "repurchase",
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.relatedCommercialOpportunityId,
+    arrivalOpportunityId,
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.relationType,
+    "repurchase_of",
+  );
+
+  const cmirWriterCalls = supabase.rpcCalls.filter(
+    (call) => call.fn === "write_commercial_message_intent_resolution_by_system",
+  );
+
+  assert.equal(cmirWriterCalls.length, 1);
+  assert.equal(cmirWriterCalls[0]?.payload.p_resolved_opportunity_id, resolvedOpportunityId);
+  assert.equal(cmirWriterCalls[0]?.payload.p_related_opportunity_id, arrivalOpportunityId);
+  assert.equal(cmirWriterCalls[0]?.payload.p_decision_kind, "repurchase");
+
+  const qualificationWriterCalls = supabase.rpcCalls.filter(
+    (call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system",
+  );
+
+  assert.equal(qualificationWriterCalls.length > 0, true);
+  assert.equal(
+    qualificationWriterCalls.every(
+      (call) => call.payload.p_commercial_opportunity_id === resolvedOpportunityId,
+    ),
+    true,
+  );
+  assert.equal(
+    qualificationWriterCalls.some(
+      (call) => call.payload.p_commercial_opportunity_id === arrivalOpportunityId,
+    ),
+    false,
+  );
+
+  assert.equal(openai.calls.length, 3);
+  assert.equal(result.usage.totalTokens, 45);
+});
+
+test("CMIR addendum resolves child B and preserves exact arrival A as addendum parent", async () => {
+  const arrivalOpportunityId = "opp-1";
+  const seed = [
+    "zion",
+    "p9",
+    "cmir",
+    "v1",
+    "org-1",
+    "store-1",
+    "msg-anchor",
+    "child",
+  ].join(":");
+  const hex = createHash("sha256").update(seed, "utf8").digest("hex").slice(0, 32);
+  const resolvedOpportunityId = [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join("-");
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent:
+      "Quero adicionar mais uma piscina ao mesmo projeto, o espaco novo e 5x4.",
+    commercialOpportunityId: arrivalOpportunityId,
+    commercialOpportunityStage: "concluido_sem_mais_acoes",
+    includeCurrentIntentResolution: false,
+    additionalCommercialOpportunities: [
+      {
+        id: resolvedOpportunityId,
+        organization_id: "org-1",
+        store_id: "store-1",
+        stage: "novo_lead",
+      },
+    ],
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: resolvedOpportunityId,
+            knownFacts: [],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: resolvedOpportunityId,
+            knownFacts: [],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        decision_kind: "addendum",
+        reason_code: "model_reason_is_not_authority",
+        evidence: ["adicionar mais uma piscina ao mesmo projeto"],
+      }),
+      usage: {
+        input_tokens: 5,
+        output_tokens: 2,
+        total_tokens: 7,
+      },
+    },
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 6,
+        output_tokens: 2,
+        total_tokens: 8,
+      },
+    },
+    {
+      output_text: "Certo, vamos tratar essa ampliacao separadamente.",
+      usage: {
+        input_tokens: 20,
+        output_tokens: 10,
+        total_tokens: 30,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(
+    result.context.responseAnchorCommercialContext?.commercialOpportunityId,
+    arrivalOpportunityId,
+  );
+  assert.equal(result.context.resolvedCommercialOpportunityId, resolvedOpportunityId);
+
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.decisionKind,
+    "addendum",
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.relatedCommercialOpportunityId,
+    arrivalOpportunityId,
+  );
+  assert.equal(
+    result.context.commercialMessageIntentResolution?.relationType,
+    "addendum_to",
+  );
+
+  const cmirWriterCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_message_intent_resolution_by_system",
+  );
+
+  assert.equal(cmirWriterCalls.length, 1);
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_resolved_opportunity_id,
+    resolvedOpportunityId,
+  );
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_related_opportunity_id,
+    arrivalOpportunityId,
+  );
+  assert.equal(
+    cmirWriterCalls[0]?.payload.p_decision_kind,
+    "addendum",
+  );
+
+  assert.equal(openai.calls.length, 3);
+  assert.equal(result.usage.totalTokens, 45);
 });
 
 test("inferred fact remains inferred in snapshot and representation", async () => {

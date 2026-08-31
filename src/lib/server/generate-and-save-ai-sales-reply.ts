@@ -4032,6 +4032,10 @@ export async function generateAndSaveAiSalesReply(
     const generationResponseAnchorCommercialContext =
       (generationResult.context?.responseAnchorCommercialContext ||
         null) as ResponseAnchorCommercialContext | null;
+    const generationResolvedCommercialOpportunityId =
+      String(
+        generationResult.context?.resolvedCommercialOpportunityId || "",
+      ).trim() || null;
 
     if (
       !generationAnchorMessageId ||
@@ -4332,9 +4336,8 @@ export async function generateAndSaveAiSalesReply(
             storeId: canonicalStoreId,
             conversationId: canonicalConversationId,
             leadId: normalizedConversation.lead_id || null,
-            commercialOpportunityId:
-              generationResponseAnchorCommercialContext?.commercialOpportunityId ||
-              null,
+            commercialOpportunityId: generationResolvedCommercialOpportunityId,
+
             generationAnchorMessageId,
             lastCustomerMessage:
               generationResult.context?.lastCustomerMessage ||

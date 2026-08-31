@@ -14,6 +14,7 @@ export type StoreDiscountSettingsRow = {
   max_discount_percent: number | null;
   allow_ask_above_max_discount: boolean | null;
   discount_autonomy_mode: string | null;
+  discount_special_rules?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -33,6 +34,7 @@ export type StoreDiscountSettingsInput = {
   maxDiscountPercent: string;
   allowAskAboveMaxDiscount: boolean;
   discountAutonomyMode: string;
+  discountSpecialRules?: string;
   highValueEnabled: boolean;
   highValueThresholdAmount: string;
   highValueDiscountPercent: string;
@@ -43,6 +45,7 @@ export type NormalizedStoreDiscountSettingsInput = {
   maxDiscountPercent: number;
   allowAskAboveMaxDiscount: boolean;
   discountAutonomyMode: StoreDiscountAutonomyMode;
+  discountSpecialRules: string | null;
   highValueEnabled: boolean;
   highValueThresholdAmountCents: number | null;
   highValueDiscountPercent: number | null;
@@ -112,6 +115,7 @@ export function createDefaultStoreDiscountSettingsInput(): StoreDiscountSettings
     maxDiscountPercent: "",
     allowAskAboveMaxDiscount: false,
     discountAutonomyMode: "approval_required",
+    discountSpecialRules: "",
     highValueEnabled: false,
     highValueThresholdAmount: "",
     highValueDiscountPercent: "",
@@ -175,6 +179,7 @@ export function normalizeStoreDiscountSettingsInput(
       maxDiscountPercent,
       allowAskAboveMaxDiscount: input.allowAskAboveMaxDiscount,
       discountAutonomyMode: autonomyMode,
+      discountSpecialRules: cleanText(input.discountSpecialRules) || null,
       highValueEnabled: input.highValueEnabled,
       highValueThresholdAmountCents,
       highValueDiscountPercent,
@@ -202,6 +207,7 @@ export function createStoreDiscountSettingsInputFromSources(args: {
       allowAskAboveMaxDiscount: settings.allow_ask_above_max_discount === true,
       discountAutonomyMode:
         cleanText(settings.discount_autonomy_mode) || "approval_required",
+      discountSpecialRules: cleanText(settings.discount_special_rules),
       highValueEnabled: highValueSettings?.enabled === true,
       highValueThresholdAmount:
         highValueSettings?.threshold_amount_cents == null
@@ -217,6 +223,7 @@ export function createStoreDiscountSettingsInputFromSources(args: {
   return {
     ...createDefaultStoreDiscountSettingsInput(),
     maxDiscountPercent: cleanText(answers.max_discount_percent),
+    discountSpecialRules: cleanText(answers.discount_special_rules),
     highValueEnabled: false,
   };
 }
@@ -271,6 +278,9 @@ export function createStoreDiscountPresentationFromSources(args: {
   const highValueEnabled = highValueSettings?.enabled === true;
   const highValueThresholdAmountCents = highValueSettings?.threshold_amount_cents ?? null;
   const highValueDiscountPercent = highValueSettings?.discount_percent ?? null;
+  const discountSpecialRules = settings
+    ? cleanText(settings.discount_special_rules) || null
+    : cleanText(answers.discount_special_rules) || null;
   const highValueSummary = !highValueEnabled
     ? "Alto valor desativado"
     : [
@@ -311,6 +321,7 @@ export function createStoreDiscountPresentationFromSources(args: {
     allowAskAboveMaxDiscount,
     autonomyMode,
     autonomyModeLabel,
+    discountSpecialRules,
     highValueEnabled,
     highValueThresholdAmountCents,
     highValueDiscountPercent,

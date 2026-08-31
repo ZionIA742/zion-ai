@@ -16,6 +16,12 @@ import { StoreProvider, useStoreContext } from "../../components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 import IntelligentCatalogImportPanel from "@/components/catalog/IntelligentCatalogImportPanel";
 import {
+  createStoreCommercialAiSettingsInputFromSources,
+  deriveStoreCommercialAiLegacyMirrors,
+  normalizeStoreCommercialAiSettingsInput,
+  type StoreCommercialAiSettingsRow,
+} from "@/lib/store-commercial-ai-settings";
+import {
   formatStoreDiscountPercentInput,
   normalizeStoreDiscountSettingsInput,
   type StoreDiscountSettingsRow,
@@ -88,6 +94,7 @@ type Step4FormData = {
   max_discount_percent: string;
   allow_ask_above_max_discount: boolean;
   discount_autonomy_mode: string;
+  discount_special_rules: string;
   high_value_enabled: boolean;
   high_value_threshold_amount: string;
   high_value_discount_percent: string;
@@ -139,6 +146,7 @@ type DiscountSettingsRow = {
   max_discount_percent: number | null;
   allow_ask_above_max_discount: boolean | null;
   discount_autonomy_mode?: string | null;
+  discount_special_rules?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -625,6 +633,7 @@ function OnboardingContent() {
     max_discount_percent: "",
     allow_ask_above_max_discount: false,
     discount_autonomy_mode: "approval_required",
+    discount_special_rules: "",
     high_value_enabled: false,
     high_value_threshold_amount: "",
     high_value_discount_percent: "",
@@ -670,6 +679,8 @@ function OnboardingContent() {
   });
   const [paymentSettings, setPaymentSettings] =
     useState<StorePaymentSettingsRow | null>(null);
+  const [commercialAiSettings, setCommercialAiSettings] =
+    useState<StoreCommercialAiSettingsRow | null>(null);
   const [strategySettings, setStrategySettings] =
     useState<StoreStrategySettingsRow | null>(null);
   const step1DraftStorageKey = useMemo(() => {
@@ -1161,7 +1172,12 @@ function OnboardingContent() {
     const loadAnswers = async () => {
       if (!organizationId || !activeStore?.id) return;
       try {
-        const [answersResult, paymentSettingsResult, strategySettingsResult] = await Promise.all([
+        const [
+          answersResult,
+          paymentSettingsResult,
+          commercialAiSettingsResult,
+          strategySettingsResult,
+        ] = await Promise.all([
           supabase.rpc("onboarding_get_answers_scoped", {
             p_organization_id: organizationId,
             p_store_id: activeStore.id,
@@ -1170,6 +1186,14 @@ function OnboardingContent() {
             .from("store_payment_settings")
             .select(
               "organization_id, store_id, accepted_payment_methods, pix_key_type, pix_key, pix_holder_name, down_payment_mode, down_payment_value_type, down_payment_percent, down_payment_amount_cents, installments_enabled, max_installments, installment_interest_policy, payment_notes, created_at, updated_at",
+            )
+            .eq("organization_id", organizationId)
+            .eq("store_id", activeStore.id)
+            .maybeSingle(),
+          supabase
+            .from("store_commercial_ai_settings")
+            .select(
+              "organization_id, store_id, price_answer_policy, price_context_requirements, created_at, updated_at",
             )
             .eq("organization_id", organizationId)
             .eq("store_id", activeStore.id)
@@ -1196,6 +1220,14 @@ function OnboardingContent() {
           setFatalError("Falha ao carregar configuracoes canonicas de pagamento.");
           return;
         }
+        if (commercialAiSettingsResult.error) {
+          console.error(
+            "[OnboardingPage] loadCommercialAiSettings error:",
+            commercialAiSettingsResult.error,
+          );
+          setFatalError("Falha ao carregar configuracoes canonicas comerciais.");
+          return;
+        }
         if (strategySettingsResult.error) {
           console.error(
             "[OnboardingPage] loadStrategySettings error:",
@@ -1208,6 +1240,8 @@ function OnboardingContent() {
         setAnswers(answers);
         const canonicalPaymentSettings =
           (paymentSettingsResult.data ?? null) as StorePaymentSettingsRow | null;
+        const canonicalCommercialAiSettings =
+          (commercialAiSettingsResult.data ?? null) as StoreCommercialAiSettingsRow | null;
         const canonicalStrategySettings =
           (strategySettingsResult.data ?? null) as StoreStrategySettingsRow | null;
         const paymentSettingsInput = createStorePaymentSettingsInputFromSources({
@@ -1215,6 +1249,17 @@ function OnboardingContent() {
           settings: canonicalPaymentSettings,
         });
         setPaymentSettings(canonicalPaymentSettings);
+        const commercialAiSettingsInput =
+          createStoreCommercialAiSettingsInputFromSources({
+            answers,
+            settings: canonicalCommercialAiSettings,
+          });
+        const normalizedCommercialAiSettings =
+          normalizeStoreCommercialAiSettingsInput(commercialAiSettingsInput);
+        const commercialAiLegacyMirrors = normalizedCommercialAiSettings.ok
+          ? deriveStoreCommercialAiLegacyMirrors(normalizedCommercialAiSettings.value)
+          : null;
+        setCommercialAiSettings(canonicalCommercialAiSettings);
         const strategySettingsInput = createStoreStrategySettingsInputFromSources({
           answers,
           settings: canonicalStrategySettings,
@@ -1356,6 +1401,16 @@ function OnboardingContent() {
         const remotePriceMustUnderstandBefore = parseArrayAnswer(
           answers.price_must_understand_before ?? answers.price_direct_conditions
         );
+        const nextAiCanSendPriceDirectly =
+          commercialAiLegacyMirrors
+            ? commercialAiLegacyMirrors.ai_can_send_price_directly
+              ? "sim"
+              : "não"
+            : typeof answers.ai_can_send_price_directly === "boolean"
+              ? answers.ai_can_send_price_directly
+                ? "sim"
+                : "não"
+              : String(answers.ai_can_send_price_directly ?? "");
         setStep4Form((prev) => ({
           ...prev,
           average_ticket: prev.average_ticket || String(answers.average_ticket ?? ""),
@@ -1394,20 +1449,19 @@ function OnboardingContent() {
             paymentSettingsInput.installmentInterestPolicy,
           payment_notes: prev.payment_notes || paymentSettingsInput.paymentNotes,
           ai_can_send_price_directly:
-            prev.ai_can_send_price_directly ||
-            (typeof answers.ai_can_send_price_directly === "boolean"
-              ? answers.ai_can_send_price_directly
-                ? "sim"
-                : "não"
-              : String(answers.ai_can_send_price_directly ?? "")),
-          price_direct_rule: prev.price_direct_rule || String(answers.price_direct_rule ?? ""),
+            prev.ai_can_send_price_directly || nextAiCanSendPriceDirectly,
+          price_direct_rule:
+            prev.price_direct_rule ||
+            String(commercialAiLegacyMirrors?.price_direct_rule ?? answers.price_direct_rule ?? ""),
           human_help_discount_cases:
             prev.human_help_discount_cases || String(answers.human_help_discount_cases ?? ""),
           human_help_custom_project_cases:
             prev.human_help_custom_project_cases || String(answers.human_help_custom_project_cases ?? ""),
           human_help_payment_cases:
             prev.human_help_payment_cases || String(answers.human_help_payment_cases ?? ""),
-          price_direct_conditions: prev.price_direct_conditions.length ? prev.price_direct_conditions : [],
+          price_direct_conditions: prev.price_direct_conditions.length
+            ? prev.price_direct_conditions
+            : commercialAiLegacyMirrors?.price_direct_conditions ?? [],
           price_direct_rule_other: prev.price_direct_rule_other || String(answers.price_direct_rule_other ?? ""),
           human_help_discount_cases_selected:
             prev.human_help_discount_cases_selected.length
@@ -1429,12 +1483,15 @@ function OnboardingContent() {
           human_help_payment_cases_other:
             prev.human_help_payment_cases_other || String(answers.human_help_payment_cases_other ?? ""),
           price_needs_human_help:
-            prev.price_needs_human_help || String(answers.price_needs_human_help ?? ""),
-          price_talk_mode: prev.price_talk_mode || String(answers.price_talk_mode ?? ""),
+            prev.price_needs_human_help ||
+            String(commercialAiLegacyMirrors?.price_needs_human_help ?? answers.price_needs_human_help ?? ""),
+          price_talk_mode:
+            prev.price_talk_mode ||
+            String(commercialAiLegacyMirrors?.price_talk_mode ?? answers.price_talk_mode ?? ""),
           price_must_understand_before:
             prev.price_must_understand_before.length
               ? prev.price_must_understand_before
-              : remotePriceMustUnderstandBefore,
+              : commercialAiLegacyMirrors?.price_must_understand_before ?? remotePriceMustUnderstandBefore,
         }));
         setStep5Form((prev) => ({
           responsible_name: prev.responsible_name || String(answers.responsible_name ?? ""),
@@ -1476,7 +1533,7 @@ function OnboardingContent() {
         const { data, error } = await supabase
           .from("store_discount_settings")
           .select(
-            "store_id,organization_id,default_discount_percent,max_discount_percent,allow_ask_above_max_discount,discount_autonomy_mode,created_at,updated_at"
+            "store_id,organization_id,default_discount_percent,max_discount_percent,allow_ask_above_max_discount,discount_autonomy_mode,discount_special_rules,created_at,updated_at"
           )
           .eq("organization_id", organizationId)
           .eq("store_id", activeStore.id)
@@ -1503,6 +1560,9 @@ function OnboardingContent() {
               row.discount_autonomy_mode.trim()
                 ? row.discount_autonomy_mode
                 : "approval_required",
+            discount_special_rules:
+              prev.discount_special_rules ||
+              String(row.discount_special_rules ?? ""),
           }));
         }
       } catch (err) {
@@ -1862,13 +1922,6 @@ function OnboardingContent() {
       return;
     }
     if (step4Form.ai_can_send_price_directly === "sim") {
-      if (
-        step4Form.price_must_understand_before.length === 0 &&
-        !step4Form.price_direct_rule_other.trim()
-      ) {
-        setFormError("Informe o que a IA precisa entender antes de falar preço.");
-        return;
-      }
       if (!step4Form.price_talk_mode) {
         setFormError("Escolha como a IA pode falar preço.");
         return;
@@ -1899,27 +1952,6 @@ function OnboardingContent() {
       setFormError("Informe em quais casos a IA deve chamar alguém por causa de pagamento.");
       return;
     }
-    const priceDirectConditionsLegacy = [
-      ...step4Form.price_must_understand_before,
-      ...(step4Form.price_talk_mode ? [step4Form.price_talk_mode] : []),
-      ...(step4Form.price_needs_human_help === "sim" ? ["nunca_sem_chamar_humano"] : []),
-    ];
-    const priceDirectRuleText =
-      step4Form.ai_can_send_price_directly === "não"
-        ? "A IA não pode falar preço sem chamar uma pessoa da loja."
-        : [
-            joinSelectedLabels(step4Form.price_must_understand_before, PRICE_DIRECT_BEFORE_OPTIONS),
-            step4Form.price_talk_mode
-              ? PRICE_TALK_MODE_OPTIONS.find((option) => option.value === step4Form.price_talk_mode)
-                  ?.label ?? ""
-              : "",
-            step4Form.price_needs_human_help === "sim"
-              ? "Precisa de ajuda humana para falar preço."
-              : "Não precisa de ajuda humana para falar preço na regra normal.",
-            step4Form.price_direct_rule_other.trim(),
-          ]
-            .filter(Boolean)
-            .join(" | ");
     const humanHelpDiscountText = joinSelectedLabels(
       step4Form.human_help_discount_cases_selected,
       HUMAN_HELP_DISCOUNT_OPTIONS,
@@ -1952,6 +1984,7 @@ function OnboardingContent() {
         step4Form.can_offer_discount === "sim"
           ? step4Form.discount_autonomy_mode
           : "approval_required",
+      discountSpecialRules: step4Form.discount_special_rules,
       highValueEnabled:
         step4Form.can_offer_discount === "sim"
           ? step4Form.high_value_enabled
@@ -1981,6 +2014,23 @@ function OnboardingContent() {
       setFormError(normalizedPaymentSettings.error);
       return;
     }
+    const priceAnswerPolicy =
+      step4Form.ai_can_send_price_directly !== "sim" ||
+      step4Form.price_needs_human_help === "sim" ||
+      step4Form.price_talk_mode === "nao_falar_sozinha"
+        ? "human_required_for_price"
+        : step4Form.price_talk_mode === "apenas_faixa_inicial"
+          ? "range_only_when_asked"
+          : "direct_when_asked";
+    const normalizedCommercialAiSettings =
+      normalizeStoreCommercialAiSettingsInput({
+        priceAnswerPolicy,
+        priceContextRequirements: step4Form.price_must_understand_before,
+      });
+    if (!normalizedCommercialAiSettings.ok) {
+      setFormError(normalizedCommercialAiSettings.error);
+      return;
+    }
     if (!organizationId || !activeStore?.id) return;
     const storeId = activeStore.id;
     setSaving(true);
@@ -2001,6 +2051,8 @@ function OnboardingContent() {
               normalizedDiscountSettings.value.allowAskAboveMaxDiscount,
             p_discount_autonomy_mode:
               normalizedDiscountSettings.value.discountAutonomyMode,
+            p_discount_special_rules:
+              normalizedDiscountSettings.value.discountSpecialRules,
           },
         );
       if (discountSettingsError) {
@@ -2047,18 +2099,31 @@ function OnboardingContent() {
       setPaymentSettings(
         (savedPaymentSettings ?? null) as StorePaymentSettingsRow | null,
       );
+      const { data: savedCommercialAiSettings, error: commercialAiSettingsError } =
+        await supabase.rpc(
+          "upsert_store_commercial_ai_settings_with_legacy_mirror_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStore.id,
+            p_price_answer_policy:
+              normalizedCommercialAiSettings.value.priceAnswerPolicy,
+            p_price_context_requirements:
+              normalizedCommercialAiSettings.value.priceContextRequirements,
+          },
+        );
+      if (commercialAiSettingsError) {
+        throw new Error(
+          "Falha ao sincronizar as configuracoes canonicas comerciais.",
+        );
+      }
+      setCommercialAiSettings(
+        (savedCommercialAiSettings ?? null) as StoreCommercialAiSettingsRow | null,
+      );
       const payloads: Array<[string, unknown]> = [
         ["average_ticket", step4Form.average_ticket.trim()],
-        [
-          "ai_can_send_price_directly",
-          step4Form.ai_can_send_price_directly.trim().toLowerCase() === "sim",
-        ],
-        ["price_direct_rule", priceDirectRuleText],
         ["human_help_discount_cases", humanHelpDiscountText],
         ["human_help_custom_project_cases", humanHelpCustomProjectText],
         ["human_help_payment_cases", humanHelpPaymentText],
-        ["price_direct_conditions", priceDirectConditionsLegacy],
-        ["price_direct_rule_other", step4Form.price_direct_rule_other.trim()],
         ["human_help_discount_cases_selected", step4Form.human_help_discount_cases_selected],
         ["human_help_discount_cases_other", step4Form.human_help_discount_cases_other.trim()],
         [
@@ -2068,9 +2133,6 @@ function OnboardingContent() {
         ["human_help_custom_project_cases_other", step4Form.human_help_custom_project_cases_other.trim()],
         ["human_help_payment_cases_selected", step4Form.human_help_payment_cases_selected],
         ["human_help_payment_cases_other", step4Form.human_help_payment_cases_other.trim()],
-        ["price_needs_human_help", step4Form.price_needs_human_help],
-        ["price_talk_mode", step4Form.price_talk_mode],
-        ["price_must_understand_before", step4Form.price_must_understand_before],
       ];
       for (const [questionKey, answer] of payloads) {
         const { error: rpcError } = await supabase.rpc("onboarding_upsert_answer_scoped", {
@@ -3010,13 +3072,6 @@ function OnboardingContent() {
                       onChange={(value) => updateStep4Field("price_needs_human_help", value)}
                     />
                   </div>
-                  <input
-                    type="text"
-                    value={step4Form.price_direct_rule_other}
-                    onChange={(e) => updateStep4Field("price_direct_rule_other", e.target.value)}
-                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                    placeholder="Se quiser complementar a regra de preço, escreva aqui (opcional)"
-                  />
                 </div>
               )}
               {step4Form.ai_can_send_price_directly === "não" && (
@@ -3035,6 +3090,13 @@ function OnboardingContent() {
                   options={HUMAN_HELP_DISCOUNT_OPTIONS}
                   selectedValues={step4Form.human_help_discount_cases_selected}
                   onToggle={(value) => toggleStep4ArrayField("human_help_discount_cases_selected", value)}
+                />
+                <textarea
+                  value={step4Form.discount_special_rules}
+                  onChange={(e) => updateStep4Field("discount_special_rules", e.target.value)}
+                  rows={2}
+                  className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                  placeholder="Regras especiais de desconto que exigem aprovação ou cuidado comercial (opcional)"
                 />
                 <input
                   type="text"
