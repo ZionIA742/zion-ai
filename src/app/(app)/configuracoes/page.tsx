@@ -31,6 +31,13 @@ import {
   normalizeStoreChannelSettingsInput,
   type StoreChannelSettingsRow,
 } from "@/lib/store-channel-settings";
+import {
+  createStoreStrategySettingsInputFromSources,
+  deriveStoreStrategyAiStoreSummary,
+  normalizeStoreStrategySettingsInput,
+  type StoreStrategySettingsInput,
+  type StoreStrategySettingsRow,
+} from "@/lib/store-strategy-settings";
 
 type CountState = {
   pools: number;
@@ -445,7 +452,7 @@ type PersistedConfiguracoesState = {
   showChannelsAdvanced: boolean;
   isActivationEditing: boolean;
   overviewDraft: Record<string, string>;
-  strategyDraft: Record<string, string>;
+  strategyDraft: StoreStrategySettingsInput;
   operationDraft: OperationDraftState;
   commercialDraft: CommercialDraftState;
   discountDraft: DiscountDraftState;
@@ -1714,6 +1721,7 @@ export default function ConfiguracoesPage() {
   const [onboarding, setOnboarding] = useState<OnboardingRow | null>(null);
   const [answers, setAnswers] = useState<AnswersMap>({});
   const [scheduleSettings, setScheduleSettings] = useState<ScheduleSettingsRow | null>(null);
+  const [strategySettings, setStrategySettings] = useState<StoreStrategySettingsRow | null>(null);
   const [channelSettings, setChannelSettings] = useState<StoreChannelSettingsRow | null>(null);
   const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettingsRow | null>(null);
   const [discountSettings, setDiscountSettings] = useState<StoreDiscountSettingsRow | null>(null);
@@ -1724,7 +1732,9 @@ export default function ConfiguracoesPage() {
   const [isStrategyEditing, setIsStrategyEditing] = useState(false);
   const [isOperationEditing, setIsOperationEditing] = useState(false);
   const [overviewDraft, setOverviewDraft] = useState<Record<string, string>>({});
-  const [strategyDraft, setStrategyDraft] = useState<Record<string, string>>({});
+  const [strategyDraft, setStrategyDraft] = useState<StoreStrategySettingsInput>(
+    createStoreStrategySettingsInputFromSources({}),
+  );
   const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}, null));
   const [isCommercialEditing, setIsCommercialEditing] = useState(false);
   const [commercialDraft, setCommercialDraft] = useState<CommercialDraftState>(
@@ -2251,6 +2261,7 @@ export default function ConfiguracoesPage() {
       setOnboarding(null);
       setAnswers({});
       setScheduleSettings(null);
+      setStrategySettings(null);
       setChannelSettings(null);
       setStoreBranding(null);
       setStoreLogoPreviewUrl(null);
@@ -2274,6 +2285,7 @@ export default function ConfiguracoesPage() {
         onboardingResult,
         answersResult,
         scheduleSettingsResult,
+        strategySettingsResult,
         channelSettingsResult,
         paymentSettingsResult,
         discountSettingsResult,
@@ -2300,6 +2312,14 @@ export default function ConfiguracoesPage() {
         supabase
           .from("store_schedule_settings")
           .select("id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, after_hours_behavior, notes, created_at, updated_at")
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .maybeSingle(),
+        supabase
+          .from("store_strategy_settings")
+          .select(
+            "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, created_at, updated_at",
+          )
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
           .maybeSingle(),
@@ -2342,6 +2362,7 @@ export default function ConfiguracoesPage() {
       if (onboardingResult.error) throw onboardingResult.error;
       if (answersResult.error) throw answersResult.error;
       if (scheduleSettingsResult.error) throw scheduleSettingsResult.error;
+      if (strategySettingsResult.error) throw strategySettingsResult.error;
       if (channelSettingsResult.error) throw channelSettingsResult.error;
       if (paymentSettingsResult.error) throw paymentSettingsResult.error;
       if (discountSettingsResult.error) throw discountSettingsResult.error;
@@ -2419,10 +2440,52 @@ export default function ConfiguracoesPage() {
         return bTime - aTime;
       });
 
+      const nextAnswers = (answersResult.data ?? {}) as AnswersMap;
+      const nextStrategySettings =
+        (strategySettingsResult.data ?? null) as StoreStrategySettingsRow | null;
+      const nextStrategyInput = createStoreStrategySettingsInputFromSources({
+        answers: nextAnswers,
+        settings: nextStrategySettings,
+      });
+
       setCounts(nextCounts);
       setOnboarding((onboardingResult.data ?? null) as OnboardingRow | null);
-      setAnswers((answersResult.data ?? {}) as AnswersMap);
+      setAnswers({
+        ...nextAnswers,
+        city: nextStrategyInput.city,
+        state: nextStrategyInput.state,
+        service_regions: nextStrategyInput.serviceRegions,
+        service_region_modes: nextStrategyInput.serviceRegionModes,
+        service_region_primary_mode: nextStrategyInput.serviceRegionPrimaryMode,
+        service_region_outside_consultation:
+          nextStrategyInput.serviceRegionOutsideConsultation,
+        service_region_notes: nextStrategyInput.serviceRegionNotes,
+        store_services: nextStrategyInput.storeServices,
+        store_services_other: nextStrategyInput.storeServicesOther,
+        store_description: nextStrategyInput.storeDescription,
+        main_store_brand: nextStrategyInput.mainStoreBrand,
+        brands_worked: nextStrategyInput.brandsWorked,
+        strategy_service_exclusions: nextStrategyInput.strategyServiceExclusions,
+        strategy_primary_focus: nextStrategyInput.strategyPrimaryFocus,
+        strategy_sell_more: nextStrategyInput.strategySellMore,
+        strategy_common_customer: nextStrategyInput.strategyCommonCustomer,
+        strategy_ideal_customer: nextStrategyInput.strategyIdealCustomer,
+        strategy_ticket_range: nextStrategyInput.strategyTicketRange,
+        strategy_positioning: nextStrategyInput.strategyPositioning,
+        strategy_priority_brands: nextStrategyInput.strategyPriorityBrands,
+        strategy_non_worked_brands: nextStrategyInput.strategyNonWorkedBrands,
+        strategy_top_lines: nextStrategyInput.strategyTopLines,
+        strategy_top_products: nextStrategyInput.strategyTopProducts,
+        strategy_differentials: nextStrategyInput.strategyDifferentials,
+        strategy_promise_limits: nextStrategyInput.strategyPromiseLimits,
+        strategy_ai_presentation: nextStrategyInput.strategyAiPresentation,
+        strategy_ai_priorities: nextStrategyInput.strategyAiPriorities,
+        strategy_ai_never_forget: nextStrategyInput.strategyAiNeverForget,
+        strategy_ai_store_summary:
+          deriveStoreStrategyAiStoreSummary(nextStrategyInput),
+      });
       setScheduleSettings((scheduleSettingsResult.data ?? null) as ScheduleSettingsRow | null);
+      setStrategySettings(nextStrategySettings);
       setChannelSettings((channelSettingsResult.data ?? null) as StoreChannelSettingsRow | null);
       setPaymentSettings((paymentSettingsResult.data ?? null) as StorePaymentSettingsRow | null);
       setDiscountSettings((discountSettingsResult.data ?? null) as StoreDiscountSettingsRow | null);
@@ -2748,47 +2811,6 @@ export default function ConfiguracoesPage() {
   }, [organizationId, activeStoreId]);
 
   useEffect(() => {
-    setStrategyDraft({
-      city: cleanText(answers.city),
-      state: cleanText(answers.state),
-      service_regions: cleanText(answers.service_regions),
-      service_region_notes: cleanText(answers.service_region_notes),
-      service_region_modes_text: joinSelectedLabels(
-        parseArrayAnswer(answers.service_region_modes),
-        SERVICE_REGION_MODE_OPTIONS
-      ),
-      store_services_text: joinSelectedLabels(
-        parseArrayAnswer(answers.store_services),
-        STORE_SERVICE_OPTIONS
-      ),
-      store_services_other: cleanText(answers.store_services_other),
-      strategy_service_exclusions: cleanText(answers.strategy_service_exclusions),
-      store_description: cleanText(answers.store_description),
-      strategy_primary_focus: cleanText(answers.strategy_primary_focus),
-      strategy_sell_more: cleanText(answers.strategy_sell_more),
-      strategy_common_customer: cleanText(answers.strategy_common_customer),
-      strategy_ideal_customer: cleanText(answers.strategy_ideal_customer),
-      strategy_ticket_range: cleanText(answers.strategy_ticket_range),
-      strategy_positioning: cleanText(answers.strategy_positioning),
-      main_store_brand: cleanText(answers.main_store_brand),
-      brands_worked: cleanText(answers.brands_worked),
-      strategy_priority_brands: cleanText(answers.strategy_priority_brands),
-      strategy_non_worked_brands: cleanText(answers.strategy_non_worked_brands),
-      strategy_top_lines: cleanText(answers.strategy_top_lines),
-      strategy_top_products: cleanText(answers.strategy_top_products),
-      strategy_differentials: cleanText(answers.strategy_differentials),
-      strategy_promise_limits: cleanText(answers.strategy_promise_limits),
-      strategy_requires_visit: cleanText(answers.strategy_requires_visit),
-      strategy_requires_human: cleanText(answers.strategy_requires_human),
-      strategy_exception_cases: cleanText(answers.strategy_exception_cases),
-      strategy_ai_store_summary: cleanText(answers.strategy_ai_store_summary),
-      strategy_ai_presentation: cleanText(answers.strategy_ai_presentation),
-      strategy_ai_priorities: cleanText(answers.strategy_ai_priorities),
-      strategy_ai_never_forget: cleanText(answers.strategy_ai_never_forget),
-    });
-  }, [answers, discountSettings, highValueDiscountSettings, paymentSettings]);
-
-  useEffect(() => {
     if (selectedStoreLogoFile) {
       const objectUrl = URL.createObjectURL(selectedStoreLogoFile);
       setStoreLogoPreviewUrl(objectUrl);
@@ -2809,12 +2831,30 @@ export default function ConfiguracoesPage() {
     [onboarding?.status]
   );
 
+  const strategySettingsInput = useMemo(
+    () =>
+      createStoreStrategySettingsInputFromSources({
+        answers,
+        settings: strategySettings,
+      }),
+    [answers, strategySettings],
+  );
+
+  const derivedStrategyAiStoreSummary = useMemo(
+    () => deriveStoreStrategyAiStoreSummary(strategySettingsInput),
+    [strategySettingsInput],
+  );
+
+  useEffect(() => {
+    setStrategyDraft(strategySettingsInput);
+  }, [strategySettingsInput]);
+
   const strategyBaseItems = useMemo(() => {
-    const city = cleanText(answers.city);
-    const state = cleanText(answers.state);
-    const serviceRegions = cleanText(answers.service_regions);
+    const city = cleanText(strategySettingsInput.city);
+    const state = cleanText(strategySettingsInput.state);
+    const serviceRegions = cleanText(strategySettingsInput.serviceRegions);
     const regionModes = joinSelectedLabels(
-      parseArrayAnswer(answers.service_region_modes),
+      strategySettingsInput.serviceRegionModes,
       SERVICE_REGION_MODE_OPTIONS
     );
 
@@ -2823,65 +2863,65 @@ export default function ConfiguracoesPage() {
       { label: "Estado", value: state },
       { label: "Região principal de atendimento", value: serviceRegions },
       { label: "Até onde atende", value: regionModes },
-      { label: "Observações sobre cobertura", value: cleanText(answers.service_region_notes) },
+      { label: "Observações sobre cobertura", value: cleanText(strategySettingsInput.serviceRegionNotes) },
     ]);
-  }, [answers, discountSettings, highValueDiscountSettings, paymentSettings]);
+  }, [strategySettingsInput]);
 
   const strategyServicesItems = useMemo(() => {
     const services = joinSelectedLabels(
-      parseArrayAnswer(answers.store_services),
+      strategySettingsInput.storeServices,
       STORE_SERVICE_OPTIONS,
-      cleanText(answers.store_services_other)
+      cleanText(strategySettingsInput.storeServicesOther)
     );
 
     return buildBulletRows([
       { label: "Serviços principais", value: services },
-      { label: "Serviços extras", value: cleanText(answers.store_services_other) },
-      { label: "Serviços que a loja não faz", value: cleanText(answers.strategy_service_exclusions) },
+      { label: "Serviços extras", value: cleanText(strategySettingsInput.storeServicesOther) },
+      { label: "Serviços que a loja não faz", value: cleanText(strategySettingsInput.strategyServiceExclusions) },
     ]);
-  }, [answers, discountSettings, highValueDiscountSettings, paymentSettings]);
+  }, [strategySettingsInput]);
 
   const strategyCommercialFocusItems = useMemo(() => {
     return buildBulletRows([
-      { label: "Tipo de loja / foco comercial", value: cleanText(answers.store_description) },
-      { label: "Principal foco da loja", value: cleanText(answers.strategy_primary_focus) },
-      { label: "O que quer vender mais", value: cleanText(answers.strategy_sell_more) },
-      { label: "Tipo de cliente mais comum", value: cleanText(answers.strategy_common_customer) },
-      { label: "Tipo de cliente ideal", value: cleanText(answers.strategy_ideal_customer) },
-      { label: "Faixa de ticket mais comum", value: cleanText(answers.strategy_ticket_range) },
-      { label: "Posicionamento da loja", value: cleanText(answers.strategy_positioning) },
+      { label: "Tipo de loja / foco comercial", value: cleanText(strategySettingsInput.storeDescription) },
+      { label: "Principal foco da loja", value: cleanText(strategySettingsInput.strategyPrimaryFocus) },
+      { label: "O que quer vender mais", value: cleanText(strategySettingsInput.strategySellMore) },
+      { label: "Tipo de cliente mais comum", value: cleanText(strategySettingsInput.strategyCommonCustomer) },
+      { label: "Tipo de cliente ideal", value: cleanText(strategySettingsInput.strategyIdealCustomer) },
+      { label: "Faixa de ticket mais comum", value: cleanText(strategySettingsInput.strategyTicketRange) },
+      { label: "Posicionamento da loja", value: cleanText(strategySettingsInput.strategyPositioning) },
     ]);
-  }, [answers]);
+  }, [strategySettingsInput]);
 
   const strategyBrandsItems = useMemo(() => {
     return buildBulletRows([
-      { label: "Marca principal", value: cleanText(answers.main_store_brand) },
-      { label: "Outras marcas trabalhadas", value: cleanText(answers.brands_worked) },
-      { label: "Marcas prioritárias", value: cleanText(answers.strategy_priority_brands) },
-      { label: "Marcas que não trabalha", value: cleanText(answers.strategy_non_worked_brands) },
-      { label: "Linhas principais", value: cleanText(answers.strategy_top_lines) },
-      { label: "Produtos com maior giro", value: cleanText(answers.strategy_top_products) },
+      { label: "Marca principal", value: cleanText(strategySettingsInput.mainStoreBrand) },
+      { label: "Outras marcas trabalhadas", value: cleanText(strategySettingsInput.brandsWorked) },
+      { label: "Marcas prioritárias", value: cleanText(strategySettingsInput.strategyPriorityBrands) },
+      { label: "Marcas que não trabalha", value: cleanText(strategySettingsInput.strategyNonWorkedBrands) },
+      { label: "Linhas principais", value: cleanText(strategySettingsInput.strategyTopLines) },
+      { label: "Produtos com maior giro", value: cleanText(strategySettingsInput.strategyTopProducts) },
     ]);
-  }, [answers]);
+  }, [strategySettingsInput]);
 
   const strategyDifferentialsItems = useMemo(() => {
     return buildBulletRows([
-      { label: "Diferenciais da loja", value: cleanText(answers.strategy_differentials) },
-      { label: "O que não pode prometer", value: cleanText(answers.strategy_promise_limits) },
+      { label: "Diferenciais da loja", value: cleanText(strategySettingsInput.strategyDifferentials) },
+      { label: "O que não pode prometer", value: cleanText(strategySettingsInput.strategyPromiseLimits) },
       { label: "O que depende de visita", value: cleanText(answers.strategy_requires_visit) },
       { label: "O que depende de humano", value: cleanText(answers.strategy_requires_human) },
       { label: "Casos de exceção", value: cleanText(answers.strategy_exception_cases) },
     ]);
-  }, [answers]);
+  }, [answers, strategySettingsInput]);
 
   const strategyAiSummaryItems = useMemo(() => {
     return buildBulletRows([
-      { label: "Como a IA deve entender a loja", value: cleanText(answers.strategy_ai_store_summary) },
-      { label: "Como deve apresentar a loja", value: cleanText(answers.strategy_ai_presentation) },
-      { label: "O que a IA deve priorizar", value: cleanText(answers.strategy_ai_priorities) },
-      { label: "O que nunca deve esquecer", value: cleanText(answers.strategy_ai_never_forget) },
+      { label: "Como a IA deve entender a loja", value: cleanText(derivedStrategyAiStoreSummary) },
+      { label: "Como deve apresentar a loja", value: cleanText(strategySettingsInput.strategyAiPresentation) },
+      { label: "O que a IA deve priorizar", value: cleanText(strategySettingsInput.strategyAiPriorities) },
+      { label: "O que nunca deve esquecer", value: cleanText(strategySettingsInput.strategyAiNeverForget) },
     ]);
-  }, [answers]);
+  }, [derivedStrategyAiStoreSummary, strategySettingsInput]);
 
   const poolTypesLabel = useMemo(() => {
     return joinSelectedLabels(
@@ -3659,136 +3699,115 @@ export default function ConfiguracoesPage() {
     setIsOverviewEditing(false);
   }, [overviewDraft, upsertConfigAnswers]);
 
-  const handleStrategyDraftChange = useCallback((key: string, value: string) => {
+  const handleStrategyDraftChange = useCallback(<K extends keyof StoreStrategySettingsInput>(
+    key: K,
+    value: StoreStrategySettingsInput[K]
+  ) => {
     setStrategyDraft((current) => ({
       ...current,
       [key]: value,
     }));
   }, []);
 
+  const handleStrategyMultiValueToggle = useCallback(
+    (key: "serviceRegionModes" | "storeServices", value: string) => {
+      setStrategyDraft((current) => ({
+        ...current,
+        [key]: current[key].includes(value)
+          ? current[key].filter((item) => item !== value)
+          : [...current[key], value],
+      }));
+    },
+    [],
+  );
+
   const handleStrategyEditOpen = useCallback(() => {
-    setStrategyDraft({
-      city: cleanText(answers.city),
-      state: cleanText(answers.state),
-      service_regions: cleanText(answers.service_regions),
-      service_region_notes: cleanText(answers.service_region_notes),
-      service_region_modes_text: joinSelectedLabels(
-        parseArrayAnswer(answers.service_region_modes),
-        SERVICE_REGION_MODE_OPTIONS
-      ),
-      store_services_text: joinSelectedLabels(
-        parseArrayAnswer(answers.store_services),
-        STORE_SERVICE_OPTIONS
-      ),
-      store_services_other: cleanText(answers.store_services_other),
-      strategy_service_exclusions: cleanText(answers.strategy_service_exclusions),
-      store_description: cleanText(answers.store_description),
-      strategy_primary_focus: cleanText(answers.strategy_primary_focus),
-      strategy_sell_more: cleanText(answers.strategy_sell_more),
-      strategy_common_customer: cleanText(answers.strategy_common_customer),
-      strategy_ideal_customer: cleanText(answers.strategy_ideal_customer),
-      strategy_ticket_range: cleanText(answers.strategy_ticket_range),
-      strategy_positioning: cleanText(answers.strategy_positioning),
-      main_store_brand: cleanText(answers.main_store_brand),
-      brands_worked: cleanText(answers.brands_worked),
-      strategy_priority_brands: cleanText(answers.strategy_priority_brands),
-      strategy_non_worked_brands: cleanText(answers.strategy_non_worked_brands),
-      strategy_top_lines: cleanText(answers.strategy_top_lines),
-      strategy_top_products: cleanText(answers.strategy_top_products),
-      strategy_differentials: cleanText(answers.strategy_differentials),
-      strategy_promise_limits: cleanText(answers.strategy_promise_limits),
-      strategy_requires_visit: cleanText(answers.strategy_requires_visit),
-      strategy_requires_human: cleanText(answers.strategy_requires_human),
-      strategy_exception_cases: cleanText(answers.strategy_exception_cases),
-      strategy_ai_store_summary: cleanText(answers.strategy_ai_store_summary),
-      strategy_ai_presentation: cleanText(answers.strategy_ai_presentation),
-      strategy_ai_priorities: cleanText(answers.strategy_ai_priorities),
-      strategy_ai_never_forget: cleanText(answers.strategy_ai_never_forget),
-    });
+    setStrategyDraft(strategySettingsInput);
     setIsStrategyEditing(true);
-  }, [answers]);
+  }, [strategySettingsInput]);
 
   const handleStrategyEditCancel = useCallback(() => {
-    setStrategyDraft({
-      city: cleanText(answers.city),
-      state: cleanText(answers.state),
-      service_regions: cleanText(answers.service_regions),
-      service_region_notes: cleanText(answers.service_region_notes),
-      service_region_modes_text: joinSelectedLabels(
-        parseArrayAnswer(answers.service_region_modes),
-        SERVICE_REGION_MODE_OPTIONS
-      ),
-      store_services_text: joinSelectedLabels(
-        parseArrayAnswer(answers.store_services),
-        STORE_SERVICE_OPTIONS
-      ),
-      store_services_other: cleanText(answers.store_services_other),
-      strategy_service_exclusions: cleanText(answers.strategy_service_exclusions),
-      store_description: cleanText(answers.store_description),
-      strategy_primary_focus: cleanText(answers.strategy_primary_focus),
-      strategy_sell_more: cleanText(answers.strategy_sell_more),
-      strategy_common_customer: cleanText(answers.strategy_common_customer),
-      strategy_ideal_customer: cleanText(answers.strategy_ideal_customer),
-      strategy_ticket_range: cleanText(answers.strategy_ticket_range),
-      strategy_positioning: cleanText(answers.strategy_positioning),
-      main_store_brand: cleanText(answers.main_store_brand),
-      brands_worked: cleanText(answers.brands_worked),
-      strategy_priority_brands: cleanText(answers.strategy_priority_brands),
-      strategy_non_worked_brands: cleanText(answers.strategy_non_worked_brands),
-      strategy_top_lines: cleanText(answers.strategy_top_lines),
-      strategy_top_products: cleanText(answers.strategy_top_products),
-      strategy_differentials: cleanText(answers.strategy_differentials),
-      strategy_promise_limits: cleanText(answers.strategy_promise_limits),
-      strategy_requires_visit: cleanText(answers.strategy_requires_visit),
-      strategy_requires_human: cleanText(answers.strategy_requires_human),
-      strategy_exception_cases: cleanText(answers.strategy_exception_cases),
-      strategy_ai_store_summary: cleanText(answers.strategy_ai_store_summary),
-      strategy_ai_presentation: cleanText(answers.strategy_ai_presentation),
-      strategy_ai_priorities: cleanText(answers.strategy_ai_priorities),
-      strategy_ai_never_forget: cleanText(answers.strategy_ai_never_forget),
-    });
+    setStrategyDraft(strategySettingsInput);
     setIsStrategyEditing(false);
-  }, [answers]);
+  }, [strategySettingsInput]);
 
   const handleStrategyEditSave = useCallback(async () => {
-    const saved = await upsertConfigAnswers(
-      {
-        city: strategyDraft.city,
-        state: strategyDraft.state,
-        service_regions: strategyDraft.service_regions,
-        service_region_notes: strategyDraft.service_region_notes,
-        store_services_other: strategyDraft.store_services_other,
-        store_description: strategyDraft.store_description,
-        main_store_brand: strategyDraft.main_store_brand,
-        brands_worked: strategyDraft.brands_worked,
-        strategy_service_exclusions: strategyDraft.strategy_service_exclusions,
-        strategy_primary_focus: strategyDraft.strategy_primary_focus,
-        strategy_sell_more: strategyDraft.strategy_sell_more,
-        strategy_common_customer: strategyDraft.strategy_common_customer,
-        strategy_ideal_customer: strategyDraft.strategy_ideal_customer,
-        strategy_ticket_range: strategyDraft.strategy_ticket_range,
-        strategy_positioning: strategyDraft.strategy_positioning,
-        strategy_priority_brands: strategyDraft.strategy_priority_brands,
-        strategy_non_worked_brands: strategyDraft.strategy_non_worked_brands,
-        strategy_top_lines: strategyDraft.strategy_top_lines,
-        strategy_top_products: strategyDraft.strategy_top_products,
-        strategy_differentials: strategyDraft.strategy_differentials,
-        strategy_promise_limits: strategyDraft.strategy_promise_limits,
-        strategy_requires_visit: strategyDraft.strategy_requires_visit,
-        strategy_requires_human: strategyDraft.strategy_requires_human,
-        strategy_exception_cases: strategyDraft.strategy_exception_cases,
-        strategy_ai_store_summary: strategyDraft.strategy_ai_store_summary,
-        strategy_ai_presentation: strategyDraft.strategy_ai_presentation,
-        strategy_ai_priorities: strategyDraft.strategy_ai_priorities,
-        strategy_ai_never_forget: strategyDraft.strategy_ai_never_forget,
-      },
-      "Alterações da estratégia salvas com sucesso."
-    );
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar a estrategia.");
+      setSuccessText(null);
+      return;
+    }
 
-    if (!saved) return;
+    const normalizedStrategySettings = normalizeStoreStrategySettingsInput(strategyDraft);
 
-    setIsStrategyEditing(false);
-  }, [strategyDraft, upsertConfigAnswers]);
+    try {
+      const { data: savedStrategySettings, error: strategySaveError } =
+        await supabase.rpc(
+          "upsert_store_strategy_settings_with_legacy_mirror_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_city: normalizedStrategySettings.value.city,
+            p_state: normalizedStrategySettings.value.state,
+            p_service_regions: normalizedStrategySettings.value.serviceRegions,
+            p_service_region_modes: normalizedStrategySettings.value.serviceRegionModes,
+            p_service_region_primary_mode:
+              normalizedStrategySettings.value.serviceRegionPrimaryMode,
+            p_service_region_outside_consultation:
+              normalizedStrategySettings.value.serviceRegionOutsideConsultation,
+            p_service_region_notes: normalizedStrategySettings.value.serviceRegionNotes,
+            p_store_services: normalizedStrategySettings.value.storeServices,
+            p_store_services_other: normalizedStrategySettings.value.storeServicesOther,
+            p_store_description: normalizedStrategySettings.value.storeDescription,
+            p_main_store_brand: normalizedStrategySettings.value.mainStoreBrand,
+            p_brands_worked: normalizedStrategySettings.value.brandsWorked,
+            p_strategy_service_exclusions:
+              normalizedStrategySettings.value.strategyServiceExclusions,
+            p_strategy_primary_focus:
+              normalizedStrategySettings.value.strategyPrimaryFocus,
+            p_strategy_sell_more: normalizedStrategySettings.value.strategySellMore,
+            p_strategy_common_customer:
+              normalizedStrategySettings.value.strategyCommonCustomer,
+            p_strategy_ideal_customer:
+              normalizedStrategySettings.value.strategyIdealCustomer,
+            p_strategy_ticket_range:
+              normalizedStrategySettings.value.strategyTicketRange,
+            p_strategy_positioning:
+              normalizedStrategySettings.value.strategyPositioning,
+            p_strategy_priority_brands:
+              normalizedStrategySettings.value.strategyPriorityBrands,
+            p_strategy_non_worked_brands:
+              normalizedStrategySettings.value.strategyNonWorkedBrands,
+            p_strategy_top_lines: normalizedStrategySettings.value.strategyTopLines,
+            p_strategy_top_products:
+              normalizedStrategySettings.value.strategyTopProducts,
+            p_strategy_differentials:
+              normalizedStrategySettings.value.strategyDifferentials,
+            p_strategy_promise_limits:
+              normalizedStrategySettings.value.strategyPromiseLimits,
+            p_strategy_ai_presentation:
+              normalizedStrategySettings.value.strategyAiPresentation,
+            p_strategy_ai_priorities:
+              normalizedStrategySettings.value.strategyAiPriorities,
+            p_strategy_ai_never_forget:
+              normalizedStrategySettings.value.strategyAiNeverForget,
+          },
+        );
+
+      if (strategySaveError) throw strategySaveError;
+
+      setStrategySettings(
+        (savedStrategySettings ?? null) as StoreStrategySettingsRow | null,
+      );
+      setErrorText(null);
+      setSuccessText("Alteracoes da estrategia salvas com sucesso.");
+      setIsStrategyEditing(false);
+      await fetchPageData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Nao foi possivel salvar as alteracoes da estrategia.");
+      setSuccessText(null);
+    }
+  }, [activeStoreId, fetchPageData, organizationId, strategyDraft]);
 
 
   useEffect(() => {
@@ -6224,27 +6243,81 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1 md:col-span-2">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Região principal de atendimento</span>
                         <input
-                          value={strategyDraft.service_regions ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("service_regions", event.target.value)}
+                          value={strategyDraft.serviceRegions}
+                          onChange={(event) => handleStrategyDraftChange("serviceRegions", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
 
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Até onde atende</span>
-                        <input
-                          value={strategyDraft.service_region_modes_text ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("service_region_modes_text", event.target.value)}
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cobertura principal</span>
+                        <select
+                          value={strategyDraft.serviceRegionPrimaryMode}
+                          onChange={(event) =>
+                            handleStrategyDraftChange("serviceRegionPrimaryMode", event.target.value)
+                          }
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: cidade + cidades vizinhas, todo o estado, sob consulta..."
-                        />
+                        >
+                          <option value="">Selecione</option>
+                          {SERVICE_REGION_MODE_OPTIONS.filter((option) => option.value !== "sob_consulta").map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
                       </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fora da rota</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleStrategyDraftChange(
+                              "serviceRegionOutsideConsultation",
+                              !strategyDraft.serviceRegionOutsideConsultation
+                            )
+                          }
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
+                            strategyDraft.serviceRegionOutsideConsultation
+                              ? "border-black bg-black text-white"
+                              : "border-gray-200 bg-white text-gray-800 hover:bg-gray-50"
+                          }`}
+                        >
+                          <span>Atende fora da rota somente sob consulta</span>
+                          <span>{strategyDraft.serviceRegionOutsideConsultation ? "Sim" : "Nao"}</span>
+                        </button>
+                      </label>
+
+                      <div className="space-y-2 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Modos adicionais de cobertura</span>
+                        <div className="flex flex-wrap gap-2">
+                          {SERVICE_REGION_MODE_OPTIONS.filter((option) => option.value !== "sob_consulta").map((option) => {
+                            const isSelected =
+                              strategyDraft.serviceRegionModes.includes(option.value) ||
+                              strategyDraft.serviceRegionPrimaryMode === option.value;
+                            return (
+                              <button
+                                key={option.value}
+                                type="button"
+                                onClick={() => handleStrategyMultiValueToggle("serviceRegionModes", option.value)}
+                                className={`rounded-full border px-3 py-1 text-sm transition ${
+                                  isSelected
+                                    ? "border-black bg-black text-white"
+                                    : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
+                                }`}
+                              >
+                                {option.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
 
                       <label className="space-y-1 md:col-span-2">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações sobre cobertura</span>
                         <textarea
-                          value={strategyDraft.service_region_notes ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("service_region_notes", event.target.value)}
+                          value={strategyDraft.serviceRegionNotes}
+                          onChange={(event) => handleStrategyDraftChange("serviceRegionNotes", event.target.value)}
                           rows={3}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
@@ -6255,21 +6328,34 @@ export default function ConfiguracoesPage() {
                   <div className="rounded-2xl border border-gray-200 bg-white p-4">
                     <div className="mb-3 text-sm font-semibold text-gray-900">2. Serviços que a loja oferece</div>
                     <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-1 md:col-span-2">
+                      <div className="space-y-2 md:col-span-2">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Serviços principais</span>
-                        <input
-                          value={strategyDraft.store_services_text ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("store_services_text", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: venda de piscinas, instalação, visita técnica..."
-                        />
-                      </label>
+                        <div className="flex flex-wrap gap-2">
+                          {STORE_SERVICE_OPTIONS.map((option) => {
+                            const isSelected = strategyDraft.storeServices.includes(option.value);
+                            return (
+                              <button
+                                key={option.value}
+                                type="button"
+                                onClick={() => handleStrategyMultiValueToggle("storeServices", option.value)}
+                                className={`rounded-full border px-3 py-1 text-sm transition ${
+                                  isSelected
+                                    ? "border-black bg-black text-white"
+                                    : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
+                                }`}
+                              >
+                                {option.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
 
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Outros serviços</span>
                         <input
-                          value={strategyDraft.store_services_other ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("store_services_other", event.target.value)}
+                          value={strategyDraft.storeServicesOther}
+                          onChange={(event) => handleStrategyDraftChange("storeServicesOther", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6277,8 +6363,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Serviços que não faz</span>
                         <input
-                          value={strategyDraft.strategy_service_exclusions ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_service_exclusions", event.target.value)}
+                          value={strategyDraft.strategyServiceExclusions}
+                          onChange={(event) => handleStrategyDraftChange("strategyServiceExclusions", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: não faz obra do entorno, não faz manutenção..."
                         />
@@ -6292,8 +6378,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1 md:col-span-2">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de loja / foco comercial</span>
                         <textarea
-                          value={strategyDraft.store_description ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("store_description", event.target.value)}
+                          value={strategyDraft.storeDescription}
+                          onChange={(event) => handleStrategyDraftChange("storeDescription", event.target.value)}
                           rows={3}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
@@ -6302,8 +6388,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Principal foco da loja</span>
                         <input
-                          value={strategyDraft.strategy_primary_focus ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_primary_focus", event.target.value)}
+                          value={strategyDraft.strategyPrimaryFocus}
+                          onChange={(event) => handleStrategyDraftChange("strategyPrimaryFocus", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6311,8 +6397,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que quer vender mais</span>
                         <input
-                          value={strategyDraft.strategy_sell_more ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_sell_more", event.target.value)}
+                          value={strategyDraft.strategySellMore}
+                          onChange={(event) => handleStrategyDraftChange("strategySellMore", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6320,8 +6406,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de cliente mais comum</span>
                         <input
-                          value={strategyDraft.strategy_common_customer ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_common_customer", event.target.value)}
+                          value={strategyDraft.strategyCommonCustomer}
+                          onChange={(event) => handleStrategyDraftChange("strategyCommonCustomer", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6329,8 +6415,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de cliente ideal</span>
                         <input
-                          value={strategyDraft.strategy_ideal_customer ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ideal_customer", event.target.value)}
+                          value={strategyDraft.strategyIdealCustomer}
+                          onChange={(event) => handleStrategyDraftChange("strategyIdealCustomer", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6338,8 +6424,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Faixa de ticket mais comum</span>
                         <input
-                          value={strategyDraft.strategy_ticket_range ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ticket_range", event.target.value)}
+                          value={strategyDraft.strategyTicketRange}
+                          onChange={(event) => handleStrategyDraftChange("strategyTicketRange", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6347,8 +6433,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Posicionamento comercial</span>
                         <input
-                          value={strategyDraft.strategy_positioning ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_positioning", event.target.value)}
+                          value={strategyDraft.strategyPositioning}
+                          onChange={(event) => handleStrategyDraftChange("strategyPositioning", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: consultiva, premium, técnica, popular..."
                         />
@@ -6362,8 +6448,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marca principal</span>
                         <input
-                          value={strategyDraft.main_store_brand ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("main_store_brand", event.target.value)}
+                          value={strategyDraft.mainStoreBrand}
+                          onChange={(event) => handleStrategyDraftChange("mainStoreBrand", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6371,8 +6457,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Outras marcas</span>
                         <input
-                          value={strategyDraft.brands_worked ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("brands_worked", event.target.value)}
+                          value={strategyDraft.brandsWorked}
+                          onChange={(event) => handleStrategyDraftChange("brandsWorked", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6380,8 +6466,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marcas que prefere priorizar</span>
                         <input
-                          value={strategyDraft.strategy_priority_brands ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_priority_brands", event.target.value)}
+                          value={strategyDraft.strategyPriorityBrands}
+                          onChange={(event) => handleStrategyDraftChange("strategyPriorityBrands", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6389,8 +6475,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marcas ou linhas que não trabalha</span>
                         <input
-                          value={strategyDraft.strategy_non_worked_brands ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_non_worked_brands", event.target.value)}
+                          value={strategyDraft.strategyNonWorkedBrands}
+                          onChange={(event) => handleStrategyDraftChange("strategyNonWorkedBrands", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6398,8 +6484,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Linhas principais vendidas</span>
                         <input
-                          value={strategyDraft.strategy_top_lines ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_top_lines", event.target.value)}
+                          value={strategyDraft.strategyTopLines}
+                          onChange={(event) => handleStrategyDraftChange("strategyTopLines", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6407,8 +6493,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Produtos com maior giro</span>
                         <input
-                          value={strategyDraft.strategy_top_products ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_top_products", event.target.value)}
+                          value={strategyDraft.strategyTopProducts}
+                          onChange={(event) => handleStrategyDraftChange("strategyTopProducts", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
@@ -6421,8 +6507,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1 md:col-span-2">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Diferenciais da loja</span>
                         <textarea
-                          value={strategyDraft.strategy_differentials ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_differentials", event.target.value)}
+                          value={strategyDraft.strategyDifferentials}
+                          onChange={(event) => handleStrategyDraftChange("strategyDifferentials", event.target.value)}
                           rows={3}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: frete grátis, envio no mesmo dia, instalação própria..."
@@ -6432,63 +6518,47 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a loja não promete</span>
                         <textarea
-                          value={strategyDraft.strategy_promise_limits ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_promise_limits", event.target.value)}
+                          value={strategyDraft.strategyPromiseLimits}
+                          onChange={(event) => handleStrategyDraftChange("strategyPromiseLimits", event.target.value)}
                           rows={3}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
                       </label>
 
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que depende de visita</span>
-                        <textarea
-                          value={strategyDraft.strategy_requires_visit ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_requires_visit", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que depende de humano</span>
-                        <textarea
-                          value={strategyDraft.strategy_requires_human ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_requires_human", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Casos de exceção importantes</span>
-                        <textarea
-                          value={strategyDraft.strategy_exception_cases ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_exception_cases", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
+                      <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-3 md:col-span-2">
+                        <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                          Campos legacy fora da autoridade canonica
+                        </div>
+                        <div className="mt-2 grid gap-2 text-sm text-gray-700 md:grid-cols-3">
+                          <div>Visita: {cleanText(answers.strategy_requires_visit) || "Nao informado"}</div>
+                          <div>Humano: {cleanText(answers.strategy_requires_human) || "Nao informado"}</div>
+                          <div>Excecoes: {cleanText(answers.strategy_exception_cases) || "Nao informado"}</div>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
                   <div className="rounded-2xl border border-gray-200 bg-white p-4">
                     <div className="mb-3 text-sm font-semibold text-gray-900">6. Resumo estratégico para a IA</div>
                     <div className="grid gap-3">
-                      <label className="space-y-1">
+                      <div className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a IA deve entender a loja</span>
                         <textarea
-                          value={strategyDraft.strategy_ai_store_summary ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ai_store_summary", event.target.value)}
+                          value={derivedStrategyAiStoreSummary}
+                          readOnly
                           rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 outline-none"
                         />
-                      </label>
+                        <div className="text-xs text-gray-500">
+                          Este resumo e derivado da configuracao canonica e nao vira autoridade manual.
+                        </div>
+                      </div>
 
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a IA deve apresentar a loja</span>
                         <textarea
-                          value={strategyDraft.strategy_ai_presentation ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ai_presentation", event.target.value)}
+                          value={strategyDraft.strategyAiPresentation}
+                          onChange={(event) => handleStrategyDraftChange("strategyAiPresentation", event.target.value)}
                           rows={3}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
@@ -6497,8 +6567,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a IA deve priorizar</span>
                         <textarea
-                          value={strategyDraft.strategy_ai_priorities ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ai_priorities", event.target.value)}
+                          value={strategyDraft.strategyAiPriorities}
+                          onChange={(event) => handleStrategyDraftChange("strategyAiPriorities", event.target.value)}
                           rows={3}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />
@@ -6507,8 +6577,8 @@ export default function ConfiguracoesPage() {
                       <label className="space-y-1">
                         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a IA nunca deve esquecer</span>
                         <textarea
-                          value={strategyDraft.strategy_ai_never_forget ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ai_never_forget", event.target.value)}
+                          value={strategyDraft.strategyAiNeverForget}
+                          onChange={(event) => handleStrategyDraftChange("strategyAiNeverForget", event.target.value)}
                           rows={3}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                         />

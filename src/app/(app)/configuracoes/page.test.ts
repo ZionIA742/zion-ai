@@ -45,6 +45,14 @@ function getChannelsSaveBlock(source: string) {
   return source.slice(start, end);
 }
 
+function getStrategySaveBlock(source: string) {
+  const start = source.indexOf("  const handleStrategyEditSave = useCallback(async () => {");
+  assert.equal(start > -1, true, "handleStrategyEditSave not found");
+  const end = source.indexOf("  }, [", start);
+  assert.equal(end > start, true, "handleStrategyEditSave end not found");
+  return source.slice(start, end);
+}
+
 function getCommercialPaymentItemsBlock(source: string) {
   const start = source.indexOf("  const commercialPaymentItems = useMemo(() => {");
   assert.equal(start > -1, true, "commercialPaymentItems block not found");
@@ -66,6 +74,14 @@ function getChannelsTabBlock(source: string) {
   assert.equal(start > -1, true, "channels tab not found");
   const end = source.indexOf('{activeTab === "contratos" ? (', start);
   assert.equal(end > start, true, "channels tab end not found");
+  return source.slice(start, end);
+}
+
+function getStrategyTabBlock(source: string) {
+  const start = source.indexOf('{activeTab === "estrategia" ? (');
+  assert.equal(start > -1, true, "strategy tab not found");
+  const end = source.indexOf('{activeTab === "piscinas" ? (', start);
+  assert.equal(end > start, true, "strategy tab end not found");
   return source.slice(start, end);
 }
 
@@ -255,6 +271,23 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "simple page load reads canonical strategy settings but does not call any strategy writer",
+    run: () => {
+      const source = readPageSource();
+      const block = getFetchPageDataBlock(source);
+
+      assert.equal(block.includes('.from("store_strategy_settings")'), true);
+      assert.equal(
+        block.includes("upsert_store_strategy_settings_with_legacy_mirror_scoped"),
+        false,
+      );
+      assert.equal(
+        block.includes("upsert_store_strategy_settings_scoped"),
+        false,
+      );
+    },
+  },
+  {
     name: "channels editor saves only the canonical channel writer payload and leaves bloco 5 data out of this save path",
     run: () => {
       const source = readPageSource();
@@ -289,6 +322,66 @@ const tests: TestCase[] = [
       assert.equal(block.includes("urgency_route"), false);
       assert.equal(block.includes("reports_route"), false);
       assert.equal(block.includes("channel_fallback_rule"), false);
+    },
+  },
+  {
+    name: "strategy editor saves only canonical strategy fields through the scoped mirror writer",
+    run: () => {
+      const source = readPageSource();
+      const block = getStrategySaveBlock(source);
+
+      assert.equal(
+        block.includes('"upsert_store_strategy_settings_with_legacy_mirror_scoped"'),
+        true,
+      );
+      assert.equal(
+        block.includes("normalizeStoreStrategySettingsInput(strategyDraft)"),
+        true,
+      );
+      assert.equal(block.includes("p_city:"), true);
+      assert.equal(block.includes("p_service_region_modes:"), true);
+      assert.equal(block.includes("p_store_services:"), true);
+      assert.equal(block.includes("p_main_store_brand:"), true);
+      assert.equal(block.includes("p_strategy_ai_never_forget:"), true);
+      assert.equal(block.includes("p_strategy_requires_visit"), false);
+      assert.equal(block.includes("p_strategy_requires_human"), false);
+      assert.equal(block.includes("p_strategy_exception_cases"), false);
+      assert.equal(block.includes("p_strategy_ai_store_summary"), false);
+      assert.equal(block.includes("upsertConfigAnswers"), false);
+    },
+  },
+  {
+    name: "strategy UI keeps canonical fields editable and leaves excluded legacy text read-only",
+    run: () => {
+      const source = readPageSource();
+      const block = getStrategyTabBlock(source);
+
+      assert.equal(
+        block.includes('onChange={(event) => handleStrategyDraftChange("serviceRegions", event.target.value)}'),
+        true,
+      );
+      assert.equal(
+        block.includes('handleStrategyDraftChange("serviceRegionPrimaryMode", event.target.value)'),
+        true,
+      );
+      assert.equal(
+        block.includes('handleStrategyMultiValueToggle("serviceRegionModes", option.value)'),
+        true,
+      );
+      assert.equal(
+        block.includes('handleStrategyMultiValueToggle("storeServices", option.value)'),
+        true,
+      );
+      assert.equal(block.includes('value={derivedStrategyAiStoreSummary}'), true);
+      assert.equal(block.includes("readOnly"), true);
+      assert.equal(block.includes("Campos legacy fora da autoridade canonica"), true);
+      assert.equal(block.includes("Este resumo e derivado da configuracao canonica"), true);
+      assert.equal(block.includes('handleStrategyDraftChange("strategy_requires_visit"'), false);
+      assert.equal(block.includes('handleStrategyDraftChange("strategy_requires_human"'), false);
+      assert.equal(block.includes('handleStrategyDraftChange("strategy_exception_cases"'), false);
+      assert.equal(block.includes('handleStrategyDraftChange("strategy_ai_store_summary"'), false);
+      assert.equal(block.includes("service_region_modes_text"), false);
+      assert.equal(block.includes("store_services_text"), false);
     },
   },
   {

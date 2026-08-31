@@ -29,7 +29,82 @@ function getSaveStep4Block(source: string) {
   return source.slice(start, end);
 }
 
+function getSaveStep1Block(source: string) {
+  const start = source.indexOf("  async function saveStep1(e: FormEvent) {");
+  assert.equal(start > -1, true, "saveStep1 not found");
+  const end = source.indexOf("  async function saveStep2(e: FormEvent) {", start);
+  assert.equal(end > start, true, "saveStep1 end not found");
+  return source.slice(start, end);
+}
+
+function getSaveStep2Block(source: string) {
+  const start = source.indexOf("  async function saveStep2(e: FormEvent) {");
+  assert.equal(start > -1, true, "saveStep2 not found");
+  const end = source.indexOf("  async function saveStep3(e: FormEvent) {", start);
+  assert.equal(end > start, true, "saveStep2 end not found");
+  return source.slice(start, end);
+}
+
+function getSaveStrategySettingsPartialBlock(source: string) {
+  const start = source.indexOf("  async function saveStrategySettingsPartial(");
+  assert.equal(start > -1, true, "saveStrategySettingsPartial not found");
+  const end = source.indexOf("  async function saveStep1(e: FormEvent) {", start);
+  assert.equal(end > start, true, "saveStrategySettingsPartial end not found");
+  return source.slice(start, end);
+}
+
 const tests: TestCase[] = [
+  {
+    name: "step 1 syncs canonical strategy settings before remaining onboarding answers and keeps canonical keys out of direct legacy writes",
+    run: () => {
+      const source = readPageSource();
+      const block = getSaveStep1Block(source);
+      const strategyBlock = getSaveStrategySettingsPartialBlock(source);
+
+      const canonicalSyncIndex = block.indexOf("await saveStrategySettingsPartial({");
+      const legacyAnswersIndex = block.indexOf("await upsertAnswers(");
+
+      assert.equal(canonicalSyncIndex > -1, true);
+      assert.equal(legacyAnswersIndex > -1, true);
+      assert.equal(canonicalSyncIndex < legacyAnswersIndex, true);
+      assert.equal(
+        strategyBlock.includes('"upsert_store_strategy_settings_with_legacy_mirror_scoped"'),
+        true,
+      );
+      assert.equal(block.includes('["store_display_name", step1Form.store_display_name.trim()]'), true);
+      assert.equal(block.includes('["commercial_whatsapp", step1Form.commercial_whatsapp.trim()]'), true);
+      assert.equal(block.includes('["store_description", step1Form.store_description.trim()]'), false);
+      assert.equal(block.includes('["city", step1Form.city.trim()]'), false);
+      assert.equal(block.includes('["state", step1Form.state.trim()]'), false);
+      assert.equal(block.includes('["service_regions", step1Form.service_regions.trim()]'), false);
+      assert.equal(block.includes('["store_services", step1Form.store_services]'), false);
+      assert.equal(block.includes('["service_region_modes", step1Form.service_region_modes]'), false);
+    },
+  },
+  {
+    name: "step 2 syncs canonical strategy settings before remaining onboarding answers and keeps brands fields out of direct legacy writes",
+    run: () => {
+      const source = readPageSource();
+      const block = getSaveStep2Block(source);
+      const strategyBlock = getSaveStrategySettingsPartialBlock(source);
+
+      const canonicalSyncIndex = block.indexOf("await saveStrategySettingsPartial({");
+      const legacyAnswersIndex = block.indexOf("await upsertAnswers(");
+
+      assert.equal(canonicalSyncIndex > -1, true);
+      assert.equal(legacyAnswersIndex > -1, true);
+      assert.equal(canonicalSyncIndex < legacyAnswersIndex, true);
+      assert.equal(
+        strategyBlock.includes('"upsert_store_strategy_settings_with_legacy_mirror_scoped"'),
+        true,
+      );
+      assert.equal(block.includes('["pool_types", step2Form.pool_types.trim()]'), true);
+      assert.equal(block.includes('["brands_worked", step2Form.brands_worked.trim()]'), false);
+      assert.equal(block.includes('["main_store_brand", step2Form.main_store_brand.trim()]'), false);
+      assert.equal(block.includes("brandsWorked: step2Form.brands_worked.trim()"), true);
+      assert.equal(block.includes("mainStoreBrand: step2Form.main_store_brand.trim()"), true);
+    },
+  },
   {
     name: "step 4 uses the canonical payment writer before remaining onboarding answers and does not write accepted_payment_methods directly",
     run: () => {

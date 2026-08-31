@@ -16,6 +16,11 @@ import { StoreProvider, useStoreContext } from "../../components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 import IntelligentCatalogImportPanel from "@/components/catalog/IntelligentCatalogImportPanel";
 import {
+  formatStoreDiscountPercentInput,
+  normalizeStoreDiscountSettingsInput,
+  type StoreDiscountSettingsRow,
+} from "@/lib/store-discount-settings";
+import {
   createStorePaymentSettingsInputFromSources,
   formatStorePaymentCurrencyInput,
   formatStorePaymentInstallmentsInput,
@@ -23,6 +28,12 @@ import {
   normalizeStorePaymentSettingsInput,
   type StorePaymentSettingsRow,
 } from "@/lib/store-payment-settings";
+import {
+  createStoreStrategySettingsInputFromSources,
+  normalizeStoreStrategySettingsInput,
+  type StoreStrategySettingsInput,
+  type StoreStrategySettingsRow,
+} from "@/lib/store-strategy-settings";
 type Step1FormData = {
   store_display_name: string;
   store_description: string;
@@ -73,7 +84,13 @@ type Step3FormData = {
 type Step4FormData = {
   average_ticket: string;
   can_offer_discount: string;
+  default_discount_percent: string;
   max_discount_percent: string;
+  allow_ask_above_max_discount: boolean;
+  discount_autonomy_mode: string;
+  high_value_enabled: boolean;
+  high_value_threshold_amount: string;
+  high_value_discount_percent: string;
   accepted_payment_methods: string[];
   pix_key_type: string;
   pix_key: string;
@@ -118,9 +135,10 @@ type AnswersMap = Record<string, unknown>;
 type DiscountSettingsRow = {
   store_id: string;
   organization_id: string;
-  default_discount_percent: number;
-  max_discount_percent: number;
-  allow_ask_above_max_discount: boolean;
+  default_discount_percent: number | null;
+  max_discount_percent: number | null;
+  allow_ask_above_max_discount: boolean | null;
+  discount_autonomy_mode?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -541,10 +559,10 @@ function OnboardingContent() {
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [answers, setAnswers] = useState<AnswersMap>({});
   const [hasCompletedOnboardingOnce, setHasCompletedOnboardingOnce] = useState(false);
   const [onboardingStatus, setOnboardingStatus] = useState<string>("");
   const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(null);
-  const hasDiscountConfigOverride = Boolean(discountSettings);
   const isOnboardingReviewMode = hasCompletedOnboardingOnce || onboardingStatus === "completed";
   const [step1DraftRecovered, setStep1DraftRecovered] = useState(false);
   const [step2DraftRecovered, setStep2DraftRecovered] = useState(false);
@@ -603,7 +621,13 @@ function OnboardingContent() {
   const [step4Form, setStep4Form] = useState<Step4FormData>({
     average_ticket: "",
     can_offer_discount: "",
+    default_discount_percent: "",
     max_discount_percent: "",
+    allow_ask_above_max_discount: false,
+    discount_autonomy_mode: "approval_required",
+    high_value_enabled: false,
+    high_value_threshold_amount: "",
+    high_value_discount_percent: "",
     accepted_payment_methods: [],
     pix_key_type: "",
     pix_key: "",
@@ -644,25 +668,10 @@ function OnboardingContent() {
     activation_preferences: [],
     activation_preferences_other: "",
   });
-  const effectiveDiscountCanOffer = useMemo(() => {
-    if (!discountSettings) {
-      return step4Form.can_offer_discount === "sim";
-    }
-    return (
-      Number(discountSettings.default_discount_percent ?? 0) > 0 ||
-      Number(discountSettings.max_discount_percent ?? 0) > 0 ||
-      Boolean(discountSettings.allow_ask_above_max_discount)
-    );
-  }, [discountSettings, step4Form.can_offer_discount]);
   const [paymentSettings, setPaymentSettings] =
     useState<StorePaymentSettingsRow | null>(null);
-  const effectiveDiscountCanOfferValue = effectiveDiscountCanOffer ? "sim" : "não";
-  const effectiveOnboardingDiscountPercent = useMemo(() => {
-    if (!discountSettings) {
-      return step4Form.max_discount_percent;
-    }
-    return String(discountSettings.default_discount_percent ?? 0);
-  }, [discountSettings, step4Form.max_discount_percent]);
+  const [strategySettings, setStrategySettings] =
+    useState<StoreStrategySettingsRow | null>(null);
   const step1DraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_step1_draft:${organizationId}:${activeStore.id}`;
@@ -1152,7 +1161,7 @@ function OnboardingContent() {
     const loadAnswers = async () => {
       if (!organizationId || !activeStore?.id) return;
       try {
-        const [answersResult, paymentSettingsResult] = await Promise.all([
+        const [answersResult, paymentSettingsResult, strategySettingsResult] = await Promise.all([
           supabase.rpc("onboarding_get_answers_scoped", {
             p_organization_id: organizationId,
             p_store_id: activeStore.id,
@@ -1161,6 +1170,14 @@ function OnboardingContent() {
             .from("store_payment_settings")
             .select(
               "organization_id, store_id, accepted_payment_methods, pix_key_type, pix_key, pix_holder_name, down_payment_mode, down_payment_value_type, down_payment_percent, down_payment_amount_cents, installments_enabled, max_installments, installment_interest_policy, payment_notes, created_at, updated_at",
+            )
+            .eq("organization_id", organizationId)
+            .eq("store_id", activeStore.id)
+            .maybeSingle(),
+          supabase
+            .from("store_strategy_settings")
+            .select(
+              "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, created_at, updated_at",
             )
             .eq("organization_id", organizationId)
             .eq("store_id", activeStore.id)
@@ -1179,15 +1196,30 @@ function OnboardingContent() {
           setFatalError("Falha ao carregar configuracoes canonicas de pagamento.");
           return;
         }
+        if (strategySettingsResult.error) {
+          console.error(
+            "[OnboardingPage] loadStrategySettings error:",
+            strategySettingsResult.error,
+          );
+          setFatalError("Falha ao carregar configuracoes canonicas de estrategia.");
+          return;
+        }
         const answers = (answersResult.data ?? {}) as AnswersMap;
+        setAnswers(answers);
         const canonicalPaymentSettings =
           (paymentSettingsResult.data ?? null) as StorePaymentSettingsRow | null;
+        const canonicalStrategySettings =
+          (strategySettingsResult.data ?? null) as StoreStrategySettingsRow | null;
         const paymentSettingsInput = createStorePaymentSettingsInputFromSources({
           answers,
           settings: canonicalPaymentSettings,
         });
         setPaymentSettings(canonicalPaymentSettings);
-        const remoteStoreServices = parseArrayAnswer(answers.store_services);
+        const strategySettingsInput = createStoreStrategySettingsInputFromSources({
+          answers,
+          settings: canonicalStrategySettings,
+        });
+        setStrategySettings(canonicalStrategySettings);
         const remotePoolTypesSelected = parseArrayAnswer(answers.pool_types_selected);
         const remoteTechnicalVisitRulesSelected = parseArrayAnswer(answers.technical_visit_rules_selected);
         const remoteImportantLimitationsSelected = parseArrayAnswer(answers.important_limitations_selected);
@@ -1202,33 +1234,25 @@ function OnboardingContent() {
         const remoteSalesFlowMiddleSteps = parseArrayAnswer(answers.sales_flow_middle_steps);
         const remoteSalesFlowFinalSteps = parseArrayAnswer(answers.sales_flow_final_steps);
         const legacyInstallationSteps = parseArrayAnswer(answers.installation_process_steps);
-        const remoteServiceRegionModes = parseArrayAnswer(answers.service_region_modes);
-        const fallbackPrimaryRegion =
-          String(answers.service_region_primary_mode ?? "") ||
-          remoteServiceRegionModes.find((value) => value !== "sob_consulta") ||
-          "";
-        const fallbackOutsideConsultation =
-          typeof answers.service_region_outside_consultation === "boolean"
-            ? answers.service_region_outside_consultation
-            : remoteServiceRegionModes.includes("sob_consulta");
         setStep1Form((prev) => ({
           store_display_name: prev.store_display_name || String(answers.store_display_name ?? activeStore.name ?? ""),
-          store_description: prev.store_description || String(answers.store_description ?? ""),
-          city: prev.city || String(answers.city ?? ""),
-          state: prev.state || String(answers.state ?? ""),
-          service_regions:
-            prev.service_regions ||
-            (Array.isArray(answers.service_regions)
-              ? answers.service_regions.join(", ")
-              : String(answers.service_regions ?? "")),
+          store_description: prev.store_description || strategySettingsInput.storeDescription,
+          city: prev.city || strategySettingsInput.city,
+          state: prev.state || strategySettingsInput.state,
+          service_regions: prev.service_regions || strategySettingsInput.serviceRegions,
           commercial_whatsapp: prev.commercial_whatsapp || String(answers.commercial_whatsapp ?? ""),
-          store_services: prev.store_services.length ? prev.store_services : remoteStoreServices,
-          store_services_other: prev.store_services_other || String(answers.store_services_other ?? ""),
-          service_region_modes: prev.service_region_modes.length ? prev.service_region_modes : remoteServiceRegionModes,
-          service_region_notes: prev.service_region_notes || String(answers.service_region_notes ?? ""),
-          service_region_primary_mode: prev.service_region_primary_mode || fallbackPrimaryRegion,
+          store_services: prev.store_services.length ? prev.store_services : strategySettingsInput.storeServices,
+          store_services_other: prev.store_services_other || strategySettingsInput.storeServicesOther,
+          service_region_modes:
+            prev.service_region_modes.length
+              ? prev.service_region_modes
+              : strategySettingsInput.serviceRegionModes,
+          service_region_notes: prev.service_region_notes || strategySettingsInput.serviceRegionNotes,
+          service_region_primary_mode:
+            prev.service_region_primary_mode || strategySettingsInput.serviceRegionPrimaryMode,
           service_region_outside_consultation:
-            prev.service_region_outside_consultation || fallbackOutsideConsultation,
+            prev.service_region_outside_consultation ||
+            strategySettingsInput.serviceRegionOutsideConsultation,
         }));
         setStep2Form((prev) => ({
           pool_types:
@@ -1262,19 +1286,13 @@ function OnboardingContent() {
                 ? "sim"
                 : "não"
               : String(answers.offers_technical_visit ?? "")),
-          brands_worked:
-            prev.brands_worked ||
-            (Array.isArray(answers.brands_worked)
-              ? answers.brands_worked.join(", ")
-              : String(answers.brands_worked ?? "")),
+          brands_worked: prev.brands_worked || strategySettingsInput.brandsWorked,
           pool_types_selected: prev.pool_types_selected.length ? prev.pool_types_selected : remotePoolTypesSelected,
           pool_types_other: prev.pool_types_other || String(answers.pool_types_other ?? ""),
           main_store_brand:
             prev.main_store_brand ||
-            String(answers.main_store_brand ?? "") ||
-            (Array.isArray(answers.brands_worked)
-              ? String(answers.brands_worked[0] ?? "")
-              : String(answers.brands_worked ?? "")),
+            strategySettingsInput.mainStoreBrand ||
+            strategySettingsInput.brandsWorked,
         }));
         setStep3Form((prev) => ({
           average_installation_time_days:
@@ -1339,6 +1357,7 @@ function OnboardingContent() {
           answers.price_must_understand_before ?? answers.price_direct_conditions
         );
         setStep4Form((prev) => ({
+          ...prev,
           average_ticket: prev.average_ticket || String(answers.average_ticket ?? ""),
           can_offer_discount:
             prev.can_offer_discount ||
@@ -1457,7 +1476,7 @@ function OnboardingContent() {
         const { data, error } = await supabase
           .from("store_discount_settings")
           .select(
-            "store_id,organization_id,default_discount_percent,max_discount_percent,allow_ask_above_max_discount,created_at,updated_at"
+            "store_id,organization_id,default_discount_percent,max_discount_percent,allow_ask_above_max_discount,discount_autonomy_mode,created_at,updated_at"
           )
           .eq("organization_id", organizationId)
           .eq("store_id", activeStore.id)
@@ -1476,7 +1495,14 @@ function OnboardingContent() {
           setStep4Form((prev) => ({
             ...prev,
             can_offer_discount: canOffer ? "sim" : "não",
-            max_discount_percent: String(row.default_discount_percent ?? 0),
+            default_discount_percent: String(row.default_discount_percent ?? 0),
+            max_discount_percent: String(row.max_discount_percent ?? 0),
+            allow_ask_above_max_discount: Boolean(row.allow_ask_above_max_discount),
+            discount_autonomy_mode:
+              typeof row.discount_autonomy_mode === "string" &&
+              row.discount_autonomy_mode.trim()
+                ? row.discount_autonomy_mode
+                : "approval_required",
           }));
         }
       } catch (err) {
@@ -1505,6 +1531,92 @@ function OnboardingContent() {
     step4DraftRecovered,
     step5DraftRecovered,
   ]);
+
+  async function saveStrategySettingsPartial(
+    patch: Partial<StoreStrategySettingsInput>,
+  ) {
+    if (!organizationId || !activeStore?.id) return null;
+
+    const normalizedStrategySettings = normalizeStoreStrategySettingsInput({
+      ...createStoreStrategySettingsInputFromSources({
+        answers,
+        settings: strategySettings,
+      }),
+      ...patch,
+    });
+
+    const { data: savedStrategySettings, error: strategySettingsError } =
+      await supabase.rpc(
+        "upsert_store_strategy_settings_with_legacy_mirror_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStore.id,
+          p_city: normalizedStrategySettings.value.city,
+          p_state: normalizedStrategySettings.value.state,
+          p_service_regions: normalizedStrategySettings.value.serviceRegions,
+          p_service_region_modes:
+            normalizedStrategySettings.value.serviceRegionModes,
+          p_service_region_primary_mode:
+            normalizedStrategySettings.value.serviceRegionPrimaryMode,
+          p_service_region_outside_consultation:
+            normalizedStrategySettings.value.serviceRegionOutsideConsultation,
+          p_service_region_notes:
+            normalizedStrategySettings.value.serviceRegionNotes,
+          p_store_services: normalizedStrategySettings.value.storeServices,
+          p_store_services_other:
+            normalizedStrategySettings.value.storeServicesOther,
+          p_store_description:
+            normalizedStrategySettings.value.storeDescription,
+          p_main_store_brand:
+            normalizedStrategySettings.value.mainStoreBrand,
+          p_brands_worked: normalizedStrategySettings.value.brandsWorked,
+          p_strategy_service_exclusions:
+            normalizedStrategySettings.value.strategyServiceExclusions,
+          p_strategy_primary_focus:
+            normalizedStrategySettings.value.strategyPrimaryFocus,
+          p_strategy_sell_more:
+            normalizedStrategySettings.value.strategySellMore,
+          p_strategy_common_customer:
+            normalizedStrategySettings.value.strategyCommonCustomer,
+          p_strategy_ideal_customer:
+            normalizedStrategySettings.value.strategyIdealCustomer,
+          p_strategy_ticket_range:
+            normalizedStrategySettings.value.strategyTicketRange,
+          p_strategy_positioning:
+            normalizedStrategySettings.value.strategyPositioning,
+          p_strategy_priority_brands:
+            normalizedStrategySettings.value.strategyPriorityBrands,
+          p_strategy_non_worked_brands:
+            normalizedStrategySettings.value.strategyNonWorkedBrands,
+          p_strategy_top_lines:
+            normalizedStrategySettings.value.strategyTopLines,
+          p_strategy_top_products:
+            normalizedStrategySettings.value.strategyTopProducts,
+          p_strategy_differentials:
+            normalizedStrategySettings.value.strategyDifferentials,
+          p_strategy_promise_limits:
+            normalizedStrategySettings.value.strategyPromiseLimits,
+          p_strategy_ai_presentation:
+            normalizedStrategySettings.value.strategyAiPresentation,
+          p_strategy_ai_priorities:
+            normalizedStrategySettings.value.strategyAiPriorities,
+          p_strategy_ai_never_forget:
+            normalizedStrategySettings.value.strategyAiNeverForget,
+        },
+      );
+
+    if (strategySettingsError) {
+      throw new Error(
+        "Falha ao sincronizar as configuracoes canonicas de estrategia.",
+      );
+    }
+
+    const nextStrategySettings =
+      (savedStrategySettings ?? null) as StoreStrategySettingsRow | null;
+    setStrategySettings(nextStrategySettings);
+    return nextStrategySettings;
+  }
+
   async function saveStep1(e: FormEvent) {
     e.preventDefault();
     if (isOnboardingReviewMode) {
@@ -1536,20 +1648,31 @@ function OnboardingContent() {
       return;
     }
     if (!organizationId || !activeStore?.id) return;
+    try {
+      setFormError(null);
+      setSuccessMessage(null);
+      await saveStrategySettingsPartial({
+        storeDescription: step1Form.store_description.trim(),
+        city: step1Form.city.trim(),
+        state: step1Form.state.trim(),
+        serviceRegions: step1Form.service_regions.trim(),
+        storeServices: step1Form.store_services,
+        storeServicesOther: step1Form.store_services_other.trim(),
+        serviceRegionModes: step1Form.service_region_modes,
+        serviceRegionNotes: step1Form.service_region_notes.trim(),
+        serviceRegionPrimaryMode: step1Form.service_region_primary_mode,
+        serviceRegionOutsideConsultation:
+          step1Form.service_region_outside_consultation,
+      });
+    } catch (err) {
+      console.error("[OnboardingPage] saveStep1 strategy sync error:", err);
+      setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
+      return;
+    }
     await upsertAnswers(
       [
         ["store_display_name", step1Form.store_display_name.trim()],
-        ["store_description", step1Form.store_description.trim()],
-        ["city", step1Form.city.trim()],
-        ["state", step1Form.state.trim()],
-        ["service_regions", step1Form.service_regions.trim()],
         ["commercial_whatsapp", step1Form.commercial_whatsapp.trim()],
-        ["store_services", step1Form.store_services],
-        ["store_services_other", step1Form.store_services_other.trim()],
-        ["service_region_modes", step1Form.service_region_modes],
-        ["service_region_notes", step1Form.service_region_notes.trim()],
-        ["service_region_primary_mode", step1Form.service_region_primary_mode],
-        ["service_region_outside_consultation", step1Form.service_region_outside_consultation],
       ],
       "Etapa 1 salva com sucesso.",
       2
@@ -1587,6 +1710,18 @@ function OnboardingContent() {
       return;
     }
     if (!organizationId || !activeStore?.id) return;
+    try {
+      setFormError(null);
+      setSuccessMessage(null);
+      await saveStrategySettingsPartial({
+        brandsWorked: step2Form.brands_worked.trim(),
+        mainStoreBrand: step2Form.main_store_brand.trim(),
+      });
+    } catch (err) {
+      console.error("[OnboardingPage] saveStep2 strategy sync error:", err);
+      setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
+      return;
+    }
     await upsertAnswers(
       [
         ["pool_types", step2Form.pool_types.trim()],
@@ -1594,10 +1729,8 @@ function OnboardingContent() {
         ["sells_accessories", step2Form.sells_accessories.trim().toLowerCase() === "sim"],
         ["offers_installation", step2Form.offers_installation.trim().toLowerCase() === "sim"],
         ["offers_technical_visit", step2Form.offers_technical_visit.trim().toLowerCase() === "sim"],
-        ["brands_worked", step2Form.brands_worked.trim()],
         ["pool_types_selected", step2Form.pool_types_selected],
         ["pool_types_other", step2Form.pool_types_other.trim()],
-        ["main_store_brand", step2Form.main_store_brand.trim()],
       ],
       "Etapa 2 salva com sucesso.",
       3
@@ -1706,13 +1839,17 @@ function OnboardingContent() {
       setFormError("Informe o ticket médio da loja.");
       return;
     }
-    if (!hasDiscountConfigOverride) {
-      if (!step4Form.can_offer_discount) {
-        setFormError("Informe se a loja pode ou não dar desconto.");
+    if (!step4Form.can_offer_discount) {
+      setFormError("Informe se a loja pode ou não dar desconto.");
+      return;
+    }
+    if (step4Form.can_offer_discount === "sim") {
+      if (!step4Form.default_discount_percent.trim()) {
+        setFormError("Informe o primeiro degrau normal de desconto.");
         return;
       }
-      if (step4Form.can_offer_discount === "sim" && !step4Form.max_discount_percent.trim()) {
-        setFormError("Informe o desconto máximo permitido.");
+      if (!step4Form.max_discount_percent.trim()) {
+        setFormError("Informe o teto normal de desconto.");
         return;
       }
     }
@@ -1762,12 +1899,6 @@ function OnboardingContent() {
       setFormError("Informe em quais casos a IA deve chamar alguém por causa de pagamento.");
       return;
     }
-    const effectiveCanOfferDiscountForSave = hasDiscountConfigOverride
-      ? effectiveDiscountCanOfferValue
-      : step4Form.can_offer_discount;
-    const effectiveMaxDiscountPercentForSave = hasDiscountConfigOverride
-      ? effectiveOnboardingDiscountPercent
-      : step4Form.max_discount_percent.trim();
     const priceDirectConditionsLegacy = [
       ...step4Form.price_must_understand_before,
       ...(step4Form.price_talk_mode ? [step4Form.price_talk_mode] : []),
@@ -1804,6 +1935,34 @@ function OnboardingContent() {
       HUMAN_HELP_PAYMENT_OPTIONS,
       step4Form.human_help_payment_cases_other
     );
+    const normalizedDiscountSettings = normalizeStoreDiscountSettingsInput({
+      defaultDiscountPercent:
+        step4Form.can_offer_discount === "sim"
+          ? step4Form.default_discount_percent
+          : "0",
+      maxDiscountPercent:
+        step4Form.can_offer_discount === "sim"
+          ? step4Form.max_discount_percent
+          : "0",
+      allowAskAboveMaxDiscount:
+        step4Form.can_offer_discount === "sim"
+          ? step4Form.allow_ask_above_max_discount
+          : false,
+      discountAutonomyMode:
+        step4Form.can_offer_discount === "sim"
+          ? step4Form.discount_autonomy_mode
+          : "approval_required",
+      highValueEnabled:
+        step4Form.can_offer_discount === "sim"
+          ? step4Form.high_value_enabled
+          : false,
+      highValueThresholdAmount: step4Form.high_value_threshold_amount,
+      highValueDiscountPercent: step4Form.high_value_discount_percent,
+    });
+    if (!normalizedDiscountSettings.ok) {
+      setFormError(normalizedDiscountSettings.error);
+      return;
+    }
     const normalizedPaymentSettings = normalizeStorePaymentSettingsInput({
       acceptedPaymentMethods: step4Form.accepted_payment_methods,
       pixKeyType: step4Form.pix_key_type,
@@ -1823,10 +1982,37 @@ function OnboardingContent() {
       return;
     }
     if (!organizationId || !activeStore?.id) return;
+    const storeId = activeStore.id;
     setSaving(true);
     setFormError(null);
     setSuccessMessage(null);
     try {
+      const { data: savedDiscountSettings, error: discountSettingsError } =
+        await supabase.rpc(
+          "upsert_store_discount_settings_with_legacy_mirror_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: storeId,
+            p_default_discount_percent:
+              normalizedDiscountSettings.value.defaultDiscountPercent,
+            p_max_discount_percent:
+              normalizedDiscountSettings.value.maxDiscountPercent,
+            p_allow_ask_above_max_discount:
+              normalizedDiscountSettings.value.allowAskAboveMaxDiscount,
+            p_discount_autonomy_mode:
+              normalizedDiscountSettings.value.discountAutonomyMode,
+          },
+        );
+      if (discountSettingsError) {
+        throw new Error(
+          "Falha ao sincronizar as configuracoes canonicas de desconto.",
+        );
+      }
+      setDiscountSettings(
+        (savedDiscountSettings ?? null) as DiscountSettingsRow | null,
+      );
+
+
       const { data: savedPaymentSettings, error: paymentSettingsError } =
         await supabase.rpc(
           "upsert_store_payment_settings_with_legacy_mirror_scoped",
@@ -1863,8 +2049,6 @@ function OnboardingContent() {
       );
       const payloads: Array<[string, unknown]> = [
         ["average_ticket", step4Form.average_ticket.trim()],
-        ["can_offer_discount", effectiveCanOfferDiscountForSave.trim().toLowerCase() === "sim"],
-        ["max_discount_percent", effectiveMaxDiscountPercentForSave],
         [
           "ai_can_send_price_directly",
           step4Form.ai_can_send_price_directly.trim().toLowerCase() === "sim",
@@ -1897,30 +2081,6 @@ function OnboardingContent() {
         });
         if (rpcError) throw new Error(`Falha ao salvar campo: ${questionKey}`);
       }
-      if (!discountSettings) {
-        const onboardingDiscountPercent =
-          step4Form.can_offer_discount === "sim"
-            ? Number(step4Form.max_discount_percent.trim() || 0)
-            : 0;
-        const bootstrapPayload = {
-          organization_id: organizationId,
-          store_id: activeStore.id,
-          default_discount_percent: onboardingDiscountPercent,
-          max_discount_percent: onboardingDiscountPercent,
-          allow_ask_above_max_discount: false,
-        };
-        const { data: bootData, error: bootstrapError } = await supabase
-          .from("store_discount_settings")
-          .upsert(bootstrapPayload, { onConflict: "store_id" })
-          .select(
-            "store_id,organization_id,default_discount_percent,max_discount_percent,allow_ask_above_max_discount,created_at,updated_at"
-          )
-          .single();
-        if (bootstrapError) {
-          throw new Error("Falha ao criar a política inicial de desconto nas Configurações.");
-        }
-        setDiscountSettings((bootData ?? bootstrapPayload) as DiscountSettingsRow);
-      }
       const { error: statusError } = await supabase.rpc("onboarding_upsert_store_onboarding_scoped", {
         p_organization_id: organizationId,
         p_store_id: activeStore.id,
@@ -1929,11 +2089,7 @@ function OnboardingContent() {
       if (statusError) throw new Error("Falha ao atualizar status do onboarding.");
       setOnboardingStatus("in_progress");
       setHasCompletedOnboardingOnce(false);
-      setSuccessMessage(
-        hasDiscountConfigOverride
-          ? "Etapa 4 salva com sucesso. Os descontos continuam sendo controlados pela aba Configurações."
-          : "Etapa 4 salva com sucesso. A política inicial de desconto foi criada em Configurações."
-      );
+      setSuccessMessage("Etapa 4 salva com sucesso.");
       ignoreNextStepScrollRef.current = false;
       setCurrentStep(5);
       setStep4DraftRecovered(false);
@@ -2662,94 +2818,6 @@ function OnboardingContent() {
                   />
                 </div>
               </div>
-              {hasDiscountConfigOverride ? (
-                <div className="space-y-4">
-                  <InfoBlock
-                    title="Desconto controlado pela aba Configurações"
-                    description="Esses valores agora estão em modo espelho no onboarding. Quando você muda em Configurações, aqui atualiza junto. Alterações feitas aqui no onboarding não sobrescrevem mais a política viva."
-                  />
-                  <div>
-                    <SectionTitle title="A loja pode dar desconto?" />
-                    <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-800">
-                      Valor efetivo atual: <strong>{effectiveDiscountCanOffer ? "Sim" : "Não"}</strong>
-                    </div>
-                  </div>
-                  {effectiveDiscountCanOffer && (
-                    <div>
-                      <SectionTitle
-                        title="Qual é o desconto máximo sem precisar chamar alguém da loja?"
-                        hint="Esse valor está vindo de Configurações > Descontos."
-                      />
-                      <div className="relative">
-                        <input
-                          type="text"
-                          value={effectiveOnboardingDiscountPercent}
-                          disabled
-                          className="w-full rounded-xl border border-gray-300 bg-gray-100 py-2.5 pl-4 pr-10 text-gray-700 outline-none"
-                          placeholder="0"
-                        />
-                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">
-                          %
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                    <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-                      <p className="text-xs text-gray-500">Desconto padrão atual</p>
-                      <p className="mt-1 text-lg font-semibold text-gray-900">
-                        {discountSettings?.default_discount_percent ?? 0}%
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-                      <p className="text-xs text-gray-500">Desconto máximo com autorização</p>
-                      <p className="mt-1 text-lg font-semibold text-gray-900">
-                        {discountSettings?.max_discount_percent ?? 0}%
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-                      <p className="text-xs text-gray-500">Consultar acima do máximo</p>
-                      <p className="mt-1 text-lg font-semibold text-gray-900">
-                        {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div>
-                    <SectionTitle title="A loja pode dar desconto?" />
-                    <SingleSelectorGrid
-                      options={YES_NO_OPTIONS}
-                      value={step4Form.can_offer_discount}
-                      onChange={(value) => updateStep4Field("can_offer_discount", value)}
-                    />
-                  </div>
-                  {step4Form.can_offer_discount === "sim" && (
-                    <div>
-                      <SectionTitle
-                        title="Qual é o desconto máximo sem precisar chamar alguém da loja?"
-                        hint="Preencha apenas o número."
-                      />
-                      <div className="relative">
-                        <input
-                          type="text"
-                          value={step4Form.max_discount_percent}
-                          onChange={(e) =>
-                            updateStep4Field("max_discount_percent", formatPercentInput(e.target.value))
-                          }
-                          className="w-full rounded-xl border border-gray-300 py-2.5 pl-4 pr-10 outline-none focus:border-black"
-                          placeholder="10"
-                          required
-                        />
-                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">
-                          %
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
               <div className="space-y-4">
                 <SectionTitle
                   title="Como o cliente pode pagar?"
