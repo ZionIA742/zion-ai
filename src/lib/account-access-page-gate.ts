@@ -12,6 +12,10 @@ export type AccountAccessPageGateDecision =
       destination: string;
     };
 
+type AccountAccessPageGateOptions = {
+  allowCompletedOnboardingReview?: boolean;
+};
+
 function redirect(
   destination: string,
 ): AccountAccessPageGateDecision {
@@ -31,6 +35,7 @@ function render(): AccountAccessPageGateDecision {
 export function resolveAccountAccessPageGate(
   resolution: AccessResolution,
   surface: AccountAccessPageSurface,
+  options: AccountAccessPageGateOptions = {},
 ): AccountAccessPageGateDecision {
   if (surface === "store_app") {
     switch (resolution.status) {
@@ -55,6 +60,9 @@ export function resolveAccountAccessPageGate(
     case "store_ready_onboarding_required":
       return render();
     case "store_ready_active":
+      if (options.allowCompletedOnboardingReview) {
+        return render();
+      }
       return redirect("/crm");
     case "store_first_access_required":
       return redirect("/auth/reset-password");

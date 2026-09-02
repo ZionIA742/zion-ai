@@ -192,7 +192,6 @@ export function createStoreDiscountSettingsInputFromSources(args: {
   settings?: StoreDiscountSettingsRow | null;
   highValueSettings?: StoreHighValueDiscountSettingsRow | null;
 }): StoreDiscountSettingsInput {
-  const answers = args.answers ?? {};
   const settings = args.settings ?? null;
   const highValueSettings = args.highValueSettings ?? null;
 
@@ -220,12 +219,7 @@ export function createStoreDiscountSettingsInputFromSources(args: {
     };
   }
 
-  return {
-    ...createDefaultStoreDiscountSettingsInput(),
-    maxDiscountPercent: cleanText(answers.max_discount_percent),
-    discountSpecialRules: cleanText(answers.discount_special_rules),
-    highValueEnabled: false,
-  };
+  return createDefaultStoreDiscountSettingsInput();
 }
 
 export function createStoreDiscountPresentationFromSources(args: {
@@ -239,7 +233,6 @@ export function createStoreDiscountPresentationFromSources(args: {
   const input = createStoreDiscountSettingsInputFromSources(args);
   const normalized = normalizeStoreDiscountSettingsInput(input);
   const legacyMax = cleanText(answers.max_discount_percent);
-  const legacyCanOffer = yesNoToBoolean(answers.can_offer_discount);
 
   const hasHistoricalConflict =
     !!settings &&
@@ -254,7 +247,7 @@ export function createStoreDiscountPresentationFromSources(args: {
     ? Number(settings.default_discount_percent ?? 0) > 0 ||
       Number(settings.max_discount_percent ?? 0) > 0 ||
       settings.allow_ask_above_max_discount === true
-    : legacyCanOffer === true;
+    : false;
 
   const defaultDiscountPercent =
     settings?.default_discount_percent == null
@@ -280,7 +273,7 @@ export function createStoreDiscountPresentationFromSources(args: {
   const highValueDiscountPercent = highValueSettings?.discount_percent ?? null;
   const discountSpecialRules = settings
     ? cleanText(settings.discount_special_rules) || null
-    : cleanText(answers.discount_special_rules) || null;
+    : null;
   const highValueSummary = !highValueEnabled
     ? "Alto valor desativado"
     : [
@@ -308,8 +301,6 @@ export function createStoreDiscountPresentationFromSources(args: {
         .filter(Boolean)
         .join(" | ")
     : [
-        legacyCanOffer === null ? null : legacyCanOffer ? "Desconto permitido" : "Desconto nao permitido",
-        legacyMax ? `Maximo legado ${legacyMax}%` : null,
       ]
         .filter(Boolean)
         .join(" | ");

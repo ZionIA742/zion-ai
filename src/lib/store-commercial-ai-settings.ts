@@ -184,23 +184,16 @@ export function createStoreCommercialAiSettingsInputFromSources(args: {
   settings?: StoreCommercialAiSettingsRow | null;
 }): StoreCommercialAiSettingsInput {
   const settings = args.settings ?? null;
-  const answers = args.answers ?? {};
   const canonicalPolicy = coercePriceAnswerPolicy(
     settings?.price_answer_policy,
-  );
-  const legacyPolicy = inferStoreCommercialAiPriceAnswerPolicyFromLegacy(
-    answers,
   );
 
   return {
     priceAnswerPolicy:
       canonicalPolicy ||
-      legacyPolicy ||
       createDefaultStoreCommercialAiSettingsInput().priceAnswerPolicy,
     priceContextRequirements: coerceStoreCommercialAiPriceContextRequirements(
-      settings
-        ? settings.price_context_requirements
-        : answers.price_must_understand_before ?? answers.price_direct_conditions,
+      settings ? settings.price_context_requirements : [],
     ),
   };
 }

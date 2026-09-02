@@ -45,6 +45,86 @@ function getDiscountSaveBlock(source: string) {
   return source.slice(start, end);
 }
 
+function getOperationSaveBlock(source: string) {
+  const start = source.indexOf("  const handleOperationEditSave = useCallback(async () => {");
+  assert.equal(start > -1, true, "handleOperationEditSave not found");
+  const end = source.indexOf("  }, [", start);
+  assert.equal(end > start, true, "handleOperationEditSave end not found");
+  return source.slice(start, end);
+}
+
+function getOperationDraftChangeBlock(source: string) {
+  const start = source.indexOf("  const handleOperationDraftChange = useCallback((key: keyof OperationDraftState, value: string) => {");
+  assert.equal(start > -1, true, "handleOperationDraftChange not found");
+  const end = source.indexOf("  const handleOperationTechnicalVisitRuleToggle = useCallback(", start);
+  assert.equal(end > start, true, "handleOperationDraftChange end not found");
+  return source.slice(start, end);
+}
+
+function getOperationEditFormBlock(source: string) {
+  const start = source.indexOf('{isOperationEditing ? (');
+  assert.equal(start > -1, true, "operation edit form not found");
+  const end = source.indexOf('<div className="mt-4 grid gap-4 lg:grid-cols-2">', start);
+  assert.equal(end > start, true, "operation edit form end not found");
+  return source.slice(start, end);
+}
+
+function getOperationDraftStateBlock(source: string) {
+  const start = source.indexOf("type OperationDraftState = {");
+  assert.equal(start > -1, true, "OperationDraftState not found");
+  const end = source.indexOf("type ScheduleSettingsRow = {", start);
+  assert.equal(end > start, true, "OperationDraftState end not found");
+  return source.slice(start, end);
+}
+
+function getCreateOperationDraftFromAnswersBlock(source: string) {
+  const start = source.indexOf("function createOperationDraftFromAnswers(");
+  assert.equal(start > -1, true, "createOperationDraftFromAnswers not found");
+  const end = source.indexOf("function createCommercialDraftFromAnswers(", start);
+  assert.equal(end > start, true, "createOperationDraftFromAnswers end not found");
+  return source.slice(start, end);
+}
+
+function getOperationScheduleSelectionBlock(source: string) {
+  const start = source.indexOf("  const installationDaysSelected = useMemo(");
+  assert.equal(start > -1, true, "installationDaysSelected block not found");
+  const end = source.indexOf("  const operationSettingsInput = useMemo(", start);
+  assert.equal(end > start, true, "operation schedule selection block end not found");
+  return source.slice(start, end);
+}
+
+function getOperationReadinessMetricsBlock(source: string) {
+  const start = source.indexOf("  const operationReadinessMetrics = useMemo(() => {");
+  assert.equal(start > -1, true, "operationReadinessMetrics not found");
+  const end = source.indexOf("  const operationSections = useMemo(() => {", start);
+  assert.equal(end > start, true, "operationReadinessMetrics end not found");
+  return source.slice(start, end);
+}
+
+function getOperationSectionsBlock(source: string) {
+  const start = source.indexOf("  const operationSections = useMemo(() => {");
+  assert.equal(start > -1, true, "operationSections not found");
+  const end = source.indexOf("  const commercialIdentityItems = useMemo(() => {", start);
+  assert.equal(end > start, true, "operationSections end not found");
+  return source.slice(start, end);
+}
+
+function getOverviewStatusCardsBlock(source: string) {
+  const start = source.indexOf('<StatusCard\n              label="Agenda"');
+  assert.equal(start > -1, true, "overview Agenda StatusCard not found");
+  const end = source.indexOf("            />", start);
+  assert.equal(end > start, true, "overview Agenda StatusCard end not found");
+  return source.slice(start, end + "            />".length);
+}
+
+function getRestoreLocalDraftBlock(source: string) {
+  const start = source.indexOf("const raw = readFromLocalStorageSafe(configDraftStorageKey);");
+  assert.equal(start > -1, true, "restore local draft effect not found");
+  const end = source.indexOf("  const persistConfiguracoesDraft = useCallback(", start);
+  assert.equal(end > start, true, "restore local draft effect end not found");
+  return source.slice(start, end);
+}
+
 function getCreateCommercialDraftFromAnswersBlock(source: string) {
   const start = source.indexOf("function createCommercialDraftFromAnswers(");
   assert.equal(start > -1, true, "createCommercialDraftFromAnswers not found");
@@ -58,6 +138,22 @@ function getCommercialIdentityItemsBlock(source: string) {
   assert.equal(start > -1, true, "commercialIdentityItems not found");
   const end = source.indexOf("  const commercialAiSettingsInput = useMemo(", start);
   assert.equal(end > start, true, "commercialIdentityItems end not found");
+  return source.slice(start, end);
+}
+
+function getPoolsOperationalItemsBlock(source: string) {
+  const start = source.indexOf("  const poolsOperationalItems = useMemo(() => {");
+  assert.equal(start > -1, true, "poolsOperationalItems not found");
+  const end = source.indexOf("  const operationReadinessMetrics = useMemo(() => {", start);
+  assert.equal(end > start, true, "poolsOperationalItems end not found");
+  return source.slice(start, end);
+}
+
+function getPoolsQuickCountBlock(source: string) {
+  const start = source.indexOf("Base comercial de piscinas");
+  assert.equal(start > -1, true, "pools tab block not found");
+  const end = source.indexOf("Cadastro manual e importa", start);
+  assert.equal(end > start, true, "pools quick count block end not found");
   return source.slice(start, end);
 }
 
@@ -98,6 +194,102 @@ function getFetchPageDataBlock(source: string) {
   assert.equal(start > -1, true, "fetchPageData not found");
   const end = source.indexOf("  const upsertConfigAnswers = useCallback(", start);
   assert.equal(end > start, true, "fetchPageData end not found");
+  return source.slice(start, end);
+}
+
+function getCreatePrimaryResponsibleDraftFromSourcesBlock(source: string) {
+  const start = source.indexOf("function createPrimaryResponsibleDraftFromSources(");
+  assert.equal(start > -1, true, "createPrimaryResponsibleDraftFromSources not found");
+  const end = source.indexOf("function parseResponsiblePeopleFromAnswers(", start);
+  assert.equal(end > start, true, "createPrimaryResponsibleDraftFromSources end not found");
+  return source.slice(start, end);
+}
+
+function getCanonicalPrimaryResponsibleStateBlock(source: string) {
+  const start = source.indexOf("  const [canonicalPrimaryResponsible, setCanonicalPrimaryResponsible] =");
+  assert.equal(start > -1, true, "canonical primary responsible state not found");
+  const end = source.indexOf("  const storeLogoInputRef = useRef", start);
+  assert.equal(end > start, true, "canonical primary responsible state end not found");
+  return source.slice(start, end);
+}
+
+function getOverviewDraftEffectBlock(source: string) {
+  const start = source.indexOf("  useEffect(() => {\n    const currentOperationInput = createStoreOperationSettingsInputFromSources({");
+  assert.equal(start > -1, true, "overview draft effect not found");
+  const end = source.indexOf("  useEffect(() => {\n    setSelectedStoreLogoFile(null);", start);
+  assert.equal(end > start, true, "overview draft effect end not found");
+  return source.slice(start, end);
+}
+
+function getOverviewSummaryBlock(source: string) {
+  const start = source.indexOf("  const overviewSummary = useMemo(() => {");
+  assert.equal(start > -1, true, "overviewSummary not found");
+  const end = source.indexOf("  const iaReadiness = useMemo(() => {", start);
+  assert.equal(end > start, true, "overviewSummary end not found");
+  return source.slice(start, end);
+}
+
+function getActivationPendenciesBlock(source: string) {
+  const start = source.indexOf("  const activationPendencies = useMemo(() => {");
+  assert.equal(start > -1, true, "activationPendencies not found");
+  const end = source.indexOf("  const shouldShowQuickAccess =", start);
+  assert.equal(end > start, true, "activationPendencies end not found");
+  return source.slice(start, end);
+}
+
+function getOverviewEditCancelBlock(source: string) {
+  const start = source.indexOf("  const handleOverviewEditCancel = useCallback(() => {");
+  assert.equal(start > -1, true, "handleOverviewEditCancel not found");
+  const end = source.indexOf("  const handleOverviewEditSave = useCallback(async () => {", start);
+  assert.equal(end > start, true, "handleOverviewEditCancel end not found");
+  return source.slice(start, end);
+}
+
+function getOverviewEditSaveBlock(source: string) {
+  const start = source.indexOf("  const handleOverviewEditSave = useCallback(async () => {");
+  assert.equal(start > -1, true, "handleOverviewEditSave not found");
+  const end = source.indexOf("  const handleStrategyDraftChange = useCallback(", start);
+  assert.equal(end > start, true, "handleOverviewEditSave end not found");
+  return source.slice(start, end);
+}
+
+function getOverviewEditFormBlock(source: string) {
+  const start = source.indexOf("{isOverviewEditing ? (");
+  assert.equal(start > -1, true, "overview edit form not found");
+  const end = source.indexOf('          <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_1fr]">', start);
+  assert.equal(end > start, true, "overview edit form end not found");
+  return source.slice(start, end);
+}
+
+function getActivationItemsBlock(source: string) {
+  const start = source.indexOf("  const activationItems = useMemo(() => {");
+  assert.equal(start > -1, true, "activationItems not found");
+  const end = source.indexOf("  const discountItems = useMemo(() => {", start);
+  assert.equal(end > start, true, "activationItems end not found");
+  return source.slice(start, end);
+}
+
+function getActivationHydrationBlock(source: string) {
+  const start = source.indexOf("  useEffect(() => {\n    setPrimaryResponsibleDraft(");
+  assert.equal(start > -1, true, "primary responsible hydration effect not found");
+  const end = source.indexOf("  const handleCommercialDraftChange = useCallback", start);
+  assert.equal(end > start, true, "primary responsible hydration effect end not found");
+  return source.slice(start, end);
+}
+
+function getActivationEditCancelBlock(source: string) {
+  const start = source.indexOf("  const handleActivationEditCancel = useCallback(() => {");
+  assert.equal(start > -1, true, "handleActivationEditCancel not found");
+  const end = source.indexOf("  const handleActivationEditSave = useCallback(async () => {", start);
+  assert.equal(end > start, true, "handleActivationEditCancel end not found");
+  return source.slice(start, end);
+}
+
+function getCreateChannelDraftFromSourcesBlock(source: string) {
+  const start = source.indexOf("function createChannelDraftFromSources(");
+  assert.equal(start > -1, true, "createChannelDraftFromSources not found");
+  const end = source.indexOf("function parseNumberInput(", start);
+  assert.equal(end > start, true, "createChannelDraftFromSources end not found");
   return source.slice(start, end);
 }
 
@@ -142,6 +334,190 @@ function getDiscountEditFormBlock(source: string) {
 }
 
 const tests: TestCase[] = [
+  {
+    name: "operation save derives canonical weekend operating days and never invents schedule rows",
+    run: () => {
+      const source = readPageSource();
+      const block = getOperationSaveBlock(source);
+
+      assert.equal(
+        block.includes("const updatedOperatingDays = applyWeekendSelectionToOperatingDays({"),
+        true,
+      );
+      assert.equal(block.includes("currentDays: scheduleSettings.operating_days"), true);
+      assert.equal(block.includes("saturdaySelection: operationDraft.serves_saturday"), true);
+      assert.equal(block.includes("sundaySelection: operationDraft.serves_sunday"), true);
+      assert.equal(block.includes("p_operating_days: updatedOperatingDays"), true);
+      assert.equal(block.includes('if (scheduleSettings) {'), true);
+      assert.equal(block.includes('await supabase.rpc("upsert_store_schedule_settings"'), true);
+      assert.equal(block.includes("onboarding_upsert_answer_scoped"), false);
+    },
+  },
+  {
+    name: "operation draft change and edit form keep agenda controls read-only until canonical schedule settings exist",
+    run: () => {
+      const source = readPageSource();
+      const changeBlock = getOperationDraftChangeBlock(source);
+      const formBlock = getOperationEditFormBlock(source);
+
+      assert.equal(changeBlock.includes("!scheduleSettings"), true);
+      assert.equal(changeBlock.includes('key === "serves_saturday"'), true);
+      assert.equal(changeBlock.includes('key === "serves_sunday"'), true);
+      assert.equal(changeBlock.includes('key === "serves_holiday"'), true);
+      assert.equal(changeBlock.includes('key === "allow_multiple_appointments_per_day"'), true);
+      assert.equal(changeBlock.includes('key === "allow_same_time_appointments"'), true);
+      assert.equal(changeBlock.includes('key === "agenda_capacity_rule"'), true);
+      assert.equal(
+        formBlock.includes("Agenda canonica ainda nao configurada; estes controles ficam somente leitura por enquanto."),
+        true,
+      );
+      assert.equal(formBlock.includes("operation-schedule-controls-read-only"), true);
+      assert.equal(formBlock.includes("pointer-events: none;"), true);
+      assert.equal(formBlock.includes("cursor: not-allowed;"), true);
+    },
+  },
+  {
+    name: "operation draft derives weekend labels only from canonical schedule settings",
+    run: () => {
+      const source = readPageSource();
+      const formBlock = getOperationEditFormBlock(source);
+      const canonicalFunctionStart = source.indexOf("function deriveCanonicalWeekendAvailabilityLabel(");
+      const canonicalFunctionEnd = source.indexOf("function createOperationDraftFromAnswers(", canonicalFunctionStart);
+      assert.equal(canonicalFunctionStart > -1, true);
+      assert.equal(canonicalFunctionEnd > canonicalFunctionStart, true);
+      const canonicalFunctionBlock = source.slice(canonicalFunctionStart, canonicalFunctionEnd);
+      const canonicalScheduleIndex = canonicalFunctionBlock.indexOf("if (scheduleSettings) {");
+
+      assert.equal(source.includes("normalizeOperatingDays"), true);
+      assert.equal(source.includes("deriveWeekendAvailabilityFromOperatingDays"), true);
+      assert.equal(source.includes("deriveCanonicalWeekendAvailabilityLabel"), true);
+      assert.equal(source.includes('deriveCanonicalWeekendAvailabilityLabel("sabado", scheduleSettings)'), true);
+      assert.equal(source.includes('deriveCanonicalWeekendAvailabilityLabel("domingo", scheduleSettings)'), true);
+      assert.equal(source.includes("const servesSaturdayLabel = useMemo("), true);
+      assert.equal(source.includes("const servesSundayLabel = useMemo("), true);
+      assert.equal(canonicalScheduleIndex > -1, true);
+      assert.equal(canonicalFunctionBlock.includes("serves_saturday"), true);
+      assert.equal(canonicalFunctionBlock.includes("serves_sunday"), true);
+      assert.equal(canonicalFunctionBlock.includes("answers."), false);
+      assert.equal(canonicalFunctionBlock.includes("installation_available_days"), false);
+      assert.equal(canonicalFunctionBlock.includes("technical_visit_available_days"), false);
+      assert.equal(formBlock.includes("Atende sábado"), true);
+      assert.equal(formBlock.includes("Atende domingo"), true);
+    },
+  },
+  {
+    name: "operation read view does not promote legacy agenda answers when canonical schedule settings are absent",
+    run: () => {
+      const source = readPageSource();
+      const draftBlock = getCreateOperationDraftFromAnswersBlock(source);
+      const selectionBlock = getOperationScheduleSelectionBlock(source);
+      const readinessBlock = getOperationReadinessMetricsBlock(source);
+      const sectionsBlock = getOperationSectionsBlock(source);
+      const overviewAgendaBlock = getOverviewStatusCardsBlock(source);
+
+      assert.equal(selectionBlock.includes("answers.installation_available_days"), false);
+      assert.equal(selectionBlock.includes("answers.technical_visit_available_days"), false);
+      assert.equal(selectionBlock.includes(": []"), true);
+
+      assert.equal(draftBlock.includes("cleanText(answers.operating_days)"), false);
+      assert.equal(draftBlock.includes("cleanText(answers.operating_hours)"), false);
+      assert.equal(draftBlock.includes("deriveHolidayAvailabilityLabel"), false);
+      assert.equal(draftBlock.includes("answers.agenda_capacity_rule"), false);
+      assert.equal(draftBlock.includes("answers.average_human_response_time"), false);
+      assert.equal(draftBlock.includes(': "Sim",'), false);
+      assert.equal(draftBlock.includes(': "Não",'), false);
+
+      assert.equal(readinessBlock.includes("const hasOperationalSchedule = Boolean(scheduleSettings);"), true);
+      assert.equal(readinessBlock.includes("installationDaysSelected.length > 0 || technicalVisitDaysSelected.length > 0"), false);
+      assert.equal(readinessBlock.includes(': "1"'), false);
+      assert.equal(readinessBlock.includes('"Bloqueado"'), true);
+      assert.equal(readinessBlock.includes(': "Pendente"'), true);
+
+      assert.equal(sectionsBlock.includes("answers.average_human_response_time"), false);
+      assert.equal(sectionsBlock.includes("answers.agenda_capacity_rule"), false);
+      assert.equal(sectionsBlock.includes(': "Sim"'), false);
+      assert.equal(sectionsBlock.includes(': "Não"'), false);
+      assert.equal(sectionsBlock.includes("CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL"), true);
+
+      assert.equal(overviewAgendaBlock.includes("answers.installation_days_rule"), false);
+      assert.equal(overviewAgendaBlock.includes("answers.technical_visit_days_rule"), false);
+      assert.equal(overviewAgendaBlock.includes('value={scheduleSettings ? "Configurada" : "Pendente"}'), true);
+    },
+  },
+  {
+    name: "operation read view keeps canonical false and empty schedule values canonical",
+    run: () => {
+      const source = readPageSource();
+      const selectionBlock = getOperationScheduleSelectionBlock(source);
+      const sectionsBlock = getOperationSectionsBlock(source);
+      const readinessBlock = getOperationReadinessMetricsBlock(source);
+
+      assert.equal(selectionBlock.includes("Array.isArray(scheduleSettings?.installation_days)"), true);
+      assert.equal(selectionBlock.includes("Array.isArray(scheduleSettings?.technical_visit_days)"), true);
+      assert.equal(selectionBlock.includes("? (scheduleSettings.installation_days as unknown[])"), true);
+      assert.equal(selectionBlock.includes("? (scheduleSettings.technical_visit_days as unknown[])"), true);
+
+      assert.equal(sectionsBlock.includes("scheduleSettings ? yesNoLabel(scheduleSettings.attends_holidays)"), true);
+      assert.equal(sectionsBlock.includes("scheduleSettings ? yesNoLabel(scheduleSettings.allow_multiple_appointments_per_day)"), true);
+      assert.equal(sectionsBlock.includes("scheduleSettings ? yesNoLabel(scheduleSettings.allow_same_time_appointments)"), true);
+      assert.equal(
+        sectionsBlock.includes("scheduleSettings && Number.isFinite(Number(scheduleSettings.same_time_capacity))"),
+        true,
+      );
+      assert.equal(readinessBlock.includes("scheduleSettings.allow_same_time_appointments"), true);
+    },
+  },
+  {
+    name: "operation localStorage restore migrates persisted draft instead of accepting raw legacy shape",
+    run: () => {
+      const source = readPageSource();
+      const draftStateBlock = getOperationDraftStateBlock(source);
+      const restoreBlock = getRestoreLocalDraftBlock(source);
+
+      assert.equal(source.includes("normalizePersistedOperationDraft"), true);
+      assert.equal(
+        restoreBlock.includes("setOperationDraft((current) =>"),
+        true,
+      );
+      assert.equal(
+        restoreBlock.includes("normalizePersistedOperationDraft(current, parsed.operationDraft)"),
+        true,
+      );
+      assert.equal(
+        restoreBlock.includes("setOperationDraft(parsed.operationDraft)"),
+        false,
+      );
+      assert.equal(draftStateBlock.includes("technical_visit_rules_summary:"), false);
+      assert.equal(draftStateBlock.includes("service_regions:"), false);
+      assert.equal(draftStateBlock.includes("important_limitations:"), false);
+      assert.equal(draftStateBlock.includes("operational_ai_summary:"), false);
+      assert.equal(restoreBlock.includes("technical_visit_rules_summary"), false);
+      assert.equal(restoreBlock.includes("service_regions"), false);
+      assert.equal(restoreBlock.includes("important_limitations"), false);
+      assert.equal(restoreBlock.includes("operational_ai_summary"), false);
+    },
+  },
+  {
+    name: "operation save prepares validation inside try and blocks invalid installation time before rpc",
+    run: () => {
+      const source = readPageSource();
+      const block = getOperationSaveBlock(source);
+      const tryIndex = block.indexOf("    try {");
+      const parseIndex = block.indexOf("const parsedAverageInstallationTime = parseOptionalPositiveInteger(");
+      const normalizeIndex = block.indexOf("const normalizedOperationSettings = normalizeStoreOperationSettingsInput({");
+      const rpcIndex = block.indexOf('await supabase.rpc(\n          "upsert_store_operation_settings_with_legacy_mirror_scoped"');
+      const invalidTimeIndex = block.indexOf("Prazo médio de instalação deve ser vazio ou um inteiro positivo.");
+
+      assert.equal(tryIndex > -1, true);
+      assert.equal(parseIndex > tryIndex, true);
+      assert.equal(normalizeIndex > tryIndex, true);
+      assert.equal(invalidTimeIndex > tryIndex, true);
+      assert.equal(invalidTimeIndex < rpcIndex, true);
+      assert.equal(rpcIndex > normalizeIndex, true);
+      assert.equal(block.includes("Number.isNaN(parsedAverageInstallationTime)"), true);
+      assert.equal(block.includes("? 0\n        : parsedAverageInstallationTime"), false);
+    },
+  },
   {
     name: "configuracoes uses the transactional responsible writer before remaining legacy answers and before onboarding status update",
     run: () => {
@@ -217,17 +593,176 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "canonical primary responsible hydrates current identity without legacy fallback",
+    run: () => {
+      const source = readPageSource();
+      const stateBlock = getCanonicalPrimaryResponsibleStateBlock(source);
+      const draftBlock = getCreatePrimaryResponsibleDraftFromSourcesBlock(source);
+      const fetchBlock = getFetchPageDataBlock(source);
+
+      assert.equal(
+        stateBlock.includes("const loadedCanonicalPrimaryResponsible = hasLoadedCanonicalPrimaryResponsible"),
+        true,
+      );
+      assert.equal(stateBlock.includes("canonicalPrimaryResponsibleDraft"), true);
+      assert.equal(
+        stateBlock.includes("createPrimaryResponsibleDraftFromSources(answers, loadedCanonicalPrimaryResponsible)"),
+        true,
+      );
+      assert.equal(draftBlock.includes("name: cleanText(responsible?.name)"), true);
+      assert.equal(draftBlock.includes("whatsapp: cleanText(responsible?.whatsappNumber)"), true);
+      assert.equal(draftBlock.includes("name: cleanText(answers.responsible_name)"), false);
+      assert.equal(draftBlock.includes("whatsapp: cleanText(answers.responsible_whatsapp)"), false);
+      assert.equal(fetchBlock.includes("setCanonicalPrimaryResponsible(nextCanonicalPrimaryResponsible)"), true);
+      assert.equal(fetchBlock.includes("setHasLoadedCanonicalPrimaryResponsible(true)"), true);
+    },
+  },
+  {
+    name: "overview identity reads canonical responsible and canonical absence stays absent",
+    run: () => {
+      const source = readPageSource();
+      const effectBlock = getOverviewDraftEffectBlock(source);
+      const summaryBlock = getOverviewSummaryBlock(source);
+      const pendenciesBlock = getActivationPendenciesBlock(source);
+
+      assert.equal(effectBlock.includes("responsible_name: cleanText(canonicalPrimaryResponsibleDraft.name)"), true);
+      assert.equal(effectBlock.includes("responsible_whatsapp: cleanText(canonicalPrimaryResponsibleDraft.whatsapp)"), true);
+      assert.equal(effectBlock.includes("responsible_name: cleanText(answers.responsible_name)"), false);
+      assert.equal(effectBlock.includes("responsible_whatsapp: cleanText(answers.responsible_whatsapp)"), false);
+      assert.equal(summaryBlock.includes("primaryResponsibleName"), true);
+      assert.equal(summaryBlock.includes("primaryResponsibleWhatsapp"), true);
+      assert.equal(summaryBlock.includes("answers.responsible_name"), false);
+      assert.equal(summaryBlock.includes("answers.responsible_whatsapp"), false);
+      assert.equal(pendenciesBlock.includes("if (!primaryResponsibleName)"), true);
+      assert.equal(pendenciesBlock.includes("if (!primaryResponsibleWhatsapp)"), true);
+      assert.equal(pendenciesBlock.includes("answers.responsible_name"), false);
+      assert.equal(pendenciesBlock.includes("answers.responsible_whatsapp"), false);
+    },
+  },
+  {
+    name: "overview operation rules read canonical operation state and do not save legacy mirrors",
+    run: () => {
+      const source = readPageSource();
+      const effectBlock = getOverviewDraftEffectBlock(source);
+      const cancelBlock = getOverviewEditCancelBlock(source);
+      const saveBlock = getOverviewEditSaveBlock(source);
+      const editFormBlock = getOverviewEditFormBlock(source);
+
+      assert.equal(
+        effectBlock.includes("currentOperationInput.installationDaysRule"),
+        true,
+      );
+      assert.equal(
+        effectBlock.includes("currentOperationInput.technicalVisitDaysRule"),
+        true,
+      );
+      assert.equal(effectBlock.includes("answers.installation_days_rule"), false);
+      assert.equal(effectBlock.includes("answers.technical_visit_days_rule"), false);
+      assert.equal(
+        cancelBlock.includes("operationSettingsInput.installationDaysRule"),
+        true,
+      );
+      assert.equal(
+        cancelBlock.includes("operationSettingsInput.technicalVisitDaysRule"),
+        true,
+      );
+      assert.equal(cancelBlock.includes("answers.installation_days_rule"), false);
+      assert.equal(cancelBlock.includes("answers.technical_visit_days_rule"), false);
+      assert.equal(saveBlock.includes("installation_days_rule"), false);
+      assert.equal(saveBlock.includes("technical_visit_days_rule"), false);
+      assert.equal(
+        editFormBlock.includes('handleOverviewDraftChange("installation_days_rule"'),
+        false,
+      );
+      assert.equal(
+        editFormBlock.includes('handleOverviewDraftChange("technical_visit_days_rule"'),
+        false,
+      );
+    },
+  },
+  {
+    name: "primary responsible edit cancel resets identity to canonical source",
+    run: () => {
+      const source = readPageSource();
+      const overviewCancelBlock = getOverviewEditCancelBlock(source);
+      const activationHydrationBlock = getActivationHydrationBlock(source);
+      const activationCancelBlock = getActivationEditCancelBlock(source);
+
+      assert.equal(
+        overviewCancelBlock.includes("responsible_name: cleanText(canonicalPrimaryResponsibleDraft.name)"),
+        true,
+      );
+      assert.equal(
+        overviewCancelBlock.includes("responsible_whatsapp: cleanText(canonicalPrimaryResponsibleDraft.whatsapp)"),
+        true,
+      );
+      assert.equal(activationHydrationBlock.includes("setPrimaryResponsibleDraft(canonicalPrimaryResponsibleDraft)"), true);
+      assert.equal(activationCancelBlock.includes("setPrimaryResponsibleDraft(canonicalPrimaryResponsibleDraft)"), true);
+      assert.equal(activationCancelBlock.includes("answers.responsible_name"), false);
+      assert.equal(activationCancelBlock.includes("answers.responsible_whatsapp"), false);
+    },
+  },
+  {
+    name: "current responsible presentation and channels do not read legacy responsible answers",
+    run: () => {
+      const source = readPageSource();
+      const activationItemsBlock = getActivationItemsBlock(source);
+      const channelsBlock = getCreateChannelDraftFromSourcesBlock(source);
+      const overviewTabStart = source.indexOf('{activeTab === "visao-geral" ? (');
+      const overviewTabEnd = source.indexOf('{activeTab === "estrategia" ? (', overviewTabStart);
+      assert.equal(overviewTabStart > -1, true, "overview tab not found");
+      assert.equal(overviewTabEnd > overviewTabStart, true, "overview tab end not found");
+      const overviewTabBlock = source.slice(overviewTabStart, overviewTabEnd);
+
+      assert.equal(source.includes("const primaryResponsibleName = cleanText(loadedCanonicalPrimaryResponsible?.name);"), true);
+      assert.equal(source.includes("loadedCanonicalPrimaryResponsible?.whatsappNumber"), true);
+      assert.equal(activationItemsBlock.includes("primaryResponsibleName"), true);
+      assert.equal(activationItemsBlock.includes("primaryResponsibleWhatsapp"), true);
+      assert.equal(activationItemsBlock.includes("answers.responsible_name"), false);
+      assert.equal(activationItemsBlock.includes("answers.responsible_whatsapp"), false);
+      assert.equal(channelsBlock.includes("responsible?: CanonicalPrimaryResponsible | null"), true);
+      assert.equal(channelsBlock.includes("const responsibleWhatsapp = cleanText(responsible?.whatsappNumber);"), true);
+      assert.equal(channelsBlock.includes("const responsibleName = cleanText(responsible?.name);"), true);
+      assert.equal(channelsBlock.includes("answers.responsible_whatsapp"), false);
+      assert.equal(overviewTabBlock.includes("primaryResponsibleName"), true);
+      assert.equal(overviewTabBlock.includes("primaryResponsibleWhatsapp"), true);
+      assert.equal(overviewTabBlock.includes("answers.responsible_name"), false);
+      assert.equal(overviewTabBlock.includes("answers.responsible_whatsapp"), false);
+    },
+  },
+  {
+    name: "legacy responsible fields without canonical equivalence remain scoped to legacy behavior",
+    run: () => {
+      const source = readPageSource();
+      const draftBlock = getCreatePrimaryResponsibleDraftFromSourcesBlock(source);
+      const discountDraftBlock = getCreateDiscountDraftFromAnswersBlock(source);
+
+      assert.equal(draftBlock.includes("cleanText(answers.responsible_role)"), true);
+      assert.equal(draftBlock.includes("answers.ai_should_notify_responsible"), true);
+      assert.equal(draftBlock.includes("cleanText(answers.responsible_notes)"), true);
+      assert.equal(source.includes("parseResponsiblePeopleFromAnswers(answers)"), true);
+      assert.equal(discountDraftBlock.includes("cleanText(answers.discount_approver_name)"), true);
+      assert.equal(discountDraftBlock.includes("cleanText(answers.responsible_name)"), true);
+    },
+  },
+  {
     name: "commercial identity presentation reads strategy authority and never price policy fields",
     run: () => {
       const source = readPageSource();
       const draftBlock = getCreateCommercialDraftFromAnswersBlock(source);
+      const combinedDraftBlock = source.slice(
+        source.indexOf("function createCommercialDraftFromAnswersWithPaymentSettings("),
+        source.indexOf("function createDiscountDraftFromAnswers("),
+      );
       const identityBlock = getCommercialIdentityItemsBlock(source);
 
-      assert.equal(
-        draftBlock.includes("ai_presentation_mode: cleanText(answers.strategy_ai_presentation) || \"Não definido\""),
-        true,
-      );
+      assert.equal(draftBlock.includes("answers.strategy_ai_presentation"), false);
+      assert.equal(combinedDraftBlock.includes("strategySettingsInput?.strategyAiPresentation"), true);
+      assert.equal(draftBlock.includes("ai_display_name: cleanText(answers.store_display_name)"), true);
+      assert.equal(draftBlock.includes("answers.responsible_name"), false);
       assert.equal(identityBlock.includes("strategySettingsInput.strategyAiPresentation"), true);
+      assert.equal(identityBlock.includes("answers.strategy_ai_presentation"), false);
+      assert.equal(identityBlock.includes("answers.responsible_name"), false);
       assert.equal(identityBlock.includes("price_talk_mode"), false);
       assert.equal(identityBlock.includes("price_answer_policy"), false);
       assert.equal(identityBlock.includes("ai_can_send_price_directly"), false);
@@ -239,6 +774,23 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "pool strategy readers use canonical strategy brand fields instead of legacy answers",
+    run: () => {
+      const source = readPageSource();
+      const poolsOperationalBlock = getPoolsOperationalItemsBlock(source);
+      const poolsQuickCountBlock = getPoolsQuickCountBlock(source);
+
+      assert.equal(poolsOperationalBlock.includes("strategySettingsInput.mainStoreBrand"), true);
+      assert.equal(poolsOperationalBlock.includes("strategySettingsInput.brandsWorked"), true);
+      assert.equal(poolsOperationalBlock.includes("answers.main_store_brand"), false);
+      assert.equal(poolsOperationalBlock.includes("answers.brands_worked"), false);
+      assert.equal(poolsQuickCountBlock.includes("strategySettingsInput.mainStoreBrand"), true);
+      assert.equal(poolsQuickCountBlock.includes("strategySettingsInput.brandsWorked"), true);
+      assert.equal(poolsQuickCountBlock.includes("answers.main_store_brand"), false);
+      assert.equal(poolsQuickCountBlock.includes("answers.brands_worked"), false);
+    },
+  },
+  {
     name: "commercial edit form shows strategy presentation as read-only and falls back to Nao definido",
     run: () => {
       const source = readPageSource();
@@ -246,6 +798,7 @@ const tests: TestCase[] = [
       const formBlock = getCommercialEditFormBlock(source);
 
       assert.equal(draftBlock.includes('"Não definido"'), true);
+      assert.equal(draftBlock.includes("answers.strategy_ai_presentation"), false);
       assert.equal(formBlock.includes("value={commercialDraft.ai_presentation_mode} readOnly"), true);
       assert.equal(
         formBlock.includes('handleCommercialDraftChange("ai_presentation_mode"'),

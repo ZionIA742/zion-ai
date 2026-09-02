@@ -62,7 +62,7 @@ test("commercial AI helper prefers canonical policy over legacy price summaries"
   });
 });
 
-test("commercial AI helper infers the minimal canonical policy from legacy fields", async () => {
+test("commercial AI helper returns safe defaults instead of legacy policy when canonical row is absent", async () => {
   const { createStoreCommercialAiSettingsInputFromSources } =
     await loadStoreCommercialAiSettingsModule();
 
@@ -81,11 +81,8 @@ test("commercial AI helper infers the minimal canonical policy from legacy field
       settings: null,
     }),
     {
-      priceAnswerPolicy: "range_only_when_asked",
-      priceContextRequirements: [
-        "need_summary",
-        "interested_product_reference",
-      ],
+      priceAnswerPolicy: "human_required_for_price",
+      priceContextRequirements: [],
     },
   );
 
@@ -98,7 +95,7 @@ test("commercial AI helper infers the minimal canonical policy from legacy field
       },
       settings: null,
     }).priceAnswerPolicy,
-    "direct_when_asked",
+    "human_required_for_price",
   );
 
   assert.deepEqual(

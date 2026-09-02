@@ -124,7 +124,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "legacy answers hydrate without silently dropping supported historical methods",
+    name: "missing canonical settings return empty defaults without legacy payment fallback",
     run: async () => {
       const { createStorePaymentSettingsInputFromSources } =
         await loadStorePaymentSettingsModule();
@@ -144,14 +144,8 @@ const tests: TestCase[] = [
         },
       });
 
-      assert.deepEqual(input.acceptedPaymentMethods, [
-        "pix",
-        "financiamento",
-      ]);
-      assert.deepEqual(input.legacyPaymentConditionTags, [
-        "parcelado",
-        "sinal_mais_parcelas",
-      ]);
+      assert.deepEqual(input.acceptedPaymentMethods, []);
+      assert.deepEqual(input.legacyPaymentConditionTags ?? [], []);
       assert.equal(
         input.paymentNotes,
         "",
@@ -159,7 +153,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "legacy parcelado tag stays outside canonical methods and does not infer installments",
+    name: "legacy parcelado tag is not promoted when canonical settings are absent",
     run: async () => {
       const { createStorePaymentSettingsInputFromSources } =
         await loadStorePaymentSettingsModule();
@@ -170,15 +164,15 @@ const tests: TestCase[] = [
         },
       });
 
-      assert.deepEqual(input.acceptedPaymentMethods, ["pix"]);
-      assert.deepEqual(input.legacyPaymentConditionTags, ["parcelado"]);
+      assert.deepEqual(input.acceptedPaymentMethods, []);
+      assert.deepEqual(input.legacyPaymentConditionTags ?? [], []);
       assert.equal(input.installmentsEnabled, "nao");
       assert.equal(input.maxInstallments, "");
       assert.equal(input.installmentInterestPolicy, "");
     },
   },
   {
-    name: "legacy sinal_mais_parcelas tag stays outside canonical methods and does not infer down payment",
+    name: "legacy sinal_mais_parcelas tag is not promoted when canonical settings are absent",
     run: async () => {
       const { createStorePaymentSettingsInputFromSources } =
         await loadStorePaymentSettingsModule();
@@ -189,10 +183,8 @@ const tests: TestCase[] = [
         },
       });
 
-      assert.deepEqual(input.acceptedPaymentMethods, ["pix"]);
-      assert.deepEqual(input.legacyPaymentConditionTags, [
-        "sinal_mais_parcelas",
-      ]);
+      assert.deepEqual(input.acceptedPaymentMethods, []);
+      assert.deepEqual(input.legacyPaymentConditionTags ?? [], []);
       assert.equal(input.downPaymentMode, "none");
       assert.equal(input.downPaymentValueType, "");
       assert.equal(input.downPaymentPercent, "");
@@ -240,7 +232,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "display presentation falls back to canonical methods and keeps legacy conditions separate without duplication",
+    name: "display presentation stays empty when canonical payment settings are absent",
     run: async () => {
       const { createStorePaymentPresentationFromSources } =
         await loadStorePaymentSettingsModule();
@@ -261,19 +253,10 @@ const tests: TestCase[] = [
         settings: null,
       });
 
-      assert.equal(presentation.paymentSummary, "Pix, Financiamento");
-      assert.deepEqual(presentation.canonicalPaymentMethods, [
-        "pix",
-        "financiamento",
-      ]);
-      assert.deepEqual(presentation.legacyPaymentConditionTags, [
-        "parcelado",
-        "sinal_mais_parcelas",
-      ]);
-      assert.equal(
-        presentation.legacyConditionNotice,
-        "Dados antigos para revisar: Parcelado, Sinal + parcelas",
-      );
+      assert.equal(presentation.paymentSummary, "");
+      assert.deepEqual(presentation.canonicalPaymentMethods, []);
+      assert.deepEqual(presentation.legacyPaymentConditionTags, []);
+      assert.equal(presentation.legacyConditionNotice, "");
     },
   },
   {
@@ -293,10 +276,7 @@ const tests: TestCase[] = [
 
       assert.equal(presentation.paymentSummary, "");
       assert.deepEqual(presentation.canonicalPaymentMethods, []);
-      assert.deepEqual(presentation.legacyPaymentConditionTags, [
-        "a_vista",
-        "sob_analise",
-      ]);
+      assert.deepEqual(presentation.legacyPaymentConditionTags, []);
     },
   },
   {

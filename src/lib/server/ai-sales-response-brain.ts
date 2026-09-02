@@ -61,6 +61,7 @@ export type SalesConversationSnapshot = {
   hasAskedCustomerNameRecently: boolean;
   hasPoolInterestContext: boolean;
   hasInstallationContext: boolean;
+  hasCanonicalVisitLocation: boolean;
   hasMinimumVisitQualification: boolean;
   visitNeedsQualificationBeforeAgenda: boolean;
   lastAiCommercialAngles: string[];
@@ -124,6 +125,19 @@ export type SalesResponseBrainInput = {
   hasConfiguredPixKey?: boolean;
   offersTechnicalVisit?: boolean;
   suggestedNextQuestion?: string | null;
+  canonicalVisitLocationState?: "known" | "not_known" | "unproven";
+  contextualQualification?: {
+    hasCanonicalSnapshot: boolean;
+    askNow: boolean;
+    targetFactKey: string | null;
+    targetGroup: string | null;
+    targetStatus:
+      | "missing"
+      | "conflict"
+      | "known"
+      | "not_applicable"
+      | "unproven";
+  } | null;
   acceptedPaymentMethodsSummary?: string | null;
 };
 
@@ -600,6 +614,9 @@ function buildSalesConversationSnapshot(
       detectLocationType(conversationText) !== "desconhecido"
   );
   const lastAiCommercialAngles = detectLastAiCommercialAngles(input.lastAiMessage);
+  const hasCanonicalVisitLocation =
+    input.canonicalVisitLocationState === "known";
+
   const hasMinimumVisitQualification = Boolean(
     hasReliableCustomerName &&
       cityOrRegion &&
@@ -675,10 +692,11 @@ function buildSalesConversationSnapshot(
     hasAskedCustomerNameRecently: askedCustomerNameRecently,
     hasPoolInterestContext,
     hasInstallationContext,
+    hasCanonicalVisitLocation,
     hasMinimumVisitQualification,
     visitNeedsQualificationBeforeAgenda:
       looksLikeVisitRequest(input.lastCustomerMessage) &&
-      (!input.offersTechnicalVisit || !hasMinimumVisitQualification),
+      (!input.offersTechnicalVisit || !hasCanonicalVisitLocation),
     lastAiCommercialAngles,
     knownData,
     missingData,
@@ -797,7 +815,7 @@ function buildSalesReplyPlan(args: {
     mustAnswer: ["responder diretamente a pergunta principal do cliente"],
     mustUseContext,
     mustNotAskAgain,
-    missingCriticalInfo: [...args.snapshot.missingData],
+    missingCriticalInfo: [],
     allowedNextStep: "answer_and_guide",
     shouldAskQuestion: false,
     questionToAsk: null,
@@ -869,7 +887,18 @@ function buildSalesReplyPlan(args: {
         ],
         blockGenericResetQuestion: true,
       };
-    case "quote_request":
+    case "quote_request": {
+      const contextualQualification =
+        args.input.contextualQualification || null;
+
+      const canAskStructuredQualification =
+        contextualQualification?.hasCanonicalSnapshot === true &&
+        contextualQualification.askNow === true &&
+        Boolean(
+          contextualQualification.targetFactKey ||
+            contextualQualification.targetGroup,
+        );
+
       return {
         ...basePlan,
         answerGoal: "prepare_quote_handoff",
@@ -878,57 +907,64 @@ function buildSalesReplyPlan(args: {
           quote: true,
           visit: false,
         },
-        shouldAskQuestion: true,
-        questionToAsk:
-          args.snapshot.shouldAskCustomerName
-            ? args.snapshot.missingData.includes("cidade")
-              ? "Perfeito. Antes de eu montar isso certinho, qual seu nome e sua cidade?"
-              : "Perfeito. Antes de eu montar isso certinho, qual seu nome?"
-            : args.snapshot.missingData.includes("cidade")
-            ? "Me confirma sua cidade para eu montar isso certinho"
-            : args.snapshot.missingData.includes("espaco_medida")
-              ? "Se ja tiver, me fala o espaco ou a medida que voce quer aproveitar"
-              : args.snapshot.mentionedModel
-                ? `So confirma para eu montar certinho: seria ${args.snapshot.mentionedModel}, em ${args.snapshot.cityOrRegion || "sua cidade"},${args.snapshot.spaceText ? ` com ${args.snapshot.spaceText}` : ""} ${args.snapshot.locationType !== "desconhecido" ? `no ${args.snapshot.locationType}` : ""}, e voce quer incluir instalacao${args.snapshot.preferredVisitPeriod ? ` e visita tecnica em ${args.snapshot.preferredVisitPeriod}` : ""}?`
-                : `So confirma para eu montar certinho: seria${args.snapshot.cityOrRegion ? ` em ${args.snapshot.cityOrRegion}` : ""}${args.snapshot.spaceText ? `, com ${args.snapshot.spaceText}` : ""}${args.snapshot.locationType !== "desconhecido" ? `, no ${args.snapshot.locationType}` : ""}, incluindo instalacao? Voce quer que eu considere uma opcao recomendada para esse espaco ou tem algum modelo especifico em mente?`,
+        shouldAskQuestion: canAskStructuredQualification,
+        questionToAsk: null,
+        missingCriticalInfo:
+          canAskStructuredQualification &&
+          contextualQualification?.targetFactKey
+            ? [contextualQualification.targetFactKey]
+            : [],
         requiredPhrasesOrIdeas: [
-          "pedir confirmacao dos dados do orcamento ja conhecidos e perguntar so o que faltar",
-          "usar cidade, espaco, modelo e contexto ja informados",
-          "dizer que vai retornar com o orcamento sem prometer PDF",
-          "montar a confirmacao em ordem organizada: local, espaco, modelo/preferencia, instalacao, itens adicionais",
+          "usar os dados do orcamento ja conhecidos sem pedir tudo de novo",
+          canAskStructuredQualification
+            ? "se houver pergunta de qualificacao nesta resposta, formular somente o unico alvo autorizado pela decisao contextual"
+            : "nao inventar cidade, espaco, modelo, instalacao ou outro questionario para liberar o orcamento",
+          "encaminhar ou preparar o proximo passo do orcamento sem prometer PDF ou envio concluido",
         ],
         forbiddenPhrases: [
           ...forbiddenPhrases,
           "orcamento enviado",
           "ja emiti o orcamento",
           "pdf enviado",
-          "vou encaminhar para a loja",
-          "a loja vai te retornar",
+          "qual seu nome e sua cidade",
+          "me confirma sua cidade para eu montar isso",
+          "me fala o espaco ou a medida",
         ],
         blockGenericResetQuestion: true,
       };
-    case "visit_request":
+    }    case "visit_request": {
+      const contextualQualification =
+        args.input.contextualQualification || null;
+
+      const canAskCanonicalLocation =
+        Boolean(args.input.offersTechnicalVisit) &&
+        contextualQualification?.hasCanonicalSnapshot === true &&
+        contextualQualification.targetGroup === "location" &&
+        contextualQualification.askNow === true;
+
       if (args.snapshot.visitNeedsQualificationBeforeAgenda) {
         return {
           ...basePlan,
           answerGoal: "guide_next_step",
-          allowedNextStep: "ask_single_missing_info",
+          allowedNextStep: canAskCanonicalLocation
+            ? "ask_single_missing_info"
+            : "answer_and_guide",
           handoffHint: {
             quote: false,
             visit: false,
           },
-          shouldAskQuestion: true,
-          questionToAsk: args.snapshot.shouldAskCustomerName
-            ? "Consigo verificar a possibilidade de visita, sim. Antes, so preciso confirmar algumas informacoes para nao marcar sem necessidade: qual seu nome, cidade e que tipo de piscina voce esta procurando?"
-            : args.snapshot.cityOrRegion
-              ? "Consigo verificar a possibilidade de visita. Antes, me confirma qual tipo de piscina voce quer avaliar e como e o espaco ou local de instalacao."
-              : "Consigo verificar a possibilidade de visita, sim. Antes, so preciso entender melhor seu caso: me confirma sua cidade, que tipo de piscina voce esta procurando e como e o espaco ou local de instalacao.",
+          shouldAskQuestion: canAskCanonicalLocation,
+          questionToAsk: null,
+          missingCriticalInfo: canAskCanonicalLocation
+            ? ["location_text"]
+            : [],
           requiredPhrasesOrIdeas: [
-            "qualificar antes de falar em agenda quando faltarem dados basicos",
-            "pedir so os dados minimos para entender se a visita faz sentido",
             args.input.offersTechnicalVisit
-              ? "usar linguagem segura como verificar a possibilidade de visita, sem prometer agenda pronta"
+              ? canAskCanonicalLocation
+                ? "se houver pergunta de qualificacao nesta resposta, formular somente o alvo de localizacao autorizado pela decisao contextual"
+                : "nao inventar nome, modelo, espaco, cidade ou outro questionario para liberar agenda"
               : "na falta de configuracao clara, nao prometer visita; dizer que precisa confirmar o procedimento correto antes",
+            "nao falar em disponibilidade de agenda enquanto a localizacao canonica da oportunidade nao estiver comprovada",
           ],
           forbiddenPhrases: [
             ...forbiddenPhrases,
@@ -941,6 +977,8 @@ function buildSalesReplyPlan(args: {
         };
       }
 
+      const needsVisitPeriod = !args.snapshot.preferredVisitPeriod;
+
       return {
         ...basePlan,
         answerGoal: "prepare_visit_handoff",
@@ -949,14 +987,15 @@ function buildSalesReplyPlan(args: {
           quote: false,
           visit: true,
         },
-        shouldAskQuestion: args.snapshot.missingData.length > 0,
-        questionToAsk:
-          args.snapshot.missingData.includes("cidade")
-            ? "Me confirma sua cidade para eu verificar isso na agenda"
-            : args.snapshot.missingData.includes("dia_periodo")
-              ? "Qual dia ou periodo costuma ser melhor para voce"
-              : null,
+        shouldAskQuestion: needsVisitPeriod,
+        questionToAsk: needsVisitPeriod
+          ? "Qual dia ou periodo costuma ser melhor para voce"
+          : null,
+        missingCriticalInfo: needsVisitPeriod
+          ? ["dia_periodo"]
+          : [],
         requiredPhrasesOrIdeas: [
+          "a localizacao canonica ja esta conhecida; daqui em diante dia ou periodo e um dado operacional de agenda",
           "dizer que vai verificar na agenda os dias ou horarios disponiveis",
           "nao prometer agenda pronta",
           "nao confirmar visita como garantida ou gratuita",
@@ -970,7 +1009,7 @@ function buildSalesReplyPlan(args: {
         ],
         blockGenericResetQuestion: true,
       };
-    case "installation_question":
+    }    case "installation_question":
       return {
         ...basePlan,
         answerGoal: "answer_direct_question",
@@ -1016,29 +1055,48 @@ function buildSalesReplyPlan(args: {
       };
     case "payment_question":
     case "pix_discount_question":
-    case "financing_question":
+    case "financing_question": {
+      const contextualQualification =
+        args.input.contextualQualification || null;
+
+      const canAskPaymentQualification =
+        contextualQualification?.hasCanonicalSnapshot === true &&
+        contextualQualification.askNow === true &&
+        contextualQualification.targetGroup === "payment";
+
       return {
         ...basePlan,
         answerGoal: "set_payment_expectation",
         tone: "objective_safe",
-        shouldAskQuestion: true,
-        questionToAsk:
-          normalizeText(args.input.lastCustomerMessage).includes("pix")
-            ? "Voce quer seguir por Pix mesmo?"
-            : "Qual forma de pagamento voce prefere usar?",
+        shouldAskQuestion: canAskPaymentQualification,
+        questionToAsk: null,
+        missingCriticalInfo:
+          canAskPaymentQualification &&
+          contextualQualification?.targetFactKey
+            ? [contextualQualification.targetFactKey]
+            : [],
         requiredPhrasesOrIdeas: [
           args.input.acceptedPaymentMethodsSummary
             ? `apresentar as formas aceitas conhecidas: ${args.input.acceptedPaymentMethodsSummary}`
             : "apresentar as formas aceitas se houver base no contexto",
-          "perguntar qual forma de pagamento o cliente prefere usar",
+          "responder primeiro exatamente a duvida de pagamento trazida pelo cliente",
+          canAskPaymentQualification
+            ? "se houver pergunta de qualificacao nesta resposta, formular somente o alvo de pagamento autorizado pela decisao contextual"
+            : "nao inventar nova pergunta sobre Pix, parcelamento ou preferencia de pagamento",
           "nao inventar chave pix, desconto, financiamento ou confirmacao",
           args.input.hasConfiguredPixKey
             ? "se houver base real, responder com seguranca sem extrapolar"
             : "se faltar configuracao, dizer que precisa confirmar a chave ou a condicao correta antes de passar",
         ],
-        forbiddenPhrases: [...forbiddenPhrases, "a loja vai confirmar", "a loja vai te passar", "vou verificar com a loja"],
+        forbiddenPhrases: [
+          ...forbiddenPhrases,
+          "a loja vai confirmar",
+          "a loja vai te passar",
+          "vou verificar com a loja",
+        ],
         blockGenericResetQuestion: true,
       };
+    }
     case "space_provided":
     case "city_or_location_provided": {
       const avoidCompactAngle = args.snapshot.lastAiCommercialAngles.includes("compact_models");
@@ -1091,7 +1149,7 @@ function buildSalesBrainPromptBlock(output: SalesResponseBrainOutput): string {
     `- dados conhecidos: ${snapshot.knownData.length > 0 ? snapshot.knownData.join("; ") : "nenhum dado confiavel relevante"}`,
     `- nome confiavel do cliente: ${snapshot.hasReliableCustomerName ? snapshot.customerName : "nao"}`,
     `- pedir nome agora: ${snapshot.shouldAskCustomerName ? "sim" : "nao"}`,
-    `- visita ja esta qualificada para agenda: ${snapshot.hasMinimumVisitQualification ? "sim" : "nao"}`,
+    `- localizacao canonica permite avancar para agenda: ${snapshot.hasCanonicalVisitLocation ? "sim" : "nao"}`,
     `- nao perguntar novamente: ${plan.mustNotAskAgain.length > 0 ? plan.mustNotAskAgain.join(", ") : "nenhum bloqueio especifico"}`,
     `- objetivo: ${plan.answerGoal}`,
     `- responder diretamente: ${plan.mustAnswer.join("; ")}`,

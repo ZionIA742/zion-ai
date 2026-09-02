@@ -1001,6 +1001,109 @@ async function loadStoreIdRows(
   };
 }
 
+async function loadConversationStoreRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
+  const { data: conversations, error: conversationsError } = await supabase
+    .from("conversations")
+    .select("lead_id, organization_id");
+
+  if (conversationsError) {
+    return {
+      rows: [],
+      error: OVERVIEW_LOAD_ERROR,
+    };
+  }
+
+  const conversationRows = (conversations ?? []) as Array<{
+    lead_id: string | null;
+    organization_id: string | null;
+  }>;
+
+  if (
+    conversationRows.some(
+      (conversation) => !String(conversation.lead_id || "").trim(),
+    )
+  ) {
+    return {
+      rows: [],
+      error: OVERVIEW_LOAD_ERROR,
+    };
+  }
+
+  const leadIds = Array.from(
+    new Set(
+      conversationRows
+        .map((conversation) => String(conversation.lead_id || "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+  if (leadIds.length === 0) {
+    return {
+      rows: [],
+      error: null,
+    };
+  }
+
+  const { data: leads, error: leadsError } = await supabase
+    .from("leads")
+    .select("id, organization_id, store_id")
+    .in("id", leadIds);
+
+  if (leadsError) {
+    return {
+      rows: [],
+      error: OVERVIEW_LOAD_ERROR,
+    };
+  }
+
+  const leadsById = new Map<
+    string,
+    {
+      id: string;
+      organization_id: string | null;
+      store_id: string | null;
+    }
+  >();
+
+  for (const lead of (leads ?? []) as Array<{
+    id: string;
+    organization_id: string | null;
+    store_id: string | null;
+  }>) {
+    leadsById.set(lead.id, lead);
+  }
+
+  const rows: StoreMetricRow[] = [];
+
+  for (const conversation of conversationRows) {
+    const leadId = String(conversation.lead_id || "").trim();
+    const lead = leadsById.get(leadId);
+
+    if (
+      !lead ||
+      !String(lead.store_id || "").trim() ||
+      String(lead.organization_id || "").trim() !==
+        String(conversation.organization_id || "").trim()
+    ) {
+      return {
+        rows: [],
+        error: OVERVIEW_LOAD_ERROR,
+      };
+    }
+
+    rows.push({
+      store_id: lead.store_id,
+    });
+  }
+
+  return {
+    rows,
+    error: null,
+  };
+}
+
 async function loadActiveMessageRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
@@ -1438,6 +1541,7 @@ export async function GET() {
       subscriptionsResult,
       storesResult,
       leadRows,
+      conversationRows,
       messageRows,
       salesAiMessageRows,
       appointmentRows,
@@ -1481,6 +1585,7 @@ export async function GET() {
         .order("created_at", { ascending: false })
         .limit(200),
       loadStoreIdRows(serviceSupabase, "leads"),
+      loadConversationStoreRows(serviceSupabase),
       loadActiveMessageRows(serviceSupabase),
       loadSalesAiMessageRows(serviceSupabase),
       loadStoreIdRows(serviceSupabase, "store_appointments"),
@@ -1520,9 +1625,48 @@ export async function GET() {
     const subscriptions = (subscriptionsResult.data ?? []) as SubscriptionRow[];
     const stores = (storesResult.data ?? []) as StoreRow[];
     const periodBoundaries = getPeriodBoundaries();
+
+    const storeOrganizationIds = Array.from(
+      new Set(stores.map((store) => store.organization_id).filter(Boolean)),
+    );
+
+    const { data: membershipOrganizationRows, error: membershipOrganizationsError } =
+      storeOrganizationIds.length > 0
+        ? await serviceSupabase
+            .from("memberships")
+            .select("organization_id")
+            .in("organization_id", storeOrganizationIds)
+        : { data: [], error: null };
+
+    if (membershipOrganizationsError) {
+      throw membershipOrganizationsError;
+    }
+
+    const organizationIdsWithMemberships = new Set(
+      (
+        (membershipOrganizationRows ?? []) as Array<{
+          organization_id: string | null;
+        }>
+      )
+        .map((row) => String(row.organization_id || "").trim())
+        .filter(Boolean),
+    );
+
+    const operationalStores = stores.filter((store) =>
+      organizationIdsWithMemberships.has(store.organization_id),
+    );
+
+    const orphanStores = stores.filter(
+      (store) => !organizationIdsWithMemberships.has(store.organization_id),
+    );
+
+    const operationalStoreIds = new Set(
+      operationalStores.map((store) => store.id),
+    );
+
     const accountAccessByStoreId = await loadStoreAccountAccessSnapshots(
       serviceSupabase,
-      stores,
+      operationalStores,
     );
 
     const organizationMap = new Map<string, OrganizationRow>();
@@ -1538,7 +1682,7 @@ export async function GET() {
 
     const metricsByStore = new Map<string, StoreOverviewMetrics>();
 
-    for (const store of stores) {
+    for (const store of operationalStores) {
       getStoreMetrics(metricsByStore, store.id);
     }
 
@@ -1704,7 +1848,7 @@ export async function GET() {
 
     applyStoreConfigurationIssues({
       metricsByStore,
-      stores,
+      stores: operationalStores,
       onboardingRows: onboardingConfigRows.rows,
       responsibleRows: responsibleConfigRows.rows,
       scheduleSettingsRows: scheduleSettingsConfigRows.rows,
@@ -1713,7 +1857,25 @@ export async function GET() {
       catalogRows: catalogConfigRows.rows,
     });
 
-    const storesList = stores.map((store) => {
+    const orphanStoreSummaries = orphanStores.map((store) => {
+      const organization = organizationMap.get(store.organization_id);
+
+      return {
+        id: store.id,
+        name: store.name ?? "Loja sem nome",
+        organizationId: store.organization_id,
+        organizationName: organization?.name ?? "Organizacao nao encontrada",
+        createdAt: store.created_at,
+      };
+    });
+
+    const operationalOrganizationCount = new Set(
+      operationalStores
+        .map((store) => store.organization_id)
+        .filter(Boolean),
+    ).size;
+
+    const storesList = operationalStores.map((store) => {
       const organization = organizationMap.get(store.organization_id);
       const canonicalSubscription =
         canonicalSubscriptionByOrganizationId.get(store.organization_id) ?? null;
@@ -1816,6 +1978,35 @@ export async function GET() {
       };
     });
 
+    const operationalEntityTotals = storesList.reduce(
+      (acc, store) => {
+        acc.leads += store.totalLeads;
+        acc.messages += store.totalMessages;
+        acc.appointments += store.totalAppointments;
+        acc.assistantThreads += store.totalAssistantThreads;
+        acc.assistantMessages += store.totalAssistantMessages;
+        return acc;
+      },
+      {
+        leads: 0,
+        messages: 0,
+        appointments: 0,
+        assistantThreads: 0,
+        assistantMessages: 0,
+      },
+    );
+
+    const operationalConversationsCount = conversationRows.rows.reduce(
+      (count, row) => {
+        const storeId = String(row.store_id || "").trim();
+
+        return operationalStoreIds.has(storeId)
+          ? count + 1
+          : count;
+      },
+      0,
+    );
+
     const subscriptionStatusCounts = storesList.reduce<Record<string, number>>(
       (acc, store) => {
         const key = String(store.subscriptionStatus || "Sem dados");
@@ -1916,21 +2107,21 @@ export async function GET() {
         role: "admin",
       },
       totals: {
-        organizations: organizationsCount.count,
-        stores: storesCount.count,
+        organizations: operationalOrganizationCount,
+        stores: storesList.length,
         storesActive: subscriptionStatusCounts.active ?? 0,
         storesTrial: subscriptionStatusCounts.trial ?? 0,
         storesInactive:
-          (storesCount.count ?? 0) -
+          storesList.length -
           (subscriptionStatusCounts.active ?? 0) -
           (subscriptionStatusCounts.trial ?? 0),
-        leads: leadsCount.count,
-        conversations: conversationsCount.count,
-        messages: messagesCount.count,
+        leads: operationalEntityTotals.leads,
+        conversations: operationalConversationsCount,
+        messages: operationalEntityTotals.messages,
         salesAiMessages: aiUsageTotals.totalSalesAiMessages,
-        appointments: appointmentsCount.count,
-        assistantThreads: assistantThreadsCount.count,
-        assistantMessages: assistantMessagesCount.count,
+        appointments: operationalEntityTotals.appointments,
+        assistantThreads: operationalEntityTotals.assistantThreads,
+        assistantMessages: operationalEntityTotals.assistantMessages,
         aiRuns: aiUsageTotals.totalAiRuns,
         successfulAiRuns: aiUsageTotals.successfulAiRuns,
         failedAiRuns: aiUsageTotals.failedAiRuns,
@@ -1971,12 +2162,13 @@ export async function GET() {
       countErrors: {
         organizations: organizationsCount.error,
         stores: storesCount.error,
-        leads: leadsCount.error,
-        conversations: conversationsCount.error,
-        messages: messagesCount.error,
-        appointments: appointmentsCount.error,
-        assistantThreads: assistantThreadsCount.error,
-        assistantMessages: assistantMessagesCount.error,
+        leads: leadsCount.error ?? leadRows.error,
+        conversations: conversationsCount.error ?? conversationRows.error,
+        messages: messagesCount.error ?? messageRows.error,
+        appointments: appointmentsCount.error ?? appointmentRows.error,
+        assistantThreads: assistantThreadsCount.error ?? assistantThreadRows.error,
+        assistantMessages:
+          assistantMessagesCount.error ?? assistantMessageRows.error,
         storeSubscriptions: subscriptionsError ? OVERVIEW_LOAD_ERROR : null,
         storeLeads: leadRows.error,
         storeMessages: messageRows.error,
@@ -1997,6 +2189,10 @@ export async function GET() {
         storeDiscountSettingsConfig: discountSettingsConfigRows.error,
         storeAuthSettingsConfig: authSettingsConfigRows.error,
         storeCatalogConfig: catalogConfigRows.error,
+      },
+      integrity: {
+        orphanStoresCount: orphanStoreSummaries.length,
+        orphanStores: orphanStoreSummaries,
       },
       stores: storesList,
       future: {

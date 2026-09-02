@@ -171,8 +171,9 @@ const tests: TestCase[] = [
       let clientCreateCount = 0;
       const client = createPrivilegedClientMock();
       const handler = createUpdateStoreNamePostHandler({
-        resolveAccess: async () => {
+        resolveAccess: async ({ requirement }) => {
           resolveCount += 1;
+          assert.equal(requirement, "active_or_onboarding");
           return createGrantedAccess();
         },
         createPrivilegedClient: () => {
@@ -214,6 +215,79 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "onboarding account can update store name without becoming active",
+    run: async () => {
+      const client = createPrivilegedClientMock();
+      const handler = createUpdateStoreNamePostHandler({
+        resolveAccess: async ({ requirement }) => {
+          assert.equal(requirement, "active_or_onboarding");
+          return createGrantedAccess({
+            resolution: {
+              domain: "store_area",
+              status: "store_ready_onboarding_required",
+              sessionUserId: "user-1",
+              safeHtmlDestination: "/onboarding",
+              apiDecision: "allow",
+              organizationResolution: "single",
+              storeResolution: "single",
+              organizationId: "onboarding-org",
+              storeId: "onboarding-store",
+              commercialAccess: "allowed",
+              reasonCode: "onboarding_required",
+              message: "Onboarding pendente.",
+            },
+            organizationId: "onboarding-org",
+            storeId: "onboarding-store",
+          });
+        },
+        createPrivilegedClient: () => client as never,
+      });
+
+      const response = await handler(
+        createJsonRequest(() => ({ name: "Loja em Onboarding" }), {
+          reads: 0,
+        }),
+      );
+      const body = (await response.json()) as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.storeId, "onboarding-store");
+      assert.equal(body.organizationId, "onboarding-org");
+      assert.equal(client.updateCalls.length, 1);
+      assert.deepEqual(client.updateCalls[0].filters, {
+        id: "onboarding-store",
+        organization_id: "onboarding-org",
+      });
+    },
+  },
+  {
+    name: "active account can still update store name",
+    run: async () => {
+      const client = createPrivilegedClientMock();
+      const handler = createUpdateStoreNamePostHandler({
+        resolveAccess: async ({ requirement }) => {
+          assert.equal(requirement, "active_or_onboarding");
+          return createGrantedAccess();
+        },
+        createPrivilegedClient: () => client as never,
+      });
+
+      const response = await handler(
+        createJsonRequest(() => ({ name: "Loja Ativa" }), { reads: 0 }),
+      );
+      const body = (await response.json()) as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(client.updateCalls.length, 1);
+      assert.deepEqual(client.updateCalls[0].filters, {
+        id: "access-store",
+        organization_id: "access-org",
+      });
+    },
+  },
+  {
     name: "invalid name returns 400 without writing",
     run: async () => {
       const client = createPrivilegedClientMock();
@@ -240,10 +314,13 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "anonymous and fail-closed wrapper statuses are preserved without reading tenant ids",
+    name: "denied statuses are preserved without reading tenant ids or writing",
     run: async () => {
       for (const denied of [
         createDeniedAccess(401, "anonymous", "anonymous"),
+        createDeniedAccess(403, "inactive_membership", "inactive_membership"),
+        createDeniedAccess(403, "cross_domain_forbidden", "zion_admin_cannot_access_store_area"),
+        createDeniedAccess(403, "store_commercial_blocked", "commercial_access_blocked"),
         createDeniedAccess(409, "store_missing_membership", "missing_membership"),
         createDeniedAccess(409, "store_multi_org_unsupported", "multi_org_unsupported"),
         createDeniedAccess(409, "store_missing_store", "missing_store"),
@@ -287,7 +364,8 @@ const tests: TestCase[] = [
 
       assert.equal(source.includes("resolveStoreApiAccess"), true);
       assert.equal(source.includes("createStoreApiDeniedResponse"), true);
-      assert.equal(source.includes('requirement: "active"'), true);
+      assert.equal(source.includes('requirement: "active_or_onboarding"'), true);
+      assert.equal(source.includes('requirement: "active"'), false);
       assert.equal(source.includes("body?.storeId"), false);
       assert.equal(source.includes("body?.organizationId"), false);
       assert.equal(source.includes("auth.getUser"), false);

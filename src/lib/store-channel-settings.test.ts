@@ -65,7 +65,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "legacy answers remain the fallback while there is no canonical row",
+    name: "missing canonical channel settings return defaults without legacy fallback",
     run: async () => {
       const { createStoreChannelSettingsInputFromSources } =
         await loadStoreChannelSettingsModule();
@@ -85,11 +85,11 @@ const tests: TestCase[] = [
         },
       });
 
-      assert.equal(input.commercialChannelName, "Canal Comercial Loja");
-      assert.equal(input.commercialReceivesRealClients, "Sim");
-      assert.equal(input.commercialIsOfficialSalesChannel, "Não");
-      assert.equal(input.integrationProviderName, "W-API");
-      assert.equal(input.integrationConnectionMode, "Webhook");
+      assert.equal(input.commercialChannelName, "Canal comercial principal");
+      assert.equal(input.commercialReceivesRealClients, "Não definido");
+      assert.equal(input.commercialIsOfficialSalesChannel, "Não definido");
+      assert.equal(input.integrationProviderName, "Ainda não definido");
+      assert.equal(input.integrationConnectionMode, "API / webhook");
     },
   },
   {

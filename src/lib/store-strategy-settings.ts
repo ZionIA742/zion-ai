@@ -251,7 +251,6 @@ export function createStoreStrategySettingsInputFromSources(args: {
   answers?: Record<string, unknown> | null;
   settings?: StoreStrategySettingsRow | null;
 }): StoreStrategySettingsInput {
-  const answers = args.answers ?? {};
   const settings = args.settings ?? null;
   const defaults = createDefaultStoreStrategySettingsInput();
 
@@ -336,6 +335,14 @@ export function createStoreStrategySettingsInputFromSources(args: {
     };
   }
 
+  return defaults;
+}
+
+export function createStoreStrategySettingsLegacySeedInputFromAnswers(
+  answersInput?: Record<string, unknown> | null,
+): StoreStrategySettingsInput {
+  const answers = answersInput ?? {};
+  const defaults = createDefaultStoreStrategySettingsInput();
   const serviceRegionModes = coerceStoreStrategyRegionModes(
     answers.service_region_modes,
   );

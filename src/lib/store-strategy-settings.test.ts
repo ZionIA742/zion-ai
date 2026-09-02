@@ -86,7 +86,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "legacy answers remain the fallback while there is no canonical row",
+    name: "missing canonical strategy row returns empty defaults without legacy fallback",
     run: async () => {
       const { createStoreStrategySettingsInputFromSources } =
         await loadStoreStrategySettingsModule();
@@ -103,6 +103,34 @@ const tests: TestCase[] = [
           strategy_positioning: "Consultiva",
           strategy_ai_presentation: "Fale como especialista",
         },
+      });
+
+      assert.equal(input.city, "");
+      assert.equal(input.state, "");
+      assert.deepEqual(input.serviceRegionModes, []);
+      assert.equal(input.serviceRegionPrimaryMode, "");
+      assert.equal(input.serviceRegionOutsideConsultation, false);
+      assert.deepEqual(input.storeServices, []);
+      assert.equal(input.strategyPositioning, "");
+      assert.equal(input.strategyAiPresentation, "");
+    },
+  },
+  {
+    name: "legacy strategy seed remains explicit for onboarding review when canonical row is absent",
+    run: async () => {
+      const { createStoreStrategySettingsLegacySeedInputFromAnswers } =
+        await loadStoreStrategySettingsModule();
+
+      const input = createStoreStrategySettingsLegacySeedInputFromAnswers({
+        city: "Campinas",
+        state: "SP",
+        service_regions: "Campinas e regiao",
+        service_region_modes: ["cidade_e_vizinhas", "sob_consulta"],
+        service_region_primary_mode: "cidade_e_vizinhas",
+        service_region_outside_consultation: true,
+        store_services: ["venda_piscinas", "instalacao_piscinas"],
+        strategy_positioning: "Consultiva",
+        strategy_ai_presentation: "Fale como especialista",
       });
 
       assert.equal(input.city, "Campinas");
@@ -163,7 +191,12 @@ const tests: TestCase[] = [
         },
       });
 
+      assert.equal(input.city, "");
+      assert.equal(input.state, "");
+      assert.equal(input.mainStoreBrand, "");
+      assert.equal(input.brandsWorked, "");
       assert.equal(input.strategyPositioning, "CANONICAL POSITION");
+      assert.equal(input.strategyAiPresentation, "");
       assert.equal("strategyAiStoreSummary" in input, false);
       assert.equal("strategyRequiresVisit" in input, false);
       assert.equal("strategyRequiresHuman" in input, false);

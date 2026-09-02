@@ -1,17 +1,25 @@
+import { buildSalesResponseBrain } from "./ai-sales-response-brain";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   type CommercialMessageIntentDecisionKind,
   buildHistoricalCommercialContextBlock,
   buildModelInput,
+  buildCommercialObjectiveBlock,
   describeCanonicalKnownFact,
   generateAiSalesReply,
   loadAnchoredCanonicalCommercialContext,
   loadCanonicalCommercialOpportunityStage,
   loadCanonicalQualificationSnapshotBySystem,
   loadCommercialSnapshotBatch,
-  resolveQualificationNextBestQuestion,
+  materializeCommercialOpportunityProfileFromQualificationBySystem,
+  inferNonQualificationNextBestQuestion,
+  inferForbiddenInThisReply,
+  resolveQualificationProfileInstallationEvidenceState,
+  resolveNextBestQuestionAfterQualificationAuthority,
+  resolveContextualQualificationDecision,
   loadScopedRecentMessages,
   resolveGenerationAnchorMessage,
   resolveMessagesWithCommercialContext,
@@ -365,6 +373,46 @@ function createCanonicalConflict(args: { factKey: string; valueKind?: string; ca
   };
 }
 
+function createProfileMaterializationRow(args?: {
+  currentProfileVersionId?: string;
+  versionNumber?: number;
+  previousProfileVersionId?: string | null;
+  componentCount?: number;
+  executionIntentCount?: number;
+  profileState?: string;
+  changed?: boolean;
+  replayed?: boolean;
+  preserved?: boolean;
+  outcome?: string;
+  requestFingerprint?: string;
+  actorType?: string;
+  sourceType?: string;
+  createdBy?: string;
+  currentUpdatedAt?: string;
+}) {
+  return {
+    current_profile_version_id:
+      args?.currentProfileVersionId ?? "profile-version-1",
+    version_number: args?.versionNumber ?? 1,
+    previous_profile_version_id:
+      args?.previousProfileVersionId === undefined
+        ? null
+        : args.previousProfileVersionId,
+    component_count: args?.componentCount ?? 0,
+    execution_intent_count: args?.executionIntentCount ?? 0,
+    profile_state: args?.profileState ?? "needs_clarification",
+    changed: args?.changed ?? true,
+    replayed: args?.replayed ?? false,
+    preserved: args?.preserved ?? false,
+    outcome: args?.outcome ?? "profile_version_created",
+    request_fingerprint: args?.requestFingerprint ?? "fingerprint-1",
+    actor_type: args?.actorType ?? "system",
+    source_type: args?.sourceType ?? "qualification_profile_materializer",
+    created_by: args?.createdBy ?? "sales_ai_profile_materializer_v1",
+    current_updated_at: args?.currentUpdatedAt ?? "2026-08-24T10:00:02.000Z",
+  };
+}
+
 function createMessage(overrides: Partial<TestMessage>): TestMessage {
   return {
     id: "message-default",
@@ -437,8 +485,11 @@ function createGenerateAiSalesReplySupabase(args?: {
   commercialOpportunityId?: string | null;
   onboardingAnswers?: Row[];
   commercialAiSettings?: Row[];
+  paymentSettings?: Row[];
+  operationSettings?: Row[];
   canonicalReaderResponses?: Array<{ data: unknown; error: { message: string } | null }>;
   writerResponse?: RpcMockEntry;
+  materializerResponse?: RpcMockEntry;
   includeCurrentIntentResolution?: boolean;
   additionalCommercialOpportunities?: Row[];
   cmirWriterResponse?: RpcMockEntry;
@@ -517,6 +568,8 @@ function createGenerateAiSalesReplySupabase(args?: {
       ],
       store_onboarding_answers: args?.onboardingAnswers ?? [],
       store_commercial_ai_settings: args?.commercialAiSettings ?? [],
+      store_payment_settings: args?.paymentSettings ?? [],
+      store_operation_settings: args?.operationSettings ?? [],
       messages: [
         createMessage({
           id: anchorMessageId,
@@ -670,6 +723,12 @@ function createGenerateAiSalesReplySupabase(args?: {
           ],
           error: null,
         })),
+      materialize_commercial_opportunity_profile_from_qualification_by_system:
+        args?.materializerResponse ??
+        {
+          data: [createProfileMaterializationRow()],
+          error: null,
+        },
     },
   );
 }
@@ -1194,44 +1253,587 @@ test("anchored canonical context fails closed when canonical stage is outside th
   });
 });
 
-test("qualification question is suppressed when canonical core groups are already satisfied", () => {
-  const question = resolveQualificationNextBestQuestion({
-    heuristicQuestion:
-      "Me fala mais ou menos o espaco ou a medida que voce tem para colocar a piscina.",
-    snapshot: {
-      organizationId: "org-1",
-      storeId: "store-1",
-      commercialOpportunityId: "opp-1",
-      knownFacts: [],
-      missingFactGroups: [],
-      conflicts: [],
-      provenanceSummary: {
-        knownFactCount: 0,
-        confirmedCount: 0,
-        inferredCount: 0,
-        conflictCount: 0,
-        messageBackedCount: 0,
-        conversationBackedCount: 0,
-        sourceCounts: {},
-      },
-      canAskNextQuestion: false,
-      knownFactCount: 0,
-      missingGroupCount: 0,
-      conflictCount: 0,
+function createContextualQualificationSnapshot(args?: {
+  knownFacts?: Row[];
+  missingFactGroups?: Row[];
+  conflicts?: Row[];
+  canAskNextQuestion?: boolean;
+}) {
+  const knownFacts = args?.knownFacts ?? [];
+  const missingFactGroups = args?.missingFactGroups ?? [];
+  const conflicts = args?.conflicts ?? [];
+
+  return {
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+    knownFacts,
+    missingFactGroups,
+    conflicts,
+    provenanceSummary: {
+      knownFactCount: knownFacts.length,
+      confirmedCount: knownFacts.length,
+      inferredCount: 0,
+      conflictCount: conflicts.length,
+      messageBackedCount: 0,
+      conversationBackedCount: 0,
+      sourceCounts: {},
     },
+    canAskNextQuestion:
+      args?.canAskNextQuestion ?? (missingFactGroups.length > 0 || conflicts.length > 0),
+    knownFactCount: knownFacts.length,
+    missingGroupCount: missingFactGroups.length,
+    conflictCount: conflicts.length,
+  };
+}
+
+function createActiveQualificationPatience(shouldAvoidNewQuestion = false) {
+  return {
+    status: "active_interest",
+    shouldAvoidNewQuestion,
+  };
+}
+
+test("local photo context can make canonical space the structured qualification target", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "space",
+          factKeys: ["space_text", "requested_area_m2"],
+        }),
+      ],
+      canAskNextQuestion: true,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "photo_or_simulation_request",
+    photoOrSimulationSubtype: "local_photo_context",
+    intents: [],
+    lastCustomerMessage: "Posso mandar uma foto do meu quintal?",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: "space_text",
+    targetGroup: "space",
+    targetStatus: "missing",
+    askNow: true,
+    reason: "target_missing_and_relevant",
+  });
+});
+
+test("visual simulation request does not invent a qualification target in the pilot", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "space",
+          factKeys: ["space_text", "requested_area_m2"],
+        }),
+      ],
+      canAskNextQuestion: true,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "photo_or_simulation_request",
+    photoOrSimulationSubtype: "simulation_visual_request",
+    intents: [],
+    lastCustomerMessage:
+      "Consegue fazer uma simulacao da piscina no meu quintal?",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: null,
+    targetGroup: null,
+    targetStatus: "not_applicable",
+    askNow: false,
+    reason: "no_relevant_qualification_target",
+  });
+});
+
+test("visual simulation request does not automatically ask the customer to send a location photo", () => {
+  const question = inferNonQualificationNextBestQuestion({
+    pattern: "photo_or_simulation_request",
+    photoOrSimulationSubtype: "simulation_visual_request",
+    facts: {
+      budgetKnown: false,
+      authorityKnown: false,
+      needKnown: false,
+      timingKnown: false,
+      locationKnown: false,
+      sizeKnown: false,
+      installationInterestKnown: false,
+      paymentInterestKnown: false,
+      visitInterestKnown: false,
+    } as never,
+    canonicalQualificationSnapshot:
+      createContextualQualificationSnapshot({
+        canAskNextQuestion: false,
+      }) as never,
+    lastCustomerMessage:
+      "Consegue montar uma piscina na foto do meu quintal?",
+    explicitCatalogRequest: false,
+    patienceSignal: createActiveQualificationPatience() as never,
+    hasCustomerLocationPhoto: false,
   });
 
   assert.equal(question, null);
 });
 
-test("qualification question can naturally resolve a canonical conflict when the heuristic targets that group", () => {
-  const question = resolveQualificationNextBestQuestion({
-    heuristicQuestion: "Qual cidade ou bairro fica o local da piscina?",
-    snapshot: {
-      organizationId: "org-1",
-      storeId: "store-1",
-      commercialOpportunityId: "opp-1",
-      knownFacts: [],
+test("photo flow cannot recover a hidden legacy space or access qualification question", () => {
+  const nextQuestion =
+    resolveNextBestQuestionAfterQualificationAuthority({
+      pattern: "photo_or_simulation_request",
+      nonQualificationQuestion: null,
+      heuristicQuestion:
+        "Pode mandar sim. Se conseguir, me manda tambem uma nocao de medida do espaco.",
+      snapshot: createContextualQualificationSnapshot({
+        canAskNextQuestion: true,
+      }) as never,
+      qualificationDecision: {
+        targetFactKey: null,
+        targetGroup: null,
+        targetStatus: "not_applicable",
+        askNow: false,
+        reason: "no_relevant_qualification_target",
+      },
+    });
+
+  assert.equal(nextQuestion, null);
+});
+
+test("real product photo request without a model keeps its legitimate clarification question", () => {
+  const question = inferNonQualificationNextBestQuestion({
+    pattern: "photo_or_simulation_request",
+    photoOrSimulationSubtype: "product_photo_without_model",
+    productPhotoRequestContext: {
+      kind: "ambiguous",
+      source: "request",
+    } as never,
+    facts: {
+      budgetKnown: false,
+      authorityKnown: false,
+      needKnown: false,
+      timingKnown: false,
+      locationKnown: false,
+      sizeKnown: false,
+      installationInterestKnown: false,
+      paymentInterestKnown: false,
+      visitInterestKnown: false,
+    } as never,
+    canonicalQualificationSnapshot:
+      createContextualQualificationSnapshot({
+        canAskNextQuestion: false,
+      }) as never,
+    lastCustomerMessage: "Tem foto dessa piscina?",
+    explicitCatalogRequest: false,
+    patienceSignal: createActiveQualificationPatience() as never,
+    hasCustomerLocationPhoto: false,
+  });
+
+  assert.equal(question, "Qual modelo voce quer ver na foto?");
+});
+test("generic pool opening chooses one canonical product reference qualification target instead of model plus space", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "need",
+          factKeys: [
+            "need_summary",
+            "interested_product_reference",
+            "customer_preferences_text",
+          ],
+        }),
+      ],
+      canAskNextQuestion: true,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "generic_pool_opening",
+    intents: [],
+    lastCustomerMessage: "Oi, estou procurando uma piscina",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: "interested_product_reference",
+    targetGroup: "need",
+    targetStatus: "missing",
+    askNow: true,
+    reason: "target_missing_and_relevant",
+  });
+});
+
+test("generic pool opening without canonical qualification context cannot revive the legacy model plus space question", () => {
+  const nextQuestion =
+    resolveNextBestQuestionAfterQualificationAuthority({
+      pattern: "generic_pool_opening",
+      nonQualificationQuestion: null,
+      heuristicQuestion:
+        "Voce ja tem algum modelo em mente? Me fala tambem o espaco disponivel.",
+      snapshot: null,
+      qualificationDecision: {
+        targetFactKey: null,
+        targetGroup: null,
+        targetStatus: "unproven",
+        askNow: false,
+        reason: "no_canonical_snapshot",
+      },
+    });
+
+  assert.equal(nextQuestion, null);
+});
+test("pure price question cannot fall back to a legacy qualification question when structured qualification intentionally has no target", () => {
+  const nextQuestion = resolveNextBestQuestionAfterQualificationAuthority({
+    pattern: "price_question",
+    nonQualificationQuestion: null,
+    heuristicQuestion: "isso seria para agora ou mais pra frente?",
+    snapshot: createContextualQualificationSnapshot({
+      canAskNextQuestion: true,
+    }) as never,
+    qualificationDecision: {
+      targetFactKey: null,
+      targetGroup: null,
+      targetStatus: "not_applicable",
+      askNow: false,
+      reason: "no_relevant_qualification_target",
+    },
+  });
+
+  assert.equal(nextQuestion, null);
+});
+
+test("discount objection cannot fall back to legacy installation payment or preference qualification", () => {
+  const nextQuestion = resolveNextBestQuestionAfterQualificationAuthority({
+    pattern: "discount_question",
+    nonQualificationQuestion: null,
+    heuristicQuestion: "Voce esta olhando so a piscina ou tambem instalacao?",
+    snapshot: createContextualQualificationSnapshot({
+      canAskNextQuestion: true,
+    }) as never,
+    qualificationDecision: {
+      targetFactKey: null,
+      targetGroup: null,
+      targetStatus: "not_applicable",
+      askNow: false,
+      reason: "no_relevant_qualification_target",
+    },
+  });
+
+  assert.equal(nextQuestion, null);
+});
+test("structured qualification target removes the legacy qualification sentence from nextBestQuestion authority", () => {
+  const nextQuestion = resolveNextBestQuestionAfterQualificationAuthority({
+    pattern: "catalog_recommendation_or_refinement",
+    nonQualificationQuestion: null,
+    heuristicQuestion:
+      "Me fala mais ou menos o espaco ou a medida que voce tem para colocar a piscina.",
+    snapshot: createContextualQualificationSnapshot({
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "space",
+          factKeys: ["space_text", "requested_area_m2"],
+        }),
+      ],
+      canAskNextQuestion: true,
+    }) as never,
+    qualificationDecision: {
+      targetFactKey: "space_text",
+      targetGroup: "space",
+      targetStatus: "missing",
+      askNow: true,
+      reason: "target_missing_and_relevant",
+    },
+  });
+
+  assert.equal(nextQuestion, null);
+});
+
+test("commercial or operational next question remains available when qualification authority is structured", () => {
+  const operationalQuestion =
+    "Vou verificar na agenda os horarios disponiveis. Qual dia ou periodo costuma ser melhor pra voce?";
+
+  const nextQuestion = resolveNextBestQuestionAfterQualificationAuthority({
+    pattern: "general_sales_conversation",
+    nonQualificationQuestion: operationalQuestion,
+    heuristicQuestion:
+      "Me fala mais ou menos o espaco ou a medida que voce tem para colocar a piscina.",
+    snapshot: createContextualQualificationSnapshot({
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "space",
+          factKeys: ["space_text", "requested_area_m2"],
+        }),
+      ],
+      canAskNextQuestion: true,
+    }) as never,
+    qualificationDecision: {
+      targetFactKey: "space_text",
+      targetGroup: "space",
+      targetStatus: "missing",
+      askNow: true,
+      reason: "target_missing_and_relevant",
+    },
+  });
+
+  assert.equal(nextQuestion, operationalQuestion);
+});
+test("qualification askNow reaches the sales prompt as a structured target without requiring a legacy question sentence", () => {
+  const qualificationDecision = {
+    targetFactKey: "space_text",
+    targetGroup: "space",
+    targetStatus: "missing",
+    askNow: true,
+    reason: "target_missing_and_relevant",
+  } as const;
+
+  const block = buildCommercialObjectiveBlock({
+    pattern: "catalog_recommendation_or_refinement",
+    paymentOrClosingSubtype: "none",
+    intents: ["catalog"],
+    primaryIntent: "catalog",
+    mustAnswerFirst: ["responder com orientacao pratica sobre modelos/opcoes"],
+    knownFacts: [],
+    missingFacts: ["espaco ainda nao confirmado"],
+    qualificationDecision,
+    nextBestQuestion: null,
+    responseGoal: "orientar usando o contexto e avancar apenas se fizer sentido",
+    forbiddenInThisReply: [],
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience(),
+  } as never);
+
+  assert.match(block, /DECISAO DE QUALIFICACAO CONTEXTUAL/);
+  assert.match(block, /perguntar qualificacao agora: sim/);
+  assert.match(block, /fato alvo: space_text/);
+  assert.match(block, /grupo alvo: space/);
+  assert.match(block, /estado do alvo: missing/);
+
+  const forbidden = inferForbiddenInThisReply({
+    pattern: "catalog_recommendation_or_refinement",
+    intents: ["catalog"],
+    nextBestQuestion: null,
+    qualificationDecision,
+    responseMode: "consultative",
+    explicitCatalogRequest: true,
+    lastAiListedPools: false,
+    lastCustomerMessage: "Quero ver algumas opcoes",
+    patienceSignal: createActiveQualificationPatience(),
+    recommendationPolicy: {
+      poolOptionCount: 1,
+    },
+    requestedPoolReference: null,
+    strongestPoolReferenceMatch: "none",
+    offersTechnicalVisit: false,
+  } as never);
+
+  assert.equal(
+    forbidden.includes(
+      "nao inventar pergunta no final so para encerrar com interrogacao",
+    ),
+    false,
+  );
+});
+
+test("qualification askNow false forbids inventing a question when there is no commercial or operational next question", () => {
+  const forbidden = inferForbiddenInThisReply({
+    pattern: "price_question",
+    intents: ["price"],
+    nextBestQuestion: null,
+    qualificationDecision: {
+      targetFactKey: null,
+      targetGroup: null,
+      targetStatus: "not_applicable",
+      askNow: false,
+      reason: "no_relevant_qualification_target",
+    },
+    responseMode: "objective",
+    explicitCatalogRequest: false,
+    lastAiListedPools: false,
+    lastCustomerMessage: "Quanto custa?",
+    patienceSignal: createActiveQualificationPatience(),
+    recommendationPolicy: {
+      poolOptionCount: 1,
+    },
+    requestedPoolReference: null,
+    strongestPoolReferenceMatch: "none",
+    offersTechnicalVisit: false,
+  } as never);
+
+  assert.equal(
+    forbidden.includes(
+      "nao inventar pergunta no final so para encerrar com interrogacao",
+    ),
+    true,
+  );
+});
+test("contextual qualification fails closed without canonical snapshot", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: null,
+    crmStage: "qualificacao",
+    pattern: "price_question",
+    intents: ["price"],
+    lastCustomerMessage: "Quanto custa?",
+    explicitCatalogRequest: false,
+    responseMode: "objective",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: null,
+    targetGroup: null,
+    targetStatus: "unproven",
+    askNow: false,
+    reason: "no_canonical_snapshot",
+  });
+});
+
+test("contextual qualification does not turn a pure price question into a budget question", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      canAskNextQuestion: false,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "price_question",
+    intents: ["price"],
+    lastCustomerMessage: "Quanto custa?",
+    explicitCatalogRequest: false,
+    responseMode: "objective",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: null,
+    targetGroup: null,
+    targetStatus: "not_applicable",
+    askNow: false,
+    reason: "no_relevant_qualification_target",
+  });
+});
+
+test("contextual qualification keeps volunteered canonical budget without using price as a new question target", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      knownFacts: [
+        createCanonicalKnownFact({
+          factKey: "budget_text",
+          normalizedValueText: "ate 20 mil",
+        }),
+      ],
+      canAskNextQuestion: false,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "price_question",
+    intents: ["price"],
+    lastCustomerMessage: "E quanto custa esse modelo?",
+    explicitCatalogRequest: false,
+    responseMode: "objective",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: null,
+    targetGroup: null,
+    targetStatus: "not_applicable",
+    askNow: false,
+    reason: "no_relevant_qualification_target",
+  });
+});
+test("contextual qualification does not turn a discount objection into a generic payment question", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "payment",
+          factKeys: ["payment_interest"],
+        }),
+      ],
+      canAskNextQuestion: true,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "discount_question",
+    intents: [],
+    lastCustomerMessage: "Tem como melhorar esse valor?",
+    explicitCatalogRequest: false,
+    responseMode: "objective",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: null,
+    targetGroup: null,
+    targetStatus: "not_applicable",
+    askNow: false,
+    reason: "no_relevant_qualification_target",
+  });
+});
+
+test("contextual qualification can target payment when payment intent is explicit", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "payment",
+          factKeys: ["payment_interest"],
+        }),
+      ],
+      canAskNextQuestion: true,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "payment_or_closing_flow",
+    intents: ["payment"],
+    lastCustomerMessage: "Da para pagar no Pix ou parcelado?",
+    explicitCatalogRequest: false,
+    responseMode: "objective",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: "payment_interest",
+    targetGroup: "payment",
+    targetStatus: "missing",
+    askNow: true,
+    reason: "target_missing_and_relevant",
+  });
+});
+test("contextual qualification asks a relevant canonical space gap without reading question text", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "space",
+          factKeys: ["space_text", "requested_area_m2"],
+        }),
+      ],
+      canAskNextQuestion: true,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "catalog_recommendation_or_refinement",
+    intents: ["catalog"],
+    lastCustomerMessage: "Quero ver algumas opcoes",
+    explicitCatalogRequest: true,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: "space_text",
+    targetGroup: "space",
+    targetStatus: "missing",
+    askNow: true,
+    reason: "target_missing_and_relevant",
+  });
+});
+
+test("contextual qualification prioritizes canonical conflict clarification for relevant location", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
       missingFactGroups: [
         createCanonicalMissingGroup({
           groupKey: "location",
@@ -1242,106 +1844,176 @@ test("qualification question can naturally resolve a canonical conflict when the
       conflicts: [
         createCanonicalConflict({
           factKey: "location_text",
-        }) as never,
+        }),
       ],
-      provenanceSummary: {
-        knownFactCount: 0,
-        confirmedCount: 0,
-        inferredCount: 0,
-        conflictCount: 1,
-        messageBackedCount: 0,
-        conversationBackedCount: 0,
-        sourceCounts: {},
-      },
       canAskNextQuestion: true,
-      knownFactCount: 0,
-      missingGroupCount: 1,
-      conflictCount: 1,
-    },
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "general_sales_conversation",
+    intents: ["installation"],
+    lastCustomerMessage: "Vocês fazem instalação aqui?",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: "location_text",
+    targetGroup: "location",
+    targetStatus: "conflict",
+    askNow: true,
+    reason: "target_conflict_requires_clarification",
+  });
+});
+
+test("contextual qualification does not confuse a satisfied need group with exact product reference being known", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      knownFacts: [
+        createCanonicalKnownFact({
+          factKey: "need_summary",
+          normalizedValueText: "piscina para familia",
+        }),
+      ],
+      missingFactGroups: [],
+      canAskNextQuestion: false,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "generic_pool_opening",
+    intents: [],
+    lastCustomerMessage: "Quero uma piscina",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: "interested_product_reference",
+    targetGroup: "need",
+    targetStatus: "unproven",
+    askNow: false,
+    reason: "target_group_already_satisfied",
+  });
+});
+
+test("contextual qualification respects patience and suppresses a new qualification question", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "space",
+          factKeys: ["space_text", "requested_area_m2"],
+        }),
+      ],
+      canAskNextQuestion: true,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "catalog_recommendation_or_refinement",
+    intents: ["catalog"],
+    lastCustomerMessage: "Depois eu vejo isso",
+    explicitCatalogRequest: true,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience(true) as never,
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: null,
+    targetGroup: null,
+    targetStatus: "not_applicable",
+    askNow: false,
+    reason: "current_context_does_not_justify_question",
+  });
+});
+
+test("technical visit with canonical location known advances only to operational period question", () => {
+  const snapshot = createContextualQualificationSnapshot({
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "location_text",
+        normalizedValueText: "campinas",
+      }),
+    ],
+    canAskNextQuestion: false,
+  }) as never;
+
+  const question = inferNonQualificationNextBestQuestion({
+    pattern: "general_sales_conversation",
+    facts: {
+      budgetKnown: false,
+      authorityKnown: false,
+      needKnown: false,
+      timingKnown: false,
+      locationKnown: false,
+      sizeKnown: false,
+      installationInterestKnown: false,
+      paymentInterestKnown: false,
+      visitInterestKnown: false,
+    } as never,
+    canonicalQualificationSnapshot: snapshot,
+    lastCustomerMessage: "Quero marcar uma visita tecnica",
+    explicitCatalogRequest: false,
+    patienceSignal: createActiveQualificationPatience() as never,
+    hasCustomerLocationPhoto: true,
   });
 
   assert.equal(
     question,
-    "So para eu nao assumir errado: qual cidade ou bairro fica o local da piscina?",
+    "Vou verificar na agenda os horarios disponiveis. Qual dia ou periodo costuma ser melhor pra voce?",
   );
 });
 
-test("qualification question stays null when heuristic has no question even if a canonical gap exists", () => {
-  const question = resolveQualificationNextBestQuestion({
-    heuristicQuestion: null,
-    snapshot: {
-      organizationId: "org-1",
-      storeId: "store-1",
-      commercialOpportunityId: "opp-1",
-      knownFacts: [],
-      missingFactGroups: [
-        createCanonicalMissingGroup({
-          groupKey: "payment",
-          factKeys: ["payment_interest"],
-        }),
-      ],
-      conflicts: [],
-      provenanceSummary: {
-        knownFactCount: 0,
-        confirmedCount: 0,
-        inferredCount: 0,
-        conflictCount: 0,
-        messageBackedCount: 0,
-        conversationBackedCount: 0,
-        sourceCounts: {},
-      },
-      canAskNextQuestion: true,
-      knownFactCount: 0,
-      missingGroupCount: 1,
-      conflictCount: 0,
-    },
+test("technical visit with canonical location missing leaves location to contextual qualification", () => {
+  const snapshot = createContextualQualificationSnapshot({
+    missingFactGroups: [
+      createCanonicalMissingGroup({
+        groupKey: "location",
+        factKeys: ["location_text"],
+      }),
+    ],
+    canAskNextQuestion: true,
+  }) as never;
+
+  const nonQualificationQuestion = inferNonQualificationNextBestQuestion({
+    pattern: "general_sales_conversation",
+    facts: {
+      budgetKnown: false,
+      authorityKnown: false,
+      needKnown: false,
+      timingKnown: false,
+      locationKnown: true,
+      sizeKnown: false,
+      installationInterestKnown: false,
+      paymentInterestKnown: false,
+      visitInterestKnown: false,
+    } as never,
+    canonicalQualificationSnapshot: snapshot,
+    lastCustomerMessage: "Quero marcar uma visita tecnica",
+    explicitCatalogRequest: false,
+    patienceSignal: createActiveQualificationPatience() as never,
+    hasCustomerLocationPhoto: true,
   });
 
-  assert.equal(question, null);
-});
+  assert.equal(nonQualificationQuestion, null);
 
-test("canonical known group already satisfied can redirect heuristic question to another canonical gap", () => {
-  const question = resolveQualificationNextBestQuestion({
-    heuristicQuestion:
-      "Me fala mais ou menos o espaco ou a medida que voce tem para colocar a piscina.",
-    snapshot: {
-      organizationId: "org-1",
-      storeId: "store-1",
-      commercialOpportunityId: "opp-1",
-      knownFacts: [
-        createCanonicalKnownFact({
-          factKey: "space_text",
-          normalizedValueText: "3x4",
-        }) as never,
-      ],
-      missingFactGroups: [
-        createCanonicalMissingGroup({
-          groupKey: "location",
-          factKeys: ["location_text"],
-        }),
-      ],
-      conflicts: [],
-      provenanceSummary: {
-        knownFactCount: 1,
-        confirmedCount: 1,
-        inferredCount: 0,
-        conflictCount: 0,
-        messageBackedCount: 0,
-        conversationBackedCount: 0,
-        sourceCounts: {
-          system_correction: 1,
-        },
-      },
-      canAskNextQuestion: true,
-      knownFactCount: 1,
-      missingGroupCount: 1,
-      conflictCount: 0,
-    },
+  const decision = resolveContextualQualificationDecision({
+    snapshot,
+    crmStage: "qualificacao",
+    pattern: "general_sales_conversation",
+    intents: ["technical_visit"],
+    lastCustomerMessage: "Quero marcar uma visita tecnica",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
   });
 
-  assert.equal(question, "Qual cidade ou bairro fica o local da piscina?");
+  assert.deepEqual(decision, {
+    targetFactKey: "location_text",
+    targetGroup: "location",
+    targetStatus: "missing",
+    askNow: true,
+    reason: "target_missing_and_relevant",
+  });
 });
-
 test("captured anchor keeps other historical context out of current commercial inference", () => {
   const scenario = resolveScenario({
     anchorMessageId: "msg-b",
@@ -2541,6 +3213,288 @@ test("canonical qualification reader helper remains read-only and calls only the
   );
 });
 
+test("qualification profile installation evidence resolver maps absent known and conflict deterministically", () => {
+  const absentSnapshot = createContextualQualificationSnapshot() as never;
+  const knownTrueSnapshot = createContextualQualificationSnapshot({
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "installation_interest",
+        valueKind: "boolean",
+        value: true,
+        state: "confirmed",
+      }),
+    ],
+  }) as never;
+  const knownFalseSnapshot = createContextualQualificationSnapshot({
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "installation_interest",
+        valueKind: "boolean",
+        value: false,
+        state: "confirmed",
+      }),
+    ],
+  }) as never;
+  const knownInferredSnapshot = createContextualQualificationSnapshot({
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "installation_interest",
+        valueKind: "boolean",
+        value: true,
+        state: "inferred",
+      }),
+    ],
+  }) as never;
+  const conflictSnapshot = createContextualQualificationSnapshot({
+    conflicts: [
+      createCanonicalConflict({
+        factKey: "installation_interest",
+        valueKind: "boolean",
+      }),
+    ],
+  }) as never;
+  const conflictWinsSnapshot = createContextualQualificationSnapshot({
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "installation_interest",
+        valueKind: "boolean",
+        value: false,
+      }),
+    ],
+    conflicts: [
+      createCanonicalConflict({
+        factKey: "installation_interest",
+        valueKind: "boolean",
+      }),
+    ],
+  }) as never;
+
+  assert.equal(
+    resolveQualificationProfileInstallationEvidenceState(absentSnapshot),
+    "absent",
+  );
+  assert.equal(
+    resolveQualificationProfileInstallationEvidenceState(knownTrueSnapshot),
+    "known",
+  );
+  assert.equal(
+    resolveQualificationProfileInstallationEvidenceState(knownFalseSnapshot),
+    "known",
+  );
+  assert.equal(
+    resolveQualificationProfileInstallationEvidenceState(knownInferredSnapshot),
+    "known",
+  );
+  assert.equal(
+    resolveQualificationProfileInstallationEvidenceState(conflictSnapshot),
+    "conflict",
+  );
+  assert.equal(
+    resolveQualificationProfileInstallationEvidenceState(conflictWinsSnapshot),
+    "conflict",
+  );
+});
+
+test("qualification profile materializer calls only the guard rpc with canonical scope and anchor event key", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      materialize_commercial_opportunity_profile_from_qualification_by_system: {
+        data: [createProfileMaterializationRow()],
+        error: null,
+      },
+    },
+  );
+
+  const result =
+    await materializeCommercialOpportunityProfileFromQualificationBySystem({
+      supabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      commercialOpportunityId: "opp-1",
+      materializationEventKey: "msg-anchor",
+      canonicalQualificationSnapshot: createContextualQualificationSnapshot({
+        knownFacts: [
+          createCanonicalKnownFact({
+            factKey: "installation_interest",
+            valueKind: "boolean",
+            value: false,
+          }),
+        ],
+      }) as never,
+    });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(supabase.rpcCalls, [
+    {
+      fn: "materialize_commercial_opportunity_profile_from_qualification_by_system",
+      payload: {
+        p_organization_id: "org-1",
+        p_store_id: "store-1",
+        p_commercial_opportunity_id: "opp-1",
+        p_materialization_event_key: "msg-anchor",
+        p_installation_evidence_state: "known",
+      },
+    },
+  ]);
+  assert.equal(
+    supabase.rpcCalls.some(
+      (call) =>
+        call.fn === "write_commercial_opportunity_profile_by_system" ||
+        call.fn === "write_commercial_opportunity_profile_internal",
+    ),
+    false,
+  );
+});
+
+test("qualification profile materializer source uses only the guard and never maps installation interest to included or excluded", () => {
+  const source = readFileSync(
+    "src/lib/server/generate-ai-sales-reply.ts",
+    "utf8",
+  );
+  const resolverStart = source.indexOf(
+    "export function resolveQualificationProfileInstallationEvidenceState(",
+  );
+  const helperStart = source.indexOf(
+    "export async function materializeCommercialOpportunityProfileFromQualificationBySystem(",
+  );
+  const helperEnd = source.indexOf(
+    "async function writeCanonicalQualificationFactBySystem(",
+    helperStart,
+  );
+
+  assert.equal(resolverStart > -1, true);
+  assert.equal(helperStart > resolverStart, true);
+  assert.equal(helperEnd > helperStart, true);
+
+  const block = source.slice(resolverStart, helperEnd);
+
+  assert.equal(
+    block.includes(
+      "materialize_commercial_opportunity_profile_from_qualification_by_system",
+    ),
+    true,
+  );
+  assert.equal(block.includes("write_commercial_opportunity_profile_by_system"), false);
+  assert.equal(block.includes("write_commercial_opportunity_profile_internal"), false);
+  assert.equal(block.includes("included"), false);
+  assert.equal(block.includes("excluded"), false);
+});
+
+test("qualification profile materializer treats preserved human and superior authority as success", async () => {
+  for (const outcome of [
+    "preserved_human_authority",
+    "preserved_non_qualification_authority",
+    "qualification_profile_unchanged",
+    "idempotent_replay_current",
+    "idempotent_replay_stale",
+    "qualification_profile_materialization_completed",
+  ]) {
+    const supabase = new FakeSupabase(
+      {},
+      {},
+      {
+        materialize_commercial_opportunity_profile_from_qualification_by_system: {
+          data: [
+            createProfileMaterializationRow({
+              outcome,
+              preserved:
+                outcome === "preserved_human_authority" ||
+                outcome === "preserved_non_qualification_authority",
+              changed: false,
+              replayed: outcome.startsWith("idempotent_replay"),
+              componentCount: 2,
+              executionIntentCount: 1,
+              profileState: "resolved",
+              actorType:
+                outcome === "preserved_human_authority" ? "human" : "system",
+            }),
+          ],
+          error: null,
+        },
+      },
+    );
+
+    const result =
+      await materializeCommercialOpportunityProfileFromQualificationBySystem({
+        supabase,
+        organizationId: "org-1",
+        storeId: "store-1",
+        commercialOpportunityId: "opp-1",
+        materializationEventKey: "msg-anchor",
+        canonicalQualificationSnapshot:
+          createContextualQualificationSnapshot() as never,
+      });
+
+    assert.equal(result.ok, true, outcome);
+  }
+});
+
+test("qualification profile materializer fails closed on rpc error cardinality invalid payload or missing event key", async () => {
+  for (const materializerResponse of [
+    { data: null, error: { message: "materializer exploded" } },
+    { data: [], error: null },
+    {
+      data: [createProfileMaterializationRow(), createProfileMaterializationRow()],
+      error: null,
+    },
+    {
+      data: [
+        createProfileMaterializationRow({
+          currentProfileVersionId: "",
+        }),
+      ],
+      error: null,
+    },
+  ]) {
+    const supabase = new FakeSupabase(
+      {},
+      {},
+      {
+        materialize_commercial_opportunity_profile_from_qualification_by_system:
+          materializerResponse,
+      },
+    );
+
+    const result =
+      await materializeCommercialOpportunityProfileFromQualificationBySystem({
+        supabase,
+        organizationId: "org-1",
+        storeId: "store-1",
+        commercialOpportunityId: "opp-1",
+        materializationEventKey: "msg-anchor",
+        canonicalQualificationSnapshot:
+          createContextualQualificationSnapshot() as never,
+      });
+
+    assert.equal(result.ok, false);
+  }
+
+  const missingEventKeyResult =
+    await materializeCommercialOpportunityProfileFromQualificationBySystem({
+      supabase: new FakeSupabase(
+        {},
+        {},
+        {
+          materialize_commercial_opportunity_profile_from_qualification_by_system:
+            {
+              data: [createProfileMaterializationRow()],
+              error: null,
+            },
+        },
+      ),
+      organizationId: "org-1",
+      storeId: "store-1",
+      commercialOpportunityId: "opp-1",
+      materializationEventKey: "",
+      canonicalQualificationSnapshot:
+        createContextualQualificationSnapshot() as never,
+    });
+
+  assert.equal(missingEventKeyResult.ok, false);
+});
+
 test("generateAiSalesReply writes canonical qualification facts, rereads snapshot, and aggregates usage", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     canonicalReaderResponses: [
@@ -2688,6 +3642,211 @@ test("generateAiSalesReply writes canonical qualification facts, rereads snapsho
   );
 });
 
+test("generateAiSalesReply materializes profile with the initial qualification snapshot when no new facts are written", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "oi, queria entender melhor as opcoes",
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: "opp-1",
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "installation_interest",
+                valueKind: "boolean",
+                value: false,
+                state: "confirmed",
+              }),
+            ],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Te ajudo com as opcoes.",
+      usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    supabase.rpcCalls.filter(
+      (call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system",
+    ).length,
+    0,
+  );
+  assert.equal(
+    supabase.rpcCalls.filter(
+      (call) => call.fn === "read_commercial_opportunity_qualification_facts_by_system",
+    ).length,
+    1,
+  );
+  const materializerCalls = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn ===
+      "materialize_commercial_opportunity_profile_from_qualification_by_system",
+  );
+  assert.equal(materializerCalls.length, 1);
+  assert.deepEqual(materializerCalls[0]?.payload, {
+    p_organization_id: "org-1",
+    p_store_id: "store-1",
+    p_commercial_opportunity_id: "opp-1",
+    p_materialization_event_key: "msg-anchor",
+    p_installation_evidence_state: "known",
+  });
+});
+
+test("generateAiSalesReply materializes profile with the post-write qualification snapshot", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "tambem quero instalacao",
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: "opp-1",
+            knownFacts: [],
+            missingFactGroups: [
+              createCanonicalMissingGroup({
+                groupKey: "installation",
+                factKeys: ["installation_interest"],
+              }),
+            ],
+            canAskNextQuestion: true,
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: "opp-1",
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "installation_interest",
+                valueKind: "boolean",
+                value: true,
+                state: "confirmed",
+              }),
+            ],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Instalacao fica como escopo a confirmar.",
+      usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    supabase.rpcCalls.filter(
+      (call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system",
+    ).length,
+    1,
+  );
+  assert.equal(
+    supabase.rpcCalls.filter(
+      (call) => call.fn === "read_commercial_opportunity_qualification_facts_by_system",
+    ).length,
+    2,
+  );
+  const materializerCall = supabase.rpcCalls.find(
+    (call) =>
+      call.fn ===
+      "materialize_commercial_opportunity_profile_from_qualification_by_system",
+  );
+  assert.equal(
+    materializerCall?.payload.p_installation_evidence_state,
+    "known",
+  );
+  assert.equal(
+    materializerCall?.payload.p_materialization_event_key,
+    "msg-anchor",
+  );
+});
+
+test("generateAiSalesReply fails closed when canonical profile materialization fails", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "oi, queria entender melhor as opcoes",
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: "opp-1",
+            knownFacts: [],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+    materializerResponse: {
+      data: null,
+      error: { message: "materializer exploded" },
+    },
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "MATERIALIZE_CANONICAL_PROFILE_FAILED",
+    message: "materializer exploded",
+  });
+  assert.equal(openai.calls.length, 1);
+});
+
 test("generateAiSalesReply prefers canonical commercial AI settings over legacy price answers", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     onboardingAnswers: [
@@ -2758,6 +3917,151 @@ test("generateAiSalesReply prefers canonical commercial AI settings over legacy 
   assert.equal(finalPayload.includes("so_apos_entender_instalacao"), true);
 });
 
+test("generateAiSalesReply uses canonical payment settings for Pix down payment and payment methods over legacy answers", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Aceita Pix, cartao e entrada?",
+    onboardingAnswers: [
+      {
+        question_key: "accepted_payment_methods",
+        answer: ["boleto"],
+      },
+      {
+        question_key: "accepted_payment_methods_summary",
+        answer: "LEGACY_PAYMENT_METHODS_SHOULD_NOT_WIN",
+      },
+      {
+        question_key: "pix_key",
+        answer: "legacy-pix-key",
+      },
+      {
+        question_key: "down_payment_rule",
+        answer: "legacy entrada obrigatoria",
+      },
+    ],
+    paymentSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        accepted_payment_methods: ["pix", "cartao_credito"],
+        pix_key_type: "email",
+        pix_key: "financeiro@example.com",
+        pix_holder_name: "Loja 1",
+        down_payment_mode: "required",
+        down_payment_value_type: "percent",
+        down_payment_percent: 20,
+        down_payment_amount_cents: null,
+        installments_enabled: true,
+        max_installments: 6,
+        installment_interest_policy: "interest_free",
+        payment_notes: "Confirmacao humana do comprovante.",
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      output_text: "A loja aceita Pix e cartao.",
+      usage: { input_tokens: 40, output_tokens: 20, total_tokens: 60 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(supabase.fromCalls.includes("store_payment_settings"), true);
+
+  const finalOpenAiCall = openai.calls[1] as Record<string, unknown>;
+  const finalPayload = JSON.stringify(finalOpenAiCall);
+
+  assert.equal(finalPayload.includes("Pix, Cartao de credito"), true);
+  assert.equal(finalPayload.includes("parcelamento em ate 6x"), true);
+  assert.equal(finalPayload.includes("Entrada obrigatoria 20%"), true);
+  assert.equal(finalPayload.includes("chave Pix configurada atualmente: sim"), true);
+  assert.equal(finalPayload.includes("regra de entrada/sinal configurada atualmente: sim"), true);
+  assert.equal(finalPayload.includes("LEGACY_PAYMENT_METHODS_SHOULD_NOT_WIN"), false);
+  assert.equal(finalPayload.includes("legacy-pix-key"), false);
+  assert.equal(finalPayload.includes("legacy entrada obrigatoria"), false);
+});
+
+test("generateAiSalesReply treats missing canonical payment and false technical visit settings as authoritative over legacy answers", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    onboardingAnswers: [
+      {
+        question_key: "accepted_payment_methods",
+        answer: ["pix"],
+      },
+      {
+        question_key: "accepted_payment_methods_summary",
+        answer: "LEGACY_PIX_SHOULD_NOT_WIN",
+      },
+      {
+        question_key: "offers_technical_visit",
+        answer: "Sim",
+      },
+      {
+        question_key: "technical_visit_rules",
+        answer: "LEGACY_VISIT_RULE_SHOULD_NOT_WIN",
+      },
+    ],
+    operationSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        offers_installation: null,
+        average_installation_time_days: null,
+        installation_days_rule: null,
+        installation_process_notes: null,
+        offers_technical_visit: false,
+        technical_visit_days_rule: null,
+        technical_visit_rules: [],
+        technical_visit_rules_other: null,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      output_text: "Vou confirmar isso com a loja.",
+      usage: { input_tokens: 40, output_tokens: 20, total_tokens: 60 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(supabase.fromCalls.includes("store_payment_settings"), true);
+  assert.equal(supabase.fromCalls.includes("store_operation_settings"), true);
+
+  const finalOpenAiCall = openai.calls[1] as Record<string, unknown>;
+  const finalPayload = JSON.stringify(finalOpenAiCall);
+
+  assert.equal(finalPayload.includes("visita tecnica configurada atualmente: nao"), true);
+  assert.equal(finalPayload.includes("chave Pix configurada atualmente: nao"), true);
+  assert.equal(finalPayload.includes("regra de entrada/sinal configurada atualmente: nao"), true);
+  assert.equal(finalPayload.includes("LEGACY_PIX_SHOULD_NOT_WIN"), false);
+  assert.equal(finalPayload.includes("LEGACY_VISIT_RULE_SHOULD_NOT_WIN"), false);
+});
+
 test("generateAiSalesReply fails closed when canonical writer fails", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     writerResponse: {
@@ -2825,7 +4129,8 @@ test("generateAiSalesReply skips structured extraction and writer when no explic
     supabase.rpcCalls.some(
       (call) =>
         call.fn === "write_commercial_opportunity_qualification_fact_by_system" ||
-        call.fn === "read_commercial_opportunity_qualification_facts_by_system",
+        call.fn === "read_commercial_opportunity_qualification_facts_by_system" ||
+        call.fn === "materialize_commercial_opportunity_profile_from_qualification_by_system",
     ),
     false,
   );
@@ -4573,4 +5878,346 @@ test("different explicit opportunities keep commercialOpportunityId and snapshot
     assert.equal(second.canonicalQualificationSnapshot.commercialOpportunityId, "opp-b");
     assert.notDeepEqual(first.canonicalQualificationSnapshot, second.canonicalQualificationSnapshot);
   }
+});
+test("sales brain visit gate trusts canonical location instead of legacy heuristic minimum qualification", () => {
+  const brain = buildSalesResponseBrain({
+    customerName: null,
+    crmStage: "qualificacao",
+    conversationStatus: "active",
+    humanActive: false,
+    lastCustomerMessage: "Quero agendar uma visita tecnica",
+    orderedMessages: [],
+    offersTechnicalVisit: true,
+    suggestedNextQuestion: null,
+    canonicalVisitLocationState: "known",
+    contextualQualification: {
+      hasCanonicalSnapshot: true,
+      askNow: false,
+      targetFactKey: "location_text",
+      targetGroup: "location",
+      targetStatus: "known",
+    },
+  });
+
+  assert.equal(brain.snapshot.hasMinimumVisitQualification, false);
+  assert.equal(brain.snapshot.hasCanonicalVisitLocation, true);
+  assert.equal(brain.snapshot.visitNeedsQualificationBeforeAgenda, false);
+  assert.equal(brain.plan.allowedNextStep, "prepare_visit_handoff");
+  assert.equal(
+    brain.plan.questionToAsk,
+    "Qual dia ou periodo costuma ser melhor para voce",
+  );
+});
+
+test("sales brain visit gate blocks agenda when canonical location still needs contextual qualification", () => {
+  const brain = buildSalesResponseBrain({
+    customerName: "Maria",
+    crmStage: "qualificacao",
+    conversationStatus: "active",
+    humanActive: false,
+    lastCustomerMessage: "Quero agendar uma visita tecnica",
+    orderedMessages: [],
+    offersTechnicalVisit: true,
+    suggestedNextQuestion: null,
+    canonicalVisitLocationState: "not_known",
+    contextualQualification: {
+      hasCanonicalSnapshot: true,
+      askNow: true,
+      targetFactKey: "location_text",
+      targetGroup: "location",
+      targetStatus: "missing",
+    },
+  });
+
+  assert.equal(brain.snapshot.hasCanonicalVisitLocation, false);
+  assert.equal(brain.snapshot.visitNeedsQualificationBeforeAgenda, true);
+  assert.equal(brain.plan.handoffHint.visit, false);
+  assert.equal(brain.plan.allowedNextStep, "ask_single_missing_info");
+  assert.equal(brain.plan.shouldAskQuestion, true);
+  assert.equal(brain.plan.questionToAsk, null);
+  assert.deepEqual(brain.plan.missingCriticalInfo, ["location_text"]);
+});
+
+test("sales brain visit gate fails closed without canonical qualification snapshot", () => {
+  const brain = buildSalesResponseBrain({
+    customerName: "Maria",
+    crmStage: "qualificacao",
+    conversationStatus: "active",
+    humanActive: false,
+    lastCustomerMessage: "Quero agendar uma visita tecnica",
+    orderedMessages: [],
+    offersTechnicalVisit: true,
+    suggestedNextQuestion: null,
+    canonicalVisitLocationState: "unproven",
+    contextualQualification: {
+      hasCanonicalSnapshot: false,
+      askNow: false,
+      targetFactKey: null,
+      targetGroup: null,
+      targetStatus: "unproven",
+    },
+  });
+
+  assert.equal(brain.snapshot.hasCanonicalVisitLocation, false);
+  assert.equal(brain.snapshot.visitNeedsQualificationBeforeAgenda, true);
+  assert.equal(brain.plan.handoffHint.visit, false);
+  assert.equal(brain.plan.shouldAskQuestion, false);
+  assert.equal(brain.plan.questionToAsk, null);
+});
+test("technical visit without canonical snapshot cannot use legacy locationKnown to ask operational period", () => {
+  const nextQuestion = inferNonQualificationNextBestQuestion({
+    pattern: "general_sales_conversation",
+    facts: {
+      locationKnown: true,
+    } as never,
+    canonicalQualificationSnapshot: null,
+    lastCustomerMessage: "Quero agendar uma visita tecnica",
+    explicitCatalogRequest: false,
+    patienceSignal: createActiveQualificationPatience() as never,
+    hasCustomerLocationPhoto: false,
+  });
+
+  assert.equal(nextQuestion, null);
+});
+
+test("qualification authority without canonical snapshot blocks any remaining legacy heuristic fallback", () => {
+  const nextQuestion =
+    resolveNextBestQuestionAfterQualificationAuthority({
+      pattern: "pool_size_discovery",
+      nonQualificationQuestion: null,
+      heuristicQuestion:
+        "Voce prefere algo mais simples de manter ou uma opcao com mais conforto?",
+      snapshot: null,
+      qualificationDecision: {
+        targetFactKey: null,
+        targetGroup: null,
+        targetStatus: "unproven",
+        askNow: false,
+        reason: "no_canonical_snapshot",
+      },
+    });
+
+  assert.equal(nextQuestion, null);
+});
+test("pool size discovery keeps customer preferences as the single structured qualification authority", () => {
+  const snapshot = createContextualQualificationSnapshot({
+    missingFactGroups: [
+      createCanonicalMissingGroup({
+        groupKey: "need",
+        factKeys: ["customer_preferences_text"],
+      }),
+    ],
+    canAskNextQuestion: true,
+  }) as never;
+
+  const decision = resolveContextualQualificationDecision({
+    snapshot,
+    crmStage: "qualificacao",
+    pattern: "pool_size_discovery",
+    intents: [],
+    lastCustomerMessage: "Tenho um espaco de 3 por 4 metros",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.equal(decision.targetFactKey, "customer_preferences_text");
+  assert.equal(decision.targetGroup, "need");
+  assert.equal(decision.askNow, true);
+
+  const nextQuestion =
+    resolveNextBestQuestionAfterQualificationAuthority({
+      pattern: "pool_size_discovery",
+      nonQualificationQuestion: null,
+      heuristicQuestion:
+        "Voce prefere algo mais simples de manter ou uma opcao com mais conforto?",
+      snapshot,
+      qualificationDecision: decision,
+    });
+
+  assert.equal(nextQuestion, null);
+});
+
+test("children context keeps customer preferences structured and cannot revive depth or space legacy questions", () => {
+  const snapshot = createContextualQualificationSnapshot({
+    missingFactGroups: [
+      createCanonicalMissingGroup({
+        groupKey: "need",
+        factKeys: ["customer_preferences_text"],
+      }),
+    ],
+    canAskNextQuestion: true,
+  }) as never;
+
+  const decision = resolveContextualQualificationDecision({
+    snapshot,
+    crmStage: "qualificacao",
+    pattern: "pool_children_context",
+    intents: [],
+    lastCustomerMessage: "Tenho duas criancas pequenas",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.equal(decision.targetFactKey, "customer_preferences_text");
+  assert.equal(decision.targetGroup, "need");
+  assert.equal(decision.askNow, true);
+
+  const depthQuestion =
+    resolveNextBestQuestionAfterQualificationAuthority({
+      pattern: "pool_children_context",
+      nonQualificationQuestion: null,
+      heuristicQuestion:
+        "Voce prefere uma piscina mais rasa ou nao tem preferencia quanto a profundidade?",
+      snapshot,
+      qualificationDecision: decision,
+    });
+
+  assert.equal(depthQuestion, null);
+
+  const spaceQuestion =
+    resolveNextBestQuestionAfterQualificationAuthority({
+      pattern: "pool_children_context",
+      nonQualificationQuestion: null,
+      heuristicQuestion:
+        "Me fala mais ou menos o espaco que voce tem pra colocar a piscina",
+      snapshot,
+      qualificationDecision: decision,
+    });
+
+  assert.equal(spaceQuestion, null);
+});
+test("runtime qualification bridge never turns a canonical gap into a legacy question sentence", () => {
+  const snapshot = createContextualQualificationSnapshot({
+    missingFactGroups: [
+      createCanonicalMissingGroup({
+        groupKey: "need",
+        factKeys: ["customer_preferences_text"],
+      }),
+    ],
+    canAskNextQuestion: true,
+  }) as never;
+
+  const nextQuestion =
+    resolveNextBestQuestionAfterQualificationAuthority({
+      pattern: "general_sales_conversation",
+      nonQualificationQuestion: null,
+      heuristicQuestion:
+        "Voce prefere algo mais simples de manter ou uma opcao com mais conforto?",
+      snapshot,
+      qualificationDecision: {
+        targetFactKey: null,
+        targetGroup: null,
+        targetStatus: "unproven",
+        askNow: false,
+        reason: "no_relevant_qualification_target",
+      },
+    });
+
+  assert.equal(nextQuestion, null);
+});
+test("quote sales brain cannot create its own city space installation questionnaire", () => {
+  const brain = buildSalesResponseBrain({
+    customerName: "Maria",
+    crmStage: "orcamento",
+    conversationStatus: "active",
+    humanActive: false,
+    lastCustomerMessage: "Quero um orcamento",
+    orderedMessages: [],
+    offersTechnicalVisit: true,
+    suggestedNextQuestion: null,
+    contextualQualification: {
+      hasCanonicalSnapshot: true,
+      askNow: false,
+      targetFactKey: null,
+      targetGroup: null,
+      targetStatus: "known",
+    },
+  });
+
+  assert.equal(brain.plan.handoffHint.quote, true);
+  assert.equal(brain.plan.shouldAskQuestion, false);
+  assert.equal(brain.plan.questionToAsk, null);
+  assert.deepEqual(brain.plan.missingCriticalInfo, []);
+});
+
+test("quote sales brain exposes only the structured qualification target when askNow is authorized", () => {
+  const brain = buildSalesResponseBrain({
+    customerName: "Maria",
+    crmStage: "orcamento",
+    conversationStatus: "active",
+    humanActive: false,
+    lastCustomerMessage: "Quero um orcamento",
+    orderedMessages: [],
+    offersTechnicalVisit: true,
+    suggestedNextQuestion: null,
+    contextualQualification: {
+      hasCanonicalSnapshot: true,
+      askNow: true,
+      targetFactKey: "location_text",
+      targetGroup: "location",
+      targetStatus: "missing",
+    },
+  });
+
+  assert.equal(brain.plan.handoffHint.quote, true);
+  assert.equal(brain.plan.shouldAskQuestion, true);
+  assert.equal(brain.plan.questionToAsk, null);
+  assert.deepEqual(
+    brain.plan.missingCriticalInfo,
+    ["location_text"],
+  );
+});
+
+test("payment sales brain does not force Pix or payment preference when contextual qualification says not to ask", () => {
+  const brain = buildSalesResponseBrain({
+    customerName: "Maria",
+    crmStage: "negociacao",
+    conversationStatus: "active",
+    humanActive: false,
+    lastCustomerMessage: "Aceita Pix?",
+    orderedMessages: [],
+    hasConfiguredPixKey: true,
+    acceptedPaymentMethodsSummary: "Pix e cartao",
+    suggestedNextQuestion: null,
+    contextualQualification: {
+      hasCanonicalSnapshot: true,
+      askNow: false,
+      targetFactKey: "payment_interest",
+      targetGroup: "payment",
+      targetStatus: "known",
+    },
+  });
+
+  assert.equal(brain.plan.shouldAskQuestion, false);
+  assert.equal(brain.plan.questionToAsk, null);
+  assert.deepEqual(brain.plan.missingCriticalInfo, []);
+});
+
+test("payment sales brain can ask only the structured payment target when contextual qualification authorizes it", () => {
+  const brain = buildSalesResponseBrain({
+    customerName: "Maria",
+    crmStage: "negociacao",
+    conversationStatus: "active",
+    humanActive: false,
+    lastCustomerMessage: "Como funciona o pagamento?",
+    orderedMessages: [],
+    acceptedPaymentMethodsSummary: "Pix e cartao",
+    suggestedNextQuestion: null,
+    contextualQualification: {
+      hasCanonicalSnapshot: true,
+      askNow: true,
+      targetFactKey: "payment_interest",
+      targetGroup: "payment",
+      targetStatus: "missing",
+    },
+  });
+
+  assert.equal(brain.plan.shouldAskQuestion, true);
+  assert.equal(brain.plan.questionToAsk, null);
+  assert.deepEqual(
+    brain.plan.missingCriticalInfo,
+    ["payment_interest"],
+  );
 });

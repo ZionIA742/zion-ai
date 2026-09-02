@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { join } from "node:path";
 import Module from "node:module";
+import { readFileSync } from "node:fs";
 import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
@@ -126,7 +127,73 @@ async function parseBody(response: Response) {
   return (await response.json()) as Record<string, unknown>;
 }
 
+function readRouteSource() {
+  return readFileSync("src/app/api/assistant/reply/route.ts", "utf8");
+}
+
+function getBuildStoreBlockSource(source: string) {
+  const start = source.indexOf("function buildStoreBlock(");
+  assert.equal(start > -1, true, "buildStoreBlock not found");
+  const end = source.indexOf("function sortAssistantMessagesChronologically", start);
+  assert.equal(end > start, true, "buildStoreBlock end not found");
+  return source.slice(start, end);
+}
+
+function getGenerateAssistantReplySource(source: string) {
+  const start = source.indexOf("async function generateAssistantReply(");
+  assert.equal(start > -1, true, "generateAssistantReply not found");
+  const end = source.indexOf("export function createAssistantReplyPostHandler", start);
+  assert.equal(end > start, true, "generateAssistantReply end not found");
+  return source.slice(start, end);
+}
+
 const tests: TestCase[] = [
+  {
+    name: "assistant runtime store block uses canonical settings context instead of onboarding answers for canonical fields",
+    run: () => {
+      const source = readRouteSource();
+      const block = getBuildStoreBlockSource(source);
+
+      assert.equal(block.includes("storeContext.storeDescription"), true);
+      assert.equal(block.includes("storeContext.storeServices"), true);
+      assert.equal(block.includes("storeContext.city"), true);
+      assert.equal(block.includes("storeContext.state"), true);
+      assert.equal(block.includes("storeContext.serviceRegions"), true);
+      assert.equal(block.includes("storeContext.offersInstallation"), true);
+      assert.equal(block.includes("storeContext.offersTechnicalVisit"), true);
+      assert.equal(block.includes("storeContext.acceptedPaymentMethods"), true);
+      assert.equal(block.includes("storeContext.responsibleName"), true);
+      assert.equal(block.includes("onboardingMap.accepted_payment_methods"), false);
+      assert.equal(block.includes("onboardingMap.responsible_name"), false);
+      assert.equal(block.includes("onboardingMap.offers_installation"), false);
+      assert.equal(block.includes("onboardingMap.service_regions"), false);
+    },
+  },
+  {
+    name: "assistant runtime loads canonical store settings before building the model prompt",
+    run: () => {
+      const source = readRouteSource();
+      const block = getGenerateAssistantReplySource(source);
+
+      const strategyIndex = block.indexOf('.from("store_strategy_settings")');
+      const operationIndex = block.indexOf('.from("store_operation_settings")');
+      const paymentIndex = block.indexOf('.from("store_payment_settings")');
+      const responsibleIndex = block.indexOf("loadCanonicalActivePrimaryStoreResponsible({");
+      const contextIndex = block.indexOf("const runtimeStoreContext = buildRuntimeStoreContext({");
+      const promptIndex = block.indexOf("const systemPrompt = buildSystemPrompt({");
+
+      assert.equal(strategyIndex > -1, true);
+      assert.equal(operationIndex > -1, true);
+      assert.equal(paymentIndex > -1, true);
+      assert.equal(responsibleIndex > -1, true);
+      assert.equal(contextIndex > strategyIndex, true);
+      assert.equal(contextIndex > operationIndex, true);
+      assert.equal(contextIndex > paymentIndex, true);
+      assert.equal(contextIndex > responsibleIndex, true);
+      assert.equal(promptIndex > contextIndex, true);
+      assert.equal(block.includes("storeContext: runtimeStoreContext"), true);
+    },
+  },
   {
     name: "active account uses canonical tenant and ignores body tenant ids",
     run: async () => {

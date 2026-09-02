@@ -45,6 +45,16 @@ import {
   type StoreStrategySettingsInput,
   type StoreStrategySettingsRow,
 } from "@/lib/store-strategy-settings";
+import {
+  applyWeekendSelectionToOperatingDays,
+  createStoreOperationSettingsInputFromSources,
+  deriveWeekendAvailabilityFromOperatingDays,
+  normalizePersistedOperationDraft,
+  normalizeOperatingDays,
+  normalizeStoreOperationSettingsInput,
+  type StoreOperationTechnicalVisitRule,
+  type StoreOperationSettingsRow,
+} from "@/lib/store-operation-settings";
 
 type CountState = {
   pools: number;
@@ -136,6 +146,20 @@ type StoreWhatsappStatusApiResponse = {
     scheduledAutomatically?: boolean;
     reason?: string | null;
   } | null;
+  error?: string;
+  message?: string;
+};
+
+type CanonicalPrimaryResponsible = {
+  id: string;
+  name: string | null;
+  whatsappNumber: string;
+  role: string | null;
+};
+
+type StorePrimaryResponsibleApiResponse = {
+  ok: boolean;
+  responsible?: CanonicalPrimaryResponsible | null;
   error?: string;
   message?: string;
 };
@@ -322,11 +346,9 @@ type OperationDraftState = {
   average_installation_time_days: string;
   installation_process_summary: string;
   offers_technical_visit: string;
-  technical_visit_rules_summary: string;
-  service_regions: string;
-  important_limitations: string;
+  technical_visit_rules_selected: StoreOperationTechnicalVisitRule[];
+  technical_visit_rules_other: string;
   agenda_capacity_rule: string;
-  operational_ai_summary: string;
 };
 
 type ScheduleSettingsRow = {
@@ -340,6 +362,7 @@ type ScheduleSettingsRow = {
   operating_days: unknown;
   operating_hours: unknown;
   installation_days: unknown;
+  technical_visit_days: unknown;
   after_hours_behavior: string | null;
   notes: string | null;
   created_at?: string | null;
@@ -543,11 +566,11 @@ const POOL_TYPE_OPTIONS: Option[] = [
 
 const DAYS_OF_WEEK_OPTIONS: Option[] = [
   { value: "segunda", label: "Segunda" },
-  { value: "terça", label: "Terça" },
+  { value: "terca", label: "Terça" },
   { value: "quarta", label: "Quarta" },
   { value: "quinta", label: "Quinta" },
   { value: "sexta", label: "Sexta" },
-  { value: "sábado", label: "Sábado" },
+  { value: "sabado", label: "Sábado" },
   { value: "domingo", label: "Domingo" },
 ];
 
@@ -556,8 +579,6 @@ const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
   { value: "confirmar_endereco", label: "Precisa confirmar endereço antes" },
   { value: "analise_do_local", label: "Pode depender de avaliação do local" },
   { value: "pode_ter_taxa", label: "Pode ter taxa de deslocamento" },
-  { value: "somente_regiao_atendida", label: "Só atende a região cadastrada" },
-  { value: "horario_comercial", label: "Somente em horário comercial" },
 ];
 
 const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
@@ -984,6 +1005,26 @@ function createEmptyResponsibleDraft(isPrimary = false): ResponsiblePersonDraft 
   };
 }
 
+function createPrimaryResponsibleDraftFromSources(
+  answers: AnswersMap,
+  responsible: CanonicalPrimaryResponsible | null,
+): ResponsiblePersonDraft {
+  return {
+    id: "principal",
+    name: cleanText(responsible?.name),
+    whatsapp: cleanText(responsible?.whatsappNumber),
+    role:
+      cleanText(responsible?.role) ||
+      cleanText(answers.responsible_role) ||
+      "ResponsÃ¡vel principal",
+    receives_ai_alerts: yesNoLabel(answers.ai_should_notify_responsible) !== "NÃ£o",
+    can_approve_discount: true,
+    can_approve_exceptions: true,
+    can_assume_human: true,
+    notes: cleanText(answers.responsible_notes),
+  };
+}
+
 function parseResponsiblePeopleFromAnswers(answers: AnswersMap): ResponsiblePersonDraft[] {
   const raw = (answers as Record<string, unknown>).additional_responsibles;
   let parsed: unknown[] = [];
@@ -1033,9 +1074,7 @@ function serializeResponsiblePeople(items: ResponsiblePersonDraft[]) {
   );
 }
 
-function includesDay(values: string[], day: string) {
-  return values.map((value) => normalizeLoose(value)).includes(normalizeLoose(day));
-}
+const CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL = "Não definido";
 
 function normalizeLoose(value: unknown) {
   return String(value ?? "")
@@ -1045,102 +1084,69 @@ function normalizeLoose(value: unknown) {
     .trim();
 }
 
-function deriveWeekendAvailabilityLabel(answers: AnswersMap, day: "sábado" | "domingo") {
-  const explicit = cleanText((answers as Record<string, unknown>)[day === "sábado" ? "serves_saturday" : "serves_sunday"]);
-  if (explicit) return yesNoLabel(explicit);
+function deriveCanonicalWeekendAvailabilityLabel(
+  day: "sabado" | "domingo",
+  scheduleSettings?: ScheduleSettingsRow | null,
+) {
+  if (scheduleSettings) {
+    const availability = deriveWeekendAvailabilityFromOperatingDays(
+      scheduleSettings.operating_days,
+    );
+    return day === "sabado"
+      ? availability.serves_saturday
+      : availability.serves_sunday;
+  }
 
-  const installationDays = parseArrayAnswer(answers.installation_available_days);
-  const visitDays = parseArrayAnswer(answers.technical_visit_available_days);
-  const hasSchedules = installationDays.length > 0 || visitDays.length > 0;
-  const isSelected = includesDay(installationDays, day) || includesDay(visitDays, day);
-
-  if (isSelected) return "Sim";
-  if (hasSchedules) return "Não";
-  return "Não definido";
-}
-
-function deriveHolidayAvailabilityLabel(answers: AnswersMap) {
-  const explicit = cleanText(answers.attends_holidays ?? answers.serves_holiday);
-  if (explicit) return yesNoLabel(explicit);
-
-  const notes = [
-    cleanText(answers.installation_days_rule),
-    cleanText(answers.technical_visit_days_rule),
-    cleanText(answers.technical_visit_rules_other),
-    cleanText(answers.important_limitations_other),
-  ]
-    .join(" ")
-    .toLowerCase();
-
-  if (notes.includes("não atende feriado") || notes.includes("nao atende feriado")) return "Não";
-  if (notes.includes("atende feriado")) return "Sim";
-  return "Não definido";
+  return CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL;
 }
 
 function createOperationDraftFromAnswers(
   answers: AnswersMap,
-  scheduleSettings?: ScheduleSettingsRow | null
+  scheduleSettings?: ScheduleSettingsRow | null,
+  operationSettings?: StoreOperationSettingsRow | null,
 ): OperationDraftState {
+  const operationInput = createStoreOperationSettingsInputFromSources({
+    answers,
+    settings: operationSettings,
+  });
   const operatingDaysFromSettings = Array.isArray(scheduleSettings?.operating_days)
     ? (scheduleSettings?.operating_days as unknown[]).map((item) => cleanText(item)).filter(Boolean).join(", ")
-    : cleanText(answers.operating_days);
+    : "";
 
   const operatingHoursFromSettings =
     scheduleSettings?.operating_hours && typeof scheduleSettings.operating_hours === "object"
       ? JSON.stringify(scheduleSettings.operating_hours)
-      : cleanText(answers.operating_hours);
+      : "";
 
   return {
     operating_days: operatingDaysFromSettings,
     operating_hours: operatingHoursFromSettings,
-    installation_days_rule: cleanText(answers.installation_days_rule),
-    technical_visit_days_rule: cleanText(answers.technical_visit_days_rule),
-    serves_saturday: deriveWeekendAvailabilityLabel(answers, "sábado"),
-    serves_sunday: deriveWeekendAvailabilityLabel(answers, "domingo"),
+    installation_days_rule: operationInput.installationDaysRule,
+    technical_visit_days_rule: operationInput.technicalVisitDaysRule,
+    serves_saturday: deriveCanonicalWeekendAvailabilityLabel("sabado", scheduleSettings),
+    serves_sunday: deriveCanonicalWeekendAvailabilityLabel("domingo", scheduleSettings),
     serves_holiday:
       scheduleSettings && typeof scheduleSettings.attends_holidays === "boolean"
         ? yesNoLabel(scheduleSettings.attends_holidays)
-        : deriveHolidayAvailabilityLabel(answers),
+        : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL,
     allow_multiple_appointments_per_day:
       scheduleSettings && typeof scheduleSettings.allow_multiple_appointments_per_day === "boolean"
         ? yesNoLabel(scheduleSettings.allow_multiple_appointments_per_day)
-        : "Sim",
+        : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL,
     allow_same_time_appointments:
       scheduleSettings && typeof scheduleSettings.allow_same_time_appointments === "boolean"
         ? yesNoLabel(scheduleSettings.allow_same_time_appointments)
-        : "Não",
-    offers_installation: yesNoLabel(answers.offers_installation),
-    average_installation_time_days: cleanText(answers.average_installation_time_days),
-    installation_process_summary: joinSelectedLabels(
-      parseArrayAnswer(answers.installation_process_steps),
-      [
-        { value: "aprovacao_do_orcamento", label: "Aprovação do orçamento" },
-        { value: "pagamento_sinal", label: "Pagamento / sinal" },
-        { value: "confirmacao_do_pagamento", label: "Confirmação do pagamento" },
-        { value: "agendamento_da_instalacao", label: "Agendamento da instalação" },
-        { value: "instalacao", label: "Instalação" },
-        { value: "entrega_final", label: "Entrega final" },
-        { value: "pos_venda", label: "Pós-venda" },
-      ],
-      cleanText(answers.installation_process_other)
-    ),
-    offers_technical_visit: yesNoLabel(answers.offers_technical_visit),
-    technical_visit_rules_summary: joinSelectedLabels(
-      parseArrayAnswer(answers.technical_visit_rules_selected),
-      TECHNICAL_VISIT_RULE_OPTIONS,
-      cleanText(answers.technical_visit_rules_other)
-    ),
-    service_regions: cleanText(answers.service_regions) || cleanText(answers.service_region_notes),
-    important_limitations: joinSelectedLabels(
-      parseArrayAnswer(answers.important_limitations_selected),
-      IMPORTANT_LIMITATION_OPTIONS,
-      cleanText(answers.important_limitations_other)
-    ),
+        : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL,
+    offers_installation: yesNoLabel(operationInput.offersInstallation),
+    average_installation_time_days: operationInput.averageInstallationTimeDays == null ? "" : String(operationInput.averageInstallationTimeDays),
+    installation_process_summary: operationInput.installationProcessNotes,
+    offers_technical_visit: yesNoLabel(operationInput.offersTechnicalVisit),
+    technical_visit_rules_selected: operationInput.technicalVisitRules,
+    technical_visit_rules_other: operationInput.technicalVisitRulesOther,
     agenda_capacity_rule:
       scheduleSettings && Number.isFinite(Number(scheduleSettings.same_time_capacity))
         ? String(scheduleSettings.same_time_capacity)
-        : cleanText(answers.agenda_capacity_rule) || cleanText(answers.average_human_response_time) || "1",
-    operational_ai_summary: cleanText(answers.operational_ai_summary),
+        : "",
   };
 }
 
@@ -1184,8 +1190,8 @@ function createCommercialDraftFromAnswers(answers: AnswersMap): any {
   );
 
   return {
-    ai_display_name: cleanText(answers.store_display_name) || cleanText(answers.responsible_name),
-    ai_presentation_mode: cleanText(answers.strategy_ai_presentation) || "Não definido",
+    ai_display_name: cleanText(answers.store_display_name),
+    ai_presentation_mode: "Não definido",
     ai_tone_summary: tone || "Ainda não definido",
     ai_speaks_as: cleanText(answers.ai_identity_mode) || "Equipe da loja",
     can_send_price_directly: yesNoLabel(answers.ai_can_send_price_directly),
@@ -1213,6 +1219,7 @@ function createCommercialDraftFromAnswersWithPaymentSettings(
   discountSettings?: StoreDiscountSettingsRow | null,
   highValueDiscountSettings?: StoreHighValueDiscountSettingsRow | null,
   commercialAiSettings?: StoreCommercialAiSettingsRow | null,
+  strategySettingsInput?: StoreStrategySettingsInput,
 ): CommercialDraftState {
   const baseDraft = createCommercialDraftFromAnswers(answers);
   const commercialAiSettingsInput =
@@ -1241,6 +1248,9 @@ function createCommercialDraftFromAnswersWithPaymentSettings(
 
   return {
     ...baseDraft,
+    ai_presentation_mode:
+      cleanText(strategySettingsInput?.strategyAiPresentation) ||
+      "Não definido",
     price_answer_policy: commercialAiSettingsInput.priceAnswerPolicy,
     price_context_requirements:
       commercialAiSettingsInput.priceContextRequirements,
@@ -1320,14 +1330,15 @@ function createDiscountDraftFromAnswers(
 function createChannelDraftFromSources(
   answers: AnswersMap,
   channelSettings?: StoreChannelSettingsRow | null,
+  responsible?: CanonicalPrimaryResponsible | null,
 ): ChannelDraftState {
   const channelSettingsInput = createStoreChannelSettingsInputFromSources({
     answers,
     settings: channelSettings ?? null,
   });
   const commercialWhatsapp = cleanText(answers.commercial_whatsapp);
-  const responsibleWhatsapp = cleanText(answers.responsible_whatsapp);
-  const responsibleName = cleanText(answers.responsible_name);
+  const responsibleWhatsapp = cleanText(responsible?.whatsappNumber);
+  const responsibleName = cleanText(responsible?.name);
 
   const draft: ChannelDraftState = {
     commercial_channel_name: channelSettingsInput.commercialChannelName,
@@ -1528,6 +1539,21 @@ function parseYesNoToBoolean(value: unknown, fallback: boolean) {
   if (["sim", "true", "1"].includes(normalized)) return true;
   if (["não", "nao", "false", "0"].includes(normalized)) return false;
   return fallback;
+}
+
+function parseYesNoToNullableBoolean(value: unknown) {
+  const normalized = cleanText(value).toLowerCase();
+  if (["sim", "true", "1"].includes(normalized)) return true;
+  if (["não", "nao", "false", "0"].includes(normalized)) return false;
+  return null;
+}
+
+function parseOptionalPositiveInteger(value: unknown) {
+  const raw = cleanText(value);
+  if (!raw) return null;
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : Number.NaN;
 }
 
 function optionLabel(value: string, options: Option[]) {
@@ -1766,6 +1792,7 @@ export default function ConfiguracoesPage() {
   const [onboarding, setOnboarding] = useState<OnboardingRow | null>(null);
   const [answers, setAnswers] = useState<AnswersMap>({});
   const [scheduleSettings, setScheduleSettings] = useState<ScheduleSettingsRow | null>(null);
+  const [operationSettings, setOperationSettings] = useState<StoreOperationSettingsRow | null>(null);
   const [strategySettings, setStrategySettings] = useState<StoreStrategySettingsRow | null>(null);
   const [channelSettings, setChannelSettings] = useState<StoreChannelSettingsRow | null>(null);
   const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettingsRow | null>(null);
@@ -1782,7 +1809,7 @@ export default function ConfiguracoesPage() {
   const [strategyDraft, setStrategyDraft] = useState<StoreStrategySettingsInput>(
     createStoreStrategySettingsInputFromSources({}),
   );
-  const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}, null));
+  const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}, null, null));
   const [isCommercialEditing, setIsCommercialEditing] = useState(false);
   const [commercialDraft, setCommercialDraft] = useState<CommercialDraftState>(
     createCommercialDraftFromAnswersWithPaymentSettings({}),
@@ -1856,9 +1883,20 @@ export default function ConfiguracoesPage() {
       }
     | null
   >(null);
+  const [canonicalPrimaryResponsible, setCanonicalPrimaryResponsible] =
+    useState<CanonicalPrimaryResponsible | null>(null);
+  const [hasLoadedCanonicalPrimaryResponsible, setHasLoadedCanonicalPrimaryResponsible] =
+    useState(false);
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
+  const loadedCanonicalPrimaryResponsible = hasLoadedCanonicalPrimaryResponsible
+    ? canonicalPrimaryResponsible
+    : null;
+  const canonicalPrimaryResponsibleDraft = useMemo(
+    () => createPrimaryResponsibleDraftFromSources(answers, loadedCanonicalPrimaryResponsible),
+    [answers, loadedCanonicalPrimaryResponsible],
+  );
   const storeLogoInputRef = useRef<HTMLInputElement | null>(null);
   const contractBaseInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftStorageKey = useMemo(() => {
@@ -2308,9 +2346,12 @@ export default function ConfiguracoesPage() {
       setOnboarding(null);
       setAnswers({});
       setScheduleSettings(null);
+      setOperationSettings(null);
       setStrategySettings(null);
       setChannelSettings(null);
       setCommercialAiSettings(null);
+      setCanonicalPrimaryResponsible(null);
+      setHasLoadedCanonicalPrimaryResponsible(false);
       setStoreBranding(null);
       setStoreLogoPreviewUrl(null);
       setStoreWhatsappStatus(null);
@@ -2325,6 +2366,8 @@ export default function ConfiguracoesPage() {
 
     setLoading(true);
     setErrorText(null);
+    setCanonicalPrimaryResponsible(null);
+    setHasLoadedCanonicalPrimaryResponsible(false);
 
     try {
       const [
@@ -2333,12 +2376,14 @@ export default function ConfiguracoesPage() {
         onboardingResult,
         answersResult,
         scheduleSettingsResult,
+        operationSettingsResult,
         strategySettingsResult,
         channelSettingsResult,
         paymentSettingsResult,
         commercialAiSettingsResult,
         discountSettingsResult,
         highValueDiscountSettingsResult,
+        primaryResponsibleResponse,
       ] = await Promise.all([
         supabase
           .from("pools")
@@ -2360,7 +2405,15 @@ export default function ConfiguracoesPage() {
         }),
         supabase
           .from("store_schedule_settings")
-          .select("id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, after_hours_behavior, notes, created_at, updated_at")
+          .select("id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, technical_visit_days, after_hours_behavior, notes, created_at, updated_at")
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .maybeSingle(),
+        supabase
+          .from("store_operation_settings")
+          .select(
+            "organization_id, store_id, offers_installation, average_installation_time_days, installation_days_rule, installation_process_notes, offers_technical_visit, technical_visit_days_rule, technical_visit_rules, technical_visit_rules_other, created_at, updated_at",
+          )
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
           .maybeSingle(),
@@ -2412,6 +2465,11 @@ export default function ConfiguracoesPage() {
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
           .maybeSingle(),
+        fetch("/api/store/primary-responsible", {
+          method: "GET",
+          cache: "no-store",
+          credentials: "include",
+        }),
       ]);
 
       if (poolsResult.error) throw poolsResult.error;
@@ -2419,12 +2477,27 @@ export default function ConfiguracoesPage() {
       if (onboardingResult.error) throw onboardingResult.error;
       if (answersResult.error) throw answersResult.error;
       if (scheduleSettingsResult.error) throw scheduleSettingsResult.error;
+      if (operationSettingsResult.error) throw operationSettingsResult.error;
       if (strategySettingsResult.error) throw strategySettingsResult.error;
       if (channelSettingsResult.error) throw channelSettingsResult.error;
       if (paymentSettingsResult.error) throw paymentSettingsResult.error;
       if (commercialAiSettingsResult.error) throw commercialAiSettingsResult.error;
       if (discountSettingsResult.error) throw discountSettingsResult.error;
       if (highValueDiscountSettingsResult.error) throw highValueDiscountSettingsResult.error;
+
+      const primaryResponsibleResult =
+        (await primaryResponsibleResponse.json().catch(() => null)) as
+          | StorePrimaryResponsibleApiResponse
+          | null;
+
+      if (!primaryResponsibleResponse.ok || !primaryResponsibleResult?.ok) {
+        throw new Error(
+          primaryResponsibleResult?.message ||
+            "Nao foi possivel carregar o responsavel principal da loja.",
+        );
+      }
+      const nextCanonicalPrimaryResponsible =
+        primaryResponsibleResult.responsible ?? null;
 
       const nextCounts: CountState = {
         pools: poolsResult.count ?? 0,
@@ -2543,6 +2616,9 @@ export default function ConfiguracoesPage() {
           deriveStoreStrategyAiStoreSummary(nextStrategyInput),
       });
       setScheduleSettings((scheduleSettingsResult.data ?? null) as ScheduleSettingsRow | null);
+      setOperationSettings(
+        (operationSettingsResult.data ?? null) as StoreOperationSettingsRow | null,
+      );
       setStrategySettings(nextStrategySettings);
       setChannelSettings((channelSettingsResult.data ?? null) as StoreChannelSettingsRow | null);
       setPaymentSettings((paymentSettingsResult.data ?? null) as StorePaymentSettingsRow | null);
@@ -2553,6 +2629,8 @@ export default function ConfiguracoesPage() {
       setHighValueDiscountSettings(
         (highValueDiscountSettingsResult.data ?? null) as StoreHighValueDiscountSettingsRow | null,
       );
+      setCanonicalPrimaryResponsible(nextCanonicalPrimaryResponsible);
+      setHasLoadedCanonicalPrimaryResponsible(true);
       setPoolImportFiles(nextPoolImportFiles);
       setCatalogImportFiles(nextCatalogImportFiles);
       await fetchStoreBrandingFromApi(activeStoreId);
@@ -2724,7 +2802,11 @@ export default function ConfiguracoesPage() {
       if (typeof parsed.isActivationEditing === "boolean") setIsActivationEditing(parsed.isActivationEditing);
       if (parsed.overviewDraft) setOverviewDraft(parsed.overviewDraft);
       if (parsed.strategyDraft) setStrategyDraft(parsed.strategyDraft);
-      if (parsed.operationDraft) setOperationDraft(parsed.operationDraft);
+      if (parsed.operationDraft) {
+        setOperationDraft((current) =>
+          normalizePersistedOperationDraft(current, parsed.operationDraft),
+        );
+      }
       if (parsed.commercialDraft) setCommercialDraft(parsed.commercialDraft);
       if (parsed.discountDraft) setDiscountDraft(parsed.discountDraft);
       if (parsed.channelDraft) setChannelDraft(parsed.channelDraft);
@@ -2843,16 +2925,21 @@ export default function ConfiguracoesPage() {
   }, [configDraftStorageKey, persistConfiguracoesDraft]);
 
   useEffect(() => {
+    const currentOperationInput = createStoreOperationSettingsInputFromSources({
+      answers,
+      settings: operationSettings,
+    });
+
     setOverviewDraft({
       store_display_name: cleanText(answers.store_display_name) || storeName,
-      responsible_name: cleanText(answers.responsible_name),
-      responsible_whatsapp: cleanText(answers.responsible_whatsapp),
+      responsible_name: cleanText(canonicalPrimaryResponsibleDraft.name),
+      responsible_whatsapp: cleanText(canonicalPrimaryResponsibleDraft.whatsapp),
       commercial_whatsapp: cleanText(answers.commercial_whatsapp),
-      installation_days_rule: cleanText(answers.installation_days_rule),
-      technical_visit_days_rule: cleanText(answers.technical_visit_days_rule),
+      installation_days_rule: currentOperationInput.installationDaysRule,
+      technical_visit_days_rule: currentOperationInput.technicalVisitDaysRule,
       final_activation_notes: cleanText(answers.final_activation_notes),
     });
-  }, [answers, storeName]);
+  }, [answers, canonicalPrimaryResponsibleDraft, operationSettings, storeName]);
 
   useEffect(() => {
     setSelectedStoreLogoFile(null);
@@ -3025,7 +3112,7 @@ export default function ConfiguracoesPage() {
   const poolsOperationalItems = useMemo(() => {
     return buildBulletRows([
       { label: "Tipos de piscina trabalhados", value: poolTypesLabel || cleanText(answers.pool_types) },
-      { label: "Marca principal para piscinas", value: cleanText(answers.main_store_brand) || cleanText(answers.brands_worked) },
+      { label: "Marca principal para piscinas", value: cleanText(strategySettingsInput.mainStoreBrand) || cleanText(strategySettingsInput.brandsWorked) },
       { label: "Cadastro manual", value: "Pode cadastrar piscina completa com medidas, estoque, preço, fotos, itens inclusos e observações" },
       { label: "Fotos", value: counts.pools > 0 ? "Gerenciadas por piscina, com até 10 imagens" : "Quando cadastrar, poderá subir até 10 imagens por piscina" },
       { label: "Preço e estoque", value: "Preenchidos diretamente na própria aba de Configurações" },
@@ -3033,7 +3120,7 @@ export default function ConfiguracoesPage() {
       { label: "Edição e exclusão", value: "Devem continuar disponíveis nas páginas internas de piscinas" },
       { label: "Importação inteligente", value: "Continua existindo sem depender deste cadastro manual" },
     ]);
-  }, [answers, counts.pools, poolTypesLabel]);
+  }, [answers, counts.pools, poolTypesLabel, strategySettingsInput]);
 
   const catalogOverviewMetrics = useMemo(() => {
     return [
@@ -3079,13 +3166,23 @@ export default function ConfiguracoesPage() {
   }, [counts.quimicos, counts.acessorios, counts.outros, totalCatalogo]);
 
   const installationDaysSelected = useMemo(
-    () => parseArrayAnswer(answers.installation_available_days),
-    [answers.installation_available_days]
+    () =>
+      Array.isArray(scheduleSettings?.installation_days)
+        ? (scheduleSettings.installation_days as unknown[])
+            .map((item) => cleanText(item))
+            .filter(Boolean)
+        : [],
+    [scheduleSettings?.installation_days],
   );
 
   const technicalVisitDaysSelected = useMemo(
-    () => parseArrayAnswer(answers.technical_visit_available_days),
-    [answers.technical_visit_available_days]
+    () =>
+      Array.isArray(scheduleSettings?.technical_visit_days)
+        ? (scheduleSettings.technical_visit_days as unknown[])
+            .map((item) => cleanText(item))
+            .filter(Boolean)
+        : [],
+    [scheduleSettings?.technical_visit_days],
   );
 
   const installationDaysLabel = useMemo(
@@ -3098,33 +3195,42 @@ export default function ConfiguracoesPage() {
     [technicalVisitDaysSelected]
   );
 
+  const operationSettingsInput = useMemo(
+    () =>
+      createStoreOperationSettingsInputFromSources({
+        answers,
+        settings: operationSettings,
+      }),
+    [answers, operationSettings],
+  );
+
   const technicalVisitRulesLabel = useMemo(
-    () => joinSelectedLabels(
-      parseArrayAnswer(answers.technical_visit_rules_selected),
-      TECHNICAL_VISIT_RULE_OPTIONS,
-      cleanText(answers.technical_visit_rules_other)
-    ),
-    [answers]
+    () =>
+      joinSelectedLabels(
+        operationSettingsInput.technicalVisitRules,
+        TECHNICAL_VISIT_RULE_OPTIONS,
+        operationSettingsInput.technicalVisitRulesOther,
+      ),
+    [operationSettingsInput],
   );
 
-  const importantLimitationsLabel = useMemo(
-    () => joinSelectedLabels(
-      parseArrayAnswer(answers.important_limitations_selected),
-      IMPORTANT_LIMITATION_OPTIONS,
-      cleanText(answers.important_limitations_other)
-    ),
-    [answers]
+  const servesSaturdayLabel = useMemo(
+    () => deriveCanonicalWeekendAvailabilityLabel("sabado", scheduleSettings),
+    [scheduleSettings],
   );
-
-  const servesSaturdayLabel = useMemo(() => deriveWeekendAvailabilityLabel(answers, "sábado"), [answers]);
-  const servesSundayLabel = useMemo(() => deriveWeekendAvailabilityLabel(answers, "domingo"), [answers]);
-  const servesHolidayLabel = useMemo(() => deriveHolidayAvailabilityLabel(answers), [answers]);
+  const servesSundayLabel = useMemo(
+    () => deriveCanonicalWeekendAvailabilityLabel("domingo", scheduleSettings),
+    [scheduleSettings],
+  );
+  const servesHolidayLabel = scheduleSettings
+    ? yesNoLabel(scheduleSettings.attends_holidays)
+    : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL;
 
   const operationReadinessMetrics = useMemo(() => {
-    const hasOperationalSchedule = installationDaysSelected.length > 0 || technicalVisitDaysSelected.length > 0;
-    const hasInstallation = yesNoLabel(answers.offers_installation) === "Sim";
-    const hasVisit = yesNoLabel(answers.offers_technical_visit) === "Sim";
-    const serviceRegions = cleanText(answers.service_regions) || cleanText(answers.service_region_notes);
+    const hasOperationalSchedule = Boolean(scheduleSettings);
+    const hasInstallation = operationSettingsInput.offersInstallation === true;
+    const hasVisit = operationSettingsInput.offersTechnicalVisit === true;
+    const serviceRegions = cleanText(strategySettingsInput.serviceRegions) || cleanText(strategySettingsInput.serviceRegionNotes);
     const compactOperationalHint = summarizeMetricText(
       installationDaysLabel || technicalVisitDaysLabel || "Defina os dias reais de operação",
       70
@@ -3137,8 +3243,13 @@ export default function ConfiguracoesPage() {
       serviceRegions || "Defina regiões e política de deslocamento",
       70
     );
-    const sameTimeAllowed = yesNoLabel(scheduleSettings?.allow_same_time_appointments);
-    const sameTimeCapacity = scheduleSettings?.same_time_capacity ? String(scheduleSettings.same_time_capacity) : "1";
+    const sameTimeAllowed = scheduleSettings
+      ? yesNoLabel(scheduleSettings.allow_same_time_appointments)
+      : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL;
+    const sameTimeCapacity =
+      scheduleSettings && Number.isFinite(Number(scheduleSettings.same_time_capacity))
+        ? String(scheduleSettings.same_time_capacity)
+        : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL;
 
     return [
       {
@@ -3151,8 +3262,8 @@ export default function ConfiguracoesPage() {
         label: "Instalação",
         value: hasInstallation ? "Ativa" : "Não configurada",
         tone: hasInstallation ? ("green" as const) : ("gray" as const),
-        hint: cleanText(answers.average_installation_time_days)
-          ? `Prazo médio: ${cleanText(answers.average_installation_time_days)} dia(s)`
+        hint: operationSettingsInput.averageInstallationTimeDays != null
+          ? `Prazo médio: ${operationSettingsInput.averageInstallationTimeDays} dia(s)`
           : "Defina prazo e etapas da instalação",
       },
       {
@@ -3163,12 +3274,20 @@ export default function ConfiguracoesPage() {
       },
       {
         label: "Agenda no mesmo horário",
-        value: sameTimeAllowed === "Sim" ? `Permitido • cap. ${sameTimeCapacity}` : "Bloqueado",
+        value: scheduleSettings
+          ? sameTimeAllowed === "Sim"
+            ? `Permitido • cap. ${sameTimeCapacity}`
+            : "Bloqueado"
+          : "Pendente",
         tone: sameTimeAllowed === "Sim" ? ("green" as const) : ("amber" as const),
-        hint: sameTimeAllowed === "Sim" ? "A agenda permite múltiplos compromissos no mesmo horário." : compactCoverageHint,
+        hint: scheduleSettings
+          ? sameTimeAllowed === "Sim"
+            ? "A agenda permite múltiplos compromissos no mesmo horário."
+            : compactCoverageHint
+          : "Agenda canônica ainda não configurada.",
       },
     ];
-  }, [answers, installationDaysSelected.length, technicalVisitDaysSelected.length, installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel, scheduleSettings]);
+  }, [installationDaysSelected.length, technicalVisitDaysSelected.length, installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel, scheduleSettings, strategySettingsInput, operationSettingsInput]);
 
   const operationSections = useMemo(() => {
     return [
@@ -3176,9 +3295,9 @@ export default function ConfiguracoesPage() {
         title: "Disponibilidade operacional",
         items: buildBulletRows([
           { label: "Dias de instalação", value: installationDaysLabel },
-          { label: "Regra complementar da instalação", value: cleanText(answers.installation_days_rule) },
+          { label: "Regra complementar da instalação", value: operationSettingsInput.installationDaysRule },
           { label: "Dias de visita técnica", value: technicalVisitDaysLabel },
-          { label: "Regra complementar da visita técnica", value: cleanText(answers.technical_visit_days_rule) },
+          { label: "Regra complementar da visita técnica", value: operationSettingsInput.technicalVisitDaysRule },
           { label: "Atende sábado", value: servesSaturdayLabel },
           { label: "Atende domingo", value: servesSundayLabel },
           { label: "Atende feriado", value: scheduleSettings ? yesNoLabel(scheduleSettings.attends_holidays) : servesHolidayLabel },
@@ -3187,59 +3306,39 @@ export default function ConfiguracoesPage() {
       {
         title: "Visita técnica",
         items: buildBulletRows([
-          { label: "Faz visita técnica", value: yesNoLabel(answers.offers_technical_visit) },
+          { label: "Faz visita técnica", value: yesNoLabel(operationSettingsInput.offersTechnicalVisit) },
           { label: "Regras da visita", value: technicalVisitRulesLabel },
         ]),
       },
       {
         title: "Instalação",
         items: buildBulletRows([
-          { label: "Faz instalação", value: yesNoLabel(answers.offers_installation) },
-          { label: "Prazo médio", value: cleanText(answers.average_installation_time_days) ? `${cleanText(answers.average_installation_time_days)} dia(s)` : "Não definido" },
-          { label: "Etapas principais da instalação", value: joinSelectedLabels(parseArrayAnswer(answers.installation_process_steps), [
-            { value: "aprovacao_do_orcamento", label: "Aprovação do orçamento" },
-            { value: "pagamento_sinal", label: "Pagamento / sinal" },
-            { value: "confirmacao_do_pagamento", label: "Confirmação do pagamento" },
-            { value: "agendamento_da_instalacao", label: "Agendamento da instalação" },
-            { value: "instalacao", label: "Instalação" },
-            { value: "entrega_final", label: "Entrega final" },
-            { value: "pos_venda", label: "Pós-venda" },
-          ], cleanText(answers.installation_process_other)) },
+          { label: "Faz instalação", value: yesNoLabel(operationSettingsInput.offersInstallation) },
+          { label: "Prazo médio", value: operationSettingsInput.averageInstallationTimeDays != null ? `${operationSettingsInput.averageInstallationTimeDays} dia(s)` : "Não definido" },
+          { label: "Observações operacionais da instalação", value: operationSettingsInput.installationProcessNotes },
         ]),
       },
       {
         title: "Cobertura e deslocamento",
         items: buildBulletRows([
-          { label: "Regiões atendidas", value: cleanText(answers.service_regions) || cleanText(answers.service_region_notes) },
-          { label: "Cobertura principal", value: joinSelectedLabels(parseArrayAnswer(answers.service_region_modes), SERVICE_REGION_MODE_OPTIONS) },
-        ]),
-      },
-      {
-        title: "Limites operacionais",
-        items: buildBulletRows([
-          { label: "Limitações importantes", value: importantLimitationsLabel },
+          { label: "Regiões atendidas", value: cleanText(strategySettingsInput.serviceRegions) || cleanText(strategySettingsInput.serviceRegionNotes) },
+          { label: "Cobertura principal", value: joinSelectedLabels(strategySettingsInput.serviceRegionModes, SERVICE_REGION_MODE_OPTIONS) },
         ]),
       },
       {
         title: "Capacidade da agenda",
         items: buildBulletRows([
-          { label: "Pode ter vários compromissos no dia", value: scheduleSettings ? yesNoLabel(scheduleSettings.allow_multiple_appointments_per_day) : "Sim" },
-          { label: "Pode ter compromissos no mesmo horário", value: scheduleSettings ? yesNoLabel(scheduleSettings.allow_same_time_appointments) : "Não" },
-          { label: "Capacidade máxima no mesmo horário", value: scheduleSettings?.same_time_capacity ? String(scheduleSettings.same_time_capacity) : cleanText(answers.average_human_response_time) || cleanText(answers.agenda_capacity_rule) || "1" },
-        ]),
-      },
-      {
-        title: "Resumo operacional para a IA",
-        items: buildBulletRows([
-          { label: "Resumo", value: cleanText(answers.operational_ai_summary) || "Ainda não definido" },
+          { label: "Pode ter vários compromissos no dia", value: scheduleSettings ? yesNoLabel(scheduleSettings.allow_multiple_appointments_per_day) : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL },
+          { label: "Pode ter compromissos no mesmo horário", value: scheduleSettings ? yesNoLabel(scheduleSettings.allow_same_time_appointments) : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL },
+          { label: "Capacidade máxima no mesmo horário", value: scheduleSettings && Number.isFinite(Number(scheduleSettings.same_time_capacity)) ? String(scheduleSettings.same_time_capacity) : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL },
         ]),
       },
     ];
-  }, [answers, installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel, importantLimitationsLabel, servesSaturdayLabel, servesSundayLabel, servesHolidayLabel, scheduleSettings]);
+  }, [installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel, servesSaturdayLabel, servesSundayLabel, servesHolidayLabel, scheduleSettings, strategySettingsInput, operationSettingsInput]);
 
   const commercialIdentityItems = useMemo(() => {
     return buildBulletRows([
-      { label: "Nome da IA no atendimento", value: cleanText(answers.store_display_name) || cleanText(answers.responsible_name) || "Não definido" },
+      { label: "Nome da IA no atendimento", value: cleanText(answers.store_display_name) || "Não definido" },
       { label: "Como a IA se apresenta", value: cleanText(strategySettingsInput.strategyAiPresentation) || "Não definido" },
       { label: "Tom comercial da IA", value: joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS], cleanText(answers.activation_preferences_other)) || "Ainda não definido" },
       { label: "Fala como", value: cleanText(answers.ai_identity_mode) || "Equipe da loja" },
@@ -3321,10 +3420,10 @@ export default function ConfiguracoesPage() {
   const connectedCommercialWhatsapp = cleanText(
     storeWhatsappStatus?.displayPhoneNumber,
   );
-  const primaryResponsibleName =
-    cleanText(primaryResponsibleDraft.name) || cleanText(answers.responsible_name);
-  const primaryResponsibleWhatsapp =
-    cleanText(primaryResponsibleDraft.whatsapp) || cleanText(answers.responsible_whatsapp);
+  const primaryResponsibleName = cleanText(loadedCanonicalPrimaryResponsible?.name);
+  const primaryResponsibleWhatsapp = cleanText(
+    loadedCanonicalPrimaryResponsible?.whatsappNumber,
+  );
   const primaryResponsibleChannelLabel =
     resolveResponsibleChannelLabel(primaryResponsibleName);
   const storeWhatsappSafeErrorText = resolveHumanReadableWhatsappSafeError(
@@ -3443,8 +3542,8 @@ export default function ConfiguracoesPage() {
     );
 
     return buildBulletRows([
-      { label: "Responsável principal", value: cleanText(answers.responsible_name) },
-      { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
+      { label: "Responsável principal", value: primaryResponsibleName },
+      { label: "WhatsApp do responsável", value: primaryResponsibleWhatsapp },
       { label: "Observações do responsável", value: cleanText(answers.responsible_notes) },
       { label: "A IA avisa o responsável", value: yesNoLabel(answers.ai_should_notify_responsible) },
       { label: "Canal para falar com a IA assistente", value: activationPrefs },
@@ -3455,7 +3554,7 @@ export default function ConfiguracoesPage() {
       { label: "Checklist de ativação real", value: notificationCases },
       { label: "Status da ativação da loja", value: resolveOnboardingLabel(onboarding?.status).label },
     ]);
-  }, [answers, onboarding?.status]);
+  }, [answers, onboarding?.status, primaryResponsibleName, primaryResponsibleWhatsapp]);
 
   const discountItems = useMemo(() => {
     return buildBulletRows([
@@ -3688,15 +3787,12 @@ export default function ConfiguracoesPage() {
   }, [answers, storeName, hasStoredLogo]);
 
   const overviewSummary = useMemo(() => {
-    const responsible = cleanText(answers.responsible_name);
-    const responsibleWhatsapp = cleanText(answers.responsible_whatsapp);
-
     return [
       `Loja ativa: ${storeName}.`,
       `Status da configuração: ${onboardingStatus.label.toLowerCase()}.`,
       `Piscinas cadastradas: ${counts.pools}.`,
       `Catálogo geral: ${totalCatalogo} itens (${counts.quimicos} químicos, ${counts.acessorios} acessórios e ${counts.outros} outros).`,
-      responsible ? `Responsável principal: ${responsible}${responsibleWhatsapp ? ` • ${responsibleWhatsapp}` : ""}.` : "",
+      primaryResponsibleName ? `Responsável principal: ${primaryResponsibleName}${primaryResponsibleWhatsapp ? ` • ${primaryResponsibleWhatsapp}` : ""}.` : "",
     ].filter(Boolean);
   }, [
     storeName,
@@ -3706,7 +3802,8 @@ export default function ConfiguracoesPage() {
     counts.quimicos,
     counts.acessorios,
     counts.outros,
-    answers,
+    primaryResponsibleName,
+    primaryResponsibleWhatsapp,
   ]);
 
   const iaReadiness = useMemo(() => {
@@ -3743,15 +3840,15 @@ export default function ConfiguracoesPage() {
     if (totalCatalogo === 0) {
       list.push("Cadastrar produtos, acessórios ou outros itens no catálogo.");
     }
-    if (!cleanText(answers.responsible_name)) {
+    if (!primaryResponsibleName) {
       list.push("Definir o responsável principal da loja.");
     }
-    if (!cleanText(answers.responsible_whatsapp)) {
+    if (!primaryResponsibleWhatsapp) {
       list.push("Definir o WhatsApp do responsável.");
     }
 
     return list;
-  }, [counts.pools, totalCatalogo, onboardingStatus.label, answers]);
+  }, [counts.pools, totalCatalogo, onboardingStatus.label, primaryResponsibleName, primaryResponsibleWhatsapp]);
 
   const shouldShowQuickAccess =
     activeTab === "visao-geral" ||
@@ -3767,15 +3864,15 @@ export default function ConfiguracoesPage() {
   const handleOverviewEditCancel = useCallback(() => {
     setOverviewDraft({
       store_display_name: cleanText(answers.store_display_name) || storeName,
-      responsible_name: cleanText(answers.responsible_name),
-      responsible_whatsapp: cleanText(answers.responsible_whatsapp),
+      responsible_name: cleanText(canonicalPrimaryResponsibleDraft.name),
+      responsible_whatsapp: cleanText(canonicalPrimaryResponsibleDraft.whatsapp),
       commercial_whatsapp: cleanText(answers.commercial_whatsapp),
-      installation_days_rule: cleanText(answers.installation_days_rule),
-      technical_visit_days_rule: cleanText(answers.technical_visit_days_rule),
+      installation_days_rule: operationSettingsInput.installationDaysRule,
+      technical_visit_days_rule: operationSettingsInput.technicalVisitDaysRule,
       final_activation_notes: cleanText(answers.final_activation_notes),
     });
     setIsOverviewEditing(false);
-  }, [answers, storeName]);
+  }, [answers, canonicalPrimaryResponsibleDraft, operationSettingsInput, storeName]);
 
   const handleOverviewEditSave = useCallback(async () => {
     const saved = await upsertConfigAnswers(
@@ -3784,8 +3881,6 @@ export default function ConfiguracoesPage() {
         responsible_name: overviewDraft.responsible_name,
         responsible_whatsapp: overviewDraft.responsible_whatsapp,
         commercial_whatsapp: overviewDraft.commercial_whatsapp,
-        installation_days_rule: overviewDraft.installation_days_rule,
-        technical_visit_days_rule: overviewDraft.technical_visit_days_rule,
         final_activation_notes: overviewDraft.final_activation_notes,
       },
       "Alterações da visão geral salvas com sucesso."
@@ -3908,20 +4003,50 @@ export default function ConfiguracoesPage() {
 
 
   useEffect(() => {
-    setOperationDraft(createOperationDraftFromAnswers(answers, scheduleSettings));
-  }, [answers, scheduleSettings]);
+    setOperationDraft(createOperationDraftFromAnswers(answers, scheduleSettings, operationSettings));
+  }, [answers, scheduleSettings, operationSettings]);
 
   const handleOperationDraftChange = useCallback((key: keyof OperationDraftState, value: string) => {
+    if (
+      !scheduleSettings &&
+      (
+        key === "serves_saturday" ||
+        key === "serves_sunday" ||
+        key === "serves_holiday" ||
+        key === "allow_multiple_appointments_per_day" ||
+        key === "allow_same_time_appointments" ||
+        key === "agenda_capacity_rule"
+      )
+    ) {
+      return;
+    }
+
     setOperationDraft((current) => ({
       ...current,
       [key]: value,
     }));
-  }, []);
+  }, [scheduleSettings]);
+
+  const handleOperationTechnicalVisitRuleToggle = useCallback(
+    (value: StoreOperationTechnicalVisitRule) => {
+      setOperationDraft((current) => {
+        const selectedValues = current.technical_visit_rules_selected.includes(value)
+          ? current.technical_visit_rules_selected.filter((item) => item !== value)
+          : [...current.technical_visit_rules_selected, value];
+
+        return {
+          ...current,
+          technical_visit_rules_selected: selectedValues,
+        };
+      });
+    },
+    [],
+  );
 
   const handleOperationEditCancel = useCallback(() => {
-    setOperationDraft(createOperationDraftFromAnswers(answers, scheduleSettings));
+    setOperationDraft(createOperationDraftFromAnswers(answers, scheduleSettings, operationSettings));
     setIsOperationEditing(false);
-  }, [answers, scheduleSettings]);
+  }, [answers, scheduleSettings, operationSettings]);
 
   const handleOperationEditSave = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -3931,67 +4056,125 @@ export default function ConfiguracoesPage() {
     }
 
     try {
-      const { data: savedScheduleSettings, error: scheduleSettingsError } = await supabase.rpc(
-        "upsert_store_schedule_settings",
-        {
-          p_organization_id: organizationId,
-          p_store_id: activeStoreId,
-          p_allow_multiple_appointments_per_day: parseYesNoToBoolean(
-            operationDraft.allow_multiple_appointments_per_day,
-            true
-          ),
-          p_allow_same_time_appointments: parseYesNoToBoolean(
-            operationDraft.allow_same_time_appointments,
-            false
-          ),
-          p_same_time_capacity: Math.max(1, Number.parseInt(cleanText(operationDraft.agenda_capacity_rule) || "1", 10) || 1),
-          p_attends_holidays: parseYesNoToBoolean(operationDraft.serves_holiday, false),
-          p_operating_days:
-            scheduleSettings?.operating_days && Array.isArray(scheduleSettings.operating_days)
-              ? scheduleSettings.operating_days
-              : [],
-          p_operating_hours:
-            scheduleSettings?.operating_hours && typeof scheduleSettings.operating_hours === "object"
-              ? scheduleSettings.operating_hours
-              : {},
-          p_installation_days:
-            scheduleSettings?.installation_days && Array.isArray(scheduleSettings.installation_days)
+      const parsedAverageInstallationTime = parseOptionalPositiveInteger(
+        operationDraft.average_installation_time_days,
+      );
+
+      if (Number.isNaN(parsedAverageInstallationTime)) {
+        setErrorText(
+          "Prazo médio de instalação deve ser vazio ou um inteiro positivo.",
+        );
+        setSuccessText(null);
+        return;
+      }
+
+      const normalizedOperationSettings = normalizeStoreOperationSettingsInput({
+        offersInstallation: parseYesNoToNullableBoolean(
+          operationDraft.offers_installation,
+        ),
+        averageInstallationTimeDays: parsedAverageInstallationTime,
+        installationDaysRule: operationDraft.installation_days_rule,
+        installationProcessNotes: operationDraft.installation_process_summary,
+        offersTechnicalVisit: parseYesNoToNullableBoolean(
+          operationDraft.offers_technical_visit,
+        ),
+        technicalVisitDaysRule: operationDraft.technical_visit_days_rule,
+        technicalVisitRules: operationDraft.technical_visit_rules_selected,
+        technicalVisitRulesOther: operationDraft.technical_visit_rules_other,
+      });
+
+      if (!normalizedOperationSettings.ok) {
+        setErrorText(normalizedOperationSettings.error);
+        setSuccessText(null);
+        return;
+      }
+
+      const { data: savedOperationSettings, error: operationSettingsError } =
+        await supabase.rpc(
+          "upsert_store_operation_settings_with_legacy_mirror_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_offers_installation:
+              normalizedOperationSettings.value.offersInstallation,
+            p_average_installation_time_days:
+              normalizedOperationSettings.value.averageInstallationTimeDays,
+            p_installation_days_rule:
+              normalizedOperationSettings.value.installationDaysRule,
+            p_installation_process_notes:
+              normalizedOperationSettings.value.installationProcessNotes,
+            p_offers_technical_visit:
+              normalizedOperationSettings.value.offersTechnicalVisit,
+            p_technical_visit_days_rule:
+              normalizedOperationSettings.value.technicalVisitDaysRule,
+            p_technical_visit_rules:
+              normalizedOperationSettings.value.technicalVisitRules,
+            p_technical_visit_rules_other:
+              normalizedOperationSettings.value.technicalVisitRulesOther,
+          },
+        );
+
+      if (operationSettingsError) throw operationSettingsError;
+
+      let savedScheduleSettings: ScheduleSettingsRow | null = null;
+
+      if (scheduleSettings) {
+        const updatedOperatingDays = applyWeekendSelectionToOperatingDays({
+          currentDays: scheduleSettings.operating_days,
+          saturdaySelection: operationDraft.serves_saturday,
+          sundaySelection: operationDraft.serves_sunday,
+        });
+        const { data: scheduleData, error: scheduleSettingsError } =
+          await supabase.rpc("upsert_store_schedule_settings", {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_allow_multiple_appointments_per_day: parseYesNoToBoolean(
+              operationDraft.allow_multiple_appointments_per_day,
+              scheduleSettings.allow_multiple_appointments_per_day,
+            ),
+            p_allow_same_time_appointments: parseYesNoToBoolean(
+              operationDraft.allow_same_time_appointments,
+              scheduleSettings.allow_same_time_appointments,
+            ),
+            p_same_time_capacity: Math.max(
+              1,
+              Number.parseInt(
+                cleanText(operationDraft.agenda_capacity_rule) ||
+                  String(scheduleSettings.same_time_capacity || 1),
+                10,
+              ) || 1,
+            ),
+            p_attends_holidays: parseYesNoToBoolean(
+              operationDraft.serves_holiday,
+              scheduleSettings.attends_holidays,
+            ),
+            p_operating_days: updatedOperatingDays,
+            p_operating_hours:
+              scheduleSettings.operating_hours &&
+              typeof scheduleSettings.operating_hours === "object"
+                ? scheduleSettings.operating_hours
+                : {},
+            p_installation_days: Array.isArray(scheduleSettings.installation_days)
               ? scheduleSettings.installation_days
               : [],
-          p_after_hours_behavior: cleanText(answers.after_hours_behavior) || null,
-          p_notes: "Fonte viva da agenda atualizada pela aba Operação.",
-        }
-      );
+            p_after_hours_behavior: scheduleSettings.after_hours_behavior,
+            p_notes: scheduleSettings.notes,
+          });
 
       if (scheduleSettingsError) throw scheduleSettingsError;
+      savedScheduleSettings = (scheduleData ?? null) as ScheduleSettingsRow | null;
+      }
 
-      const saved = await upsertConfigAnswers(
-        {
-          operating_days: operationDraft.operating_days,
-          operating_hours: operationDraft.operating_hours,
-          installation_days_rule: operationDraft.installation_days_rule,
-          technical_visit_days_rule: operationDraft.technical_visit_days_rule,
-          serves_saturday: operationDraft.serves_saturday,
-          serves_sunday: operationDraft.serves_sunday,
-          attends_holidays: operationDraft.serves_holiday,
-          serves_holiday: operationDraft.serves_holiday,
-          offers_installation: operationDraft.offers_installation,
-          average_installation_time_days: operationDraft.average_installation_time_days,
-          installation_process_other: operationDraft.installation_process_summary,
-          offers_technical_visit: operationDraft.offers_technical_visit,
-          technical_visit_rules_other: operationDraft.technical_visit_rules_summary,
-          service_regions: operationDraft.service_regions,
-          important_limitations_other: operationDraft.important_limitations,
-          agenda_capacity_rule: operationDraft.agenda_capacity_rule,
-          operational_ai_summary: operationDraft.operational_ai_summary,
-        },
-        "Alterações da operação salvas com sucesso."
+      setOperationSettings(
+        (savedOperationSettings ?? null) as StoreOperationSettingsRow | null,
       );
-
-      if (!saved) return;
-
-      setScheduleSettings((savedScheduleSettings ?? null) as ScheduleSettingsRow | null);
+      if (savedScheduleSettings) {
+        setScheduleSettings(savedScheduleSettings);
+      }
+      setErrorText(null);
+      setSuccessText("Alterações da operação salvas com sucesso.");
       setIsOperationEditing(false);
+      await fetchPageData();
     } catch (error: any) {
       setErrorText(error?.message ?? "Erro ao salvar alterações da operação.");
       setSuccessText(null);
@@ -4001,8 +4184,7 @@ export default function ConfiguracoesPage() {
     activeStoreId,
     operationDraft,
     scheduleSettings,
-    answers.after_hours_behavior,
-    upsertConfigAnswers,
+    fetchPageData,
   ]);
 
 
@@ -4014,6 +4196,7 @@ export default function ConfiguracoesPage() {
         discountSettings,
         highValueDiscountSettings,
         commercialAiSettings,
+        strategySettingsInput,
       ),
     );
   }, [
@@ -4022,20 +4205,11 @@ export default function ConfiguracoesPage() {
     discountSettings,
     highValueDiscountSettings,
     paymentSettings,
+    strategySettingsInput,
   ]);
 
   useEffect(() => {
-    setPrimaryResponsibleDraft({
-      id: "principal",
-      name: cleanText(answers.responsible_name),
-      whatsapp: cleanText(answers.responsible_whatsapp),
-      role: cleanText(answers.responsible_role) || "Responsável principal",
-      receives_ai_alerts: yesNoLabel(answers.ai_should_notify_responsible) !== "Não",
-      can_approve_discount: true,
-      can_approve_exceptions: true,
-      can_assume_human: true,
-      notes: cleanText(answers.responsible_notes),
-    });
+    setPrimaryResponsibleDraft(canonicalPrimaryResponsibleDraft);
     setAdditionalResponsiblesDraft(parseResponsiblePeopleFromAnswers(answers));
     setActivationConfirmInformationDraft(Boolean(answers.confirm_information_is_correct));
     setActivationNotificationCasesDraft(
@@ -4052,7 +4226,7 @@ export default function ConfiguracoesPage() {
         cleanText(answers.activation_preferences_other)
       )
     );
-  }, [answers]);
+  }, [answers, canonicalPrimaryResponsibleDraft]);
 
   const handleCommercialDraftChange = useCallback((key: keyof CommercialDraftState, value: string) => {
     setCommercialDraft((current) => ({
@@ -4095,6 +4269,7 @@ export default function ConfiguracoesPage() {
         discountSettings,
         highValueDiscountSettings,
         commercialAiSettings,
+        strategySettingsInput,
       ),
     );
     setIsCommercialEditing(false);
@@ -4333,8 +4508,8 @@ export default function ConfiguracoesPage() {
   }, [activeStoreId, discountDraft, organizationId, upsertConfigAnswers]);
 
   useEffect(() => {
-    setChannelDraft(createChannelDraftFromSources(answers, channelSettings));
-  }, [answers, channelSettings]);
+    setChannelDraft(createChannelDraftFromSources(answers, channelSettings, loadedCanonicalPrimaryResponsible));
+  }, [answers, channelSettings, loadedCanonicalPrimaryResponsible]);
 
   const handleChannelDraftChange = useCallback((key: keyof ChannelDraftState, value: string) => {
     setChannelDraft((current) => ({
@@ -4344,10 +4519,10 @@ export default function ConfiguracoesPage() {
   }, []);
 
   const handleChannelsEditCancel = useCallback(() => {
-    setChannelDraft(createChannelDraftFromSources(answers, channelSettings));
+    setChannelDraft(createChannelDraftFromSources(answers, channelSettings, loadedCanonicalPrimaryResponsible));
     setShowChannelsAdvanced(false);
     setIsChannelsEditing(false);
-  }, [answers, channelSettings]);
+  }, [answers, channelSettings, loadedCanonicalPrimaryResponsible]);
 
   const handleChannelsEditSave = useCallback(async () => {
     const normalizedChannelSettings = normalizeStoreChannelSettingsInput({
@@ -4505,17 +4680,7 @@ export default function ConfiguracoesPage() {
   }, []);
 
   const handleActivationEditCancel = useCallback(() => {
-    setPrimaryResponsibleDraft({
-      id: "principal",
-      name: cleanText(answers.responsible_name),
-      whatsapp: cleanText(answers.responsible_whatsapp),
-      role: cleanText(answers.responsible_role) || "Responsável principal",
-      receives_ai_alerts: yesNoLabel(answers.ai_should_notify_responsible) !== "Não",
-      can_approve_discount: true,
-      can_approve_exceptions: true,
-      can_assume_human: true,
-      notes: cleanText(answers.responsible_notes),
-    });
+    setPrimaryResponsibleDraft(canonicalPrimaryResponsibleDraft);
     setAdditionalResponsiblesDraft(parseResponsiblePeopleFromAnswers(answers));
     setActivationConfirmInformationDraft(Boolean(answers.confirm_information_is_correct));
     setActivationNotificationCasesDraft(
@@ -4533,7 +4698,7 @@ export default function ConfiguracoesPage() {
       )
     );
     setIsActivationEditing(false);
-  }, [answers]);
+  }, [answers, canonicalPrimaryResponsibleDraft]);
 
   const handleActivationEditSave = useCallback(async () => {
     const cleanAdditional = additionalResponsiblesDraft.filter(
@@ -6184,15 +6349,15 @@ export default function ConfiguracoesPage() {
             />
             <StatusCard
               label="Canal da assistente"
-              value={cleanText(answers.responsible_whatsapp) ? "Configurado" : "Pendente"}
-              tone={cleanText(answers.responsible_whatsapp) ? "green" : "amber"}
-              hint={cleanText(answers.responsible_whatsapp) || "Canal do responsável ainda não definido"}
+              value={primaryResponsibleWhatsapp ? "Configurado" : "Pendente"}
+              tone={primaryResponsibleWhatsapp ? "green" : "amber"}
+              hint={primaryResponsibleWhatsapp || "Canal do responsável ainda não definido"}
             />
             <StatusCard
               label="Agenda"
-              value={cleanText(answers.installation_days_rule) || cleanText(answers.technical_visit_days_rule) ? "Configurada" : "Pendente"}
-              tone={cleanText(answers.installation_days_rule) || cleanText(answers.technical_visit_days_rule) ? "green" : "amber"}
-              hint="Regras de disponibilidade e operação"
+              value={scheduleSettings ? "Configurada" : "Pendente"}
+              tone={scheduleSettings ? "green" : "amber"}
+              hint={scheduleSettings ? "Regras de disponibilidade e operação" : "Agenda canônica ainda não configurada"}
             />
             <StatusCard
               label="Prontidão da IA"
@@ -6257,7 +6422,7 @@ export default function ConfiguracoesPage() {
                   </span>
                   <input
                     value={overviewDraft.installation_days_rule ?? ""}
-                    onChange={(event) => handleOverviewDraftChange("installation_days_rule", event.target.value)}
+                    readOnly
                     className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                   />
                 </label>
@@ -6268,7 +6433,7 @@ export default function ConfiguracoesPage() {
                   </span>
                   <input
                     value={overviewDraft.technical_visit_days_rule ?? ""}
-                    onChange={(event) => handleOverviewDraftChange("technical_visit_days_rule", event.target.value)}
+                    readOnly
                     className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                   />
                 </label>
@@ -6306,9 +6471,9 @@ export default function ConfiguracoesPage() {
               <div className="mb-2 text-sm font-semibold text-gray-900">Responsáveis e acesso</div>
               <SummaryList
                 items={buildBulletRows([
-                  { label: "Responsável principal", value: cleanText(answers.responsible_name) },
-                  { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
-                  { label: "Quem tem acesso ao sistema", value: cleanText(answers.responsible_name) || "Responsável principal da loja" },
+                  { label: "Responsável principal", value: primaryResponsibleName },
+                  { label: "WhatsApp do responsável", value: primaryResponsibleWhatsapp },
+                  { label: "Quem tem acesso ao sistema", value: primaryResponsibleName || "Responsável principal da loja" },
                 ])}
               />
             </div>
@@ -7016,7 +7181,7 @@ export default function ConfiguracoesPage() {
                   items={[
                     `Piscinas cadastradas: ${counts.pools}.`,
                     `Tipos-base configurados: ${poolTypesLabel || "Ainda não definidos"}.`,
-                    `Marca principal ligada à operação: ${cleanText(answers.main_store_brand) || cleanText(answers.brands_worked) || "Ainda não definida"}.`,
+                    `Marca principal ligada à operação: ${cleanText(strategySettingsInput.mainStoreBrand) || cleanText(strategySettingsInput.brandsWorked) || "Ainda não definida"}.`,
                     "Cadastro manual e importação inteligente podem coexistir sem conflito.",
                   ]}
                 />
@@ -7390,7 +7555,37 @@ export default function ConfiguracoesPage() {
           {isOperationEditing ? (
             <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
               <div className="mb-3 text-sm font-semibold text-gray-900">Editar operação na mesma página</div>
-              <div className="grid gap-4 md:grid-cols-2">
+              {!scheduleSettings ? (
+                <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  Agenda canonica ainda nao configurada; estes controles ficam somente leitura por enquanto.
+                </div>
+              ) : null}
+              <div
+                className={scheduleSettings ? "grid gap-4 md:grid-cols-2" : "grid gap-4 md:grid-cols-2 operation-schedule-controls-read-only"}
+              >
+                {!scheduleSettings ? (
+                  <style jsx>{`
+                    .operation-schedule-controls-read-only > :nth-child(3),
+                    .operation-schedule-controls-read-only > :nth-child(4),
+                    .operation-schedule-controls-read-only > :nth-child(5),
+                    .operation-schedule-controls-read-only > :nth-child(12),
+                    .operation-schedule-controls-read-only > :nth-child(13),
+                    .operation-schedule-controls-read-only > :nth-child(14) {
+                      opacity: 0.55;
+                      pointer-events: none;
+                    }
+
+                    .operation-schedule-controls-read-only > :nth-child(3) select,
+                    .operation-schedule-controls-read-only > :nth-child(4) select,
+                    .operation-schedule-controls-read-only > :nth-child(5) select,
+                    .operation-schedule-controls-read-only > :nth-child(12) select,
+                    .operation-schedule-controls-read-only > :nth-child(13) select,
+                    .operation-schedule-controls-read-only > :nth-child(14) input {
+                      background: #f3f4f6;
+                      cursor: not-allowed;
+                    }
+                  `}</style>
+                ) : null}
                 <label className="space-y-1 md:col-span-2">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra complementar da instalação</span>
                   <input value={operationDraft.installation_days_rule} onChange={(e)=>handleOperationDraftChange("installation_days_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
@@ -7420,40 +7615,44 @@ export default function ConfiguracoesPage() {
                   <input value={operationDraft.average_installation_time_days} onChange={(e)=>handleOperationDraftChange("average_installation_time_days", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Etapas principais da instalação</span>
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações operacionais da instalação</span>
                   <textarea value={operationDraft.installation_process_summary} onChange={(e)=>handleOperationDraftChange("installation_process_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Faz visita técnica</span>
                   <select value={operationDraft.offers_technical_visit} onChange={(e)=>handleOperationDraftChange("offers_technical_visit", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                 </label>
+                <div className="space-y-2 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regras estruturadas da visita técnica</span>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {TECHNICAL_VISIT_RULE_OPTIONS.map((option) => (
+                      <label key={option.value} className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800">
+                        <input
+                          type="checkbox"
+                          checked={operationDraft.technical_visit_rules_selected.includes(option.value as StoreOperationTechnicalVisitRule)}
+                          onChange={() => handleOperationTechnicalVisitRuleToggle(option.value as StoreOperationTechnicalVisitRule)}
+                          className="h-4 w-4 rounded border-gray-300 text-gray-900"
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
                 <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regras da visita técnica</span>
-                  <textarea value={operationDraft.technical_visit_rules_summary} onChange={(e)=>handleOperationDraftChange("technical_visit_rules_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regiões atendidas</span>
-                  <input value={operationDraft.service_regions} onChange={(e)=>handleOperationDraftChange("service_regions", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Limitações importantes</span>
-                  <textarea value={operationDraft.important_limitations} onChange={(e)=>handleOperationDraftChange("important_limitations", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observação adicional da visita técnica</span>
+                  <textarea value={operationDraft.technical_visit_rules_other} onChange={(e)=>handleOperationDraftChange("technical_visit_rules_other", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Vários compromissos no mesmo dia</span>
-                  <select value={operationDraft.allow_multiple_appointments_per_day} onChange={(e)=>handleOperationDraftChange("allow_multiple_appointments_per_day", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Sim</option><option>Não</option></select>
+                  <select value={operationDraft.allow_multiple_appointments_per_day} onChange={(e)=>handleOperationDraftChange("allow_multiple_appointments_per_day", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                 </label>
                 <label className="space-y-1">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Compromissos no mesmo horário</span>
-                  <select value={operationDraft.allow_same_time_appointments} onChange={(e)=>handleOperationDraftChange("allow_same_time_appointments", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não</option><option>Sim</option></select>
+                  <select value={operationDraft.allow_same_time_appointments} onChange={(e)=>handleOperationDraftChange("allow_same_time_appointments", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Não</option><option>Sim</option></select>
                 </label>
                 <label className="space-y-1">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Capacidade no mesmo horário</span>
                   <input value={operationDraft.agenda_capacity_rule} onChange={(e)=>handleOperationDraftChange("agenda_capacity_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo operacional para a IA</span>
-                  <textarea value={operationDraft.operational_ai_summary} onChange={(e)=>handleOperationDraftChange("operational_ai_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
               </div>
             </div>

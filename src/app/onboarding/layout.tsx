@@ -23,7 +23,9 @@ export default async function OnboardingLayout({
     redirect("/account/access-unavailable");
   }
 
-  const gate = resolveAccountAccessPageGate(resolution, "onboarding");
+  const gate = resolveAccountAccessPageGate(resolution, "onboarding", {
+    allowCompletedOnboardingReview: process.env.NODE_ENV !== "production",
+  });
 
   if (gate.action === "redirect") {
     redirect(gate.destination);

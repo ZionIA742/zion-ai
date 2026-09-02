@@ -62,7 +62,7 @@ test(
 );
 
 test(
-  "discount helper does not invent default percent from legacy max only",
+  "discount helper returns defaults instead of legacy max when canonical row is absent",
   async () => {
     const { createStoreDiscountSettingsInputFromSources } =
       await loadStoreDiscountSettingsModule();
@@ -77,8 +77,8 @@ test(
     });
 
     assert.equal(input.defaultDiscountPercent, "");
-    assert.equal(input.maxDiscountPercent, "18");
-    assert.equal(input.discountSpecialRules, "Cliente importante exige revisão humana.");
+    assert.equal(input.maxDiscountPercent, "");
+    assert.equal(input.discountSpecialRules, "");
   },
 );
 
@@ -133,7 +133,7 @@ test(
 );
 
 test(
-  "discount helper uses only semantic discount legacy when canonical row is absent",
+  "discount helper does not promote semantic discount legacy when canonical row is absent",
   async () => {
     const { createStoreDiscountSettingsInputFromSources } =
       await loadStoreDiscountSettingsModule();
@@ -148,7 +148,7 @@ test(
       highValueSettings: null,
     });
 
-    assert.equal(input.discountSpecialRules, "Apenas gerente aprova excecao.");
+    assert.equal(input.discountSpecialRules, "");
   },
 );
 
@@ -239,4 +239,63 @@ test("discount normalization keeps special rules textual and blanks become null"
   if (blankResult.ok) {
     assert.equal(blankResult.value.discountSpecialRules, null);
   }
+});
+
+test("discount normalization accepts explicit zero policy for no normal discounts", async () => {
+  const { normalizeStoreDiscountSettingsInput } =
+    await loadStoreDiscountSettingsModule();
+
+  assert.deepEqual(
+    normalizeStoreDiscountSettingsInput({
+      defaultDiscountPercent: "0",
+      maxDiscountPercent: "0",
+      allowAskAboveMaxDiscount: false,
+      discountAutonomyMode: "approval_required",
+      discountSpecialRules: "",
+      highValueEnabled: false,
+      highValueThresholdAmount: "",
+      highValueDiscountPercent: "",
+    }),
+    {
+      ok: true,
+      value: {
+        defaultDiscountPercent: 0,
+        maxDiscountPercent: 0,
+        allowAskAboveMaxDiscount: false,
+        discountAutonomyMode: "approval_required",
+        discountSpecialRules: null,
+        highValueEnabled: false,
+        highValueThresholdAmountCents: null,
+        highValueDiscountPercent: null,
+      },
+    },
+  );
+});
+
+test("discount helper keeps canonical zero policy instead of legacy can offer", async () => {
+  const { createStoreDiscountSettingsInputFromSources } =
+    await loadStoreDiscountSettingsModule();
+
+  const input = createStoreDiscountSettingsInputFromSources({
+    answers: {
+      can_offer_discount: true,
+      max_discount_percent: "25",
+      discount_special_rules: "Legado nao deve vencer.",
+    },
+    settings: {
+      organization_id: "org-1",
+      store_id: "store-1",
+      default_discount_percent: 0,
+      max_discount_percent: 0,
+      allow_ask_above_max_discount: false,
+      discount_autonomy_mode: "approval_required",
+      discount_special_rules: null,
+    },
+    highValueSettings: null,
+  });
+
+  assert.equal(input.defaultDiscountPercent, "0");
+  assert.equal(input.maxDiscountPercent, "0");
+  assert.equal(input.allowAskAboveMaxDiscount, false);
+  assert.equal(input.discountSpecialRules, "");
 });

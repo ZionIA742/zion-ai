@@ -35,11 +35,21 @@ import {
   type StorePaymentSettingsRow,
 } from "@/lib/store-payment-settings";
 import {
+  createStoreStrategySettingsLegacySeedInputFromAnswers,
   createStoreStrategySettingsInputFromSources,
   normalizeStoreStrategySettingsInput,
   type StoreStrategySettingsInput,
   type StoreStrategySettingsRow,
 } from "@/lib/store-strategy-settings";
+import {
+  createStoreOperationSettingsInputFromSources,
+  normalizeOperatingDays,
+  normalizeOperationTechnicalVisitRules,
+  normalizeStoreOperationSettingsInput,
+  parseOperationAverageInstallationTimeInput,
+  type StoreOperationSettingsInput,
+  type StoreOperationSettingsRow,
+} from "@/lib/store-operation-settings";
 type Step1FormData = {
   store_display_name: string;
   store_description: string;
@@ -87,6 +97,27 @@ type Step3FormData = {
   sales_flow_middle_confirmed: boolean;
   sales_flow_final_confirmed: boolean;
 };
+type Step2StringField = Exclude<keyof Step2FormData, "pool_types_selected">;
+type Step3StringField =
+  | "average_installation_time_days"
+  | "installation_days_rule"
+  | "technical_visit_days_rule"
+  | "average_human_response_time"
+  | "installation_process_other"
+  | "technical_visit_rules_other"
+  | "attends_holidays"
+  | "important_limitations_other"
+  | "sales_flow_notes";
+type Step3StringArrayField =
+  | "installation_process_steps"
+  | "important_limitations_selected"
+  | "sales_flow_start_steps"
+  | "sales_flow_middle_steps"
+  | "sales_flow_final_steps";
+type Step3BooleanField =
+  | "sales_flow_start_confirmed"
+  | "sales_flow_middle_confirmed"
+  | "sales_flow_final_confirmed";
 type Step4FormData = {
   average_ticket: string;
   can_offer_discount: string;
@@ -158,6 +189,25 @@ type ExistingCatalogItemRow = {
   description: string | null;
   metadata: Record<string, unknown> | null;
 };
+type ScheduleSettingsRow = {
+  id?: string;
+  organization_id: string;
+  store_id: string;
+  allow_multiple_appointments_per_day: boolean;
+  allow_same_time_appointments: boolean;
+  same_time_capacity: number;
+  attends_holidays: boolean | null;
+  operating_days: unknown;
+  operating_hours: unknown;
+  installation_days: unknown;
+  technical_visit_days: unknown;
+  after_hours_behavior: string | null;
+  notes: string | null;
+  enforce_operating_window: boolean;
+  timezone_name: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
 type Option = {
   value: string;
   label: string;
@@ -192,11 +242,11 @@ const POOL_TYPE_OPTIONS: Option[] = [
 ];
 const DAYS_OF_WEEK_OPTIONS: Option[] = [
   { value: "segunda", label: "Segunda" },
-  { value: "terça", label: "Terça" },
+  { value: "terca", label: "Terça" },
   { value: "quarta", label: "Quarta" },
   { value: "quinta", label: "Quinta" },
   { value: "sexta", label: "Sexta" },
-  { value: "sábado", label: "Sábado" },
+  { value: "sabado", label: "Sábado" },
   { value: "domingo", label: "Domingo" },
 ];
 const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
@@ -204,8 +254,6 @@ const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
   { value: "confirmar_endereco", label: "Precisa confirmar endereço antes" },
   { value: "analise_do_local", label: "Pode depender de avaliação do local" },
   { value: "pode_ter_taxa", label: "Pode ter taxa de deslocamento" },
-  { value: "somente_regiao_atendida", label: "Só atende a região cadastrada" },
-  { value: "horario_comercial", label: "Somente em horário comercial" },
 ];
 const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
   { value: "nao_atende_domingo", label: "Não atende domingo" },
@@ -269,6 +317,11 @@ const DOWN_PAYMENT_VALUE_TYPE_OPTIONS: Option[] = [
   { value: "percent", label: "Percentual" },
   { value: "fixed", label: "Valor fixo" },
   { value: "case_by_case", label: "Caso a caso" },
+];
+const DISCOUNT_AUTONOMY_MODE_OPTIONS: Option[] = [
+  { value: "approval_required", label: "Sempre com aprovação humana" },
+  { value: "default_step_autonomous", label: "IA pode conceder só o primeiro degrau" },
+  { value: "within_policy_autonomous", label: "IA pode conceder dentro da política" },
 ];
 const INSTALLMENT_INTEREST_POLICY_OPTIONS: Option[] = [
   { value: "interest_free", label: "Sem juros" },
@@ -351,6 +404,164 @@ function parseArrayAnswer(value: unknown): string[] {
       .filter(Boolean);
   }
   return [];
+}
+function parseYesNoValue(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return null;
+
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+  if (normalized === "sim") return true;
+  if (normalized === "nao") return false;
+  return null;
+}
+function yesNoFormValue(value: boolean | null | undefined): string {
+  if (value === true) return "sim";
+  if (value === false) return "n\u00e3o";
+  return "";
+}
+function canonicalDaysFromSource(value: unknown): string[] {
+  return normalizeOperatingDays(value);
+}
+function operationRulesFromSource(value: unknown) {
+  return normalizeOperationTechnicalVisitRules(value);
+}
+function ensureScheduleSettingsPayloadCanPreserve(row: ScheduleSettingsRow) {
+  if (!Number.isInteger(row.same_time_capacity)) {
+    throw new Error(
+      "Agenda canonica invalida: same_time_capacity nao pode ser preservado.",
+    );
+  }
+
+  if (
+    row.operating_days === null ||
+    typeof row.operating_days === "undefined" ||
+    row.operating_hours === null ||
+    typeof row.operating_hours === "undefined"
+  ) {
+    throw new Error(
+      "Agenda canonica invalida: operating_days/operating_hours nao podem ser preservados.",
+    );
+  }
+}
+function mergePersistedStep2Draft(
+  currentDraft: Step2FormData,
+  persistedDraft: unknown,
+): Step2FormData {
+  if (
+    !persistedDraft ||
+    typeof persistedDraft !== "object" ||
+    Array.isArray(persistedDraft)
+  ) {
+    return currentDraft;
+  }
+
+  const persisted = persistedDraft as Record<string, unknown>;
+  const next = { ...currentDraft };
+  const stringFields: Step2StringField[] = [
+    "pool_types",
+    "sells_chemicals",
+    "sells_accessories",
+    "offers_installation",
+    "offers_technical_visit",
+    "brands_worked",
+    "pool_types_other",
+    "main_store_brand",
+  ];
+
+  for (const field of stringFields) {
+    if (typeof persisted[field] === "string") {
+      next[field] = persisted[field];
+    }
+  }
+
+  if (Array.isArray(persisted.pool_types_selected)) {
+    next.pool_types_selected = persisted.pool_types_selected
+      .map((item) => (typeof item === "string" ? item : ""))
+      .filter(Boolean);
+  }
+
+  return next;
+}
+function mergePersistedStep3Draft(
+  currentDraft: Step3FormData,
+  persistedDraft: unknown,
+): Step3FormData {
+  if (
+    !persistedDraft ||
+    typeof persistedDraft !== "object" ||
+    Array.isArray(persistedDraft)
+  ) {
+    return currentDraft;
+  }
+
+  const persisted = persistedDraft as Record<string, unknown>;
+  const next = { ...currentDraft };
+  const stringFields: Step3StringField[] = [
+    "average_installation_time_days",
+    "installation_days_rule",
+    "technical_visit_days_rule",
+    "average_human_response_time",
+    "installation_process_other",
+    "technical_visit_rules_other",
+    "attends_holidays",
+    "important_limitations_other",
+    "sales_flow_notes",
+  ];
+  const stringArrayFields: Step3StringArrayField[] = [
+    "installation_process_steps",
+    "important_limitations_selected",
+    "sales_flow_start_steps",
+    "sales_flow_middle_steps",
+    "sales_flow_final_steps",
+  ];
+  const booleanFields: Step3BooleanField[] = [
+    "sales_flow_start_confirmed",
+    "sales_flow_middle_confirmed",
+    "sales_flow_final_confirmed",
+  ];
+
+  for (const field of stringFields) {
+    if (typeof persisted[field] === "string") {
+      next[field] = persisted[field];
+    }
+  }
+
+  for (const field of stringArrayFields) {
+    if (Array.isArray(persisted[field])) {
+      next[field] = persisted[field]
+        .map((item) => (typeof item === "string" ? item : ""))
+        .filter(Boolean);
+    }
+  }
+
+  for (const field of booleanFields) {
+    if (typeof persisted[field] === "boolean") {
+      next[field] = persisted[field];
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(persisted, "installation_available_days")) {
+    next.installation_available_days = canonicalDaysFromSource(
+      persisted.installation_available_days,
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(persisted, "technical_visit_available_days")) {
+    next.technical_visit_available_days = canonicalDaysFromSource(
+      persisted.technical_visit_available_days,
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(persisted, "technical_visit_rules_selected")) {
+    next.technical_visit_rules_selected = operationRulesFromSource(
+      persisted.technical_visit_rules_selected,
+    );
+  }
+
+  return next;
 }
 function joinSelectedLabels(values: string[], options: Option[], extra?: string) {
   const labels = values
@@ -683,6 +894,10 @@ function OnboardingContent() {
     useState<StoreCommercialAiSettingsRow | null>(null);
   const [strategySettings, setStrategySettings] =
     useState<StoreStrategySettingsRow | null>(null);
+  const [operationSettings, setOperationSettings] =
+    useState<StoreOperationSettingsRow | null>(null);
+  const [scheduleSettings, setScheduleSettings] =
+    useState<ScheduleSettingsRow | null>(null);
   const step1DraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_step1_draft:${organizationId}:${activeStore.id}`;
@@ -1114,7 +1329,7 @@ function OnboardingContent() {
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw) as Step2FormData;
-      setStep2Form((prev) => ({ ...prev, ...parsed }));
+      setStep2Form((prev) => mergePersistedStep2Draft(prev, parsed));
       setStep2DraftRecovered(true);
     } catch {}
   }, [step2DraftStorageKey]);
@@ -1124,7 +1339,7 @@ function OnboardingContent() {
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw) as Step3FormData;
-      setStep3Form((prev) => ({ ...prev, ...parsed }));
+      setStep3Form((prev) => mergePersistedStep3Draft(prev, parsed));
       setStep3DraftRecovered(true);
     } catch {}
   }, [step3DraftStorageKey]);
@@ -1177,6 +1392,8 @@ function OnboardingContent() {
           paymentSettingsResult,
           commercialAiSettingsResult,
           strategySettingsResult,
+          operationSettingsResult,
+          scheduleSettingsResult,
         ] = await Promise.all([
           supabase.rpc("onboarding_get_answers_scoped", {
             p_organization_id: organizationId,
@@ -1202,6 +1419,22 @@ function OnboardingContent() {
             .from("store_strategy_settings")
             .select(
               "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, created_at, updated_at",
+            )
+            .eq("organization_id", organizationId)
+            .eq("store_id", activeStore.id)
+            .maybeSingle(),
+          supabase
+            .from("store_operation_settings")
+            .select(
+              "organization_id, store_id, offers_installation, average_installation_time_days, installation_days_rule, installation_process_notes, offers_technical_visit, technical_visit_days_rule, technical_visit_rules, technical_visit_rules_other, created_at, updated_at",
+            )
+            .eq("organization_id", organizationId)
+            .eq("store_id", activeStore.id)
+            .maybeSingle(),
+          supabase
+            .from("store_schedule_settings")
+            .select(
+              "id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, technical_visit_days, after_hours_behavior, notes, enforce_operating_window, timezone_name, created_at, updated_at",
             )
             .eq("organization_id", organizationId)
             .eq("store_id", activeStore.id)
@@ -1236,6 +1469,22 @@ function OnboardingContent() {
           setFatalError("Falha ao carregar configuracoes canonicas de estrategia.");
           return;
         }
+        if (operationSettingsResult.error) {
+          console.error(
+            "[OnboardingPage] loadOperationSettings error:",
+            operationSettingsResult.error,
+          );
+          setFatalError("Falha ao carregar configuracoes canonicas de operacao.");
+          return;
+        }
+        if (scheduleSettingsResult.error) {
+          console.error(
+            "[OnboardingPage] loadScheduleSettings error:",
+            scheduleSettingsResult.error,
+          );
+          setFatalError("Falha ao carregar configuracoes canonicas de agenda.");
+          return;
+        }
         const answers = (answersResult.data ?? {}) as AnswersMap;
         setAnswers(answers);
         const canonicalPaymentSettings =
@@ -1244,6 +1493,10 @@ function OnboardingContent() {
           (commercialAiSettingsResult.data ?? null) as StoreCommercialAiSettingsRow | null;
         const canonicalStrategySettings =
           (strategySettingsResult.data ?? null) as StoreStrategySettingsRow | null;
+        const canonicalOperationSettings =
+          (operationSettingsResult.data ?? null) as StoreOperationSettingsRow | null;
+        const canonicalScheduleSettings =
+          (scheduleSettingsResult.data ?? null) as ScheduleSettingsRow | null;
         const paymentSettingsInput = createStorePaymentSettingsInputFromSources({
           answers,
           settings: canonicalPaymentSettings,
@@ -1264,7 +1517,16 @@ function OnboardingContent() {
           answers,
           settings: canonicalStrategySettings,
         });
+        const strategyFormSeedInput = canonicalStrategySettings
+          ? strategySettingsInput
+          : createStoreStrategySettingsLegacySeedInputFromAnswers(answers);
         setStrategySettings(canonicalStrategySettings);
+        const operationSettingsInput = createStoreOperationSettingsInputFromSources({
+          answers,
+          settings: canonicalOperationSettings,
+        });
+        setOperationSettings(canonicalOperationSettings);
+        setScheduleSettings(canonicalScheduleSettings);
         const remotePoolTypesSelected = parseArrayAnswer(answers.pool_types_selected);
         const remoteTechnicalVisitRulesSelected = parseArrayAnswer(answers.technical_visit_rules_selected);
         const remoteImportantLimitationsSelected = parseArrayAnswer(answers.important_limitations_selected);
@@ -1281,23 +1543,23 @@ function OnboardingContent() {
         const legacyInstallationSteps = parseArrayAnswer(answers.installation_process_steps);
         setStep1Form((prev) => ({
           store_display_name: prev.store_display_name || String(answers.store_display_name ?? activeStore.name ?? ""),
-          store_description: prev.store_description || strategySettingsInput.storeDescription,
-          city: prev.city || strategySettingsInput.city,
-          state: prev.state || strategySettingsInput.state,
-          service_regions: prev.service_regions || strategySettingsInput.serviceRegions,
+          store_description: prev.store_description || strategyFormSeedInput.storeDescription,
+          city: prev.city || strategyFormSeedInput.city,
+          state: prev.state || strategyFormSeedInput.state,
+          service_regions: prev.service_regions || strategyFormSeedInput.serviceRegions,
           commercial_whatsapp: prev.commercial_whatsapp || String(answers.commercial_whatsapp ?? ""),
-          store_services: prev.store_services.length ? prev.store_services : strategySettingsInput.storeServices,
-          store_services_other: prev.store_services_other || strategySettingsInput.storeServicesOther,
+          store_services: prev.store_services.length ? prev.store_services : strategyFormSeedInput.storeServices,
+          store_services_other: prev.store_services_other || strategyFormSeedInput.storeServicesOther,
           service_region_modes:
             prev.service_region_modes.length
               ? prev.service_region_modes
-              : strategySettingsInput.serviceRegionModes,
-          service_region_notes: prev.service_region_notes || strategySettingsInput.serviceRegionNotes,
+              : strategyFormSeedInput.serviceRegionModes,
+          service_region_notes: prev.service_region_notes || strategyFormSeedInput.serviceRegionNotes,
           service_region_primary_mode:
-            prev.service_region_primary_mode || strategySettingsInput.serviceRegionPrimaryMode,
+            prev.service_region_primary_mode || strategyFormSeedInput.serviceRegionPrimaryMode,
           service_region_outside_consultation:
             prev.service_region_outside_consultation ||
-            strategySettingsInput.serviceRegionOutsideConsultation,
+            strategyFormSeedInput.serviceRegionOutsideConsultation,
         }));
         setStep2Form((prev) => ({
           pool_types:
@@ -1318,45 +1580,48 @@ function OnboardingContent() {
                 : "não"
               : String(answers.sells_accessories ?? "")),
           offers_installation:
-            prev.offers_installation ||
-            (typeof answers.offers_installation === "boolean"
-              ? answers.offers_installation
-                ? "sim"
-                : "não"
-              : String(answers.offers_installation ?? "")),
+            canonicalOperationSettings
+              ? yesNoFormValue(operationSettingsInput.offersInstallation)
+              : prev.offers_installation ||
+                yesNoFormValue(parseYesNoValue(answers.offers_installation)),
           offers_technical_visit:
-            prev.offers_technical_visit ||
-            (typeof answers.offers_technical_visit === "boolean"
-              ? answers.offers_technical_visit
-                ? "sim"
-                : "não"
-              : String(answers.offers_technical_visit ?? "")),
-          brands_worked: prev.brands_worked || strategySettingsInput.brandsWorked,
+            canonicalOperationSettings
+              ? yesNoFormValue(operationSettingsInput.offersTechnicalVisit)
+              : prev.offers_technical_visit ||
+                yesNoFormValue(parseYesNoValue(answers.offers_technical_visit)),
+          brands_worked: prev.brands_worked || strategyFormSeedInput.brandsWorked,
           pool_types_selected: prev.pool_types_selected.length ? prev.pool_types_selected : remotePoolTypesSelected,
           pool_types_other: prev.pool_types_other || String(answers.pool_types_other ?? ""),
           main_store_brand:
             prev.main_store_brand ||
-            strategySettingsInput.mainStoreBrand ||
-            strategySettingsInput.brandsWorked,
+            strategyFormSeedInput.mainStoreBrand ||
+            strategyFormSeedInput.brandsWorked,
         }));
         setStep3Form((prev) => ({
           average_installation_time_days:
-            prev.average_installation_time_days || String(answers.average_installation_time_days ?? ""),
-          installation_days_rule: prev.installation_days_rule || String(answers.installation_days_rule ?? ""),
+            canonicalOperationSettings
+              ? String(operationSettingsInput.averageInstallationTimeDays ?? "")
+              : prev.average_installation_time_days || String(answers.average_installation_time_days ?? ""),
+          installation_days_rule:
+            canonicalOperationSettings
+              ? operationSettingsInput.installationDaysRule
+              : prev.installation_days_rule || String(answers.installation_days_rule ?? ""),
           installation_available_days:
-            prev.installation_available_days.length
-              ? prev.installation_available_days
-              : Array.isArray(answers.installation_available_days)
-              ? answers.installation_available_days.map(String)
-              : [],
+            canonicalScheduleSettings
+              ? canonicalDaysFromSource(canonicalScheduleSettings.installation_days)
+              : prev.installation_available_days.length
+              ? canonicalDaysFromSource(prev.installation_available_days)
+              : canonicalDaysFromSource(answers.installation_available_days),
           technical_visit_days_rule:
-            prev.technical_visit_days_rule || String(answers.technical_visit_days_rule ?? ""),
+            canonicalOperationSettings
+              ? operationSettingsInput.technicalVisitDaysRule
+              : prev.technical_visit_days_rule || String(answers.technical_visit_days_rule ?? ""),
           technical_visit_available_days:
-            prev.technical_visit_available_days.length
-              ? prev.technical_visit_available_days
-              : Array.isArray(answers.technical_visit_available_days)
-              ? answers.technical_visit_available_days.map(String)
-              : [],
+            canonicalScheduleSettings
+              ? canonicalDaysFromSource(canonicalScheduleSettings.technical_visit_days)
+              : prev.technical_visit_available_days.length
+              ? canonicalDaysFromSource(prev.technical_visit_available_days)
+              : canonicalDaysFromSource(answers.technical_visit_available_days),
           average_human_response_time:
             prev.average_human_response_time || String(answers.average_human_response_time ?? ""),
           installation_process_steps:
@@ -1366,18 +1631,20 @@ function OnboardingContent() {
           installation_process_other:
             prev.installation_process_other || String(answers.installation_process_other ?? ""),
           technical_visit_rules_selected:
-            prev.technical_visit_rules_selected.length
-              ? prev.technical_visit_rules_selected
-              : remoteTechnicalVisitRulesSelected,
+            canonicalOperationSettings
+              ? operationSettingsInput.technicalVisitRules
+              : prev.technical_visit_rules_selected.length
+              ? operationRulesFromSource(prev.technical_visit_rules_selected)
+              : operationRulesFromSource(remoteTechnicalVisitRulesSelected),
           technical_visit_rules_other:
-            prev.technical_visit_rules_other || String(answers.technical_visit_rules_other ?? ""),
+            canonicalOperationSettings
+              ? operationSettingsInput.technicalVisitRulesOther
+              : prev.technical_visit_rules_other || String(answers.technical_visit_rules_other ?? ""),
           attends_holidays:
-            prev.attends_holidays ||
-            (typeof answers.attends_holidays === "boolean"
-              ? answers.attends_holidays
-                ? "sim"
-                : "não"
-              : String(answers.attends_holidays ?? "")),
+            canonicalScheduleSettings
+              ? yesNoFormValue(canonicalScheduleSettings.attends_holidays)
+              : prev.attends_holidays ||
+                yesNoFormValue(parseYesNoValue(answers.attends_holidays)),
           important_limitations_selected:
             prev.important_limitations_selected.length
               ? prev.important_limitations_selected
@@ -1560,9 +1827,7 @@ function OnboardingContent() {
               row.discount_autonomy_mode.trim()
                 ? row.discount_autonomy_mode
                 : "approval_required",
-            discount_special_rules:
-              prev.discount_special_rules ||
-              String(row.discount_special_rules ?? ""),
+            discount_special_rules: String(row.discount_special_rules ?? ""),
           }));
         }
       } catch (err) {
@@ -1677,6 +1942,126 @@ function OnboardingContent() {
     return nextStrategySettings;
   }
 
+  async function saveOperationSettingsPartial(
+    patch: Partial<StoreOperationSettingsInput>,
+  ) {
+    if (!organizationId || !activeStore?.id) return null;
+
+    const normalizedOperationSettings = normalizeStoreOperationSettingsInput({
+      ...createStoreOperationSettingsInputFromSources({
+        answers,
+        settings: operationSettings,
+      }),
+      ...patch,
+    });
+
+    if (!normalizedOperationSettings.ok) {
+      throw new Error(normalizedOperationSettings.error);
+    }
+
+    const { data: savedOperationSettings, error: operationSettingsError } =
+      await supabase.rpc(
+        "upsert_store_operation_settings_with_legacy_mirror_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStore.id,
+          p_offers_installation:
+            normalizedOperationSettings.value.offersInstallation,
+          p_average_installation_time_days:
+            normalizedOperationSettings.value.averageInstallationTimeDays,
+          p_installation_days_rule:
+            normalizedOperationSettings.value.installationDaysRule,
+          p_installation_process_notes:
+            normalizedOperationSettings.value.installationProcessNotes,
+          p_offers_technical_visit:
+            normalizedOperationSettings.value.offersTechnicalVisit,
+          p_technical_visit_days_rule:
+            normalizedOperationSettings.value.technicalVisitDaysRule,
+          p_technical_visit_rules:
+            normalizedOperationSettings.value.technicalVisitRules,
+          p_technical_visit_rules_other:
+            normalizedOperationSettings.value.technicalVisitRulesOther,
+        },
+      );
+
+    if (operationSettingsError) {
+      throw new Error(
+        "Falha ao sincronizar as configuracoes canonicas de operacao.",
+      );
+    }
+
+    const nextOperationSettings =
+      (savedOperationSettings ?? null) as StoreOperationSettingsRow | null;
+    setOperationSettings(nextOperationSettings);
+    return nextOperationSettings;
+  }
+
+  async function saveExistingScheduleSettingsPartial(args: {
+    installationDays?: string[];
+    technicalVisitDays?: string[];
+    attendsHolidays?: boolean | null;
+  }) {
+    if (!organizationId || !activeStore?.id || !scheduleSettings) return null;
+    ensureScheduleSettingsPayloadCanPreserve(scheduleSettings);
+
+    const { data: scheduleData, error: scheduleSettingsError } =
+      await supabase.rpc("upsert_store_schedule_settings", {
+        p_organization_id: organizationId,
+        p_store_id: activeStore.id,
+        p_allow_multiple_appointments_per_day:
+          scheduleSettings.allow_multiple_appointments_per_day,
+        p_allow_same_time_appointments:
+          scheduleSettings.allow_same_time_appointments,
+        p_same_time_capacity: scheduleSettings.same_time_capacity,
+        p_attends_holidays:
+          args.attendsHolidays ?? scheduleSettings.attends_holidays,
+        p_operating_days: scheduleSettings.operating_days,
+        p_operating_hours: scheduleSettings.operating_hours,
+        p_installation_days:
+          args.installationDays ??
+          canonicalDaysFromSource(scheduleSettings.installation_days),
+        p_after_hours_behavior: scheduleSettings.after_hours_behavior,
+        p_notes: scheduleSettings.notes,
+        p_enforce_operating_window: scheduleSettings.enforce_operating_window,
+        p_timezone_name: scheduleSettings.timezone_name,
+      });
+
+    if (scheduleSettingsError) {
+      throw new Error(
+        "Falha ao sincronizar as configuracoes canonicas de agenda.",
+      );
+    }
+
+    let nextScheduleSettings =
+      (scheduleData ?? null) as ScheduleSettingsRow | null;
+
+    if (typeof args.technicalVisitDays !== "undefined") {
+      const {
+        data: technicalVisitScheduleData,
+        error: technicalVisitDaysError,
+      } = await supabase.rpc(
+        "upsert_store_schedule_technical_visit_days_with_legacy_mirror_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStore.id,
+          p_technical_visit_days: args.technicalVisitDays,
+        },
+      );
+
+      if (technicalVisitDaysError) {
+        throw new Error(
+          "Falha ao sincronizar os dias canonicos de visita tecnica.",
+        );
+      }
+
+      nextScheduleSettings =
+        (technicalVisitScheduleData ?? nextScheduleSettings) as ScheduleSettingsRow | null;
+    }
+
+    setScheduleSettings(nextScheduleSettings);
+    return nextScheduleSettings;
+  }
+
   async function saveStep1(e: FormEvent) {
     e.preventDefault();
     if (isOnboardingReviewMode) {
@@ -1777,8 +2162,14 @@ function OnboardingContent() {
         brandsWorked: step2Form.brands_worked.trim(),
         mainStoreBrand: step2Form.main_store_brand.trim(),
       });
+      await saveOperationSettingsPartial({
+        offersInstallation: parseYesNoValue(step2Form.offers_installation),
+        offersTechnicalVisit: parseYesNoValue(
+          step2Form.offers_technical_visit,
+        ),
+      });
     } catch (err) {
-      console.error("[OnboardingPage] saveStep2 strategy sync error:", err);
+      console.error("[OnboardingPage] saveStep2 canonical sync error:", err);
       setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
       return;
     }
@@ -1787,8 +2178,6 @@ function OnboardingContent() {
         ["pool_types", step2Form.pool_types.trim()],
         ["sells_chemicals", step2Form.sells_chemicals.trim().toLowerCase() === "sim"],
         ["sells_accessories", step2Form.sells_accessories.trim().toLowerCase() === "sim"],
-        ["offers_installation", step2Form.offers_installation.trim().toLowerCase() === "sim"],
-        ["offers_technical_visit", step2Form.offers_technical_visit.trim().toLowerCase() === "sim"],
         ["pool_types_selected", step2Form.pool_types_selected],
         ["pool_types_other", step2Form.pool_types_other.trim()],
       ],
@@ -1861,19 +2250,74 @@ function OnboardingContent() {
       return;
     }
     if (!organizationId || !activeStore?.id) return;
+    const parsedAverageInstallationTime =
+      parseOperationAverageInstallationTimeInput(
+        step3Form.average_installation_time_days,
+      );
+
+    if (!parsedAverageInstallationTime.ok) {
+      setFormError(parsedAverageInstallationTime.error);
+      return;
+    }
+
+    const currentOperationInput = createStoreOperationSettingsInputFromSources({
+      answers,
+      settings: operationSettings,
+    });
+    const nextInstallationDays = canonicalDaysFromSource(
+      step3Form.installation_available_days,
+    );
+    const nextTechnicalVisitDays = canonicalDaysFromSource(
+      step3Form.technical_visit_available_days,
+    );
+    const nextAttendsHolidays = parseYesNoValue(step3Form.attends_holidays);
+
+    try {
+      setFormError(null);
+      setSuccessMessage(null);
+      await saveOperationSettingsPartial({
+        offersInstallation:
+          parseYesNoValue(step2Form.offers_installation) ??
+          currentOperationInput.offersInstallation,
+        averageInstallationTimeDays: parsedAverageInstallationTime.value,
+        installationDaysRule: step3Form.installation_days_rule.trim(),
+        installationProcessNotes: currentOperationInput.installationProcessNotes,
+        offersTechnicalVisit:
+          parseYesNoValue(step2Form.offers_technical_visit) ??
+          currentOperationInput.offersTechnicalVisit,
+        technicalVisitDaysRule: step3Form.technical_visit_days_rule.trim(),
+        technicalVisitRules: operationRulesFromSource(
+          step3Form.technical_visit_rules_selected,
+        ),
+        technicalVisitRulesOther:
+          step3Form.technical_visit_rules_other.trim(),
+      });
+
+      if (scheduleSettings) {
+        await saveExistingScheduleSettingsPartial({
+          installationDays: nextInstallationDays,
+          technicalVisitDays: nextTechnicalVisitDays,
+          attendsHolidays: nextAttendsHolidays,
+        });
+      }
+    } catch (err) {
+      console.error("[OnboardingPage] saveStep3 canonical sync error:", err);
+      setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
+      return;
+    }
+
     await upsertAnswers(
       [
-        ["average_installation_time_days", step3Form.average_installation_time_days.trim()],
-        ["installation_days_rule", step3Form.installation_days_rule.trim()],
-        ["installation_available_days", step3Form.installation_available_days],
-        ["technical_visit_days_rule", step3Form.technical_visit_days_rule.trim()],
-        ["technical_visit_available_days", step3Form.technical_visit_available_days],
+        ["installation_available_days", nextInstallationDays],
+        ...(scheduleSettings
+          ? []
+          : ([
+              ["technical_visit_available_days", nextTechnicalVisitDays],
+            ] as Array<[string, unknown]>)),
         ["average_human_response_time", step3Form.average_human_response_time.trim()],
         ["installation_process_steps", step3Form.installation_process_steps],
         ["installation_process_other", step3Form.installation_process_other.trim()],
-        ["technical_visit_rules_selected", step3Form.technical_visit_rules_selected],
-        ["technical_visit_rules_other", step3Form.technical_visit_rules_other.trim()],
-        ["attends_holidays", step3Form.attends_holidays.trim().toLowerCase() === "sim"],
+        ["attends_holidays", nextAttendsHolidays],
         ["important_limitations_selected", step3Form.important_limitations_selected],
         ["important_limitations_other", step3Form.important_limitations_other.trim()],
         ["sales_flow_start_steps", step3Form.sales_flow_start_steps],
@@ -1900,18 +2344,8 @@ function OnboardingContent() {
       return;
     }
     if (!step4Form.can_offer_discount) {
-      setFormError("Informe se a loja pode ou não dar desconto.");
+      setFormError("Informe se a loja trabalha ou não com descontos.");
       return;
-    }
-    if (step4Form.can_offer_discount === "sim") {
-      if (!step4Form.default_discount_percent.trim()) {
-        setFormError("Informe o primeiro degrau normal de desconto.");
-        return;
-      }
-      if (!step4Form.max_discount_percent.trim()) {
-        setFormError("Informe o teto normal de desconto.");
-        return;
-      }
     }
     if (step4Form.accepted_payment_methods.length === 0) {
       setFormError("Selecione pelo menos uma forma de pagamento ou condição comercial.");
@@ -1967,30 +2401,24 @@ function OnboardingContent() {
       HUMAN_HELP_PAYMENT_OPTIONS,
       step4Form.human_help_payment_cases_other
     );
+    const usesNormalDiscount = step4Form.can_offer_discount === "sim";
     const normalizedDiscountSettings = normalizeStoreDiscountSettingsInput({
-      defaultDiscountPercent:
-        step4Form.can_offer_discount === "sim"
-          ? step4Form.default_discount_percent
-          : "0",
-      maxDiscountPercent:
-        step4Form.can_offer_discount === "sim"
-          ? step4Form.max_discount_percent
-          : "0",
-      allowAskAboveMaxDiscount:
-        step4Form.can_offer_discount === "sim"
-          ? step4Form.allow_ask_above_max_discount
-          : false,
-      discountAutonomyMode:
-        step4Form.can_offer_discount === "sim"
-          ? step4Form.discount_autonomy_mode
-          : "approval_required",
+      defaultDiscountPercent: usesNormalDiscount
+        ? step4Form.default_discount_percent
+        : "0",
+      maxDiscountPercent: usesNormalDiscount
+        ? step4Form.max_discount_percent
+        : "0",
+      allowAskAboveMaxDiscount: usesNormalDiscount
+        ? step4Form.allow_ask_above_max_discount
+        : false,
+      discountAutonomyMode: usesNormalDiscount
+        ? step4Form.discount_autonomy_mode
+        : "approval_required",
       discountSpecialRules: step4Form.discount_special_rules,
-      highValueEnabled:
-        step4Form.can_offer_discount === "sim"
-          ? step4Form.high_value_enabled
-          : false,
-      highValueThresholdAmount: step4Form.high_value_threshold_amount,
-      highValueDiscountPercent: step4Form.high_value_discount_percent,
+      highValueEnabled: false,
+      highValueThresholdAmount: "",
+      highValueDiscountPercent: "",
     });
     if (!normalizedDiscountSettings.ok) {
       setFormError(normalizedDiscountSettings.error);
@@ -3025,6 +3453,78 @@ function OnboardingContent() {
                     placeholder="Ex.: a condicao final pode variar conforme projeto, logistica e aprovacao interna."
                   />
                 </label>
+              </div>
+              <div className="space-y-4">
+                <SectionTitle
+                  title="A loja trabalha com descontos?"
+                  hint="Essa resposta define se a politica canonica de desconto normal sera criada com valores zerados ou com uma regra informada."
+                />
+                <SingleSelectorGrid
+                  options={YES_NO_OPTIONS}
+                  value={step4Form.can_offer_discount}
+                  onChange={(value) => updateStep4Field("can_offer_discount", value)}
+                />
+                {step4Form.can_offer_discount === "sim" ? (
+                  <div className="space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <label className="space-y-2">
+                        <SectionTitle title="Primeiro degrau normal de desconto" hint="Preencha apenas o percentual." />
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={step4Form.default_discount_percent}
+                            onChange={(e) => updateStep4Field("default_discount_percent", formatStoreDiscountPercentInput(e.target.value))}
+                            className="w-full rounded-xl border border-gray-300 py-2.5 pl-4 pr-10 outline-none focus:border-black"
+                            placeholder="5"
+                          />
+                          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">%</span>
+                        </div>
+                      </label>
+                      <label className="space-y-2">
+                        <SectionTitle title="Teto normal de desconto" hint="O primeiro degrau nao pode ser maior que este teto." />
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={step4Form.max_discount_percent}
+                            onChange={(e) => updateStep4Field("max_discount_percent", formatStoreDiscountPercentInput(e.target.value))}
+                            className="w-full rounded-xl border border-gray-300 py-2.5 pl-4 pr-10 outline-none focus:border-black"
+                            placeholder="10"
+                          />
+                          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">%</span>
+                        </div>
+                      </label>
+                    </div>
+                    <div className="space-y-3">
+                      <SectionTitle title="Modo de autonomia de desconto" hint="Use os modos canonicos ja existentes." />
+                      <SingleSelectorGrid
+                        options={DISCOUNT_AUTONOMY_MODE_OPTIONS}
+                        value={step4Form.discount_autonomy_mode}
+                        onChange={(value) => updateStep4Field("discount_autonomy_mode", value)}
+                      />
+                    </div>
+                    <label className="flex items-start gap-3 rounded-xl border border-gray-200 p-4 text-sm text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={step4Form.allow_ask_above_max_discount}
+                        onChange={(e) =>
+                          updateStep4Field(
+                            "allow_ask_above_max_discount",
+                            e.target.checked,
+                          )
+                        }
+                        className="mt-1"
+                      />
+                      <span>Permitir que a IA consulte uma pessoa quando o cliente pedir desconto acima do teto.</span>
+                    </label>
+                  </div>
+                ) : null}
+                {step4Form.can_offer_discount === "não" ? (
+                  <InfoBlock
+                    title="Desconto normal desativado"
+                    description="Ao salvar, a politica canonica de desconto normal ficara zerada porque essa foi uma decisao explicita da loja."
+                    subtle
+                  />
+                ) : null}
               </div>
               <div>
                 <SectionTitle

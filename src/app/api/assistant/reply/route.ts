@@ -70,6 +70,19 @@ import {
   type StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
+import {
+  createStoreOperationSettingsInputFromSources,
+  type StoreOperationSettingsRow,
+} from "@/lib/store-operation-settings";
+import {
+  createStorePaymentDisplaySummaryFromSources,
+  type StorePaymentSettingsRow,
+} from "@/lib/store-payment-settings";
+import {
+  createStoreStrategySettingsInputFromSources,
+  type StoreStrategySettingsRow,
+} from "@/lib/store-strategy-settings";
+import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
 
 export const runtime = "nodejs";
 
@@ -5801,22 +5814,83 @@ function resolveLatestResponsibleRequest(messages: AssistantMessageRow[]) {
   };
 }
 
-function buildStoreBlock(onboardingMap: Record<string, string>, store: StoreRow) {
+type RuntimeStoreContext = {
+  storeDisplayName: string;
+  storeDescription: string;
+  storeServices: string;
+  city: string;
+  state: string;
+  serviceRegions: string;
+  offersInstallation: string;
+  offersTechnicalVisit: string;
+  technicalVisitRules: string;
+  installationProcess: string;
+  acceptedPaymentMethods: string;
+  importantLimitations: string;
+  responsibleName: string;
+};
+
+function yesNoFromBoolean(value: boolean | null | undefined) {
+  if (value === true) return "Sim";
+  if (value === false) return "Não";
+  return "";
+}
+
+function buildRuntimeStoreContext(args: {
+  onboardingMap: Record<string, string>;
+  store: StoreRow;
+  strategySettings: StoreStrategySettingsRow | null;
+  operationSettings: StoreOperationSettingsRow | null;
+  paymentSettings: StorePaymentSettingsRow | null;
+  primaryResponsibleName: string;
+}): RuntimeStoreContext {
+  const strategyInput = createStoreStrategySettingsInputFromSources({
+    settings: args.strategySettings,
+  });
+  const operationInput = createStoreOperationSettingsInputFromSources({
+    settings: args.operationSettings,
+  });
+  const paymentSummary = createStorePaymentDisplaySummaryFromSources({
+    settings: args.paymentSettings,
+  });
+
+  return {
+    storeDisplayName: args.store.name || "",
+    storeDescription: strategyInput.storeDescription,
+    storeServices: strategyInput.storeServices.join(", "),
+    city: strategyInput.city,
+    state: strategyInput.state,
+    serviceRegions: strategyInput.serviceRegions,
+    offersInstallation: yesNoFromBoolean(operationInput.offersInstallation),
+    offersTechnicalVisit: yesNoFromBoolean(operationInput.offersTechnicalVisit),
+    technicalVisitRules: [
+      ...operationInput.technicalVisitRules,
+      operationInput.technicalVisitRulesOther,
+    ]
+      .filter(Boolean)
+      .join(", "),
+    installationProcess: operationInput.installationProcessNotes,
+    acceptedPaymentMethods: paymentSummary,
+    importantLimitations: args.onboardingMap.important_limitations,
+    responsibleName: args.primaryResponsibleName,
+  };
+}
+
+function buildStoreBlock(storeContext: RuntimeStoreContext, store: StoreRow) {
   const entries: Array<[string, string | null | undefined]> = [
-    ["nome da loja", onboardingMap.store_display_name || store.name],
-    ["descrição", onboardingMap.store_description],
-    ["serviços", onboardingMap.store_services],
-    ["cidade", onboardingMap.city],
-    ["estado", onboardingMap.state],
-    ["regiões", onboardingMap.service_regions],
-    ["oferece instalação", onboardingMap.offers_installation],
-    ["oferece visita técnica", onboardingMap.offers_technical_visit],
-    ["regras de visita técnica", onboardingMap.technical_visit_rules],
-    ["regras selecionadas de visita técnica", onboardingMap.technical_visit_rules_selected],
-    ["processo de instalação", onboardingMap.installation_process],
-    ["pagamentos aceitos", onboardingMap.accepted_payment_methods],
-    ["limitações importantes", onboardingMap.important_limitations],
-    ["nome do responsável", onboardingMap.responsible_name],
+    ["nome da loja", storeContext.storeDisplayName || store.name],
+    ["descrição", storeContext.storeDescription],
+    ["serviços", storeContext.storeServices],
+    ["cidade", storeContext.city],
+    ["estado", storeContext.state],
+    ["regiões", storeContext.serviceRegions],
+    ["oferece instalação", storeContext.offersInstallation],
+    ["oferece visita técnica", storeContext.offersTechnicalVisit],
+    ["regras de visita técnica", storeContext.technicalVisitRules],
+    ["processo de instalação", storeContext.installationProcess],
+    ["pagamentos aceitos", storeContext.acceptedPaymentMethods],
+    ["limitações importantes", storeContext.importantLimitations],
+    ["nome do responsável", storeContext.responsibleName],
   ];
 
   const lines = entries
@@ -7057,7 +7131,7 @@ const ZION_POOL_STORE_ASSISTANT_SCENARIO_LIBRARY = [
 
 function buildSystemPrompt(args: {
   store: StoreRow;
-  onboardingMap: Record<string, string>;
+  storeContext: RuntimeStoreContext;
   recentMessages: AssistantMessageRow[];
   todayAppointments: AppointmentRow[];
   overdueAppointments: AppointmentRow[];
@@ -7070,7 +7144,7 @@ function buildSystemPrompt(args: {
   openOperationalTasks?: StoreAssistantOperationalTaskRow[];
   lastHumanMessage: string;
 }) {
-  const storeName = args.onboardingMap.store_display_name || args.store.name || "a loja";
+  const storeName = args.storeContext.storeDisplayName || args.store.name || "a loja";
   const requestAnalysis = buildRequestAnalysisBlock(args.lastHumanMessage);
 
   return [
@@ -7158,7 +7232,7 @@ function buildSystemPrompt(args: {
     requestAnalysis,
     "",
     "DADOS DA LOJA",
-    buildStoreBlock(args.onboardingMap, args.store),
+    buildStoreBlock(args.storeContext, args.store),
     "",
     "HISTÓRICO RECENTE DA THREAD",
     buildHistoryBlock(args.recentMessages),
@@ -7437,6 +7511,83 @@ async function generateAssistantReply(params: {
       const text = asText(row.answer);
       if (text) onboardingMap[row.question_key] = text;
     }
+
+    const { data: strategySettingsData, error: strategySettingsError } =
+      await supabase
+        .from("store_strategy_settings")
+        .select(
+          "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, created_at, updated_at",
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
+        .maybeSingle();
+
+    if (strategySettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_STRATEGY_SETTINGS_FAILED",
+        message: strategySettingsError.message,
+      };
+    }
+
+    const { data: operationSettingsData, error: operationSettingsError } =
+      await supabase
+        .from("store_operation_settings")
+        .select(
+          "organization_id, store_id, offers_installation, average_installation_time_days, installation_days_rule, installation_process_notes, offers_technical_visit, technical_visit_days_rule, technical_visit_rules, technical_visit_rules_other, created_at, updated_at",
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
+        .maybeSingle();
+
+    if (operationSettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_OPERATION_SETTINGS_FAILED",
+        message: operationSettingsError.message,
+      };
+    }
+
+    const { data: paymentSettingsData, error: paymentSettingsError } =
+      await supabase
+        .from("store_payment_settings")
+        .select(
+          "organization_id, store_id, accepted_payment_methods, pix_key_type, pix_key, pix_holder_name, down_payment_mode, down_payment_value_type, down_payment_percent, down_payment_amount_cents, installments_enabled, max_installments, installment_interest_policy, payment_notes, created_at, updated_at",
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
+        .maybeSingle();
+
+    if (paymentSettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_PAYMENT_SETTINGS_FAILED",
+        message: paymentSettingsError.message,
+      };
+    }
+
+    const primaryResponsibleResult =
+      await loadCanonicalActivePrimaryStoreResponsible({
+        supabase,
+        organizationId,
+        storeId,
+      });
+
+    const primaryResponsibleName = primaryResponsibleResult.ok
+      ? primaryResponsibleResult.responsible.name || ""
+      : "";
+
+    const runtimeStoreContext = buildRuntimeStoreContext({
+      onboardingMap,
+      store,
+      strategySettings:
+        (strategySettingsData ?? null) as StoreStrategySettingsRow | null,
+      operationSettings:
+        (operationSettingsData ?? null) as StoreOperationSettingsRow | null,
+      paymentSettings:
+        (paymentSettingsData ?? null) as StorePaymentSettingsRow | null,
+      primaryResponsibleName,
+    });
 
     const { data: recentMessagesRaw, error: messagesError } = await supabase.rpc(
       "assistant_list_messages",
@@ -7993,7 +8144,7 @@ async function generateAssistantReply(params: {
 
     const systemPrompt = buildSystemPrompt({
       store,
-      onboardingMap,
+      storeContext: runtimeStoreContext,
       recentMessages,
       todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
       nextAppointments: (nextAppointmentsData || []) as AppointmentRow[],

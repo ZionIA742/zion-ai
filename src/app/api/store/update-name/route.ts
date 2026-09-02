@@ -20,7 +20,7 @@ type RequestBody = {
 
 type UpdateStoreNameRouteDeps = {
   resolveAccess: (params: {
-    requirement: "active";
+    requirement: "active_or_onboarding";
     deps?: Partial<ResolveStoreApiAccessDeps>;
   }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
   createPrivilegedClient: () => ReturnType<typeof createClient>;
@@ -52,7 +52,7 @@ export function createUpdateStoreNamePostHandler(
   return async function POST(request: Request) {
     try {
       const access = await resolveAccess({
-        requirement: "active",
+        requirement: "active_or_onboarding",
       });
 
       if (!access.ok) {

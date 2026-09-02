@@ -13,6 +13,17 @@ import {
   type StoreCommercialAiSettingsRow,
 } from "../store-commercial-ai-settings.js";
 import {
+  createStoreOperationSettingsInputFromSources,
+  type StoreOperationSettingsInput,
+  type StoreOperationSettingsRow,
+} from "../store-operation-settings.js";
+import {
+  createStorePaymentDisplaySummaryFromSources,
+  createStorePaymentSettingsInputFromSources,
+  type StorePaymentSettingsInput,
+  type StorePaymentSettingsRow,
+} from "../store-payment-settings.js";
+import {
   buildQualificationWriterOperationKey,
   extractDeterministicQualificationCandidates,
   extractStructuredQualificationCandidates,
@@ -313,6 +324,11 @@ type CanonicalQualificationSnapshot = {
   conflictCount: number;
 };
 
+export type QualificationProfileInstallationEvidenceState =
+  | "absent"
+  | "known"
+  | "conflict";
+
 type LoadCanonicalQualificationSnapshotResult =
   | { ok: true; snapshot: CanonicalQualificationSnapshot }
   | {
@@ -454,6 +470,32 @@ type ConversationFactState = {
   visitInterestKnown: boolean;
 };
 
+type QualificationDecisionTargetStatus =
+  | "missing"
+  | "conflict"
+  | "known"
+  | "not_applicable"
+  | "unproven";
+
+type QualificationDecisionReason =
+  | "no_canonical_snapshot"
+  | "no_relevant_qualification_target"
+  | "canonical_questioning_not_available"
+  | "target_missing_and_relevant"
+  | "target_conflict_requires_clarification"
+  | "target_already_known"
+  | "target_group_already_satisfied"
+  | "target_unproven_and_relevant"
+  | "current_context_does_not_justify_question";
+
+type QualificationDecision = {
+  targetFactKey: CanonicalQualificationFactKey | null;
+  targetGroup: CanonicalQualificationGroupKey | null;
+  targetStatus: QualificationDecisionTargetStatus;
+  askNow: boolean;
+  reason: QualificationDecisionReason;
+};
+
 type CommercialObjective = {
   pattern: ConversationPattern;
   paymentOrClosingSubtype: PaymentOrClosingSubtype;
@@ -462,6 +504,7 @@ type CommercialObjective = {
   mustAnswerFirst: string[];
   knownFacts: string[];
   missingFacts: string[];
+  qualificationDecision: QualificationDecision;
   nextBestQuestion: string | null;
   responseGoal: string;
   forbiddenInThisReply: string[];
@@ -1514,15 +1557,10 @@ function looksLikePaymentQuestion(text: string): boolean {
   return detectIntents(text).includes("payment");
 }
 
-function hasConfiguredTechnicalVisit(onboardingMap: Record<string, string>): boolean {
-  const rawValue = String(onboardingMap.offers_technical_visit || "").trim();
-  const normalizedValue = normalizeText(rawValue);
-  if (["sim", "yes", "true", "1"].includes(normalizedValue)) return true;
-
-  const summary = normalizeText(onboardingMap.technical_visit_rules_summary || "");
-  const rules = normalizeText(onboardingMap.technical_visit_rules || "");
-
-  return Boolean(summary || rules);
+function hasConfiguredTechnicalVisit(
+  operationSettingsInput: StoreOperationSettingsInput,
+): boolean {
+  return operationSettingsInput.offersTechnicalVisit === true;
 }
 
 function shouldSuggestVisitAdvance(args: {
@@ -2318,8 +2356,181 @@ type CanonicalQualificationWriterRow = {
   updated_at: string | null;
 };
 
+type CommercialOpportunityProfileMaterializationRow = {
+  current_profile_version_id: unknown;
+  version_number: unknown;
+  previous_profile_version_id: unknown;
+  component_count: unknown;
+  execution_intent_count: unknown;
+  profile_state: unknown;
+  changed: unknown;
+  replayed: unknown;
+  preserved: unknown;
+  outcome: unknown;
+  request_fingerprint: unknown;
+  actor_type: unknown;
+  source_type: unknown;
+  created_by: unknown;
+  current_updated_at: unknown;
+};
+
 function isValidQualificationWriterOutcome(value: string | null): boolean {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) > 0;
+}
+
+function isValidMaterializedProfileState(
+  value: string | null,
+): value is "resolved" | "needs_clarification" | "conflict" {
+  return (
+    value === "resolved" ||
+    value === "needs_clarification" ||
+    value === "conflict"
+  );
+}
+
+function isValidMaterializedProfileActorType(
+  value: string | null,
+): value is "human" | "system" {
+  return value === "human" || value === "system";
+}
+
+export function resolveQualificationProfileInstallationEvidenceState(
+  snapshot: CanonicalQualificationSnapshot,
+): QualificationProfileInstallationEvidenceState {
+  if (
+    snapshot.conflicts.some(
+      (conflict) => conflict.factKey === "installation_interest",
+    )
+  ) {
+    return "conflict";
+  }
+
+  if (
+    snapshot.knownFacts.some(
+      (fact) => fact.factKey === "installation_interest",
+    )
+  ) {
+    return "known";
+  }
+
+  return "absent";
+}
+
+function parseCommercialOpportunityProfileMaterializationRow(
+  row: unknown,
+): CommercialOpportunityProfileMaterializationRow | null {
+  if (!isRecord(row)) return null;
+
+  const currentProfileVersionId = asNullableString(
+    row.current_profile_version_id,
+  );
+  const versionNumber = row.version_number;
+  const previousProfileVersionId = row.previous_profile_version_id;
+  const componentCount = asNonNegativeInteger(row.component_count);
+  const executionIntentCount = asNonNegativeInteger(row.execution_intent_count);
+  const profileState = asNullableString(row.profile_state);
+  const changed = row.changed;
+  const replayed = row.replayed;
+  const preserved = row.preserved;
+  const outcome = asNullableString(row.outcome);
+  const requestFingerprint = asNullableString(row.request_fingerprint);
+  const actorType = asNullableString(row.actor_type);
+  const sourceType = asNullableString(row.source_type);
+  const createdBy = asNullableString(row.created_by);
+  const currentUpdatedAt = asNullableString(row.current_updated_at);
+
+  if (
+    !currentProfileVersionId ||
+    !isPositiveInteger(versionNumber) ||
+    (previousProfileVersionId !== null &&
+      asNullableString(previousProfileVersionId) == null) ||
+    componentCount == null ||
+    executionIntentCount == null ||
+    !isValidMaterializedProfileState(profileState) ||
+    typeof changed !== "boolean" ||
+    typeof replayed !== "boolean" ||
+    typeof preserved !== "boolean" ||
+    !outcome ||
+    !requestFingerprint ||
+    !isValidMaterializedProfileActorType(actorType) ||
+    !sourceType ||
+    !createdBy ||
+    !currentUpdatedAt
+  ) {
+    return null;
+  }
+
+  return row as CommercialOpportunityProfileMaterializationRow;
+}
+
+export async function materializeCommercialOpportunityProfileFromQualificationBySystem(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+  materializationEventKey: string;
+  canonicalQualificationSnapshot: CanonicalQualificationSnapshot | null;
+}) {
+  const materializationEventKey = String(
+    args.materializationEventKey || "",
+  ).trim();
+
+  if (!materializationEventKey || !args.canonicalQualificationSnapshot) {
+    return {
+      ok: false as const,
+      message:
+        "Canonical profile materialization requires an anchored event key and qualification snapshot.",
+    };
+  }
+
+  const installationEvidenceState =
+    resolveQualificationProfileInstallationEvidenceState(
+      args.canonicalQualificationSnapshot,
+    );
+
+  const { data, error } = await args.supabase.rpc(
+    "materialize_commercial_opportunity_profile_from_qualification_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+      p_materialization_event_key: materializationEventKey,
+      p_installation_evidence_state: installationEvidenceState,
+    },
+  );
+
+  if (error) {
+    return {
+      ok: false as const,
+      message: error.message,
+    };
+  }
+
+  if (!Array.isArray(data) || data.length !== 1) {
+    return {
+      ok: false as const,
+      message:
+        "Canonical profile materializer returned unexpected cardinality.",
+    };
+  }
+
+  const row = parseCommercialOpportunityProfileMaterializationRow(data[0]);
+
+  if (!row) {
+    return {
+      ok: false as const,
+      message: "Canonical profile materializer returned an invalid payload.",
+    };
+  }
+
+  return {
+    ok: true as const,
+    row,
+  };
 }
 
 async function writeCanonicalQualificationFactBySystem(args: {
@@ -3136,28 +3347,20 @@ function buildCommercialHandoffReplyV2(args: {
   locationText: string | null;
   preferredPeriodText: string | null;
   requestedAreaM2: number | null;
+  hasCanonicalVisitLocation: boolean;
 }): string {
   if (args.handoffType === "commercial_visit_request") {
-    if (args.locationText && args.preferredPeriodText) {
+    if (!args.hasCanonicalVisitLocation) {
+      return "Posso te ajudar com isso. Primeiro precisamos confirmar a localizacao necessaria para a visita antes de avancar para a agenda.";
+    }
+
+    if (args.preferredPeriodText) {
       return `Perfeito. Vou verificar na agenda os horarios disponiveis para ${args.preferredPeriodText} e te falo em seguida.`;
-    }
-
-    if (!args.locationText && !args.preferredPeriodText) {
-      return "Posso te ajudar com isso. Vou verificar na agenda os dias que temos disponiveis. Me confirma sua cidade e qual dia ou periodo costuma ser melhor para voce.";
-    }
-
-    if (!args.locationText) {
-      return "Posso te ajudar com isso. Me confirma sua cidade que eu vejo na agenda os melhores horarios para a visita.";
     }
 
     return "Posso te ajudar com isso. Vou verificar na agenda os dias que temos disponiveis. Qual dia ou periodo costuma ser melhor para voce?";
   }
-
-  if (args.requestedAreaM2 != null || args.locationText) {
-    return "Perfeito. Ja tenho parte das informacoes para montar isso certinho. So me confirma se voce quer incluir instalacao e se tem mais algum item que quer colocar no orcamento.";
-  }
-
-  return "Posso te ajudar com isso. Me confirma sua cidade e, se ja tiver, o espaco ou medida que voce quer aproveitar para eu montar isso certinho.";
+  return "Perfeito. Vou organizar seu pedido de orcamento com as informacoes que voce ja passou e seguir pelo proximo passo seguro.";
 }
 
 function inferCommercialHandoff(args: {
@@ -3174,6 +3377,7 @@ function inferCommercialHandoff(args: {
   lastAiListedPools: boolean;
   recommendedModel: string | null;
   commercialOpportunityId: string | null;
+  hasCanonicalVisitLocation: boolean;
 }): CommercialHandoffContext | null {
   if (args.patienceSignal.status === "not_interested") return null;
 
@@ -3213,6 +3417,7 @@ function inferCommercialHandoff(args: {
       locationText,
       preferredPeriodText,
       requestedAreaM2,
+      hasCanonicalVisitLocation: args.hasCanonicalVisitLocation,
     }),
     customerName: args.leadName,
     customerPhone: args.leadPhone,
@@ -3878,23 +4083,6 @@ function extractRequestedAreaM2(text: string): number | null {
   return null;
 }
 
-function shouldAskTimingNow(args: {
-  facts: ConversationFactState;
-  intents: DetectedIntent[];
-  lastCustomerMessage: string;
-}): boolean {
-  const { facts, intents, lastCustomerMessage } = args;
-
-  if (facts.timingKnown) return false;
-  if (intents.includes("catalog")) return false;
-  if (intents.includes("comparison")) return false;
-  if (looksLikePaymentQuestion(lastCustomerMessage)) return false;
-  if (looksLikeTechnicalVisitQuestion(lastCustomerMessage)) return false;
-  if (looksLikeInstallationQuestion(lastCustomerMessage)) return false;
-  if (looksLikePriceQuestion(lastCustomerMessage)) return false;
-
-  return false;
-}
 
 function formatCurrencyFromCents(priceCents: number | null | undefined, currency?: string | null): string | null {
   if (priceCents == null) return null;
@@ -5322,122 +5510,257 @@ function summarizeCanonicalMissingFacts(
   return out;
 }
 
-function inferCanonicalQualificationQuestion(
+type ContextualQualificationTarget = {
+  factKey: CanonicalQualificationFactKey;
+  groupKey: CanonicalQualificationGroupKey | null;
+};
+
+function getCanonicalQualificationGroup(
   snapshot: CanonicalQualificationSnapshot,
-): string | null {
-  const firstGap = snapshot.missingFactGroups[0] || null;
-  if (!firstGap) return null;
+  groupKey: CanonicalQualificationGroupKey,
+): CanonicalQualificationMissingGroup | null {
+  return (
+    snapshot.missingFactGroups.find((group) => group.groupKey === groupKey) ||
+    null
+  );
+}
 
-  if (firstGap.groupKey === "location") {
-    return firstGap.status === "conflict"
-      ? "So para eu nao assumir errado: qual cidade ou bairro fica o local da piscina?"
-      : "Qual cidade ou bairro fica o local da piscina?";
+function getCanonicalQualificationConflict(
+  snapshot: CanonicalQualificationSnapshot,
+  factKey: CanonicalQualificationFactKey,
+): CanonicalQualificationConflict | null {
+  return snapshot.conflicts.find((item) => item.factKey === factKey) || null;
+}
+
+function inferContextualQualificationTarget(args: {
+  pattern: ConversationPattern;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
+  intents: DetectedIntent[];
+  lastCustomerMessage: string;
+  explicitCatalogRequest: boolean;
+}): ContextualQualificationTarget | null {
+  const {
+    pattern,
+    photoOrSimulationSubtype,
+    intents,
+    lastCustomerMessage,
+    explicitCatalogRequest,
+  } = args;
+
+
+  if (
+    intents.includes("installation") ||
+    intents.includes("technical_visit") ||
+    intents.includes("region") ||
+    looksLikeTechnicalVisitQuestion(lastCustomerMessage)
+  ) {
+    return {
+      factKey: "location_text",
+      groupKey: "location",
+    };
   }
 
-  if (firstGap.groupKey === "space") {
-    return firstGap.status === "conflict"
-      ? "So para confirmar a medida certa: qual e o espaco aproximado que voce tem para a piscina?"
-      : "Me fala mais ou menos o espaco ou a medida que voce tem para colocar a piscina.";
+  if (intents.includes("payment")) {
+    return {
+      factKey: "payment_interest",
+      groupKey: "payment",
+    };
   }
 
-  if (firstGap.groupKey === "need") {
-    return firstGap.status === "conflict"
-      ? "Quero alinhar certinho sua preferencia: voce busca algo mais compacto e pratico ou mais conforto?"
-      : "Voce prefere algo mais simples de manter ou uma opcao com mais conforto?";
+  if (
+    pattern === "photo_or_simulation_request" &&
+    photoOrSimulationSubtype === "local_photo_context"
+  ) {
+    return {
+      factKey: "space_text",
+      groupKey: "space",
+    };
   }
 
-  if (firstGap.groupKey === "installation") {
-    return "Voce esta olhando so a piscina ou tambem instalacao?";
+  if (
+    explicitCatalogRequest ||
+    intents.includes("comparison") ||
+    intents.includes("pool_choice")
+  ) {
+    return {
+      factKey: "space_text",
+      groupKey: "space",
+    };
   }
 
-  if (firstGap.groupKey === "payment") {
-    return firstGap.status === "conflict"
-      ? "So para eu considerar a condicao certa: voce pensa mais em Pix ou em parcelamento?"
-      : "Pensando no pagamento, voce imagina mais Pix ou parcelamento?";
+  if (pattern === "generic_pool_opening") {
+    return {
+      factKey: "interested_product_reference",
+      groupKey: "need",
+    };
+  }
+
+  if (
+    pattern === "pool_size_discovery" ||
+    pattern === "pool_children_context"
+  ) {
+    return {
+      factKey: "customer_preferences_text",
+      groupKey: "need",
+    };
   }
 
   return null;
 }
 
-function classifyQualificationQuestionGroup(
-  question: string | null,
-): CanonicalQualificationGroupKey | null {
-  const normalized = normalizeText(question);
-  if (!normalized) return null;
-
-  if (
-    normalized.includes("cidade") ||
-    normalized.includes("bairro") ||
-    normalized.includes("local")
-  ) {
-    return "location";
-  }
-
-  if (
-    normalized.includes("espaco") ||
-    normalized.includes("medida") ||
-    normalized.includes("area")
-  ) {
-    return "space";
-  }
-
-  if (normalized.includes("instalacao")) {
-    return "installation";
-  }
-
-  if (
-    normalized.includes("pix") ||
-    normalized.includes("parcelado") ||
-    normalized.includes("pagamento") ||
-    normalized.includes("condicao")
-  ) {
-    return "payment";
-  }
-
-  if (
-    normalized.includes("prefere") ||
-    normalized.includes("conforto") ||
-    normalized.includes("modelo")
-  ) {
-    return "need";
-  }
-
-  return null;
-}
-
-export function resolveQualificationNextBestQuestion(args: {
-  heuristicQuestion: string | null;
+export function resolveContextualQualificationDecision(args: {
   snapshot: CanonicalQualificationSnapshot | null;
-}): string | null {
-  if (!args.snapshot) return args.heuristicQuestion;
+  crmStage: string | null;
+  pattern: ConversationPattern;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
+  intents: DetectedIntent[];
+  lastCustomerMessage: string;
+  explicitCatalogRequest: boolean;
+  responseMode: ResponseMode;
+  patienceSignal: CustomerPatienceSignal;
+}): QualificationDecision {
+  const {
+    snapshot,
+    crmStage,
+    pattern,
+    photoOrSimulationSubtype,
+    intents,
+    lastCustomerMessage,
+    explicitCatalogRequest,
+    patienceSignal,
+  } = args;
 
-  const heuristicGroup = classifyQualificationQuestionGroup(args.heuristicQuestion);
-  const canonicalQuestion = inferCanonicalQualificationQuestion(args.snapshot);
-  const matchingHeuristicGap =
-    heuristicGroup == null
-      ? null
-      : args.snapshot.missingFactGroups.find((group) => group.groupKey === heuristicGroup) || null;
-
-  if (!args.snapshot.canAskNextQuestion) {
-    return heuristicGroup ? null : args.heuristicQuestion;
+  if (!snapshot) {
+    return {
+      targetFactKey: null,
+      targetGroup: null,
+      targetStatus: "unproven",
+      askNow: false,
+      reason: "no_canonical_snapshot",
+    };
   }
 
-  if (!heuristicGroup) {
-    return args.heuristicQuestion;
+  const normalizedStage = normalizeText(crmStage || "");
+
+  if (
+    patienceSignal.shouldAvoidNewQuestion ||
+    normalizedStage === "perdido" ||
+    normalizedStage === "concluido_sem_mais_acoes"
+  ) {
+    return {
+      targetFactKey: null,
+      targetGroup: null,
+      targetStatus: "not_applicable",
+      askNow: false,
+      reason: "current_context_does_not_justify_question",
+    };
   }
 
-  if (hasCanonicalQualificationKnownGroup(args.snapshot, heuristicGroup)) {
-    return canonicalQuestion || null;
+  const target = inferContextualQualificationTarget({
+    pattern,
+    photoOrSimulationSubtype,
+    intents,
+    lastCustomerMessage,
+    explicitCatalogRequest,
+  });
+
+  if (!target) {
+    return {
+      targetFactKey: null,
+      targetGroup: null,
+      targetStatus: "not_applicable",
+      askNow: false,
+      reason: "no_relevant_qualification_target",
+    };
   }
 
-  if (matchingHeuristicGap?.status === "conflict") {
-    return inferCanonicalQualificationQuestion({
-      ...args.snapshot,
-      missingFactGroups: [matchingHeuristicGap],
-    });
+  const exactConflict = getCanonicalQualificationConflict(
+    snapshot,
+    target.factKey,
+  );
+
+  if (exactConflict) {
+    return {
+      targetFactKey: target.factKey,
+      targetGroup: target.groupKey,
+      targetStatus: "conflict",
+      askNow: true,
+      reason: "target_conflict_requires_clarification",
+    };
   }
 
-  return args.heuristicQuestion;
+  const knownFact = findCanonicalQualificationFact(
+    snapshot,
+    target.factKey,
+  );
+
+  if (knownFact) {
+    return {
+      targetFactKey: target.factKey,
+      targetGroup: target.groupKey,
+      targetStatus: "known",
+      askNow: false,
+      reason: "target_already_known",
+    };
+  }
+
+  if (target.groupKey) {
+    const groupGap = getCanonicalQualificationGroup(
+      snapshot,
+      target.groupKey,
+    );
+
+    if (!groupGap) {
+      return {
+        targetFactKey: target.factKey,
+        targetGroup: target.groupKey,
+        targetStatus: "unproven",
+        askNow: false,
+        reason: "target_group_already_satisfied",
+      };
+    }
+
+    if (groupGap.status === "conflict") {
+      const conflictingFact =
+        snapshot.conflicts.find((conflict) =>
+          groupGap.factKeys.includes(conflict.factKey),
+        ) || null;
+
+      return {
+        targetFactKey: conflictingFact?.factKey || target.factKey,
+        targetGroup: target.groupKey,
+        targetStatus: "conflict",
+        askNow: true,
+        reason: "target_conflict_requires_clarification",
+      };
+    }
+
+    if (!snapshot.canAskNextQuestion) {
+      return {
+        targetFactKey: target.factKey,
+        targetGroup: target.groupKey,
+        targetStatus: "missing",
+        askNow: false,
+        reason: "canonical_questioning_not_available",
+      };
+    }
+
+    return {
+      targetFactKey: target.factKey,
+      targetGroup: target.groupKey,
+      targetStatus: "missing",
+      askNow: true,
+      reason: "target_missing_and_relevant",
+    };
+  }
+
+  return {
+    targetFactKey: target.factKey,
+    targetGroup: null,
+    targetStatus: "unproven",
+    askNow: true,
+    reason: "target_unproven_and_relevant",
+  };
 }
 
 function inferRecommendationPolicy(args: {
@@ -5657,18 +5980,29 @@ function shouldAskForCustomerLocationPhoto(args: {
   return mentionsSpaceContext || asksRecommendationHelp;
 }
 
-function inferNextBestQuestion(args: {
+export function resolveNextBestQuestionAfterQualificationAuthority(args: {
+  pattern: ConversationPattern;
+  nonQualificationQuestion: string | null;
+  heuristicQuestion: string | null;
+  snapshot: CanonicalQualificationSnapshot | null;
+  qualificationDecision: QualificationDecision;
+}): string | null {
+  if (args.nonQualificationQuestion) {
+    return args.nonQualificationQuestion;
+  }
+
+  return null;
+}
+export function inferNonQualificationNextBestQuestion(args: {
   pattern: ConversationPattern;
   paymentOrClosingSubtype?: PaymentOrClosingSubtype;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   productPhotoRequestContext?: ProductPhotoRequestContext | null;
   facts: ConversationFactState;
-  intents: DetectedIntent[];
+  canonicalQualificationSnapshot?: CanonicalQualificationSnapshot | null;
   lastCustomerMessage: string;
   explicitCatalogRequest: boolean;
   patienceSignal: CustomerPatienceSignal;
-  offersTechnicalVisit: boolean;
-  lastAiListedPools: boolean;
   hasCustomerLocationPhoto: boolean;
 }): string | null {
   const {
@@ -5677,12 +6011,10 @@ function inferNextBestQuestion(args: {
     photoOrSimulationSubtype,
     productPhotoRequestContext,
     facts,
-    intents,
+    canonicalQualificationSnapshot,
     lastCustomerMessage,
     explicitCatalogRequest,
     patienceSignal,
-    offersTechnicalVisit,
-    lastAiListedPools,
     hasCustomerLocationPhoto,
   } = args;
 
@@ -5702,72 +6034,35 @@ function inferNextBestQuestion(args: {
       hasCustomerLocationPhoto,
     })
   ) {
-    return "Você tem uma foto do lugar? Com a foto dá pra entender melhor o espaço e me ajuda a te sugerir piscinas melhores";
+    return "VocÃª tem uma foto do lugar? Com a foto dÃ¡ pra entender melhor o espaÃ§o e me ajuda a te sugerir piscinas melhores";
   }
 
-  if (pattern === "generic_pool_opening") {
-    return "Beleza, voce ja tem algum modelo em mente? Se nao tiver, posso te mostrar algumas opcoes. Me fala tambem mais ou menos o espaco que voce tem pra colocar a piscina";
-  }
-
-  if (pattern === "pool_size_discovery") {
-    return "Com esse espaco ja da para afunilar melhor as opcoes. Voce prefere algo mais simples de manter ou uma opcao com mais conforto?";
-  }
-
-  if (pattern === "pool_children_context") {
-    if (facts.sizeKnown) {
-      return "Voce prefere uma piscina mais rasa ou nao tem preferencia quanto a profundidade?";
-    }
-    return "me fala tambem mais ou menos o espaco que voce tem pra colocar a piscina";
-  }
-
-  if (pattern === "discount_question") {
-    const normalizedDiscountMessage = normalizeText(lastCustomerMessage);
-    const explicitPaymentCondition = hasExplicitPaymentConditionSignal(lastCustomerMessage);
-    const askedPixImprovement =
-      normalizedDiscountMessage.includes("pix melhora") ||
-      normalizedDiscountMessage.includes("no pix melhora") ||
-      normalizedDiscountMessage.includes("a vista melhora") ||
-      normalizedDiscountMessage.includes("avista melhora");
-
-    if (hasSpecificPoolReference(lastCustomerMessage)) {
-      if (!facts.installationInterestKnown && !looksLikeInstallationQuestion(lastCustomerMessage)) {
-        return "Voce esta olhando so a piscina ou tambem instalacao?";
-      }
-      if (!explicitPaymentCondition) {
-        return facts.sizeKnown || facts.needKnown
-          ? "Voce quer priorizar o menor preco ou uma opcao pequena com um pouco mais de conforto?"
-          : "Quer que eu te mostre as opcoes mais em conta?";
-      }
-      if (!askedPixImprovement && !facts.paymentInterestKnown) {
-        return "Seria no Pix/a vista ou parcelado?";
-      }
-      return "Qual condicao faz mais sentido pra voce hoje: so a piscina ou piscina com instalacao?";
-    }
-
-    if (facts.needKnown) {
-      return explicitPaymentCondition
-        ? askedPixImprovement
-          ? "Qual modelo voce esta pensando pra eu ver a condicao mais real?"
-          : "Seria no Pix/a vista ou parcelado?"
-        : "Voce quer priorizar o menor preco ou uma opcao com um pouco mais de conforto?";
-    }
-
-    return explicitPaymentCondition
-      ? "Qual modelo voce esta pensando pra eu ver a condicao mais real?"
-      : "Quer que eu te mostre as opcoes mais acessiveis?";
-  }
-
-  if (pattern === "payment_or_closing_flow") {
-    if (paymentOrClosingSubtype === "closing_or_buying") {
-      return "Me fala qual condicao faz mais sentido pra voce hoje que eu te oriento no proximo passo";
-    }
+  if (
+    pattern === "generic_pool_opening" ||
+    pattern === "pool_size_discovery" ||
+    pattern === "pool_children_context" ||
+    pattern === "discount_question"
+  ) {
     return null;
   }
 
+  if (pattern === "payment_or_closing_flow") {
+    return paymentOrClosingSubtype === "closing_or_buying"
+      ? "Me fala qual condicao faz mais sentido pra voce hoje que eu te oriento no proximo passo"
+      : null;
+  }
+
   if (looksLikeTechnicalVisitQuestion(lastCustomerMessage)) {
-    return facts.locationKnown
+    const locationKnownForVisit = canonicalQualificationSnapshot
+      ? hasCanonicalQualificationKnownGroup(
+          canonicalQualificationSnapshot,
+          "location",
+        )
+      : false;
+
+    return locationKnownForVisit
       ? "Vou verificar na agenda os horarios disponiveis. Qual dia ou periodo costuma ser melhor pra voce?"
-      : "Vou verificar na agenda os dias que temos disponiveis. Me confirma sua cidade ou bairro e qual dia ou periodo costuma ser melhor pra voce?";
+      : null;
   }
 
   if (pattern === "photo_or_simulation_request") {
@@ -5789,58 +6084,8 @@ function inferNextBestQuestion(args: {
     if (photoOrSimulationSubtype === "product_photo_specific") {
       return null;
     }
-    if (photoOrSimulationSubtype === "simulation_visual_request") {
-      return "Com uma foto do espaço dá pra entender melhor o local e indicar modelos que combinam melhor. Me manda uma foto do lugar que eu te ajudo por aqui";
-    }
-    if (facts.sizeKnown) {
-      return "Se conseguir, me fala tambem se tem alguma limitacao de acesso ou detalhe do espaco que te preocupa mais";
-    }
-    return "Pode mandar sim. Se conseguir, me manda tambem uma nocao de medida do espaco, porque isso ajuda bastante a orientar melhor";
-  }
-
-  if (pattern === "specific_model_or_ad_request") {
     return null;
-  }
 
-  if (
-    (explicitCatalogRequest || intents.includes("comparison") || looksLikePoolChoice(lastCustomerMessage)) &&
-    !facts.sizeKnown
-  ) {
-    return "me fala mais ou menos o espaco que voce tem pra colocar a piscina";
-  }
-
-  if (
-    facts.needKnown &&
-    facts.sizeKnown &&
-    extractRequestedAreaM2(lastCustomerMessage) != null &&
-    !hasNewPoolRefinementSignal(lastCustomerMessage) &&
-    !looksLikePriceQuestion(lastCustomerMessage) &&
-    !looksLikeInstallationQuestion(lastCustomerMessage) &&
-    !looksLikeComparisonQuestion(lastCustomerMessage) &&
-    !hasSpecificPoolReference(lastCustomerMessage)
-  ) {
-    return "Com esse espaco faz sentido olhar modelos mais compactos. Voce prefere algo mais simples de manter ou uma opcao com mais conforto?";
-  }
-
-  if (
-    (intents.includes("installation") || intents.includes("technical_visit") || intents.includes("region")) &&
-    !facts.locationKnown
-  ) {
-    return "qual sua cidade ou bairro?";
-  }
-
-  if (intents.includes("price") && !facts.budgetKnown) {
-    return "voce pensa em uma faixa mais economica, intermediaria ou algo mais premium?";
-  }
-
-  if (
-    shouldAskTimingNow({
-      facts,
-      intents,
-      lastCustomerMessage,
-    })
-  ) {
-    return "isso seria para agora ou mais pra frente?";
   }
 
   return null;
@@ -5928,8 +6173,8 @@ function inferResponseGoal(args: {
 
   if (looksLikeTechnicalVisitQuestion(args.lastCustomerMessage)) {
     return offersTechnicalVisit
-      ? "tratar visita como proximo passo comercial seguro, coletar cidade ou bairro e melhor dia ou periodo, dizer que vai verificar na agenda a disponibilidade e nao afirmar que a visita ja foi agendada ou confirmada"
-      : "explicar com sinceridade que a visita depende de validacao interna, coletar cidade ou bairro e melhor dia ou periodo e nao prometer agendamento como se estivesse executado";
+      ? "tratar visita como proximo passo comercial seguro; localizacao pertence a qualificacao contextual e dia ou periodo pertence ao passo operacional depois que a localizacao canonica estiver conhecida; nunca pedir os dois automaticamente na mesma regra e nao afirmar que a visita ja foi agendada ou confirmada"
+      : "explicar com sinceridade que a visita depende de validacao interna e nao criar questionario de qualificacao ou promessa de agenda por conta propria";
   }
 
   if (pattern === "payment_or_closing_flow") {
@@ -5961,7 +6206,7 @@ function inferResponseGoal(args: {
     (strongestPoolReferenceMatch === "exact" || strongestPoolReferenceMatch === "strong") &&
     hasTrustedPoolPrice(bestNamedPoolMatch)
   ) {
-    return "responder o preco do modelo encontrado logo no comeco, usando o valor base do catalogo e a faixa do cadastro quando existir, e so depois fazer uma pergunta curta de avanco";
+    return "responder o preco do modelo encontrado logo no comeco, usando o valor base do catalogo e a faixa do cadastro quando existir; depois, avance apenas se houver proximo passo comercial ou qualificacao realmente autorizados, sem inventar pergunta";
   }
 
   if (responseMode === "objective") {
@@ -5969,15 +6214,15 @@ function inferResponseGoal(args: {
   }
 
   if (pattern === "generic_pool_opening") {
-    return "responder como vendedora de WhatsApp, sem listar catalogo, e puxar so o basico para sair do generico: modelo em mente e espaco disponivel";
+    return "responder como vendedora de WhatsApp, sem listar catalogo cedo demais; se houver qualificacao nesta resposta, seguir somente o alvo autorizado pela decisao de qualificacao contextual, sem combinar modelo e espaco automaticamente";
   }
 
   if (pattern === "pool_size_discovery") {
-    return "interpretar o espaco, afunilar melhor as opcoes pelo tamanho e avancar com no maximo uma pergunta pratica sobre manutencao, conforto, custo ou proximo passo, sem reabrir motivacao";
+    return "interpretar o espaco ja informado e usar esse contexto para afunilar comercialmente por encaixe, praticidade e opcoes adequadas; se houver qualificacao nesta resposta, nao escolher manutencao, conforto, custo ou outro tema por conta propria e seguir somente o alvo autorizado pela decisao de qualificacao contextual";
   }
 
   if (pattern === "pool_children_context") {
-    return "priorizar seguranca, praticidade, supervisao facil e manutencao simples. Se ja houver espaco informado, afunilar para modelos compactos, seguros e simples de cuidar, sem puxar conforto premium ou recursos extras";
+    return "usar o contexto de filhos ou criancas para orientar comercialmente com foco em seguranca, praticidade, supervisao e manutencao simples, sem inventar promessa de seguranca; qualquer nova pergunta de qualificacao deve seguir somente o alvo autorizado pela decisao de qualificacao contextual";
   }
 
   if (pattern === "photo_or_simulation_request") {
@@ -5994,7 +6239,7 @@ function inferResponseGoal(args: {
       return "afunilar primeiro o tipo de modelo ou sugerir opcoes reais antes de falar em foto especifica, sem escolher imagem aleatoria";
     }
     if (photoOrSimulationSubtype === "simulation_visual_request") {
-      return "explicar com naturalidade que foto e medidas ajudam bastante a orientar melhor, mas sem prometer montagem visual pronta, render ou simulacao real neste momento, e manter um proximo passo comercial util";
+      return "explicar com naturalidade que simulacao, montagem ou render visual nao estao disponiveis nesta etapa; oferecer apenas ajuda suportada, como fotos reais de produtos e orientacao comercial com dados objetivos, sem inventar pergunta";
     }
     if (photoOrSimulationSubtype === "product_photo_without_model") {
       return "descobrir primeiro qual modelo de piscina o cliente quer ver em foto, sem citar piscinas aleatorias nem supor produto por conta propria";
@@ -6002,11 +6247,11 @@ function inferResponseGoal(args: {
     if (photoOrSimulationSubtype === "product_photo_specific") {
       return "responder sobre a foto do modelo especifico citado no contexto, usando apenas a evidencia real de foto cadastrada desse modelo e sem trocar para outro produto sem necessidade";
     }
-    return "tratar a foto do local como apoio comercial para orientar melhor por espaco, acesso e encaixe; pedir medida quando faltar; e ser totalmente sincera sem prometer simulacao, render, montagem visual ou analise real da imagem";
+    return "tratar a foto do local apenas como apoio comercial para orientar melhor por espaco, acesso e encaixe; qualquer pergunta de medida ou espaco deve obedecer a decisao de qualificacao contextual; ser totalmente sincera sem prometer simulacao, render, montagem visual ou analise real da imagem";
   }
 
   if (pattern === "specific_model_or_ad_request") {
-    return "responder a referencia especifica primeiro, sem tratar como lead generico, e so depois conduzir com uma pergunta curta se ainda faltar contexto critico";
+    return "responder a referencia especifica primeiro, sem tratar como lead generico; depois, conduzir somente pelo proximo passo comercial ou pela qualificacao autorizada, sem transformar contexto faltante em pergunta automatica";
   }
 
   if (intents.includes("comparison")) {
@@ -6030,12 +6275,13 @@ function inferResponseGoal(args: {
   return "responder de forma comercial, objetiva e natural, avançando só um passo útil sem parecer formulário";
 }
 
-function inferForbiddenInThisReply(args: {
+export function inferForbiddenInThisReply(args: {
   pattern: ConversationPattern;
   paymentOrClosingSubtype?: PaymentOrClosingSubtype;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   intents: DetectedIntent[];
   nextBestQuestion: string | null;
+  qualificationDecision: QualificationDecision;
   responseMode: ResponseMode;
   explicitCatalogRequest: boolean;
   lastAiListedPools: boolean;
@@ -6112,7 +6358,7 @@ function inferForbiddenInThisReply(args: {
     out.push("nao tratar pedido de foto do local como se o sistema ja recebesse, processasse e entendesse a imagem automaticamente");
     out.push("nao abrir catalogo cedo demais se ainda faltar medida ou contexto basico do espaco");
     if (args.photoOrSimulationSubtype === "simulation_visual_request") {
-      out.push("nao reduzir pedido de simulacao a um simples pode mandar foto sem deixar claro que montagem visual pronta nao esta garantida");
+      out.push("nao sugerir que enviar uma foto habilita simulacao; montagem, render e simulacao visual nao estao disponiveis nesta etapa");
     }
     if (args.photoOrSimulationSubtype === "product_photo_without_model") {
       out.push("nao escolher um modelo de piscina por conta propria quando o cliente pediu foto sem dizer qual modelo");
@@ -6148,7 +6394,7 @@ function inferForbiddenInThisReply(args: {
     out.push("nao responder comparacao com texto generico sem contraste real");
   }
 
-  if (!args.nextBestQuestion) {
+  if (!args.nextBestQuestion && !args.qualificationDecision.askNow) {
     out.push("nao inventar pergunta no final so para encerrar com interrogacao");
   }
 
@@ -6211,6 +6457,7 @@ function inferForbiddenInThisReply(args: {
 function buildCommercialObjective(args: {
   facts: ConversationFactState;
   canonicalQualificationSnapshot?: CanonicalQualificationSnapshot | null;
+  crmStage: string | null;
   orderedMessages: MessageRow[];
   lastCustomerMessage: string;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
@@ -6245,24 +6492,40 @@ function buildCommercialObjective(args: {
     paymentOrClosingSubtype,
   });
 
-  const heuristicNextBestQuestion = inferNextBestQuestion({
+  const qualificationDecision = resolveContextualQualificationDecision({
+    snapshot: canonicalQualificationSnapshot,
+    crmStage: args.crmStage,
     pattern,
-    paymentOrClosingSubtype,
     photoOrSimulationSubtype: args.photoOrSimulationSubtype,
-    productPhotoRequestContext: args.productPhotoRequestContext,
-    facts,
     intents,
     lastCustomerMessage: args.lastCustomerMessage,
     explicitCatalogRequest: args.explicitCatalogRequest,
+    responseMode,
     patienceSignal,
-    offersTechnicalVisit: args.offersTechnicalVisit,
-    lastAiListedPools: args.lastAiListedPools,
-    hasCustomerLocationPhoto: alreadyHasCustomerLocationPhoto,
   });
-  const nextBestQuestion = resolveQualificationNextBestQuestion({
-    heuristicQuestion: heuristicNextBestQuestion,
-    snapshot: canonicalQualificationSnapshot,
-  });
+
+  const nonQualificationNextBestQuestion =
+    inferNonQualificationNextBestQuestion({
+      pattern,
+      paymentOrClosingSubtype,
+      photoOrSimulationSubtype: args.photoOrSimulationSubtype,
+      productPhotoRequestContext: args.productPhotoRequestContext,
+      facts,
+      canonicalQualificationSnapshot,
+      lastCustomerMessage: args.lastCustomerMessage,
+      explicitCatalogRequest: args.explicitCatalogRequest,
+      patienceSignal,
+      hasCustomerLocationPhoto: alreadyHasCustomerLocationPhoto,
+    });
+
+  const nextBestQuestion =
+    resolveNextBestQuestionAfterQualificationAuthority({
+      pattern,
+      nonQualificationQuestion: nonQualificationNextBestQuestion,
+      heuristicQuestion: null,
+      snapshot: canonicalQualificationSnapshot,
+      qualificationDecision,
+    });
 
   return {
     pattern,
@@ -6276,6 +6539,7 @@ function buildCommercialObjective(args: {
     missingFacts: canonicalQualificationSnapshot
       ? summarizeCanonicalMissingFacts(canonicalQualificationSnapshot)
       : summarizeMissingFacts(facts, args.lastCustomerMessage),
+    qualificationDecision,
     nextBestQuestion,
     responseGoal: inferResponseGoal({
       pattern,
@@ -6302,6 +6566,7 @@ function buildCommercialObjective(args: {
       photoOrSimulationSubtype: args.photoOrSimulationSubtype,
       intents,
       nextBestQuestion,
+      qualificationDecision,
       responseMode,
       explicitCatalogRequest: args.explicitCatalogRequest,
       lastAiListedPools: args.lastAiListedPools,
@@ -6359,7 +6624,7 @@ function formatPatienceToneGuidance(signal: CustomerPatienceSignal): string {
   return "- sem orientação especial de pausa nesta resposta";
 }
 
-function buildCommercialObjectiveBlock(objective: CommercialObjective): string {
+export function buildCommercialObjectiveBlock(objective: CommercialObjective): string {
   const intentsText = objective.intents.length
     ? objective.intents.map((item) => `- ${item}`).join("\n")
     : "- nenhuma intenção secundária relevante detectada";
@@ -6379,6 +6644,17 @@ function buildCommercialObjectiveBlock(objective: CommercialObjective): string {
   const forbiddenText = objective.forbiddenInThisReply.length
     ? objective.forbiddenInThisReply.map((item) => `- ${item}`).join("\n")
     : "- sem bloqueios adicionais";
+
+  const qualificationDecisionText = [
+    `- perguntar qualificacao agora: ${objective.qualificationDecision.askNow ? "sim" : "nao"}`,
+    `- fato alvo: ${objective.qualificationDecision.targetFactKey || "nenhum"}`,
+    `- grupo alvo: ${objective.qualificationDecision.targetGroup || "nenhum"}`,
+    `- estado do alvo: ${objective.qualificationDecision.targetStatus}`,
+    `- motivo da decisao: ${objective.qualificationDecision.reason}`,
+    objective.qualificationDecision.askNow
+      ? "- se houver pergunta de qualificacao, use somente esse alvo; formule naturalmente e faca no maximo uma pergunta principal"
+      : "- nao crie pergunta de qualificacao so porque existem fatos faltando",
+  ].join("\n");
 
   const patienceTimingText = objective.patienceSignal.followUpTiming
     ? `- prazo/retomada citado pelo cliente: ${objective.patienceSignal.followUpTiming}`
@@ -6404,6 +6680,10 @@ ${knownFactsText}
 
 O QUE AINDA FALTA, SE FIZER SENTIDO
 ${missingFactsText}
+
+DECISAO DE QUALIFICACAO CONTEXTUAL
+${qualificationDecisionText}
+- esta decisao controla apenas qualificacao; um proximo passo comercial ou operacional pode existir separadamente
 
 SINAL DE PACIÊNCIA, PAUSA OU DESINTERESSE
 - status: ${objective.patienceSignal.status}
@@ -6574,7 +6854,7 @@ function buildSalesResponseBrainInstructionBlock(args: {
 
   if (looksLikeExtendedQuoteRequest(args.lastCustomerMessage)) {
     instructions.push(
-      "- em pedido de orcamento, use o contexto ja conhecido para encaminhar a solicitação sem pedir tudo de novo; so peca a informacao critica que realmente estiver faltando"
+      "- em pedido de orcamento, use o contexto ja conhecido para encaminhar a solicitacao sem pedir tudo de novo; dados de qualificacao so podem virar pergunta quando a decisao de qualificacao contextual desta resposta autorizar"
     );
   }
 
@@ -6809,7 +7089,7 @@ function buildCustomerMediaContextBlock(messages: MessageRow[]): string {
       "- sempre que a resposta usar a foto como base, deixe claro que a confirmacao depende das medidas e detalhes objetivos do local",
       "- nao prometa simulacao visual, previa visual ou que vai mostrar como vai ficar",
       "- prefira linguagem como 'parece favoravel para estudar opcoes' em vez de frases que soem como garantia tecnica",
-      "- se precisar de confirmacao, peca largura, comprimento, profundidade desejada e informacoes objetivas do espaco",
+      "- nao transforme necessidade de confirmacao tecnica em pergunta automatica; se a decisao de qualificacao contextual autorizar uma pergunta de espaco, use somente o alvo autorizado",
     ].join("\n");
   }
 
@@ -6822,7 +7102,7 @@ function buildCustomerMediaContextBlock(messages: MessageRow[]): string {
     "- nao invente acabamento, deck, piso, paisagismo, iluminacao, obra externa ou servicos de entorno",
     "- nao afirme medidas, inclinacao, estrutura, drenagem ou detalhes tecnicos visuais que nao foram validados",
     "- nao diga que vai mandar imagem ao cliente",
-    "- se precisar de mais precisao, peca dados objetivos como medida aproximada, cidade/regiao, tipo de espaco e uso desejado",
+    "- necessidade de mais precisao nao autoriza novas perguntas por si so; dados de qualificacao so devem ser perguntados quando a decisao de qualificacao contextual desta resposta autorizar",
   ].join("\n");
 }
 
@@ -6861,27 +7141,25 @@ function buildResponsePriorityBlock(args: {
 
   if (args.pattern === "generic_pool_opening") {
     instructions.push(
-      "- PADRÃO DOMINANTE: abertura genérica de piscina. Não liste catálogo agora. Pergunte de forma natural se o cliente já tem modelo em mente e peça o espaço disponível."
+      "- PADRAO DOMINANTE: abertura generica de piscina. Nao liste catalogo agora. Nao escolha aqui entre modelo, espaco, medida ou outro dado de qualificacao; qualquer pergunta de qualificacao deve seguir exclusivamente a decisao de qualificacao contextual desta resposta."
     );
   }
-
   if (args.pattern === "pool_size_discovery") {
     instructions.push(
-      "- PADRÃO DOMINANTE: cliente já informou espaço/medida. Interprete o espaço, afunile por praticidade, encaixe, manutenção e conforto. Não volte para pergunta ampla de uso, motivo, filhos, família, lazer ou outro motivo."
+      "- PADRAO DOMINANTE: cliente ja informou espaco ou medida. Use esse dado para afunilar por encaixe, praticidade e contexto comercial sem voltar para triagem ampla de uso, motivo, filhos, familia ou lazer."
     );
     instructions.push(
-      "- Nesta etapa, faça no máximo uma pergunta prática e fechada. A pergunta preferida é sobre algo mais simples de manter versus uma opção com mais conforto."
+      "- Nao escolha aqui uma pergunta de manutencao, conforto, custo ou outra preferencia. Se houver pergunta de qualificacao nesta resposta, formule somente o unico alvo autorizado pela decisao de qualificacao contextual."
     );
   }
   if (args.pattern === "pool_children_context") {
     instructions.push(
-      "- PADRAO DOMINANTE: contexto de filhos/criancas. Priorize seguranca, praticidade, supervisao e manutencao simples. Nao puxe luxo, spa, hidromassagem, conforto premium ou recursos extras cedo."
+      "- PADRAO DOMINANTE: contexto de filhos ou criancas. Considere seguranca, praticidade, supervisao e manutencao simples como criterios comerciais; nao puxe luxo, spa, hidromassagem, conforto premium ou recursos extras cedo e nao prometa que um produto e seguro apenas por uma caracteristica isolada."
     );
     instructions.push(
-      "- Se ja houver espaco informado, diga que faz sentido olhar modelos compactos, seguros e simples de cuidar. Se precisar perguntar algo, prefira profundidade ou seguranca, e nao conforto ou recurso extra."
+      "- Nao escolha profundidade, seguranca, espaco ou outro dado como pergunta por conta propria. Se houver pergunta de qualificacao nesta resposta, formule somente o unico alvo autorizado pela decisao de qualificacao contextual."
     );
   }
-
   if (args.pattern === "discount_question") {
     instructions.push(
       "- PADRAO DOMINANTE: desconto, menor valor, Pix melhor, promocao ou objecao de preco. Responda de forma comercial, proteja margem e venda valor antes de reduzir preco."
@@ -6963,7 +7241,7 @@ function buildResponsePriorityBlock(args: {
   if (args.pattern === "photo_or_simulation_request") {
     if (args.photoOrSimulationSubtype === "simulation_visual_request") {
       instructions.push(
-        "- PADRÃO DOMINANTE: pedido de simulação, montagem, render ou visualização. Diga com naturalidade que foto e medidas ajudam bastante a orientar melhor, mas não prometa uma montagem visual pronta neste momento."
+        "- PADRÃO DOMINANTE: pedido de simulação, montagem, render ou visualização. Explique com naturalidade que esse recurso visual não está disponível nesta etapa e ofereça apenas alternativas realmente suportadas, sem pedir foto ou medidas automaticamente."
       );
     } else if (args.photoOrSimulationSubtype === "product_photo_without_model") {
       instructions.push(
@@ -6978,10 +7256,10 @@ function buildResponsePriorityBlock(args: {
       );
     } else {
       instructions.push(
-        "- PADRÃO DOMINANTE: foto do local, dúvida de encaixe ou pedido de simulação. Trate a foto como apoio comercial para orientar melhor por espaço, acesso e encaixe."
+        "- PADRÃO DOMINANTE: foto do local ou dúvida de encaixe. Trate a foto somente como apoio comercial para orientar melhor por espaço, acesso e encaixe."
       );
       instructions.push(
-        "- Peça medida junto com a foto quando isso ajudar. Não abra catálogo cedo demais se ainda faltar noção de espaço."
+        "- Não transforme foto do local em pedido automático de medida. Se espaço ou medida precisarem virar pergunta de qualificação, siga exclusivamente a decisão de qualificação contextual desta resposta."
       );
       instructions.push(
         "- Não prometa simulação, montagem visual, render, foto editada ou visualização pronta. Não finja análise visual real da imagem."
@@ -7048,10 +7326,9 @@ function buildResponsePriorityBlock(args: {
 
   if (isGenericPoolOpening(args.lastCustomerMessage)) {
     instructions.push(
-      "- Esta é uma abertura genérica de interesse em piscina. Não liste modelos nem catálogo ainda. Responda com naturalidade e faça só uma pergunta consultiva leve, de preferência puxando espaço/medida ou se o cliente já tem algum modelo em mente."
+      "- Esta e uma abertura generica de interesse em piscina. Nao liste modelos nem catalogo ainda. Responda com naturalidade e nao invente uma pergunta de descoberta por conta propria; se a decisao de qualificacao contextual autorizar uma pergunta, formule apenas esse unico alvo."
     );
   }
-
   if (args.shouldPresentPoolRecommendations) {
     if (args.recommendationPolicy.poolOptionCount === 1) {
       instructions.push(
@@ -7185,7 +7462,7 @@ function buildExamplesBlock(args: {
     examples.push(
       `EXEMPLO BOM:
 Cliente: "Aceita cartão? E vocês fazem visita técnica?"
-Resposta boa: "Sim, aceitamos cartão. E a visita eu posso verificar pra você. ${args.nextBestQuestion || "Me fala sua cidade ou bairro e um bom dia ou período pra eu te orientar certinho."}"`
+Resposta boa: "Sim, aceitamos cartão. E a visita eu posso verificar pra você. ${args.nextBestQuestion ? ` ${args.nextBestQuestion}` : ""}"`
     );
   }
 
@@ -7322,8 +7599,19 @@ ${unavailablePoolLines}
 `.trim();
 }
 
+const CANONICAL_RUNTIME_ONBOARDING_KEYS = new Set([
+  "accepted_payment_methods",
+  "accepted_payment_methods_summary",
+  "offers_installation",
+  "offers_technical_visit",
+  "technical_visit_rules",
+  "technical_visit_rules_selected",
+  "technical_visit_rules_summary",
+]);
+
 function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>): string {
   const entries = Object.entries(onboardingMap)
+    .filter(([key]) => !CANONICAL_RUNTIME_ONBOARDING_KEYS.has(key))
     .filter(([, value]) => hasMeaningfulValue(value))
     .slice(0, 40)
     .map(([key, value]) => `- ${key}: ${String(value).trim()}`);
@@ -7333,33 +7621,27 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
 
 function buildRawOnboardingSummary(onboardingMap: Record<string, string>): string {
   const entries = Object.entries(onboardingMap)
+    .filter(([key]) => !CANONICAL_RUNTIME_ONBOARDING_KEYS.has(key))
     .filter(([, value]) => value != null && String(value).trim().length > 0)
     .map(([key, value]) => `- ${key}: ${String(value).trim()}`);
 
   return entries.length ? entries.join("\n") : "- Sem respostas configuradas no onboarding.";
 }
 
-function hasConfiguredPixKey(onboardingMap: Record<string, string>): boolean {
-  return Object.entries(onboardingMap).some(([key, value]) => {
-    const normalizedKey = normalizeText(key);
-    const normalizedValue = normalizeText(value);
-    return (
-      normalizedValue.length > 0 &&
-      ((normalizedKey.includes("pix") && (normalizedKey.includes("key") || normalizedKey.includes("chave"))) ||
-        normalizedKey.includes("dados bancarios"))
-    );
-  });
+function hasConfiguredPixKey(
+  paymentSettingsInput: StorePaymentSettingsInput,
+): boolean {
+  return Boolean(
+    paymentSettingsInput.acceptedPaymentMethods.includes("pix") &&
+      paymentSettingsInput.pixKeyType &&
+      paymentSettingsInput.pixKey,
+  );
 }
 
-function hasConfiguredDownPaymentRule(onboardingMap: Record<string, string>): boolean {
-  return Object.entries(onboardingMap).some(([key, value]) => {
-    const normalizedKey = normalizeText(key);
-    const normalizedValue = normalizeText(value);
-    return (
-      normalizedValue.length > 0 &&
-      (normalizedKey.includes("entrada") || normalizedKey.includes("sinal") || normalizedKey.includes("down_payment"))
-    );
-  });
+function hasConfiguredDownPaymentRule(
+  paymentSettingsInput: StorePaymentSettingsInput,
+): boolean {
+  return paymentSettingsInput.downPaymentMode !== "none";
 }
 
 const COMMERCIAL_MESSAGE_INTENT_DECISION_KINDS = new Set<CommercialMessageIntentDecisionKind>([
@@ -8039,6 +8321,8 @@ function buildInstructions(args: {
   conversationStatus: string | null;
   humanActive: boolean | null;
   onboardingMap: Record<string, string>;
+  paymentSettingsInput: StorePaymentSettingsInput;
+  operationSettingsInput: StoreOperationSettingsInput;
   recentHistory: string;
   currentCommercialStateBlock: string;
   historicalCommercialContextBlock: string;
@@ -8072,9 +8356,9 @@ function buildInstructions(args: {
   const leadLabel = args.leadName || "cliente";
   const operationalBlock = buildOperationalOnboardingBlock(args.onboardingMap);
   const rawOnboardingSummary = buildRawOnboardingSummary(args.onboardingMap);
-  const hasPixKey = hasConfiguredPixKey(args.onboardingMap);
-  const hasDownPaymentRule = hasConfiguredDownPaymentRule(args.onboardingMap);
-  const hasTechnicalVisit = hasConfiguredTechnicalVisit(args.onboardingMap);
+  const hasPixKey = hasConfiguredPixKey(args.paymentSettingsInput);
+  const hasDownPaymentRule = hasConfiguredDownPaymentRule(args.paymentSettingsInput);
+  const hasTechnicalVisit = hasConfiguredTechnicalVisit(args.operationSettingsInput);
 
   return `
 Você é a IA comercial real do projeto ZION atendendo a loja ${storeLabel}.
@@ -8170,19 +8454,19 @@ REGRAS OPERACIONAIS
 - se a mensagem misturar preço com desconto ou Pix, responda primeiro o preço quando houver base real e só depois trate a condição comercial com segurança
 - em recomendações por espaço, não diga cabe no seu espaço, vai caber ou se encaixa; prefira pode fazer sentido para esse espaço, pelo tamanho parece uma boa opção ou pode combinar com esse espaço
 - se a loja fizer visita técnica e já houver espaço, interesse em instalação ou necessidade de confirmar acesso/medidas, visita ou avaliação pode ser um próximo passo comercial natural
-- nesse caso, trate visita como verificação ou encaminhamento: peça cidade/bairro e melhor dia/período e diga que vai verificar disponibilidade; não diga que já agendou
+- nesse caso, trate visita como verificação ou encaminhamento: localização só pode ser perguntada pela decisão de qualificação contextual; dia/período só pode ser pedido depois que a localização canônica estiver conhecida; não diga que já agendou
 - se a visita técnica não estiver configurada com clareza, não invente que faz visita; diga que isso precisa de confirmação interna antes de responder
 - nunca escreva posso agendar sim, agendei, visita confirmada, horário marcado, já marquei ou ficou agendado sem ação real de agenda
 - quando o cliente pedir visita diretamente, prefira posso te ajudar com isso ou posso verificar um horário pra visita
-- quando o cliente pedir foto do local, falar de quintal, encaixe ou simulação, trate a foto como apoio comercial e não como análise visual automática
-- quando fizer sentido comercial pedir foto do local para orientar melhor a recomendação, prefira uma frase natural como: "Você tem uma foto do lugar? Com a foto dá pra entender melhor o espaço e me ajuda a te sugerir piscinas melhores"
-- peça medida junto com a foto quando isso ajudar a orientar melhor
+- quando o cliente falar de foto do local, quintal ou encaixe, trate a foto apenas como apoio comercial e não como análise visual automática
+- só peça foto do local quando houver um próximo passo comercial explícito para isso nesta resposta; não transforme menção a espaço, quintal ou encaixe em pedido automático de foto
+- medida ou espaço só devem virar pergunta de qualificação quando a decisão de qualificação contextual desta resposta autorizar
 - não diga que analisou a imagem, que viu o quintal pela foto ou que consegue montar/renderizar visualmente se esse recurso não existe no sistema atual
-- se o cliente pedir simulação, explique com sinceridade que a foto ajuda a orientar melhor, mas não prometa montagem visual pronta neste momento
-- se o cliente pedir simulação ou montagem, você pode responder de forma natural no espírito de: "Com uma foto do espaço dá pra entender melhor o local e indicar modelos que combinam melhor. Me manda uma foto do lugar que eu te ajudo por aqui"
+- se o cliente pedir simulação, montagem ou render, explique com sinceridade que esse recurso visual não está disponível nesta etapa; não deixe a resposta sugerir que a função existe ou será feita depois
+- em pedido de simulação ou montagem, não peça foto como substituto automático da função indisponível; ofereça ajuda suportada, como fotos reais dos produtos e orientação comercial com informações objetivas
 - se o cliente pedir foto de produto sem dizer qual piscina é, pergunte primeiro qual modelo ele quer ver e não liste fotos/modelos aleatórios
 - se houver modelo claro no histórico ou na mensagem, responda só sobre a foto desse modelo específico
-- se o cliente já enviou foto do local nesta conversa (${args.hasCustomerLocationPhoto ? "sim" : "não"}), não peça outra foto; use a que já existe apenas como apoio comercial e siga pedindo dados objetivos quando faltar precisão
+- se o cliente já enviou foto do local nesta conversa (${args.hasCustomerLocationPhoto ? "sim" : "não"}), não peça outra foto; use a que já existe apenas como apoio comercial e não crie novas perguntas de qualificação fora da decisão contextual desta resposta
 
 REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
 - padrão atual: ${args.conversationPattern}
@@ -8196,7 +8480,7 @@ REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
 - se o padrão for payment_or_closing_flow, oriente com base nas configurações vivas da loja e não confirme pagamento, comprovante, reserva, contrato ou venda sem validação real
 - se o subtipo for pix_key_request e não houver chave Pix configurada, não diga que pode passar a chave; diga que ela precisa ser confirmada pela loja/responsável
 - se o subtipo for down_payment_or_entry e não houver regra explícita de entrada/sinal, não diga "pode sim"; trate como condição a confirmar
-- se o padrão for photo_or_simulation_request, trate foto como apoio comercial, peça medida quando fizer sentido e não prometa análise visual real nem simulação pronta
+- se o padrão for photo_or_simulation_request, trate foto como apoio comercial; perguntas de medida ou espaço devem obedecer à decisão de qualificação contextual, e simulação, montagem ou render visual não estão disponíveis nesta etapa
 - subtipo de foto/simulação detectado: ${args.photoOrSimulationSubtype || "nenhum"}
 - visita tecnica configurada no contexto: ${hasTechnicalVisit ? "sim" : "não"}
 - chave Pix configurada no contexto: ${hasPixKey ? "sim" : "não"}
@@ -8479,15 +8763,16 @@ function buildCurrentCommercialStateBlock(args: {
   conversationStatus: string | null;
   leadState: string | null;
   humanActive: boolean | null;
-  onboardingMap: Record<string, string>;
+  paymentSettingsInput: StorePaymentSettingsInput;
+  operationSettingsInput: StoreOperationSettingsInput;
 }): string {
   return [
     `- conversation.status atual: ${args.conversationStatus || "desconhecido"}`,
     `- lead.state atual: ${args.leadState || "desconhecido"}`,
     `- humanActive atual: ${args.humanActive === true ? "sim" : "nao"}`,
-    `- visita tecnica configurada atualmente: ${hasConfiguredTechnicalVisit(args.onboardingMap) ? "sim" : "nao"}`,
-    `- chave Pix configurada atualmente: ${hasConfiguredPixKey(args.onboardingMap) ? "sim" : "nao"}`,
-    `- regra de entrada/sinal configurada atualmente: ${hasConfiguredDownPaymentRule(args.onboardingMap) ? "sim" : "nao"}`,
+    `- visita tecnica configurada atualmente: ${hasConfiguredTechnicalVisit(args.operationSettingsInput) ? "sim" : "nao"}`,
+    `- chave Pix configurada atualmente: ${hasConfiguredPixKey(args.paymentSettingsInput) ? "sim" : "nao"}`,
+    `- regra de entrada/sinal configurada atualmente: ${hasConfiguredDownPaymentRule(args.paymentSettingsInput) ? "sim" : "nao"}`,
     "- use configuracoes atuais, catalogo atual e disponibilidade atual como fonte soberana para responder agora.",
   ].join("\n");
 }
@@ -8670,6 +8955,42 @@ export async function generateAiSalesReply(
       };
     }
 
+    const { data: paymentSettings, error: paymentSettingsError } =
+      await supabase
+        .from("store_payment_settings")
+        .select(
+          "organization_id, store_id, accepted_payment_methods, pix_key_type, pix_key, pix_holder_name, down_payment_mode, down_payment_value_type, down_payment_percent, down_payment_amount_cents, installments_enabled, max_installments, installment_interest_policy, payment_notes, created_at, updated_at",
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", resolvedStoreId)
+        .maybeSingle();
+
+    if (paymentSettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_PAYMENT_SETTINGS_FAILED",
+        message: paymentSettingsError.message,
+      };
+    }
+
+    const { data: operationSettings, error: operationSettingsError } =
+      await supabase
+        .from("store_operation_settings")
+        .select(
+          "organization_id, store_id, offers_installation, average_installation_time_days, installation_days_rule, installation_process_notes, offers_technical_visit, technical_visit_days_rule, technical_visit_rules, technical_visit_rules_other, created_at, updated_at",
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", resolvedStoreId)
+        .maybeSingle();
+
+    if (operationSettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_OPERATION_SETTINGS_FAILED",
+        message: operationSettingsError.message,
+      };
+    }
+
     const onboardingMap: Record<string, string> = {};
 
     for (const row of (onboardingAnswers || []) as StoreAnswerRow[]) {
@@ -8681,6 +9002,20 @@ export async function generateAiSalesReply(
 
     const canonicalCommercialAiSettings =
       (commercialAiSettings ?? null) as StoreCommercialAiSettingsRow | null;
+    const canonicalPaymentSettings =
+      (paymentSettings ?? null) as StorePaymentSettingsRow | null;
+    const canonicalOperationSettings =
+      (operationSettings ?? null) as StoreOperationSettingsRow | null;
+    const paymentSettingsInput = createStorePaymentSettingsInputFromSources({
+      settings: canonicalPaymentSettings,
+    });
+    const acceptedPaymentMethodsSummary =
+      createStorePaymentDisplaySummaryFromSources({
+        settings: canonicalPaymentSettings,
+      }) || null;
+    const operationSettingsInput = createStoreOperationSettingsInputFromSources({
+      settings: canonicalOperationSettings,
+    });
 
     if (canonicalCommercialAiSettings) {
       const commercialAiSettingsInput =
@@ -8933,6 +9268,24 @@ export async function generateAiSalesReply(
         }
 
         canonicalQualificationSnapshot = postWriteQualificationResult.snapshot;
+      }
+
+      const profileMaterializationResult =
+        await materializeCommercialOpportunityProfileFromQualificationBySystem({
+          supabase,
+          organizationId,
+          storeId: resolvedStoreId,
+          commercialOpportunityId: resolvedCommercialOpportunityId,
+          materializationEventKey: anchorMessageId,
+          canonicalQualificationSnapshot,
+        });
+
+      if (!profileMaterializationResult.ok) {
+        return {
+          ok: false,
+          error: "MATERIALIZE_CANONICAL_PROFILE_FAILED",
+          message: profileMaterializationResult.message,
+        };
       }
     }
 
@@ -9387,6 +9740,7 @@ export async function generateAiSalesReply(
     const commercialObjective = buildCommercialObjective({
       facts: conversationFacts,
       canonicalQualificationSnapshot,
+      crmStage: crmStageForReply,
       orderedMessages: messagesForCurrentCommercialInference,
       lastCustomerMessage,
       photoOrSimulationSubtype,
@@ -9394,7 +9748,7 @@ export async function generateAiSalesReply(
       explicitCatalogRequest,
       lastAiListedPools,
       shouldPresentPoolRecommendations,
-      offersTechnicalVisit: hasConfiguredTechnicalVisit(onboardingMap),
+      offersTechnicalVisit: hasConfiguredTechnicalVisit(operationSettingsInput),
       recommendationPolicy,
       requestedPoolReference,
       strongestPoolReferenceMatch,
@@ -9427,13 +9781,28 @@ export async function generateAiSalesReply(
       recommendedModel: matchedPools[0]?.pool?.name || null,
       requestedPoolReferenceRaw: requestedPoolReference?.raw || null,
       strongestPoolReferenceMatch,
-      hasConfiguredPixKey: hasConfiguredPixKey(onboardingMap),
-      offersTechnicalVisit: hasConfiguredTechnicalVisit(onboardingMap),
+      hasConfiguredPixKey: hasConfiguredPixKey(paymentSettingsInput),
+      offersTechnicalVisit: hasConfiguredTechnicalVisit(operationSettingsInput),
       suggestedNextQuestion: effectiveNextBestQuestion,
-      acceptedPaymentMethodsSummary:
-        onboardingMap.accepted_payment_methods_summary ||
-        onboardingMap.accepted_payment_methods ||
-        null,
+      canonicalVisitLocationState: canonicalQualificationSnapshot
+        ? hasCanonicalQualificationKnownGroup(
+            canonicalQualificationSnapshot,
+            "location",
+          )
+          ? "known"
+          : "not_known"
+        : "unproven",
+      contextualQualification: {
+        hasCanonicalSnapshot: Boolean(canonicalQualificationSnapshot),
+        askNow: commercialObjective.qualificationDecision.askNow,
+        targetFactKey:
+          commercialObjective.qualificationDecision.targetFactKey,
+        targetGroup:
+          commercialObjective.qualificationDecision.targetGroup,
+        targetStatus:
+          commercialObjective.qualificationDecision.targetStatus,
+      },
+      acceptedPaymentMethodsSummary,
     });
 
     const catalogEvidenceBlock = buildCatalogEvidenceBlock({
@@ -9461,9 +9830,9 @@ export async function generateAiSalesReply(
       hasCatalogEvidence: matchedCatalogItems.length > 0,
       hasPoolEvidence: matchedPools.length > 0,
       shouldPresentPoolRecommendations,
-      hasConfiguredPixKey: hasConfiguredPixKey(onboardingMap),
-      hasConfiguredDownPaymentRule: hasConfiguredDownPaymentRule(onboardingMap),
-      offersTechnicalVisit: hasConfiguredTechnicalVisit(onboardingMap),
+      hasConfiguredPixKey: hasConfiguredPixKey(paymentSettingsInput),
+      hasConfiguredDownPaymentRule: hasConfiguredDownPaymentRule(paymentSettingsInput),
+      offersTechnicalVisit: hasConfiguredTechnicalVisit(operationSettingsInput),
       recommendationPolicy,
       requestedPoolReference,
       strongestPoolReferenceMatch,
@@ -9494,12 +9863,15 @@ export async function generateAiSalesReply(
       conversationStatus: conversation.status,
       humanActive: conversation.is_human_active,
       onboardingMap,
+      paymentSettingsInput,
+      operationSettingsInput,
       recentHistory,
       currentCommercialStateBlock: buildCurrentCommercialStateBlock({
         conversationStatus: conversation.status,
         leadState: crmStageForReply,
         humanActive: conversation.is_human_active,
-        onboardingMap,
+        paymentSettingsInput,
+        operationSettingsInput,
       }),
       historicalCommercialContextBlock,
       customerMediaContextBlock,
@@ -9558,10 +9930,12 @@ export async function generateAiSalesReply(
       intents: commercialObjective.intents,
       pattern: commercialObjective.pattern,
       patienceSignal: commercialObjective.patienceSignal,
-      offersTechnicalVisit: hasConfiguredTechnicalVisit(onboardingMap),
+      offersTechnicalVisit: hasConfiguredTechnicalVisit(operationSettingsInput),
       lastAiListedPools,
       recommendedModel: matchedPools[0]?.pool?.name || null,
       commercialOpportunityId: resolvedCommercialOpportunityId,
+      hasCanonicalVisitLocation:
+        salesBrain.snapshot.hasCanonicalVisitLocation,
 
     });
     const operationalFollowUpDecision = inferOperationalFollowUpDecision({
@@ -9573,8 +9947,14 @@ export async function generateAiSalesReply(
       commercialHandoff?.replyOverride &&
         commercialHandoff.shouldCreateTask &&
         !(
-          commercialHandoff.taskType === "commercial_visit_request" &&
-          salesBrain.snapshot.visitNeedsQualificationBeforeAgenda
+          (
+            commercialHandoff.taskType === "commercial_visit_request" &&
+            salesBrain.snapshot.visitNeedsQualificationBeforeAgenda
+          ) ||
+          (
+            commercialHandoff.taskType === "commercial_quote_request" &&
+            commercialObjective.qualificationDecision.askNow
+          )
         )
     );
     const finalAiText = catalogPhotoAction

@@ -393,7 +393,6 @@ export function createStorePaymentSettingsInputFromSources(args: {
   settings?: StorePaymentSettingsRow | null;
 }): StorePaymentSettingsInput {
   const settings = args.settings ?? null;
-  const answers = args.answers ?? {};
 
   if (settings) {
     return {
@@ -426,16 +425,7 @@ export function createStorePaymentSettingsInputFromSources(args: {
     };
   }
 
-  return {
-    ...createDefaultStorePaymentSettingsInput(),
-    acceptedPaymentMethods: coerceStorePaymentMethods(
-      answers.accepted_payment_methods,
-    ),
-    legacyPaymentConditionTags: coerceLegacyPaymentConditionTags(
-      answers.accepted_payment_methods,
-    ),
-    paymentNotes: cleanText(answers.payment_notes),
-  };
+  return createDefaultStorePaymentSettingsInput();
 }
 
 export function getStorePaymentMethodLabel(value: StorePaymentMethod) {
@@ -462,10 +452,11 @@ export function createStorePaymentPresentationFromSources(args: {
   settings?: StorePaymentSettingsRow | null;
 }) {
   const answers = args.answers ?? {};
+  const settings = args.settings ?? null;
   const paymentSettingsInput = createStorePaymentSettingsInputFromSources(args);
-  const legacyPaymentConditionTags = args.settings
-    ? coerceLegacyPaymentConditionTags(args.settings.accepted_payment_methods)
-    : coerceLegacyPaymentConditionTags(answers.accepted_payment_methods);
+  const legacyPaymentConditionTags = settings
+    ? coerceLegacyPaymentConditionTags(settings.accepted_payment_methods)
+    : [];
   const normalizedPaymentSettings = normalizeStorePaymentSettingsInput({
     acceptedPaymentMethods: paymentSettingsInput.acceptedPaymentMethods,
     pixKeyType: paymentSettingsInput.pixKeyType,

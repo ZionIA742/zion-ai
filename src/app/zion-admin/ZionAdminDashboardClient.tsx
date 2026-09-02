@@ -74,6 +74,16 @@ export type ZionAdminOverview = {
     totalOperationalIssues?: number | null;
   };
   countErrors: Record<string, string | null>;
+  integrity?: {
+    orphanStoresCount: number;
+    orphanStores: Array<{
+      id: string;
+      name: string;
+      organizationId: string;
+      organizationName: string;
+      createdAt: string | null;
+    }>;
+  };
   stores: ZionAdminStore[];
   future: {
     billing: string;
@@ -3082,6 +3092,11 @@ export default function ZionAdminDashboardClient({
   const stores = data?.stores ?? [];
   const activeStores = stores.filter(isStoreActive);
   const inactiveStores = stores.filter(isStoreCanceledOrInactive);
+  const integrityOrphanStores = data?.integrity?.orphanStores ?? [];
+  const orphanStoresCount = data?.integrity?.orphanStoresCount ?? 0;
+  const visibleOrphanStoreNames = integrityOrphanStores
+    .slice(0, 10)
+    .map((store) => store.name);
 
   const countErrors = data?.countErrors ?? {};
   const hasCountErrors = Object.values(countErrors).some(Boolean);
@@ -3384,6 +3399,24 @@ export default function ZionAdminDashboardClient({
           <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
             Alguns indicadores não puderam ser carregados. A tela mostrou
             somente dados com origem confiável.
+          </div>
+        ) : null}
+
+        {orphanStoresCount > 0 ? (
+          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+            <div className="font-semibold">
+              {orphanStoresCount} estrutura(s) sem usuario vinculado
+            </div>
+            <div className="mt-1 text-xs text-amber-100/80">
+              Estas estruturas nao entram nas listas nem nos contadores normais do Zion-ADM.
+              {visibleOrphanStoreNames.length > 0
+                ? ` Revisar: ${visibleOrphanStoreNames.join(", ")}${
+                    orphanStoresCount > visibleOrphanStoreNames.length
+                      ? ` e mais ${orphanStoresCount - visibleOrphanStoreNames.length}`
+                      : ""
+                  }.`
+                : ""}
+            </div>
           </div>
         ) : null}
 

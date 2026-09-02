@@ -379,6 +379,28 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "onboarding can temporarily render active access when review override is enabled",
+    run: () => {
+      const result = resolveAccountAccessPageGate(
+        createResolution({
+          status: "store_ready_active",
+          safeHtmlDestination: "/crm",
+          apiDecision: "allow",
+          reasonCode: "ready_active",
+          organizationResolution: "single",
+          storeResolution: "single",
+          organizationId: "org-1",
+          storeId: "store-1",
+          commercialAccess: "allowed",
+        }),
+        "onboarding",
+        { allowCompletedOnboardingReview: true },
+      );
+
+      assertRenderDecision(result);
+    },
+  },
+  {
     name: "onboarding redirects first access to reset password",
     run: () => {
       const result = resolveAccountAccessPageGate(

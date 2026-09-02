@@ -170,10 +170,8 @@ export function createStoreChannelSettingsInputFromSources(args: {
   answers?: Record<string, unknown> | null;
   settings?: StoreChannelSettingsRow | null;
 }): StoreChannelSettingsInput {
-  const answers = args.answers ?? {};
   const settings = args.settings ?? null;
   const defaults = createDefaultStoreChannelSettingsInput();
-  const commercialWhatsapp = cleanText(answers.commercial_whatsapp);
 
   if (settings) {
     return {
@@ -182,13 +180,11 @@ export function createStoreChannelSettingsInputFromSources(args: {
         defaults.commercialChannelName,
       commercialReceivesRealClients: booleanToYesNo(
         settings.commercial_receives_real_clients,
-        commercialWhatsapp ? "Sim" : defaults.commercialReceivesRealClients,
+        defaults.commercialReceivesRealClients,
       ),
       commercialIsOfficialSalesChannel: booleanToYesNo(
         settings.commercial_is_official_sales_channel,
-        commercialWhatsapp
-          ? "Sim"
-          : defaults.commercialIsOfficialSalesChannel,
+        defaults.commercialIsOfficialSalesChannel,
       ),
       commercialChannelType:
         cleanText(settings.commercial_channel_type) ||
@@ -214,33 +210,5 @@ export function createStoreChannelSettingsInputFromSources(args: {
     };
   }
 
-  return {
-    commercialChannelName:
-      cleanText(answers.commercial_channel_name) ||
-      defaults.commercialChannelName,
-    commercialReceivesRealClients:
-      cleanText(answers.commercial_receives_real_clients) ||
-      (commercialWhatsapp ? "Sim" : defaults.commercialReceivesRealClients),
-    commercialIsOfficialSalesChannel:
-      cleanText(answers.commercial_is_official_sales_channel) ||
-      (commercialWhatsapp ? "Sim" : defaults.commercialIsOfficialSalesChannel),
-    commercialChannelType:
-      cleanText(answers.commercial_channel_type) ||
-      defaults.commercialChannelType,
-    commercialEntryPriority:
-      cleanText(answers.commercial_entry_priority) ||
-      defaults.commercialEntryPriority,
-    commercialHumanHandoffEnabled:
-      cleanText(answers.commercial_human_handoff_enabled) ||
-      defaults.commercialHumanHandoffEnabled,
-    commercialChannelNotes: cleanText(answers.commercial_channel_notes),
-    integrationProviderName:
-      cleanText(answers.integration_provider_name) ||
-      defaults.integrationProviderName,
-    integrationConnectionMode:
-      cleanText(answers.integration_connection_mode) ||
-      defaults.integrationConnectionMode,
-    integrationsNotes:
-      cleanText(answers.integrations_notes) || defaults.integrationsNotes,
-  };
+  return defaults;
 }
