@@ -19,6 +19,9 @@ import {
 } from "./sales-contracts/customer-contract-acceptance";
 import { ContractAccessError } from "./sales-contracts/contract-auth";
 import { pushAssistantContractWorkflowDecisionMessage } from "./assistant/contract-workflow-messages";
+import {
+  loadSalesAiOperatingWindowAuthority,
+} from "./sales-ai-operating-window";
 
 type GenerateAndSaveAiSalesReplyParams = {
   organizationId: string;
@@ -64,6 +67,7 @@ type GenerateAndSaveAiSalesReplyDeps = {
   updateLatestRunningAiRunUsage: typeof updateLatestRunningAiRunUsage;
   sendAiPanelMessage: typeof sendAiPanelMessage;
   createCommercialAssistantHandoff: typeof createCommercialAssistantHandoff;
+  loadSalesAiOperatingWindowAuthority: typeof loadSalesAiOperatingWindowAuthority;
 };
 
 const AI_REPLY_GENERATION_ANCHOR_MISMATCH =
@@ -3324,6 +3328,85 @@ async function persistOperationalFollowUpDecision(args: {
   }
 }
 
+async function persistAfterHoursResume(args: {
+  supabase: any;
+  canonicalScope: Awaited<
+    ReturnType<typeof resolveConversationAiWindowStateScope>
+  >;
+  leadId: string | null;
+  lastCustomerMessageAt: string | null;
+  operatingWindowContext: Awaited<
+    ReturnType<typeof loadSalesAiOperatingWindowAuthority>
+  >;
+}) {
+  const nextResumeAt = args.operatingWindowContext.nextAiAllowedPeriod?.startIso || null;
+  if (!nextResumeAt) return;
+
+  const now = new Date();
+  const timeZone = args.operatingWindowContext.timezoneName || "America/Sao_Paulo";
+  const queueKey = `resume:${args.canonicalScope.conversationId}:sales_ai_after_hours:${formatQueueTimestamp(nextResumeAt, timeZone)}`;
+  const input = {
+    type: "resume_sales_conversation",
+    reason: "sales_ai_after_hours_policy",
+    resumeAt: nextResumeAt,
+    system_event: "ai_window_resume",
+    resume_mode: "sales_ai_after_hours_policy",
+    created_at_iso: now.toISOString(),
+    created_at_local: formatLocalAuditStamp(now, timeZone),
+    created_at_sp: formatLocalAuditStamp(now, "America/Sao_Paulo"),
+    queue_key: queueKey,
+    next_resume_at: nextResumeAt,
+    timezone_name: timeZone,
+    sales_ai_operating_window_context: args.operatingWindowContext,
+  };
+
+  const { error: windowError } = await args.supabase
+    .from("conversation_ai_window_state")
+    .upsert(
+      {
+        conversation_id: args.canonicalScope.conversationId,
+        organization_id: args.canonicalScope.organizationId,
+        store_id: args.canonicalScope.storeId,
+        waiting_next_day: false,
+        pending_supervisor: false,
+        last_customer_message_at: args.lastCustomerMessageAt,
+        next_resume_at: nextResumeAt,
+        resume_reason: "sales_ai_after_hours_policy",
+        updated_at: now.toISOString(),
+      },
+      { onConflict: "conversation_id" },
+    );
+
+  if (windowError) {
+    throw new Error(
+      `Falha ao persistir retomada after-hours da IA comercial: ${windowError.message}`,
+    );
+  }
+
+  const { error: queueError } = await args.supabase
+    .from("ai_run_queue")
+    .upsert(
+      {
+        organization_id: args.canonicalScope.organizationId,
+        store_id: args.canonicalScope.storeId,
+        conversation_id: args.canonicalScope.conversationId,
+        lead_id: args.canonicalScope.leadId || args.leadId,
+        queue_key: queueKey,
+        input,
+        enqueued_at: now.toISOString(),
+        processed_at: null,
+        processing_error: null,
+      },
+      { onConflict: "queue_key" },
+    );
+
+  if (queueError) {
+    throw new Error(
+      `Falha ao enfileirar retomada after-hours da IA comercial: ${queueError.message}`,
+    );
+  }
+}
+
 
 function cleanIntegerOrNull(value: unknown): number | null {
   if (value == null) return null;
@@ -3864,6 +3947,7 @@ export async function generateAndSaveAiSalesReply(
       updateLatestRunningAiRunUsage,
       sendAiPanelMessage,
       createCommercialAssistantHandoff,
+      loadSalesAiOperatingWindowAuthority,
       ...deps,
     };
     const organizationId = String(params.organizationId || "").trim();
@@ -3990,6 +4074,33 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
+    const salesAiOperatingWindowContext =
+      await resolvedDeps.loadSalesAiOperatingWindowAuthority({
+        supabase,
+        organizationId: canonicalOrganizationId,
+        storeId: canonicalStoreId,
+      });
+
+    if (salesAiOperatingWindowContext.decision === "AI_NOT_ALLOWED_NOW") {
+      await persistAfterHoursResume({
+        supabase,
+        canonicalScope,
+        leadId: normalizedConversation.lead_id || null,
+        lastCustomerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
+        operatingWindowContext: salesAiOperatingWindowContext,
+      });
+
+      return {
+        ok: false,
+        error: "SALES_AI_NOT_ALLOWED_NOW",
+        message:
+          "A politica operacional canonica nao permite resposta automatica da IA comercial neste momento.",
+        context: {
+          salesAiOperatingWindowContext,
+        },
+      };
+    }
+
     await clearPendingResumeArtifacts({
       supabase,
       canonicalScope,
@@ -4017,6 +4128,7 @@ export async function generateAndSaveAiSalesReply(
       storeId: canonicalStoreId,
       conversationId: canonicalConversationId,
       anchorMessageId: boundaryBeforeGeneration.lastIncomingCustomerMessageId,
+      salesAiOperatingWindowContext,
     });
 
     if (generationResult.ok === false) {

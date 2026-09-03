@@ -24,6 +24,15 @@ import {
   type StorePaymentSettingsRow,
 } from "../store-payment-settings.js";
 import {
+  buildSalesAiOperatingWindowPromptBlock,
+  type SalesAiOperatingWindowContext,
+} from "./sales-ai-operating-window";
+import {
+  buildSalesAiAppointmentPromptBlock,
+  loadSalesAiAppointmentContext,
+  type SalesAiAppointmentContext,
+} from "./sales-ai-appointment-context";
+import {
   buildQualificationWriterOperationKey,
   extractDeterministicQualificationCandidates,
   extractStructuredQualificationCandidates,
@@ -623,6 +632,7 @@ export type GenerateAiSalesReplyParams = {
   storeId: string;
   conversationId: string;
   anchorMessageId: string;
+  salesAiOperatingWindowContext?: SalesAiOperatingWindowContext | null;
   supabaseClient?: any;
   openaiClient?: {
     responses: {
@@ -662,6 +672,8 @@ export type GenerateAiSalesReplyResult =
         resolvedCommercialOpportunityId: string | null;
         commercialMessageIntentResolution: CommercialMessageIntentResolutionContext | null;
         responseAnchorCommercialContext: ResponseAnchorCommercialContext | null;
+        salesAiOperatingWindowContext: SalesAiOperatingWindowContext | null;
+        salesAiAppointmentContext: SalesAiAppointmentContext | null;
       };
     }
   | {
@@ -8351,6 +8363,8 @@ function buildInstructions(args: {
   requestedPoolReference: RequestedPoolReference | null;
   strongestPoolReferenceMatch: PoolReferenceMatchStrength;
   bestNamedPoolMatch: MatchedPool | null;
+  salesAiOperatingWindowContext?: SalesAiOperatingWindowContext | null;
+  salesAiAppointmentContext?: SalesAiAppointmentContext | null;
 }) {
   const storeLabel = args.storeDisplayName || args.storeName || "a loja";
   const leadLabel = args.leadName || "cliente";
@@ -8359,6 +8373,12 @@ function buildInstructions(args: {
   const hasPixKey = hasConfiguredPixKey(args.paymentSettingsInput);
   const hasDownPaymentRule = hasConfiguredDownPaymentRule(args.paymentSettingsInput);
   const hasTechnicalVisit = hasConfiguredTechnicalVisit(args.operationSettingsInput);
+  const salesAiOperatingWindowBlock = buildSalesAiOperatingWindowPromptBlock(
+    args.salesAiOperatingWindowContext,
+  );
+  const salesAiAppointmentBlock = buildSalesAiAppointmentPromptBlock(
+    args.salesAiAppointmentContext,
+  );
 
   return `
 Você é a IA comercial real do projeto ZION atendendo a loja ${storeLabel}.
@@ -8427,6 +8447,8 @@ REGRAS OPERACIONAIS
 - só aproxime ou ofereça percentual específico quando isso estiver claramente autorizado nas regras de desconto, política comercial ou por aprovação humana
 - se faltar base para cravar algo, responda com cautela comercial em vez de inventar certeza
 - se houver regra clara de escalonamento humano, respeite
+${salesAiOperatingWindowBlock}
+${salesAiAppointmentBlock}
 - não prometa enviar mídia, PDF, catálogo ou fotos como se a entrega já estivesse acontecendo
 - cite modelos concretos quando fizer sentido e quando houver pedido explícito atual, continuidade afirmativa clara ou contexto suficiente com catálogo compatível
 - quando o cliente já aceitou ver modelos ou pediu opções, não peça permissão de novo: use o catálogo e siga a política desta resposta para apresentar 1, 2 ou até 3 recomendações reais com nome e motivo curto
@@ -9289,6 +9311,16 @@ export async function generateAiSalesReply(
       }
     }
 
+    const salesAiAppointmentContext = await loadSalesAiAppointmentContext({
+      supabase,
+      organizationId,
+      storeId: resolvedStoreId,
+      conversationId,
+      leadId: lead.id,
+      commercialOpportunityId: resolvedCommercialOpportunityId,
+      lastCustomerMessage,
+    });
+
     const messagesForConversationContinuity = annotatedMessages;
     const inferredCurrentCommercialMessages = selectMessagesForCurrentCommercialInference({
       annotatedMessages,
@@ -9899,6 +9931,8 @@ export async function generateAiSalesReply(
       requestedPoolReference,
       strongestPoolReferenceMatch,
       bestNamedPoolMatch,
+      salesAiOperatingWindowContext: params.salesAiOperatingWindowContext || null,
+      salesAiAppointmentContext,
     });
 
     const input = buildModelInput(messagesForConversationContinuity);
@@ -9995,6 +10029,8 @@ export async function generateAiSalesReply(
         resolvedCommercialOpportunityId,
         commercialMessageIntentResolution,
         responseAnchorCommercialContext,
+        salesAiOperatingWindowContext: params.salesAiOperatingWindowContext || null,
+        salesAiAppointmentContext,
       },
     };
   } catch (error: any) {

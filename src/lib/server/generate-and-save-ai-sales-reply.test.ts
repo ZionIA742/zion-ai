@@ -244,6 +244,8 @@ function createAiWindowScopeSupabase(args?: {
   leadOrganizationId?: string;
   conversationError?: { message: string } | null;
   storeError?: { message: string } | null;
+  scheduleSettings?: Record<string, unknown> | null;
+  holidayBlocks?: Array<Record<string, unknown>>;
 }) {
   const canonicalOrganizationId = args?.canonicalOrganizationId ?? "org-canonical";
   const canonicalStoreId = args?.canonicalStoreId ?? "store-canonical";
@@ -262,15 +264,48 @@ function createAiWindowScopeSupabase(args?: {
     is: Array<{ column: string; value: unknown }>;
     like: Array<{ column: string; value: unknown }>;
   }> = [];
+  const queueUpserts: Array<{ row: Record<string, unknown>; options: Record<string, unknown> }> = [];
   const conversationSelects: string[] = [];
   const storeSelects: string[] = [];
   const conversationFilters: Array<{ column: string; value: unknown }> = [];
   const storeFilters: Array<{ column: string; value: unknown }> = [];
+  const scheduleSettings =
+    args && "scheduleSettings" in args
+      ? args.scheduleSettings
+      : {
+          operating_days: [
+            "segunda",
+            "terca",
+            "quarta",
+            "quinta",
+            "sexta",
+            "sabado",
+            "domingo",
+          ],
+          operating_hours: {
+            segunda: { start: "00:00", end: "23:59" },
+            terca: { start: "00:00", end: "23:59" },
+            quarta: { start: "00:00", end: "23:59" },
+            quinta: { start: "00:00", end: "23:59" },
+            sexta: { start: "00:00", end: "23:59" },
+            sabado: { start: "00:00", end: "23:59" },
+            domingo: { start: "00:00", end: "23:59" },
+          },
+          timezone_name: "America/Sao_Paulo",
+          attends_holidays: false,
+          ai_after_hours_enabled: false,
+          ai_after_hours_mode: null,
+          ai_after_hours_start: null,
+          ai_after_hours_end: null,
+          ai_attends_holidays: false,
+        };
+  const holidayBlocks = args?.holidayBlocks || [];
 
   return {
     windowUpserts,
     stateUpdates,
     queueUpdates,
+    queueUpserts,
     conversationSelects,
     storeSelects,
     conversationFilters,
@@ -359,9 +394,27 @@ function createAiWindowScopeSupabase(args?: {
             },
             async maybeSingle() {
               return {
-                data: {
-                  timezone_name: "America/Sao_Paulo",
-                },
+                data: scheduleSettings,
+                error: null,
+              };
+            },
+          };
+        }
+
+        if (table === "store_schedule_blocks") {
+          return {
+            select(_selection: string) {
+              return this;
+            },
+            eq(_column: string, _value: unknown) {
+              return this;
+            },
+            lt(_column: string, _value: unknown) {
+              return this;
+            },
+            async gt(_column: string, _value: unknown) {
+              return {
+                data: holidayBlocks,
                 error: null,
               };
             },
@@ -426,6 +479,13 @@ function createAiWindowScopeSupabase(args?: {
             async like(column: string, value: unknown) {
               state.like.push({ column, value });
               queueUpdates.push(state);
+              return { error: null };
+            },
+            async upsert(
+              row: Record<string, unknown>,
+              options: Record<string, unknown>,
+            ) {
+              queueUpserts.push({ row, options });
               return { error: null };
             },
           };
@@ -1876,6 +1936,184 @@ const tests: TestCase[] = [
         assert.deepEqual(supabase.storeFilters, [
           { column: "id", value: "store-canonical" },
         ]);
+      });
+    },
+  },
+  {
+    name: "closed store with canonical AI after-hours disabled blocks generation without losing inbound boundary",
+    run: async () => {
+      const supabase = createAiWindowScopeSupabase();
+      let generationCalls = 0;
+      let sendCalls = 0;
+      let boundaryCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => supabase.client as never,
+            ...createScopeAwareReplyDeps({
+              loadConversationMessageBoundaryState: async () => {
+                boundaryCalls += 1;
+                return {
+                  lastIncomingCustomerMessageId: "msg-closed-1",
+                  lastIncomingCustomerMessageAt: "2026-09-04T00:00:00.000Z",
+                  lastAiMessageId: null,
+                  lastAiMessageAt: null,
+                };
+              },
+              loadSalesAiOperatingWindowAuthority: async () =>
+                ({
+                  decision: "AI_NOT_ALLOWED_NOW",
+                  humanAvailableNow: false,
+                  aiAllowedNow: false,
+                  humanUnavailableReason: "outside_human_operating_hours",
+                  timezoneName: "America/Sao_Paulo",
+                  localNow: "2026-09-03 21:00",
+                  isHolidayBlocked: false,
+                  holidayBlockTitle: null,
+                  nextHumanOpenPeriod: {
+                    startIso: "2026-09-04T11:00:00.000Z",
+                    endIso: "2026-09-04T21:00:00.000Z",
+                    localDate: "2026-09-04",
+                    dayKey: "sexta",
+                    startTime: "08:00",
+                    endTime: "18:00",
+                    label: "sexta-feira 2026-09-04 as 08:00",
+                  },
+                  nextAiAllowedPeriod: {
+                    startIso: "2026-09-04T11:00:00.000Z",
+                    endIso: "2026-09-04T21:00:00.000Z",
+                    localDate: "2026-09-04",
+                    dayKey: "sexta",
+                    startTime: "08:00",
+                    endTime: "18:00",
+                    label: "sexta-feira 2026-09-04 as 08:00",
+                  },
+                  policy: {
+                    aiAfterHoursEnabled: false,
+                    aiAfterHoursMode: null,
+                    aiAfterHoursStart: null,
+                    aiAfterHoursEnd: null,
+                    aiAttendsHolidays: false,
+                  },
+                }) as never,
+              generateAiSalesReply: async () => {
+                generationCalls += 1;
+                return ({ ok: false, error: "UNUSED", message: "UNUSED" }) as never;
+              },
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, false);
+        assert.equal(result.error, "SALES_AI_NOT_ALLOWED_NOW");
+        assert.equal(boundaryCalls, 1);
+        assert.equal(generationCalls, 0);
+        assert.equal(sendCalls, 0);
+        assert.equal(supabase.windowUpserts.length, 1);
+        assert.equal(
+          supabase.windowUpserts[0]?.row.next_resume_at,
+          "2026-09-04T11:00:00.000Z",
+        );
+        assert.equal(
+          supabase.windowUpserts[0]?.row.resume_reason,
+          "sales_ai_after_hours_policy",
+        );
+        assert.equal(supabase.queueUpserts.length, 1);
+        assert.equal(
+          supabase.queueUpserts[0]?.row.queue_key,
+          "resume:conv-canonical:sales_ai_after_hours:202609040800",
+        );
+        assert.deepEqual(supabase.queueUpserts[0]?.options, {
+          onConflict: "queue_key",
+        });
+        assert.equal(supabase.queueUpdates.length, 0);
+      });
+    },
+  },
+  {
+    name: "allowed after-hours context is passed into sales generation before sending",
+    run: async () => {
+      const supabase = createAiWindowScopeSupabase();
+      let receivedDecision: string | null = null;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => supabase.client as never,
+            ...createScopeAwareReplyDeps({
+              loadSalesAiOperatingWindowAuthority: async () =>
+                ({
+                  decision: "AI_ALLOWED_AFTER_HOURS",
+                  humanAvailableNow: false,
+                  aiAllowedNow: true,
+                  humanUnavailableReason: "outside_human_operating_hours",
+                  timezoneName: "America/Sao_Paulo",
+                  localNow: "2026-09-03 21:00",
+                  isHolidayBlocked: false,
+                  holidayBlockTitle: null,
+                  nextHumanOpenPeriod: {
+                    startIso: "2026-09-04T11:00:00.000Z",
+                    endIso: "2026-09-04T21:00:00.000Z",
+                    localDate: "2026-09-04",
+                    dayKey: "sexta",
+                    startTime: "08:00",
+                    endTime: "18:00",
+                    label: "sexta-feira 2026-09-04 as 08:00",
+                  },
+                  nextAiAllowedPeriod: {
+                    startIso: "2026-09-03T21:00:00.000Z",
+                    endIso: "2026-09-04T03:00:00.000Z",
+                    localDate: "2026-09-03",
+                    dayKey: "quinta",
+                    startTime: "18:00",
+                    endTime: "00:00",
+                    label: "quinta-feira 2026-09-03 as 18:00",
+                  },
+                  policy: {
+                    aiAfterHoursEnabled: true,
+                    aiAfterHoursMode: "all_closed_hours",
+                    aiAfterHoursStart: null,
+                    aiAfterHoursEnd: null,
+                    aiAttendsHolidays: false,
+                  },
+                }) as never,
+              generateAiSalesReply: async (args: any) => {
+                receivedDecision =
+                  args.salesAiOperatingWindowContext?.decision || null;
+                return {
+                  ok: true,
+                  aiText: "Resposta after-hours segura",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                  },
+                } as never;
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.equal(receivedDecision, "AI_ALLOWED_AFTER_HOURS");
       });
     },
   },

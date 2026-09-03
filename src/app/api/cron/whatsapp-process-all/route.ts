@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { processWhatsappInbox } from "@/lib/server/whatsapp-inbox-processor";
 import { processWhatsappPendingMessages } from "@/lib/server/whatsapp-external-sender";
+import { processDueAiRunQueue } from "@/lib/server/process-ai-run-queue";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +25,12 @@ type StoreExecutionSummary = {
     processed: number;
     sent: number;
     failed: number;
+  };
+  aiQueue?: {
+    processed: number;
+    succeeded: number;
+    failed: number;
+    skipped: number;
   };
   error?: string;
 };
@@ -130,6 +137,7 @@ export async function GET(req: Request) {
   try {
     const inboxLimit = parseEnvLimit(process.env.WHATSAPP_CRON_INBOX_LIMIT, 10);
     const pendingLimit = parseEnvLimit(process.env.WHATSAPP_CRON_PENDING_LIMIT, 10);
+    const aiQueueLimit = parseEnvLimit(process.env.WHATSAPP_CRON_AI_QUEUE_LIMIT, 10);
     const stores = await listActiveWhatsappStores();
 
     if (stores.length === 0) {
@@ -149,6 +157,10 @@ export async function GET(req: Request) {
         pendingProcessed: 0,
         pendingSent: 0,
         pendingFailed: 0,
+        aiQueueProcessed: 0,
+        aiQueueSucceeded: 0,
+        aiQueueFailed: 0,
+        aiQueueSkipped: 0,
         results: [] as StoreExecutionSummary[],
       });
     }
@@ -162,6 +174,10 @@ export async function GET(req: Request) {
     let pendingProcessed = 0;
     let pendingSent = 0;
     let pendingFailed = 0;
+    let aiQueueProcessed = 0;
+    let aiQueueSucceeded = 0;
+    let aiQueueFailed = 0;
+    let aiQueueSkipped = 0;
 
     for (const store of stores) {
       try {
@@ -177,6 +193,12 @@ export async function GET(req: Request) {
           limit: pendingLimit,
         });
 
+        const aiQueueResult = await processDueAiRunQueue({
+          organizationId: store.organizationId,
+          storeId: store.storeId,
+          limit: aiQueueLimit,
+        });
+
         processedStores += 1;
         inboxProcessed += inboxResult.processed;
         inboxSucceeded += inboxResult.succeeded;
@@ -184,6 +206,10 @@ export async function GET(req: Request) {
         pendingProcessed += pendingResult.processed;
         pendingSent += pendingResult.sent;
         pendingFailed += pendingResult.failed;
+        aiQueueProcessed += aiQueueResult.processed;
+        aiQueueSucceeded += aiQueueResult.succeeded;
+        aiQueueFailed += aiQueueResult.failed;
+        aiQueueSkipped += aiQueueResult.skipped;
 
         results.push({
           organizationId: store.organizationId,
@@ -198,6 +224,12 @@ export async function GET(req: Request) {
             processed: pendingResult.processed,
             sent: pendingResult.sent,
             failed: pendingResult.failed,
+          },
+          aiQueue: {
+            processed: aiQueueResult.processed,
+            succeeded: aiQueueResult.succeeded,
+            failed: aiQueueResult.failed,
+            skipped: aiQueueResult.skipped,
           },
         });
       } catch (error) {
@@ -228,9 +260,14 @@ export async function GET(req: Request) {
       pendingProcessed,
       pendingSent,
       pendingFailed,
+      aiQueueProcessed,
+      aiQueueSucceeded,
+      aiQueueFailed,
+      aiQueueSkipped,
       limits: {
         inbox: inboxLimit,
         pending: pendingLimit,
+        aiQueue: aiQueueLimit,
       },
       results,
     });
