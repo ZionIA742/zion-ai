@@ -1553,8 +1553,8 @@ export default function AssistantPage() {
         <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/10">
           <div className="flex shrink-0 items-center justify-between gap-4 border-b border-black/10 bg-white px-4 py-3">
             <div className="flex min-w-0 items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-900 text-xs font-bold text-white shadow-sm">
-                IA
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-900 text-lg font-bold text-white shadow-sm">
+                Z
               </div>
               <div className="min-w-0">
                 <div className="truncate text-base font-bold text-gray-900">Assistente da loja</div>
