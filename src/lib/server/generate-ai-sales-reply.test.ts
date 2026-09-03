@@ -487,6 +487,10 @@ function createGenerateAiSalesReplySupabase(args?: {
   commercialAiSettings?: Row[];
   paymentSettings?: Row[];
   operationSettings?: Row[];
+  catalogItems?: Row[];
+  catalogItemPhotos?: Row[];
+  pools?: Row[];
+  poolPhotos?: Row[];
   canonicalReaderResponses?: Array<{ data: unknown; error: { message: string } | null }>;
   writerResponse?: RpcMockEntry;
   materializerResponse?: RpcMockEntry;
@@ -570,6 +574,10 @@ function createGenerateAiSalesReplySupabase(args?: {
       store_commercial_ai_settings: args?.commercialAiSettings ?? [],
       store_payment_settings: args?.paymentSettings ?? [],
       store_operation_settings: args?.operationSettings ?? [],
+      store_catalog_items: args?.catalogItems ?? [],
+      store_catalog_item_photos: args?.catalogItemPhotos ?? [],
+      pools: args?.pools ?? [],
+      pool_photos: args?.poolPhotos ?? [],
       messages: [
         createMessage({
           id: anchorMessageId,
@@ -3915,6 +3923,537 @@ test("generateAiSalesReply prefers canonical commercial AI settings over legacy 
   assert.equal(finalPayload.includes("A IA nao pode falar preco sem chamar uma pessoa da loja."), true);
   assert.equal(finalPayload.includes("LEGACY_PRICE_RULE_SHOULD_NOT_WIN"), false);
   assert.equal(finalPayload.includes("so_apos_entender_instalacao"), true);
+});
+
+test("generateAiSalesReply keeps core recommendation when proactive suggestions are disabled", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "qual piscina voce recomenda para um espaco 3x4?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: false,
+      superior_option_suggestions_enabled: false,
+    }],
+    pools: [{
+      id: "pool-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      name: "Piscina Compacta 300",
+      material: "fibra",
+      shape: "retangular",
+      width_m: 3,
+      length_m: 4,
+      depth_m: 1.2,
+      price: 12000,
+      description: "Boa para espacos compactos.",
+      photo_url: null,
+      is_active: true,
+      track_stock: false,
+      stock_quantity: 0,
+    }],
+    catalogItems: [{
+      id: "item-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      sku: "CAPA-1",
+      name: "Capa termica",
+      description: "Acessorio de piscina.",
+      price_cents: 50000,
+      currency: "BRL",
+      is_active: true,
+      metadata: { categoria: "acessorios" },
+      track_stock: false,
+      stock_quantity: 0,
+    }],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Eu recomendo a Compacta 300.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("pode recomendar agora: sim"), true);
+  assert.equal(finalPayload.includes("pode sugerir complemento proativamente: nao"), true);
+  assert.equal(finalPayload.includes("pode apresentar opcao superior proativamente: nao"), true);
+  assert.equal(finalPayload.includes("Piscina Compacta 300"), true);
+  assert.equal(finalPayload.includes("Capa termica"), false);
+});
+
+test("generateAiSalesReply still answers explicit complementary request with proactive complementary disabled", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "voces tem cloro?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: false,
+      superior_option_suggestions_enabled: false,
+    }],
+    catalogItems: [{
+      id: "item-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      sku: "CLORO-1",
+      name: "Cloro Granulado",
+      description: "Produto quimico para piscina.",
+      price_cents: 3000,
+      currency: "BRL",
+      is_active: true,
+      metadata: { categoria: "quimicos" },
+      track_stock: false,
+      stock_quantity: 0,
+    }],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Temos Cloro Granulado.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("pedido explicito de complementar detectado: sim"), true);
+  assert.equal(finalPayload.includes("Cloro Granulado"), true);
+});
+
+test("generateAiSalesReply filters proactive complementary candidates by selected canonical category", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "qual piscina voce recomenda para um espaco 3x4?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: true,
+      complementary_scope_mode: "selected_scope",
+      complementary_category_keys: ["quimicos"],
+      complementary_line_keys: [],
+      complementary_allowed_moments: ["after_product_interest"],
+      superior_option_suggestions_enabled: false,
+    }],
+    pools: [{
+      id: "pool-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      name: "Piscina Compacta 300",
+      material: "fibra",
+      shape: "retangular",
+      width_m: 3,
+      length_m: 4,
+      depth_m: 1.2,
+      price: 12000,
+      description: "Boa para espacos compactos.",
+      photo_url: null,
+      is_active: true,
+      track_stock: false,
+      stock_quantity: 0,
+    }],
+    catalogItems: [
+      {
+        id: "item-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        sku: "CAPA-1",
+        name: "Capa termica",
+        description: "Acessorio de piscina.",
+        price_cents: 50000,
+        currency: "BRL",
+        is_active: true,
+        metadata: {
+          categoria: "acessorios",
+          compatibility: ["Piscina Compacta 300"],
+        },
+        track_stock: false,
+        stock_quantity: 0,
+      },
+      {
+        id: "item-2",
+        organization_id: "org-1",
+        store_id: "store-1",
+        sku: "CLORO-1",
+        name: "Cloro Granulado",
+        description: "Produto quimico para piscina.",
+        price_cents: 3000,
+        currency: "BRL",
+        is_active: true,
+        metadata: {
+          categoria: "quimicos",
+          compatibility: ["Piscina Compacta 300"],
+        },
+        track_stock: false,
+        stock_quantity: 0,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Eu recomendo a Compacta 300.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("categorias complementares permitidas: quimicos"), true);
+  assert.equal(finalPayload.includes("linhas complementares permitidas: todas as linhas compativeis com evidencia canonica"), true);
+  assert.equal(finalPayload.includes("Cloro Granulado"), true);
+  assert.equal(finalPayload.includes("Capa termica"), false);
+});
+
+test("generateAiSalesReply fails closed for proactive complementary candidate without canonical relation", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "qual piscina voce recomenda para um espaco 3x4?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: true,
+      complementary_scope_mode: "all_compatible",
+      complementary_category_keys: [],
+      complementary_line_keys: [],
+      complementary_allowed_moments: ["after_product_interest"],
+      superior_option_suggestions_enabled: false,
+    }],
+    pools: [{
+      id: "pool-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      name: "Piscina Compacta 300",
+      material: "fibra",
+      shape: "retangular",
+      width_m: 3,
+      length_m: 4,
+      depth_m: 1.2,
+      price: 12000,
+      description: "Boa para espacos compactos.",
+      photo_url: null,
+      is_active: true,
+      track_stock: false,
+      stock_quantity: 0,
+    }],
+    catalogItems: [{
+      id: "item-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      sku: "CLORO-1",
+      name: "Cloro Granulado",
+      description: "Produto quimico para piscina.",
+      price_cents: 3000,
+      currency: "BRL",
+      is_active: true,
+      metadata: { categoria: "quimicos" },
+      track_stock: false,
+      stock_quantity: 0,
+    }],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Eu recomendo a Compacta 300.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("candidatos complementares proativos carregados: 0"), true);
+  assert.equal(finalPayload.includes("Cloro Granulado"), false);
+});
+
+test("generateAiSalesReply permits proactive complementary candidate by selected line with canonical relation", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "qual piscina voce recomenda para um espaco 3x4?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: true,
+      complementary_scope_mode: "selected_scope",
+      complementary_category_keys: [],
+      complementary_line_keys: ["tratamento"],
+      complementary_allowed_moments: ["after_product_interest"],
+      superior_option_suggestions_enabled: false,
+    }],
+    pools: [{
+      id: "pool-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      name: "Piscina Compacta 300",
+      material: "fibra",
+      shape: "retangular",
+      width_m: 3,
+      length_m: 4,
+      depth_m: 1.2,
+      price: 12000,
+      description: "Boa para espacos compactos.",
+      photo_url: null,
+      is_active: true,
+      track_stock: false,
+      stock_quantity: 0,
+    }],
+    catalogItems: [
+      {
+        id: "item-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        sku: "KIT-1",
+        name: "Kit Tratamento",
+        description: "Kit para manutencao.",
+        price_cents: 9000,
+        currency: "BRL",
+        is_active: true,
+        metadata: {
+          categoria: "outros",
+          line: "Tratamento",
+          compatible_with: ["Piscina Compacta 300"],
+        },
+        track_stock: false,
+        stock_quantity: 0,
+      },
+      {
+        id: "item-2",
+        organization_id: "org-1",
+        store_id: "store-1",
+        sku: "LUZ-1",
+        name: "Iluminacao LED",
+        description: "Acessorio compativel.",
+        price_cents: 15000,
+        currency: "BRL",
+        is_active: true,
+        metadata: {
+          categoria: "acessorios",
+          line: "Iluminacao",
+          compatible_with: ["Piscina Compacta 300"],
+        },
+        track_stock: false,
+        stock_quantity: 0,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Eu recomendo a Compacta 300.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("linhas complementares permitidas: tratamento"), true);
+  assert.equal(finalPayload.includes("Kit Tratamento"), true);
+  assert.equal(finalPayload.includes("Iluminacao LED"), false);
+});
+
+test("generateAiSalesReply permits explicit superior request while proactive superior is disabled", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "tem uma opcao melhor que essa?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: false,
+      superior_option_suggestions_enabled: false,
+    }],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Tenho uma opcao mais completa.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("pedido explicito de opcao superior detectado: sim"), true);
+  assert.equal(finalPayload.includes("como o cliente pediu opcao melhor explicitamente"), true);
+  assert.equal(finalPayload.includes("nao promover upgrade, opcao premium, maior ou mais completa espontaneamente"), false);
+});
+
+test("generateAiSalesReply does not treat higher price or dimensions alone as proactive superior evidence", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "qual piscina voce recomenda para um espaco 3x4?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: false,
+      superior_option_suggestions_enabled: true,
+      superior_option_allowed_triggers: ["materially_relevant_advantage"],
+    }],
+    pools: [
+      {
+        id: "pool-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        name: "Piscina Compacta 300",
+        material: "fibra",
+        shape: "retangular",
+        width_m: 3,
+        length_m: 4,
+        depth_m: 1.2,
+        price: 12000,
+        description: "Boa para espacos compactos.",
+        photo_url: null,
+        is_active: true,
+        track_stock: false,
+        stock_quantity: 0,
+      },
+      {
+        id: "pool-2",
+        organization_id: "org-1",
+        store_id: "store-1",
+        name: "Piscina Grande 500",
+        material: "fibra",
+        shape: "retangular",
+        width_m: 5,
+        length_m: 6,
+        depth_m: 1.4,
+        price: 24000,
+        description: "Modelo maior.",
+        photo_url: null,
+        is_active: true,
+        track_stock: false,
+        stock_quantity: 0,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Eu recomendo a Compacta 300.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("candidatos superiores proativos carregados: 0"), true);
+});
+
+test("generateAiSalesReply counts proactive superior only with comparative advantage for known need", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "gostei da Compacta 300, mas quero mais conforto para lazer",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: false,
+      superior_option_suggestions_enabled: true,
+      superior_option_allowed_triggers: ["materially_relevant_advantage"],
+    }],
+    pools: [
+      {
+        id: "pool-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        name: "Piscina Compacta 300",
+        material: "fibra",
+        shape: "retangular",
+        width_m: 3,
+        length_m: 4,
+        depth_m: 1.2,
+        price: 12000,
+        description: "Modelo simples.",
+        photo_url: null,
+        is_active: true,
+        track_stock: false,
+        stock_quantity: 0,
+      },
+      {
+        id: "pool-2",
+        organization_id: "org-1",
+        store_id: "store-1",
+        name: "Piscina Spa 400",
+        material: "fibra",
+        shape: "retangular",
+        width_m: 4,
+        length_m: 5,
+        depth_m: 1.3,
+        price: 18000,
+        description: "Tem prainha e hidromassagem para mais conforto.",
+        photo_url: null,
+        is_active: true,
+        track_stock: false,
+        stock_quantity: 0,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Tenho uma opcao com mais conforto.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("candidatos superiores proativos carregados: 1"), true);
 });
 
 test("generateAiSalesReply uses canonical payment settings for Pix down payment and payment methods over legacy answers", async () => {

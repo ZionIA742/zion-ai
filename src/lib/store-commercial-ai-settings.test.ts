@@ -83,6 +83,13 @@ test("commercial AI helper returns safe defaults instead of legacy policy when c
     {
       priceAnswerPolicy: "human_required_for_price",
       priceContextRequirements: [],
+      complementarySuggestionsEnabled: false,
+      complementaryScopeMode: "all_compatible",
+      complementaryCategoryKeys: [],
+      complementaryLineKeys: [],
+      complementaryAllowedMoments: [],
+      superiorOptionSuggestionsEnabled: false,
+      superiorOptionAllowedTriggers: [],
     },
   );
 
@@ -119,10 +126,129 @@ test("commercial AI helper rejects invalid canonical policy on normalization", a
     normalizeStoreCommercialAiSettingsInput({
       priceAnswerPolicy: "legacy_free_text",
       priceContextRequirements: [],
+      complementarySuggestionsEnabled: false,
+      complementaryScopeMode: "all_compatible",
+      complementaryCategoryKeys: [],
+      complementaryAllowedMoments: [],
+      superiorOptionSuggestionsEnabled: false,
+      superiorOptionAllowedTriggers: [],
     }),
     {
       ok: false,
       error: "Politica de resposta de preco invalida.",
     },
   );
+});
+
+test("commercial AI helper defaults proactive suggestion policy to disabled without invalidating core recommendation", async () => {
+  const {
+    buildCommercialSuggestionPolicy,
+    createStoreCommercialAiSettingsInputFromSources,
+    normalizeStoreCommercialAiSettingsInput,
+  } = await loadStoreCommercialAiSettingsModule();
+
+  const input = createStoreCommercialAiSettingsInputFromSources({
+    settings: null,
+  });
+  const normalized = normalizeStoreCommercialAiSettingsInput(input);
+
+  assert.equal(normalized.ok, true);
+  if (!normalized.ok) return;
+
+  assert.equal(normalized.value.complementarySuggestionsEnabled, false);
+  assert.equal(normalized.value.superiorOptionSuggestionsEnabled, false);
+  assert.deepEqual(buildCommercialSuggestionPolicy(normalized.value), {
+    allowProactiveComplementarySuggestions: false,
+    complementaryScopeMode: "all_compatible",
+    allowedComplementaryCategoryKeys: [],
+    allowedComplementaryLineKeys: [],
+    allowedComplementaryMoments: [],
+    allowProactiveSuperiorOptionSuggestions: false,
+    allowedSuperiorTriggers: [],
+  });
+});
+
+test("commercial AI helper validates selected complementary scope only when enabled", async () => {
+  const { normalizeStoreCommercialAiSettingsInput } =
+    await loadStoreCommercialAiSettingsModule();
+
+  assert.deepEqual(
+    normalizeStoreCommercialAiSettingsInput({
+      priceAnswerPolicy: "direct_when_asked",
+      priceContextRequirements: [],
+      complementarySuggestionsEnabled: true,
+      complementaryScopeMode: "selected_scope",
+      complementaryCategoryKeys: [],
+      complementaryLineKeys: [],
+      complementaryAllowedMoments: ["after_product_interest"],
+      superiorOptionSuggestionsEnabled: false,
+      superiorOptionAllowedTriggers: [],
+    }),
+    {
+      ok: false,
+      error:
+        "Selecione ao menos uma categoria ou linha para sugestoes complementares.",
+    },
+  );
+
+  const normalized = normalizeStoreCommercialAiSettingsInput({
+    priceAnswerPolicy: "direct_when_asked",
+    priceContextRequirements: [],
+    complementarySuggestionsEnabled: true,
+    complementaryScopeMode: "selected_scope",
+    complementaryCategoryKeys: ["Acessórios", "quimicos", "Acessórios"],
+    complementaryLineKeys: ["Linha Premium", "linha premium", "Tratamento"],
+    complementaryAllowedMoments: [
+      "after_product_interest",
+      "invalid_moment",
+      "during_proposal_preparation",
+    ],
+    superiorOptionSuggestionsEnabled: true,
+    superiorOptionAllowedTriggers: [
+      "materially_relevant_advantage",
+      "invalid_trigger",
+    ],
+  });
+
+  assert.equal(normalized.ok, true);
+  if (!normalized.ok) return;
+
+  assert.deepEqual(normalized.value.complementaryCategoryKeys, [
+    "acessorios",
+    "quimicos",
+  ]);
+  assert.deepEqual(normalized.value.complementaryLineKeys, [
+    "linha_premium",
+    "tratamento",
+  ]);
+  assert.deepEqual(normalized.value.complementaryAllowedMoments, [
+    "after_product_interest",
+    "during_proposal_preparation",
+  ]);
+  assert.deepEqual(normalized.value.superiorOptionAllowedTriggers, [
+    "materially_relevant_advantage",
+  ]);
+});
+
+test("commercial AI helper permits selected complementary scope by line only", async () => {
+  const { normalizeStoreCommercialAiSettingsInput } =
+    await loadStoreCommercialAiSettingsModule();
+
+  const normalized = normalizeStoreCommercialAiSettingsInput({
+    priceAnswerPolicy: "direct_when_asked",
+    priceContextRequirements: [],
+    complementarySuggestionsEnabled: true,
+    complementaryScopeMode: "selected_scope",
+    complementaryCategoryKeys: [],
+    complementaryLineKeys: ["Tratamento"],
+    complementaryAllowedMoments: [],
+    superiorOptionSuggestionsEnabled: false,
+    superiorOptionAllowedTriggers: [],
+  });
+
+  assert.equal(normalized.ok, true);
+  if (!normalized.ok) return;
+
+  assert.deepEqual(normalized.value.complementaryCategoryKeys, []);
+  assert.deepEqual(normalized.value.complementaryLineKeys, ["tratamento"]);
 });

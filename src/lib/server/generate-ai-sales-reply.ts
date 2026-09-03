@@ -7,22 +7,24 @@ import { buildBehaviorInstructionBlock } from "./ai-sales-behavior";
 import { buildSalesMethodologyInstructionBlock } from "./ai-sales-methodology";
 import { buildSalesResponseBrain } from "./ai-sales-response-brain";
 import {
+  buildCommercialSuggestionPolicy,
   createStoreCommercialAiSettingsInputFromSources,
   deriveStoreCommercialAiLegacyMirrors,
   normalizeStoreCommercialAiSettingsInput,
+  type CommercialSuggestionPolicy,
   type StoreCommercialAiSettingsRow,
-} from "../store-commercial-ai-settings.js";
+} from "../store-commercial-ai-settings";
 import {
   createStoreOperationSettingsInputFromSources,
   type StoreOperationSettingsInput,
   type StoreOperationSettingsRow,
-} from "../store-operation-settings.js";
+} from "../store-operation-settings";
 import {
   createStorePaymentDisplaySummaryFromSources,
   createStorePaymentSettingsInputFromSources,
   type StorePaymentSettingsInput,
   type StorePaymentSettingsRow,
-} from "../store-payment-settings.js";
+} from "../store-payment-settings";
 import {
   buildSalesAiOperatingWindowPromptBlock,
   type SalesAiOperatingWindowContext,
@@ -38,7 +40,7 @@ import {
   extractStructuredQualificationCandidates,
   mergeQualificationFactCandidates,
   validateQualificationFactCandidate,
-} from "./sales-qualification-fact-extraction.js";
+} from "./sales-qualification-fact-extraction";
 
 type ConversationRow = {
   id: string;
@@ -618,6 +620,14 @@ type RecommendationPolicy = {
   allowOnlySimilarLanguage: boolean;
   requireExactOrStrongMatchForNamedPool: boolean;
   reason: string;
+};
+
+type CommercialSuggestionRuntimeContext = {
+  policy: CommercialSuggestionPolicy;
+  explicitComplementaryRequest: boolean;
+  explicitSuperiorOptionRequest: boolean;
+  proactiveComplementaryCandidateCount: number;
+  proactiveSuperiorCandidateCount: number;
 };
 
 type PhotoOrSimulationSubtype =
@@ -3538,6 +3548,10 @@ function looksLikePoolRecommendationRequest(text: string): boolean {
     t.includes("opcoes") ||
     t.includes("opções") ||
     t.includes("catalogo") ||
+    t.includes("recomenda") ||
+    t.includes("recomendar") ||
+    t.includes("indicaria") ||
+    t.includes("indica") ||
     t.includes("catálogo") ||
     t.includes("me mostra") ||
     t.includes("mostrar") ||
@@ -4156,6 +4170,270 @@ function extractMetadataCategory(metadata: Record<string, unknown> | null | unde
   return asText(raw);
 }
 
+function normalizeCatalogCategoryKey(value: unknown): string | null {
+  const normalized = normalizeText(asText(value)).replace(/[^a-z0-9_-]/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized || null;
+}
+
+function normalizeCatalogScopeKey(value: unknown): string | null {
+  return normalizeCatalogCategoryKey(value);
+}
+
+function extractCatalogCategoryKey(item: CatalogItemRow): string | null {
+  return normalizeCatalogCategoryKey(
+    item.metadata?.categoria ??
+      item.metadata?.category ??
+      item.metadata?.source_category,
+  );
+}
+
+function extractCatalogLineKey(item: CatalogItemRow): string | null {
+  return normalizeCatalogScopeKey(
+    item.metadata?.line ??
+      item.metadata?.linha ??
+      item.metadata?.model ??
+      item.metadata?.product_line ??
+      item.metadata?.source_line,
+  );
+}
+
+function collectMetadataTextValues(value: unknown): string[] {
+  if (value == null) return [];
+  if (Array.isArray(value)) return value.flatMap((entry) => collectMetadataTextValues(entry));
+  if (typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).flatMap((entry) =>
+      collectMetadataTextValues(entry),
+    );
+  }
+  const text = asText(value);
+  if (!text) return [];
+  return text
+    .split(/[,\n;|]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function collectCatalogCompatibilityValues(item: CatalogItemRow): string[] {
+  const metadata = item.metadata;
+  if (!metadata || typeof metadata !== "object") return [];
+  const relationKeys = [
+    "compatible_with",
+    "compatibility",
+    "compatible_pool",
+    "compatible_pools",
+    "compatible_pool_id",
+    "compatible_pool_ids",
+    "compatible_pool_name",
+    "compatible_pool_names",
+    "related_product",
+    "related_products",
+    "related_pool",
+    "related_pools",
+    "related_pool_id",
+    "related_pool_ids",
+    "pool_id",
+    "pool_ids",
+    "pool",
+    "pool_name",
+    "pool_model",
+    "product_type",
+    "application",
+    "aplicacao",
+    "usage",
+    "use",
+    "uso",
+    "indication",
+    "indicacao",
+  ];
+
+  return relationKeys.flatMap((key) => collectMetadataTextValues(metadata[key]));
+}
+
+function buildComplementaryPoolEvidenceTokens(pool: PoolRow): string[] {
+  const tokens = [
+    pool.id,
+    pool.name,
+    buildCanonicalPoolModelKey(pool.name)?.key,
+  ];
+  return tokens
+    .map((token) => normalizeText(token))
+    .filter((token): token is string => token.length > 0);
+}
+
+function hasCanonicalComplementaryEvidence(
+  item: CatalogItemRow,
+  currentPoolMatches: MatchedPool[],
+): boolean {
+  if (currentPoolMatches.length === 0) return false;
+  const relationTexts = collectCatalogCompatibilityValues(item)
+    .map((value) => normalizeText(value))
+    .filter(Boolean);
+  if (relationTexts.length === 0) return false;
+
+  const evidenceTokens = currentPoolMatches.flatMap((match) =>
+    buildComplementaryPoolEvidenceTokens(match.pool),
+  );
+  return relationTexts.some((relationText) =>
+    evidenceTokens.some((token) => relationText === token || relationText.includes(token)),
+  );
+}
+
+function poolAreaM2(pool: PoolRow): number | null {
+  return pool.width_m != null && pool.length_m != null
+    ? pool.width_m * pool.length_m
+    : null;
+}
+
+function hasKnownSuperiorNeed(args: {
+  facts: ConversationFactState;
+  customerConversationText: string;
+}): boolean {
+  if (args.facts.needKnown || args.facts.sizeKnown || args.facts.locationKnown) return true;
+  return /\b(conforto|familia|crianca|filho|hidro|spa|prainha|lazer|maior|espaco|seguranca|profundidade|compacta|pequeno|grande)\b/i.test(
+    normalizeText(args.customerConversationText),
+  );
+}
+
+function hasComparativeSuperiorEvidence(args: {
+  candidate: PoolRow;
+  base: PoolRow | null;
+  facts: ConversationFactState;
+  customerConversationText: string;
+}): boolean {
+  if (!args.base || args.candidate.id === args.base.id) return false;
+  if (!hasKnownSuperiorNeed({
+    facts: args.facts,
+    customerConversationText: args.customerConversationText,
+  })) {
+    return false;
+  }
+
+  const needText = normalizeText(args.customerConversationText);
+  const candidateText = normalizeText(
+    [args.candidate.name, args.candidate.material, args.candidate.shape, args.candidate.description]
+      .filter(Boolean)
+      .join(" | "),
+  );
+  const baseText = normalizeText(
+    [args.base.name, args.base.material, args.base.shape, args.base.description]
+      .filter(Boolean)
+      .join(" | "),
+  );
+
+  if (/\b(conforto|lazer|premium|completa|completo|hidro|spa|prainha)\b/i.test(needText)) {
+    const comfortMarkers = /\b(hidro|hidromassagem|spa|prainha|banco|assento|deck molhado|premium|relaxamento|conforto)\b/i;
+    return comfortMarkers.test(candidateText) && !comfortMarkers.test(baseText);
+  }
+
+  if (/\b(crianca|filho|familia|seguranca|ras[ao])\b/i.test(needText)) {
+    const familyMarkers = /\b(infantil|familia|seguranca|ras[ao]|praia|prainha|antiderrapante)\b/i;
+    return familyMarkers.test(candidateText) && !familyMarkers.test(baseText);
+  }
+
+  const candidateArea = poolAreaM2(args.candidate);
+  const baseArea = poolAreaM2(args.base);
+  if (/\b(maior|grande|nadar)\b/i.test(needText) && candidateArea != null && baseArea != null) {
+    return candidateArea > baseArea * 1.15;
+  }
+
+  return false;
+}
+
+function looksLikeExplicitComplementaryRequest(text: string): boolean {
+  const t = normalizeText(text);
+  return (
+    /\b(capa|cloro|barrilha|filtro|bomba|acessorio|acessorios|produto quimico|produtos quimicos|limpeza|manutencao)\b/i.test(t) ||
+    /\b(o que mais|mais alguma coisa|tambem preciso|tambem quero|junto com|alem da piscina)\b/i.test(t)
+  );
+}
+
+function looksLikeExplicitSuperiorOptionRequest(text: string): boolean {
+  const t = normalizeText(text);
+  return (
+    /\b(opcao melhor|opcoes melhores|modelo melhor|algo melhor|versao melhor|mais completa|mais completo|maior|premium|superior|upgrade)\b/i.test(t) ||
+    /\b(tem algo acima|tem uma melhor|tem uma maior)\b/i.test(t)
+  );
+}
+
+function shouldLoadProactiveComplementaryCandidates(args: {
+  policy: CommercialSuggestionPolicy;
+  explicitComplementaryRequest: boolean;
+  explicitSuperiorOptionRequest: boolean;
+  pattern: ConversationPattern;
+  catalogIntent: CatalogIntentAnalysis;
+  recommendationPolicy: RecommendationPolicy;
+}): boolean {
+  if (!args.policy.allowProactiveComplementarySuggestions) return false;
+  if (args.explicitComplementaryRequest || args.explicitSuperiorOptionRequest) return false;
+  if (!args.recommendationPolicy.allowRecommendations && args.pattern !== "payment_or_closing_flow") return false;
+  if (args.catalogIntent.asksForPhoto || args.catalogIntent.asksForPrice || args.catalogIntent.asksForAvailability) return false;
+
+  const moments = args.policy.allowedComplementaryMoments;
+  if (moments.length === 0) return true;
+
+  return (
+    moments.includes("after_need_understood") ||
+    moments.includes("after_product_interest") ||
+    (args.pattern === "payment_or_closing_flow" &&
+      moments.includes("during_proposal_preparation"))
+  );
+}
+
+function shouldKeepProactiveComplementaryCandidate(
+  item: CatalogItemRow,
+  policy: CommercialSuggestionPolicy,
+  currentPoolMatches: MatchedPool[],
+): boolean {
+  if (!hasCanonicalComplementaryEvidence(item, currentPoolMatches)) return false;
+  if (policy.complementaryScopeMode !== "selected_scope") return true;
+  const categoryKey = extractCatalogCategoryKey(item);
+  const lineKey = extractCatalogLineKey(item);
+  return (
+    Boolean(categoryKey && policy.allowedComplementaryCategoryKeys.includes(categoryKey)) ||
+    Boolean(lineKey && policy.allowedComplementaryLineKeys.includes(lineKey))
+  );
+}
+
+function buildCommercialSuggestionPolicyBlock(
+  context: CommercialSuggestionRuntimeContext,
+): string {
+  const lines = [
+    "POLITICA CANONICA DE SUGESTOES COMERCIAIS",
+    "- recomendacao normal do produto principal continua separada desta politica",
+    `- pedido explicito de complementar detectado: ${context.explicitComplementaryRequest ? "sim" : "nao"}`,
+    `- pedido explicito de opcao superior detectado: ${context.explicitSuperiorOptionRequest ? "sim" : "nao"}`,
+    `- pode sugerir complemento proativamente: ${context.policy.allowProactiveComplementarySuggestions ? "sim" : "nao"}`,
+    `- escopo de complementares: ${context.policy.complementaryScopeMode}`,
+    `- categorias complementares permitidas: ${context.policy.allowedComplementaryCategoryKeys.length ? context.policy.allowedComplementaryCategoryKeys.join(", ") : "todas as categorias compativeis com evidencia canonica"}`,
+    `- linhas complementares permitidas: ${context.policy.allowedComplementaryLineKeys.length ? context.policy.allowedComplementaryLineKeys.join(", ") : "todas as linhas compativeis com evidencia canonica"}`,
+    `- momentos permitidos para complemento: ${context.policy.allowedComplementaryMoments.length ? context.policy.allowedComplementaryMoments.join(", ") : "sem restricao adicional configurada"}`,
+    `- candidatos complementares proativos carregados: ${context.proactiveComplementaryCandidateCount}`,
+    `- pode apresentar opcao superior proativamente: ${context.policy.allowProactiveSuperiorOptionSuggestions ? "sim" : "nao"}`,
+    `- gatilhos permitidos para superior: ${context.policy.allowedSuperiorTriggers.length ? context.policy.allowedSuperiorTriggers.join(", ") : "sem gatilho configurado"}`,
+    `- candidatos superiores proativos carregados: ${context.proactiveSuperiorCandidateCount}`,
+  ];
+
+  if (!context.policy.allowProactiveComplementarySuggestions && !context.explicitComplementaryRequest) {
+    lines.push("- nao sugira espontaneamente capa, quimicos, acessorios ou itens adicionais ao produto principal nesta resposta");
+  }
+
+  if (!context.policy.allowProactiveSuperiorOptionSuggestions && !context.explicitSuperiorOptionRequest) {
+    lines.push("- nao promova espontaneamente upgrade, modelo premium, maior ou mais completo nesta resposta");
+  }
+
+  if (context.explicitComplementaryRequest) {
+    lines.push("- como o cliente pediu complemento explicitamente, responda factual usando apenas itens reais e evidencias disponiveis");
+  }
+
+  if (context.explicitSuperiorOptionRequest) {
+    lines.push("- como o cliente pediu opcao melhor explicitamente, pode responder normalmente sem tratar isso como iniciativa proativa");
+  }
+
+  lines.push("- preco maior sozinho nunca prova opcao superior; use vantagem material, dimensao, recurso, material, necessidade do cliente ou evidencia equivalente");
+
+  return lines.join("\n");
+}
+
 function extractRequestedBrand(text: string): string | null {
   const normalized = normalizeText(text);
 
@@ -4352,6 +4630,9 @@ function extractRequestedPoolReference(text: string): RequestedPoolReference | n
     const effectiveCleaned = refinedCleaned || cleaned;
 
     if (!effectiveCleaned) continue;
+    if (/\b(recomenda|recomendaria|indica|indicaria|melhor|opcao|opcoes|para um espaco|para uma area)\b/i.test(effectiveCleaned)) {
+      continue;
+    }
 
     const tokens = effectiveCleaned.split(/\s+/).filter(Boolean);
     const descriptiveOnly =
@@ -5862,7 +6143,10 @@ function inferRecommendationPolicy(args: {
   }
 
   if (args.pattern === "pool_size_discovery") {
-    const allowRecommendations = args.shouldPresentPoolRecommendations && args.facts.needKnown;
+    const allowRecommendations =
+      args.shouldPresentPoolRecommendations &&
+      (args.facts.needKnown ||
+        looksLikePoolRecommendationRequest(args.lastCustomerMessage));
     return {
       allowRecommendations,
       poolOptionCount: allowRecommendations ? 1 : 0,
@@ -6300,6 +6584,9 @@ export function inferForbiddenInThisReply(args: {
   lastCustomerMessage: string;
   patienceSignal: CustomerPatienceSignal;
   recommendationPolicy: RecommendationPolicy;
+  commercialSuggestionPolicy?: CommercialSuggestionPolicy;
+  explicitComplementaryRequest?: boolean;
+  explicitSuperiorOptionRequest?: boolean;
   requestedPoolReference: RequestedPoolReference | null;
   strongestPoolReferenceMatch: PoolReferenceMatchStrength;
   offersTechnicalVisit: boolean;
@@ -6430,6 +6717,20 @@ export function inferForbiddenInThisReply(args: {
     out.push("nao listar 3 modelos por padrao quando a politica desta resposta pede afunilamento");
   }
 
+  if (
+    args.commercialSuggestionPolicy?.allowProactiveComplementarySuggestions === false &&
+    !args.explicitComplementaryRequest
+  ) {
+    out.push("nao sugerir complemento, acessorio, capa, quimico ou item adicional espontaneamente");
+  }
+
+  if (
+    args.commercialSuggestionPolicy?.allowProactiveSuperiorOptionSuggestions === false &&
+    !args.explicitSuperiorOptionRequest
+  ) {
+    out.push("nao promover upgrade, opcao premium, maior ou mais completa espontaneamente");
+  }
+
   if (args.responseMode === "objective") {
     out.push("nao abrir explicacao longa alem do que o cliente perguntou");
     out.push("nao adicionar varios assuntos extras na mesma resposta");
@@ -6479,6 +6780,9 @@ function buildCommercialObjective(args: {
   shouldPresentPoolRecommendations: boolean;
   offersTechnicalVisit: boolean;
   recommendationPolicy: RecommendationPolicy;
+  commercialSuggestionPolicy?: CommercialSuggestionPolicy;
+  explicitComplementaryRequest?: boolean;
+  explicitSuperiorOptionRequest?: boolean;
   requestedPoolReference: RequestedPoolReference | null;
   strongestPoolReferenceMatch: PoolReferenceMatchStrength;
   bestNamedPoolMatch: MatchedPool | null;
@@ -6585,6 +6889,9 @@ function buildCommercialObjective(args: {
       lastCustomerMessage: args.lastCustomerMessage,
       patienceSignal,
       recommendationPolicy: args.recommendationPolicy,
+      commercialSuggestionPolicy: args.commercialSuggestionPolicy,
+      explicitComplementaryRequest: args.explicitComplementaryRequest,
+      explicitSuperiorOptionRequest: args.explicitSuperiorOptionRequest,
       requestedPoolReference: args.requestedPoolReference,
       strongestPoolReferenceMatch: args.strongestPoolReferenceMatch,
       offersTechnicalVisit: args.offersTechnicalVisit,
@@ -8356,6 +8663,7 @@ function buildInstructions(args: {
   nextBestQuestion: string | null;
   explicitCatalogRequest: boolean;
   catalogEvidenceBlock: string;
+  commercialSuggestionPolicyBlock: string;
   responsePriorityBlock: string;
   examplesBlock: string;
   shouldPresentPoolRecommendations: boolean;
@@ -8489,6 +8797,8 @@ ${salesAiAppointmentBlock}
 - se o cliente pedir foto de produto sem dizer qual piscina é, pergunte primeiro qual modelo ele quer ver e não liste fotos/modelos aleatórios
 - se houver modelo claro no histórico ou na mensagem, responda só sobre a foto desse modelo específico
 - se o cliente já enviou foto do local nesta conversa (${args.hasCustomerLocationPhoto ? "sim" : "não"}), não peça outra foto; use a que já existe apenas como apoio comercial e não crie novas perguntas de qualificação fora da decisão contextual desta resposta
+
+${args.commercialSuggestionPolicyBlock}
 
 REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
 - padrão atual: ${args.conversationPattern}
@@ -8963,7 +9273,7 @@ export async function generateAiSalesReply(
       await supabase
         .from("store_commercial_ai_settings")
         .select(
-          "organization_id, store_id, price_answer_policy, price_context_requirements, created_at, updated_at",
+          "organization_id, store_id, price_answer_policy, price_context_requirements, complementary_suggestions_enabled, complementary_scope_mode, complementary_category_keys, complementary_line_keys, complementary_allowed_moments, superior_option_suggestions_enabled, superior_option_allowed_triggers, created_at, updated_at",
         )
         .eq("organization_id", organizationId)
         .eq("store_id", resolvedStoreId)
@@ -9038,24 +9348,27 @@ export async function generateAiSalesReply(
     const operationSettingsInput = createStoreOperationSettingsInputFromSources({
       settings: canonicalOperationSettings,
     });
+    const commercialAiSettingsInput =
+      createStoreCommercialAiSettingsInputFromSources({
+        answers: onboardingMap,
+        settings: canonicalCommercialAiSettings,
+      });
+    const normalizedCommercialAiSettings =
+      normalizeStoreCommercialAiSettingsInput(commercialAiSettingsInput);
+
+    if (!normalizedCommercialAiSettings.ok) {
+      return {
+        ok: false,
+        error: "INVALID_COMMERCIAL_AI_SETTINGS",
+        message: normalizedCommercialAiSettings.error,
+      };
+    }
+
+    const commercialSuggestionPolicy = buildCommercialSuggestionPolicy(
+      normalizedCommercialAiSettings.value,
+    );
 
     if (canonicalCommercialAiSettings) {
-      const commercialAiSettingsInput =
-        createStoreCommercialAiSettingsInputFromSources({
-          answers: onboardingMap,
-          settings: canonicalCommercialAiSettings,
-        });
-      const normalizedCommercialAiSettings =
-        normalizeStoreCommercialAiSettingsInput(commercialAiSettingsInput);
-
-      if (!normalizedCommercialAiSettings.ok) {
-        return {
-          ok: false,
-          error: "INVALID_COMMERCIAL_AI_SETTINGS",
-          message: normalizedCommercialAiSettings.error,
-        };
-      }
-
       const commercialAiLegacyMirrors = deriveStoreCommercialAiLegacyMirrors(
         normalizedCommercialAiSettings.value,
       );
@@ -9350,6 +9663,10 @@ export async function generateAiSalesReply(
     const lastAiOfferedPoolOptions = detectLastAiOfferedPoolOptions(lastAiMessage);
     const explicitCatalogRequest = isExplicitCatalogRequest(lastCustomerMessage);
     const catalogIntent = analyzeCatalogIntent(lastCustomerMessage);
+    const explicitComplementaryRequest =
+      looksLikeExplicitComplementaryRequest(lastCustomerMessage);
+    const explicitSuperiorOptionRequest =
+      looksLikeExplicitSuperiorOptionRequest(lastCustomerMessage);
     const requestedPoolReference = extractRequestedPoolReference(lastCustomerMessage);
     const customerConversationText = buildCustomerConversationText(
       messagesForCurrentCommercialInference,
@@ -9381,8 +9698,9 @@ export async function generateAiSalesReply(
       detectLastAiListedPools(lastAiMessage) ||
       lastAiOfferedPoolOptions;
     const directPoolRecommendationRequest =
-      catalogIntent.asksAboutPool &&
-      (explicitCatalogRequest || looksLikePoolRecommendationRequest(lastCustomerMessage));
+      catalogIntent.asksAboutPool ||
+      explicitCatalogRequest ||
+      looksLikePoolRecommendationRequest(lastCustomerMessage);
     const genericPoolOpening = isGenericPoolOpening(lastCustomerMessage);
     const shouldPresentPoolRecommendations =
       (!genericPoolOpening && customerAskedToRepeatPoolOptions) ||
@@ -9421,6 +9739,16 @@ export async function generateAiSalesReply(
     let scoredPools: MatchedPool[] = [];
     let strongestPoolReferenceMatch: PoolReferenceMatchStrength = "none";
     let bestNamedPoolMatch: MatchedPool | null = null;
+    const conversationPatternForRuntime = detectConversationPattern({
+      facts: conversationFacts,
+      intents: detectIntents(lastCustomerMessage),
+      lastCustomerMessage,
+      explicitCatalogRequest,
+      patienceSignal: analyzeCustomerPatienceSignal(lastCustomerMessage),
+      shouldPresentPoolRecommendations,
+      lastAiListedPools,
+      paymentOrClosingSubtype: detectPaymentOrClosingSubtype(lastCustomerMessage),
+    });
 
     let pools: PoolRow[] = [];
     if (
@@ -9514,13 +9842,44 @@ export async function generateAiSalesReply(
       }
     }
 
+    const recommendationPolicy = inferRecommendationPolicy({
+      pattern: conversationPatternForRuntime,
+      facts: conversationFacts,
+      lastCustomerMessage,
+      photoOrSimulationSubtype,
+      explicitCatalogRequest,
+      shouldPresentPoolRecommendations,
+      lastAiListedPools,
+      requestedPoolReference,
+      strongestPoolReferenceMatch,
+    });
+    const shouldLoadProactiveComplementaryCatalogItems =
+      shouldLoadProactiveComplementaryCandidates({
+        policy: commercialSuggestionPolicy,
+        explicitComplementaryRequest,
+        explicitSuperiorOptionRequest,
+        pattern: conversationPatternForRuntime,
+        catalogIntent,
+        recommendationPolicy,
+      });
+    const proactiveComplementaryPoolContext = scoredPools
+      .filter((match) =>
+        isSellableInventoryState({
+          isActive: match.pool.is_active,
+          trackStock: match.pool.track_stock,
+          stockQuantity: match.pool.stock_quantity,
+        }).isSellable
+      )
+      .slice(0, Math.max(1, recommendationPolicy.poolOptionCount));
+
     let catalogItems: CatalogItemRow[] = [];
     if (
       catalogIntent.asksAboutCatalogProduct ||
       catalogIntent.asksForBrand ||
       catalogIntent.asksForPhoto ||
       catalogIntent.asksForAvailability ||
-      catalogIntent.asksForPrice
+      catalogIntent.asksForPrice ||
+      shouldLoadProactiveComplementaryCatalogItems
     ) {
       const { data: catalogItemsData, error: catalogItemsError } = await supabase
         .from("store_catalog_items")
@@ -9638,7 +9997,28 @@ export async function generateAiSalesReply(
           stockQuantity: match.item.stock_quantity,
         }).isSellable
       )
+      .filter((match) =>
+        shouldLoadProactiveComplementaryCatalogItems &&
+        !catalogIntent.asksAboutCatalogProduct &&
+        !explicitComplementaryRequest
+          ? shouldKeepProactiveComplementaryCandidate(
+              match.item,
+              commercialSuggestionPolicy,
+              proactiveComplementaryPoolContext,
+            )
+          : true
+      )
       .slice(0, 5);
+    const proactiveComplementaryCandidateCount =
+      shouldLoadProactiveComplementaryCatalogItems
+        ? matchedCatalogItems.filter((match) =>
+            shouldKeepProactiveComplementaryCandidate(
+              match.item,
+              commercialSuggestionPolicy,
+              proactiveComplementaryPoolContext,
+            )
+          ).length
+        : 0;
 
     const matchedCatalogItemIds = new Set(matchedCatalogItems.map((match) => match.item.id));
     const matchedCatalogItemNames = new Set(
@@ -9661,27 +10041,6 @@ export async function generateAiSalesReply(
         return !normalizedName || !matchedCatalogItemNames.has(normalizedName);
       })
       .slice(0, 5);
-
-    const recommendationPolicy = inferRecommendationPolicy({
-      pattern: detectConversationPattern({
-        facts: conversationFacts,
-        intents: detectIntents(lastCustomerMessage),
-        lastCustomerMessage,
-        explicitCatalogRequest,
-        patienceSignal: analyzeCustomerPatienceSignal(lastCustomerMessage),
-        shouldPresentPoolRecommendations,
-        lastAiListedPools,
-        paymentOrClosingSubtype: detectPaymentOrClosingSubtype(lastCustomerMessage),
-      }),
-      facts: conversationFacts,
-      lastCustomerMessage,
-      photoOrSimulationSubtype,
-      explicitCatalogRequest,
-      shouldPresentPoolRecommendations,
-      lastAiListedPools,
-      requestedPoolReference,
-      strongestPoolReferenceMatch,
-    });
 
     if (scoredPools.length > 0) {
       matchedPools = scoredPools
@@ -9737,6 +10096,26 @@ export async function generateAiSalesReply(
           .join("\n");
       }
     }
+    const proactiveSuperiorCandidateCount =
+      commercialSuggestionPolicy.allowProactiveSuperiorOptionSuggestions &&
+      !explicitSuperiorOptionRequest
+        ? scoredPools
+            .filter((match) =>
+              isSellableInventoryState({
+                isActive: match.pool.is_active,
+                trackStock: match.pool.track_stock,
+                stockQuantity: match.pool.stock_quantity,
+              }).isSellable
+            )
+            .filter((match) =>
+              hasComparativeSuperiorEvidence({
+                candidate: match.pool,
+                base: bestNamedPoolMatch?.pool || matchedPools[0]?.pool || null,
+                facts: conversationFacts,
+                customerConversationText,
+              })
+            ).length
+        : 0;
 
     const photoCandidatePools = scoredPools;
 
@@ -9782,6 +10161,9 @@ export async function generateAiSalesReply(
       shouldPresentPoolRecommendations,
       offersTechnicalVisit: hasConfiguredTechnicalVisit(operationSettingsInput),
       recommendationPolicy,
+      commercialSuggestionPolicy,
+      explicitComplementaryRequest,
+      explicitSuperiorOptionRequest,
       requestedPoolReference,
       strongestPoolReferenceMatch,
       bestNamedPoolMatch,
@@ -9847,6 +10229,13 @@ export async function generateAiSalesReply(
       strongestPoolReferenceMatch,
       bestNamedPoolMatch,
       recommendationPolicy,
+    });
+    const commercialSuggestionPolicyBlock = buildCommercialSuggestionPolicyBlock({
+      policy: commercialSuggestionPolicy,
+      explicitComplementaryRequest,
+      explicitSuperiorOptionRequest,
+      proactiveComplementaryCandidateCount,
+      proactiveSuperiorCandidateCount,
     });
 
     const responsePriorityBlock = buildResponsePriorityBlock({
@@ -9924,6 +10313,7 @@ export async function generateAiSalesReply(
       nextBestQuestion: effectiveNextBestQuestion,
       explicitCatalogRequest,
       catalogEvidenceBlock,
+      commercialSuggestionPolicyBlock,
       responsePriorityBlock,
       examplesBlock,
       shouldPresentPoolRecommendations,
