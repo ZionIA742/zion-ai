@@ -423,7 +423,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "generation deliberately disabled resolves blocked with deterministic policy reason",
+    name: "legacy quote generation flag false does not block quote readiness",
     run: async () => {
       const { result } = await resolveWithTables({
         store_quote_settings: {
@@ -441,14 +441,14 @@ const tests: TestCase[] = [
         },
       });
 
-      assert.equal(result.capabilitiesByKey.quote.state, "blocked");
-      assert.deepEqual(result.capabilitiesByKey.quote.reasonCodes, [
-        STORE_READINESS_REASON_CODES.QUOTE_GENERATION_DISABLED_BY_POLICY,
-      ]);
+      assert.equal(result.capabilitiesByKey.quote.state, "ready");
+      assert.deepEqual(result.capabilitiesByKey.quote.reasonCodes, []);
+      assert.equal(result.capabilitiesByKey.quote.blocksCapability, false);
+      assert.equal(result.capabilitiesByKey.quote.blocksPilotGo, false);
     },
   },
   {
-    name: "send deliberately disabled resolves blocked with deterministic policy reason",
+    name: "legacy quote send flag false does not block quote readiness",
     run: async () => {
       const { result } = await resolveWithTables({
         store_quote_settings: {
@@ -466,10 +466,10 @@ const tests: TestCase[] = [
         },
       });
 
-      assert.equal(result.capabilitiesByKey.quote.state, "blocked");
-      assert.deepEqual(result.capabilitiesByKey.quote.reasonCodes, [
-        STORE_READINESS_REASON_CODES.QUOTE_SEND_DISABLED_BY_POLICY,
-      ]);
+      assert.equal(result.capabilitiesByKey.quote.state, "ready");
+      assert.deepEqual(result.capabilitiesByKey.quote.reasonCodes, []);
+      assert.equal(result.capabilitiesByKey.quote.blocksCapability, false);
+      assert.equal(result.capabilitiesByKey.quote.blocksPilotGo, false);
     },
   },
   {

@@ -251,7 +251,10 @@ export function shouldEnqueueResponsibleExternalNotification(
     return { eligible: false as const, reason: "reason_not_supported" };
   }
 
-  return { eligible: true as const };
+  return {
+    eligible: true as const,
+    requiresResponsibleNotification: true as const,
+  };
 }
 
 export function renderResponsibleExternalNotificationMessage(args: {
@@ -378,14 +381,16 @@ export async function enqueueResponsibleExternalNotificationFromAssistantNotific
     return { created: false as const, skippedReason: eligibility.reason };
   }
 
-  const notifyResponsible = await loadAssistantNotifyResponsibleSetting({
-    supabase,
-    organizationId,
-    storeId,
-  });
+  if (!eligibility.requiresResponsibleNotification) {
+    const notifyResponsible = await loadAssistantNotifyResponsibleSetting({
+      supabase,
+      organizationId,
+      storeId,
+    });
 
-  if (!notifyResponsible) {
-    return { created: false as const, skippedReason: "assistant_notify_responsible_disabled" };
+    if (!notifyResponsible) {
+      return { created: false as const, skippedReason: "assistant_notify_responsible_disabled" };
+    }
   }
 
   const responsible = await loadPrimaryResponsibleForExternalNotifications({

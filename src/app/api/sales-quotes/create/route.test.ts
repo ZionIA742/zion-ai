@@ -455,7 +455,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "commercialOpportunityId valido persiste o valor exato no insert da quote",
+    name: "legacy ai_can_generate_quote false stays snapshot-only and does not block quote preparation",
     run: async () => {
       const { createCreateQuotePostHandler } = await loadRouteModule();
       const supabase = createSupabaseRecorder();
@@ -467,7 +467,13 @@ const tests: TestCase[] = [
 
       const response = await createCreateQuotePostHandler({
         resolveQuoteScope: async () => scope as never,
-        reserveQuoteNumber: async () => createNumberReservation(),
+        reserveQuoteNumber: async () => ({
+          ...createNumberReservation(),
+          settings: {
+            ...createNumberReservation().settings,
+            aiCanGenerateQuote: false,
+          },
+        }),
         resolveOpportunityDetail: async () => ({
           ok: true,
           data: {
@@ -523,6 +529,8 @@ const tests: TestCase[] = [
       assert.equal(response.status, 200);
       assert.equal(body.ok, true);
       assert.equal(supabase.insertCalls.length >= 1, true);
+      const metadata = supabase.insertCalls[0]?.payload.metadata as Record<string, unknown>;
+      assert.equal(metadata.ai_can_generate_quote_snapshot, false);
       assert.deepEqual(supabase.insertCalls[0], {
         table: "sales_quotes",
         payload: {

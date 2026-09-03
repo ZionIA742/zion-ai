@@ -183,6 +183,29 @@ async function parseBody(response: Response) {
 
 const tests: TestCase[] = [
   {
+    name: "approved quote can be sent without depending on legacy ai send autonomy flag",
+    run: async () => {
+      const { createSendQuotePostHandler } = await loadRouteModule();
+      const calls: Array<Record<string, unknown>> = [];
+      const handler = createSendQuotePostHandler({
+        resolveQuoteScope: async () => createScope() as never,
+        loadQuoteSettings: async () =>
+          createSettingsResult({ aiCanSendQuoteToCustomer: false }) as never,
+        materializeQuoteSend: async (payload: Record<string, unknown>) => {
+          calls.push(payload);
+          return createOperation() as never;
+        },
+      });
+      const response = await handler(new Request("https://example.test"), {
+        params: Promise.resolve({ quoteId: "quote-1" }),
+      });
+      const body = await parseBody(response);
+      assert.equal(response.status, 200);
+      assert.equal(body.sendState, "queued");
+      assert.equal(calls.length, 1);
+    },
+  },
+  {
     name: "first send materializes canonical PDF document metadata without marking quote sent",
     run: async () => {
       const { createSendQuotePostHandler } = await loadRouteModule();
@@ -403,6 +426,34 @@ const tests: TestCase[] = [
       const body = await parseBody(response);
       assert.equal(response.status, 409);
       assert.equal(body.error, "QUOTE_REQUIRES_APPROVAL");
+    },
+  },
+  {
+    name: "legacy approval opt-out never allows pending_review quote to reach customer",
+    run: async () => {
+      const { createSendQuotePostHandler } = await loadRouteModule();
+      let materialized = false;
+      const handler = createSendQuotePostHandler({
+        resolveQuoteScope: async () => createScope({
+          quote: createQuoteFixture({ status: "pending_review" }),
+          supabase: createSupabaseRecorder({
+            version: createVersionFixture({ status: "pending_review" }),
+          }),
+        }) as never,
+        loadQuoteSettings: async () =>
+          createSettingsResult({ requiresHumanApprovalBeforeSend: false }) as never,
+        materializeQuoteSend: async () => {
+          materialized = true;
+          return createOperation() as never;
+        },
+      });
+      const response = await handler(new Request("https://example.test"), {
+        params: Promise.resolve({ quoteId: "quote-1" }),
+      });
+      const body = await parseBody(response);
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "QUOTE_REQUIRES_APPROVAL");
+      assert.equal(materialized, false);
     },
   },
 ];

@@ -211,19 +211,7 @@ export function createSendQuotePostHandler(deps?: SendRouteDeps) {
         );
       }
 
-      if (!settings.aiCanSendQuoteToCustomer) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "QUOTE_SEND_DISABLED",
-            message: "Esta loja não permite envio automático de orçamento ao cliente.",
-          },
-          { status: 403 },
-        );
-      }
-
       if (
-        settings.requiresHumanApprovalBeforeSend &&
         String(scope.quote.status || "").trim().toLowerCase() !== "approved"
       ) {
         return NextResponse.json(

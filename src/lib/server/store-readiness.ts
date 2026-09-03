@@ -518,8 +518,6 @@ export function resolveQuoteCapability(args: {
       reasonCodes: [STORE_READINESS_REASON_CODES.QUOTE_SETTINGS_MISSING],
       missingFields: [
         "store_quote_settings.quote_pdf_enabled",
-        "store_quote_settings.ai_can_generate_quote",
-        "store_quote_settings.ai_can_send_quote_to_customer",
       ],
       blocksAccess: false,
       blocksCapability: true,
@@ -533,20 +531,6 @@ export function resolveQuoteCapability(args: {
   if (!args.settings.quotePdfEnabled) {
     reasonCodes.push(STORE_READINESS_REASON_CODES.QUOTE_PDF_DISABLED_BY_POLICY);
     missingFields.push("store_quote_settings.quote_pdf_enabled");
-  }
-
-  if (!args.settings.aiCanGenerateQuote) {
-    reasonCodes.push(
-      STORE_READINESS_REASON_CODES.QUOTE_GENERATION_DISABLED_BY_POLICY,
-    );
-    missingFields.push("store_quote_settings.ai_can_generate_quote");
-  }
-
-  if (!args.settings.aiCanSendQuoteToCustomer) {
-    reasonCodes.push(
-      STORE_READINESS_REASON_CODES.QUOTE_SEND_DISABLED_BY_POLICY,
-    );
-    missingFields.push("store_quote_settings.ai_can_send_quote_to_customer");
   }
 
   if (reasonCodes.length > 0) {
