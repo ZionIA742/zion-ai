@@ -415,46 +415,50 @@ export function detectCustomerMood(message: string): CustomerMood {
   if (!text) return "neutral";
 
   const irritatedSignals = [
-    "já falei",
-    "não foi isso",
-    "vocês não entendem",
-    "demora",
+    "j\u00e1 falei",
+    "n\u00e3o foi isso",
+    "voc\u00eas n\u00e3o entendem",
     "que absurdo",
+    "que demora",
+    "demorando demais",
     "nada a ver",
-    "horrível",
-    "péssimo",
+    "horr\u00edvel",
+    "p\u00e9ssimo",
     "ruim",
   ];
 
   const hurrySignals = [
-    "rápido",
     "sem enrolar",
-    "objetivo",
     "urgente",
-    "agora",
-    "hoje",
-    "preciso já",
+    "preciso j\u00e1",
+    "preciso agora",
     "manda logo",
+    "com pressa",
   ];
 
   const confusedSignals = [
-    "não entendi",
+    "n\u00e3o entendi",
     "como assim",
-    "tô confuso",
-    "não sei",
+    "t\u00f4 confuso",
+    "n\u00e3o sei",
     "me perdi",
     "explica",
   ];
 
-  const drySignals = [
+  const dryExactSignals = [
     "valor",
-    "preço",
+    "pre\u00e7o",
     "quanto",
     "tem",
     "manda",
     "ok",
     "sim",
-    "não",
+    "n\u00e3o",
+  ];
+
+  const dryQuestionPatterns = [
+    /^qual (?:o )?(?:valor|pre\u00e7o)\??$/,
+    /^quanto (?:custa|fica|\u00e9)\??$/,
   ];
 
   if (irritatedSignals.some((signal) => text.includes(signal))) {
@@ -469,13 +473,15 @@ export function detectCustomerMood(message: string): CustomerMood {
     return "confused";
   }
 
-  if (text.length <= 20 || drySignals.includes(text)) {
+  if (
+    dryExactSignals.includes(text) ||
+    dryQuestionPatterns.some((pattern) => pattern.test(text))
+  ) {
     return "dry";
   }
 
   return "neutral";
 }
-
 export function buildBehaviorInstructionBlock(lastCustomerMessage: string): string {
   const mood = detectCustomerMood(lastCustomerMessage);
   const moodRules = AI_SALES_BEHAVIOR.moodRules[mood];
