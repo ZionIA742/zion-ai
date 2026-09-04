@@ -3983,7 +3983,7 @@ test("generateAiSalesReply keeps core recommendation when proactive suggestions 
   });
 
   assert.equal(result.ok, true);
-  const finalPayload = JSON.stringify(openai.calls[1]);
+  const finalPayload = JSON.stringify(openai.calls[1]).replace(/\u00a0/g, " ");
   assert.equal(finalPayload.includes("pode recomendar agora: sim"), true);
   assert.equal(finalPayload.includes("pode sugerir complemento proativamente: nao"), true);
   assert.equal(finalPayload.includes("pode apresentar opcao superior proativamente: nao"), true);
@@ -4599,6 +4599,314 @@ test("generateAiSalesReply treats missing canonical payment and false technical 
   assert.equal(finalPayload.includes("regra de entrada/sinal configurada atualmente: nao"), true);
   assert.equal(finalPayload.includes("LEGACY_PIX_SHOULD_NOT_WIN"), false);
   assert.equal(finalPayload.includes("LEGACY_VISIT_RULE_SHOULD_NOT_WIN"), false);
+});
+
+test("generateAiSalesReply ignores technical visit pricing residual when offers is false", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "a visita tecnica custa quanto?",
+    operationSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        offers_installation: null,
+        average_installation_time_days: null,
+        installation_days_rule: null,
+        installation_process_notes: null,
+        offers_technical_visit: false,
+        technical_visit_days_rule: null,
+        technical_visit_rules: ["pode_ter_taxa"],
+        technical_visit_rules_other: null,
+        technical_visit_pricing_mode: "fixed",
+        technical_visit_fixed_fee_cents: 25000,
+        technical_visit_case_by_case_rule: "NAO_USAR_RESIDUAL",
+        technical_visit_fee_deductible_from_purchase: true,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Vou confirmar com a loja.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("loja oferece visita tecnica: nao"), true);
+  assert.equal(finalPayload.includes("ignore qualquer preco, regra de calculo ou abatimento residual"), true);
+  assert.equal(finalPayload.includes("R$ 250,00"), false);
+  assert.equal(finalPayload.includes("NAO_USAR_RESIDUAL"), false);
+});
+
+test("generateAiSalesReply exposes free technical visit pricing authority", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "a visita tecnica e gratuita?",
+    operationSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        offers_installation: null,
+        average_installation_time_days: null,
+        installation_days_rule: null,
+        installation_process_notes: null,
+        offers_technical_visit: true,
+        technical_visit_days_rule: null,
+        technical_visit_rules: [],
+        technical_visit_rules_other: null,
+        technical_visit_pricing_mode: "free",
+        technical_visit_fixed_fee_cents: null,
+        technical_visit_case_by_case_rule: null,
+        technical_visit_fee_deductible_from_purchase: null,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "A visita tecnica e gratuita.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("modo de cobranca da visita: free"), true);
+  assert.equal(finalPayload.includes("a visita tecnica e gratuita"), true);
+});
+
+test("generateAiSalesReply exposes fixed technical visit fee and deductible authority", async () => {
+  for (const deductible of [true, false]) {
+    const supabase = createGenerateAiSalesReplySupabase({
+      anchorMessageContent: "quanto custa a visita tecnica?",
+      operationSettings: [
+        {
+          organization_id: "org-1",
+          store_id: "store-1",
+          offers_installation: null,
+          average_installation_time_days: null,
+          installation_days_rule: null,
+          installation_process_notes: null,
+          offers_technical_visit: true,
+          technical_visit_days_rule: null,
+          technical_visit_rules: [],
+          technical_visit_rules_other: null,
+          technical_visit_pricing_mode: "fixed",
+          technical_visit_fixed_fee_cents: 12550,
+          technical_visit_case_by_case_rule: null,
+          technical_visit_fee_deductible_from_purchase: deductible,
+        },
+      ],
+    });
+    const openai = new FakeOpenAi([
+      { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+      { output_text: "A visita custa R$ 125,50.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    ]);
+
+    const result = await generateAiSalesReply({
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      anchorMessageId: "msg-anchor",
+      supabaseClient: supabase,
+      openaiClient: openai,
+    });
+
+    assert.equal(result.ok, true);
+    const finalPayload = JSON.stringify(openai.calls[1]).replace(/\u00a0/g, " ");
+    assert.equal(finalPayload.includes("modo de cobranca da visita: fixed"), true);
+    assert.equal(finalPayload.includes("valor canonico da visita: R$ 125,50"), true);
+    assert.equal(
+      finalPayload.includes(
+        deductible
+          ? "sim, pode informar que o valor e abatido da compra"
+          : "nao, pode informar que o valor nao e abatido da compra",
+      ),
+      true,
+    );
+  }
+});
+
+test("generateAiSalesReply exposes case by case rule without inventing exact fee", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "como calcula a visita tecnica?",
+    operationSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        offers_installation: null,
+        average_installation_time_days: null,
+        installation_days_rule: null,
+        installation_process_notes: null,
+        offers_technical_visit: true,
+        technical_visit_days_rule: null,
+        technical_visit_rules: [],
+        technical_visit_rules_other: null,
+        technical_visit_pricing_mode: "case_by_case",
+        technical_visit_fixed_fee_cents: null,
+        technical_visit_case_by_case_rule: "Calculada conforme distancia e complexidade do acesso.",
+        technical_visit_fee_deductible_from_purchase: true,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "A visita e calculada conforme distancia.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]).replace(/\u00a0/g, " ");
+  assert.equal(finalPayload.includes("modo de cobranca da visita: case_by_case"), true);
+  assert.equal(finalPayload.includes("Calculada conforme distancia e complexidade do acesso."), true);
+  assert.equal(finalPayload.includes("nao inventar valor exato de visita tecnica"), true);
+  assert.equal(finalPayload.includes("R$"), false);
+});
+
+test("generateAiSalesReply fails closed when technical visit pricing mode or deductible is absent", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "a visita tecnica e paga ou gratis?",
+    operationSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        offers_installation: null,
+        average_installation_time_days: null,
+        installation_days_rule: null,
+        installation_process_notes: null,
+        offers_technical_visit: true,
+        technical_visit_days_rule: null,
+        technical_visit_rules: [],
+        technical_visit_rules_other: null,
+        technical_visit_pricing_mode: null,
+        technical_visit_fixed_fee_cents: null,
+        technical_visit_case_by_case_rule: null,
+        technical_visit_fee_deductible_from_purchase: null,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Vou confirmar com a loja.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("modo de cobranca da visita: nao configurado"), true);
+  assert.equal(finalPayload.includes("nao afirmar que a visita e gratis, paga, tem valor fixo"), true);
+});
+
+test("generateAiSalesReply does not invent deductible when paid technical visit lacks deductible authority", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "se eu comprar a piscina abate a visita?",
+    operationSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        offers_installation: null,
+        average_installation_time_days: null,
+        installation_days_rule: null,
+        installation_process_notes: null,
+        offers_technical_visit: true,
+        technical_visit_days_rule: null,
+        technical_visit_rules: [],
+        technical_visit_rules_other: null,
+        technical_visit_pricing_mode: "fixed",
+        technical_visit_fixed_fee_cents: 10000,
+        technical_visit_case_by_case_rule: null,
+        technical_visit_fee_deductible_from_purchase: null,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Vou confirmar o abatimento com a loja.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]).replace(/\u00a0/g, " ");
+  assert.equal(finalPayload.includes("valor canonico da visita: R$ 100,00"), true);
+  assert.equal(finalPayload.includes("abatimento na compra: nao configurado; nao inventar"), true);
+});
+
+test("generateAiSalesReply does not promote pode ter taxa into technical visit pricing authority", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "a visita tecnica tem taxa?",
+    operationSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        offers_installation: null,
+        average_installation_time_days: null,
+        installation_days_rule: null,
+        installation_process_notes: null,
+        offers_technical_visit: true,
+        technical_visit_days_rule: null,
+        technical_visit_rules: ["pode_ter_taxa"],
+        technical_visit_rules_other: null,
+        technical_visit_pricing_mode: null,
+        technical_visit_fixed_fee_cents: null,
+        technical_visit_case_by_case_rule: null,
+        technical_visit_fee_deductible_from_purchase: null,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Vou confirmar a taxa com a loja.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1]);
+  assert.equal(finalPayload.includes("pode_ter_taxa legado nao autoriza cobranca, valor, modalidade ou abatimento"), true);
+  assert.equal(finalPayload.includes("valor canonico da visita"), false);
 });
 
 test("generateAiSalesReply fails closed when canonical writer fails", async () => {

@@ -8,6 +8,15 @@ export const STORE_OPERATION_TECHNICAL_VISIT_RULES = [
 export type StoreOperationTechnicalVisitRule =
   (typeof STORE_OPERATION_TECHNICAL_VISIT_RULES)[number];
 
+export const STORE_OPERATION_TECHNICAL_VISIT_PRICING_MODES = [
+  "free",
+  "fixed",
+  "case_by_case",
+] as const;
+
+export type StoreOperationTechnicalVisitPricingMode =
+  (typeof STORE_OPERATION_TECHNICAL_VISIT_PRICING_MODES)[number];
+
 export type StoreOperationSettingsRow = {
   organization_id: string;
   store_id: string;
@@ -19,6 +28,10 @@ export type StoreOperationSettingsRow = {
   technical_visit_days_rule: string | null;
   technical_visit_rules: unknown;
   technical_visit_rules_other: string | null;
+  technical_visit_pricing_mode?: string | null;
+  technical_visit_fixed_fee_cents?: number | null;
+  technical_visit_case_by_case_rule?: string | null;
+  technical_visit_fee_deductible_from_purchase?: boolean | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -32,6 +45,25 @@ export type StoreOperationSettingsInput = {
   technicalVisitDaysRule: string;
   technicalVisitRules: StoreOperationTechnicalVisitRule[];
   technicalVisitRulesOther: string;
+  technicalVisitPricingMode: StoreOperationTechnicalVisitPricingMode | null;
+  technicalVisitFixedFeeCents: number | null;
+  technicalVisitCaseByCaseRule: string;
+  technicalVisitFeeDeductibleFromPurchase: boolean | null;
+};
+
+type StoreOperationSettingsNormalizerInput = Omit<
+  StoreOperationSettingsInput,
+  | "technicalVisitRules"
+  | "technicalVisitPricingMode"
+  | "technicalVisitFixedFeeCents"
+  | "technicalVisitCaseByCaseRule"
+  | "technicalVisitFeeDeductibleFromPurchase"
+> & {
+  technicalVisitRules?: unknown;
+  technicalVisitPricingMode?: unknown;
+  technicalVisitFixedFeeCents?: unknown;
+  technicalVisitCaseByCaseRule?: unknown;
+  technicalVisitFeeDeductibleFromPurchase?: unknown;
 };
 
 type AnswersMap = Record<string, unknown>;
@@ -97,6 +129,28 @@ function parsePositiveInteger(value: unknown): number | null {
 
   const parsed = Number.parseInt(match[1], 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseTechnicalVisitPricingMode(
+  value: unknown,
+): StoreOperationTechnicalVisitPricingMode | null {
+  const normalized = normalizeLoose(value);
+  return STORE_OPERATION_TECHNICAL_VISIT_PRICING_MODES.includes(
+    normalized as StoreOperationTechnicalVisitPricingMode,
+  )
+    ? (normalized as StoreOperationTechnicalVisitPricingMode)
+    : null;
+}
+
+function parseInteger(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? value : null;
+  }
+
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!/^-?\d+$/.test(trimmed)) return null;
+  return Number.parseInt(trimmed, 10);
 }
 
 export function parseOperationAverageInstallationTimeInput(
@@ -321,6 +375,22 @@ export function createStoreOperationSettingsInputFromSources(args: {
       technicalVisitRulesOther: cleanText(
         settings.technical_visit_rules_other,
       ),
+      technicalVisitPricingMode: parseTechnicalVisitPricingMode(
+        settings.technical_visit_pricing_mode,
+      ),
+      technicalVisitFixedFeeCents:
+        typeof settings.technical_visit_fixed_fee_cents === "number"
+          ? settings.technical_visit_fixed_fee_cents
+          : null,
+      technicalVisitCaseByCaseRule: cleanText(
+        settings.technical_visit_case_by_case_rule,
+      ),
+      technicalVisitFeeDeductibleFromPurchase:
+        settings.technical_visit_fee_deductible_from_purchase === true
+          ? true
+          : settings.technical_visit_fee_deductible_from_purchase === false
+            ? false
+            : null,
     };
   }
 
@@ -334,13 +404,15 @@ export function createStoreOperationSettingsInputFromSources(args: {
     technicalVisitDaysRule: "",
     technicalVisitRules: [],
     technicalVisitRulesOther: "",
+    technicalVisitPricingMode: null,
+    technicalVisitFixedFeeCents: null,
+    technicalVisitCaseByCaseRule: "",
+    technicalVisitFeeDeductibleFromPurchase: null,
   };
 }
 
 export function normalizeStoreOperationSettingsInput(
-  input: Omit<StoreOperationSettingsInput, "technicalVisitRules"> & {
-    technicalVisitRules?: unknown;
-  },
+  input: StoreOperationSettingsNormalizerInput,
 ):
   | { ok: true; value: StoreOperationSettingsInput }
   | { ok: false; error: string } {
@@ -381,6 +453,63 @@ export function normalizeStoreOperationSettingsInput(
     };
   }
 
+  const rawTechnicalVisitPricingMode = input.technicalVisitPricingMode;
+  const technicalVisitPricingMode =
+    rawTechnicalVisitPricingMode == null ||
+    rawTechnicalVisitPricingMode === ""
+      ? null
+      : parseTechnicalVisitPricingMode(rawTechnicalVisitPricingMode);
+  if (
+    rawTechnicalVisitPricingMode != null &&
+    rawTechnicalVisitPricingMode !== "" &&
+    technicalVisitPricingMode === null
+  ) {
+    return {
+      ok: false,
+      error: "technicalVisitPricingMode contem valor invalido.",
+    };
+  }
+
+  const fixedFeeInput = input.technicalVisitFixedFeeCents ?? null;
+  const fixedFeeCents = fixedFeeInput == null ? null : parseInteger(fixedFeeInput);
+  const caseByCaseRule = cleanText(input.technicalVisitCaseByCaseRule);
+  const rawDeductible = input.technicalVisitFeeDeductibleFromPurchase;
+  const deductible =
+    rawDeductible === true ? true : rawDeductible === false ? false : null;
+
+  if (technicalVisitPricingMode === "fixed") {
+    if (fixedFeeCents == null || fixedFeeCents <= 0) {
+      return {
+        ok: false,
+        error: "technicalVisitFixedFeeCents deve ser positivo para valor fixo.",
+      };
+    }
+    if (deductible !== true && deductible !== false) {
+      return {
+        ok: false,
+        error:
+          "technicalVisitFeeDeductibleFromPurchase deve ser boolean para visita paga.",
+      };
+    }
+  }
+
+  if (technicalVisitPricingMode === "case_by_case") {
+    if (!caseByCaseRule) {
+      return {
+        ok: false,
+        error:
+          "technicalVisitCaseByCaseRule deve ser informada para calculo caso a caso.",
+      };
+    }
+    if (deductible !== true && deductible !== false) {
+      return {
+        ok: false,
+        error:
+          "technicalVisitFeeDeductibleFromPurchase deve ser boolean para visita paga.",
+      };
+    }
+  }
+
   return {
     ok: true,
     value: {
@@ -393,6 +522,16 @@ export function normalizeStoreOperationSettingsInput(
       technicalVisitRules:
         normalizedRules as StoreOperationTechnicalVisitRule[],
       technicalVisitRulesOther: cleanText(input.technicalVisitRulesOther),
+      technicalVisitPricingMode,
+      technicalVisitFixedFeeCents:
+        technicalVisitPricingMode === "fixed" ? fixedFeeCents : null,
+      technicalVisitCaseByCaseRule:
+        technicalVisitPricingMode === "case_by_case" ? caseByCaseRule : "",
+      technicalVisitFeeDeductibleFromPurchase:
+        technicalVisitPricingMode === "fixed" ||
+        technicalVisitPricingMode === "case_by_case"
+          ? deductible
+          : null,
     },
   };
 }

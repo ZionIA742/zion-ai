@@ -1585,6 +1585,84 @@ function hasConfiguredTechnicalVisit(
   return operationSettingsInput.offersTechnicalVisit === true;
 }
 
+function formatCentsAsCurrency(cents: number | null | undefined): string | null {
+  if (!Number.isInteger(cents) || cents == null || cents <= 0) return null;
+  const reais = cents / 100;
+  try {
+    return new Intl.NumberFormat("pt-BR", {
+      style: "currency",
+      currency: "BRL",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(reais);
+  } catch {
+    return `R$ ${reais.toFixed(2).replace(".", ",")}`;
+  }
+}
+
+function buildTechnicalVisitPricingPolicyBlock(
+  operationSettingsInput: StoreOperationSettingsInput,
+): string {
+  if (operationSettingsInput.offersTechnicalVisit !== true) {
+    return [
+      "POLITICA CANONICA DE COBRANCA DA VISITA TECNICA",
+      `- loja oferece visita tecnica: ${operationSettingsInput.offersTechnicalVisit === false ? "nao" : "nao configurado"}`,
+      "- ignore qualquer preco, regra de calculo ou abatimento residual de visita tecnica",
+      "- nao apresente visita tecnica como servico disponivel",
+      "- pode_ter_taxa legado nao autoriza cobranca, valor, modalidade ou abatimento",
+    ].join("\n");
+  }
+
+  const mode = operationSettingsInput.technicalVisitPricingMode;
+  const deductible = operationSettingsInput.technicalVisitFeeDeductibleFromPurchase;
+  const lines = [
+    "POLITICA CANONICA DE COBRANCA DA VISITA TECNICA",
+    "- loja oferece visita tecnica: sim",
+    `- modo de cobranca da visita: ${mode || "nao configurado"}`,
+  ];
+
+  if (mode === "free") {
+    lines.push("- autoridade financeira: a visita tecnica e gratuita");
+    lines.push("- abatimento na compra: nao aplicavel");
+  } else if (mode === "fixed") {
+    const formattedFee = formatCentsAsCurrency(
+      operationSettingsInput.technicalVisitFixedFeeCents,
+    );
+    lines.push(
+      `- valor canonico da visita: ${formattedFee || "nao configurado"}`,
+    );
+    lines.push(
+      `- abatimento na compra: ${
+        deductible === true
+          ? "sim, pode informar que o valor e abatido da compra"
+          : deductible === false
+            ? "nao, pode informar que o valor nao e abatido da compra"
+            : "nao configurado; nao inventar"
+      }`,
+    );
+  } else if (mode === "case_by_case") {
+    lines.push(
+      `- regra canonica de calculo: ${operationSettingsInput.technicalVisitCaseByCaseRule || "nao configurada"}`,
+    );
+    lines.push("- nao inventar valor exato de visita tecnica sem autoridade suficiente");
+    lines.push(
+      `- abatimento na compra: ${
+        deductible === true
+          ? "sim, pode informar que o valor e abatido da compra"
+          : deductible === false
+            ? "nao, pode informar que o valor nao e abatido da compra"
+            : "nao configurado; nao inventar"
+      }`,
+    );
+  } else {
+    lines.push("- autoridade financeira: nao configurada");
+    lines.push("- nao afirmar que a visita e gratis, paga, tem valor fixo, tem regra de calculo ou abatimento");
+  }
+
+  lines.push("- pode_ter_taxa legado nao autoriza cobranca, valor, modalidade ou abatimento");
+  return lines.join("\n");
+}
+
 function shouldSuggestVisitAdvance(args: {
   facts: ConversationFactState;
   intents: DetectedIntent[];
@@ -8681,6 +8759,9 @@ function buildInstructions(args: {
   const hasPixKey = hasConfiguredPixKey(args.paymentSettingsInput);
   const hasDownPaymentRule = hasConfiguredDownPaymentRule(args.paymentSettingsInput);
   const hasTechnicalVisit = hasConfiguredTechnicalVisit(args.operationSettingsInput);
+  const technicalVisitPricingPolicyBlock = buildTechnicalVisitPricingPolicyBlock(
+    args.operationSettingsInput,
+  );
   const salesAiOperatingWindowBlock = buildSalesAiOperatingWindowPromptBlock(
     args.salesAiOperatingWindowContext,
   );
@@ -8797,6 +8878,8 @@ ${salesAiAppointmentBlock}
 - se o cliente pedir foto de produto sem dizer qual piscina é, pergunte primeiro qual modelo ele quer ver e não liste fotos/modelos aleatórios
 - se houver modelo claro no histórico ou na mensagem, responda só sobre a foto desse modelo específico
 - se o cliente já enviou foto do local nesta conversa (${args.hasCustomerLocationPhoto ? "sim" : "não"}), não peça outra foto; use a que já existe apenas como apoio comercial e não crie novas perguntas de qualificação fora da decisão contextual desta resposta
+
+${technicalVisitPricingPolicyBlock}
 
 ${args.commercialSuggestionPolicyBlock}
 
@@ -9309,7 +9392,7 @@ export async function generateAiSalesReply(
       await supabase
         .from("store_operation_settings")
         .select(
-          "organization_id, store_id, offers_installation, average_installation_time_days, installation_days_rule, installation_process_notes, offers_technical_visit, technical_visit_days_rule, technical_visit_rules, technical_visit_rules_other, created_at, updated_at",
+          "organization_id, store_id, offers_installation, average_installation_time_days, installation_days_rule, installation_process_notes, offers_technical_visit, technical_visit_days_rule, technical_visit_rules, technical_visit_rules_other, technical_visit_pricing_mode, technical_visit_fixed_fee_cents, technical_visit_case_by_case_rule, technical_visit_fee_deductible_from_purchase, created_at, updated_at",
         )
         .eq("organization_id", organizationId)
         .eq("store_id", resolvedStoreId)

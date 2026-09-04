@@ -62,6 +62,10 @@ test("canonical operation settings win over contaminated legacy answers", () => 
 
   assert.equal(input.offersInstallation, true);
   assert.equal(input.averageInstallationTimeDays, 2);
+  assert.equal(input.technicalVisitPricingMode, null);
+  assert.equal(input.technicalVisitFixedFeeCents, null);
+  assert.equal(input.technicalVisitCaseByCaseRule, "");
+  assert.equal(input.technicalVisitFeeDeductibleFromPurchase, null);
   assert.deepEqual(input.technicalVisitRules, [
     "precisa_agendar",
     "confirmar_endereco",
@@ -118,6 +122,10 @@ test("missing canonical operation settings do not fall back to legacy answers", 
   assert.equal(input.averageInstallationTimeDays, null);
   assert.equal(input.installationDaysRule, "");
   assert.equal(input.offersTechnicalVisit, null);
+  assert.equal(input.technicalVisitPricingMode, null);
+  assert.equal(input.technicalVisitFixedFeeCents, null);
+  assert.equal(input.technicalVisitCaseByCaseRule, "");
+  assert.equal(input.technicalVisitFeeDeductibleFromPurchase, null);
   assert.equal(input.technicalVisitDaysRule, "");
   assert.deepEqual(input.technicalVisitRules, []);
   assert.equal(input.installationProcessNotes, "");
@@ -153,6 +161,10 @@ test("partial save base without canonical row writes only explicit patch over em
     technicalVisitDaysRule: "",
     technicalVisitRules: [],
     technicalVisitRulesOther: "",
+    technicalVisitPricingMode: null,
+    technicalVisitFixedFeeCents: null,
+    technicalVisitCaseByCaseRule: "",
+    technicalVisitFeeDeductibleFromPurchase: null,
   });
 });
 
@@ -194,6 +206,10 @@ test("partial save base with canonical row preserves fields not altered by patch
     "pode_ter_taxa",
   ]);
   assert.equal(normalized.value.technicalVisitRulesOther, "CANONICAL_OTHER");
+  assert.equal(normalized.value.technicalVisitPricingMode, null);
+  assert.equal(normalized.value.technicalVisitFixedFeeCents, null);
+  assert.equal(normalized.value.technicalVisitCaseByCaseRule, "");
+  assert.equal(normalized.value.technicalVisitFeeDeductibleFromPurchase, null);
 });
 
 test("weekend toggles preserve the canonical operating days array", () => {
@@ -467,4 +483,155 @@ test("normalizer fails closed for non-array technical visit rules", () => {
   assert.equal(result.error, "technicalVisitRules deve ser uma lista.");
 });
 
-console.log("store-operation-settings: 15 tests passed");
+test("technical visit pricing absence stays explicitly unconfigured", () => {
+  const input = createStoreOperationSettingsInputFromSources({
+    settings: null,
+  });
+
+  assert.equal(input.technicalVisitPricingMode, null);
+  assert.equal(input.technicalVisitFixedFeeCents, null);
+  assert.equal(input.technicalVisitCaseByCaseRule, "");
+  assert.equal(input.technicalVisitFeeDeductibleFromPurchase, null);
+});
+
+test("technical visit pricing free clears dependent financial fields", () => {
+  const result = normalizeStoreOperationSettingsInput({
+    ...createStoreOperationSettingsInputFromSources({ settings: null }),
+    offersTechnicalVisit: true,
+    technicalVisitPricingMode: "free",
+    technicalVisitFixedFeeCents: 25000,
+    technicalVisitCaseByCaseRule: "conforme distancia",
+    technicalVisitFeeDeductibleFromPurchase: true,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(result.value.technicalVisitPricingMode, "free");
+  assert.equal(result.value.technicalVisitFixedFeeCents, null);
+  assert.equal(result.value.technicalVisitCaseByCaseRule, "");
+  assert.equal(result.value.technicalVisitFeeDeductibleFromPurchase, null);
+});
+
+test("technical visit pricing fixed accepts positive fee with deductible true or false", () => {
+  for (const deductible of [true, false]) {
+    const result = normalizeStoreOperationSettingsInput({
+      ...createStoreOperationSettingsInputFromSources({ settings: null }),
+      offersTechnicalVisit: true,
+      technicalVisitPricingMode: "fixed",
+      technicalVisitFixedFeeCents: 15000,
+      technicalVisitCaseByCaseRule: "remover residual",
+      technicalVisitFeeDeductibleFromPurchase: deductible,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+
+    assert.equal(result.value.technicalVisitPricingMode, "fixed");
+    assert.equal(result.value.technicalVisitFixedFeeCents, 15000);
+    assert.equal(result.value.technicalVisitCaseByCaseRule, "");
+    assert.equal(result.value.technicalVisitFeeDeductibleFromPurchase, deductible);
+  }
+});
+
+test("technical visit pricing fixed rejects missing zero or negative fee", () => {
+  for (const fee of [null, 0, -100]) {
+    const result = normalizeStoreOperationSettingsInput({
+      ...createStoreOperationSettingsInputFromSources({ settings: null }),
+      offersTechnicalVisit: true,
+      technicalVisitPricingMode: "fixed",
+      technicalVisitFixedFeeCents: fee,
+      technicalVisitCaseByCaseRule: "",
+      technicalVisitFeeDeductibleFromPurchase: true,
+    });
+
+    assert.equal(result.ok, false);
+  }
+});
+
+test("technical visit pricing fixed requires deductible authority", () => {
+  const result = normalizeStoreOperationSettingsInput({
+    ...createStoreOperationSettingsInputFromSources({ settings: null }),
+    offersTechnicalVisit: true,
+    technicalVisitPricingMode: "fixed",
+    technicalVisitFixedFeeCents: 15000,
+    technicalVisitFeeDeductibleFromPurchase: null,
+  });
+
+  assert.equal(result.ok, false);
+});
+
+test("technical visit pricing case by case accepts rule and clears fixed fee", () => {
+  for (const deductible of [true, false]) {
+    const result = normalizeStoreOperationSettingsInput({
+      ...createStoreOperationSettingsInputFromSources({ settings: null }),
+      offersTechnicalVisit: true,
+      technicalVisitPricingMode: "case_by_case",
+      technicalVisitFixedFeeCents: 15000,
+      technicalVisitCaseByCaseRule: "Calculada conforme distancia e complexidade.",
+      technicalVisitFeeDeductibleFromPurchase: deductible,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+
+    assert.equal(result.value.technicalVisitPricingMode, "case_by_case");
+    assert.equal(result.value.technicalVisitFixedFeeCents, null);
+    assert.equal(
+      result.value.technicalVisitCaseByCaseRule,
+      "Calculada conforme distancia e complexidade.",
+    );
+    assert.equal(result.value.technicalVisitFeeDeductibleFromPurchase, deductible);
+  }
+});
+
+test("technical visit pricing case by case rejects missing rule", () => {
+  const result = normalizeStoreOperationSettingsInput({
+    ...createStoreOperationSettingsInputFromSources({ settings: null }),
+    offersTechnicalVisit: true,
+    technicalVisitPricingMode: "case_by_case",
+    technicalVisitCaseByCaseRule: "",
+    technicalVisitFeeDeductibleFromPurchase: true,
+  });
+
+  assert.equal(result.ok, false);
+});
+
+test("technical visit pricing rejects invalid mode", () => {
+  const result = normalizeStoreOperationSettingsInput({
+    ...createStoreOperationSettingsInputFromSources({ settings: null }),
+    offersTechnicalVisit: true,
+    technicalVisitPricingMode: "legacy_fee_mode",
+  });
+
+  assert.equal(result.ok, false);
+});
+
+test("legacy pode ter taxa rule does not infer technical visit pricing", () => {
+  const input = createStoreOperationSettingsInputFromSources({
+    answers: {
+      offers_technical_visit: true,
+      technical_visit_rules_selected: ["pode_ter_taxa"],
+    },
+    settings: {
+      organization_id: "org-1",
+      store_id: "store-1",
+      offers_installation: null,
+      average_installation_time_days: null,
+      installation_days_rule: null,
+      installation_process_notes: null,
+      offers_technical_visit: true,
+      technical_visit_days_rule: null,
+      technical_visit_rules: ["pode_ter_taxa"],
+      technical_visit_rules_other: null,
+    },
+  });
+
+  assert.deepEqual(input.technicalVisitRules, ["pode_ter_taxa"]);
+  assert.equal(input.technicalVisitPricingMode, null);
+  assert.equal(input.technicalVisitFixedFeeCents, null);
+  assert.equal(input.technicalVisitCaseByCaseRule, "");
+  assert.equal(input.technicalVisitFeeDeductibleFromPurchase, null);
+});
+
+console.log("store-operation-settings: tests passed");
