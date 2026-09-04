@@ -6,6 +6,10 @@ import {
   getCatalogPriceSemanticsFromNumber,
   getCatalogStockSemantics,
 } from "@/lib/catalog/presentation";
+import {
+  buildMonthlySalesGoalState,
+  type StoreMonthlySalesGoalRow,
+} from "@/lib/store-monthly-sales-goal";
 import { resolveStoreApiAccess } from "@/lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
@@ -425,6 +429,7 @@ export function createDashboardMetricsGetHandler(
       followupsResult,
       catalogResult,
       poolsResult,
+      monthlyGoalResult,
     ] = await Promise.all([
       supabase
         .from("conversations")
@@ -521,6 +526,15 @@ export function createDashboardMetricsGetHandler(
         .eq("store_id", storeId)
         .order("created_at", { ascending: false })
         .limit(10000),
+
+      supabase
+        .from("store_monthly_sales_goals")
+        .select(
+          "organization_id, store_id, monthly_goal_enabled, monthly_goal_amount_cents, created_at, updated_at",
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
+        .limit(1),
     ]);
 
     const queryFailures = [
@@ -537,6 +551,7 @@ export function createDashboardMetricsGetHandler(
       },
       { source: "store_catalog_items", error: catalogResult.error },
       { source: "pools", error: poolsResult.error },
+      { source: "store_monthly_sales_goals", error: monthlyGoalResult.error },
     ].filter((item) => item.error);
 
     if (queryFailures.length > 0) {
@@ -571,6 +586,9 @@ export function createDashboardMetricsGetHandler(
     const followups = (followupsResult.data || []) as FollowupRow[];
     const catalogItems = (catalogResult.data || []) as CatalogItemRow[];
     const pools = (poolsResult.data || []) as PoolRow[];
+    const monthlyGoalRow = Array.isArray(monthlyGoalResult.data)
+      ? ((monthlyGoalResult.data[0] as StoreMonthlySalesGoalRow | undefined) ?? null)
+      : null;
 
     const leadById = new Map(leads.map((lead) => [lead.id, lead]));
 
@@ -805,6 +823,11 @@ export function createDashboardMetricsGetHandler(
 
     const pendingAiQueue = aiQueue.filter((item) => !item.processed_at);
     const failedAiQueue = aiQueue.filter((item) => Boolean(item.processing_error));
+    const currentRevenueCents: number | null = null;
+    const monthlyGoal = buildMonthlySalesGoalState({
+      row: monthlyGoalRow,
+      currentRevenueCents,
+    });
 
     const operationalAlerts = [
       pendingFollowups.length > 0
@@ -923,6 +946,8 @@ export function createDashboardMetricsGetHandler(
         },
         sales: {
           available: false,
+          revenueMonthCents: currentRevenueCents,
+          monthlyGoal,
           reason:
             "O dashboard ainda não encontrou uma tabela confiável de vendas/pedidos/faturamento. Não vou inventar faturamento sem base real.",
         },

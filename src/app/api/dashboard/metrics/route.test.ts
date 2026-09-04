@@ -299,7 +299,7 @@ const tests: TestCase[] = [
       assert.equal(body.storeId, "server-store");
       assert.equal(harness.getResolveCount(), 1);
       assert.equal(harness.getClientCreateCount(), 1);
-      assert.equal(harness.calls.length, 11);
+      assert.equal(harness.calls.length, 12);
 
       for (const call of harness.calls) {
         assert.equal(
@@ -379,6 +379,70 @@ const tests: TestCase[] = [
           (filter) => filter.op === "in" && filter.column === "lead_id",
         )?.value,
         ["lead-store-1"],
+      );
+    },
+  },
+  {
+    name: "monthly sales goal is read from canonical store settings scope",
+    run: async () => {
+      const harness = createHandlerHarness({
+        responses: {
+          store_monthly_sales_goals: {
+            data: [
+              {
+                organization_id: "server-org",
+                store_id: "server-store",
+                monthly_goal_enabled: true,
+                monthly_goal_amount_cents: 250000,
+                created_at: "2026-09-01T00:00:00.000Z",
+                updated_at: "2026-09-01T00:00:00.000Z",
+              },
+            ],
+            error: null,
+          },
+        },
+      });
+
+      const response = await harness.handler(
+        new Request(
+          "https://example.test/api/dashboard/metrics?organizationId=attacker-org&storeId=attacker-store",
+        ),
+      );
+      const body = await parseBody(response);
+      const summary = body.summary as Record<string, unknown>;
+      const sales = summary.sales as Record<string, unknown>;
+      const monthlyGoal = sales.monthlyGoal as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(monthlyGoal.enabled, true);
+      assert.equal(monthlyGoal.amountCents, 250000);
+      assert.equal(monthlyGoal.configured, true);
+      assert.equal(monthlyGoal.revenueKnown, false);
+      assert.equal(monthlyGoal.progressPercent, null);
+      assert.equal(monthlyGoal.remainingCents, null);
+      assert.equal(sales.revenueMonthCents, null);
+
+      const goalCall = harness.calls.find(
+        (call) => call.table === "store_monthly_sales_goals",
+      );
+      assert.ok(goalCall);
+      assert.equal(
+        goalCall.filters.some(
+          (filter) =>
+            filter.op === "eq" &&
+            filter.column === "organization_id" &&
+            filter.value === "server-org",
+        ),
+        true,
+      );
+      assert.equal(
+        goalCall.filters.some(
+          (filter) =>
+            filter.op === "eq" &&
+            filter.column === "store_id" &&
+            filter.value === "server-store",
+        ),
+        true,
       );
     },
   },

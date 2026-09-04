@@ -144,6 +144,39 @@ type ConcludeOpportunityResponse = {
   message?: string;
 };
 
+type PaymentProgressState = {
+  assessmentState: string;
+  progressState: string;
+  reasonCode: string;
+  resolverKey: string;
+  resolverVersion: number;
+  authorityFingerprint: string;
+  confirmedAmountCents: number;
+  eventCount: number;
+  obligationSatisfied: boolean;
+  settlementEventCount: number;
+};
+
+type PaymentGetResponse = {
+  ok: boolean;
+  commercialOpportunityId?: string;
+  lifecycleCycle?: number | null;
+  payment?: PaymentProgressState;
+  error?: string;
+  message?: string;
+};
+
+type PaymentActionResponse = {
+  ok: boolean;
+  action?: "confirm_payment" | "settle" | "reopen";
+  commercialOpportunityId?: string;
+  lifecycleCycle?: number;
+  operationKey?: string;
+  result?: Record<string, unknown> | null;
+  error?: string;
+  message?: string;
+};
+
 type ReopenForPostSaleResponse = {
   ok: boolean;
   commercialOpportunityId?: string;
@@ -1090,6 +1123,15 @@ export default function LeadPage() {
   const [activeDetailsTab, setActiveDetailsTab] = useState<DetailTab | null>(null);
   const [activeGeneratedPdfTab, setActiveGeneratedPdfTab] =
     useState<GeneratedPdfTab>("quotes");
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [paymentState, setPaymentState] = useState<PaymentProgressState | null>(null);
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
+  const [paymentAmountReais, setPaymentAmountReais] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("pix");
+  const [paymentNotes, setPaymentNotes] = useState("");
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [paymentSuccess, setPaymentSuccess] = useState<string | null>(null);
   const [isQuoteModalOpen, setIsQuoteModalOpen] = useState(false);
   const [quoteTitle, setQuoteTitle] = useState("");
   const [quoteCustomerNotes, setQuoteCustomerNotes] = useState("");
@@ -1467,6 +1509,190 @@ export default function LeadPage() {
     setSelectedOpportunityId(opportunityId);
     setRequiresOpportunitySelection(false);
     syncSelectedOpportunityInUrl(opportunityId);
+  }
+
+  async function loadSelectedOpportunityPayment(options?: { openModal?: boolean }) {
+    if (!selectedOpportunity) {
+      setErrorText("Selecione uma oportunidade comercial antes de acessar o pagamento.");
+      setStatusText(null);
+      return;
+    }
+
+    const lifecycleCycle = selectedOpportunity.lifecycleCycle;
+
+    if (!Number.isInteger(lifecycleCycle)) {
+      setErrorText("Recarregue a oportunidade antes de acessar o pagamento.");
+      setStatusText(null);
+      return;
+    }
+
+    if (options?.openModal) {
+      setIsPaymentModalOpen(true);
+    }
+
+    setPaymentLoading(true);
+    setPaymentError(null);
+
+    try {
+      const response = await fetch(
+        `/api/crm/opportunities/payment?commercialOpportunityId=${encodeURIComponent(
+          selectedOpportunity.id,
+        )}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        },
+      );
+
+      const result =
+        (await response.json().catch(() => null)) as PaymentGetResponse | null;
+
+      if (!response.ok || !result?.ok || !result.payment) {
+        throw new Error(
+          result?.message ||
+            result?.error ||
+            "Nao foi possivel carregar o estado do pagamento.",
+        );
+      }
+
+      setPaymentState(result.payment);
+    } catch (error: any) {
+      setPaymentState(null);
+      setPaymentError(
+        error?.message || "Nao foi possivel carregar o estado do pagamento.",
+      );
+    } finally {
+      setPaymentLoading(false);
+    }
+  }
+
+  function openPaymentModal() {
+    if (!selectedOpportunity) {
+      setErrorText("Selecione uma oportunidade comercial antes de acessar o pagamento.");
+      setStatusText(null);
+      return;
+    }
+
+    setPaymentAmountReais("");
+    setPaymentMethod("pix");
+    setPaymentNotes("");
+    setPaymentError(null);
+    setPaymentSuccess(null);
+
+    void loadSelectedOpportunityPayment({ openModal: true });
+  }
+
+  function closePaymentModal() {
+    if (paymentSubmitting) {
+      return;
+    }
+
+    setIsPaymentModalOpen(false);
+    setPaymentError(null);
+    setPaymentSuccess(null);
+  }
+
+  async function submitSelectedOpportunityPaymentAction(
+    action: "confirm_payment" | "settle" | "reopen",
+  ) {
+    if (!selectedOpportunity) {
+      setPaymentError("Selecione uma oportunidade comercial.");
+      return;
+    }
+
+    const lifecycleCycle = selectedOpportunity.lifecycleCycle;
+
+    if (!Number.isInteger(lifecycleCycle)) {
+      setPaymentError("Recarregue a oportunidade antes de registrar o pagamento.");
+      return;
+    }
+
+    let amountCents: number | null = null;
+
+    if (action === "confirm_payment") {
+      amountCents = convertReaisToCents(paymentAmountReais);
+
+      if (!Number.isInteger(amountCents) || amountCents <= 0) {
+        setPaymentError("Informe um valor de pagamento maior que zero.");
+        setPaymentSuccess(null);
+        return;
+      }
+    }
+
+    if (
+      action === "settle" &&
+      !window.confirm(
+        "Confirmar que a obrigacao de pagamento desta oportunidade foi quitada?",
+      )
+    ) {
+      return;
+    }
+
+    if (
+      action === "reopen" &&
+      !window.confirm(
+        "Reabrir a obrigacao de pagamento desta oportunidade?",
+      )
+    ) {
+      return;
+    }
+
+    setPaymentSubmitting(true);
+    setPaymentError(null);
+    setPaymentSuccess(null);
+
+    try {
+      const requestId = `crm_${action}_${crypto.randomUUID()}`;
+
+      const response = await fetch("/api/crm/opportunities/payment", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          commercialOpportunityId: selectedOpportunity.id,
+          expectedLifecycleCycle: Number(lifecycleCycle),
+          action,
+          requestId,
+          notes: paymentNotes.trim() || null,
+          ...(action === "confirm_payment"
+            ? {
+                amountCents,
+                paymentMethod: paymentMethod.trim() || null,
+              }
+            : {}),
+        }),
+      });
+
+      const result =
+        (await response.json().catch(() => null)) as PaymentActionResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(
+          result?.message ||
+            result?.error ||
+            "Nao foi possivel atualizar o pagamento.",
+        );
+      }
+
+      if (action === "confirm_payment") {
+        setPaymentSuccess("Pagamento confirmado registrado com sucesso.");
+        setPaymentAmountReais("");
+      } else if (action === "settle") {
+        setPaymentSuccess("Quitacao confirmada pela loja.");
+      } else {
+        setPaymentSuccess("Obrigacao de pagamento reaberta.");
+      }
+
+      await loadSelectedOpportunityPayment();
+      await fetchLeadConversationAndMessages({ silent: true });
+    } catch (error: any) {
+      setPaymentError(
+        error?.message || "Nao foi possivel atualizar o pagamento.",
+      );
+    } finally {
+      setPaymentSubmitting(false);
+    }
   }
 
   async function concludeSelectedOpportunity() {
@@ -3882,6 +4108,21 @@ export default function LeadPage() {
                     Criar orçamento
                   </button>
 
+                  <button
+                    type="button"
+                    onClick={openPaymentModal}
+                    disabled={
+                      !selectedOpportunity ||
+                      working ||
+                      refreshing ||
+                      simulatingCustomer ||
+                      paymentSubmitting
+                    }
+                    className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Pagamento
+                  </button>
+
                   {canConcludeSelectedOpportunity ? (
                     <button
                       type="button"
@@ -4828,6 +5069,214 @@ export default function LeadPage() {
                       )}
                     </div>
                   ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {isPaymentModalOpen ? (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4 py-6">
+              <div className="max-h-[82vh] w-full max-w-xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
+                <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-white/50">
+                      Oportunidade comercial
+                    </div>
+                    <h2 className="mt-1 text-lg font-bold">Pagamento</h2>
+                    <div className="mt-1 text-xs text-white/60">
+                      Registre apenas valores que foram confirmados pela loja.
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={closePaymentModal}
+                    disabled={paymentSubmitting}
+                    className="rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/15 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Fechar
+                  </button>
+                </div>
+
+                <div className="max-h-[68vh] overflow-y-auto p-5">
+                  <div className="grid gap-5">
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                      {paymentLoading ? (
+                        <p className="text-sm text-gray-600">
+                          Carregando pagamento...
+                        </p>
+                      ) : paymentState ? (
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div>
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500">
+                              Valor confirmado
+                            </div>
+                            <div className="mt-1 text-lg font-bold text-gray-950">
+                              {formatCurrencyBRL(
+                                paymentState.confirmedAmountCents / 100,
+                              )}
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500">
+                              Estado
+                            </div>
+                            <div className="mt-1 text-sm font-semibold text-gray-950">
+                              {paymentState.obligationSatisfied
+                                ? "Quitado pela loja"
+                                : paymentState.progressState === "in_progress"
+                                  ? "Pagamento parcial"
+                                  : paymentState.progressState === "not_started"
+                                    ? "Nao iniciado"
+                                    : paymentState.progressState}
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-600">
+                          Estado do pagamento indisponivel.
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="grid gap-4 rounded-2xl border border-gray-200 p-4">
+                      <div>
+                        <label className="text-xs font-semibold text-gray-700">
+                          Valor confirmado
+                        </label>
+                        <div className="mt-1 flex items-center gap-2">
+                          <span className="text-sm font-semibold text-gray-500">
+                            R$
+                          </span>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={paymentAmountReais}
+                            onChange={(event) =>
+                              setPaymentAmountReais(event.target.value)
+                            }
+                            disabled={paymentSubmitting}
+                            placeholder="0,00"
+                            className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-950 outline-none focus:border-gray-400 disabled:bg-gray-100"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-semibold text-gray-700">
+                          Forma de pagamento
+                        </label>
+                        <input
+                          type="text"
+                          value={paymentMethod}
+                          onChange={(event) =>
+                            setPaymentMethod(event.target.value)
+                          }
+                          disabled={paymentSubmitting}
+                          placeholder="Ex.: pix"
+                          className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-950 outline-none focus:border-gray-400 disabled:bg-gray-100"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-semibold text-gray-700">
+                          Observacoes
+                        </label>
+                        <textarea
+                          value={paymentNotes}
+                          onChange={(event) =>
+                            setPaymentNotes(event.target.value)
+                          }
+                          disabled={paymentSubmitting}
+                          rows={3}
+                          placeholder="Opcional"
+                          className="mt-1 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-950 outline-none focus:border-gray-400 disabled:bg-gray-100"
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void submitSelectedOpportunityPaymentAction(
+                            "confirm_payment",
+                          )
+                        }
+                        disabled={
+                          paymentSubmitting ||
+                          paymentLoading ||
+                          !selectedOpportunity
+                        }
+                        className="rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {paymentSubmitting
+                          ? "Salvando..."
+                          : "Registrar pagamento confirmado"}
+                      </button>
+                    </div>
+
+                    {paymentState?.obligationSatisfied ? (
+                      <div className="rounded-2xl border border-gray-200 p-4">
+                        <div className="text-sm font-semibold text-gray-950">
+                          Pagamento quitado
+                        </div>
+                        <p className="mt-1 text-xs leading-5 text-gray-600">
+                          A loja confirmou que a obrigacao de pagamento foi
+                          satisfeita.
+                        </p>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void submitSelectedOpportunityPaymentAction("reopen")
+                          }
+                          disabled={paymentSubmitting || paymentLoading}
+                          className="mt-3 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Reabrir obrigacao de pagamento
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="rounded-2xl border border-gray-200 p-4">
+                        <div className="text-sm font-semibold text-gray-950">
+                          Confirmacao de quitacao
+                        </div>
+                        <p className="mt-1 text-xs leading-5 text-gray-600">
+                          Use esta acao somente quando a loja tiver confirmado
+                          que a obrigacao de pagamento desta oportunidade foi
+                          satisfeita.
+                        </p>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void submitSelectedOpportunityPaymentAction("settle")
+                          }
+                          disabled={
+                            paymentSubmitting ||
+                            paymentLoading ||
+                            !paymentState ||
+                            paymentState.confirmedAmountCents <= 0
+                          }
+                          className="mt-3 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Confirmar obrigacao quitada
+                        </button>
+                      </div>
+                    )}
+
+                    {paymentError ? (
+                      <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                        {paymentError}
+                      </div>
+                    ) : null}
+
+                    {paymentSuccess ? (
+                      <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800">
+                        {paymentSuccess}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             </div>

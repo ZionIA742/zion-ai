@@ -109,6 +109,7 @@ export type SalesQuoteVersionRow = {
   store_id: string;
   version_number: number | null;
   status: string | null;
+  quote_kind?: string | null;
   store_file_id: string | null;
   storage_bucket: string | null;
   storage_path: string | null;

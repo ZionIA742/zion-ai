@@ -24,6 +24,12 @@ import {
   type StorePaymentSettingsRow,
 } from "@/lib/store-payment-settings";
 import {
+  normalizeMonthlySalesGoalInput,
+  normalizeStoreMonthlySalesGoalRow,
+  type StoreMonthlySalesGoalInput,
+  type StoreMonthlySalesGoalRow,
+} from "@/lib/store-monthly-sales-goal";
+import {
   createStoreDiscountPresentationFromSources,
   createStoreDiscountSettingsInputFromSources,
   formatStoreDiscountMoneyInput,
@@ -755,6 +761,37 @@ function buildStoreName(activeStore: unknown) {
 
 function cleanText(value: unknown) {
   return String(value ?? "").trim();
+}
+
+function formatMonthlyGoalDraftAmount(value: number | null | undefined) {
+  if (value == null || value <= 0) return "";
+  return String(Math.round(value / 100));
+}
+
+function parseMonthlyGoalDraftAmount(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (!digits) return null;
+  const amount = Number(digits);
+  return Number.isFinite(amount) && amount > 0 ? amount * 100 : null;
+}
+
+function normalizeMonthlySalesGoalApiValue(value: unknown) {
+  const record =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null;
+
+  if (record && "enabled" in record) {
+    return normalizeMonthlySalesGoalInput({
+      enabled: record.enabled === true,
+      amountCents:
+        typeof record.amountCents === "number" ? record.amountCents : null,
+    });
+  }
+
+  return normalizeStoreMonthlySalesGoalRow(
+    value as StoreMonthlySalesGoalRow | null,
+  );
 }
 
 function buildImportFileKey(file: StoreImportFileRow, index: number) {
@@ -1798,6 +1835,16 @@ export default function ConfiguracoesPage() {
   const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettingsRow | null>(null);
   const [commercialAiSettings, setCommercialAiSettings] =
     useState<StoreCommercialAiSettingsRow | null>(null);
+  const [monthlySalesGoal, setMonthlySalesGoal] =
+    useState<StoreMonthlySalesGoalInput>(
+      normalizeStoreMonthlySalesGoalRow(null),
+    );
+  const [monthlySalesGoalDraft, setMonthlySalesGoalDraft] =
+    useState<StoreMonthlySalesGoalInput>(
+      normalizeStoreMonthlySalesGoalRow(null),
+    );
+  const [isMonthlySalesGoalEditing, setIsMonthlySalesGoalEditing] =
+    useState(false);
   const [discountSettings, setDiscountSettings] = useState<StoreDiscountSettingsRow | null>(null);
   const [highValueDiscountSettings, setHighValueDiscountSettings] =
     useState<StoreHighValueDiscountSettingsRow | null>(null);
@@ -2384,6 +2431,7 @@ export default function ConfiguracoesPage() {
         discountSettingsResult,
         highValueDiscountSettingsResult,
         primaryResponsibleResponse,
+        monthlySalesGoalResponse,
       ] = await Promise.all([
         supabase
           .from("pools")
@@ -2470,6 +2518,11 @@ export default function ConfiguracoesPage() {
           cache: "no-store",
           credentials: "include",
         }),
+        fetch("/api/store/monthly-sales-goal", {
+          method: "GET",
+          cache: "no-store",
+          credentials: "include",
+        }),
       ]);
 
       if (poolsResult.error) throw poolsResult.error;
@@ -2498,6 +2551,31 @@ export default function ConfiguracoesPage() {
       }
       const nextCanonicalPrimaryResponsible =
         primaryResponsibleResult.responsible ?? null;
+
+      const monthlySalesGoalResult =
+        (await monthlySalesGoalResponse.json().catch(() => null)) as
+          | {
+              ok: true;
+              goal:
+                | StoreMonthlySalesGoalRow
+                | StoreMonthlySalesGoalInput
+                | null;
+            }
+          | { ok: false; message?: string | null }
+          | null;
+
+      if (!monthlySalesGoalResponse.ok || !monthlySalesGoalResult?.ok) {
+        const failure =
+          monthlySalesGoalResult as { message?: string | null } | null;
+
+        throw new Error(
+          failure?.message ||
+            "Nao foi possivel carregar a meta mensal da loja.",
+        );
+      }
+
+      const nextMonthlySalesGoal =
+        normalizeMonthlySalesGoalApiValue(monthlySalesGoalResult.goal);
 
       const nextCounts: CountState = {
         pools: poolsResult.count ?? 0,
@@ -2625,6 +2703,9 @@ export default function ConfiguracoesPage() {
       setCommercialAiSettings(
         (commercialAiSettingsResult.data ?? null) as StoreCommercialAiSettingsRow | null,
       );
+      setMonthlySalesGoal(nextMonthlySalesGoal);
+      setMonthlySalesGoalDraft(nextMonthlySalesGoal);
+      setIsMonthlySalesGoalEditing(false);
       setDiscountSettings((discountSettingsResult.data ?? null) as StoreDiscountSettingsRow | null);
       setHighValueDiscountSettings(
         (highValueDiscountSettingsResult.data ?? null) as StoreHighValueDiscountSettingsRow | null,
@@ -4396,6 +4477,61 @@ export default function ConfiguracoesPage() {
 
     setIsCommercialEditing(false);
   }, [activeStoreId, commercialDraft, organizationId, upsertConfigAnswers]);
+
+  const handleMonthlySalesGoalSave = useCallback(async () => {
+    try {
+      const normalized =
+        normalizeMonthlySalesGoalInput(monthlySalesGoalDraft);
+
+      const response = await fetch("/api/store/monthly-sales-goal", {
+        method: "POST",
+        cache: "no-store",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          enabled: normalized.enabled,
+          amountCents: normalized.amountCents,
+        }),
+      });
+
+      const body = (await response.json().catch(() => null)) as
+        | {
+            ok: true;
+            goal:
+              | StoreMonthlySalesGoalInput
+              | StoreMonthlySalesGoalRow
+              | null;
+          }
+        | { ok: false; message?: string | null }
+        | null;
+
+      if (!response.ok || !body?.ok) {
+        const failure = body as { message?: string | null } | null;
+
+        throw new Error(
+          failure?.message ||
+            "Nao foi possivel salvar a meta mensal.",
+        );
+      }
+
+      const nextGoal =
+        normalizeMonthlySalesGoalApiValue(body.goal);
+
+      setMonthlySalesGoal(nextGoal);
+      setMonthlySalesGoalDraft(nextGoal);
+      setIsMonthlySalesGoalEditing(false);
+      setErrorText(null);
+      setSuccessText("Meta mensal salva com sucesso.");
+    } catch (error: any) {
+      setErrorText(
+        error?.message ||
+          "Nao foi possivel salvar a meta mensal.",
+      );
+      setSuccessText(null);
+    }
+  }, [monthlySalesGoalDraft]);
 
 
 
@@ -7925,6 +8061,127 @@ export default function ConfiguracoesPage() {
               <div className="mb-2 text-sm font-semibold text-gray-900">Regras de negociação, promessas e pós-venda</div>
               <SummaryList items={commercialNegotiationItems} />
             </div>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-gray-900">
+                  Meta mensal
+                </div>
+                <div className="mt-1 text-xs leading-5 text-gray-600">
+                  Meta comercial mensal usada pelo Dashboard.
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                {isMonthlySalesGoalEditing ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void handleMonthlySalesGoalSave()}
+                      className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                    >
+                      Salvar
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMonthlySalesGoalDraft(monthlySalesGoal);
+                        setIsMonthlySalesGoalEditing(false);
+                      }}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                    >
+                      Cancelar
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMonthlySalesGoalDraft(monthlySalesGoal);
+                      setIsMonthlySalesGoalEditing(true);
+                    }}
+                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                  >
+                    Editar
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {isMonthlySalesGoalEditing ? (
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <label className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm text-gray-800">
+                  <input
+                    type="checkbox"
+                    checked={monthlySalesGoalDraft.enabled}
+                    onChange={(event) =>
+                      setMonthlySalesGoalDraft((current) => ({
+                        enabled: event.target.checked,
+                        amountCents: event.target.checked
+                          ? current.amountCents
+                          : null,
+                      }))
+                    }
+                  />
+                  Usar meta mensal de vendas
+                </label>
+
+                {monthlySalesGoalDraft.enabled ? (
+                  <label className="space-y-1">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                      Valor da meta (R$)
+                    </span>
+                    <input
+                      inputMode="numeric"
+                      value={formatMonthlyGoalDraftAmount(
+                        monthlySalesGoalDraft.amountCents,
+                      )}
+                      onChange={(event) =>
+                        setMonthlySalesGoalDraft((current) => ({
+                          ...current,
+                          amountCents: parseMonthlyGoalDraftAmount(
+                            event.target.value,
+                          ),
+                        }))
+                      }
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    />
+                  </label>
+                ) : null}
+              </div>
+            ) : (
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="rounded-xl border border-gray-200 bg-white px-3 py-3">
+                  <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Status
+                  </div>
+                  <div className="mt-1 text-sm font-semibold text-gray-900">
+                    {monthlySalesGoal.enabled
+                      ? "Meta ativa"
+                      : "Meta nao definida"}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-gray-200 bg-white px-3 py-3">
+                  <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Valor
+                  </div>
+                  <div className="mt-1 text-sm font-semibold text-gray-900">
+                    {monthlySalesGoal.amountCents
+                      ? new Intl.NumberFormat("pt-BR", {
+                          style: "currency",
+                          currency: "BRL",
+                        }).format(
+                          monthlySalesGoal.amountCents / 100,
+                        )
+                      : "Nao definido"}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </SectionBlock>
       ) : null}

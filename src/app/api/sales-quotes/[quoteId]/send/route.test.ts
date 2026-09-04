@@ -11,6 +11,7 @@ type VersionFixture = {
   store_id: string;
   version_number: number | null;
   status: string | null;
+  quote_kind?: string | null;
   store_file_id: string | null;
   storage_bucket: string | null;
   storage_path: string | null;
@@ -86,6 +87,7 @@ function createVersionFixture(overrides?: Partial<VersionFixture>): VersionFixtu
     store_id: "store-1",
     version_number: 1,
     status: "approved",
+    quote_kind: null,
     store_file_id: null,
     storage_bucket: "zion-store-files",
     storage_path: "org-1/store-1/sales-quotes/quote-1/orc-001-v0001.pdf",
@@ -403,6 +405,126 @@ const tests: TestCase[] = [
         assert.equal(body.readinessState, state);
         assert.equal(materialized, false);
       }
+    },
+  },
+  {
+    name: "legacy null quote kind does not invoke quote-kind readiness",
+    run: async () => {
+      const { createSendQuotePostHandler } = await loadRouteModule();
+      let quoteKindCalls = 0;
+      const handler = createSendQuotePostHandler({
+        resolveQuoteScope: async () => createScope({
+          supabase: createSupabaseRecorder({
+            version: createVersionFixture({ quote_kind: null }),
+          }),
+        }) as never,
+        loadQuoteSettings: async () => createSettingsResult() as never,
+        materializeQuoteSend: async () => createOperation() as never,
+        refreshActionReadiness: async () => createReadyReadiness(),
+        readQuoteKindSendReadiness: async () => {
+          quoteKindCalls += 1;
+          throw new Error("legacy quote must not check quote-kind readiness");
+        },
+      });
+
+      const response = await handler(new Request("https://example.test"), {
+        params: Promise.resolve({ quoteId: "quote-1" }),
+      });
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 200);
+      assert.equal(body.sendState, "queued");
+      assert.equal(quoteKindCalls, 0);
+    },
+  },
+  {
+    name: "preliminary quote policy blocks before materializing send",
+    run: async () => {
+      const { createSendQuotePostHandler } = await loadRouteModule();
+      let materialized = false;
+      let quoteKindCalls = 0;
+      const handler = createSendQuotePostHandler({
+        resolveQuoteScope: async () => createScope({
+          supabase: createSupabaseRecorder({
+            version: createVersionFixture({ quote_kind: "preliminary" }),
+          }),
+        }) as never,
+        loadQuoteSettings: async () => createSettingsResult() as never,
+        materializeQuoteSend: async () => {
+          materialized = true;
+          return createOperation() as never;
+        },
+        refreshActionReadiness: async () => createReadyReadiness(),
+        readQuoteKindSendReadiness: async (payload) => {
+          quoteKindCalls += 1;
+          assert.equal(payload.organizationId, "org-1");
+          assert.equal(payload.storeId, "store-1");
+          assert.equal(payload.commercialOpportunityId, "opp-1");
+          assert.equal(payload.salesQuoteVersionId, "version-1");
+          return {
+            readinessState: "blocked",
+            reasonCode: "preliminary_quote_before_visit_not_allowed",
+            blockingItems: [{ item_key: "preliminary_quote_before_technical_visit" }],
+            authorityFingerprint: "fp-preliminary",
+          };
+        },
+      });
+
+      const response = await handler(new Request("https://example.test"), {
+        params: Promise.resolve({ quoteId: "quote-1" }),
+      });
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "PRELIMINARY_QUOTE_SEND_BLOCKED");
+      assert.equal(body.reasonCode, "preliminary_quote_before_visit_not_allowed");
+      assert.equal(materialized, false);
+      assert.equal(quoteKindCalls, 1);
+    },
+  },
+  {
+    name: "definitive quote readiness blocks before materializing send",
+    run: async () => {
+      const { createSendQuotePostHandler } = await loadRouteModule();
+      let materialized = false;
+      let quoteKindCalls = 0;
+      const handler = createSendQuotePostHandler({
+        resolveQuoteScope: async () => createScope({
+          supabase: createSupabaseRecorder({
+            version: createVersionFixture({ quote_kind: "definitive" }),
+          }),
+        }) as never,
+        loadQuoteSettings: async () => createSettingsResult() as never,
+        materializeQuoteSend: async () => {
+          materialized = true;
+          return createOperation() as never;
+        },
+        refreshActionReadiness: async () => createReadyReadiness(),
+        readQuoteKindSendReadiness: async (payload) => {
+          quoteKindCalls += 1;
+          assert.equal(payload.organizationId, "org-1");
+          assert.equal(payload.storeId, "store-1");
+          assert.equal(payload.commercialOpportunityId, "opp-1");
+          assert.equal(payload.salesQuoteVersionId, "version-1");
+          return {
+            readinessState: "blocked",
+            reasonCode: "definitive_quote_requires_completed_technical_visit",
+            blockingItems: [{ item_key: "technical_visit" }],
+            authorityFingerprint: "fp-definitive",
+          };
+        },
+      });
+
+      const response = await handler(new Request("https://example.test"), {
+        params: Promise.resolve({ quoteId: "quote-1" }),
+      });
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "DEFINITIVE_QUOTE_SEND_BLOCKED");
+      assert.equal(body.reasonCode, "definitive_quote_requires_completed_technical_visit");
+      assert.equal(materialized, false);
+      assert.equal(quoteKindCalls, 1);
     },
   },
   {

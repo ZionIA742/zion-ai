@@ -260,8 +260,23 @@ function buildErrorResponse(error: unknown) {
   );
 }
 
+function normalizeQuoteKind(value: unknown): "preliminary" | "definitive" | null {
+  if (value == null || String(value).trim() === "") return null;
+
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "preliminary" || normalized === "definitive") {
+    return normalized;
+  }
+
+  throw new QuoteAccessError(
+    400,
+    "QUOTE_KIND_INVALID",
+    "quoteKind precisa ser preliminary ou definitive.",
+  );
+}
+
 export async function POST(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ quoteId: string }> }
 ) {
   let generationContext:
@@ -275,6 +290,10 @@ export async function POST(
   let versionCreated = false;
 
   try {
+    const body = (await request.json().catch(() => null)) as
+      | { quoteKind?: unknown; quote_kind?: unknown }
+      | null;
+    const quoteKind = normalizeQuoteKind(body?.quoteKind ?? body?.quote_kind);
     const { quoteId: rawQuoteId } = await context.params;
     const quoteId = String(rawQuoteId || "").trim();
     const scope = await resolveAuthorizedExistingQuote(quoteId);
@@ -407,6 +426,7 @@ export async function POST(
       sizeBytes: storedFile.sizeBytes,
       quoteSnapshot: snapshot,
       nextQuoteStatus: "pending_review",
+      quoteKind,
     });
     versionCreated = true;
 

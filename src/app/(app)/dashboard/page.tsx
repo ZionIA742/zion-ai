@@ -74,6 +74,15 @@ type DashboardMetrics = {
     sales: {
       available: boolean;
       reason: string;
+      revenueMonthCents?: number | null;
+      monthlyGoal?: {
+        enabled: boolean;
+        amountCents: number | null;
+        configured: boolean;
+        revenueKnown?: boolean;
+        progressPercent: number | null;
+        remainingCents: number | null;
+      };
     };
   };
   lists: {
@@ -746,16 +755,22 @@ function ClickableExecutiveNumberCard({
 
 function GoalGauge({
   percent,
+  configuredGoalCents,
+  currentRevenueCents,
   onClick,
 }: {
   percent: number;
+  configuredGoalCents?: number | null;
+  currentRevenueCents?: number | null;
   onClick: () => void;
 }) {
-  const configuredGoalCents = 0;
-  const currentRevenueCents = 0;
-  const hasGoal = configuredGoalCents > 0;
-  const displayPercent = hasGoal
-    ? Math.round((currentRevenueCents / configuredGoalCents) * 100)
+  const goalCents = Number(configuredGoalCents || 0);
+  const revenueKnown = currentRevenueCents != null;
+  const revenueCents = revenueKnown ? Number(currentRevenueCents || 0) : 0;
+  const hasGoal = goalCents > 0;
+  const canShowProgress = hasGoal && revenueKnown;
+  const displayPercent = canShowProgress
+    ? Math.round((revenueCents / goalCents) * 100)
     : percent;
 
   const arcPercent = Math.max(0, Math.min(displayPercent, 100));
@@ -800,7 +815,7 @@ function GoalGauge({
 
           <div className="absolute left-1/2 top-[82px] -translate-x-1/2 -translate-y-1/2">
             <span className="inline-flex min-w-[62px] items-center justify-center rounded-full border border-zinc-200 bg-white px-3 py-2 text-lg font-semibold leading-none text-zinc-950 shadow-sm">
-              {hasGoal ? formatPercent(displayPercent) : "0%"}
+              {canShowProgress ? formatPercent(displayPercent) : "--"}
             </span>
           </div>
 
@@ -817,7 +832,7 @@ function GoalGauge({
             Meta: {hasGoal ? formatCurrencyFromCents(configuredGoalCents) : "Não definida"}
           </p>
           <p className="mt-1 break-words text-base font-medium leading-snug text-zinc-950">
-            Hoje: {hasGoal ? formatCurrencyFromCents(currentRevenueCents) : "Sem vendas"}
+            Hoje: {hasGoal && revenueKnown ? formatCurrencyFromCents(currentRevenueCents) : "Indisponivel"}
           </p>
         </div>
       </div>
@@ -2098,15 +2113,10 @@ export default function DashboardPage() {
       setIsLoading(true);
       setErrorMessage(null);
 
-      const response = await fetch(
-  `/api/dashboard/metrics?organizationId=${encodeURIComponent(
-    organizationId
-  )}&storeId=${encodeURIComponent(activeStoreId)}`,
-  {
-    method: "GET",
-    cache: "no-store",
-  }
-);
+      const response = await fetch("/api/dashboard/metrics", {
+        method: "GET",
+        cache: "no-store",
+      });
 
       const data = await response.json();
 
@@ -2635,7 +2645,12 @@ export default function DashboardPage() {
           <>
             <div className="space-y-3">
               <div className="grid min-w-0 gap-3 xl:grid-cols-[0.82fr_1.65fr]">
-                <GoalGauge percent={0} onClick={() => setSalesDetailDrawer("goal")} />
+                <GoalGauge
+                  percent={summary.sales.monthlyGoal?.progressPercent ?? 0}
+                  configuredGoalCents={summary.sales.monthlyGoal?.amountCents ?? null}
+                  currentRevenueCents={summary.sales.revenueMonthCents ?? null}
+                  onClick={() => setSalesDetailDrawer("goal")}
+                />
 
                 <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3">
                   <SalesMetricTile

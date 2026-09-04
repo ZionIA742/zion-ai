@@ -71,7 +71,8 @@ export async function authenticateQuoteRequest() {
   const { data: memberships, error: membershipError } = await supabase
     .from("memberships")
     .select("organization_id")
-    .eq("user_id", user.id);
+    .eq("user_id", user.id)
+    .eq("is_active", true);
 
   if (membershipError) {
     throw new QuoteAccessError(

@@ -12,6 +12,41 @@ function toNumber(value: number | null | undefined) {
   return Number.isFinite(value) ? Number(value) : 0;
 }
 
+type SupabaseErrorLike = { message?: string | null };
+type SupabaseResultLike<T> = PromiseLike<{
+  data: T;
+  error: SupabaseErrorLike | null;
+}>;
+type SupabaseWriteResultLike = PromiseLike<{ error: SupabaseErrorLike | null }>;
+
+type SupabaseSelectBuilderLike<T> = {
+  select(columns: string): SupabaseSelectBuilderLike<T>;
+  eq(column: string, value: unknown): SupabaseSelectBuilderLike<T>;
+  order(
+    column: string,
+    options?: { ascending?: boolean; nullsFirst?: boolean },
+  ): SupabaseSelectBuilderLike<T>;
+  limit(count: number): SupabaseResultLike<T[]>;
+  maybeSingle(): SupabaseResultLike<T | null>;
+};
+
+type SupabaseInsertBuilderLike<T> = SupabaseWriteResultLike & {
+  select(columns: string): {
+    maybeSingle(): SupabaseResultLike<T | null>;
+  };
+};
+
+type SupabaseTableBuilderLike<T> = SupabaseSelectBuilderLike<T> & {
+  insert(payload: Record<string, unknown>): SupabaseInsertBuilderLike<T>;
+  update(payload: Record<string, unknown>): {
+    eq(column: string, value: unknown): SupabaseWriteResultLike;
+  };
+};
+
+type QuoteVersioningSupabaseClient = {
+  from(table: string): SupabaseTableBuilderLike<Record<string, unknown>>;
+};
+
 export function buildQuoteSnapshot(args: {
   quote: SalesQuoteRow;
   items: SalesQuoteItemRow[];
@@ -61,10 +96,11 @@ export function buildQuoteSnapshot(args: {
 }
 
 export async function getNextQuoteVersionNumber(args: {
-  supabase: any;
+  supabase: unknown;
   quoteId: string;
 }) {
-  const { data, error } = await args.supabase
+  const supabase = args.supabase as QuoteVersioningSupabaseClient;
+  const { data, error } = await supabase
     .from("sales_quote_versions")
     .select("version_number")
     .eq("quote_id", args.quoteId)
@@ -83,7 +119,7 @@ export async function getNextQuoteVersionNumber(args: {
 }
 
 export async function createQuoteVersion(args: {
-  supabase: any;
+  supabase: unknown;
   quote: SalesQuoteRow;
   versionNumber: number;
   storeFileId: string;
@@ -93,9 +129,12 @@ export async function createQuoteVersion(args: {
   sizeBytes: number;
   quoteSnapshot: QuoteSnapshot;
   nextQuoteStatus: string;
+  quoteKind?: "preliminary" | "definitive" | null;
 }) {
+  const supabase = args.supabase as QuoteVersioningSupabaseClient;
+
   if (args.quote.current_version_id) {
-    const { error: supersedeError } = await args.supabase
+    const { error: supersedeError } = await supabase
       .from("sales_quote_versions")
       .update({
         status: "superseded",
@@ -109,7 +148,7 @@ export async function createQuoteVersion(args: {
     }
   }
 
-  const { data: versionRow, error: versionError } = await args.supabase
+  const { data: versionRow, error: versionError } = await supabase
     .from("sales_quote_versions")
     .insert({
       quote_id: args.quote.id,
@@ -117,6 +156,7 @@ export async function createQuoteVersion(args: {
       store_id: args.quote.store_id,
       version_number: args.versionNumber,
       status: "generated",
+      quote_kind: args.quoteKind ?? null,
       store_file_id: args.storeFileId,
       storage_bucket: args.storageBucket,
       storage_path: args.storagePath,
@@ -126,7 +166,7 @@ export async function createQuoteVersion(args: {
       quote_snapshot: args.quoteSnapshot,
     })
     .select(
-      "id, quote_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, quote_snapshot, created_at"
+      "id, quote_id, organization_id, store_id, version_number, status, quote_kind, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, quote_snapshot, created_at"
     )
     .maybeSingle();
 
@@ -134,7 +174,7 @@ export async function createQuoteVersion(args: {
     throw new Error(versionError?.message || "Falha ao criar sales_quote_versions.");
   }
 
-  const { error: quoteUpdateError } = await args.supabase
+  const { error: quoteUpdateError } = await supabase
     .from("sales_quotes")
     .update({
       current_version_id: versionRow.id,
@@ -152,17 +192,19 @@ export async function createQuoteVersion(args: {
 }
 
 export async function recordQuoteGenerationFailure(args: {
-  supabase: any;
+  supabase: unknown;
   quote: SalesQuoteRow;
   versionNumber: number;
   quoteSnapshot: QuoteSnapshot;
 }) {
-  const { error } = await args.supabase.from("sales_quote_versions").insert({
+  const supabase = args.supabase as QuoteVersioningSupabaseClient;
+  const { error } = await supabase.from("sales_quote_versions").insert({
     quote_id: args.quote.id,
     organization_id: args.quote.organization_id,
     store_id: args.quote.store_id,
     version_number: args.versionNumber,
     status: "failed",
+    quote_kind: null,
     store_file_id: null,
     storage_bucket: null,
     storage_path: null,

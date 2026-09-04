@@ -32,6 +32,18 @@ type SendRouteDeps = {
   loadQuoteSettings?: typeof loadStoreQuoteSettings;
   materializeQuoteSend?: typeof materializeSalesQuoteSendBySystem;
   refreshActionReadiness?: typeof refreshCommercialActionReadiness;
+  readQuoteKindSendReadiness?: (args: {
+    supabase: unknown;
+    organizationId: string;
+    storeId: string;
+    commercialOpportunityId: string;
+    salesQuoteVersionId: string;
+  }) => Promise<{
+    readinessState: string;
+    reasonCode: string | null;
+    blockingItems: unknown[];
+    authorityFingerprint: string | null;
+  }>;
 };
 
 function buildReadinessGateResponse(
@@ -112,6 +124,58 @@ function buildQueuedMessage(outcome: string) {
   return "O orçamento foi colocado na fila canônica de envio ao cliente.";
 }
 
+function normalizeQuoteKind(value: unknown): "preliminary" | "definitive" | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "preliminary" || normalized === "definitive") return normalized;
+  return null;
+}
+
+async function readQuoteKindSendReadiness(args: {
+  supabase: unknown;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+  salesQuoteVersionId: string;
+}) {
+  const supabase = args.supabase as {
+    rpc(
+      fn: string,
+      rpcArgs: Record<string, unknown>,
+    ): PromiseLike<{ data: unknown; error: { message?: string | null } | null }>;
+  };
+  const { data, error } = await supabase.rpc(
+    "read_quote_kind_send_readiness_scoped",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+      p_sales_quote_version_id: args.salesQuoteVersionId,
+    },
+  );
+
+  if (error) {
+    throw new Error(error.message || "quote kind readiness failed");
+  }
+
+  const row = Array.isArray(data)
+    ? (data[0] as Record<string, unknown> | undefined)
+    : (data as Record<string, unknown> | null);
+
+  if (!row || typeof row.readiness_state !== "string") {
+    throw new Error("quote kind readiness returned empty data");
+  }
+
+  return {
+    readinessState: row.readiness_state,
+    reasonCode: typeof row.reason_code === "string" ? row.reason_code : null,
+    blockingItems: Array.isArray(row.blocking_items) ? row.blocking_items : [],
+    authorityFingerprint:
+      typeof row.authority_fingerprint === "string"
+        ? row.authority_fingerprint
+        : null,
+  };
+}
+
 export function createSendQuotePostHandler(deps?: SendRouteDeps) {
   const resolveQuoteScope = deps?.resolveQuoteScope ?? resolveAuthorizedExistingQuote;
   const loadQuoteSettings = deps?.loadQuoteSettings ?? loadStoreQuoteSettings;
@@ -119,6 +183,8 @@ export function createSendQuotePostHandler(deps?: SendRouteDeps) {
     deps?.materializeQuoteSend ?? materializeSalesQuoteSendBySystem;
   const refreshActionReadiness =
     deps?.refreshActionReadiness ?? refreshCommercialActionReadiness;
+  const readQuoteKindReadiness =
+    deps?.readQuoteKindSendReadiness ?? readQuoteKindSendReadiness;
 
   return async function POST(
     _request: Request,
@@ -151,7 +217,7 @@ export function createSendQuotePostHandler(deps?: SendRouteDeps) {
       const { data: versionData, error: versionError } = await scope.supabase
         .from("sales_quote_versions")
         .select(
-          "id, quote_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, quote_snapshot, created_at, sent_at",
+          "id, quote_id, organization_id, store_id, version_number, status, quote_kind, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, quote_snapshot, created_at, sent_at",
         )
         .eq("id", currentVersionId)
         .eq("quote_id", scope.quote.id)
@@ -363,6 +429,38 @@ export function createSendQuotePostHandler(deps?: SendRouteDeps) {
 
       if (!readiness.ok || readiness.decision.readinessState !== "ready") {
         return buildReadinessGateResponse(readiness);
+      }
+
+      const quoteKind = normalizeQuoteKind(version.quote_kind);
+      if (quoteKind) {
+        const quoteKindReadiness = await readQuoteKindReadiness({
+          supabase: scope.supabase,
+          organizationId: scope.organizationId,
+          storeId: scope.store.id,
+          commercialOpportunityId,
+          salesQuoteVersionId: version.id,
+        });
+
+        if (quoteKindReadiness.readinessState !== "ready") {
+          return NextResponse.json(
+            {
+              ok: false,
+              error:
+                quoteKind === "definitive"
+                  ? "DEFINITIVE_QUOTE_SEND_BLOCKED"
+                  : "PRELIMINARY_QUOTE_SEND_BLOCKED",
+              message:
+                quoteKind === "definitive"
+                  ? "O orcamento definitivo ainda nao esta pronto para envio."
+                  : "O orcamento preliminar ainda nao esta pronto para envio.",
+              readinessState: quoteKindReadiness.readinessState,
+              reasonCode: quoteKindReadiness.reasonCode,
+              blockingItems: quoteKindReadiness.blockingItems,
+              authorityFingerprint: quoteKindReadiness.authorityFingerprint,
+            },
+            { status: 409 },
+          );
+        }
       }
 
       const operation = await materializeQuoteSend({
