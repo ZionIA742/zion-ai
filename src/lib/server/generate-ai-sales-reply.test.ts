@@ -487,6 +487,9 @@ function createGenerateAiSalesReplySupabase(args?: {
   commercialAiSettings?: Row[];
   paymentSettings?: Row[];
   operationSettings?: Row[];
+  channelSettings?: Row[];
+  discountSettings?: Row[];
+  highValueDiscountSettings?: Row[];
   catalogItems?: Row[];
   catalogItemPhotos?: Row[];
   pools?: Row[];
@@ -574,6 +577,9 @@ function createGenerateAiSalesReplySupabase(args?: {
       store_commercial_ai_settings: args?.commercialAiSettings ?? [],
       store_payment_settings: args?.paymentSettings ?? [],
       store_operation_settings: args?.operationSettings ?? [],
+      store_channel_settings: args?.channelSettings ?? [],
+      store_discount_settings: args?.discountSettings ?? [],
+      store_high_value_discount_settings: args?.highValueDiscountSettings ?? [],
       store_catalog_items: args?.catalogItems ?? [],
       store_catalog_item_photos: args?.catalogItemPhotos ?? [],
       pools: args?.pools ?? [],
@@ -3914,6 +3920,417 @@ test("generateAiSalesReply fails closed when canonical profile materialization f
   assert.equal(openai.calls.length, 1);
 });
 
+test("sales AI loads canonical discount policy as live authority instead of legacy onboarding discount fields", async () => {
+  const { readFileSync } = await import("node:fs");
+
+  const runtimeSource = readFileSync(
+    "src/lib/server/generate-ai-sales-reply.ts",
+    "utf8",
+  );
+
+  assert.equal(
+    runtimeSource.includes("../store-discount-settings"),
+    true,
+    "Sales AI must consume the existing canonical discount settings module",
+  );
+
+  assert.equal(
+    runtimeSource.includes("createStoreDiscountPresentationFromSources"),
+    true,
+    "Sales AI must reuse the canonical discount presentation instead of rebuilding discount policy from onboarding",
+  );
+
+  const discountQueryStart = runtimeSource.indexOf(
+    '.from("store_discount_settings")',
+  );
+
+  assert.equal(
+    discountQueryStart >= 0,
+    true,
+    "Sales AI must load store_discount_settings",
+  );
+
+  if (discountQueryStart >= 0) {
+    const discountQueryBlock = runtimeSource.slice(
+      discountQueryStart,
+      discountQueryStart + 1400,
+    );
+
+    assert.equal(
+      discountQueryBlock.includes('.eq("organization_id", organizationId)'),
+      true,
+      "canonical discount settings query must be organization scoped",
+    );
+
+    assert.equal(
+      discountQueryBlock.includes('.eq("store_id", resolvedStoreId)'),
+      true,
+      "canonical discount settings query must be store scoped",
+    );
+  }
+
+  const highValueQueryStart = runtimeSource.indexOf(
+    '.from("store_high_value_discount_settings")',
+  );
+
+  assert.equal(
+    highValueQueryStart >= 0,
+    true,
+    "Sales AI must load store_high_value_discount_settings",
+  );
+
+  if (highValueQueryStart >= 0) {
+    const highValueQueryBlock = runtimeSource.slice(
+      highValueQueryStart,
+      highValueQueryStart + 1200,
+    );
+
+    assert.equal(
+      highValueQueryBlock.includes('.eq("organization_id", organizationId)'),
+      true,
+      "high-value discount settings query must be organization scoped",
+    );
+
+    assert.equal(
+      highValueQueryBlock.includes('.eq("store_id", resolvedStoreId)'),
+      true,
+      "high-value discount settings query must be store scoped",
+    );
+  }
+
+  assert.equal(
+    runtimeSource.includes("LOAD_DISCOUNT_SETTINGS_FAILED"),
+    true,
+    "failure to load canonical normal discount policy must fail closed",
+  );
+
+  assert.equal(
+    runtimeSource.includes("LOAD_HIGH_VALUE_DISCOUNT_SETTINGS_FAILED"),
+    true,
+    "failure to load canonical high-value discount policy must fail closed",
+  );
+
+  assert.equal(
+    runtimeSource.includes("POLITICA CANONICA DE DESCONTO DA LOJA"),
+    true,
+    "the final Sales AI context must explicitly expose canonical discount authority",
+  );
+});
+test("generateAiSalesReply requests blocking human handoff when customer explicitly asks for a person and canonical channel allows it", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent:
+      "Quero falar com uma pessoa da loja, por favor.",
+    commercialOpportunityId: null,
+    channelSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        commercial_channel_name: "WhatsApp comercial",
+        commercial_receives_real_clients: true,
+        commercial_is_official_sales_channel: true,
+        commercial_channel_type: "WhatsApp",
+        commercial_entry_priority: "Principal",
+        commercial_human_handoff_enabled: true,
+        commercial_channel_notes: null,
+        integration_provider_name: "Provider",
+        integration_connection_mode: "API / webhook",
+        integrations_notes: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      },
+    },
+    {
+      output_text: "Posso continuar te ajudando por aqui.",
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      },
+    },
+  ]);
+
+  const response = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(response.ok, true);
+
+  assert.equal(
+    supabase.fromCalls.includes("store_channel_settings"),
+    true,
+    "Sales AI must read canonical store_channel_settings",
+  );
+
+  const context = response.ok
+    ? (response.context as Record<string, any>)
+    : null;
+
+  const humanHandoff = context?.humanHandoff ?? null;
+
+  assert.equal(humanHandoff?.requested, true);
+  assert.equal(humanHandoff?.enabled, true);
+  assert.equal(humanHandoff?.shouldCreateTask, true);
+  assert.equal(
+    humanHandoff?.taskType,
+    "customer_human_handoff_request",
+  );
+  assert.equal(
+    humanHandoff?.reason,
+    "explicit_customer_request",
+  );
+
+  assert.equal(
+    typeof humanHandoff?.replyOverride,
+    "string",
+  );
+
+  assert.equal(
+    String(humanHandoff?.replyOverride || "")
+      .toLowerCase()
+      .includes("pessoa"),
+    true,
+    "enabled handoff must have a deterministic acknowledgement to the customer",
+  );
+});
+
+test("generateAiSalesReply honors canonical disabled human handoff over conflicting legacy enabled mirror", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent:
+      "Quero falar com um atendente agora.",
+    onboardingAnswers: [
+      {
+        question_key: "commercial_human_handoff_enabled",
+        answer: "Sim",
+      },
+    ],
+    channelSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        commercial_channel_name: "WhatsApp comercial",
+        commercial_receives_real_clients: true,
+        commercial_is_official_sales_channel: true,
+        commercial_channel_type: "WhatsApp",
+        commercial_entry_priority: "Principal",
+        commercial_human_handoff_enabled: false,
+        commercial_channel_notes: null,
+        integration_provider_name: "Provider",
+        integration_connection_mode: "API / webhook",
+        integrations_notes: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      },
+    },
+    {
+      output_text: "Vou transferir voce para um atendente.",
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      },
+    },
+  ]);
+
+  const response = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(response.ok, true);
+
+  assert.equal(
+    supabase.fromCalls.includes("store_channel_settings"),
+    true,
+  );
+
+  const context = response.ok
+    ? (response.context as Record<string, any>)
+    : null;
+
+  const humanHandoff = context?.humanHandoff ?? null;
+
+  assert.equal(humanHandoff?.requested, true);
+  assert.equal(humanHandoff?.enabled, false);
+  assert.equal(humanHandoff?.shouldCreateTask, false);
+  assert.equal(
+    humanHandoff?.reason,
+    "human_handoff_disabled",
+  );
+
+  assert.equal(
+    typeof humanHandoff?.replyOverride,
+    "string",
+  );
+
+  const replyOverride =
+    String(humanHandoff?.replyOverride || "").toLowerCase();
+
+  assert.equal(
+    replyOverride.includes("não consigo") ||
+      replyOverride.includes("nao consigo"),
+    true,
+    "disabled handoff must explicitly avoid pretending that a transfer happened",
+  );
+});
+test("generateAiSalesReply gives canonical discount policy precedence over conflicting legacy discount mirrors in final model context", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Consegue melhorar o valor? Tem desconto?",
+    onboardingAnswers: [
+      {
+        question_key: "max_discount_percent",
+        answer: "99",
+      },
+      {
+        question_key: "discount_policy_summary",
+        answer: "LEGACY_DISCOUNT_POLICY_SHOULD_NOT_WIN",
+      },
+      {
+        question_key: "discount_special_rules",
+        answer: "LEGACY_DISCOUNT_RULE_SHOULD_NOT_WIN",
+      },
+    ],
+    discountSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        default_discount_percent: 5,
+        max_discount_percent: 12,
+        allow_ask_above_max_discount: true,
+        discount_autonomy_mode: "approval_required",
+        discount_special_rules: "CANONICAL_DISCOUNT_RULE_ONLY",
+      },
+    ],
+    highValueDiscountSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        enabled: true,
+        threshold_amount_cents: 500000,
+        discount_percent: 7,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+      },
+    },
+    {
+      output_text:
+        "Vou verificar a melhor condicao dentro da politica da loja.",
+      usage: {
+        input_tokens: 40,
+        output_tokens: 20,
+        total_tokens: 60,
+      },
+    },
+  ]);
+
+  const response = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(response.ok, true);
+
+  assert.equal(
+    supabase.fromCalls.includes("store_discount_settings"),
+    true,
+  );
+
+  assert.equal(
+    supabase.fromCalls.includes("store_high_value_discount_settings"),
+    true,
+  );
+
+  const finalOpenAiCall = openai.calls[1] as Record<string, unknown>;
+  const finalPayload = JSON.stringify(finalOpenAiCall);
+
+  assert.equal(
+    finalPayload.includes("POLITICA CANONICA DE DESCONTO DA LOJA"),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes("primeiro degrau normal configurado: 5%"),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes("teto normal interno configurado: 12%"),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes(
+      "modo de autonomia configurado: approval_required",
+    ),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes("CANONICAL_DISCOUNT_RULE_ONLY"),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes("R$ 5000,00"),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes("existe percentual elegivel de 7%"),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes("LEGACY_DISCOUNT_POLICY_SHOULD_NOT_WIN"),
+    false,
+    "legacy discount policy summary must not remain model-visible when canonical discount settings exist",
+  );
+
+  assert.equal(
+    finalPayload.includes("LEGACY_DISCOUNT_RULE_SHOULD_NOT_WIN"),
+    false,
+    "legacy discount special rule must not remain model-visible when canonical discount settings exist",
+  );
+});
 test("generateAiSalesReply prefers canonical commercial AI settings over legacy price answers", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     onboardingAnswers: [
@@ -7605,5 +8022,97 @@ test("payment sales brain can ask only the structured payment target when contex
   assert.deepEqual(
     brain.plan.missingCriticalInfo,
     ["payment_interest"],
+  );
+});
+test("sales AI forbids unsourced commercial claims in value selling and recommendations", async () => {
+  const { readFileSync } = await import("node:fs");
+  const runtimeSource = readFileSync(
+    "src/lib/server/generate-ai-sales-reply.ts",
+    "utf8",
+  );
+
+  assert.equal(
+    runtimeSource.includes(
+      "Qualidade, segurança, garantia, durabilidade, resistência, certificação e outros diferenciais só podem ser afirmados quando estiverem explicitamente comprovados",
+    ),
+    true,
+  );
+
+  assert.equal(
+    runtimeSource.includes(
+      "não use qualidade, segurança, garantia, durabilidade, resistência ou certificação como argumento comercial sem fonte explícita",
+    ),
+    true,
+  );
+
+  assert.equal(
+    runtimeSource.includes(
+      "Se a ideia for priorizar segurança para criança, eu começaria pelas opções mais rasas.",
+    ),
+    false,
+    "shallow depth must not be presented as a safety conclusion",
+  );
+
+  assert.equal(
+    runtimeSource.includes(
+      "Segurança eu só trataria como diferencial se houver especificação técnica confirmada para o modelo.",
+    ),
+    true,
+  );
+
+  assert.equal(
+    runtimeSource.includes(
+      "destaque orientação, produto, instalação, qualidade, segurança, garantia, atendimento ou outro diferencial configurado",
+    ),
+    false,
+    "generic value selling must not seed unsupported quality/safety/warranty claims",
+  );
+});
+
+test("safety comparison requires explicit safety evidence instead of shallow family fit", async () => {
+  const { readFileSync } = await import("node:fs");
+  const runtimeSource = readFileSync(
+    "src/lib/server/generate-ai-sales-reply.ts",
+    "utf8",
+  );
+
+  const comparisonStart = runtimeSource.indexOf(
+    "function hasComparativeSuperiorEvidence",
+  );
+  const comparisonEnd = runtimeSource.indexOf(
+    "function looksLikeExplicitComplementaryRequest",
+    comparisonStart,
+  );
+
+  assert.equal(comparisonStart >= 0, true);
+  assert.equal(comparisonEnd > comparisonStart, true);
+
+  const comparisonBlock = runtimeSource.slice(
+    comparisonStart,
+    comparisonEnd,
+  );
+
+  assert.equal(
+    comparisonBlock.includes(
+      'const safetyMarkers = /\\b(seguranca|antiderrapante)\\b/i;',
+    ),
+    true,
+    "safety preference must require an explicit safety marker from product evidence",
+  );
+
+  assert.equal(
+    comparisonBlock.includes(
+      'const familyFitMarkers = /\\b(infantil|familia|ras[ao]|praia|prainha)\\b/i;',
+    ),
+    true,
+    "family fit may still use explicit family/shallow features without calling them safety",
+  );
+
+  assert.equal(
+    comparisonBlock.includes(
+      'const familyMarkers = /\\b(infantil|familia|seguranca|ras[ao]|praia|prainha|antiderrapante)\\b/i;',
+    ),
+    false,
+    "family fit and safety evidence must remain separate authorities",
   );
 });

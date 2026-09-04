@@ -756,6 +756,157 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "human handoff persistence creates a blocking conversation task without requiring commercial opportunity",
+    run: async () => {
+      const runtimeModule: any = await import(
+        "./generate-and-save-ai-sales-reply"
+      );
+
+      const createHumanAssistantHandoff =
+        runtimeModule.createHumanAssistantHandoff;
+
+      assert.equal(
+        typeof createHumanAssistantHandoff,
+        "function",
+        "runtime must expose a dedicated human handoff persistence helper",
+      );
+
+      const recorder = createSupabaseRecorder();
+
+      let findExistingTaskCalls = 0;
+      let notificationCalls = 0;
+
+      const result = await createHumanAssistantHandoff(
+        {
+          supabase: recorder.supabase,
+          organizationId: "org-1",
+          storeId: "store-1",
+          conversationId: "conv-1",
+          leadId: "lead-1",
+          humanHandoff: {
+            requested: true,
+            enabled: true,
+            shouldCreateTask: true,
+            taskType: "customer_human_handoff_request",
+            reason: "explicit_customer_request",
+            replyOverride:
+              "Claro. Vou solicitar o atendimento de uma pessoa da loja por aqui.",
+            lastCustomerMessage:
+              "Quero falar com uma pessoa da loja, por favor.",
+          },
+        },
+        {
+          findExistingTask: async (args: Record<string, unknown>) => {
+            findExistingTaskCalls += 1;
+
+            assert.equal(args.organizationId, "org-1");
+            assert.equal(args.storeId, "store-1");
+            assert.equal(args.conversationId, "conv-1");
+            assert.equal(
+              args.taskType,
+              "customer_human_handoff_request",
+            );
+
+            assert.equal(
+              Object.prototype.hasOwnProperty.call(
+                args,
+                "commercialOpportunityId",
+              ),
+              false,
+              "human handoff dedupe must not require opportunity identity",
+            );
+
+            return null;
+          },
+
+          enqueueNotification: async (
+            args: Record<string, unknown>,
+          ) => {
+            notificationCalls += 1;
+
+            assert.equal(args.organizationId, "org-1");
+            assert.equal(args.storeId, "store-1");
+            assert.equal(args.conversationId, "conv-1");
+            assert.equal(args.leadId, "lead-1");
+            assert.equal(args.taskId, "task-1");
+
+            return {
+              created: true,
+              error: null,
+              reason: "created",
+            };
+          },
+        },
+      );
+
+      assert.equal(result.created, true);
+      assert.equal(result.skipped, false);
+
+      assert.equal(findExistingTaskCalls, 1);
+      assert.equal(notificationCalls, 1);
+
+      assert.equal(recorder.insertedRows.length, 1);
+
+      const row = recorder.insertedRows[0] || {};
+
+      assert.equal(row.organization_id, "org-1");
+      assert.equal(row.store_id, "store-1");
+      assert.equal(row.related_conversation_id, "conv-1");
+      assert.equal(row.related_lead_id, "lead-1");
+
+      assert.equal(
+        row.task_type,
+        "customer_human_handoff_request",
+      );
+
+      assert.equal(row.status, "open");
+
+      assert.equal(
+        row.commercial_opportunity_id,
+        null,
+        "explicit request for a person belongs to the conversation and must not require an opportunity",
+      );
+
+      const payload =
+        row.task_payload &&
+        typeof row.task_payload === "object"
+          ? (row.task_payload as Record<string, unknown>)
+          : {};
+
+      assert.equal(payload.needs_human_action, true);
+      assert.equal(
+        payload.handoff_type,
+        "customer_human_handoff_request",
+      );
+      assert.equal(
+        payload.reason,
+        "explicit_customer_request",
+      );
+
+      assert.equal(
+        payload.last_customer_message,
+        "Quero falar com uma pessoa da loja, por favor.",
+      );
+
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(
+          payload,
+          "handoff_origin",
+        ),
+        false,
+        "human request task must not inherit the non-blocking ai_sales commercial handoff origin",
+      );
+
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(
+          payload,
+          "allow_sales_ai_while_pending",
+        ),
+        false,
+        "human request task must remain blocking while pending",
+      );
+    },
+  },  {
     name: "persists the explicit commercial opportunity id in the handoff insert",
     run: async () => {
       const recorder = createSupabaseRecorder();
@@ -2113,6 +2264,193 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "explicit customer human request persists blocking handoff before sending acknowledgement",
+    run: async () => {
+      const supabase = createAiWindowScopeSupabase();
+
+      const events: string[] = [];
+      let humanHandoffCalls = 0;
+      let sendCalls = 0;
+
+      const humanHandoff = {
+        requested: true as const,
+        enabled: true,
+        shouldCreateTask: true,
+        taskType: "customer_human_handoff_request" as const,
+        reason: "explicit_customer_request" as const,
+        replyOverride:
+          "Claro. Vou solicitar o atendimento de uma pessoa da loja por aqui.",
+        lastCustomerMessage:
+          "Quero falar com uma pessoa da loja, por favor.",
+      };
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () =>
+              supabase.client as never,
+
+            ...createScopeAwareReplyDeps(
+              ({
+                generateAiSalesReply: async () =>
+                  ({
+                    ok: true,
+                    aiText:
+                      "Claro. Vou solicitar o atendimento de uma pessoa da loja por aqui.",
+                    anchorMessageId: "msg-1",
+                    usage: null,
+                    context: {
+                      operationalFollowUpDecision: {
+                        kind: "none",
+                        reason: "none",
+                      },
+                      humanHandoff,
+                      resolvedCommercialOpportunityId: null,
+                    },
+                  }) as never,
+
+                createHumanAssistantHandoff: async (
+                  args: Record<string, any>,
+                ) => {
+                  humanHandoffCalls += 1;
+                  events.push("human_handoff");
+
+                  assert.equal(
+                    args.organizationId,
+                    "org-canonical",
+                  );
+
+                  assert.equal(
+                    args.storeId,
+                    "store-canonical",
+                  );
+
+                  assert.equal(
+                    args.conversationId,
+                    "conv-canonical",
+                  );
+
+                  assert.equal(
+                    args.leadId,
+                    "lead-canonical",
+                  );
+
+                  assert.deepEqual(
+                    args.humanHandoff,
+                    humanHandoff,
+                  );
+
+                  assert.equal(
+                    Object.prototype.hasOwnProperty.call(
+                      args,
+                      "commercialOpportunityId",
+                    ),
+                    false,
+                    "human handoff integration must not require opportunity identity",
+                  );
+
+                  return {
+                    created: true,
+                    skipped: false,
+                    reason: "created",
+                    taskId: "task-human-1",
+                    notificationResult: {
+                      created: true,
+                      error: null,
+                      reason: "created",
+                    },
+                  };
+                },
+
+                sendAiPanelMessage: async (
+                  args: Record<string, any>,
+                ) => {
+                  sendCalls += 1;
+                  events.push("send");
+
+                  assert.equal(
+                    args.organizationId,
+                    "org-canonical",
+                  );
+
+                  assert.equal(
+                    args.storeId,
+                    "store-canonical",
+                  );
+
+                  assert.equal(
+                    args.conversationId,
+                    "conv-canonical",
+                  );
+
+                  assert.equal(
+                    args.aiText,
+                    "Claro. Vou solicitar o atendimento de uma pessoa da loja por aqui.",
+                  );
+
+                  return "msg-ai-human-handoff-1";
+                },
+              } as any),
+            ),
+          } as any,
+        );
+
+        assert.equal(
+          humanHandoffCalls,
+          1,
+          "real generateAndSave flow must persist the blocking human handoff",
+        );
+
+        assert.equal(
+          sendCalls,
+          1,
+          "acknowledgement must still be sent once",
+        );
+
+        assert.deepEqual(
+          events,
+          ["human_handoff", "send"],
+          "blocking human task must exist before the acknowledgement is sent",
+        );
+
+        assert.equal(result.ok, true);
+
+        if (!result.ok) return;
+
+        assert.equal(
+          result.messageId,
+          "msg-ai-human-handoff-1",
+        );
+
+        const context =
+          result.context &&
+          typeof result.context === "object"
+            ? (result.context as Record<string, any>)
+            : {};
+
+        assert.equal(
+          context.humanHandoffResult?.created,
+          true,
+        );
+
+        assert.equal(
+          context.humanHandoffResult?.taskId,
+          "task-human-1",
+        );
+
+        assert.equal(
+          context.humanHandoffResult
+            ?.notificationResult?.created,
+          true,
+        );
+      });
+    },
+  },  {
     name: "coherent params persist canonical conversation_ai_window_state ids",
     run: async () => {
       const supabase = createAiWindowScopeSupabase();
@@ -2895,8 +3233,16 @@ const tests: TestCase[] = [
         "utf8",
       );
 
+      const humanHandoffIndex = source.indexOf(
+        "const requestedHumanHandoff ="
+      );
       const handoffIndex = source.indexOf(
-        "const requestedCommercialHandoff = generationResult.context?.commercialHandoff || null;"
+        "const requestedCommercialHandoff =",
+        humanHandoffIndex
+      );
+      const humanPriorityIndex = source.indexOf(
+        "requestedHumanHandoff?.shouldCreateTask === true",
+        handoffIndex
       );
       const validationIndex = source.indexOf(
         "getRequiredCommercialOpportunityIdFromHandoff(",
@@ -2911,8 +3257,10 @@ const tests: TestCase[] = [
         skipIndex
       );
 
-      assert.equal(handoffIndex > -1, true);
-      assert.equal(validationIndex > handoffIndex, true);
+      assert.equal(humanHandoffIndex > -1, true);
+      assert.equal(handoffIndex > humanHandoffIndex, true);
+      assert.equal(humanPriorityIndex > handoffIndex, true);
+      assert.equal(validationIndex > humanPriorityIndex, true);
       assert.equal(skipIndex > validationIndex, true);
       assert.equal(sendIndex > skipIndex, true);
     },

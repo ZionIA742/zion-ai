@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   detectPaymentOrClosingSubtype,
   generateAiSalesReply,
+  type HumanHandoffContext,
   type CommercialHandoffContext,
   type OperationalFollowUpDecision,
   type PaymentOrClosingSubtype,
@@ -83,6 +84,7 @@ type GenerateAndSaveAiSalesReplyDeps = {
   generateAiSalesReply: typeof generateAiSalesReply;
   updateLatestRunningAiRunUsage: typeof updateLatestRunningAiRunUsage;
   sendAiPanelMessage: typeof sendAiPanelMessage;
+  createHumanAssistantHandoff: typeof createHumanAssistantHandoff;
   createCommercialAssistantHandoff: typeof createCommercialAssistantHandoff;
   loadSalesAiOperatingWindowAuthority: typeof loadSalesAiOperatingWindowAuthority;
 };
@@ -840,6 +842,34 @@ export async function findExistingCommercialHandoffTask(args: {
   return (data as OpenOperationalTaskRow | null) || null;
 }
 
+export async function findExistingHumanHandoffTask(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  taskType: "customer_human_handoff_request";
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("id, task_type, status, commercial_opportunity_id, task_payload")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("related_conversation_id", args.conversationId)
+    .eq("task_type", args.taskType)
+    .in("status", getOpenCommercialHandoffStatuses())
+    .order("updated_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Falha ao verificar pedido de atendimento humano existente: ${error.message}`,
+    );
+  }
+
+  return (data as OpenOperationalTaskRow | null) || null;
+}
 function buildCommercialHandoffNotificationBody(handoff: CommercialHandoffContext) {
   const headline =
     handoff.taskType === "commercial_quote_request"
@@ -1052,6 +1082,150 @@ async function enqueueCommercialHandoffNotification(args: {
   }
 }
 
+async function findExistingHumanHandoffNotification(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  taskId: string;
+  notificationType: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_notification_queue")
+    .select("id, notification_type, status, context")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("related_conversation_id", args.conversationId)
+    .eq("related_lead_id", args.leadId || null)
+    .eq("notification_type", args.notificationType)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    throw new Error(
+      `Falha ao verificar notificacao de atendimento humano existente: ${error.message}`,
+    );
+  }
+
+  return ((data || []) as Array<{
+    id?: string | null;
+    context?: Record<string, unknown> | null;
+  }>).find((row) => {
+    const context =
+      row.context && typeof row.context === "object"
+        ? row.context
+        : null;
+
+    const sameTaskId =
+      String(context?.["task_id"] || "").trim() ===
+      args.taskId;
+
+    const sameSource =
+      String(context?.["source"] || "").trim() ===
+      "customer_human_handoff_request";
+
+    return sameTaskId && sameSource;
+  });
+}
+
+async function enqueueHumanHandoffNotification(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  taskId: string;
+  humanHandoff: HumanHandoffContext;
+}) {
+  const notificationType = "important_alert";
+  const title = "Cliente solicitou atendimento humano";
+
+  const customerMessage =
+    String(args.humanHandoff.lastCustomerMessage || "").trim();
+
+  const body = customerMessage
+    ? `Cliente solicitou atendimento de uma pessoa da loja. Mensagem: ${customerMessage}`
+    : "Cliente solicitou atendimento de uma pessoa da loja.";
+
+  const eventKey =
+    `customer_human_handoff_request:${args.taskId}`;
+
+  const context = {
+    source: "customer_human_handoff_request",
+    reason: "explicit_customer_request",
+    task_id: args.taskId,
+    task_type: "customer_human_handoff_request",
+    handoff_type: "customer_human_handoff_request",
+    event_key: eventKey,
+    conversation_id: args.conversationId,
+    lead_id: args.leadId || null,
+    needs_human_action: true,
+    last_customer_message: customerMessage || null,
+  };
+
+  try {
+    const existingNotification =
+      await findExistingHumanHandoffNotification({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        leadId: args.leadId || null,
+        taskId: args.taskId,
+        notificationType,
+      });
+
+    if (existingNotification?.id) {
+      return {
+        created: false,
+        error: null,
+        reason: "similar_notification_already_exists",
+      };
+    }
+
+    const { error } = await args.supabase.rpc(
+      "assistant_enqueue_internal_notification",
+      {
+        p_organization_id: args.organizationId,
+        p_store_id: args.storeId,
+        p_notification_type: notificationType,
+        p_title: title,
+        p_body: body,
+        p_priority: "high",
+        p_context: context,
+        p_related_lead_id: args.leadId || null,
+        p_related_conversation_id: args.conversationId,
+        p_related_appointment_id: null,
+        p_event_key: eventKey,
+      },
+    );
+
+    if (error) {
+      return {
+        created: false,
+        error:
+          error.message ||
+          "HUMAN_HANDOFF_NOTIFICATION_RPC_FAILED",
+        reason: "notification_enqueue_failed",
+      };
+    }
+
+    return {
+      created: true,
+      error: null,
+      reason: "notification_created",
+    };
+  } catch (error: any) {
+    return {
+      created: false,
+      error:
+        error?.message ||
+        "HUMAN_HANDOFF_NOTIFICATION_EXCEPTION",
+      reason: "notification_enqueue_failed",
+    };
+  }
+}
 async function detectOpenAssistantOperationalFlow(args: {
   supabase: any;
   organizationId: string;
@@ -3599,6 +3773,163 @@ function getRequiredCommercialOpportunityIdFromHandoff(
   return commercialOpportunityId;
 }
 
+export type HumanAssistantHandoffDeps = {
+  findExistingTask: (args: {
+    supabase: any;
+    organizationId: string;
+    storeId: string;
+    conversationId: string;
+    taskType: "customer_human_handoff_request";
+  }) => Promise<{ id?: string | null } | null>;
+  enqueueNotification: (args: {
+    supabase: any;
+    organizationId: string;
+    storeId: string;
+    conversationId: string;
+    leadId: string | null;
+    taskId: string;
+    humanHandoff: HumanHandoffContext;
+  }) => Promise<{
+    created: boolean;
+    error?: string | null;
+    reason?: string | null;
+  }>;
+};
+
+export type HumanHandoffCreationResult = {
+  created: boolean;
+  skipped: boolean;
+  reason:
+    | "handoff_not_requested"
+    | "human_handoff_not_enabled"
+    | "similar_open_human_handoff_already_exists"
+    | "created";
+  taskId?: string | null;
+  notificationResult?: {
+    created: boolean;
+    error?: string | null;
+    reason?: string | null;
+  };
+};
+
+export async function createHumanAssistantHandoff(
+  args: {
+    supabase: any;
+    organizationId: string;
+    storeId: string;
+    conversationId: string;
+    leadId: string | null;
+    humanHandoff: HumanHandoffContext | null | undefined;
+    timezoneName?: string | null;
+  },
+  deps: HumanAssistantHandoffDeps = {
+    findExistingTask: findExistingHumanHandoffTask,
+    enqueueNotification: enqueueHumanHandoffNotification,
+  },
+): Promise<HumanHandoffCreationResult> {
+  const humanHandoff = args.humanHandoff;
+
+  if (!humanHandoff || !humanHandoff.requested || !humanHandoff.shouldCreateTask) {
+    return {
+      created: false,
+      skipped: true,
+      reason: "handoff_not_requested",
+    };
+  }
+
+  if (
+    !humanHandoff.enabled ||
+    humanHandoff.reason !== "explicit_customer_request" ||
+    humanHandoff.taskType !== "customer_human_handoff_request"
+  ) {
+    return {
+      created: false,
+      skipped: true,
+      reason: "human_handoff_not_enabled",
+    };
+  }
+
+  const similarTask = await deps.findExistingTask({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    taskType: "customer_human_handoff_request",
+  });
+
+  if (similarTask) {
+    return {
+      created: false,
+      skipped: true,
+      reason: "similar_open_human_handoff_already_exists",
+      taskId: similarTask.id || null,
+    };
+  }
+
+  const payload = {
+    needs_human_action: true,
+    handoff_created: true,
+    handoff_type: "customer_human_handoff_request",
+    reason: "explicit_customer_request",
+    last_customer_message: humanHandoff.lastCustomerMessage,
+    created_by: "generate-and-save-ai-sales-reply",
+  };
+
+  const { data, error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .insert({
+      organization_id: args.organizationId,
+      store_id: args.storeId,
+      thread_id: null,
+      task_type: "customer_human_handoff_request",
+      status: "open",
+      priority: "high",
+      title: "Cliente solicitou atendimento humano",
+      description:
+        humanHandoff.lastCustomerMessage ||
+        "Cliente solicitou atendimento de uma pessoa da loja.",
+      related_lead_id: args.leadId || null,
+      related_conversation_id: args.conversationId,
+      commercial_opportunity_id: null,
+      related_appointment_id: null,
+      customer_name: null,
+      customer_phone: null,
+      target_date: null,
+      target_time: null,
+      target_start_at: null,
+      target_end_at: null,
+      timezone_name: args.timezoneName || null,
+      task_payload: payload,
+      last_action_at: new Date().toISOString(),
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (error || !data?.id) {
+    throw new Error(
+      error?.message ||
+        "TASK_INSERT_NOT_CONFIRMED_FOR_HUMAN_HANDOFF",
+    );
+  }
+
+  const notificationResult = await deps.enqueueNotification({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    leadId: args.leadId || null,
+    taskId: String(data.id),
+    humanHandoff,
+  });
+
+  return {
+    created: true,
+    skipped: false,
+    reason: "created",
+    taskId: String(data.id),
+    notificationResult,
+  };
+}
 export async function createCommercialAssistantHandoff(
   args: {
   supabase: any;
@@ -4016,6 +4347,7 @@ export async function generateAndSaveAiSalesReply(
       generateAiSalesReply,
       updateLatestRunningAiRunUsage,
       sendAiPanelMessage,
+      createHumanAssistantHandoff,
       createCommercialAssistantHandoff,
       loadSalesAiOperatingWindowAuthority,
       ...deps,
@@ -4326,7 +4658,13 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    const requestedCommercialHandoff = generationResult.context?.commercialHandoff || null;
+    const requestedHumanHandoff =
+      generationResult.context?.humanHandoff || null;
+
+    const requestedCommercialHandoff =
+      requestedHumanHandoff?.shouldCreateTask === true
+        ? null
+        : generationResult.context?.commercialHandoff || null;
     let validatedCommercialHandoff = requestedCommercialHandoff;
     let requestedCommercialOpportunityId: string | null = null;
 
@@ -4377,6 +4715,46 @@ export async function generateAndSaveAiSalesReply(
       }
     }
 
+    let humanHandoffResult: HumanHandoffCreationResult | null =
+      null;
+
+    if (requestedHumanHandoff?.shouldCreateTask === true) {
+      try {
+        humanHandoffResult =
+          await resolvedDeps.createHumanAssistantHandoff({
+            supabase,
+            organizationId: canonicalOrganizationId,
+            storeId: canonicalStoreId,
+            conversationId: canonicalConversationId,
+            leadId: normalizedConversation.lead_id || null,
+            humanHandoff: requestedHumanHandoff,
+          });
+      } catch (humanHandoffError: any) {
+        return {
+          ok: false,
+          error: "HUMAN_HANDOFF_CREATION_FAILED",
+          message:
+            humanHandoffError?.message ||
+            "Nao foi possivel registrar o pedido de atendimento humano com seguranca.",
+          aiText,
+        };
+      }
+
+      const humanHandoffConfirmed =
+        humanHandoffResult.created ||
+        humanHandoffResult.reason ===
+          "similar_open_human_handoff_already_exists";
+
+      if (!humanHandoffConfirmed) {
+        return {
+          ok: false,
+          error: "HUMAN_HANDOFF_CREATION_FAILED",
+          message:
+            "O pedido de atendimento humano nao ficou confirmado como pendencia bloqueante.",
+          aiText,
+        };
+      }
+    }
     let messageId: string | null = null;
 
     try {
@@ -4607,6 +4985,7 @@ export async function generateAndSaveAiSalesReply(
       context: {
         ...generationResult.context,
         qualificationAutoProgressResult,
+        humanHandoffResult,
         commercialHandoffResult,
         preContractCardResult,
       },

@@ -25,11 +25,20 @@ import {
   type StoreOperationSettingsRow,
 } from "../store-operation-settings";
 import {
+  createStoreChannelSettingsInputFromSources,
+  type StoreChannelSettingsRow,
+} from "../store-channel-settings";
+import {
   createStorePaymentDisplaySummaryFromSources,
   createStorePaymentSettingsInputFromSources,
   type StorePaymentSettingsInput,
   type StorePaymentSettingsRow,
 } from "../store-payment-settings";
+import {
+  createStoreDiscountPresentationFromSources,
+  type StoreDiscountSettingsRow,
+  type StoreHighValueDiscountSettingsRow,
+} from "../store-discount-settings";
 import {
   buildSalesAiOperatingWindowPromptBlock,
   type SalesAiOperatingWindowContext,
@@ -442,6 +451,17 @@ export type OperationalFollowUpDecision = {
   requestedTiming?: string | null;
 };
 
+export type HumanHandoffContext = {
+  requested: true;
+  enabled: boolean;
+  shouldCreateTask: boolean;
+  taskType: "customer_human_handoff_request";
+  reason:
+    | "explicit_customer_request"
+    | "human_handoff_disabled";
+  replyOverride: string;
+  lastCustomerMessage: string;
+};
 export type CommercialHandoffType =
   | "commercial_visit_request"
   | "commercial_quote_request";
@@ -697,6 +717,7 @@ export type GenerateAiSalesReplyResult =
         resolvedStoreId: string;
         requestedStoreId: string | null;
         operationalFollowUpDecision: OperationalFollowUpDecision;
+        humanHandoff: HumanHandoffContext | null;
         commercialHandoff: CommercialHandoffContext | null;
         catalogPhotoAction: CatalogPhotoActionContext | null;
         resolvedCommercialOpportunityId: string | null;
@@ -3483,6 +3504,57 @@ function buildCommercialHandoffReplyV2(args: {
   return "Perfeito. Vou organizar seu pedido de orcamento com as informacoes que voce ja passou e seguir pelo proximo passo seguro.";
 }
 
+function looksLikeExplicitHumanHandoffRequest(
+  lastCustomerMessage: string,
+): boolean {
+  const text = normalizeText(lastCustomerMessage);
+
+  if (!text) return false;
+
+  const explicitPatterns = [
+    /\b(?:quero|queria|gostaria|preciso)\s+(?:falar|conversar)\s+com\s+(?:um|uma)?\s*(?:atendente|pessoa|vendedor|vendedora|responsavel|humano)\b/,
+    /\b(?:posso|pode)\s+(?:falar|conversar)\s+com\s+(?:um|uma)?\s*(?:atendente|pessoa|vendedor|vendedora|responsavel|humano)\b/,
+    /\b(?:me\s+)?(?:transfere|transfira|encaminha|encaminhe|passa|passe)\s+(?:pra|para)\s+(?:um|uma)?\s*(?:atendente|pessoa|vendedor|vendedora|responsavel|humano)\b/,
+    /\bquero\s+(?:um|uma)\s+(?:atendente|vendedor|vendedora)\b/,
+  ];
+
+  return explicitPatterns.some((pattern) => pattern.test(text));
+}
+
+function inferHumanHandoff(args: {
+  lastCustomerMessage: string;
+  commercialHumanHandoffEnabled: string;
+}): HumanHandoffContext | null {
+  if (!looksLikeExplicitHumanHandoffRequest(args.lastCustomerMessage)) {
+    return null;
+  }
+
+  const enabled = args.commercialHumanHandoffEnabled === "Sim";
+
+  if (!enabled) {
+    return {
+      requested: true,
+      enabled: false,
+      shouldCreateTask: false,
+      taskType: "customer_human_handoff_request",
+      reason: "human_handoff_disabled",
+      replyOverride:
+        "Entendi. Neste canal eu não consigo fazer a transferência para uma pessoa agora, mas posso continuar te ajudando por aqui.",
+      lastCustomerMessage: args.lastCustomerMessage,
+    };
+  }
+
+  return {
+    requested: true,
+    enabled: true,
+    shouldCreateTask: true,
+    taskType: "customer_human_handoff_request",
+    reason: "explicit_customer_request",
+    replyOverride:
+      "Claro. Vou solicitar o atendimento de uma pessoa da loja por aqui.",
+    lastCustomerMessage: args.lastCustomerMessage,
+  };
+}
 function inferCommercialHandoff(args: {
   lastCustomerMessage: string;
   customerConversationText: string;
@@ -4423,11 +4495,15 @@ function hasComparativeSuperiorEvidence(args: {
     return comfortMarkers.test(candidateText) && !comfortMarkers.test(baseText);
   }
 
-  if (/\b(crianca|filho|familia|seguranca|ras[ao])\b/i.test(needText)) {
-    const familyMarkers = /\b(infantil|familia|seguranca|ras[ao]|praia|prainha|antiderrapante)\b/i;
-    return familyMarkers.test(candidateText) && !familyMarkers.test(baseText);
+  if (/\b(seguranca)\b/i.test(needText)) {
+    const safetyMarkers = /\b(seguranca|antiderrapante)\b/i;
+    return safetyMarkers.test(candidateText) && !safetyMarkers.test(baseText);
   }
 
+  if (/\b(crianca|filho|familia|ras[ao])\b/i.test(needText)) {
+    const familyFitMarkers = /\b(infantil|familia|ras[ao]|praia|prainha)\b/i;
+    return familyFitMarkers.test(candidateText) && !familyFitMarkers.test(baseText);
+  }
   const candidateArea = poolAreaM2(args.candidate);
   const baseArea = poolAreaM2(args.base);
   if (/\b(maior|grande|nadar)\b/i.test(needText) && candidateArea != null && baseArea != null) {
@@ -7846,7 +7922,8 @@ function buildResponsePriorityBlock(args: {
   );
 
   instructions.push(
-    "- Seja totalmente sincera: se a base não confirmar estoque, foto, marca, serviço ou disponibilidade, não invente."
+    "- Seja totalmente sincera: se a base não confirmar estoque, foto, marca, serviço, disponibilidade ou qualquer outro fato comercial, não invente.",
+    "- Qualidade, segurança, garantia, durabilidade, resistência, certificação e outros diferenciais só podem ser afirmados quando estiverem explicitamente comprovados no catálogo, na Configuração viva ou em outra fonte canônica presente no contexto. Não transforme profundidade, formato, preço, aparência ou preferência do cliente em promessa de segurança, qualidade ou durabilidade."
   );
 
   instructions.push(
@@ -7958,7 +8035,7 @@ Resposta boa: "Com esse espaço, eu olharia primeiro estas opções:
 2. [modelo vendável 2] — opção prática e mais básica para quem quer algo fácil de acompanhar
 3. [modelo vendável 3] — alternativa prática para quem quer começar com algo mais enxuto
 
-Se a ideia for priorizar segurança para criança, eu começaria pelas opções mais rasas."`
+Como é para seus filhos brincarem, eu compararia primeiro espaço, medidas e profundidade que estejam realmente informados para cada modelo. Segurança eu só trataria como diferencial se houver especificação técnica confirmada para o modelo."`
   );
 
   examples.push(
@@ -8799,6 +8876,76 @@ function buildScheduledResumePromptBlock(
   ].join("\n");
 }
 
+function buildCanonicalDiscountPolicyPromptBlock(
+  presentation: ReturnType<typeof createStoreDiscountPresentationFromSources>,
+): string {
+  const header = "POLITICA CANONICA DE DESCONTO DA LOJA";
+
+  if (!presentation.policySummary) {
+    return [
+      header,
+      "- nenhuma politica canonica normal de desconto esta configurada para esta loja",
+      "- sem autoridade canonica, nao ofereca nem prometa percentual especifico de desconto",
+      "- campos legados de onboarding/configuracao sobre desconto nao autorizam concessao",
+      "- uma politica de alto valor isolada nao deve ser tratada como autorizacao automatica de desconto",
+    ].join("\n");
+  }
+
+  const lines = [
+    header,
+    `- resumo canonico interno: ${presentation.policySummary}`,
+    "- esta fonte canonica vence campos legados de onboarding/configuracao sobre desconto",
+    "- o teto normal e informacao interna de negociacao e nunca deve ser revelado automaticamente ao cliente",
+    `- modo de autonomia configurado: ${presentation.autonomyMode}`,
+    "- conhecer o modo de autonomia e os limites nao substitui a verificacao da autoridade concreta aplicavel a uma concessao especifica",
+  ];
+
+  if (presentation.discountSpecialRules) {
+    lines.push(
+      `- regras especiais configuradas: ${presentation.discountSpecialRules}`,
+    );
+  }
+
+  if (presentation.defaultDiscountPercent != null) {
+    lines.push(
+      `- primeiro degrau normal configurado: ${presentation.defaultDiscountPercent}%`,
+    );
+  }
+
+  if (presentation.maxDiscountPercent != null) {
+    lines.push(
+      `- teto normal interno configurado: ${presentation.maxDiscountPercent}%`,
+    );
+  }
+
+  lines.push(
+    presentation.allowAskAboveMaxDiscount
+      ? "- acima do teto: a politica permite consultar um humano; consultar nao significa aprovacao"
+      : "- acima do teto: a politica nao autoriza nem consulta automatica nem promessa de concessao",
+  );
+
+  if (
+    presentation.highValueEnabled &&
+    presentation.highValueThresholdAmountCents != null &&
+    presentation.highValueDiscountPercent != null
+  ) {
+    const threshold = `R$ ${(presentation.highValueThresholdAmountCents / 100)
+      .toFixed(2)
+      .replace(".", ",")}`;
+
+    lines.push(
+      `- politica de alto valor: a partir de ${threshold}, existe percentual elegivel de ${presentation.highValueDiscountPercent}%; elegibilidade nao equivale a concessao aprovada`,
+    );
+  }
+
+  if (presentation.hasHistoricalConflict) {
+    lines.push(
+      "- existe divergencia historica com dado legado; use exclusivamente a politica canonica atual",
+    );
+  }
+
+  return lines.join("\n");
+}
 function buildInstructions(args: {
   conversationPattern: ConversationPattern;
   paymentOrClosingSubtype?: PaymentOrClosingSubtype;
@@ -8834,6 +8981,7 @@ function buildInstructions(args: {
   explicitCatalogRequest: boolean;
   catalogEvidenceBlock: string;
   commercialSuggestionPolicyBlock: string;
+  canonicalDiscountPolicyBlock: string;
   responsePriorityBlock: string;
   examplesBlock: string;
   shouldPresentPoolRecommendations: boolean;
@@ -8930,10 +9078,11 @@ REGRAS OPERACIONAIS
 - trate desconto máximo/percentual máximo como limite interno de negociação, não como oferta inicial para o cliente
 - nunca revele automaticamente o percentual máximo de desconto configurado, como "até 18%", "até X%" ou equivalente, a menos que a configuração diga explicitamente para divulgar esse número ao cliente
 - se o cliente perguntar sobre desconto, responda de forma comercial e protegendo margem: diga que a loja consegue avaliar desconto conforme produto, projeto, forma de pagamento ou condição configurada
-- ao falar de desconto, venda valor antes de reduzir preço: destaque orientação, produto, instalação, qualidade, segurança, garantia, atendimento ou outro diferencial configurado antes de negociar abatimento
+- ao falar de desconto, venda valor antes de reduzir preço, mas destaque somente atributos e diferenciais que estejam comprovados no catálogo, na Configuração viva ou em outra fonte canônica presente no contexto; não use qualidade, segurança, garantia, durabilidade, resistência ou certificação como argumento comercial sem fonte explícita
 - só aproxime ou ofereça percentual específico quando isso estiver claramente autorizado nas regras de desconto, política comercial ou por aprovação humana
 - se faltar base para cravar algo, responda com cautela comercial em vez de inventar certeza
 - se houver regra clara de escalonamento humano, respeite
+${args.canonicalDiscountPolicyBlock}
 ${salesAiOperatingWindowBlock}
 ${salesAiAppointmentBlock}
 - não prometa enviar mídia, PDF, catálogo ou fotos como se a entrega já estivesse acontecendo
@@ -9505,6 +9654,60 @@ export async function generateAiSalesReply(
       };
     }
 
+    const { data: channelSettings, error: channelSettingsError } =
+      await supabase
+        .from("store_channel_settings")
+        .select(
+          "organization_id, store_id, commercial_channel_name, commercial_receives_real_clients, commercial_is_official_sales_channel, commercial_channel_type, commercial_entry_priority, commercial_human_handoff_enabled, commercial_channel_notes, integration_provider_name, integration_connection_mode, integrations_notes, created_at, updated_at",
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", resolvedStoreId)
+        .maybeSingle();
+
+    if (channelSettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_CHANNEL_SETTINGS_FAILED",
+        message: channelSettingsError.message,
+      };
+    }
+    const { data: discountSettings, error: discountSettingsError } =
+      await supabase
+        .from("store_discount_settings")
+        .select(
+          "organization_id, store_id, default_discount_percent, max_discount_percent, allow_ask_above_max_discount, discount_autonomy_mode, discount_special_rules, created_at, updated_at",
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", resolvedStoreId)
+        .maybeSingle();
+
+    if (discountSettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_DISCOUNT_SETTINGS_FAILED",
+        message: discountSettingsError.message,
+      };
+    }
+
+    const {
+      data: highValueDiscountSettings,
+      error: highValueDiscountSettingsError,
+    } = await supabase
+      .from("store_high_value_discount_settings")
+      .select(
+        "organization_id, store_id, enabled, threshold_amount_cents, discount_percent, created_at, updated_at",
+      )
+      .eq("organization_id", organizationId)
+      .eq("store_id", resolvedStoreId)
+      .maybeSingle();
+
+    if (highValueDiscountSettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_HIGH_VALUE_DISCOUNT_SETTINGS_FAILED",
+        message: highValueDiscountSettingsError.message,
+      };
+    }
     const onboardingMap: Record<string, string> = {};
 
     for (const row of (onboardingAnswers || []) as StoreAnswerRow[]) {
@@ -9514,6 +9717,10 @@ export async function generateAiSalesReply(
       }
     }
 
+    const canonicalDiscountSettings =
+      (discountSettings ?? null) as StoreDiscountSettingsRow | null;
+    const canonicalHighValueDiscountSettings =
+      (highValueDiscountSettings ?? null) as StoreHighValueDiscountSettingsRow | null;
     const canonicalCommercialAiSettings =
       (commercialAiSettings ?? null) as StoreCommercialAiSettingsRow | null;
     const canonicalPaymentSettings =
@@ -9530,6 +9737,19 @@ export async function generateAiSalesReply(
     const operationSettingsInput = createStoreOperationSettingsInputFromSources({
       settings: canonicalOperationSettings,
     });
+    const channelSettingsInput =
+      createStoreChannelSettingsInputFromSources({
+        answers: onboardingMap,
+        settings:
+          (channelSettings ?? null) as StoreChannelSettingsRow | null,
+      });
+    const discountPresentation = createStoreDiscountPresentationFromSources({
+      answers: onboardingMap,
+      settings: canonicalDiscountSettings,
+      highValueSettings: canonicalHighValueDiscountSettings,
+    });
+    const canonicalDiscountPolicyBlock =
+      buildCanonicalDiscountPolicyPromptBlock(discountPresentation);
     const commercialAiSettingsInput =
       createStoreCommercialAiSettingsInputFromSources({
         answers: onboardingMap,
@@ -10503,6 +10723,7 @@ export async function generateAiSalesReply(
       explicitCatalogRequest,
       catalogEvidenceBlock,
       commercialSuggestionPolicyBlock,
+      canonicalDiscountPolicyBlock,
       responsePriorityBlock,
       examplesBlock,
       shouldPresentPoolRecommendations,
@@ -10534,6 +10755,11 @@ export async function generateAiSalesReply(
       commercialObjective.responseMode,
       lead.name
     );
+    const humanHandoff = inferHumanHandoff({
+      lastCustomerMessage,
+      commercialHumanHandoffEnabled:
+        channelSettingsInput.commercialHumanHandoffEnabled,
+    });
     const commercialHandoff = inferCommercialHandoff({
       lastCustomerMessage,
       customerConversationText,
@@ -10563,6 +10789,9 @@ export async function generateAiSalesReply(
             patienceSignal: commercialObjective.patienceSignal,
           });
 
+    const shouldUseHumanReplyOverride = Boolean(
+      humanHandoff?.replyOverride
+    );
     const shouldUseCommercialReplyOverride = Boolean(
       commercialHandoff?.replyOverride &&
         commercialHandoff.shouldCreateTask &&
@@ -10577,7 +10806,9 @@ export async function generateAiSalesReply(
           )
         )
     );
-    const finalAiText = catalogPhotoAction
+    const finalAiText = shouldUseHumanReplyOverride
+      ? String(humanHandoff?.replyOverride || "").trim()
+      : catalogPhotoAction
       ? `Sim, temos foto d${catalogPhotoAction.targetType === "pool" ? "a" : "o"} ${
           catalogPhotoAction.targetType === "pool"
             ? catalogPhotoAction.poolName || "modelo"
@@ -10610,6 +10841,7 @@ export async function generateAiSalesReply(
         resolvedStoreId,
         requestedStoreId: requestedStoreId || null,
         operationalFollowUpDecision,
+        humanHandoff,
         commercialHandoff,
         catalogPhotoAction,
         resolvedCommercialOpportunityId,
