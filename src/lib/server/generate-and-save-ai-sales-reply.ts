@@ -23,10 +23,27 @@ import {
   loadSalesAiOperatingWindowAuthority,
 } from "./sales-ai-operating-window";
 
+type ScheduledSalesResumeReason =
+  | "sales_ai_after_hours_policy"
+  | "customer_requested_tomorrow"
+  | "customer_requested_next_week"
+  | "customer_requested_next_month";
+
+type ScheduledSalesResumeExecutionContext = {
+  kind: "scheduled_resume";
+  queueId: string;
+  queueKey: string | null;
+  reason: ScheduledSalesResumeReason;
+  resumeAt: string;
+  anchorMessageId: string;
+  styleHint?: string | null;
+};
+
 type GenerateAndSaveAiSalesReplyParams = {
   organizationId: string;
   storeId: string;
   conversationId: string;
+  executionContext?: ScheduledSalesResumeExecutionContext;
 };
 
 type GenerateAndSaveAiSalesReplyResult =
@@ -74,6 +91,57 @@ const AI_REPLY_GENERATION_ANCHOR_MISMATCH =
   "AI_REPLY_GENERATION_ANCHOR_MISMATCH";
 const AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE =
   "AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE";
+
+const SCHEDULED_SALES_RESUME_REASONS = new Set<ScheduledSalesResumeReason>([
+  "sales_ai_after_hours_policy",
+  "customer_requested_tomorrow",
+  "customer_requested_next_week",
+  "customer_requested_next_month",
+]);
+
+function resolveScheduledSalesResumeExecutionContext(
+  value: unknown,
+): ScheduledSalesResumeExecutionContext | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<ScheduledSalesResumeExecutionContext>;
+  const queueId = String(candidate.queueId || "").trim();
+  const queueKey =
+    candidate.queueKey == null
+      ? null
+      : String(candidate.queueKey || "").trim() || null;
+  const reason = String(candidate.reason || "").trim() as ScheduledSalesResumeReason;
+  const resumeAt = String(candidate.resumeAt || "").trim();
+  const anchorMessageId = String(candidate.anchorMessageId || "").trim();
+  const styleHint =
+    candidate.styleHint == null
+      ? null
+      : String(candidate.styleHint || "").trim() || null;
+  const resumeAtMs = Date.parse(resumeAt);
+
+  if (
+    candidate.kind !== "scheduled_resume" ||
+    !queueId ||
+    !anchorMessageId ||
+    !SCHEDULED_SALES_RESUME_REASONS.has(reason) ||
+    !Number.isFinite(resumeAtMs) ||
+    resumeAtMs > Date.now()
+  ) {
+    return null;
+  }
+
+  return {
+    kind: "scheduled_resume",
+    queueId,
+    queueKey,
+    reason,
+    resumeAt,
+    anchorMessageId,
+    styleHint,
+  };
+}
 const CONVERSATION_SCOPE_MISMATCH_ERRORS = new Set([
   "CONVERSATION_SCOPE_ORGANIZATION_MISSING",
   "CONVERSATION_SCOPE_LEAD_MISSING",
@@ -3173,6 +3241,7 @@ async function persistOperationalFollowUpDecision(args: {
   >;
   leadId: string | null;
   decision: OperationalFollowUpDecision;
+  anchorMessageId: string;
   lastCustomerMessageAt: string | null;
   lastAiMessageAt: string | null;
 }) {
@@ -3181,6 +3250,7 @@ async function persistOperationalFollowUpDecision(args: {
     canonicalScope,
     leadId,
     decision,
+    anchorMessageId,
     lastCustomerMessageAt,
     lastAiMessageAt,
   } = args;
@@ -3284,16 +3354,12 @@ async function persistOperationalFollowUpDecision(args: {
   }
 
   const now = new Date();
-
-  if (isFutureIso(nextResumeAt, now)) {
-    return;
-  }
-
   const queueKey = `resume:${canonicalScope.conversationId}:${decision.reason}:${formatQueueTimestamp(nextResumeAt, timeZone)}`;
   const input = {
     type: "resume_sales_conversation",
     reason: decision.reason,
     resumeAt: nextResumeAt,
+    anchorMessageId,
     system_event: "ai_window_resume",
     resume_mode: decision.reason,
     style_hint: "Retomar de forma natural, humana e sem pressão. Não justificar atraso.",
@@ -3306,10 +3372,10 @@ async function persistOperationalFollowUpDecision(args: {
     requested_timing: decision.requestedTiming || null,
     timezone_name: timeZone,
   };
-
-  const { error: insertQueueError } = await supabase
+  const { error: queueUpsertError } = await supabase
     .from("ai_run_queue")
-    .insert({
+    .upsert(
+      {
       organization_id: canonicalScope.organizationId,
       store_id: canonicalScope.storeId,
       conversation_id: canonicalScope.conversationId,
@@ -3319,11 +3385,13 @@ async function persistOperationalFollowUpDecision(args: {
       enqueued_at: now.toISOString(),
       processed_at: null,
       processing_error: null,
-    });
+      },
+      { onConflict: "queue_key" },
+    );
 
-  if (insertQueueError) {
+  if (queueUpsertError) {
     throw new Error(
-      `Falha ao enfileirar retomada operacional: ${insertQueueError.message}`
+      `Falha ao enfileirar retomada operacional: ${queueUpsertError.message}`
     );
   }
 }
@@ -3334,6 +3402,7 @@ async function persistAfterHoursResume(args: {
     ReturnType<typeof resolveConversationAiWindowStateScope>
   >;
   leadId: string | null;
+  anchorMessageId: string;
   lastCustomerMessageAt: string | null;
   operatingWindowContext: Awaited<
     ReturnType<typeof loadSalesAiOperatingWindowAuthority>
@@ -3349,6 +3418,7 @@ async function persistAfterHoursResume(args: {
     type: "resume_sales_conversation",
     reason: "sales_ai_after_hours_policy",
     resumeAt: nextResumeAt,
+    anchorMessageId: args.anchorMessageId,
     system_event: "ai_window_resume",
     resume_mode: "sales_ai_after_hours_policy",
     created_at_iso: now.toISOString(),
@@ -3953,6 +4023,18 @@ export async function generateAndSaveAiSalesReply(
     const organizationId = String(params.organizationId || "").trim();
     const storeId = String(params.storeId || "").trim();
     const conversationId = String(params.conversationId || "").trim();
+    const scheduledResumeContext = params.executionContext
+      ? resolveScheduledSalesResumeExecutionContext(params.executionContext)
+      : null;
+
+    if (params.executionContext && !scheduledResumeContext) {
+      return {
+        ok: false,
+        error: "INVALID_SCHEDULED_RESUME_CONTEXT",
+        message:
+          "A retomada programada nao possui contexto valido, vencido e ancorado para execucao.",
+      };
+    }
 
     if (!organizationId || !storeId || !conversationId) {
       return {
@@ -4065,7 +4147,18 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    if (hasAiReplyAfterLatestCustomerMessage(boundaryBeforeGeneration)) {
+    if (
+      scheduledResumeContext &&
+      boundaryBeforeGeneration.lastIncomingCustomerMessageId !==
+        scheduledResumeContext.anchorMessageId
+    ) {
+      return buildAiReplySupersededResult();
+    }
+
+    if (
+      !scheduledResumeContext &&
+      hasAiReplyAfterLatestCustomerMessage(boundaryBeforeGeneration)
+    ) {
       return {
         ok: false,
         error: "AI_REPLY_ALREADY_EXISTS_FOR_LATEST_CUSTOMER_MESSAGE",
@@ -4086,6 +4179,7 @@ export async function generateAndSaveAiSalesReply(
         supabase,
         canonicalScope,
         leadId: normalizedConversation.lead_id || null,
+        anchorMessageId: boundaryBeforeGeneration.lastIncomingCustomerMessageId,
         lastCustomerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
         operatingWindowContext: salesAiOperatingWindowContext,
       });
@@ -4101,26 +4195,31 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    await clearPendingResumeArtifacts({
-      supabase,
-      canonicalScope,
-      customerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
-      preserveReason: false,
-      nextResumeReason: null,
-      queueCancelReason: "cancelled_by_new_customer_message",
-    });
+    if (!scheduledResumeContext) {
+      await clearPendingResumeArtifacts({
+        supabase,
+        canonicalScope,
+        customerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
+        preserveReason: false,
+        nextResumeReason: null,
+        queueCancelReason: "cancelled_by_new_customer_message",
+      });
+    }
 
-    const contractAcceptanceResult = await resolvedDeps.tryHandleCustomerContractAcceptance({
-      supabase,
-      organizationId: canonicalOrganizationId,
-      storeId: canonicalStoreId,
-      conversationId: canonicalConversationId,
-      leadId: normalizedConversation.lead_id || null,
-      anchorMessageId: boundaryBeforeGeneration.lastIncomingCustomerMessageId,
-    });
+    if (!scheduledResumeContext) {
+      const contractAcceptanceResult =
+        await resolvedDeps.tryHandleCustomerContractAcceptance({
+          supabase,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          leadId: normalizedConversation.lead_id || null,
+          anchorMessageId: boundaryBeforeGeneration.lastIncomingCustomerMessageId,
+        });
 
-    if (contractAcceptanceResult) {
-      return contractAcceptanceResult;
+      if (contractAcceptanceResult) {
+        return contractAcceptanceResult;
+      }
     }
 
     const generationResult = await resolvedDeps.generateAiSalesReply({
@@ -4129,6 +4228,15 @@ export async function generateAndSaveAiSalesReply(
       conversationId: canonicalConversationId,
       anchorMessageId: boundaryBeforeGeneration.lastIncomingCustomerMessageId,
       salesAiOperatingWindowContext,
+      ...(scheduledResumeContext
+        ? {
+            scheduledResumeContext: {
+              reason: scheduledResumeContext.reason,
+              resumeAt: scheduledResumeContext.resumeAt,
+              styleHint: scheduledResumeContext.styleHint,
+            },
+          }
+        : {}),
     });
 
     if (generationResult.ok === false) {
@@ -4198,7 +4306,17 @@ export async function generateAndSaveAiSalesReply(
       return buildAiReplySupersededResult(aiText);
     }
 
-    if (hasAiReplyAfterLatestCustomerMessage(boundaryBeforeSave)) {
+    const aiBoundaryChangedDuringGeneration =
+      boundaryBeforeSave.lastAiMessageId !==
+        boundaryBeforeGeneration.lastAiMessageId ||
+      boundaryBeforeSave.lastAiMessageAt !==
+        boundaryBeforeGeneration.lastAiMessageAt;
+
+    if (
+      scheduledResumeContext
+        ? aiBoundaryChangedDuringGeneration
+        : hasAiReplyAfterLatestCustomerMessage(boundaryBeforeSave)
+    ) {
       return {
         ok: false,
         error: "AI_REPLY_ALREADY_EXISTS_FOR_LATEST_CUSTOMER_MESSAGE",
@@ -4349,11 +4467,16 @@ export async function generateAndSaveAiSalesReply(
       supabase,
       canonicalScope,
       leadId: normalizedConversation.lead_id || null,
-      decision:
-        generationResult.context?.operationalFollowUpDecision || {
-          kind: "none",
-          reason: "none",
-        },
+      decision: scheduledResumeContext
+        ? {
+            kind: "none",
+            reason: "none",
+          }
+        : generationResult.context?.operationalFollowUpDecision || {
+            kind: "none",
+            reason: "none",
+          },
+      anchorMessageId: generationAnchorMessageId,
       lastCustomerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
       lastAiMessageAt: aiMessageTimestamp,
     });

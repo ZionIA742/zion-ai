@@ -58,11 +58,20 @@ function safeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error || "unknown_error");
 }
 
-function isAfterHoursResume(row: AiRunQueueRow): boolean {
+function isDueSalesResume(row: AiRunQueueRow): boolean {
   const input = row.input && typeof row.input === "object" ? row.input : {};
+  const reason = String(input.reason || "");
+
+  const supportedReasons = new Set([
+    "sales_ai_after_hours_policy",
+    "customer_requested_tomorrow",
+    "customer_requested_next_week",
+    "customer_requested_next_month",
+  ]);
+
   return (
     input.type === "resume_sales_conversation" &&
-    input.reason === "sales_ai_after_hours_policy" &&
+    supportedReasons.has(reason) &&
     Boolean(input.resumeAt) &&
     Date.parse(String(input.resumeAt)) <= Date.now()
   );
@@ -110,6 +119,35 @@ async function loadConversationAutomationState(args: {
   return (data as ConversationAutomationRow | null) || null;
 }
 
+async function consumeMatchingSalesResumeWindowState(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  reason: string;
+  resumeAt: string;
+}) {
+  const { error } = await args.supabase
+    .from("conversation_ai_window_state")
+    .update({
+      waiting_next_day: false,
+      next_resume_at: null,
+      resume_reason: "none",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .eq("resume_reason", args.reason)
+    .eq("next_resume_at", args.resumeAt);
+
+  if (error) {
+    throw new Error(
+      `Falha ao consumir estado canonico da retomada: ${error.message}`,
+    );
+  }
+}
+
 export async function processDueAiRunQueue(
   input: ProcessAiRunQueueInput,
 ): Promise<ProcessAiRunQueueResult> {
@@ -142,10 +180,17 @@ export async function processDueAiRunQueue(
   let failed = 0;
   let skipped = 0;
 
-  for (const row of ((data || []) as AiRunQueueRow[]).filter(isAfterHoursResume)) {
+  for (const row of ((data || []) as AiRunQueueRow[]).filter(isDueSalesResume)) {
     const queueId = String(row.id || "").trim();
     const conversationId = String(row.conversation_id || "").trim();
     const queueKey = row.queue_key || null;
+    const queueInput =
+      row.input && typeof row.input === "object" ? row.input : {};
+    const resumeReason = String(queueInput.reason || "").trim();
+    const resumeAt = String(queueInput.resumeAt || "").trim();
+    const anchorMessageId = String(queueInput.anchorMessageId || "").trim();
+    const styleHint =
+      String(queueInput.styleHint || queueInput.style_hint || "").trim() || null;
 
     if (!queueId || !conversationId) {
       skipped += 1;
@@ -154,6 +199,32 @@ export async function processDueAiRunQueue(
         queueKey,
         status: "skipped",
         detail: "queue_missing_conversation",
+      });
+      continue;
+    }
+
+    if (!anchorMessageId) {
+      await markQueueProcessed({
+        supabase,
+        id: queueId,
+        organizationId,
+        storeId,
+        detail: "resume_anchor_missing",
+      });
+      await consumeMatchingSalesResumeWindowState({
+        supabase,
+        organizationId,
+        storeId,
+        conversationId,
+        reason: resumeReason,
+        resumeAt,
+      });
+      skipped += 1;
+      results.push({
+        queueId,
+        queueKey,
+        status: "skipped",
+        detail: "resume_anchor_missing",
       });
       continue;
     }
@@ -173,6 +244,14 @@ export async function processDueAiRunQueue(
           storeId,
           detail: "conversation_not_active",
         });
+        await consumeMatchingSalesResumeWindowState({
+          supabase,
+          organizationId,
+          storeId,
+          conversationId,
+          reason: resumeReason,
+          resumeAt,
+        });
         skipped += 1;
         results.push({
           queueId,
@@ -191,6 +270,14 @@ export async function processDueAiRunQueue(
           storeId,
           detail: "human_active",
         });
+        await consumeMatchingSalesResumeWindowState({
+          supabase,
+          organizationId,
+          storeId,
+          conversationId,
+          reason: resumeReason,
+          resumeAt,
+        });
         skipped += 1;
         results.push({ queueId, queueKey, status: "skipped", detail: "human_active" });
         continue;
@@ -200,6 +287,19 @@ export async function processDueAiRunQueue(
         organizationId,
         storeId,
         conversationId,
+        executionContext: {
+          kind: "scheduled_resume",
+          queueId,
+          queueKey,
+          reason: resumeReason as
+            | "sales_ai_after_hours_policy"
+            | "customer_requested_tomorrow"
+            | "customer_requested_next_week"
+            | "customer_requested_next_month",
+          resumeAt,
+          anchorMessageId,
+          styleHint,
+        },
       });
       const detail = aiResult.ok ? null : aiResult.error;
 
@@ -209,6 +309,15 @@ export async function processDueAiRunQueue(
         organizationId,
         storeId,
         detail,
+      });
+
+      await consumeMatchingSalesResumeWindowState({
+        supabase,
+        organizationId,
+        storeId,
+        conversationId,
+        reason: resumeReason,
+        resumeAt,
       });
 
       if (aiResult.ok) {

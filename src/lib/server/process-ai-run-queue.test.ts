@@ -15,6 +15,10 @@ function createQueueSupabase(
     eq: Array<{ column: string; value: unknown }>;
     is: Array<{ column: string; value: unknown }>;
   }> = [];
+  const windowUpdates: Array<{
+    payload: Record<string, unknown>;
+    eq: Array<{ column: string; value: unknown }>;
+  }> = [];
   const selects: Array<{
     eq: Array<{ column: string; value: unknown }>;
     is: Array<{ column: string; value: unknown }>;
@@ -25,6 +29,7 @@ function createQueueSupabase(
 
   return {
     updates,
+    windowUpdates,
     selects,
     supabase: {
       from(table: string) {
@@ -50,6 +55,35 @@ function createQueueSupabase(
               };
             },
           };
+        }
+
+        if (table === "conversation_ai_window_state") {
+          const state = {
+            payload: {} as Record<string, unknown>,
+            eq: [] as Array<{ column: string; value: unknown }>,
+          };
+
+          const builder = {
+            update(payload: Record<string, unknown>) {
+              state.payload = payload;
+              return builder;
+            },
+            eq(column: string, value: unknown) {
+              state.eq.push({ column, value });
+              return builder;
+            },
+            then<TResult1 = { error: null }, TResult2 = never>(
+              onfulfilled?:
+                | ((value: { error: null }) => TResult1 | PromiseLike<TResult1>)
+                | null,
+              onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+            ) {
+              windowUpdates.push(state);
+              return Promise.resolve({ error: null }).then(onfulfilled, onrejected);
+            },
+          };
+
+          return builder;
         }
 
         assert.equal(table, "ai_run_queue");
@@ -118,6 +152,7 @@ function queueRow(overrides?: Record<string, unknown>) {
       type: "resume_sales_conversation",
       reason: "sales_ai_after_hours_policy",
       resumeAt: "2020-01-01T00:00:00.000Z",
+      anchorMessageId: "msg-customer-1",
     },
     ...overrides,
   };
@@ -149,7 +184,20 @@ const tests: TestCase[] = [
 
       assert.equal(result.succeeded, 1);
       assert.deepEqual(calls, [
-        { organizationId: "org-1", storeId: "store-1", conversationId: "conv-1" },
+        {
+          organizationId: "org-1",
+          storeId: "store-1",
+          conversationId: "conv-1",
+          executionContext: {
+            kind: "scheduled_resume",
+            queueId: "queue-1",
+            queueKey: "resume:conv-1:sales_ai_after_hours:202609040800",
+            reason: "sales_ai_after_hours_policy",
+            resumeAt: "2020-01-01T00:00:00.000Z",
+            anchorMessageId: "msg-customer-1",
+            styleHint: null,
+          },
+        },
       ]);
       assert.deepEqual(recorder.selects[0]?.eq, [
         { column: "organization_id", value: "org-1" },
@@ -195,6 +243,49 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "missing scheduled resume anchor consumes matching canonical window without running sales AI",
+    run: async () => {
+      const recorder = createQueueSupabase([
+        queueRow({
+          input: {
+            type: "resume_sales_conversation",
+            reason: "customer_requested_tomorrow",
+            resumeAt: "2020-01-01T00:00:00.000Z",
+          },
+        }),
+      ]);
+      let calls = 0;
+
+      const result = await processDueAiRunQueue({
+        organizationId: "org-1",
+        storeId: "store-1",
+        supabaseClient: recorder.supabase,
+        runAiFlow: async () => {
+          calls += 1;
+          throw new Error("resume without anchor must not run");
+        },
+      });
+
+      assert.equal(result.skipped, 1);
+      assert.equal(result.results[0]?.detail, "resume_anchor_missing");
+      assert.equal(calls, 0);
+      assert.equal(recorder.updates.length, 1);
+      assert.equal(
+        recorder.windowUpdates.length,
+        1,
+        "terminal resume without anchor must consume its matching canonical window",
+      );
+
+      assert.deepEqual(recorder.windowUpdates[0]?.eq, [
+        { column: "organization_id", value: "org-1" },
+        { column: "store_id", value: "store-1" },
+        { column: "conversation_id", value: "conv-1" },
+        { column: "resume_reason", value: "customer_requested_tomorrow" },
+        { column: "next_resume_at", value: "2020-01-01T00:00:00.000Z" },
+      ]);
+    },
+  },
+  {
     name: "human takeover or terminal conversation before resume skips without calling sales AI",
     run: async () => {
       for (const conversation of [
@@ -216,21 +307,35 @@ const tests: TestCase[] = [
         assert.equal(result.skipped, 1);
         assert.equal(calls, 0);
         assert.equal(recorder.updates.length, 1);
+        assert.equal(
+          recorder.windowUpdates.length,
+          1,
+          "terminal human/closed resume must consume its matching canonical window",
+        );
+        assert.deepEqual(recorder.windowUpdates[0]?.eq, [
+          { column: "organization_id", value: "org-1" },
+          { column: "store_id", value: "store-1" },
+          { column: "conversation_id", value: "conv-1" },
+          { column: "resume_reason", value: "sales_ai_after_hours_policy" },
+          { column: "next_resume_at", value: "2020-01-01T00:00:00.000Z" },
+        ]);
       }
     },
   },
   {
-    name: "non after-hours resume rows are ignored by this worker",
+    name: "future customer requested resume waits until its resume time",
     run: async () => {
       const recorder = createQueueSupabase([
         queueRow({
+          queue_key: "resume:conv-1:customer_requested_tomorrow:future",
           input: {
             type: "resume_sales_conversation",
             reason: "customer_requested_tomorrow",
-            resumeAt: "2020-01-01T00:00:00.000Z",
+            resumeAt: "2999-01-01T00:00:00.000Z",
           },
         }),
       ]);
+
       let calls = 0;
 
       const result = await processDueAiRunQueue({
@@ -239,13 +344,97 @@ const tests: TestCase[] = [
         supabaseClient: recorder.supabase,
         runAiFlow: async () => {
           calls += 1;
-          throw new Error("should not run");
+          throw new Error("future resume must not run");
         },
       });
 
       assert.equal(result.processed, 0);
+      assert.equal(result.succeeded, 0);
+      assert.equal(result.failed, 0);
+      assert.equal(result.skipped, 0);
       assert.equal(calls, 0);
       assert.equal(recorder.updates.length, 0);
+    },
+  },
+  {
+    name: "due customer requested resume reopens the canonical sales AI flow",
+    run: async () => {
+      const recorder = createQueueSupabase([
+        queueRow({
+          queue_key: "resume:conv-1:customer_requested_tomorrow:202609050900",
+          input: {
+            type: "resume_sales_conversation",
+            reason: "customer_requested_tomorrow",
+            resumeAt: "2020-01-01T00:00:00.000Z",
+            anchorMessageId: "msg-customer-1",
+            style_hint: "Retomar de forma natural, humana e sem pressao.",
+          },
+        }),
+      ]);
+      const calls: Array<Record<string, unknown>> = [];
+
+      const result = await processDueAiRunQueue({
+        organizationId: "org-1",
+        storeId: "store-1",
+        supabaseClient: recorder.supabase,
+        runAiFlow: async (args) => {
+          calls.push(args);
+          return {
+            ok: true,
+            aiText: "retomada ok",
+            context: {},
+            usage: null,
+            persisted: true,
+            messageId: "msg-ai-resume-1",
+          };
+        },
+      });
+
+      assert.equal(result.processed, 1);
+      assert.equal(result.succeeded, 1);
+      assert.equal(result.failed, 0);
+      assert.equal(result.skipped, 0);
+      assert.deepEqual(calls, [
+        {
+          organizationId: "org-1",
+          storeId: "store-1",
+          conversationId: "conv-1",
+          executionContext: {
+            kind: "scheduled_resume",
+            queueId: "queue-1",
+            queueKey: "resume:conv-1:customer_requested_tomorrow:202609050900",
+            reason: "customer_requested_tomorrow",
+            resumeAt: "2020-01-01T00:00:00.000Z",
+            anchorMessageId: "msg-customer-1",
+            styleHint: "Retomar de forma natural, humana e sem pressao.",
+          },
+        },
+      ]);
+      assert.equal(recorder.updates.length, 1);
+
+      assert.equal(
+        recorder.windowUpdates.length,
+        1,
+        "consumed resume must clear its matching canonical window state",
+      );
+
+      const consumedWindow = recorder.windowUpdates[0];
+
+      assert.equal(consumedWindow?.payload.waiting_next_day, false);
+      assert.equal(consumedWindow?.payload.next_resume_at, null);
+      assert.equal(consumedWindow?.payload.resume_reason, "none");
+      assert.equal(
+        Number.isFinite(Date.parse(String(consumedWindow?.payload.updated_at || ""))),
+        true,
+      );
+
+      assert.deepEqual(consumedWindow?.eq, [
+        { column: "organization_id", value: "org-1" },
+        { column: "store_id", value: "store-1" },
+        { column: "conversation_id", value: "conv-1" },
+        { column: "resume_reason", value: "customer_requested_tomorrow" },
+        { column: "next_resume_at", value: "2020-01-01T00:00:00.000Z" },
+      ]);
     },
   },
 ];

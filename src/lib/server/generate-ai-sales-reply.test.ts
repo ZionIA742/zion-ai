@@ -3650,6 +3650,65 @@ test("generateAiSalesReply writes canonical qualification facts, rereads snapsho
   );
 });
 
+test("generateAiSalesReply tells the model when the turn is a scheduled resume", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "me chama amanha",
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Oi! Como combinamos, estou voltando por aqui.",
+      usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    scheduledResumeContext: {
+      reason: "customer_requested_tomorrow",
+      resumeAt: "2026-09-05T12:00:00.000Z",
+      styleHint: "Retomar de forma natural, humana e sem pressao.",
+    },
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.deepEqual(result.context.operationalFollowUpDecision, {
+    kind: "none",
+    reason: "none",
+  });
+
+  const finalOpenAiCall = openai.calls[1] as Record<string, unknown>;
+  const finalPayload = JSON.stringify(finalOpenAiCall);
+
+  assert.equal(
+    finalPayload.includes("RETOMADA PROGRAMADA"),
+    true,
+    "scheduled resume must be explicit in the model instructions",
+  );
+  assert.equal(
+    finalPayload.includes("nao e uma nova mensagem do cliente"),
+    true,
+  );
+  assert.equal(
+    finalPayload.includes("retome de forma natural"),
+    true,
+  );
+  assert.equal(
+    finalPayload.includes("nao responda novamente ao pedido antigo de ser chamado"),
+    true,
+  );
+});
 test("generateAiSalesReply materializes profile with the initial qualification snapshot when no new facts are written", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent: "oi, queria entender melhor as opcoes",

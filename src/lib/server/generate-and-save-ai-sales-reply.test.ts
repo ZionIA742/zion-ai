@@ -1902,6 +1902,217 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "scheduled resume is superseded when a newer customer message exists",
+    run: async () => {
+      const supabase = createAiWindowScopeSupabase();
+      let generationCalls = 0;
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+            executionContext: {
+              kind: "scheduled_resume",
+              queueId: "queue-stale-1",
+              queueKey:
+                "resume:conv-canonical:customer_requested_tomorrow:202609050900",
+              reason: "customer_requested_tomorrow",
+              resumeAt: "2020-01-01T00:00:00.000Z",
+              anchorMessageId: "msg-customer-1",
+              styleHint: "Retomar de forma natural, humana e sem pressao.",
+            },
+          },
+          {
+            createSupabaseClient: () => supabase.client as never,
+            ...createScopeAwareReplyDeps({
+              loadConversationMessageBoundaryState: createBoundaryLoader([
+                {
+                  lastIncomingCustomerMessageId: "msg-customer-2",
+                  lastIncomingCustomerMessageAt: "2026-09-05T11:55:00.000Z",
+                  lastAiMessageId: "msg-ai-promise-1",
+                  lastAiMessageAt: "2026-09-04T12:00:01.000Z",
+                },
+              ]),
+              generateAiSalesReply: async () => {
+                generationCalls += 1;
+                return {
+                  ok: true,
+                  aiText: "Nao deveria ser gerada.",
+                  anchorMessageId: "msg-customer-2",
+                  usage: null,
+                  context: {},
+                } as never;
+              },
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-invalid";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.equal(
+          result.error,
+          "AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE",
+        );
+        assert.equal(generationCalls, 0);
+        assert.equal(sendCalls, 0);
+      });
+    },
+  },
+
+  {
+    name: "scheduled resume is blocked when another AI reply appears during generation",
+    run: async () => {
+      const supabase = createAiWindowScopeSupabase();
+      let generationCalls = 0;
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+            executionContext: {
+              kind: "scheduled_resume",
+              queueId: "queue-concurrent-1",
+              queueKey:
+                "resume:conv-canonical:customer_requested_tomorrow:202609050900",
+              reason: "customer_requested_tomorrow",
+              resumeAt: "2020-01-01T00:00:00.000Z",
+              anchorMessageId: "msg-customer-1",
+              styleHint: "Retomar de forma natural, humana e sem pressao.",
+            },
+          },
+          {
+            createSupabaseClient: () => supabase.client as never,
+            ...createScopeAwareReplyDeps({
+              loadConversationMessageBoundaryState: createBoundaryLoader([
+                {
+                  lastIncomingCustomerMessageId: "msg-customer-1",
+                  lastIncomingCustomerMessageAt: "2026-09-04T12:00:00.000Z",
+                  lastAiMessageId: "msg-ai-promise-1",
+                  lastAiMessageAt: "2026-09-04T12:00:01.000Z",
+                },
+                {
+                  lastIncomingCustomerMessageId: "msg-customer-1",
+                  lastIncomingCustomerMessageAt: "2026-09-04T12:00:00.000Z",
+                  lastAiMessageId: "msg-ai-concurrent-2",
+                  lastAiMessageAt: "2026-09-05T12:00:01.000Z",
+                },
+              ]),
+              generateAiSalesReply: async () => {
+                generationCalls += 1;
+                return {
+                  ok: true,
+                  aiText: "Oi! Como combinamos, estou voltando por aqui.",
+                  anchorMessageId: "msg-customer-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                  },
+                } as never;
+              },
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-should-not-send";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.equal(
+          result.error,
+          "AI_REPLY_ALREADY_EXISTS_FOR_LATEST_CUSTOMER_MESSAGE",
+        );
+        assert.equal(generationCalls, 1);
+        assert.equal(sendCalls, 0);
+      });
+    },
+  },
+  {
+    name: "scheduled resume may generate after its own prior AI promise",
+    run: async () => {
+      const supabase = createAiWindowScopeSupabase();
+      let generationCalls = 0;
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+            executionContext: {
+              kind: "scheduled_resume",
+              queueId: "queue-resume-1",
+              queueKey: "resume:conv-canonical:customer_requested_tomorrow:202609050900",
+              reason: "customer_requested_tomorrow",
+              resumeAt: "2020-01-01T00:00:00.000Z",
+              anchorMessageId: "msg-customer-1",
+            },
+          } as any,
+          {
+            createSupabaseClient: () => supabase.client as never,
+            ...createScopeAwareReplyDeps({
+              loadConversationMessageBoundaryState: createBoundaryLoader([
+                {
+                  lastIncomingCustomerMessageId: "msg-customer-1",
+                  lastIncomingCustomerMessageAt: "2026-09-04T12:00:00.000Z",
+                  lastAiMessageId: "msg-ai-promise-1",
+                  lastAiMessageAt: "2026-09-04T12:00:01.000Z",
+                },
+                {
+                  lastIncomingCustomerMessageId: "msg-customer-1",
+                  lastIncomingCustomerMessageAt: "2026-09-04T12:00:00.000Z",
+                  lastAiMessageId: "msg-ai-promise-1",
+                  lastAiMessageAt: "2026-09-04T12:00:01.000Z",
+                },
+              ]),
+              generateAiSalesReply: async () => {
+                generationCalls += 1;
+                return {
+                  ok: true,
+                  aiText: "Oi! Como combinamos, estou voltando por aqui.",
+                  anchorMessageId: "msg-customer-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                  },
+                } as never;
+              },
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-resume-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.equal(generationCalls, 1);
+        assert.equal(sendCalls, 1);
+        if (result.ok) {
+          assert.equal(result.messageId, "msg-ai-resume-1");
+        }
+      });
+    },
+  },
+  {
     name: "coherent params persist canonical conversation_ai_window_state ids",
     run: async () => {
       const supabase = createAiWindowScopeSupabase();
@@ -2160,6 +2371,79 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "scheduled resume cannot recursively schedule itself from its historical anchor",
+    run: async () => {
+      const supabase = createAiWindowScopeSupabase();
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+            executionContext: {
+              kind: "scheduled_resume",
+              queueId: "queue-resume-loop-1",
+              queueKey:
+                "resume:conv-canonical:customer_requested_tomorrow:202609050900",
+              reason: "customer_requested_tomorrow",
+              resumeAt: "2020-01-01T00:00:00.000Z",
+              anchorMessageId: "msg-customer-1",
+              styleHint: "Retomar de forma natural, humana e sem pressao.",
+            },
+          },
+          {
+            createSupabaseClient: () => supabase.client as never,
+            ...createScopeAwareReplyDeps({
+              loadConversationMessageBoundaryState: createBoundaryLoader([
+                {
+                  lastIncomingCustomerMessageId: "msg-customer-1",
+                  lastIncomingCustomerMessageAt: "2026-09-04T12:00:00.000Z",
+                  lastAiMessageId: "msg-ai-promise-1",
+                  lastAiMessageAt: "2026-09-04T12:00:01.000Z",
+                },
+                {
+                  lastIncomingCustomerMessageId: "msg-customer-1",
+                  lastIncomingCustomerMessageAt: "2026-09-04T12:00:00.000Z",
+                  lastAiMessageId: "msg-ai-promise-1",
+                  lastAiMessageAt: "2026-09-04T12:00:01.000Z",
+                },
+              ]),
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Oi! Como combinamos, estou voltando por aqui.",
+                  anchorMessageId: "msg-customer-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "schedule_resume",
+                      reason: "customer_requested_tomorrow",
+                      timingLabel: "amanha",
+                      requestedTiming: "amanha",
+                    },
+                  },
+                }) as never,
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-resume-loop-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.equal(sendCalls, 1);
+        assert.equal(
+          supabase.queueUpserts.length,
+          0,
+          "scheduled resume must not create another resume from the same historical anchor",
+        );
+      });
+    },
+  },
+  {
     name: "divergent external store fails before any window upsert",
     run: async () => {
       const supabase = createAiWindowScopeSupabase();
@@ -2379,6 +2663,83 @@ const tests: TestCase[] = [
         assert.equal(usageCalls, 0);
         assert.equal(supabase.windowUpserts.length, 0);
         assert.equal(supabase.queueUpdates.length, 0);
+      });
+    },
+  },
+  {
+    name: "customer requested tomorrow persists a real future resume queue",
+    run: async () => {
+      const supabase = createAiWindowScopeSupabase();
+      const before = Date.now();
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => supabase.client as never,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Beleza, amanhã eu te chamo",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "schedule_resume",
+                      reason: "customer_requested_tomorrow",
+                      timingLabel: "amanhã",
+                      requestedTiming: "amanhã",
+                    },
+                  },
+                }) as never,
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+
+        const futureWindow = supabase.windowUpserts.find(
+          (entry) =>
+            entry.row.resume_reason === "customer_requested_tomorrow" &&
+            typeof entry.row.next_resume_at === "string",
+        );
+
+        assert.ok(futureWindow);
+
+        const nextResumeAt = String(futureWindow.row.next_resume_at);
+        assert.equal(Date.parse(nextResumeAt) > before, true);
+
+        assert.equal(
+          supabase.queueUpserts.length,
+          1,
+          "customer requested future resume must create a durable queue row",
+        );
+
+        const queued = supabase.queueUpserts[0];
+
+        assert.equal(queued.row.organization_id, "org-canonical");
+        assert.equal(queued.row.store_id, "store-canonical");
+        assert.equal(queued.row.conversation_id, "conv-canonical");
+
+        const input = queued.row.input as Record<string, unknown>;
+
+        assert.equal(input.type, "resume_sales_conversation");
+        assert.equal(input.reason, "customer_requested_tomorrow");
+        assert.equal(input.resumeAt, nextResumeAt);
+        assert.equal(
+          input.anchorMessageId,
+          "msg-1",
+          "scheduled resume queue must preserve its original customer anchor",
+        );
+
+        assert.deepEqual(queued.options, {
+          onConflict: "queue_key",
+        });
       });
     },
   },

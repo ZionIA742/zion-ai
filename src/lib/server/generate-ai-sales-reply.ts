@@ -637,12 +637,23 @@ type PhotoOrSimulationSubtype =
   | "product_photo_without_model"
   | "general_photo_request";
 
+export type SalesAiScheduledResumeContext = {
+  reason:
+    | "sales_ai_after_hours_policy"
+    | "customer_requested_tomorrow"
+    | "customer_requested_next_week"
+    | "customer_requested_next_month";
+  resumeAt: string;
+  styleHint?: string | null;
+};
+
 export type GenerateAiSalesReplyParams = {
   organizationId: string;
   storeId: string;
   conversationId: string;
   anchorMessageId: string;
   salesAiOperatingWindowContext?: SalesAiOperatingWindowContext | null;
+  scheduledResumeContext?: SalesAiScheduledResumeContext | null;
   supabaseClient?: any;
   openaiClient?: {
     responses: {
@@ -8707,6 +8718,35 @@ function buildCommercialIntentClarificationQuestion(
   }
   return null;
 }
+function buildScheduledResumePromptBlock(
+  context?: SalesAiScheduledResumeContext | null,
+): string {
+  if (!context) {
+    return "";
+  }
+
+  const reasonLabel =
+    context.reason === "sales_ai_after_hours_policy"
+      ? "retomada apos a janela operacional"
+      : context.reason === "customer_requested_tomorrow"
+        ? "retomada pedida pelo cliente para o dia seguinte"
+        : context.reason === "customer_requested_next_week"
+          ? "retomada pedida pelo cliente para a semana seguinte"
+          : "retomada pedida pelo cliente para o mes seguinte";
+
+  return [
+    "RETOMADA PROGRAMADA",
+    "- esta execucao e uma retomada previamente combinada e nao e uma nova mensagem do cliente",
+    "- a mensagem-ancora e historica; use-a apenas para recuperar o combinado e o contexto comercial",
+    "- retome de forma natural, humana e sem pressao",
+    "- nao responda novamente ao pedido antigo de ser chamado; o momento combinado ja chegou",
+    "- nesta execucao especifica, a retomada ja foi disparada pelo sistema; reconheca o combinado quando fizer sentido, sem dizer que criou um novo agendamento agora",
+    "- nao crie outro follow-up apenas porque a mensagem-ancora antiga pedia contato futuro",
+    "- continue do ponto comercial real da conversa, sem reiniciar triagem",
+    `- contexto da retomada: ${reasonLabel}`,
+  ].join("\n");
+}
+
 function buildInstructions(args: {
   conversationPattern: ConversationPattern;
   paymentOrClosingSubtype?: PaymentOrClosingSubtype;
@@ -8751,6 +8791,7 @@ function buildInstructions(args: {
   bestNamedPoolMatch: MatchedPool | null;
   salesAiOperatingWindowContext?: SalesAiOperatingWindowContext | null;
   salesAiAppointmentContext?: SalesAiAppointmentContext | null;
+  scheduledResumeContext?: SalesAiScheduledResumeContext | null;
 }) {
   const storeLabel = args.storeDisplayName || args.storeName || "a loja";
   const leadLabel = args.leadName || "cliente";
@@ -8767,6 +8808,9 @@ function buildInstructions(args: {
   );
   const salesAiAppointmentBlock = buildSalesAiAppointmentPromptBlock(
     args.salesAiAppointmentContext,
+  );
+  const scheduledResumeBlock = buildScheduledResumePromptBlock(
+    args.scheduledResumeContext,
   );
 
   return `
@@ -8814,12 +8858,14 @@ ESTILO DE WHATSAPP
 - em mensagens longas, sérias, explicações técnicas, contratos, orçamentos ou avisos formais, use pontuação completa normalmente
 - a naturalidade de WhatsApp nunca pode contrariar SPIN, BANT, sinceridade comercial ou regras da loja
 
+${scheduledResumeBlock}
+
 REGRAS OPERACIONAIS
 - use a Configuração viva da loja como fonte principal de verdade; tecnicamente ela pode vir das respostas scoped do onboarding/configurações
 - use as evidências de catálogo, estoque e foto fornecidas abaixo como fonte de verdade para produto e mídia
 - não prometa preço, prazo, instalação, visita, desconto, pagamento ou cobertura regional sem base
-- follow-up proativo real, cadência automática, agendamento de retomada e cancelamento automático ainda dependem de Configurações/CRM/worker; não fale como se isso já estivesse conectado aqui
-- se o cliente pedir para chamar amanhã, semana que vem ou mês que vem, reconheça o prazo, mas não diga que um agendamento automático já foi criado se isso não aconteceu de fato
+- follow-up proativo real, cadencia automatica, agendamento de retomada e cancelamento automatico so podem ser tratados como existentes quando houver evidencia canonica ou quando esta execucao estiver marcada como RETOMADA PROGRAMADA; fora disso, nao invente automacao
+- se o cliente pedir para chamar amanha, semana que vem ou mes que vem, reconheca o combinado de forma natural; nao descreva mecanismos internos nem afirme que criou um novo agendamento automatico
 - quando a conversa entrar em pagamento, Pix, comprovante, reserva, contrato, sinal/entrada ou fechamento, trate a configuração viva da loja como fonte soberana
 - se a forma de pagamento, chave Pix, parcelamento, entrada, sinal ou regra de contrato não estiver clara nas configurações, não invente
 - Pix aceito não significa chave Pix disponível; só diga que pode passar a chave se ela existir de forma real no contexto/configuração
@@ -10406,6 +10452,7 @@ export async function generateAiSalesReply(
       bestNamedPoolMatch,
       salesAiOperatingWindowContext: params.salesAiOperatingWindowContext || null,
       salesAiAppointmentContext,
+      scheduledResumeContext: params.scheduledResumeContext || null,
     });
 
     const input = buildModelInput(messagesForConversationContinuity);
@@ -10445,10 +10492,16 @@ export async function generateAiSalesReply(
         salesBrain.snapshot.hasCanonicalVisitLocation,
 
     });
-    const operationalFollowUpDecision = inferOperationalFollowUpDecision({
-      lastCustomerMessage,
-      patienceSignal: commercialObjective.patienceSignal,
-    });
+    const operationalFollowUpDecision: OperationalFollowUpDecision =
+      params.scheduledResumeContext
+        ? {
+            kind: "none",
+            reason: "none",
+          }
+        : inferOperationalFollowUpDecision({
+            lastCustomerMessage,
+            patienceSignal: commercialObjective.patienceSignal,
+          });
 
     const shouldUseCommercialReplyOverride = Boolean(
       commercialHandoff?.replyOverride &&
