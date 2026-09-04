@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import {
+  mapCommercialActionReadinessFailure,
+  refreshCommercialActionReadiness,
+  type RefreshCommercialActionReadinessResult,
+} from "@/lib/server/commercial-action-readiness";
+import {
   QuoteAccessError,
   resolveAuthorizedExistingQuote,
 } from "@/lib/server/sales-quotes/quote-auth";
@@ -26,7 +31,39 @@ type SendRouteDeps = {
   resolveQuoteScope?: typeof resolveAuthorizedExistingQuote;
   loadQuoteSettings?: typeof loadStoreQuoteSettings;
   materializeQuoteSend?: typeof materializeSalesQuoteSendBySystem;
+  refreshActionReadiness?: typeof refreshCommercialActionReadiness;
 };
+
+function buildReadinessGateResponse(
+  result: RefreshCommercialActionReadinessResult,
+) {
+  const mapped = mapCommercialActionReadinessFailure(result);
+
+  if (!result.ok) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: mapped.error,
+        message: "Nao foi possivel validar a prontidao do envio do orcamento agora.",
+      },
+      { status: mapped.status },
+    );
+  }
+
+  return NextResponse.json(
+    {
+      ok: false,
+      error: mapped.error,
+      message: "O envio do orcamento ainda nao esta pronto para execucao.",
+      actionKey: result.decision.actionKey,
+      readinessState: result.decision.readinessState,
+      reasonCode: result.decision.reasonCode,
+      blockingItems: result.decision.blockingItems,
+      authorityFingerprint: result.decision.authorityFingerprint,
+    },
+    { status: mapped.status },
+  );
+}
 
 function buildErrorResponse(error: unknown) {
   if (error instanceof QuoteAccessError) {
@@ -80,6 +117,8 @@ export function createSendQuotePostHandler(deps?: SendRouteDeps) {
   const loadQuoteSettings = deps?.loadQuoteSettings ?? loadStoreQuoteSettings;
   const materializeQuoteSend =
     deps?.materializeQuoteSend ?? materializeSalesQuoteSendBySystem;
+  const refreshActionReadiness =
+    deps?.refreshActionReadiness ?? refreshCommercialActionReadiness;
 
   return async function POST(
     _request: Request,
@@ -313,6 +352,18 @@ export function createSendQuotePostHandler(deps?: SendRouteDeps) {
           mime_type: PDF_MIME_TYPE,
         },
       });
+
+      const readiness = await refreshActionReadiness({
+        supabase: scope.supabase,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        commercialOpportunityId,
+        actionKey: "send_quote",
+      });
+
+      if (!readiness.ok || readiness.decision.readinessState !== "ready") {
+        return buildReadinessGateResponse(readiness);
+      }
 
       const operation = await materializeQuoteSend({
         supabase: scope.supabase,

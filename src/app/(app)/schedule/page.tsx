@@ -50,6 +50,15 @@ type ScheduleApiResponse = {
   items?: ScheduleItem[];
 };
 
+type ActionReadinessApiResponse = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  actionKey?: string;
+  readinessState?: string;
+  reasonCode?: string | null;
+};
+
 type AppointmentEditForm = {
   title: string;
   appointmentType: string;
@@ -130,6 +139,26 @@ function formatDateTime(value: string | null) {
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function buildTechnicalVisitReadinessErrorMessage(
+  readiness: ActionReadinessApiResponse | null,
+) {
+  if (readiness?.message) return readiness.message;
+
+  if (readiness?.readinessState === "blocked") {
+    return "A visita tecnica ainda possui bloqueios comerciais pendentes.";
+  }
+
+  if (readiness?.readinessState === "needs_resolution") {
+    return "A visita tecnica precisa de resolucao comercial antes do agendamento.";
+  }
+
+  if (readiness?.readinessState === "conflict") {
+    return "A visita tecnica possui conflito comercial antes do agendamento.";
+  }
+
+  return "Nao foi possivel validar a prontidao comercial da visita tecnica agora.";
 }
 
 function formatMonthYear(date: Date) {
@@ -2228,6 +2257,40 @@ export default function SchedulePage() {
 
       const commercialOpportunityId =
         commercialOpportunityResolution.commercialOpportunityId;
+
+      if (
+        appointmentCreateForm.appointmentType === "technical_visit" &&
+        commercialOpportunityId
+      ) {
+        const readinessResponse = await fetch(
+          "/api/crm/opportunities/action-readiness",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              commercialOpportunityId,
+              actionKey: "schedule_technical_visit",
+            }),
+          }
+        );
+        const readinessBody = (await readinessResponse
+          .json()
+          .catch(() => null)) as ActionReadinessApiResponse | null;
+
+        if (
+          !readinessResponse.ok ||
+          readinessBody?.ok !== true ||
+          readinessBody.readinessState !== "ready"
+        ) {
+          setAppointmentCreateErrorText(
+            buildTechnicalVisitReadinessErrorMessage(readinessBody)
+          );
+          setSavingAppointmentCreate(false);
+          return;
+        }
+      }
 
       const { data, error } = await supabase.rpc("create_store_appointment_with_commercial_context", {
         p_organization_id: organizationId,

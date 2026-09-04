@@ -1,4 +1,9 @@
 import { NextResponse } from "next/server";
+import {
+  mapCommercialActionReadinessFailure,
+  refreshCommercialActionReadiness,
+  type RefreshCommercialActionReadinessResult,
+} from "@/lib/server/commercial-action-readiness";
 import { resolveAuthorizedQuoteForContract, ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
 import { registerContractBusinessEvent } from "@/lib/server/sales-contracts/contract-events";
 import {
@@ -12,6 +17,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type QuoteMetadata = Record<string, unknown> | null;
+
+type CreateContractFromQuoteDeps = {
+  resolveQuoteForContract: typeof resolveAuthorizedQuoteForContract;
+  registerBusinessEvent: typeof registerContractBusinessEvent;
+  refreshActionReadiness: typeof refreshCommercialActionReadiness;
+};
 
 function buildErrorResponse(error: unknown) {
   if (error instanceof ContractAccessError) {
@@ -81,7 +92,48 @@ function buildContractNumber() {
   return `CTR-${dateKey}-${random}`;
 }
 
-export async function POST(request: Request) {
+function buildReadinessGateResponse(
+  result: RefreshCommercialActionReadinessResult,
+) {
+  const mapped = mapCommercialActionReadinessFailure(result);
+
+  if (!result.ok) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: mapped.error,
+        message: "Nao foi possivel validar a prontidao da criacao do contrato agora.",
+      },
+      { status: mapped.status },
+    );
+  }
+
+  return NextResponse.json(
+    {
+      ok: false,
+      error: mapped.error,
+      message: "A criacao do contrato ainda nao esta pronta para execucao.",
+      actionKey: result.decision.actionKey,
+      readinessState: result.decision.readinessState,
+      reasonCode: result.decision.reasonCode,
+      blockingItems: result.decision.blockingItems,
+      authorityFingerprint: result.decision.authorityFingerprint,
+    },
+    { status: mapped.status },
+  );
+}
+
+export function createCreateContractFromQuotePostHandler(
+  deps: Partial<CreateContractFromQuoteDeps> = {},
+) {
+  const resolveQuoteForContract =
+    deps.resolveQuoteForContract ?? resolveAuthorizedQuoteForContract;
+  const registerBusinessEvent =
+    deps.registerBusinessEvent ?? registerContractBusinessEvent;
+  const refreshActionReadiness =
+    deps.refreshActionReadiness ?? refreshCommercialActionReadiness;
+
+  return async function POST(request: Request) {
   try {
     const body = (await request.json().catch(() => null)) as CreateContractFromQuoteInput | null;
     const quoteId = String(body?.quoteId || "").trim();
@@ -90,8 +142,22 @@ export async function POST(request: Request) {
       throw new ContractAccessError(400, "INVALID_QUOTE_ID", "quoteId nao informado.");
     }
 
-    const scope = await resolveAuthorizedQuoteForContract(quoteId);
+    const scope = await resolveQuoteForContract(quoteId);
     const quoteMetadata = (scope.quote.metadata ?? null) as QuoteMetadata;
+    const commercialOpportunityId =
+      String(scope.quote.commercial_opportunity_id || "").trim() || null;
+
+    if (!commercialOpportunityId) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "QUOTE_COMMERCIAL_OPPORTUNITY_REQUIRED_FOR_CONTRACT",
+          message:
+            "Este orcamento precisa de commercial_opportunity_id explicita para gerar contrato.",
+        },
+        { status: 409 },
+      );
+    }
 
     const { data: existingContracts, error: existingContractsError } = await scope.supabase
       .from("sales_contracts")
@@ -115,6 +181,18 @@ export async function POST(request: Request) {
         "CONTRACT_ALREADY_EXISTS",
         "Ja existe um contrato ativo vinculado a este orcamento."
       );
+    }
+
+    const readiness = await refreshActionReadiness({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      commercialOpportunityId,
+      actionKey: "create_contract",
+    });
+
+    if (!readiness.ok || readiness.decision.readinessState !== "ready") {
+      return buildReadinessGateResponse(readiness);
     }
 
     const contractPayload = {
@@ -150,6 +228,7 @@ export async function POST(request: Request) {
         source: "quote",
         quote_number: scope.quote.quote_number,
         quote_status: scope.quote.status,
+        commercial_opportunity_id: commercialOpportunityId,
         quote_version_id: scope.quoteVersion.id,
         created_via: "api_sales_contracts_create_from_quote",
       },
@@ -165,7 +244,7 @@ export async function POST(request: Request) {
       throw new Error(createContractError?.message || "Falha ao criar sales_contracts.");
     }
 
-    await registerContractBusinessEvent({
+    await registerBusinessEvent({
       supabase: scope.supabase,
       organizationId: scope.organizationId,
       storeId: scope.store.id,
@@ -178,6 +257,7 @@ export async function POST(request: Request) {
         contract_id: createdContract.id,
         contract_number: createdContract.contract_number,
         quote_id: scope.quote.id,
+        commercial_opportunity_id: commercialOpportunityId,
         quote_version_id: scope.quoteVersion.id,
         status: createdContract.status,
         stage: "contract_record_created",
@@ -191,4 +271,7 @@ export async function POST(request: Request) {
   } catch (error) {
     return buildErrorResponse(error);
   }
+  };
 }
+
+export const POST = createCreateContractFromQuotePostHandler();

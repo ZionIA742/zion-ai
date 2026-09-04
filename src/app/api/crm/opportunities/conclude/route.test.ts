@@ -200,6 +200,38 @@ function createSupabaseMock(args?: {
   };
 }
 
+function createReadyReadiness() {
+  return {
+    ok: true as const,
+    decision: {
+      actionKey: "conclude_opportunity" as const,
+      readinessState: "ready" as const,
+      reasonCode: "ready",
+      blockingItems: [],
+      readinessBasis: { source: "test" },
+      authorityFingerprint: "fp-ready",
+      resolverKey: "commercial_action_readiness_v1",
+      resolverVersion: 1,
+    },
+  };
+}
+
+function createReadiness(state: "blocked" | "needs_resolution" | "conflict") {
+  return {
+    ok: true as const,
+    decision: {
+      actionKey: "conclude_opportunity" as const,
+      readinessState: state,
+      reasonCode: `${state}_reason`,
+      blockingItems: [{ item_key: "required_fact" }],
+      readinessBasis: { source: "test" },
+      authorityFingerprint: `fp-${state}`,
+      resolverKey: "commercial_action_readiness_v1",
+      resolverVersion: 1,
+    },
+  };
+}
+
 async function parseBody(response: Response) {
   return (await response.json()) as Record<string, unknown>;
 }
@@ -249,6 +281,8 @@ const tests: TestCase[] = [
           error: null,
         },
       });
+      const serviceClient = { service: true };
+      const readinessCalls: Array<Record<string, unknown>> = [];
 
       const response = await createConcludeOpportunityPostHandler({
         resolveAccess: async () =>
@@ -257,6 +291,11 @@ const tests: TestCase[] = [
             storeId: "access-store",
             supabase: supabase as unknown as StoreApiAccessGranted["supabase"],
           }),
+        createServiceSupabaseClient: () => serviceClient,
+        refreshActionReadiness: async (payload) => {
+          readinessCalls.push(payload as unknown as Record<string, unknown>);
+          return createReadyReadiness();
+        },
       })(
         createJsonRequest(
           () => ({
@@ -276,6 +315,13 @@ const tests: TestCase[] = [
       assert.equal(body.commercialOpportunityId, "opportunity-1");
       assert.equal(body.idempotencyKey, "crm_conclude_opportunity:opportunity-1:3:pos_venda");
       assert.equal(requestReads.reads, 1);
+      assert.deepEqual(readinessCalls[0], {
+        supabase: serviceClient,
+        organizationId: "access-org",
+        storeId: "access-store",
+        commercialOpportunityId: "opportunity-1",
+        actionKey: "conclude_opportunity",
+      });
       assert.equal(supabase.queryCalls.length, 1);
       assert.deepEqual(supabase.queryCalls[0], {
         table: "commercial_opportunities",
@@ -305,6 +351,100 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "conclusion readiness states block before the human writer",
+    run: async () => {
+      const { createConcludeOpportunityPostHandler } = await loadRouteModule();
+
+      for (const [state, error] of [
+        ["blocked", "COMMERCIAL_ACTION_BLOCKED"],
+        ["needs_resolution", "COMMERCIAL_ACTION_NEEDS_RESOLUTION"],
+        ["conflict", "COMMERCIAL_ACTION_CONFLICT"],
+      ] as const) {
+        const supabase = createSupabaseMock({
+          opportunity: {
+            data: {
+              id: "opportunity-1",
+              organization_id: "access-org",
+              store_id: "access-store",
+              stage: "pos_venda",
+              lifecycle_cycle: 3,
+            },
+            error: null,
+          },
+        });
+
+        const response = await createConcludeOpportunityPostHandler({
+          resolveAccess: async () =>
+            createGrantedAccess({
+              supabase: supabase as unknown as StoreApiAccessGranted["supabase"],
+            }),
+          createServiceSupabaseClient: () => ({}),
+          refreshActionReadiness: async () => createReadiness(state),
+        })(
+          createJsonRequest(
+            () => ({
+              commercialOpportunityId: "opportunity-1",
+              expectedStage: "pos_venda",
+              expectedLifecycleCycle: 3,
+            }),
+            { reads: 0 },
+          ),
+        );
+
+        const body = await parseBody(response);
+        assert.equal(response.status, 409);
+        assert.equal(body.error, error);
+        assert.equal(body.readinessState, state);
+        assert.equal(supabase.rpcCalls.length, 0);
+      }
+    },
+  },
+  {
+    name: "conclusion readiness refresh failure fails closed before the human writer",
+    run: async () => {
+      const { createConcludeOpportunityPostHandler } = await loadRouteModule();
+      const supabase = createSupabaseMock({
+        opportunity: {
+          data: {
+            id: "opportunity-1",
+            organization_id: "access-org",
+            store_id: "access-store",
+            stage: "pos_venda",
+            lifecycle_cycle: 3,
+          },
+          error: null,
+        },
+      });
+
+      const response = await createConcludeOpportunityPostHandler({
+        resolveAccess: async () =>
+          createGrantedAccess({
+            supabase: supabase as unknown as StoreApiAccessGranted["supabase"],
+          }),
+        createServiceSupabaseClient: () => ({}),
+        refreshActionReadiness: async () => ({
+          ok: false,
+          error: "READINESS_READ_FAILED",
+          message: "read failed",
+        }),
+      })(
+        createJsonRequest(
+          () => ({
+            commercialOpportunityId: "opportunity-1",
+            expectedStage: "pos_venda",
+            expectedLifecycleCycle: 3,
+          }),
+          { reads: 0 },
+        ),
+      );
+
+      const body = await parseBody(response);
+      assert.equal(response.status, 503);
+      assert.equal(body.error, "COMMERCIAL_ACTION_READINESS_UNAVAILABLE");
+      assert.equal(supabase.rpcCalls.length, 0);
+    },
+  },
+  {
     name: "real intermediate stage is rejected before rpc even if browser claims pos_venda",
     run: async () => {
       const { createConcludeOpportunityPostHandler } = await loadRouteModule();
@@ -326,6 +466,8 @@ const tests: TestCase[] = [
           createGrantedAccess({
             supabase: supabase as unknown as StoreApiAccessGranted["supabase"],
           }),
+        createServiceSupabaseClient: () => ({}),
+        refreshActionReadiness: async () => createReadyReadiness(),
       })(
         createJsonRequest(
           () => ({
@@ -354,6 +496,8 @@ const tests: TestCase[] = [
           createGrantedAccess({
             supabase: supabase as unknown as StoreApiAccessGranted["supabase"],
           }),
+        createServiceSupabaseClient: () => ({}),
+        refreshActionReadiness: async () => createReadyReadiness(),
       })(
         createJsonRequest(
           () => ({
@@ -393,6 +537,8 @@ const tests: TestCase[] = [
           createGrantedAccess({
             supabase: supabase as unknown as StoreApiAccessGranted["supabase"],
           }),
+        createServiceSupabaseClient: () => ({}),
+        refreshActionReadiness: async () => createReadyReadiness(),
       })(
         createJsonRequest(
           () => ({
@@ -424,6 +570,8 @@ const tests: TestCase[] = [
           createGrantedAccess({
             supabase: supabase as unknown as StoreApiAccessGranted["supabase"],
           }),
+        createServiceSupabaseClient: () => ({}),
+        refreshActionReadiness: async () => createReadyReadiness(),
       })(
         createJsonRequest(
           () => ({
@@ -467,6 +615,8 @@ const tests: TestCase[] = [
           createGrantedAccess({
             supabase: supabase as unknown as StoreApiAccessGranted["supabase"],
           }),
+        createServiceSupabaseClient: () => ({}),
+        refreshActionReadiness: async () => createReadyReadiness(),
       })(
         createJsonRequest(
           () => ({
@@ -510,6 +660,8 @@ const tests: TestCase[] = [
           createGrantedAccess({
             supabase: supabase as unknown as StoreApiAccessGranted["supabase"],
           }),
+        createServiceSupabaseClient: () => ({}),
+        refreshActionReadiness: async () => createReadyReadiness(),
       })(
         createJsonRequest(
           () => ({

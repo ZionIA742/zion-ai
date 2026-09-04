@@ -14,7 +14,7 @@ type MembershipRow = {
 };
 
 const SALES_QUOTES_SELECT =
-  "id, organization_id, store_id, conversation_id, lead_id, quote_number, title, status, customer_name, customer_phone, customer_notes, internal_notes, subtotal_cents, discount_cents, total_cents, current_version_id, last_change_request_id, metadata, created_at, updated_at";
+  "id, organization_id, store_id, commercial_opportunity_id, conversation_id, lead_id, quote_number, title, status, customer_name, customer_phone, customer_notes, internal_notes, subtotal_cents, discount_cents, total_cents, current_version_id, last_change_request_id, metadata, created_at, updated_at";
 
 const SALES_QUOTE_VERSIONS_SELECT =
   "id, quote_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, quote_snapshot, created_at, sent_at";

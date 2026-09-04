@@ -1,4 +1,10 @@
+import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import {
+  mapCommercialActionReadinessFailure,
+  refreshCommercialActionReadiness,
+  type RefreshCommercialActionReadinessResult,
+} from "@/lib/server/commercial-action-readiness";
 import {
   resolveStoreApiAccess,
   type ResolveStoreApiAccessDeps,
@@ -46,7 +52,27 @@ type ConcludeOpportunityDeps = {
     requirement: "active";
     deps?: Partial<ResolveStoreApiAccessDeps>;
   }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+  createServiceSupabaseClient: () => unknown;
+  refreshActionReadiness: typeof refreshCommercialActionReadiness;
 };
+
+function createServiceSupabaseClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !supabaseServiceKey) {
+    throw new Error(
+      "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variaveis de ambiente.",
+    );
+  }
+
+  return createClient(supabaseUrl, supabaseServiceKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
 
 function buildJsonResponse(body: unknown, status = 200) {
   return NextResponse.json(body, {
@@ -70,10 +96,45 @@ function buildIdempotencyKey(args: {
   return `crm_conclude_opportunity:${args.commercialOpportunityId}:${lifecycleCycle}:${normalizedStage}`;
 }
 
+function buildReadinessGateResponse(
+  result: RefreshCommercialActionReadinessResult,
+) {
+  const mapped = mapCommercialActionReadinessFailure(result);
+
+  if (!result.ok) {
+    return buildJsonResponse(
+      {
+        ok: false,
+        error: mapped.error,
+        message: "Nao foi possivel validar a prontidao da conclusao comercial agora.",
+      },
+      mapped.status,
+    );
+  }
+
+  return buildJsonResponse(
+    {
+      ok: false,
+      error: mapped.error,
+      message: "A conclusao comercial ainda nao esta pronta para execucao.",
+      actionKey: result.decision.actionKey,
+      readinessState: result.decision.readinessState,
+      reasonCode: result.decision.reasonCode,
+      blockingItems: result.decision.blockingItems,
+      authorityFingerprint: result.decision.authorityFingerprint,
+    },
+    mapped.status,
+  );
+}
+
 export function createConcludeOpportunityPostHandler(
   deps: Partial<ConcludeOpportunityDeps> = {},
 ) {
   const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
+  const makeServiceSupabase =
+    deps.createServiceSupabaseClient ?? createServiceSupabaseClient;
+  const refreshActionReadiness =
+    deps.refreshActionReadiness ?? refreshCommercialActionReadiness;
 
   return async function POST(request: Request) {
     try {
@@ -160,6 +221,18 @@ export function createConcludeOpportunityPostHandler(
         expectedStage,
         expectedLifecycleCycle,
       });
+      const readiness = await refreshActionReadiness({
+        supabase: makeServiceSupabase() as never,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        commercialOpportunityId: opportunity.id,
+        actionKey: "conclude_opportunity",
+      });
+
+      if (!readiness.ok || readiness.decision.readinessState !== "ready") {
+        return buildReadinessGateResponse(readiness);
+      }
+
       const evidenceSummary = `Conclusao manual confirmada para a opportunity ${opportunity.id} no CRM.`;
       const { data, error } = await access.supabase.rpc(
         "conclude_commercial_opportunity_by_user",

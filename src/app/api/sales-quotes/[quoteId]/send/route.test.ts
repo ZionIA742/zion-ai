@@ -177,6 +177,38 @@ function createOperation(overrides?: Partial<Record<string, unknown>>) {
   };
 }
 
+function createReadyReadiness() {
+  return {
+    ok: true as const,
+    decision: {
+      actionKey: "send_quote" as const,
+      readinessState: "ready" as const,
+      reasonCode: "ready",
+      blockingItems: [],
+      readinessBasis: { source: "test" },
+      authorityFingerprint: "fp-ready",
+      resolverKey: "commercial_action_readiness_v1",
+      resolverVersion: 1,
+    },
+  };
+}
+
+function createReadiness(state: "blocked" | "needs_resolution" | "conflict") {
+  return {
+    ok: true as const,
+    decision: {
+      actionKey: "send_quote" as const,
+      readinessState: state,
+      reasonCode: `${state}_reason`,
+      blockingItems: [{ item_key: "required_fact" }],
+      readinessBasis: { source: "test" },
+      authorityFingerprint: `fp-${state}`,
+      resolverKey: "commercial_action_readiness_v1",
+      resolverVersion: 1,
+    },
+  };
+}
+
 async function parseBody(response: Response) {
   return (await response.json()) as Record<string, unknown>;
 }
@@ -195,6 +227,7 @@ const tests: TestCase[] = [
           calls.push(payload);
           return createOperation() as never;
         },
+        refreshActionReadiness: async () => createReadyReadiness(),
       });
       const response = await handler(new Request("https://example.test"), {
         params: Promise.resolve({ quoteId: "quote-1" }),
@@ -222,6 +255,7 @@ const tests: TestCase[] = [
           calls.push(payload);
           return createOperation() as never;
         },
+        refreshActionReadiness: async () => createReadyReadiness(),
       });
       const response = await handler(new Request("https://example.test"), {
         params: Promise.resolve({ quoteId: "quote-1" }),
@@ -249,6 +283,7 @@ const tests: TestCase[] = [
         resolveQuoteScope: async () => createScope() as never,
         loadQuoteSettings: async () => createSettingsResult() as never,
         materializeQuoteSend: async () => createOperation({ outcome: "already_queued" }) as never,
+        refreshActionReadiness: async () => createReadyReadiness(),
       });
       const response = await handler(new Request("https://example.test"), {
         params: Promise.resolve({ quoteId: "quote-1" }),
@@ -268,6 +303,7 @@ const tests: TestCase[] = [
         loadQuoteSettings: async () => createSettingsResult() as never,
         materializeQuoteSend: async () =>
           createOperation({ outcome: "uncertain", outbound_delivery_state: "uncertain" }) as never,
+        refreshActionReadiness: async () => createReadyReadiness(),
       });
       const response = await handler(new Request("https://example.test"), {
         params: Promise.resolve({ quoteId: "quote-1" }),
@@ -286,6 +322,7 @@ const tests: TestCase[] = [
         loadQuoteSettings: async () => createSettingsResult() as never,
         materializeQuoteSend: async () =>
           createOperation({ outcome: "failed", outbound_delivery_state: "failed" }) as never,
+        refreshActionReadiness: async () => createReadyReadiness(),
       });
       const response = await handler(new Request("https://example.test"), {
         params: Promise.resolve({ quoteId: "quote-1" }),
@@ -300,6 +337,7 @@ const tests: TestCase[] = [
     run: async () => {
       const { createSendQuotePostHandler } = await loadRouteModule();
       let materialized = false;
+      let readinessCalls = 0;
       const handler = createSendQuotePostHandler({
         resolveQuoteScope: async () => createScope({
           quote: createQuoteFixture({ status: "sent" }),
@@ -315,6 +353,10 @@ const tests: TestCase[] = [
           materialized = true;
           return createOperation() as never;
         },
+        refreshActionReadiness: async () => {
+          readinessCalls += 1;
+          return createReadyReadiness();
+        },
       });
       const response = await handler(new Request("https://example.test"), {
         params: Promise.resolve({ quoteId: "quote-1" }),
@@ -322,6 +364,71 @@ const tests: TestCase[] = [
       const body = await parseBody(response);
       assert.equal(response.status, 200);
       assert.equal(body.sendState, "already_sent");
+      assert.equal(materialized, false);
+      assert.equal(readinessCalls, 0);
+    },
+  },
+  {
+    name: "send_quote readiness states block before materializing send",
+    run: async () => {
+      const { createSendQuotePostHandler } = await loadRouteModule();
+
+      for (const [state, error] of [
+        ["blocked", "COMMERCIAL_ACTION_BLOCKED"],
+        ["needs_resolution", "COMMERCIAL_ACTION_NEEDS_RESOLUTION"],
+        ["conflict", "COMMERCIAL_ACTION_CONFLICT"],
+      ] as const) {
+        let materialized = false;
+        const handler = createSendQuotePostHandler({
+          resolveQuoteScope: async () => createScope() as never,
+          loadQuoteSettings: async () => createSettingsResult() as never,
+          materializeQuoteSend: async () => {
+            materialized = true;
+            return createOperation() as never;
+          },
+          refreshActionReadiness: async (payload) => {
+            assert.equal(payload.organizationId, "org-1");
+            assert.equal(payload.storeId, "store-1");
+            assert.equal(payload.commercialOpportunityId, "opp-1");
+            assert.equal(payload.actionKey, "send_quote");
+            return createReadiness(state);
+          },
+        });
+        const response = await handler(new Request("https://example.test"), {
+          params: Promise.resolve({ quoteId: "quote-1" }),
+        });
+        const body = await parseBody(response);
+        assert.equal(response.status, 409);
+        assert.equal(body.error, error);
+        assert.equal(body.readinessState, state);
+        assert.equal(materialized, false);
+      }
+    },
+  },
+  {
+    name: "send_quote readiness refresh failure fails closed before materializing send",
+    run: async () => {
+      const { createSendQuotePostHandler } = await loadRouteModule();
+      let materialized = false;
+      const handler = createSendQuotePostHandler({
+        resolveQuoteScope: async () => createScope() as never,
+        loadQuoteSettings: async () => createSettingsResult() as never,
+        materializeQuoteSend: async () => {
+          materialized = true;
+          return createOperation() as never;
+        },
+        refreshActionReadiness: async () => ({
+          ok: false,
+          error: "READINESS_READ_FAILED",
+          message: "read failed",
+        }),
+      });
+      const response = await handler(new Request("https://example.test"), {
+        params: Promise.resolve({ quoteId: "quote-1" }),
+      });
+      const body = await parseBody(response);
+      assert.equal(response.status, 503);
+      assert.equal(body.error, "COMMERCIAL_ACTION_READINESS_UNAVAILABLE");
       assert.equal(materialized, false);
     },
   },

@@ -1,4 +1,6 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   buildCommercialOpportunitySelectOptions,
   isCommercialOpportunitySelectionCompatible,
@@ -120,6 +122,27 @@ const tests: TestCase[] = [
         ok: true,
         commercialOpportunityId: null,
       });
+    },
+  },
+  {
+    name: "technical visit creation checks action readiness before appointment rpc",
+    run: () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/app/(app)/schedule/page.tsx"),
+        "utf8",
+      );
+      const readinessIndex = source.indexOf(
+        'fetch(\n          "/api/crm/opportunities/action-readiness"',
+      );
+      const rpcIndex = source.indexOf(
+        'supabase.rpc("create_store_appointment_with_commercial_context"',
+      );
+
+      assert.equal(source.includes('actionKey: "schedule_technical_visit"'), true);
+      assert.equal(source.includes('readinessBody.readinessState !== "ready"'), true);
+      assert.equal(readinessIndex > -1, true);
+      assert.equal(rpcIndex > -1, true);
+      assert.equal(readinessIndex < rpcIndex, true);
     },
   },
 ];
