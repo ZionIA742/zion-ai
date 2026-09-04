@@ -3984,6 +3984,486 @@ test("generateAiSalesReply prefers canonical commercial AI settings over legacy 
   assert.equal(finalPayload.includes("so_apos_entender_instalacao"), true);
 });
 
+test("generateAiSalesReply preserves canonical on-request price and non-tracked stock semantics for catalog items", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "quanto custa o Cloro Granulado?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: false,
+      superior_option_suggestions_enabled: false,
+    }],
+    catalogItems: [{
+      id: "item-on-request",
+      organization_id: "org-1",
+      store_id: "store-1",
+      sku: "CLORO-OR",
+      name: "Cloro Granulado",
+      description: "Produto quimico para piscina.",
+      price_cents: null,
+      price_status: "on_request",
+      currency: "BRL",
+      is_active: true,
+      metadata: { categoria: "quimicos" },
+      track_stock: false,
+      stock_quantity: null,
+      stock_status: "not_tracked",
+    }],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "O valor desse item e sob consulta.",
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+
+  const finalPayload = JSON.stringify(openai.calls[1])
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  assert.equal(
+    finalPayload.includes("preco_status: on_request"),
+    true,
+    "canonical on_request price status must reach the model",
+  );
+  assert.equal(
+    finalPayload.includes("preco: sob consulta"),
+    true,
+    "on_request must be represented as price under consultation",
+  );
+  assert.equal(
+    finalPayload.includes("estoque_status: not_tracked"),
+    true,
+    "canonical not_tracked stock status must reach the model",
+  );
+  assert.equal(
+    finalPayload.includes("estoque: nao controlado"),
+    true,
+    "not_tracked must not be represented as free stock",
+  );
+  assert.equal(
+    finalPayload.includes("| estoque livre"),
+    false,
+    "not tracked inventory is not free inventory",
+  );
+});
+
+test("generateAiSalesReply preserves canonical unknown stock instead of collapsing it to zero", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "tem Capa Termica disponivel?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: false,
+      superior_option_suggestions_enabled: false,
+    }],
+    catalogItems: [{
+      id: "item-stock-unknown",
+      organization_id: "org-1",
+      store_id: "store-1",
+      sku: "CAPA-UNK",
+      name: "Capa Termica",
+      description: "Acessorio para piscina.",
+      price_cents: 50000,
+      price_status: "valid",
+      currency: "BRL",
+      is_active: true,
+      metadata: { categoria: "acessorios" },
+      track_stock: true,
+      stock_quantity: null,
+      stock_status: "unknown",
+    }],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Esse item aparece no catalogo, mas preciso confirmar o estoque.",
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+
+  const finalPayload = JSON.stringify(openai.calls[1])
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  assert.equal(
+    finalPayload.includes("estoque_status: unknown"),
+    true,
+    "canonical unknown stock status must reach the model",
+  );
+  assert.equal(
+    finalPayload.includes("estoque: desconhecido"),
+    true,
+    "unknown stock must remain unknown",
+  );
+  assert.equal(
+    finalPayload.includes("estoque_status: zero"),
+    false,
+    "unknown stock cannot become confirmed zero",
+  );
+});
+
+test("generateAiSalesReply preserves canonical on-request price and non-tracked stock semantics for pools", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "quanto custa a Piscina Consulta 400?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: false,
+      superior_option_suggestions_enabled: false,
+    }],
+    pools: [{
+      id: "pool-on-request",
+      organization_id: "org-1",
+      store_id: "store-1",
+      name: "Piscina Consulta 400",
+      material: "fibra",
+      shape: "retangular",
+      width_m: 4,
+      length_m: 5,
+      depth_m: 1.3,
+      price: null,
+      price_status: "on_request",
+      description: "Modelo vendido sob consulta.",
+      photo_url: null,
+      is_active: true,
+      track_stock: false,
+      stock_quantity: null,
+      stock_status: "not_tracked",
+    }],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "O valor dessa piscina e sob consulta.",
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+
+  const finalPayload = JSON.stringify(openai.calls[1])
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  assert.equal(
+    finalPayload.includes("preco_status: on_request"),
+    true,
+    "pool on_request price status must reach the model",
+  );
+  assert.equal(
+    finalPayload.includes("preco: sob consulta"),
+    true,
+    "pool on_request price must stay under consultation",
+  );
+  assert.equal(
+    finalPayload.includes("estoque_status: not_tracked"),
+    true,
+    "pool not_tracked status must reach the model",
+  );
+  assert.equal(
+    finalPayload.includes("| estoque livre"),
+    false,
+    "pool without stock tracking cannot be described as free stock",
+  );
+});
+
+test("sales AI live catalog queries load canonical price_status and stock_status columns", async () => {
+  const { readFileSync } = await import("node:fs");
+  const runtimeSource = readFileSync(
+    "src/lib/server/generate-ai-sales-reply.ts",
+    "utf8",
+  );
+
+  const poolFrom = runtimeSource.indexOf('.from("pools")');
+  assert.notEqual(poolFrom, -1);
+
+  const poolBlock = runtimeSource.slice(poolFrom, poolFrom + 1200);
+
+  assert.equal(
+    poolBlock.includes("price_status"),
+    true,
+    "pools live query must load canonical price_status",
+  );
+  assert.equal(
+    poolBlock.includes("stock_status"),
+    true,
+    "pools live query must load canonical stock_status",
+  );
+
+  const catalogBlocks: string[] = [];
+  let cursor = 0;
+
+  while (true) {
+    const index = runtimeSource.indexOf('.from("store_catalog_items")', cursor);
+    if (index < 0) break;
+
+    catalogBlocks.push(runtimeSource.slice(index, index + 1200));
+    cursor = index + 1;
+  }
+
+  assert.equal(
+    catalogBlocks.length >= 2,
+    true,
+    "expected both primary and exact catalog-item live queries",
+  );
+
+  for (const block of catalogBlocks) {
+    assert.equal(
+      block.includes("price_status"),
+      true,
+      "every catalog-item live query must load canonical price_status",
+    );
+    assert.equal(
+      block.includes("stock_status"),
+      true,
+      "every catalog-item live query must load canonical stock_status",
+    );
+  }
+});
+test("generateAiSalesReply keeps explicit pool photo available when canonical stock is confirmed zero", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Tem foto da Piscina Fibra 300?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: false,
+      superior_option_suggestions_enabled: false,
+    }],
+    pools: [{
+      id: "pool-photo-zero",
+      organization_id: "org-1",
+      store_id: "store-1",
+      name: "Piscina Fibra 300",
+      material: "fibra",
+      shape: "retangular",
+      width_m: 3,
+      length_m: 4,
+      depth_m: 1.2,
+      price: 12000,
+      price_status: "valid",
+      description: "Modelo com foto real cadastrada.",
+      photo_url: "https://example.com/piscina-fibra-300.jpg",
+      is_active: true,
+      track_stock: true,
+      stock_quantity: 0,
+      stock_status: "zero",
+    }],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Vou te mostrar a foto cadastrada desse modelo.",
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.notEqual(
+    result.context.catalogPhotoAction,
+    null,
+    "confirmed zero stock must not erase real registered photo evidence",
+  );
+
+  assert.equal(
+    result.context.catalogPhotoAction?.shouldSend,
+    true,
+  );
+
+  assert.equal(
+    result.context.catalogPhotoAction?.targetType,
+    "pool",
+  );
+
+  assert.equal(
+    result.context.catalogPhotoAction?.publicUrl,
+    "https://example.com/piscina-fibra-300.jpg",
+  );
+
+  assert.equal(
+    result.aiText.includes("temos foto"),
+    true,
+    "photo-only reply may confirm registered media without claiming stock availability",
+  );
+});
+
+test("catalog photo action is not gated by inventory sellability", async () => {
+  const { readFileSync } = await import("node:fs");
+
+  const runtimeSource = readFileSync(
+    "src/lib/server/generate-ai-sales-reply.ts",
+    "utf8",
+  );
+
+  const start = runtimeSource.indexOf(
+    "function buildCatalogPhotoAction(",
+  );
+
+  assert.notEqual(start, -1);
+
+  const nextFunction = runtimeSource.indexOf(
+    "\nfunction ",
+    start + 20,
+  );
+
+  assert.notEqual(nextFunction, -1);
+
+  const block = runtimeSource.slice(start, nextFunction);
+
+  assert.equal(
+    block.includes("isSellableInventoryState"),
+    false,
+    "registered photo evidence must not be discarded because stock is zero",
+  );
+
+  assert.equal(
+    block.includes("availability.isSellable"),
+    false,
+    "commercial sellability cannot be a media-existence gate",
+  );
+});
+
+test("catalog photo resolution uses catalog candidates before sellability filtering", async () => {
+  const { readFileSync } = await import("node:fs");
+
+  const runtimeSource = readFileSync(
+    "src/lib/server/generate-ai-sales-reply.ts",
+    "utf8",
+  );
+
+  const start = runtimeSource.indexOf(
+    "const photoCandidatePools = scoredPools;",
+  );
+
+  assert.notEqual(start, -1);
+
+  const end = runtimeSource.indexOf(
+    "const commercialObjective = buildCommercialObjective({",
+    start,
+  );
+
+  assert.notEqual(end, -1);
+
+  const photoFlow = runtimeSource.slice(start, end);
+
+  const scoredCatalogForwardCount = (
+    photoFlow.match(/matchedCatalogItems:\s*scoredCatalogItems/g) || []
+  ).length;
+
+  assert.equal(
+    scoredCatalogForwardCount >= 2,
+    true,
+    "photo context and photo action must see active catalog candidates before stock sellability filtering",
+  );
+});
+test("sales AI prompt keeps stock_status as the single stock semantics authority", async () => {
+  const { readFileSync } = await import("node:fs");
+
+  const runtimeSource = readFileSync(
+    "src/lib/server/generate-ai-sales-reply.ts",
+    "utf8",
+  );
+
+  assert.equal(
+    runtimeSource.includes("stock_status=zero"),
+    true,
+    "prompt must preserve canonical zero semantics",
+  );
+
+  assert.equal(
+    runtimeSource.includes("stock_status=unknown ou unknown_legacy"),
+    true,
+    "prompt must preserve canonical unknown semantics",
+  );
+
+  assert.equal(
+    runtimeSource.includes("stock_status=not_tracked"),
+    true,
+    "prompt must preserve canonical not_tracked semantics",
+  );
+
+  assert.equal(
+    runtimeSource.includes("estoque controlado positivo"),
+    false,
+    "raw positive quantity heuristic cannot compete with canonical stock_status",
+  );
+
+  assert.equal(
+    runtimeSource.includes("quantidade zero ou nula"),
+    false,
+    "null inventory cannot be collapsed into confirmed zero by legacy prompt wording",
+  );
+});
 test("generateAiSalesReply keeps core recommendation when proactive suggestions are disabled", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent: "qual piscina voce recomenda para um espaco 3x4?",

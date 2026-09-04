@@ -3,6 +3,11 @@ import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import { getCanonicalCrmStage } from "@/config/crm";
 import { isSellableInventoryState } from "../catalog/availability";
+import {
+  getCatalogPriceSemantics,
+  getCatalogPriceSemanticsFromNumber,
+  getCatalogStockSemantics,
+} from "../catalog/presentation";
 import { buildBehaviorInstructionBlock } from "./ai-sales-behavior";
 import { buildSalesMethodologyInstructionBlock } from "./ai-sales-methodology";
 import { buildSalesResponseBrain } from "./ai-sales-response-brain";
@@ -199,11 +204,13 @@ type PoolRow = {
   length_m: number | null;
   depth_m: number | null;
   price: number | null;
+  price_status: string | null;
   description: string | null;
   photo_url: string | null;
   is_active: boolean | null;
   track_stock: boolean | null;
   stock_quantity: number | null;
+  stock_status: string | null;
 };
 
 type CatalogItemRow = {
@@ -214,6 +221,7 @@ type CatalogItemRow = {
   name: string | null;
   description: string | null;
   price_cents: number | null;
+  price_status: string | null;
   currency: string | null;
   is_active: boolean | null;
   metadata: Record<string, unknown> | null;
@@ -221,6 +229,7 @@ type CatalogItemRow = {
   updated_at: string | null;
   track_stock: boolean | null;
   stock_quantity: number | null;
+  stock_status: string | null;
 };
 
 type CatalogItemPhotoRow = {
@@ -4851,26 +4860,56 @@ function scoreCatalogItem(
   if (analysis.requestedProductTerm === "barrilha" && haystack.includes("barrilha")) score += 3;
 
   if (item.is_active === true) score += 1;
-  if (item.track_stock === true && (item.stock_quantity || 0) > 0) score += 1;
+  if (
+    getCatalogStockSemantics({
+      stockStatus: item.stock_status,
+      stockQuantity: item.stock_quantity,
+      trackStock: item.track_stock,
+    }).isAvailable
+  ) {
+    score += 1;
+  }
 
   return score;
 }
 
 function buildCatalogItemContextLine(match: MatchedCatalogItem): string {
   const name = match.item.name || "Item sem nome";
-  const price =
-    typeof match.item.price_cents === "number"
-      ? new Intl.NumberFormat("pt-BR", { style: "currency", currency: match.item.currency || "BRL" }).format(match.item.price_cents / 100)
-      : null;
-  const availability =
-    match.item.track_stock === true
-      ? (match.item.stock_quantity || 0) > 0
-        ? `estoque: ${match.item.stock_quantity}`
-        : "sem estoque confirmado"
-      : "estoque livre";
-  const photos = match.photos.length > 0 ? `${match.photos.length} foto(s)` : "sem foto cadastrada";
+  const price = getCatalogPriceSemantics({
+    priceStatus: match.item.price_status,
+    priceCents: match.item.price_cents,
+  });
+  const stock = getCatalogStockSemantics({
+    stockStatus: match.item.stock_status,
+    stockQuantity: match.item.stock_quantity,
+    trackStock: match.item.track_stock,
+  });
 
-  return `- ${name}${price ? ` | preco: ${price}` : ""} | ${availability} | ${photos}`;
+  const priceLabel =
+    price.resolvedStatus === "valid" && price.hasNumericPrice
+      ? price.label
+      : price.resolvedStatus === "on_request"
+        ? "sob consulta"
+        : price.resolvedStatus === "unknown_legacy"
+          ? "nao confirmado"
+          : price.resolvedStatus === "missing"
+            ? "nao informado"
+            : "invalido";
+
+  const stockLabel = stock.isAvailable
+    ? "confirmado"
+    : stock.isZero
+      ? "zero confirmado"
+      : stock.isNotTracked
+        ? "nao controlado"
+        : "desconhecido";
+
+  const photos =
+    match.photos.length > 0
+      ? `${match.photos.length} foto(s)`
+      : "sem foto cadastrada";
+
+  return `- ${name} | preco_status: ${price.resolvedStatus} | preco: ${priceLabel} | estoque_status: ${stock.resolvedStatus} | estoque: ${stockLabel} | ${photos}`;
 }
 
 function formatPoolLine(pool: PoolRow, hasPhoto: boolean): string {
@@ -4880,15 +4919,36 @@ function formatPoolLine(pool: PoolRow, hasPhoto: boolean): string {
       : pool.depth_m
         ? `profundidade ${pool.depth_m}m`
         : "medidas nao informadas";
-  const price = formatCurrencyFromReais(pool.price);
-  const availability =
-    pool.track_stock === true
-      ? (pool.stock_quantity || 0) > 0
-        ? `estoque: ${pool.stock_quantity}`
-        : "sem estoque confirmado"
-      : "estoque livre";
+  const price = getCatalogPriceSemanticsFromNumber({
+    priceStatus: pool.price_status,
+    price: pool.price,
+  });
+  const stock = getCatalogStockSemantics({
+    stockStatus: pool.stock_status,
+    stockQuantity: pool.stock_quantity,
+    trackStock: pool.track_stock,
+  });
 
-  return `- ${pool.name || "Piscina sem nome"}${price ? ` | preco base: ${price}` : ""} | ${dimensions} | ${availability} | ${hasPhoto ? "com foto" : "sem foto"}`;
+  const priceLabel =
+    price.resolvedStatus === "valid" && price.hasNumericPrice
+      ? price.label
+      : price.resolvedStatus === "on_request"
+        ? "sob consulta"
+        : price.resolvedStatus === "unknown_legacy"
+          ? "nao confirmado"
+          : price.resolvedStatus === "missing"
+            ? "nao informado"
+            : "invalido";
+
+  const stockLabel = stock.isAvailable
+    ? "confirmado"
+    : stock.isZero
+      ? "zero confirmado"
+      : stock.isNotTracked
+        ? "nao controlado"
+        : "desconhecido";
+
+  return `- ${pool.name || "Piscina sem nome"} | preco_status: ${price.resolvedStatus} | preco: ${priceLabel} | ${dimensions} | estoque_status: ${stock.resolvedStatus} | estoque: ${stockLabel} | ${hasPhoto ? "com foto" : "sem foto"}`;
 }
 
 function looksLikeHistoricalProductPhotoReference(text: string): boolean {
@@ -5190,15 +5250,6 @@ function buildCatalogPhotoAction(args: {
       return null;
     }
 
-    const availability = isSellableInventoryState({
-      isActive: resolvedPool.is_active,
-      trackStock: resolvedPool.track_stock,
-      stockQuantity: resolvedPool.stock_quantity,
-    });
-
-    if (!availability.isSellable) {
-      return null;
-    }
 
     const poolPhotos = args.poolPhotosByPoolId.get(resolvedPool.id) || [];
     const primaryPoolPhoto = selectPrimaryPoolPhoto(
@@ -5261,15 +5312,6 @@ function buildCatalogPhotoAction(args: {
     return null;
   }
 
-  const availability = isSellableInventoryState({
-    isActive: resolvedCatalogItem.is_active,
-    trackStock: resolvedCatalogItem.track_stock,
-    stockQuantity: resolvedCatalogItem.stock_quantity,
-  });
-
-  if (!availability.isSellable) {
-    return null;
-  }
 
   const catalogItemPhotos = args.catalogItemPhotosByItemId.get(resolvedCatalogItem.id) || [];
   const primaryCatalogItemPhoto = selectPrimaryCatalogItemPhoto(
@@ -5634,7 +5676,15 @@ function scorePool(
   }
 
   if (pool.is_active === true) score += 1;
-  if (pool.track_stock === true && (pool.stock_quantity || 0) > 0) score += 1;
+  if (
+    getCatalogStockSemantics({
+      stockStatus: pool.stock_status,
+      stockQuantity: pool.stock_quantity,
+      trackStock: pool.track_stock,
+    }).isAvailable
+  ) {
+    score += 1;
+  }
   if (pool.price != null) score += 1;
 
   return score;
@@ -7804,7 +7854,7 @@ function buildResponsePriorityBlock(args: {
   );
 
   instructions.push(
-    "- Se o catálogo mostrar item ativo com estoque controlado positivo, você pode dizer que tem, sem revelar a quantidade exata em estoque."
+    "- Se stock_status=available, você pode dizer que há disponibilidade confirmada, sem revelar a quantidade exata em estoque."
   );
 
   instructions.push(
@@ -7812,7 +7862,9 @@ function buildResponsePriorityBlock(args: {
   );
 
   instructions.push(
-    "- Se o catálogo mostrar item ativo com estoque controlado e quantidade 0 ou nula, diga que está em falta ou sem estoque confirmado."
+    "- Se stock_status=zero, trate como falta confirmada de estoque no momento. Nunca transforme zero confirmado em estoque desconhecido.",
+    "- Se stock_status=unknown ou unknown_legacy, nao trate como zero nem como falta confirmada; diga apenas que o estoque nao esta confirmado.",
+    "- Se stock_status=not_tracked, isso significa apenas que a base nao controla estoque; nunca traduza isso como estoque livre ou disponibilidade confirmada."
   );
 
   instructions.push(
@@ -8970,8 +9022,9 @@ REGRAS ESPECÍFICAS DE DESCONTO E NEGOCIAÇÃO
 REGRAS ESPECÍFICAS DE SINCERIDADE
 - Se o cliente pedir um produto específico e ele não aparecer entre os itens compatíveis, diga isso de forma humana, sem falar em catálogo atual, match ou busca técnica.
 - Se o cliente pedir uma marca específica e a marca não estiver claramente confirmada nos itens compatíveis, não diga que tem essa marca.
-- Se houver item compatível ativo com estoque controlado positivo, você pode dizer que há disponibilidade confirmada, sem revelar a quantidade exata em estoque.
-- Se houver item compatível ativo com estoque controlado e quantidade zero ou nula, diga que está em falta ou sem estoque confirmado.
+- Se stock_status=available, você pode dizer que há disponibilidade confirmada, sem revelar a quantidade exata em estoque.
+- Se stock_status=zero, diga que o item está em falta no momento; zero é falta confirmada, não estoque desconhecido.
+- Se stock_status=unknown ou unknown_legacy, diga apenas que o estoque não está confirmado; nunca trate isso como zero.
 - Se o item/modelo aparecer nas seções de encontrados sem disponibilidade vendável, não diga que não localizou no catálogo; diga que ele aparece no catálogo, mas que não há disponibilidade confirmada para venda no momento.
 - Não use a palavra "unidades" ao falar de estoque/disponibilidade, salvo se houver autorização explícita em configuração futura.
 - Se houver item compatível ativo sem controle de estoque, diga que ele aparece ativo no catálogo, mas que o estoque não está confirmado por esta base.
@@ -9893,7 +9946,7 @@ export async function generateAiSalesReply(
       const { data: poolsData, error: poolsError } = await supabase
         .from("pools")
         .select(
-          "id, name, material, shape, width_m, length_m, depth_m, price, description, photo_url, is_active, track_stock, stock_quantity"
+          "id, name, material, shape, width_m, length_m, depth_m, price, price_status, description, photo_url, is_active, track_stock, stock_quantity, stock_status"
         )
         .eq("organization_id", organizationId)
         .eq("store_id", resolvedStoreId)
@@ -9997,6 +10050,7 @@ export async function generateAiSalesReply(
           isActive: match.pool.is_active,
           trackStock: match.pool.track_stock,
           stockQuantity: match.pool.stock_quantity,
+          stockStatus: match.pool.stock_status,
         }).isSellable
       )
       .slice(0, Math.max(1, recommendationPolicy.poolOptionCount));
@@ -10013,7 +10067,7 @@ export async function generateAiSalesReply(
       const { data: catalogItemsData, error: catalogItemsError } = await supabase
         .from("store_catalog_items")
         .select(
-          "id, organization_id, store_id, sku, name, description, price_cents, currency, is_active, metadata, created_at, updated_at, track_stock, stock_quantity"
+          "id, organization_id, store_id, sku, name, description, price_cents, price_status, currency, is_active, metadata, created_at, updated_at, track_stock, stock_quantity, stock_status"
         )
         .eq("organization_id", organizationId)
         .eq("store_id", resolvedStoreId)
@@ -10048,7 +10102,7 @@ export async function generateAiSalesReply(
           const { data: exactCatalogCandidates, error: exactCatalogLookupError } = await supabase
             .from("store_catalog_items")
             .select(
-              "id, organization_id, store_id, sku, name, description, price_cents, currency, is_active, metadata, created_at, updated_at, track_stock, stock_quantity"
+              "id, organization_id, store_id, sku, name, description, price_cents, price_status, currency, is_active, metadata, created_at, updated_at, track_stock, stock_quantity, stock_status"
             )
             .eq("organization_id", organizationId)
             .eq("store_id", resolvedStoreId)
@@ -10124,6 +10178,7 @@ export async function generateAiSalesReply(
           isActive: match.item.is_active,
           trackStock: match.item.track_stock,
           stockQuantity: match.item.stock_quantity,
+          stockStatus: match.item.stock_status,
         }).isSellable
       )
       .filter((match) =>
@@ -10162,6 +10217,7 @@ export async function generateAiSalesReply(
           isActive: match.item.is_active,
           trackStock: match.item.track_stock,
           stockQuantity: match.item.stock_quantity,
+          stockStatus: match.item.stock_status,
         }).isSellable
       )
       .filter((match) => {
@@ -10178,6 +10234,7 @@ export async function generateAiSalesReply(
             isActive: match.pool.is_active,
             trackStock: match.pool.track_stock,
             stockQuantity: match.pool.stock_quantity,
+            stockStatus: match.pool.stock_status,
           }).isSellable
         )
         .slice(0, recommendationPolicy.poolOptionCount);
@@ -10195,6 +10252,7 @@ export async function generateAiSalesReply(
             isActive: match.pool.is_active,
             trackStock: match.pool.track_stock,
             stockQuantity: match.pool.stock_quantity,
+            stockStatus: match.pool.stock_status,
           }).isSellable
         )
         .filter((match) => {
@@ -10209,6 +10267,7 @@ export async function generateAiSalesReply(
           isActive: pool.is_active,
           trackStock: pool.track_stock,
           stockQuantity: pool.stock_quantity,
+          stockStatus: pool.stock_status,
         }).isSellable
       );
 
@@ -10234,6 +10293,7 @@ export async function generateAiSalesReply(
                 isActive: match.pool.is_active,
                 trackStock: match.pool.track_stock,
                 stockQuantity: match.pool.stock_quantity,
+                stockStatus: match.pool.stock_status,
               }).isSellable
             )
             .filter((match) =>
@@ -10256,7 +10316,7 @@ export async function generateAiSalesReply(
       strongestPoolReferenceMatch,
       bestNamedPoolMatch,
       photoCandidatePools,
-      matchedCatalogItems,
+      matchedCatalogItems: scoredCatalogItems,
       orderedMessages: messagesForCurrentCommercialInference,
     });
     const productPhotoRequestContextBlock = buildProductPhotoRequestContextBlock(
@@ -10270,7 +10330,7 @@ export async function generateAiSalesReply(
       strongestPoolReferenceMatch,
       bestNamedPoolMatch,
       availablePools: photoCandidatePools,
-      matchedCatalogItems,
+      matchedCatalogItems: scoredCatalogItems,
       poolPhotosByPoolId,
       catalogItemPhotosByItemId,
       organizationId,
