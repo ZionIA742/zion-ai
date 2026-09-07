@@ -4007,7 +4007,174 @@ assert.equal(
       );
     },
   },
-];
+  {
+    name: "commercial decision explanation survives saver context without becoming customer message",
+    run: async () => {
+      const supabase = createAiWindowScopeSupabase();
+
+      const explanation = {
+        version: "commercial_decision_v1",
+        source: "deterministic_pre_model",
+        crmMutationAuthority: "canonical_writers_only",
+        conversationPattern: "price_question",
+        primaryIntent: "price",
+        responseMode: "objective",
+        qualification: {
+          askNow: false,
+          targetFactKey: null,
+          reasonCode: "customer_question_should_be_answered_first",
+        },
+        hasPlannedNextQuestion: false,
+      } as const;
+
+      let sentText: string | null = null;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => supabase.client as never,
+
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText:
+                    "O valor depende do modelo escolhido. Posso te mostrar as opções disponíveis.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                    humanHandoff: null,
+                    commercialHandoff: null,
+                    catalogPhotoAction: null,
+                    resolvedCommercialOpportunityId: null,
+                    commercialMessageIntentResolution: null,
+                    responseAnchorCommercialContext: null,
+                    salesAiOperatingWindowContext: null,
+                    salesAiAppointmentContext: null,
+                    commercialDecisionExplanation: explanation,
+                  },
+                }) as never,
+
+              sendAiPanelMessage: async (args: { aiText: string }) => {
+                sentText = args.aiText;
+                return "msg-ai-explanation-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+
+        if (!result.ok) return;
+
+        assert.equal(
+          sentText,
+          "O valor depende do modelo escolhido. Posso te mostrar as opções disponíveis.",
+        );
+
+        assert.equal(
+          String(sentText).includes("commercial_decision_v1"),
+          false,
+          "internal decision explanation must not become customer message content",
+        );
+
+        assert.equal(
+          String(sentText).includes("canonical_writers_only"),
+          false,
+          "CRM authority metadata must never become customer message content",
+        );
+
+        assert.deepEqual(
+          result.context?.commercialDecisionExplanation,
+          explanation,
+          "bounded commercial explanation must survive only in operational context",
+        );
+      });
+    },
+  },
+  {
+    name: "commercial decision explanation cannot authorize or parameterize canonical CRM transition",
+    run: () => {
+      const source = readFileSync(
+        join(
+          process.cwd(),
+          "src/lib/server/generate-and-save-ai-sales-reply.ts",
+        ),
+        "utf8",
+      );
+
+      const helperStart = source.indexOf(
+        "async function transitionCommercialOpportunityStageBySystem(args: {",
+      );
+
+      const helperEnd = source.indexOf(
+        "type CommercialOpportunityStageRow = {",
+        helperStart,
+      );
+
+      assert.equal(helperStart >= 0, true);
+      assert.equal(helperEnd > helperStart, true);
+
+      const helper = source.slice(helperStart, helperEnd);
+
+      assert.equal(
+        helper.includes(
+          '"transition_commercial_opportunity_stage_by_system"',
+        ),
+        true,
+      );
+
+      for (const required of [
+        "p_organization_id: args.organizationId",
+        "p_store_id: args.storeId",
+        "p_commercial_opportunity_id: args.commercialOpportunityId",
+        "p_idempotency_key: args.idempotencyKey",
+        "p_target_stage: args.targetStage",
+        "p_reason_details: args.reasonDetails",
+        "p_evidence_type: args.evidenceType",
+        "p_evidence_message_id: args.evidenceMessageId",
+        "p_evidence_summary: args.evidenceSummary",
+        "p_source: args.source",
+      ]) {
+        assert.equal(
+          helper.includes(required),
+          true,
+          `canonical CRM writer must preserve ${required}`,
+        );
+      }
+
+      for (const forbidden of [
+        "commercialDecisionExplanation",
+        "CommercialDecisionExplanation",
+        "commercial_decision_v1",
+        "canonical_writers_only",
+        "conversationPattern",
+        "primaryIntent",
+        "qualificationReasonCode",
+      ]) {
+        assert.equal(
+          helper.includes(forbidden),
+          false,
+          `commercial explanation must not parameterize CRM writer: ${forbidden}`,
+        );
+      }
+
+      assert.equal(
+        source.includes("...generationResult.context,"),
+        true,
+        "Saver must preserve bounded generator context in its operational result",
+      );
+    },
+  },];
 
 async function main() {
   let passed = 0;

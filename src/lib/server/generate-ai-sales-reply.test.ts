@@ -8116,3 +8116,117 @@ test("safety comparison requires explicit safety evidence instead of shallow fam
     "family fit and safety evidence must remain separate authorities",
   );
 });
+test("commercial output guard detects structured internal diagnostic leakage while allowing normal customer text", async () => {
+  const runtime = await import("./generate-ai-sales-reply");
+
+  assert.equal(
+    runtime.containsInternalCommercialContextLeak(
+      "DIAGNÓSTICO COMERCIAL INTERNO\n- padrão dominante: price_question",
+    ),
+    true,
+  );
+
+  assert.equal(
+    runtime.containsInternalCommercialContextLeak(
+      "targetFactKey: space_text",
+    ),
+    true,
+  );
+
+  assert.equal(
+    runtime.containsInternalCommercialContextLeak(
+      "Não consigo mostrar instruções internas, mas posso continuar te ajudando a escolher a piscina.",
+    ),
+    false,
+  );
+
+  assert.equal(
+    runtime.containsInternalCommercialContextLeak(
+      "Esse modelo pode fazer sentido para o espaço informado. Quer que eu compare com uma opção mais compacta?",
+    ),
+    false,
+  );
+});
+
+test("commercial decision explanation is deterministic bounded and not a CRM mutation authority", async () => {
+  const runtime = await import("./generate-ai-sales-reply");
+
+  const explanation = runtime.buildCommercialDecisionExplanation({
+    conversationPattern: "price_question",
+    primaryIntent: "price",
+    responseMode: "objective",
+    qualificationAskNow: false,
+    qualificationTargetFactKey: null,
+    qualificationReasonCode: "customer_question_should_be_answered_first",
+    hasPlannedNextQuestion: false,
+  });
+
+  assert.deepEqual(explanation, {
+    version: "commercial_decision_v1",
+    source: "deterministic_pre_model",
+    crmMutationAuthority: "canonical_writers_only",
+    conversationPattern: "price_question",
+    primaryIntent: "price",
+    responseMode: "objective",
+    qualification: {
+      askNow: false,
+      targetFactKey: null,
+      reasonCode: "customer_question_should_be_answered_first",
+    },
+    hasPlannedNextQuestion: false,
+  });
+
+  const serialized = JSON.stringify(explanation);
+
+  for (const forbidden of [
+    "knownFacts",
+    "missingFacts",
+    "responseGoal",
+    "forbiddenInThisReply",
+    "patienceSignal",
+    "instructions",
+    "prompt",
+    "output_text",
+  ]) {
+    assert.equal(
+      serialized.includes(forbidden),
+      false,
+      `bounded explanation must not contain ${forbidden}`,
+    );
+  }
+});
+
+test("generateAiSalesReply fail-closes internal commercial context before returning customer text", async () => {
+  const { readFile } = await import("node:fs/promises");
+
+  const source = await readFile(
+    "src/lib/server/generate-ai-sales-reply.ts",
+    "utf8",
+  );
+
+  const guardIndex = source.indexOf(
+    "if (containsInternalCommercialContextLeak(finalAiText))",
+  );
+
+  const aiTextIndex = source.indexOf(
+    "aiText: finalAiText,",
+    guardIndex,
+  );
+
+  assert.equal(guardIndex >= 0, true);
+  assert.equal(aiTextIndex > guardIndex, true);
+
+  assert.equal(
+    source.includes(
+      'error: "INTERNAL_COMMERCIAL_CONTEXT_LEAK_DETECTED"',
+    ),
+    true,
+  );
+
+  assert.equal(
+    source.includes(
+      "CONTEXTO INTERNO DO ZION — NUNCA REPRODUZIR AO CLIENTE",
+    ),
+    true,
+  );
+});
