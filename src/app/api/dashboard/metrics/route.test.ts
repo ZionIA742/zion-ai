@@ -603,6 +603,91 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "followups month metric uses created_at within the store civil month",
+    run: async () => {
+      const harness = createHandlerHarness({
+        now: new Date("2026-09-08T03:30:00.000Z"),
+        responses: {
+          store_schedule_settings: {
+            data: [{ timezone_name: "America/Sao_Paulo" }],
+            error: null,
+          },
+          schedule_post_appointment_followups: {
+            data: [
+              {
+                id: "followup-month-boundary",
+                appointment_id: "appointment-1",
+                lead_id: "lead-1",
+                conversation_id: "conv-1",
+                followup_status: "pending",
+                preferred_channel: "whatsapp",
+                prompt_count: 0,
+                scheduled_end: "2026-09-20T15:00:00.000Z",
+                created_at: "2026-09-01T03:00:00.000Z",
+                last_prompted_at: null,
+                confirmed_at: null,
+                resolved_at: null,
+              },
+              {
+                id: "followup-before-month",
+                appointment_id: "appointment-2",
+                lead_id: "lead-1",
+                conversation_id: "conv-1",
+                followup_status: "pending",
+                preferred_channel: "whatsapp",
+                prompt_count: 1,
+                scheduled_end: "2026-09-22T15:00:00.000Z",
+                created_at: "2026-09-01T02:59:59.999Z",
+                last_prompted_at: null,
+                confirmed_at: null,
+                resolved_at: null,
+              },
+              {
+                id: "followup-month-resolved",
+                appointment_id: "appointment-3",
+                lead_id: "lead-1",
+                conversation_id: "conv-1",
+                followup_status: "resolved",
+                preferred_channel: "whatsapp",
+                prompt_count: 1,
+                scheduled_end: "2026-09-24T15:00:00.000Z",
+                created_at: "2026-09-15T12:00:00.000Z",
+                last_prompted_at: null,
+                confirmed_at: null,
+                resolved_at: "2026-09-16T12:00:00.000Z",
+              },
+            ],
+            error: null,
+          },
+        },
+      });
+
+      const response = await harness.handler(
+        new Request("https://example.test/api/dashboard/metrics"),
+      );
+      const body = await parseBody(response);
+      const summary = body.summary as Record<string, unknown>;
+      const followups = summary.followups as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(followups.total, 3);
+      assert.equal(followups.month, 2);
+      assert.equal(followups.pending, 2);
+
+      const followupsCall = harness.calls.find(
+        (call) => call.table === "schedule_post_appointment_followups",
+      );
+      assert.ok(followupsCall);
+      assert.equal(followupsCall.columns.includes("created_at"), true);
+      assert.equal(
+        followupsCall.filters.some(
+          (filter) => filter.op === "gte" || filter.op === "lte",
+        ),
+        false,
+      );
+    },
+  },
+  {
     name: "success preserves public payload shape",
     run: async () => {
       const harness = createHandlerHarness();
@@ -804,6 +889,21 @@ const tests: TestCase[] = [
       );
       assert.equal(/\bpendingFollowups\b/.test(panelDefinition), false);
       assert.equal(/\bpendingFollowups\b/.test(detailDefinition), false);
+    },
+  },
+  {
+    name: "month followups card uses the monthly followups metric",
+    run: () => {
+      const source = readFileSync(
+        join(__dirname, "../../../(app)/dashboard/page.tsx"),
+        "utf8",
+      );
+      const titleIndex = source.indexOf("Follow-ups no mês");
+      const cardSource = source.slice(titleIndex, titleIndex + 600);
+
+      assert.equal(titleIndex > -1, true);
+      assert.equal(cardSource.includes("summary.followups.month"), true);
+      assert.equal(cardSource.includes("summary.followups.total"), false);
     },
   },
 ];

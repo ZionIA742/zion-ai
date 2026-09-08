@@ -69,6 +69,7 @@ type DashboardMetrics = {
     };
     followups: {
       total: number;
+      month: number;
       pending: number;
       byStatus: Record<string, number>;
     };
@@ -3254,7 +3255,7 @@ export default function DashboardPage() {
                     Follow-ups no mês
                   </p>
                   <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-emerald-700">
-                    {formatNumber(summary.followups.total)}
+                    {formatNumber(summary.followups.month)}
                   </p>
                   <p className="mt-0.5 break-words text-[10px] leading-relaxed text-zinc-500">
                     Clique para ver lista
