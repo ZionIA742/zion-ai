@@ -861,47 +861,37 @@ function GoalGauge({
 function CommercialReadingPanel({
   salesAvailable,
   leadsMonth,
-  pendingFollowups,
   futureAppointments,
   onClick,
 }: {
   salesAvailable: boolean;
   leadsMonth: number;
-  pendingFollowups: number;
   futureAppointments: number;
   onClick: () => void;
 }) {
-  const primaryInsight = pendingFollowups
+  const primaryInsight = futureAppointments
     ? {
-        eyebrow: "Prioridade agora",
-        title: `${formatNumber(pendingFollowups)} follow-up(s) precisam de atenção`,
-        text: "Os acompanhamentos pendentes são o ponto comercial mais imediato para trabalhar agora.",
-        accent: "border-amber-500",
-        eyebrowColor: "text-amber-700",
+        eyebrow: "Movimento comercial",
+        title: `${formatNumber(futureAppointments)} compromisso(s) futuro(s) registrado(s)`,
+        text: "Os próximos compromissos são o movimento operacional/comercial concreto disponível neste momento.",
+        accent: "border-emerald-600",
+        eyebrowColor: "text-emerald-700",
       }
-    : futureAppointments
+    : leadsMonth
       ? {
-          eyebrow: "Movimento comercial",
-          title: `${formatNumber(futureAppointments)} compromisso(s) futuro(s) registrado(s)`,
-          text: "Os próximos compromissos são o movimento comercial mais concreto disponível neste momento.",
-          accent: "border-emerald-600",
-          eyebrowColor: "text-emerald-700",
+          eyebrow: "Demanda",
+          title: `${formatNumber(leadsMonth)} lead(s) entraram neste mês`,
+          text: "Há demanda registrada para trabalhar e acompanhar a evolução no funil.",
+          accent: "border-cyan-600",
+          eyebrowColor: "text-cyan-700",
         }
-      : leadsMonth
-        ? {
-            eyebrow: "Demanda",
-            title: `${formatNumber(leadsMonth)} lead(s) entraram neste mês`,
-            text: "Há demanda registrada para trabalhar e acompanhar a evolução no funil.",
-            accent: "border-cyan-600",
-            eyebrowColor: "text-cyan-700",
-          }
-        : {
-            eyebrow: "Cenário atual",
-            title: "Sem movimento comercial novo no período",
-            text: "Ainda não há novos leads, compromissos futuros ou acompanhamentos que indiquem uma prioridade mais específica.",
-            accent: "border-slate-500",
-            eyebrowColor: "text-slate-600",
-          };
+      : {
+          eyebrow: "Cenário atual",
+          title: "Sem movimento comercial novo no período",
+          text: "Ainda não há novos leads ou compromissos futuros que indiquem uma prioridade mais específica.",
+          accent: "border-slate-500",
+          eyebrowColor: "text-slate-600",
+        };
 
   const compactInsights = [
     {
@@ -918,13 +908,11 @@ function CommercialReadingPanel({
     },
     {
       label: "Próximo passo",
-      value: pendingFollowups
-        ? "Priorizar acompanhamentos"
-        : futureAppointments
-          ? "Acompanhar compromissos"
-          : leadsMonth
-            ? "Avançar leads do funil"
-            : "Aguardar nova demanda",
+      value: futureAppointments
+        ? "Acompanhar compromissos"
+        : leadsMonth
+          ? "Avançar leads do funil"
+          : "Aguardar nova demanda",
       dot: "bg-emerald-600",
     },
   ];
@@ -991,22 +979,18 @@ function CommercialReadingDetail({
   salesAvailable,
   salesStatusText,
   leadsMonth,
-  pendingFollowups,
   futureAppointments,
 }: {
   salesAvailable: boolean;
   salesStatusText: string;
   leadsMonth: number;
-  pendingFollowups: number;
   futureAppointments: number;
 }) {
-  const nextStep = pendingFollowups
-    ? `Priorizar os ${formatNumber(pendingFollowups)} acompanhamento(s) pendente(s).`
-    : futureAppointments
-      ? `Acompanhar os ${formatNumber(futureAppointments)} compromisso(s) futuro(s) já registrados.`
-      : leadsMonth
-        ? "Trabalhar os leads que já entraram no funil e acompanhar a evolução deles."
-        : "Aguardar nova demanda mantendo a operação pronta para responder rapidamente.";
+  const nextStep = futureAppointments
+    ? `Acompanhar os ${formatNumber(futureAppointments)} compromisso(s) futuro(s) já registrados.`
+    : leadsMonth
+      ? "Trabalhar os leads que já entraram no funil e acompanhar a evolução deles."
+      : "Aguardar nova demanda mantendo a operação pronta para responder rapidamente.";
 
   const items = [
     {
@@ -1026,11 +1010,13 @@ function CommercialReadingDetail({
       dot: "bg-cyan-600",
     },
     {
-      label: "Atenção",
-      value: pendingFollowups ? `${formatNumber(pendingFollowups)} pendente(s)` : "Em dia",
-      text: pendingFollowups
-        ? "Existem acompanhamentos pendentes que podem influenciar o avanço das oportunidades."
-        : "Não há follow-ups pendentes neste momento.",
+      label: "Agenda",
+      value: futureAppointments
+        ? `${formatNumber(futureAppointments)} compromisso(s) futuro(s)`
+        : "Sem compromissos futuros",
+      text: futureAppointments
+        ? "Há compromissos futuros registrados para acompanhar."
+        : "Não há compromisso futuro registrado no momento.",
       dot: "bg-amber-500",
     },
     {
@@ -2801,7 +2787,6 @@ export default function DashboardPage() {
               <CommercialReadingPanel
                 salesAvailable={summary.sales.available}
                 leadsMonth={summary.leads.month}
-                pendingFollowups={summary.followups.pending}
                 futureAppointments={summary.appointments.future}
                 onClick={() => setSalesDetailDrawer("commercialReading")}
               />
@@ -2917,7 +2902,6 @@ export default function DashboardPage() {
                     salesAvailable={summary.sales.available}
                     salesStatusText={salesStatusText}
                     leadsMonth={summary.leads.month}
-                    pendingFollowups={summary.followups.pending}
                     futureAppointments={summary.appointments.future}
                   />
                 ) : (

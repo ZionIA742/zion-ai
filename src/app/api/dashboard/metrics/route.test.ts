@@ -768,6 +768,44 @@ const tests: TestCase[] = [
       assert.equal(source.includes('fetch("/api/dashboard/metrics"'), true);
     },
   },
+  {
+    name: "commercial reading does not receive post appointment followups",
+    run: () => {
+      const source = readFileSync(
+        join(__dirname, "../../../(app)/dashboard/page.tsx"),
+        "utf8",
+      );
+      const panelDefinition = source.slice(
+        source.indexOf("function CommercialReadingPanel"),
+        source.indexOf("function CommercialReadingDetail"),
+      );
+      const detailDefinition = source.slice(
+        source.indexOf("function CommercialReadingDetail"),
+        source.indexOf("type SalesPeriodView"),
+      );
+      const panelCallSite = source.slice(
+        source.indexOf("<CommercialReadingPanel"),
+        source.indexOf("</CommercialReadingPanel>") > -1
+          ? source.indexOf("</CommercialReadingPanel>")
+          : source.indexOf("<CommercialReadingDetail"),
+      );
+      const detailCallSite = source.slice(
+        source.indexOf("<CommercialReadingDetail"),
+        source.indexOf("/>", source.indexOf("<CommercialReadingDetail")) + 2,
+      );
+
+      assert.equal(
+        panelCallSite.includes("pendingFollowups={summary.followups.pending}"),
+        false,
+      );
+      assert.equal(
+        detailCallSite.includes("pendingFollowups={summary.followups.pending}"),
+        false,
+      );
+      assert.equal(/\bpendingFollowups\b/.test(panelDefinition), false);
+      assert.equal(/\bpendingFollowups\b/.test(detailDefinition), false);
+    },
+  },
 ];
 
 async function run() {
