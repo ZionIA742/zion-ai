@@ -149,6 +149,7 @@ function createHandlerHarness(options?: {
   accessResult?: Awaited<ReturnType<DashboardMetricsRouteDeps["resolveAccess"]>>;
   responses?: Partial<Record<string, QueryResult | QueryResult[]>>;
   events?: string[];
+  now?: Date;
 }) {
   let resolveCount = 0;
   let clientCreateCount = 0;
@@ -168,6 +169,9 @@ function createHandlerHarness(options?: {
       options?.events?.push("client:create");
       clientCreateCount += 1;
       return createPrivilegedClientMock(calls, options?.responses) as never;
+    },
+    now() {
+      return options?.now ?? new Date("2026-09-08T12:00:00.000Z");
     },
   });
 
@@ -299,7 +303,7 @@ const tests: TestCase[] = [
       assert.equal(body.storeId, "server-store");
       assert.equal(harness.getResolveCount(), 1);
       assert.equal(harness.getClientCreateCount(), 1);
-      assert.equal(harness.calls.length, 12);
+      assert.equal(harness.calls.length, 13);
 
       for (const call of harness.calls) {
         assert.equal(
@@ -383,6 +387,54 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "store timezone is read from canonical schedule settings scope",
+    run: async () => {
+      const harness = createHandlerHarness({
+        responses: {
+          store_schedule_settings: {
+            data: [{ timezone_name: "Asia/Tokyo" }],
+            error: null,
+          },
+        },
+      });
+
+      const response = await harness.handler(
+        new Request(
+          "https://example.test/api/dashboard/metrics?organizationId=attacker-org&storeId=attacker-store",
+        ),
+      );
+      const body = await parseBody(response);
+      const period = body.period as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(period.timeZone, "Asia/Tokyo");
+
+      const scheduleCall = harness.calls.find(
+        (call) => call.table === "store_schedule_settings",
+      );
+      assert.ok(scheduleCall);
+      assert.equal(scheduleCall.columns, "timezone_name");
+      assert.equal(
+        scheduleCall.filters.some(
+          (filter) =>
+            filter.op === "eq" &&
+            filter.column === "organization_id" &&
+            filter.value === "server-org",
+        ),
+        true,
+      );
+      assert.equal(
+        scheduleCall.filters.some(
+          (filter) =>
+            filter.op === "eq" &&
+            filter.column === "store_id" &&
+            filter.value === "server-store",
+        ),
+        true,
+      );
+    },
+  },
+  {
     name: "monthly sales goal is read from canonical store settings scope",
     run: async () => {
       const harness = createHandlerHarness({
@@ -447,6 +499,110 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "period uses Sao Paulo timezone boundaries independently from UTC runtime day",
+    run: async () => {
+      const harness = createHandlerHarness({
+        now: new Date("2026-09-08T03:30:00.000Z"),
+        responses: {
+          store_schedule_settings: {
+            data: [{ timezone_name: "America/Sao_Paulo" }],
+            error: null,
+          },
+        },
+      });
+
+      const response = await harness.handler(
+        new Request("https://example.test/api/dashboard/metrics"),
+      );
+      const body = await parseBody(response);
+      const period = body.period as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(body.generatedAt, "2026-09-08T03:30:00.000Z");
+      assert.deepEqual(period, {
+        timeZone: "America/Sao_Paulo",
+        todayDateKey: "2026-09-08",
+        todayStart: "2026-09-08T03:00:00.000Z",
+        todayEnd: "2026-09-09T02:59:59.999Z",
+        weekStart: "2026-09-02T03:00:00.000Z",
+        monthStart: "2026-09-01T03:00:00.000Z",
+        monthEnd: "2026-10-01T02:59:59.999Z",
+        next30DaysEnd: "2026-10-09T02:59:59.999Z",
+      });
+
+      const monthMessagesCall = harness.calls.find(
+        (call) => call.table === "messages" && call.limit === 5000,
+      );
+      assert.ok(monthMessagesCall);
+      assert.equal(
+        monthMessagesCall.filters.find(
+          (filter) => filter.op === "gte" && filter.column === "created_at",
+        )?.value,
+        "2026-09-01T03:00:00.000Z",
+      );
+      assert.equal(
+        monthMessagesCall.filters.find(
+          (filter) => filter.op === "lte" && filter.column === "created_at",
+        )?.value,
+        "2026-10-01T02:59:59.999Z",
+      );
+    },
+  },
+  {
+    name: "period uses a different configured timezone without Sao Paulo hardcode",
+    run: async () => {
+      const harness = createHandlerHarness({
+        now: new Date("2026-09-08T03:30:00.000Z"),
+        responses: {
+          store_schedule_settings: {
+            data: [{ timezone_name: "Asia/Tokyo" }],
+            error: null,
+          },
+        },
+      });
+
+      const response = await harness.handler(
+        new Request("https://example.test/api/dashboard/metrics"),
+      );
+      const body = await parseBody(response);
+      const period = body.period as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(period.timeZone, "Asia/Tokyo");
+      assert.equal(period.todayDateKey, "2026-09-08");
+      assert.equal(period.todayStart, "2026-09-07T15:00:00.000Z");
+      assert.equal(period.monthStart, "2026-08-31T15:00:00.000Z");
+      assert.equal(period.next30DaysEnd, "2026-10-08T14:59:59.999Z");
+    },
+  },
+  {
+    name: "invalid or empty store timezone falls back to Sao Paulo",
+    run: async () => {
+      for (const timezoneName of ["", "Invalid/Timezone"]) {
+        const harness = createHandlerHarness({
+          now: new Date("2026-09-08T03:30:00.000Z"),
+          responses: {
+            store_schedule_settings: {
+              data: [{ timezone_name: timezoneName }],
+              error: null,
+            },
+          },
+        });
+
+        const response = await harness.handler(
+          new Request("https://example.test/api/dashboard/metrics"),
+        );
+        const body = await parseBody(response);
+        const period = body.period as Record<string, unknown>;
+
+        assert.equal(response.status, 200);
+        assert.equal(period.timeZone, "America/Sao_Paulo");
+        assert.equal(period.todayDateKey, "2026-09-08");
+        assert.equal(period.todayStart, "2026-09-08T03:00:00.000Z");
+      }
+    },
+  },
+  {
     name: "success preserves public payload shape",
     run: async () => {
       const harness = createHandlerHarness();
@@ -464,6 +620,32 @@ const tests: TestCase[] = [
         "storeId",
         "summary",
       ]);
+    },
+  },
+  {
+    name: "schedule settings query failures return sanitized 500 payload",
+    run: async () => {
+      const harness = createHandlerHarness({
+        responses: {
+          store_schedule_settings: {
+            data: [],
+            error: { message: "permission denied for table store_schedule_settings" },
+          },
+        },
+      });
+      const response = await harness.handler(
+        new Request("https://example.test/api/dashboard/metrics"),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 500);
+      assert.equal(body.ok, false);
+      assert.equal(body.error, "LOAD_DASHBOARD_METRICS_FAILED");
+      assert.equal(
+        body.message,
+        "Nao foi possivel carregar as metricas do dashboard no momento.",
+      );
+      assert.equal(JSON.stringify(body).includes("permission denied"), false);
     },
   },
   {

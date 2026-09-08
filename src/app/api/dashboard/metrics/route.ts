@@ -10,6 +10,7 @@ import {
   buildMonthlySalesGoalState,
   type StoreMonthlySalesGoalRow,
 } from "@/lib/store-monthly-sales-goal";
+import { buildDashboardPeriod } from "@/lib/server/dashboard-time";
 import { resolveStoreApiAccess } from "@/lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
@@ -149,6 +150,10 @@ type PoolRow = {
   created_at: string | null;
 };
 
+type StoreScheduleSettingsRow = {
+  timezone_name: string | null;
+};
+
 function buildJsonResponse(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
@@ -159,36 +164,6 @@ function buildJsonResponse(body: unknown, status = 200) {
       Vary: "*",
     },
   });
-}
-
-function startOfLocalDay(date: Date) {
-  const copy = new Date(date);
-  copy.setHours(0, 0, 0, 0);
-  return copy;
-}
-
-function endOfLocalDay(date: Date) {
-  const copy = new Date(date);
-  copy.setHours(23, 59, 59, 999);
-  return copy;
-}
-
-function startOfLocalMonth(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
-}
-
-function endOfLocalMonth(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
-}
-
-function addDays(date: Date, days: number) {
-  const copy = new Date(date);
-  copy.setDate(copy.getDate() + days);
-  return copy;
-}
-
-function toIso(date: Date) {
-  return date.toISOString();
 }
 
 function normalizeText(value: string | null | undefined) {
@@ -341,6 +316,7 @@ function mapPoolForDashboard(pool: PoolRow) {
 export type DashboardMetricsRouteDeps = {
   resolveAccess: typeof resolveStoreApiAccess;
   createPrivilegedClient: () => ReturnType<typeof createClient>;
+  now: () => Date;
 };
 
 function createPrivilegedDashboardClient() {
@@ -360,6 +336,7 @@ export function createDashboardMetricsGetHandler(
   const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
   const createPrivilegedClient =
     deps.createPrivilegedClient ?? createPrivilegedDashboardClient;
+  const resolveNow = deps.now ?? (() => new Date());
 
   return async function GET(request: Request) {
     void request;
@@ -375,13 +352,44 @@ export function createDashboardMetricsGetHandler(
     try {
       const supabase = createPrivilegedClient();
 
-    const now = new Date();
-    const todayStart = startOfLocalDay(now);
-    const todayEnd = endOfLocalDay(now);
-    const weekStart = addDays(todayStart, -6);
-    const monthStart = startOfLocalMonth(now);
-    const monthEnd = endOfLocalMonth(now);
-    const next30DaysEnd = addDays(todayEnd, 30);
+    const scheduleSettingsResult = await supabase
+      .from("store_schedule_settings")
+      .select("timezone_name")
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .limit(1);
+
+    if (scheduleSettingsResult.error) {
+      console.error("[dashboard-metrics] query failure", [
+        {
+          source: "store_schedule_settings",
+          code: scheduleSettingsResult.error.code,
+          message: scheduleSettingsResult.error.message,
+          details: scheduleSettingsResult.error.details,
+          hint: scheduleSettingsResult.error.hint,
+        },
+      ]);
+
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_DASHBOARD_METRICS_FAILED",
+          message: "Nao foi possivel carregar as metricas do dashboard no momento.",
+        },
+        500
+      );
+    }
+
+    const scheduleSettings = Array.isArray(scheduleSettingsResult.data)
+      ? ((scheduleSettingsResult.data[0] as StoreScheduleSettingsRow | undefined) ?? null)
+      : null;
+    const now = resolveNow();
+    const period = buildDashboardPeriod(now, scheduleSettings?.timezone_name);
+    const todayStart = new Date(period.todayStart);
+    const todayEnd = new Date(period.todayEnd);
+    const weekStart = new Date(period.weekStart);
+    const monthStart = new Date(period.monthStart);
+    const monthEnd = new Date(period.monthEnd);
 
     const leadsResult = await supabase
       .from("leads")
@@ -446,8 +454,8 @@ export function createDashboardMetricsGetHandler(
         .select("id,conversation_id,lead_id,store_id,sender,direction,message_type,content,created_at")
         .eq("organization_id", organizationId)
         .eq("store_id", storeId)
-        .gte("created_at", toIso(monthStart))
-        .lte("created_at", toIso(monthEnd))
+        .gte("created_at", period.monthStart)
+        .lte("created_at", period.monthEnd)
         .order("created_at", { ascending: false })
         .limit(5000),
 
@@ -466,8 +474,8 @@ export function createDashboardMetricsGetHandler(
         )
         .eq("organization_id", organizationId)
         .eq("store_id", storeId)
-        .gte("created_at", toIso(monthStart))
-        .lte("created_at", toIso(monthEnd))
+        .gte("created_at", period.monthStart)
+        .lte("created_at", period.monthEnd)
         .order("created_at", { ascending: false })
         .limit(5000),
 
@@ -476,8 +484,8 @@ export function createDashboardMetricsGetHandler(
         .select("id,conversation_id,lead_id,action,next_state,created_at")
         .eq("organization_id", organizationId)
         .eq("store_id", storeId)
-        .gte("created_at", toIso(monthStart))
-        .lte("created_at", toIso(monthEnd))
+        .gte("created_at", period.monthStart)
+        .lte("created_at", period.monthEnd)
         .order("created_at", { ascending: false })
         .limit(1000),
 
@@ -496,8 +504,8 @@ export function createDashboardMetricsGetHandler(
         )
         .eq("organization_id", organizationId)
         .eq("store_id", storeId)
-        .gte("scheduled_start", toIso(monthStart))
-        .lte("scheduled_start", toIso(next30DaysEnd))
+        .gte("scheduled_start", period.monthStart)
+        .lte("scheduled_start", period.next30DaysEnd)
         .order("scheduled_start", { ascending: true })
         .limit(5000),
 
@@ -878,12 +886,14 @@ export function createDashboardMetricsGetHandler(
       storeId,
       generatedAt: now.toISOString(),
       period: {
-        todayStart: toIso(todayStart),
-        todayEnd: toIso(todayEnd),
-        weekStart: toIso(weekStart),
-        monthStart: toIso(monthStart),
-        monthEnd: toIso(monthEnd),
-        next30DaysEnd: toIso(next30DaysEnd),
+        timeZone: period.timeZone,
+        todayDateKey: period.todayDateKey,
+        todayStart: period.todayStart,
+        todayEnd: period.todayEnd,
+        weekStart: period.weekStart,
+        monthStart: period.monthStart,
+        monthEnd: period.monthEnd,
+        next30DaysEnd: period.next30DaysEnd,
       },
       summary: {
         leads: {

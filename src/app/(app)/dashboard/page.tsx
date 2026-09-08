@@ -12,6 +12,16 @@ type DashboardMetrics = {
   generatedAt: string;
   storeSystemStartedAt?: string | null;
   storeCreatedAt?: string | null;
+  period: {
+    timeZone: string;
+    todayDateKey: string;
+    todayStart: string;
+    todayEnd: string;
+    weekStart: string;
+    monthStart: string;
+    monthEnd: string;
+    next30DaysEnd: string;
+  };
   summary: {
     leads: {
       total: number;
@@ -302,9 +312,16 @@ function getDashboardInventoryValueLabel(item: {
   return formatCurrencyFromCents(price.priceCents * stock.quantity);
 }
 
-function formatDateTime(value: string | null | undefined) {
+const DEFAULT_DASHBOARD_TIME_ZONE = "America/Sao_Paulo";
+
+function getDashboardTimeZone(metrics: DashboardMetrics | null) {
+  return metrics?.period?.timeZone || DEFAULT_DASHBOARD_TIME_ZONE;
+}
+
+function formatDateTime(value: string | null | undefined, timeZone = DEFAULT_DASHBOARD_TIME_ZONE) {
   if (!value) return "Sem data";
   return new Intl.DateTimeFormat("pt-BR", {
+    timeZone,
     day: "2-digit",
     month: "2-digit",
     hour: "2-digit",
@@ -312,9 +329,10 @@ function formatDateTime(value: string | null | undefined) {
   }).format(new Date(value));
 }
 
-function formatDate(value: string | null | undefined) {
+function formatDate(value: string | null | undefined, timeZone = DEFAULT_DASHBOARD_TIME_ZONE) {
   if (!value) return "Sem data";
   return new Intl.DateTimeFormat("pt-BR", {
+    timeZone,
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -1169,19 +1187,50 @@ function SalesMetricTile({
   );
 }
 
+function createSalesDate(year: number, monthIndex: number, day: number) {
+  return new Date(Date.UTC(year, monthIndex, day, 12, 0, 0, 0));
+}
+
+function parseSalesDateKey(value: string | null | undefined) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+  if (!match) return createSalesDate(2000, 0, 1);
+
+  return createSalesDate(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3])
+  );
+}
+
+function getSalesYear(value: Date) {
+  return value.getUTCFullYear();
+}
+
+function getSalesMonth(value: Date) {
+  return value.getUTCMonth();
+}
+
+function getSalesDate(value: Date) {
+  return value.getUTCDate();
+}
+
+function isSameSalesDate(value: Date, referenceDate: Date) {
+  return (
+    getSalesYear(value) === getSalesYear(referenceDate) &&
+    getSalesMonth(value) === getSalesMonth(referenceDate) &&
+    getSalesDate(value) === getSalesDate(referenceDate)
+  );
+}
+
 function startOfSalesWeek(value: Date) {
-  const date = new Date(value);
-  date.setHours(0, 0, 0, 0);
-  const weekday = date.getDay();
+  const date = createSalesDate(getSalesYear(value), getSalesMonth(value), getSalesDate(value));
+  const weekday = date.getUTCDay();
   const offset = weekday === 0 ? -6 : 1 - weekday;
-  date.setDate(date.getDate() + offset);
-  return date;
+  return addSalesDays(date, offset);
 }
 
 function addSalesDays(value: Date, amount: number) {
-  const date = new Date(value);
-  date.setDate(date.getDate() + amount);
-  return date;
+  return createSalesDate(getSalesYear(value), getSalesMonth(value), getSalesDate(value) + amount);
 }
 
 function capitalizeSalesLabel(value: string) {
@@ -1190,6 +1239,7 @@ function capitalizeSalesLabel(value: string) {
 
 function formatSalesDay(value: Date) {
   return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "UTC",
     weekday: "short",
   })
     .format(value)
@@ -1198,12 +1248,14 @@ function formatSalesDay(value: Date) {
 
 function formatSalesDayNumber(value: Date) {
   return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "UTC",
     day: "2-digit",
   }).format(value);
 }
 
 function formatSalesMonthShort(value: Date) {
   return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "UTC",
     month: "short",
   })
     .format(value)
@@ -1216,17 +1268,19 @@ function formatSalesPeriodTitle(view: SalesPeriodView, anchorDate: Date) {
   }
 
   if (view === "month") {
-    return `Meses de ${anchorDate.getFullYear()}`;
+    return `Meses de ${getSalesYear(anchorDate)}`;
   }
 
   if (view === "week") {
     const start = startOfSalesWeek(anchorDate);
     const end = addSalesDays(start, 6);
     const startText = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "UTC",
       day: "2-digit",
       month: "short",
     }).format(start);
     const endText = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "UTC",
       day: "2-digit",
       month: "short",
       year: "numeric",
@@ -1237,6 +1291,7 @@ function formatSalesPeriodTitle(view: SalesPeriodView, anchorDate: Date) {
 
   return capitalizeSalesLabel(
     new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "UTC",
       weekday: "long",
       day: "2-digit",
       month: "long",
@@ -1246,17 +1301,19 @@ function formatSalesPeriodTitle(view: SalesPeriodView, anchorDate: Date) {
 }
 
 function shiftSalesPeriod(anchorDate: Date, view: SalesPeriodView, direction: -1 | 1) {
-  const next = new Date(anchorDate);
-
   if (view === "month") {
-    next.setFullYear(next.getFullYear() + direction);
-  } else if (view === "week") {
-    next.setDate(next.getDate() + direction * 7);
-  } else if (view === "day") {
-    next.setDate(next.getDate() + direction);
+    return createSalesDate(getSalesYear(anchorDate) + direction, getSalesMonth(anchorDate), 1);
   }
 
-  return next;
+  if (view === "week") {
+    return addSalesDays(anchorDate, direction * 7);
+  }
+
+  if (view === "day") {
+    return addSalesDays(anchorDate, direction);
+  }
+
+  return anchorDate;
 }
 
 function SalesCalendarPlaceholder({
@@ -1277,6 +1334,7 @@ function SalesCalendarPlaceholder({
 function SalesPeriodExplorer({
   view,
   anchorDate,
+  todayDate,
   onViewChange,
   onAnchorDateChange,
   salesAvailable,
@@ -1285,23 +1343,23 @@ function SalesPeriodExplorer({
 }: {
   view: SalesPeriodView;
   anchorDate: Date;
+  todayDate: Date;
   onViewChange: (view: SalesPeriodView) => void;
   onAnchorDateChange: (date: Date) => void;
   salesAvailable: boolean;
   statusText: string;
   systemStartYear: number;
 }) {
-  const now = new Date();
-  const currentYear = now.getFullYear();
+  const currentYear = getSalesYear(todayDate);
   const safeStartYear = Math.min(Math.max(2000, systemStartYear), currentYear);
   const weekStart = startOfSalesWeek(anchorDate);
   const weekDays = Array.from({ length: 7 }, (_, index) => addSalesDays(weekStart, index));
   const yearMonths = Array.from({ length: 12 }, (_, index) =>
-    new Date(anchorDate.getFullYear(), index, 1)
+    createSalesDate(getSalesYear(anchorDate), index, 1)
   );
   const yearOptions = Array.from(
     { length: currentYear - safeStartYear + 1 },
-    (_, index) => new Date(safeStartYear + index, 0, 1)
+    (_, index) => createSalesDate(safeStartYear + index, 0, 1)
   );
 
   const emptyHelper = salesAvailable
@@ -1309,7 +1367,7 @@ function SalesPeriodExplorer({
     : "Aguardando uma origem confiável de vendas, pedidos ou faturamento.";
 
   function goToday() {
-    onAnchorDateChange(new Date());
+    onAnchorDateChange(todayDate);
     onViewChange("day");
   }
 
@@ -1384,15 +1442,15 @@ function SalesPeriodExplorer({
         {view === "year" ? (
           <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {yearOptions.map((yearDate) => {
-              const isCurrentYear = yearDate.getFullYear() === currentYear;
+              const isCurrentYear = getSalesYear(yearDate) === currentYear;
 
               return (
                 <button
-                  key={yearDate.getFullYear()}
+                  key={getSalesYear(yearDate)}
                   type="button"
                   onClick={() => {
                     onAnchorDateChange(
-                      new Date(yearDate.getFullYear(), anchorDate.getMonth(), 1)
+                      createSalesDate(getSalesYear(yearDate), getSalesMonth(anchorDate), 1)
                     );
                     onViewChange("month");
                   }}
@@ -1402,7 +1460,7 @@ function SalesPeriodExplorer({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xl font-semibold text-zinc-950">
-                      {yearDate.getFullYear()}
+                      {getSalesYear(yearDate)}
                     </span>
                     <span className="rounded-[3px] bg-blue-50 px-2 py-1 text-[10px] font-semibold text-blue-700">
                       {isCurrentYear ? "Atual" : "Ver meses"}
@@ -1419,17 +1477,17 @@ function SalesPeriodExplorer({
           <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {yearMonths.map((month) => {
               const isCurrentMonth =
-                month.getFullYear() === now.getFullYear() &&
-                month.getMonth() === now.getMonth();
+                getSalesYear(month) === getSalesYear(todayDate) &&
+                getSalesMonth(month) === getSalesMonth(todayDate);
 
               return (
                 <button
-                  key={month.toISOString()}
+                  key={`${getSalesYear(month)}-${getSalesMonth(month)}`}
                   type="button"
                   onClick={() => {
                     const targetDate = isCurrentMonth
-                      ? new Date()
-                      : new Date(month.getFullYear(), month.getMonth(), 1);
+                      ? todayDate
+                      : createSalesDate(getSalesYear(month), getSalesMonth(month), 1);
                     onAnchorDateChange(targetDate);
                     onViewChange("week");
                   }}
@@ -1440,7 +1498,10 @@ function SalesPeriodExplorer({
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-sm font-semibold text-zinc-950">
                       {capitalizeSalesLabel(
-                        new Intl.DateTimeFormat("pt-BR", { month: "long" }).format(month)
+                        new Intl.DateTimeFormat("pt-BR", {
+                          timeZone: "UTC",
+                          month: "long",
+                        }).format(month)
                       )}
                     </span>
                     {isCurrentMonth ? (
@@ -1465,15 +1526,12 @@ function SalesPeriodExplorer({
             <div className="overflow-x-auto pb-1">
               <div className="grid min-w-[770px] grid-cols-7 gap-2">
                 {weekDays.map((day) => {
-                  const isToday = isSameLocalDate(day.toISOString());
-                  const isSelected = isSameLocalDate(
-                    day.toISOString(),
-                    anchorDate
-                  );
+                  const isToday = isSameSalesDate(day, todayDate);
+                  const isSelected = isSameSalesDate(day, anchorDate);
 
                   return (
                     <button
-                      key={day.toISOString()}
+                      key={`${getSalesYear(day)}-${getSalesMonth(day)}-${getSalesDate(day)}`}
                       type="button"
                       onClick={() => onAnchorDateChange(day)}
                       className={`relative min-h-[112px] min-w-0 rounded-[6px] border bg-white px-3 py-3 text-left shadow-sm transition hover:border-cyan-500 hover:shadow ${
@@ -1521,6 +1579,7 @@ function SalesPeriodExplorer({
                   <h4 className="mt-1 text-base font-semibold text-zinc-950">
                     {capitalizeSalesLabel(
                       new Intl.DateTimeFormat("pt-BR", {
+                        timeZone: "UTC",
                         weekday: "long",
                         day: "2-digit",
                         month: "long",
@@ -1834,16 +1893,41 @@ function isDashboardTab(value: string | null): value is DashboardTab {
   return Boolean(value && tabs.some((tab) => tab.id === value));
 }
 
-function isSameLocalDate(value: string | null | undefined, referenceDate = new Date()) {
+function getDateKeyInTimeZone(value: string | null | undefined, timeZone = DEFAULT_DASHBOARD_TIME_ZONE) {
   if (!value) return false;
 
-  const date = new Date(value);
-
-  return (
-    date.getFullYear() === referenceDate.getFullYear() &&
-    date.getMonth() === referenceDate.getMonth() &&
-    date.getDate() === referenceDate.getDate()
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const values = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value])
   );
+
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function isSameLocalDate(
+  value: string | null | undefined,
+  referenceDateKey: string,
+  timeZone = DEFAULT_DASHBOARD_TIME_ZONE
+) {
+  return getDateKeyInTimeZone(value, timeZone) === referenceDateKey;
+}
+
+function isTimestampInRange(
+  value: string | null | undefined,
+  start: string,
+  end: string
+) {
+  if (!value) return false;
+
+  const timestamp = new Date(value).getTime();
+  return timestamp >= new Date(start).getTime() && timestamp <= new Date(end).getTime();
 }
 
 function getAppointmentRouteAddress(
@@ -1901,10 +1985,12 @@ function MapsRouteButton({
 
 function TodayAppointmentsDrawer({
   appointments,
+  timeZone,
   isOpen,
   onClose,
 }: {
   appointments: DashboardMetrics["lists"]["nextAppointments"];
+  timeZone: string;
   isOpen: boolean;
   onClose: () => void;
 }) {
@@ -1975,7 +2061,7 @@ function TodayAppointmentsDrawer({
                     </div>
                     <div>
                       <span className="font-medium text-zinc-950">Horário: </span>
-                      {formatDateTime(appointment.scheduledStart)}
+                      {formatDateTime(appointment.scheduledStart, timeZone)}
                     </div>
                     {appointment.customerPhone ? (
                       <div className="sm:col-span-2">
@@ -2052,11 +2138,14 @@ function DashboardDetailDrawer({
 }
 
 function getStoreSystemStartYear(metrics: DashboardMetrics) {
-  const currentYear = new Date().getFullYear();
+  const currentYear = getSalesYear(parseSalesDateKey(metrics.period.todayDateKey));
   const explicitCandidates = [metrics.storeSystemStartedAt, metrics.storeCreatedAt];
   const explicitYears = explicitCandidates
     .filter((value): value is string => Boolean(value))
-    .map((value) => new Date(value).getFullYear())
+    .map((value) => {
+      const dateKey = getDateKeyInTimeZone(value, metrics.period.timeZone);
+      return typeof dateKey === "string" ? getSalesYear(parseSalesDateKey(dateKey)) : NaN;
+    })
     .filter((year) => Number.isFinite(year) && year >= 2000 && year <= currentYear);
 
   return explicitYears.length ? Math.min(...explicitYears) : currentYear;
@@ -2076,10 +2165,8 @@ export default function DashboardPage() {
   const [leadDetailDrawer, setLeadDetailDrawer] = useState<LeadDetailDrawer | null>(null);
   const [salesDetailDrawer, setSalesDetailDrawer] = useState<SalesDetailDrawer | null>(null);
   const [salesPeriodView, setSalesPeriodView] = useState<SalesPeriodView>("week");
-  const [salesAnchorDate, setSalesAnchorDate] = useState(() => new Date());
-  const [storeSystemStartYear, setStoreSystemStartYear] = useState(
-    () => new Date().getFullYear()
-  );
+  const [salesAnchorDate, setSalesAnchorDate] = useState<Date | null>(null);
+  const [storeSystemStartYear, setStoreSystemStartYear] = useState(2000);
   const [isTodayAppointmentsDrawerOpen, setIsTodayAppointmentsDrawerOpen] =
     useState(false);
   const [isUrgentStatesDrawerOpen, setIsUrgentStatesDrawerOpen] = useState(false);
@@ -2135,7 +2222,7 @@ export default function DashboardPage() {
         const validSavedYear =
           Number.isFinite(savedYear) &&
           savedYear >= 2000 &&
-          savedYear <= new Date().getFullYear()
+          savedYear <= getSalesYear(parseSalesDateKey(data.period.todayDateKey))
             ? savedYear
             : null;
 
@@ -2147,6 +2234,9 @@ export default function DashboardPage() {
       }
 
       setStoreSystemStartYear(resolvedStartYear);
+      setSalesAnchorDate((current) =>
+        current ?? parseSalesDateKey(data.period.todayDateKey)
+      );
       setMetrics(data);
     } catch (error: unknown) {
       setErrorMessage(
@@ -2297,8 +2387,15 @@ export default function DashboardPage() {
 
   const summary = metrics.summary;
   const lists = metrics.lists;
+  const dashboardTimeZone = getDashboardTimeZone(metrics);
+  const dashboardTodayDate = parseSalesDateKey(metrics.period.todayDateKey);
+  const currentSalesAnchorDate = salesAnchorDate ?? dashboardTodayDate;
   const todayAppointments = lists.nextAppointments.filter((appointment) =>
-    isSameLocalDate(appointment.scheduledStart)
+    isSameLocalDate(
+      appointment.scheduledStart,
+      metrics.period.todayDateKey,
+      dashboardTimeZone
+    )
   );
   const urgentAgendaItems = [
     ...lists.pendingFollowups.map((followup) => ({
@@ -2308,7 +2405,7 @@ export default function DashboardPage() {
         followup.promptCount
       )} tentativa(s)`,
       status: formatLabel(followup.followupStatus),
-      date: formatDateTime(followup.scheduledEnd),
+      date: formatDateTime(followup.scheduledEnd, dashboardTimeZone),
     })),
     ...lists.operationalAlerts
       .filter((alert) =>
@@ -2352,24 +2449,14 @@ export default function DashboardPage() {
     { key: "others", label: "Outros" },
   ];
 
-  const now = new Date();
-  const sevenDaysAgo = new Date(now);
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
-  sevenDaysAgo.setHours(0, 0, 0, 0);
-
   const leadsToday = lists.recentLeads.filter((lead) =>
-    isSameLocalDate(lead.createdAt, now)
+    isTimestampInRange(lead.createdAt, metrics.period.todayStart, metrics.period.todayEnd)
   );
   const leadsLast7Days = lists.recentLeads.filter((lead) => {
-    const createdAt = new Date(lead.createdAt);
-    return createdAt >= sevenDaysAgo && createdAt <= now;
+    return isTimestampInRange(lead.createdAt, metrics.period.weekStart, metrics.period.todayEnd);
   });
   const leadsThisMonth = lists.recentLeads.filter((lead) => {
-    const createdAt = new Date(lead.createdAt);
-    return (
-      createdAt.getFullYear() === now.getFullYear() &&
-      createdAt.getMonth() === now.getMonth()
-    );
+    return isTimestampInRange(lead.createdAt, metrics.period.monthStart, metrics.period.monthEnd);
   });
 
   const selectedLeadDetail = leadDetailDrawer
@@ -2582,7 +2669,7 @@ export default function DashboardPage() {
                         meta: (
                           <>
                             <StatusPill>{formatLabel(lead.state)}</StatusPill>
-                            <span>Criado em {formatDate(lead.createdAt)}</span>
+                            <span>Criado em {formatDate(lead.createdAt, dashboardTimeZone)}</span>
                           </>
                         ),
                       }))}
@@ -2629,7 +2716,7 @@ export default function DashboardPage() {
                         meta: (
                           <>
                             <StatusPill>{formatLabel(lead.state)}</StatusPill>
-                            <span>Criado em {formatDate(lead.createdAt)}</span>
+                            <span>Criado em {formatDate(lead.createdAt, dashboardTimeZone)}</span>
                           </>
                         ),
                       }))}
@@ -2701,7 +2788,8 @@ export default function DashboardPage() {
               <div className="min-w-0">
                 <SalesPeriodExplorer
                   view={salesPeriodView}
-                  anchorDate={salesAnchorDate}
+                  anchorDate={currentSalesAnchorDate}
+                  todayDate={dashboardTodayDate}
                   onViewChange={setSalesPeriodView}
                   onAnchorDateChange={setSalesAnchorDate}
                   salesAvailable={summary.sales.available}
@@ -3050,7 +3138,7 @@ export default function DashboardPage() {
                           title: "IA",
                           subtitle: compactText(message.content, 130),
                           meta: <span>{formatLabel(message.direction)}</span>,
-                          right: <span className="text-xs text-zinc-500">{formatDateTime(message.createdAt)}</span>,
+                          right: <span className="text-xs text-zinc-500">{formatDateTime(message.createdAt, dashboardTimeZone)}</span>,
                         }))}
                     />
                   </DashboardPanel>
@@ -3232,7 +3320,7 @@ export default function DashboardPage() {
                                 {formatLabel(appointment.status)}
                               </span>
                               <span className="min-w-0 break-words text-zinc-700">
-                                {formatDateTime(appointment.scheduledStart)}
+                                {formatDateTime(appointment.scheduledStart, dashboardTimeZone)}
                               </span>
                               <div className="flex min-w-0 justify-start sm:justify-end">
                                 <MapsRouteButton
@@ -3254,6 +3342,7 @@ export default function DashboardPage() {
 
             <TodayAppointmentsDrawer
               appointments={todayAppointments}
+              timeZone={dashboardTimeZone}
               isOpen={isTodayAppointmentsDrawerOpen}
               onClose={() => setIsTodayAppointmentsDrawerOpen(false)}
             />
@@ -3299,7 +3388,7 @@ export default function DashboardPage() {
                         </div>
                         <div>
                           <span className="font-medium text-zinc-950">Horário: </span>
-                          {formatDateTime(appointment.scheduledStart)}
+                          {formatDateTime(appointment.scheduledStart, dashboardTimeZone)}
                         </div>
                         {appointment.customerPhone ? (
                           <div>
@@ -3322,7 +3411,7 @@ export default function DashboardPage() {
                           Relatório do caso
                         </p>
                         <p className="mt-2 text-sm leading-relaxed text-zinc-700">
-                          Compromisso agendado para {appointment.customerName || "cliente sem nome"} em {formatDateTime(appointment.scheduledStart)}. Tipo: {formatLabel(appointment.appointmentType)}. Status atual: {formatLabel(appointment.status)}.
+                          Compromisso agendado para {appointment.customerName || "cliente sem nome"} em {formatDateTime(appointment.scheduledStart, dashboardTimeZone)}. Tipo: {formatLabel(appointment.appointmentType)}. Status atual: {formatLabel(appointment.status)}.
                         </p>
                       </div>
                     </div>
@@ -3400,7 +3489,7 @@ export default function DashboardPage() {
                       </div>
 
                       <p className="mt-3 text-sm text-zinc-500">
-                        Data base: {formatDateTime(followup.scheduledEnd)}
+                        Data base: {formatDateTime(followup.scheduledEnd, dashboardTimeZone)}
                       </p>
                     </div>
                   ))}
@@ -3439,7 +3528,7 @@ export default function DashboardPage() {
                       </div>
 
                       <p className="mt-3 text-sm text-zinc-500">
-                        Data base: {formatDateTime(followup.scheduledEnd)}
+                        Data base: {formatDateTime(followup.scheduledEnd, dashboardTimeZone)}
                       </p>
                     </div>
                   ))}
