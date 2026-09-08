@@ -109,6 +109,7 @@ type FollowupRow = {
   preferred_channel: string;
   prompt_count: number;
   scheduled_end: string;
+  created_at: string;
   last_prompted_at: string | null;
   confirmed_at: string | null;
   resolved_at: string | null;
@@ -512,7 +513,7 @@ export function createDashboardMetricsGetHandler(
       supabase
         .from("schedule_post_appointment_followups")
         .select(
-          "id,appointment_id,lead_id,conversation_id,followup_status,preferred_channel,prompt_count,scheduled_end,last_prompted_at,confirmed_at,resolved_at"
+          "id,appointment_id,lead_id,conversation_id,followup_status,preferred_channel,prompt_count,scheduled_end,created_at,last_prompted_at,confirmed_at,resolved_at"
         )
         .eq("organization_id", organizationId)
         .eq("store_id", storeId)
@@ -709,6 +710,11 @@ export function createDashboardMetricsGetHandler(
     const pendingFollowups = followups.filter((followup) => {
       const status = normalizeText(followup.followup_status);
       return !followup.resolved_at && !["resolved", "resolvido", "confirmed", "confirmado"].includes(status);
+    });
+
+    const monthFollowups = followups.filter((followup) => {
+      const createdAt = new Date(followup.created_at);
+      return createdAt >= monthStart && createdAt <= monthEnd;
     });
 
     const dashboardCatalogItems = catalogItems.map(mapCatalogItemForDashboard);
@@ -942,6 +948,7 @@ export function createDashboardMetricsGetHandler(
         },
         followups: {
           total: followups.length,
+          month: monthFollowups.length,
           pending: pendingFollowups.length,
           byStatus: countBy(followups, "followup_status"),
         },
