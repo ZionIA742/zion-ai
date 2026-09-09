@@ -24,6 +24,7 @@ type LeadRow = {
 };
 
 type FollowupCandidateRow = {
+  commercial_opportunity_id: string;
   conversation_id: string;
   lead_id: string;
   lead_name: string | null;
@@ -233,7 +234,7 @@ export default function InboxPage() {
   const [errorText, setErrorText] = useState<string | null>(null);
   const [followupErrorText, setFollowupErrorText] = useState<string | null>(null);
   const [followupStatusText, setFollowupStatusText] = useState<string | null>(null);
-  const [triggeringConversationId, setTriggeringConversationId] = useState<string | null>(null);
+  const [triggeringOpportunityId, setTriggeringOpportunityId] = useState<string | null>(null);
   const [openSection, setOpenSection] = useState<"followup" | "messages" | null>(null);
   const [commercialHandoffByConversation, setCommercialHandoffByConversation] = useState<
     Record<string, CommercialHandoffIndicator>
@@ -285,7 +286,7 @@ export default function InboxPage() {
     if (!organizationId) return;
 
     const { data, error } = await supabase.rpc(
-      "panel_list_followup_candidates_scoped",
+      "panel_list_followup_opportunity_candidates_scoped",
       {
         p_organization_id: organizationId,
         p_store_id: activeStoreId ?? null,
@@ -296,7 +297,7 @@ export default function InboxPage() {
     );
 
     if (error) {
-      console.error("[InboxPage] panel_list_followup_candidates_scoped error:", error);
+      console.error("[InboxPage] panel_list_followup_opportunity_candidates_scoped error:", error);
       setFollowupErrorText(error.message);
       setFollowupRows([]);
       return;
@@ -536,7 +537,16 @@ export default function InboxPage() {
       return;
     }
 
-    setTriggeringConversationId(candidate.conversation_id);
+    if (!activeStoreId) {
+      setFollowupErrorText("Loja não carregada.");
+      return;
+    }
+    if (!candidate.commercial_opportunity_id || !candidate.conversation_id) {
+      setFollowupErrorText("Follow-up sem identidade canônica suficiente.");
+      return;
+    }
+
+    setTriggeringOpportunityId(candidate.commercial_opportunity_id);
     setFollowupErrorText(null);
     setFollowupStatusText(null);
 
@@ -544,17 +554,25 @@ export default function InboxPage() {
       String(candidate.suggested_action || "").toLowerCase() === "followup_visit"
         ? "visit"
         : "offer";
+    const cadenceIntervalMinutes = 1440;
+    const operationKey = `inbox-manual:${crypto.randomUUID()}`;
+    const nextActionAt = new Date(Date.now() + cadenceIntervalMinutes * 60 * 1000).toISOString();
 
-    const { data, error } = await supabase.rpc("panel_enqueue_followup_scoped", {
+    const { data, error } = await supabase.rpc("panel_enqueue_followup_opportunity_scoped", {
       p_organization_id: organizationId,
+      p_store_id: activeStoreId,
+      p_commercial_opportunity_id: candidate.commercial_opportunity_id,
       p_conversation_id: candidate.conversation_id,
       p_followup_type: followupType,
+      p_operation_key: operationKey,
+      p_cadence_interval_minutes: cadenceIntervalMinutes,
+      p_next_action_at: nextActionAt,
     });
 
     if (error) {
-      console.error("[InboxPage] panel_enqueue_followup_scoped error:", error);
+      console.error("[InboxPage] panel_enqueue_followup_opportunity_scoped error:", error);
       setFollowupErrorText(error.message);
-      setTriggeringConversationId(null);
+      setTriggeringOpportunityId(null);
       return;
     }
 
@@ -573,7 +591,7 @@ export default function InboxPage() {
             }`
           : "Não foi possível enfileirar o follow-up."
       );
-      setTriggeringConversationId(null);
+      setTriggeringOpportunityId(null);
       await loadFollowupCandidates();
       return;
     }
@@ -583,7 +601,7 @@ export default function InboxPage() {
         result.conversation_id || candidate.conversation_id
       )}.`
     );
-    setTriggeringConversationId(null);
+    setTriggeringOpportunityId(null);
     await loadFollowupCandidates();
   }
 
@@ -812,11 +830,11 @@ export default function InboxPage() {
                 ) : (
                   sortedFollowupRows.map((row) => {
                     const blocked = !!row.blocked_reason;
-                    const isTriggering = triggeringConversationId === row.conversation_id;
+                    const isTriggering = triggeringOpportunityId === row.commercial_opportunity_id;
 
                     return (
                       <div
-                        key={row.conversation_id}
+                        key={row.commercial_opportunity_id}
                         className="rounded-2xl bg-gray-50 px-4 py-3 ring-1 ring-black/5"
                       >
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
