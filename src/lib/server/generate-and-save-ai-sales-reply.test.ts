@@ -497,6 +497,57 @@ function createAiWindowScopeSupabase(args?: {
   };
 }
 
+function createStopContactOptOutHarness(args?: {
+  optOutError?: { message: string } | null;
+  restoreError?: { message: string } | null;
+}) {
+  const scope = createAiWindowScopeSupabase();
+  const events: string[] = [];
+  const systemRpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
+  let clientIndex = 0;
+
+  return {
+    scope,
+    events,
+    systemRpcCalls,
+    createSupabaseClient() {
+      clientIndex += 1;
+      return (clientIndex % 2 === 1
+        ? scope.client
+        : {
+            ...scope.client,
+            async rpc(fn: string, payload: Record<string, unknown>) {
+              events.push(`rpc:${fn}`);
+              systemRpcCalls.push({ fn, payload });
+
+              if (
+                fn !== "opt_out_commercial_opportunity_followup_by_system" &&
+                fn !== "restore_commercial_opportunity_contact_consent_by_system"
+              ) {
+                throw new Error(`Unexpected system rpc: ${fn}`);
+              }
+
+              if (
+                fn === "opt_out_commercial_opportunity_followup_by_system" &&
+                args?.optOutError
+              ) {
+                return { data: null, error: args.optOutError };
+              }
+
+              if (
+                fn === "restore_commercial_opportunity_contact_consent_by_system" &&
+                args?.restoreError
+              ) {
+                return { data: null, error: args.restoreError };
+              }
+
+              return { data: { ok: true }, error: null };
+            },
+          }) as never;
+    },
+  };
+}
+
 async function withMockedSupabaseEnv(run: () => Promise<void>) {
   const previousUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const previousKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -3084,7 +3135,7 @@ const tests: TestCase[] = [
   {
     name: "stop_contact uses canonical conversation organization and store filters",
     run: async () => {
-      const supabase = createAiWindowScopeSupabase();
+      const harness = createStopContactOptOutHarness();
 
       await withMockedSupabaseEnv(async () => {
         const result = await generateAndSaveAiSalesReply(
@@ -3094,7 +3145,7 @@ const tests: TestCase[] = [
             conversationId: "conv-canonical",
           },
           {
-            createSupabaseClient: () => supabase.client as never,
+            createSupabaseClient: harness.createSupabaseClient,
             ...createScopeAwareReplyDeps({
               generateAiSalesReply: async () =>
                 ({
@@ -3107,6 +3158,7 @@ const tests: TestCase[] = [
                       kind: "stop_contact",
                       reason: "customer_requested_stop_contact",
                     },
+                    resolvedCommercialOpportunityId: "opp-canonical",
                   },
                 }) as never,
             }),
@@ -3114,26 +3166,707 @@ const tests: TestCase[] = [
         );
 
         assert.equal(result.ok, true);
-        assert.equal(supabase.stateUpdates.length, 1);
-        assert.deepEqual(supabase.stateUpdates[0]?.eq, [
+        assert.equal(harness.scope.stateUpdates.length, 1);
+        assert.deepEqual(harness.scope.stateUpdates[0]?.eq, [
           { column: "conversation_id", value: "conv-canonical" },
           { column: "organization_id", value: "org-canonical" },
           { column: "store_id", value: "store-canonical" },
         ]);
-        assert.equal(supabase.queueUpdates.length, 2);
-        assert.deepEqual(supabase.queueUpdates[0]?.eq, [
+        assert.equal(harness.scope.queueUpdates.length, 2);
+        assert.deepEqual(harness.scope.queueUpdates[0]?.eq, [
           { column: "organization_id", value: "org-canonical" },
           { column: "store_id", value: "store-canonical" },
           { column: "conversation_id", value: "conv-canonical" },
         ]);
-        assert.deepEqual(supabase.queueUpdates[1]?.eq, [
+        assert.deepEqual(harness.scope.queueUpdates[1]?.eq, [
           { column: "organization_id", value: "org-canonical" },
           { column: "store_id", value: "store-canonical" },
           { column: "conversation_id", value: "conv-canonical" },
         ]);
       });
     },
-  },  {
+  },
+  {
+    name: "reactive Sales AI WhatsApp reply carries explicit outbound metadata",
+    run: async () => {
+      const harness = createStopContactOptOutHarness();
+      let sentArgs: Record<string, unknown> | null = null;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Resposta comercial",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                  },
+                }) as never,
+              sendAiPanelMessage: async (args: Record<string, unknown>) => {
+                sentArgs = args;
+                return "msg-ai-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.deepEqual(sentArgs?.salesAiExternalMetadata, {
+          outbound_kind: "reactive_ai_reply",
+          source_message_id: "msg-1",
+          commercial_opportunity_id: "opp-canonical",
+        });
+      });
+    },
+  },
+  {
+    name: "stop_contact materializes canonical opportunity opt-out before sending AI reply",
+    run: async () => {
+      const harness = createStopContactOptOutHarness();
+      let sentArgs: Record<string, unknown> | null = null;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Tudo bem, nao vou te chamar de novo por aqui.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "stop_contact",
+                      reason: "customer_requested_stop_contact",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                  },
+                }) as never,
+              sendAiPanelMessage: async (args: Record<string, unknown>) => {
+                sentArgs = args;
+                harness.events.push("sendAiPanelMessage");
+                return "msg-ai-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.deepEqual(harness.events.slice(0, 2), [
+          "rpc:opt_out_commercial_opportunity_followup_by_system",
+          "sendAiPanelMessage",
+        ]);
+        assert.deepEqual(sentArgs?.salesAiExternalMetadata, {
+          outbound_kind: "stop_contact_ack",
+          source_message_id: "msg-1",
+          commercial_opportunity_id: "opp-canonical",
+        });
+        assert.deepEqual(harness.systemRpcCalls[0]?.payload, {
+          p_organization_id: "org-canonical",
+          p_store_id: "store-canonical",
+          p_commercial_opportunity_id: "opp-canonical",
+          p_source_conversation_id: "conv-canonical",
+          p_source_message_id: "msg-1",
+          p_operation_key: "sales_ai_stop_contact:opp-canonical:msg-1",
+          p_reason_code: "customer_stop_contact",
+          p_reason_details:
+            "sales_ai_operational_followup_decision_stop_contact",
+        });
+        assert.equal(
+          harness.systemRpcCalls.some((call) => /lost|stage/i.test(call.fn)),
+          false,
+        );
+        assert.equal(
+          harness.systemRpcCalls.some((call) => /_by_user$/i.test(call.fn)),
+          false,
+        );
+      });
+    },
+  },
+  {
+    name: "Sales AI source requires explicit metadata before external WhatsApp insert and never writes Lost",
+    run: () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/lib/server/generate-and-save-ai-sales-reply.ts"),
+        "utf8",
+      );
+      const sendStart = source.indexOf("async function sendAiPanelMessage(");
+      const sendEnd = source.indexOf("function isValidTimeZone(", sendStart);
+      assert.equal(sendStart > -1, true);
+      assert.equal(sendEnd > sendStart, true);
+      const sendBlock = source.slice(sendStart, sendEnd);
+
+      assert.equal(source.includes('outbound_kind:'), true);
+      assert.equal(source.includes('"stop_contact_ack"'), true);
+      assert.equal(source.includes('"reactive_ai_reply"'), true);
+      assert.equal(source.includes("source_message_id: generationAnchorMessageId"), true);
+      assert.equal(source.includes("commercial_opportunity_id: generationResolvedCommercialOpportunityId"), true);
+      assert.equal(sendBlock.includes("SALES_AI_EXTERNAL_WHATSAPP_METADATA_REQUIRED"), true);
+      assert.equal(sendBlock.includes("metadata: args.salesAiExternalMetadata"), true);
+      assert.equal(source.includes("mark_commercial_opportunity_lost"), false);
+      assert.equal(source.includes("stage: \"lost\""), false);
+    },
+  },
+  {
+    name: "stop_contact opt-out operation key is deterministic for replayed message and opportunity",
+    run: async () => {
+      const operationKeys: unknown[] = [];
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const harness = createStopContactOptOutHarness();
+
+        await withMockedSupabaseEnv(async () => {
+          const result = await generateAndSaveAiSalesReply(
+            {
+              organizationId: "org-canonical",
+              storeId: "store-canonical",
+              conversationId: "conv-canonical",
+            },
+            {
+              createSupabaseClient: harness.createSupabaseClient,
+              ...createScopeAwareReplyDeps({
+                generateAiSalesReply: async () =>
+                  ({
+                    ok: true,
+                    aiText: "Tudo bem, nao vou te chamar de novo por aqui.",
+                    anchorMessageId: "msg-1",
+                    usage: null,
+                    context: {
+                      operationalFollowUpDecision: {
+                        kind: "stop_contact",
+                        reason: "customer_requested_stop_contact",
+                      },
+                      resolvedCommercialOpportunityId: "opp-canonical",
+                    },
+                  }) as never,
+                sendAiPanelMessage: async () => "msg-ai-1",
+              }),
+            },
+          );
+
+          assert.equal(result.ok, true);
+          operationKeys.push(
+            harness.systemRpcCalls[0]?.payload.p_operation_key,
+          );
+        });
+      }
+
+      assert.deepEqual(operationKeys, [
+        "sales_ai_stop_contact:opp-canonical:msg-1",
+        "sales_ai_stop_contact:opp-canonical:msg-1",
+      ]);
+    },
+  },
+  {
+    name: "non stop_contact decision does not call canonical opt-out writer",
+    run: async () => {
+      const harness = createStopContactOptOutHarness();
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Combinado, eu te chamo amanha.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "schedule_resume",
+                      reason: "customer_requested_tomorrow",
+                      timingLabel: "amanha",
+                      requestedTiming: "amanha",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                  },
+                }) as never,
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.equal(sendCalls, 1);
+        assert.deepEqual(harness.systemRpcCalls, []);
+      });
+    },
+  },
+  {
+    name: "stop_contact without exact opportunity fails closed without sending or fabricating opt-out",
+    run: async () => {
+      const harness = createStopContactOptOutHarness();
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Tudo bem, nao vou te chamar de novo por aqui.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "stop_contact",
+                      reason: "customer_requested_stop_contact",
+                    },
+                    resolvedCommercialOpportunityId: null,
+                  },
+                }) as never,
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, false);
+        if (!result.ok) {
+          assert.equal(
+            result.error,
+            "STOP_CONTACT_COMMERCIAL_OPPORTUNITY_MISSING",
+          );
+        }
+        assert.equal(sendCalls, 0);
+        assert.deepEqual(harness.systemRpcCalls, []);
+      });
+    },
+  },
+  {
+    name: "stop_contact opt-out writer failure blocks automatic AI send",
+    run: async () => {
+      const harness = createStopContactOptOutHarness({
+        optOutError: { message: "opt-out writer failed" },
+      });
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Tudo bem, nao vou te chamar de novo por aqui.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "stop_contact",
+                      reason: "customer_requested_stop_contact",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                  },
+                }) as never,
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, false);
+        if (!result.ok) {
+          assert.equal(result.error, "FOLLOWUP_OPT_OUT_FAILED");
+          assert.equal(result.message, "opt-out writer failed");
+        }
+        assert.equal(sendCalls, 0);
+        assert.deepEqual(harness.systemRpcCalls.map((call) => call.fn), [
+          "opt_out_commercial_opportunity_followup_by_system",
+        ]);
+      });
+    },
+  },
+  {
+    name: "restore_contact materializes canonical contact consent before sending AI reply",
+    run: async () => {
+      const harness = createStopContactOptOutHarness();
+      let sentArgs: Record<string, unknown> | null = null;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Claro, posso voltar a te chamar por aqui.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "restore_contact",
+                      reason: "customer_restore_contact",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                  },
+                }) as never,
+              sendAiPanelMessage: async (args: Record<string, unknown>) => {
+                sentArgs = args;
+                harness.events.push("sendAiPanelMessage");
+                return "msg-ai-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.deepEqual(harness.events.slice(0, 2), [
+          "rpc:restore_commercial_opportunity_contact_consent_by_system",
+          "sendAiPanelMessage",
+        ]);
+        assert.deepEqual(harness.systemRpcCalls[0]?.payload, {
+          p_organization_id: "org-canonical",
+          p_store_id: "store-canonical",
+          p_commercial_opportunity_id: "opp-canonical",
+          p_source_conversation_id: "conv-canonical",
+          p_source_message_id: "msg-1",
+          p_operation_key: "sales_ai_restore_contact:opp-canonical:msg-1",
+          p_reason_code: "customer_restore_contact",
+          p_reason_details:
+            "sales_ai_operational_followup_decision_restore_contact",
+        });
+        assert.deepEqual(sentArgs?.salesAiExternalMetadata, {
+          outbound_kind: "reactive_ai_reply",
+          source_message_id: "msg-1",
+          commercial_opportunity_id: "opp-canonical",
+        });
+        assert.equal(harness.scope.queueUpserts.length, 0);
+        assert.equal(
+          harness.systemRpcCalls.some((call) =>
+            /activate_commercial_opportunity_followup/i.test(call.fn),
+          ),
+          false,
+        );
+      });
+    },
+  },
+  {
+    name: "restore_contact writer failure blocks automatic AI send",
+    run: async () => {
+      const harness = createStopContactOptOutHarness({
+        restoreError: { message: "restore writer failed" },
+      });
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Claro, posso voltar a te chamar por aqui.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "restore_contact",
+                      reason: "customer_restore_contact",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                  },
+                }) as never,
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, false);
+        if (!result.ok) {
+          assert.equal(result.error, "FOLLOWUP_CONTACT_RESTORE_FAILED");
+          assert.equal(result.message, "restore writer failed");
+        }
+        assert.equal(sendCalls, 0);
+        assert.deepEqual(harness.systemRpcCalls.map((call) => call.fn), [
+          "restore_commercial_opportunity_contact_consent_by_system",
+        ]);
+      });
+    },
+  },
+  {
+    name: "restore_contact without exact opportunity fails closed without sending",
+    run: async () => {
+      const harness = createStopContactOptOutHarness();
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Claro, posso voltar a te chamar por aqui.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "restore_contact",
+                      reason: "customer_restore_contact",
+                    },
+                    resolvedCommercialOpportunityId: null,
+                  },
+                }) as never,
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, false);
+        if (!result.ok) {
+          assert.equal(
+            result.error,
+            "RESTORE_CONTACT_COMMERCIAL_OPPORTUNITY_MISSING",
+          );
+        }
+        assert.equal(sendCalls, 0);
+        assert.deepEqual(harness.systemRpcCalls, []);
+      });
+    },
+  },
+  {
+    name: "ordinary inbound decision does not restore contact consent",
+    run: async () => {
+      const harness = createStopContactOptOutHarness();
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Posso te ajudar com valores.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                  },
+                }) as never,
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.equal(sendCalls, 1);
+        assert.deepEqual(harness.systemRpcCalls, []);
+      });
+    },
+  },
+  {
+    name: "stop_contact only calls opt-out writer and restore_contact only calls restore writer",
+    run: async () => {
+      const stopHarness = createStopContactOptOutHarness();
+      const restoreHarness = createStopContactOptOutHarness();
+
+      await withMockedSupabaseEnv(async () => {
+        const stopResult = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: stopHarness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Tudo bem, nao vou te chamar de novo por aqui.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "stop_contact",
+                      reason: "customer_requested_stop_contact",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                  },
+                }) as never,
+              sendAiPanelMessage: async () => "msg-ai-stop",
+            }),
+          },
+        );
+
+        const restoreResult = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: restoreHarness.createSupabaseClient,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Claro, posso voltar a te chamar por aqui.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "restore_contact",
+                      reason: "customer_restore_contact",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                  },
+                }) as never,
+              sendAiPanelMessage: async () => "msg-ai-restore",
+            }),
+          },
+        );
+
+        assert.equal(stopResult.ok, true);
+        assert.equal(restoreResult.ok, true);
+        assert.deepEqual(stopHarness.systemRpcCalls.map((call) => call.fn), [
+          "opt_out_commercial_opportunity_followup_by_system",
+        ]);
+        assert.deepEqual(restoreHarness.systemRpcCalls.map((call) => call.fn), [
+          "restore_commercial_opportunity_contact_consent_by_system",
+        ]);
+      });
+    },
+  },
+  {
+    name: "restore_contact RPC replay or already_contactable result is accepted when SQL returns no error",
+    run: async () => {
+      const operationKeys: unknown[] = [];
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const harness = createStopContactOptOutHarness();
+
+        await withMockedSupabaseEnv(async () => {
+          const result = await generateAndSaveAiSalesReply(
+            {
+              organizationId: "org-canonical",
+              storeId: "store-canonical",
+              conversationId: "conv-canonical",
+            },
+            {
+              createSupabaseClient: harness.createSupabaseClient,
+              ...createScopeAwareReplyDeps({
+                generateAiSalesReply: async () =>
+                  ({
+                    ok: true,
+                    aiText: "Claro, posso voltar a te chamar por aqui.",
+                    anchorMessageId: "msg-1",
+                    usage: null,
+                    context: {
+                      operationalFollowUpDecision: {
+                        kind: "restore_contact",
+                        reason: "customer_restore_contact",
+                      },
+                      resolvedCommercialOpportunityId: "opp-canonical",
+                    },
+                  }) as never,
+                sendAiPanelMessage: async () => "msg-ai-1",
+              }),
+            },
+          );
+
+          assert.equal(result.ok, true);
+          operationKeys.push(
+            harness.systemRpcCalls[0]?.payload.p_operation_key,
+          );
+        });
+      }
+
+      assert.deepEqual(operationKeys, [
+        "sales_ai_restore_contact:opp-canonical:msg-1",
+        "sales_ai_restore_contact:opp-canonical:msg-1",
+      ]);
+    },
+  },
+  {
     name: "source passes the explicit expected anchor into signSalesContractAsCustomer",
     run: () => {
       const source = readFileSync(

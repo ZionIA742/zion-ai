@@ -1,4 +1,6 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   createProcessWhatsappPendingMessages,
   isRetryableWhatsappHttpStatus,
@@ -7,6 +9,7 @@ import {
 type TestCase = { name: string; run: () => Promise<void> | void };
 
 type MessageOverrides = Partial<Record<string, unknown>>;
+const senderPath = join(process.cwd(), "src/lib/server/whatsapp-external-sender.ts");
 
 function createMessage(overrides?: MessageOverrides) {
   return {
@@ -47,6 +50,7 @@ function createHarness(overrides?: {
   prepareImpl?: () => Promise<Record<string, unknown>>;
   sendImpl?: () => Promise<string>;
   markSentImpl?: () => Promise<void>;
+  gateImpl?: () => Promise<{ ok: true; decision: "send" | "blocked"; reason: string }>;
   finalizeImpl?: () => Promise<{
     commercialOpportunityId: string;
     salesQuoteId: string;
@@ -57,6 +61,8 @@ function createHarness(overrides?: {
 }) {
   const calls = {
     integration: 0,
+    gate: [] as string[],
+    order: [] as string[],
     claim: [] as string[],
     release: [] as Array<{ messageId: string; org: string; store: string; errorText: string | null }>,
     attemptStarted: [] as string[],
@@ -81,12 +87,14 @@ function createHarness(overrides?: {
     createSupabaseAdmin: () => ({}) as never,
     getWhatsappIntegration: async () => {
       calls.integration += 1;
+      calls.order.push("STRICT INTEGRATION");
       if (overrides?.integrationImpl) return overrides.integrationImpl();
       return { accessToken: "token", phoneNumberId: "phone-number-id" };
     },
     getPendingExternalMessages: async () => pending as never,
     claimMessageForExternalSend: async (_supabase, message) => {
       calls.claim.push(message.id);
+      calls.order.push("CLAIM");
       return claimQueue.shift() ?? true;
     },
     releaseClaimedMessage: async (_supabase, message, errorText) => {
@@ -97,8 +105,11 @@ function createHarness(overrides?: {
         errorText,
       });
     },
-    markMessageAttemptStarted: async (_supabase, message) => {
-      calls.attemptStarted.push(message.id);
+    validateOrCancelWhatsappExternalSend: async (_supabase, message) => {
+      calls.gate.push(message.id);
+      calls.order.push("FINAL SQL GATE");
+      if (overrides?.gateImpl) return overrides.gateImpl() as never;
+      return { ok: true, decision: "send", reason: "authorized" };
     },
     markMessageRetryableFailure: async (_supabase, message, errorText) => {
       calls.retryable.push({ messageId: message.id, errorText });
@@ -122,11 +133,13 @@ function createHarness(overrides?: {
     },
     preparePendingMessageForSend: async (_supabase, message) => {
       calls.prepared.push(message.id);
+      calls.order.push("PREPARE");
       if (overrides?.prepareImpl) return (await overrides.prepareImpl()) as never;
       return { mode: "text" as const, to: "5511999999999", body: "Segue o orcamento" };
     },
     sendSinglePendingMessage: async () => {
       calls.send.push("send");
+      calls.order.push("POST META");
       if (overrides?.sendImpl) return overrides.sendImpl();
       return "wamid-1";
     },
@@ -171,10 +184,48 @@ const tests: TestCase[] = [
       assert.equal(result.retryable, 0);
       assert.equal(result.uncertain, 0);
       assert.equal(harness.calls.integration, 1);
+      assert.deepEqual(harness.calls.order, [
+        "CLAIM",
+        "PREPARE",
+        "STRICT INTEGRATION",
+        "FINAL SQL GATE",
+        "POST META",
+      ]);
+      assert.deepEqual(harness.calls.attemptStarted, []);
       assert.deepEqual(harness.calls.markSent, [
         { messageId: "message-1", externalMessageId: "wamid-1" },
       ]);
       assert.match(String(result.results.at(-1)?.detail || ""), /finalizacao comercial concluida/);
+    },
+  },
+  {
+    name: "source uses strict WhatsApp integration reader and not legacy integration RPC",
+    run: () => {
+      const source = readFileSync(senderPath, "utf8");
+      const readerStart = source.indexOf("async function getWhatsappIntegration(");
+      const readerEnd = source.indexOf("async function getPendingExternalMessages(", readerStart);
+      assert.equal(readerStart > -1, true);
+      assert.equal(readerEnd > readerStart, true);
+      const readerBlock = source.slice(readerStart, readerEnd);
+
+      assert.equal(readerBlock.includes('"get_active_whatsapp_integration_for_external_send_by_system"'), true);
+      assert.equal(readerBlock.includes('"get_whatsapp_integration"'), false);
+      assert.equal(readerBlock.includes("rows.length !== 1"), true);
+      assert.equal(readerBlock.includes("phoneNumberId"), true);
+      assert.equal(readerBlock.indexOf("const phoneNumberId") > -1, true);
+      assert.equal(readerBlock.indexOf("const accessToken") > readerBlock.indexOf("const phoneNumberId"), true);
+    },
+  },
+  {
+    name: "source preserves env token fallback only after strict integration row is proven",
+    run: () => {
+      const source = readFileSync(senderPath, "utf8");
+
+      assert.equal(source.includes("const integrationToken = integration?.access_token?.trim() || \"\";"), true);
+      assert.equal(source.includes("if (integrationToken) return integrationToken;"), true);
+      assert.equal(source.includes("META_WHATSAPP_ACCESS_TOKEN?.trim()"), true);
+      assert.equal(source.includes("rows.length !== 1"), true);
+      assert.equal(source.includes("if (!phoneNumberId) throw new Error(\"Integracao WhatsApp sem phone_number_id\")"), true);
     },
   },
   {
@@ -244,11 +295,121 @@ const tests: TestCase[] = [
       });
       const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
       assert.equal(harness.calls.release.length, 0);
+      assert.deepEqual(harness.calls.attemptStarted, []);
       assert.deepEqual(harness.calls.uncertain, [
         { messageId: "message-1", errorText: "network timeout", providerMessageId: null },
       ]);
       assert.equal(result.uncertain, 1);
       assert.equal(result.results.at(-1)?.status, "uncertain");
+    },
+  },
+  {
+    name: "gate blocked decision does not POST, release, mark attempt, or mark failed again",
+    run: async () => {
+      const harness = createHarness({
+        gateImpl: async () => ({
+          ok: true,
+          decision: "blocked",
+          reason: "commercial_opportunity_opted_out",
+        }),
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.order, [
+        "CLAIM",
+        "PREPARE",
+        "STRICT INTEGRATION",
+        "FINAL SQL GATE",
+      ]);
+      assert.deepEqual(harness.calls.send, []);
+      assert.deepEqual(harness.calls.release, []);
+      assert.deepEqual(harness.calls.attemptStarted, []);
+      assert.deepEqual(harness.calls.failed, []);
+      assert.equal(result.failed, 1);
+      assert.equal(result.results.at(-1)?.status, "failed");
+      assert.equal(
+        result.results.at(-1)?.detail,
+        "ZION_EXTERNAL_SEND_BLOCKED:commercial_opportunity_opted_out",
+      );
+    },
+  },
+  {
+    name: "technical gate failure before send releases claim as pre-attempt retryable",
+    run: async () => {
+      const harness = createHarness({
+        gateImpl: async () => {
+          throw new Error("gate rpc unavailable");
+        },
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.order, [
+        "CLAIM",
+        "PREPARE",
+        "STRICT INTEGRATION",
+        "FINAL SQL GATE",
+      ]);
+      assert.deepEqual(harness.calls.send, []);
+      assert.deepEqual(harness.calls.release, [
+        { messageId: "message-1", org: "org-1", store: "store-1", errorText: "gate rpc unavailable" },
+      ]);
+      assert.equal(result.retryable, 1);
+    },
+  },
+  {
+    name: "integration failure before gate does not POST and releases claim",
+    run: async () => {
+      const harness = createHarness({
+        integrationImpl: async () => {
+          throw new Error("strict integration missing");
+        },
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.order, [
+        "CLAIM",
+        "PREPARE",
+        "STRICT INTEGRATION",
+      ]);
+      assert.deepEqual(harness.calls.gate, []);
+      assert.deepEqual(harness.calls.send, []);
+      assert.deepEqual(harness.calls.release, [
+        { messageId: "message-1", org: "org-1", store: "store-1", errorText: "strict integration missing" },
+      ]);
+      assert.equal(result.retryable, 1);
+    },
+  },
+  {
+    name: "known provider failure after gate remains uncertain and is not retried blindly",
+    run: async () => {
+      const harness = createHarness({
+        sendImpl: async () => {
+          throw Object.assign(new Error("Meta 503"), {
+            name: "KnownWhatsappSendFailure",
+            retryable: true,
+            httpStatus: 503,
+          });
+        },
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.order, [
+        "CLAIM",
+        "PREPARE",
+        "STRICT INTEGRATION",
+        "FINAL SQL GATE",
+        "POST META",
+      ]);
+      assert.deepEqual(harness.calls.retryable, []);
+      assert.deepEqual(harness.calls.release, []);
+      assert.deepEqual(harness.calls.uncertain, [
+        { messageId: "message-1", errorText: "Meta 503", providerMessageId: null },
+      ]);
+      assert.equal(result.uncertain, 1);
     },
   },
   {

@@ -105,6 +105,23 @@ type WhatsappIntegration = {
   phoneNumberId: string;
 };
 
+type WhatsappExternalSendGateResult =
+  | {
+      ok: true;
+      decision: "send";
+      reason: "authorized";
+      message_id?: string | null;
+      conversation_id?: string | null;
+      outbound_kind?: string | null;
+    }
+  | {
+      ok: true;
+      decision: "blocked";
+      reason: string;
+      message_id?: string | null;
+      conversation_id?: string | null;
+    };
+
 type MarkSentResult = {
   message_id?: string | null;
   external_message_id?: string | null;
@@ -191,10 +208,10 @@ type ProcessDeps = {
     message: MessageScope,
     errorText: string | null,
   ) => Promise<void>;
-  markMessageAttemptStarted: (
+  validateOrCancelWhatsappExternalSend: (
     supabase: SupabaseClient,
     message: MessageScope,
-  ) => Promise<void>;
+  ) => Promise<WhatsappExternalSendGateResult>;
   markMessageRetryableFailure: (
     supabase: SupabaseClient,
     message: MessageScope,
@@ -458,18 +475,83 @@ async function getWhatsappIntegration(
   organizationId: string,
   storeId: string,
 ): Promise<WhatsappIntegration> {
-  const { data, error } = await supabase.rpc("get_whatsapp_integration", {
-    p_organization_id: organizationId,
-    p_store_id: storeId,
-  });
+  const { data, error } = await supabase.rpc(
+    "get_active_whatsapp_integration_for_external_send_by_system",
+    {
+      p_organization_id: organizationId,
+      p_store_id: storeId,
+    },
+  );
   if (error) throw new Error(`Erro ao buscar integracao WhatsApp: ${error.message}`);
 
-  const row = Array.isArray(data) ? data[0] : data;
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  if (rows.length !== 1) {
+    throw new Error("Integracao WhatsApp ativa/exata ausente ou ambigua para envio externo");
+  }
+
+  const row = rows[0];
   const integration = row as WhatsappIntegrationRow | null | undefined;
-  const accessToken = resolveWhatsappAccessToken(integration);
   const phoneNumberId = integration?.phone_number_id?.trim() || "";
   if (!phoneNumberId) throw new Error("Integracao WhatsApp sem phone_number_id");
+  const accessToken = resolveWhatsappAccessToken(integration);
   return { accessToken, phoneNumberId };
+}
+
+async function validateOrCancelWhatsappExternalSend(
+  supabase: SupabaseClient,
+  message: MessageScope,
+): Promise<WhatsappExternalSendGateResult> {
+  const { data, error } = await supabase.rpc(
+    "validate_or_cancel_whatsapp_external_send_by_system",
+    {
+      p_organization_id: message.organizationId,
+      p_store_id: message.storeId,
+      p_message_id: message.id,
+    },
+  );
+
+  if (error) {
+    throw new Error(`Erro no gate final de envio WhatsApp da mensagem ${message.id}: ${error.message}`);
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error(`Gate final de envio WhatsApp retornou contrato invalido para message ${message.id}`);
+  }
+
+  const result = data as Record<string, unknown>;
+  if (result.ok !== true) {
+    throw new Error(`Gate final de envio WhatsApp recusou contrato ok para message ${message.id}`);
+  }
+
+  const decision = normalizeText(result.decision);
+  if (decision === "send") {
+    if (normalizeText(result.reason) !== "authorized") {
+      throw new Error(`Gate final de envio WhatsApp autorizou com motivo invalido para message ${message.id}`);
+    }
+    return {
+      ok: true,
+      decision: "send",
+      reason: "authorized",
+      message_id: normalizeText(result.message_id) || null,
+      conversation_id: normalizeText(result.conversation_id) || null,
+      outbound_kind: normalizeText(result.outbound_kind) || null,
+    };
+  }
+
+  if (decision === "blocked") {
+    const reason = normalizeText(result.reason);
+    if (!reason) {
+      throw new Error(`Gate final de envio WhatsApp bloqueou sem motivo para message ${message.id}`);
+    }
+    return {
+      ok: true,
+      decision: "blocked",
+      reason,
+      message_id: normalizeText(result.message_id) || null,
+      conversation_id: normalizeText(result.conversation_id) || null,
+    };
+  }
+
+  throw new Error(`Gate final de envio WhatsApp retornou decisao invalida para message ${message.id}`);
 }
 
 async function getPendingExternalMessages(
@@ -541,35 +623,6 @@ async function releaseClaimedMessage(
   if (error) throw new Error(`Falha ao liberar claim da mensagem ${message.id}: ${error.message}`);
   if (!(data as TransitionResultRow | null)?.id) {
     throw new Error(`Falha ao liberar claim da mensagem ${message.id}: transicao perdida.`);
-  }
-}
-
-async function markMessageAttemptStarted(supabase: SupabaseClient, message: MessageScope) {
-  const now = new Date().toISOString();
-  const { data, error } = await supabase
-    .from("messages")
-    .update({
-      // Conservador por desenho: a partir deste commit local nao existe retry cego.
-      outbound_delivery_state: "uncertain",
-      outbound_attempt_started_at: now,
-      outbound_uncertain_at: now,
-      outbound_claimed_at: null,
-      outbound_claimed_by: null,
-      outbound_error_text: null,
-    })
-    .eq("id", message.id)
-    .eq("organization_id", message.organizationId)
-    .eq("store_id", message.storeId)
-    .eq("outbound_delivery_state", "processing")
-    .is("external_message_id", null)
-    .is("deleted_at", null)
-    .select("id")
-    .maybeSingle();
-  if (error) {
-    throw new Error(`Falha ao marcar inicio de tentativa externa da mensagem ${message.id}: ${error.message}`);
-  }
-  if (!(data as TransitionResultRow | null)?.id) {
-    throw new Error(`Falha ao marcar inicio de tentativa externa da mensagem ${message.id}: transicao perdida.`);
   }
 }
 
@@ -986,7 +1039,8 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
     getPendingExternalMessages: deps?.getPendingExternalMessages ?? getPendingExternalMessages,
     claimMessageForExternalSend: deps?.claimMessageForExternalSend ?? claimMessageForExternalSend,
     releaseClaimedMessage: deps?.releaseClaimedMessage ?? releaseClaimedMessage,
-    markMessageAttemptStarted: deps?.markMessageAttemptStarted ?? markMessageAttemptStarted,
+    validateOrCancelWhatsappExternalSend:
+      deps?.validateOrCancelWhatsappExternalSend ?? validateOrCancelWhatsappExternalSend,
     markMessageRetryableFailure: deps?.markMessageRetryableFailure ?? markMessageRetryableFailure,
     markMessageFailed: deps?.markMessageFailed ?? markMessageFailed,
     markMessageUncertain: deps?.markMessageUncertain ?? markMessageUncertain,
@@ -1079,9 +1133,23 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
           input.storeId,
         );
 
-        // This persisted transition intentionally happens immediately before the POST.
+        const gateResult = await resolvedDeps.validateOrCancelWhatsappExternalSend(
+          supabase,
+          message,
+        );
+
+        if (gateResult.decision === "blocked") {
+          failed += 1;
+          results.push({
+            messageId: message.id,
+            status: "failed",
+            detail: `ZION_EXTERNAL_SEND_BLOCKED:${gateResult.reason}`,
+          });
+          continue;
+        }
+
+        // The final SQL gate persisted processing -> uncertain immediately before the POST.
         // A crash after this point is treated as uncertain, never blindly resent.
-        await resolvedDeps.markMessageAttemptStarted(supabase, message);
         attemptStarted = true;
 
         providerMessageId = await resolvedDeps.sendSinglePendingMessage(
@@ -1129,19 +1197,6 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
           await resolvedDeps.releaseClaimedMessage(supabase, message, detail);
           retryable += 1;
           results.push({ messageId: message.id, status: "retryable", detail });
-          continue;
-        }
-
-        if (error instanceof KnownWhatsappSendFailure) {
-          if (error.retryable) {
-            await resolvedDeps.markMessageRetryableFailure(supabase, message, detail);
-            retryable += 1;
-            results.push({ messageId: message.id, status: "retryable", detail });
-          } else {
-            await resolvedDeps.markMessageFailed(supabase, message, detail);
-            failed += 1;
-            results.push({ messageId: message.id, status: "failed", detail });
-          }
           continue;
         }
 

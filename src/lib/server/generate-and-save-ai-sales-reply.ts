@@ -3059,6 +3059,7 @@ async function insertAiWhatsappMessage(args: {
   supabase: any;
   conversationId: string;
   aiText: string;
+  metadata: Record<string, unknown>;
 }) {
   const metadata = {
     source: "ai_sales_reply",
@@ -3067,6 +3068,7 @@ async function insertAiWhatsappMessage(args: {
     send_external: true,
     outbound_origin: "ai_sales_reply",
     whatsapp_detected_from_conversation: true,
+    ...args.metadata,
   };
 
   const { data, error } = await args.supabase.rpc("insert_message", {
@@ -3094,18 +3096,17 @@ async function sendAiPanelMessage(args: {
   storeId: string;
   conversationId: string;
   aiText: string;
+  salesAiExternalMetadata?: Record<string, unknown> | null;
 }) {
+  let whatsappConversation = false;
+
   try {
-    const whatsappConversation = await isRealWhatsappConversation({
+    whatsappConversation = await isRealWhatsappConversation({
       supabase: args.supabase,
       organizationId: args.organizationId,
       storeId: args.storeId,
       conversationId: args.conversationId,
     });
-
-    if (whatsappConversation) {
-      return await insertAiWhatsappMessage(args);
-    }
   } catch (whatsappDetectionError: any) {
     console.warn("[zion-ai-sales-reply] Falha ao detectar conversa WhatsApp real", {
       organizationId: args.organizationId,
@@ -3115,6 +3116,18 @@ async function sendAiPanelMessage(args: {
         whatsappDetectionError instanceof Error
           ? whatsappDetectionError.message
           : String(whatsappDetectionError || ""),
+    });
+  }
+
+  if (whatsappConversation) {
+    if (!args.salesAiExternalMetadata) {
+      throw new Error("SALES_AI_EXTERNAL_WHATSAPP_METADATA_REQUIRED");
+    }
+    return await insertAiWhatsappMessage({
+      supabase: args.supabase,
+      conversationId: args.conversationId,
+      aiText: args.aiText,
+      metadata: args.salesAiExternalMetadata,
     });
   }
 
@@ -3749,6 +3762,66 @@ async function updateLatestRunningAiRunUsage(args: {
       `Falha ao registrar uso/custo no ai_run: ${updateError.message}`
     );
   }
+}
+
+async function optOutCommercialOpportunityFollowUpForStopContact(args: {
+  systemSupabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  commercialOpportunityId: string;
+  sourceMessageId: string;
+}) {
+  const operationKey = `sales_ai_stop_contact:${args.commercialOpportunityId}:${args.sourceMessageId}`;
+  const { error } = await args.systemSupabase.rpc(
+    "opt_out_commercial_opportunity_followup_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+      p_source_conversation_id: args.conversationId,
+      p_source_message_id: args.sourceMessageId,
+      p_operation_key: operationKey,
+      p_reason_code: "customer_stop_contact",
+      p_reason_details: "sales_ai_operational_followup_decision_stop_contact",
+    },
+  );
+
+  if (error) {
+    throw new Error(error.message || "Falha ao registrar opt-out comercial.");
+  }
+
+  return operationKey;
+}
+
+async function restoreCommercialOpportunityContactConsentForExplicitCustomerRequest(args: {
+  systemSupabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  commercialOpportunityId: string;
+  sourceMessageId: string;
+}) {
+  const operationKey = `sales_ai_restore_contact:${args.commercialOpportunityId}:${args.sourceMessageId}`;
+  const { error } = await args.systemSupabase.rpc(
+    "restore_commercial_opportunity_contact_consent_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+      p_source_conversation_id: args.conversationId,
+      p_source_message_id: args.sourceMessageId,
+      p_operation_key: operationKey,
+      p_reason_code: "customer_restore_contact",
+      p_reason_details: "sales_ai_operational_followup_decision_restore_contact",
+    },
+  );
+
+  if (error) {
+    throw new Error(error.message || "Falha ao restaurar consentimento comercial.");
+  }
+
+  return operationKey;
 }
 
 function readCommercialOpportunityIdFromHandoff(
@@ -4755,6 +4828,110 @@ export async function generateAndSaveAiSalesReply(
         };
       }
     }
+
+    const operationalFollowUpDecision =
+      generationResult.context?.operationalFollowUpDecision || {
+        kind: "none",
+        reason: "none",
+      };
+    const operationalFollowUpDecisionKind = String(
+      (operationalFollowUpDecision as { kind?: unknown } | null | undefined)?.kind ||
+        "none",
+    );
+
+    if (!scheduledResumeContext && operationalFollowUpDecisionKind === "stop_contact") {
+      if (!generationResolvedCommercialOpportunityId) {
+        return {
+          ok: false,
+          error: "STOP_CONTACT_COMMERCIAL_OPPORTUNITY_MISSING",
+          message:
+            "A IA identificou pedido para parar contato, mas nenhuma oportunidade comercial canônica exata foi resolvida.",
+          aiText,
+        };
+      }
+
+      try {
+        await optOutCommercialOpportunityFollowUpForStopContact({
+          systemSupabase,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          commercialOpportunityId: generationResolvedCommercialOpportunityId,
+          sourceMessageId: generationAnchorMessageId,
+        });
+      } catch (optOutError: any) {
+        console.warn("[zion-ai-sales-followup] Falha ao registrar opt-out por stop_contact", {
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          commercialOpportunityId: generationResolvedCommercialOpportunityId,
+          sourceMessageId: generationAnchorMessageId,
+          error: optOutError?.message || optOutError,
+        });
+
+        return {
+          ok: false,
+          error: "FOLLOWUP_OPT_OUT_FAILED",
+          message:
+            optOutError?.message ||
+            "Nao foi possivel registrar o opt-out canonico antes da resposta automatica.",
+          aiText,
+        };
+      }
+    }
+
+    if (!scheduledResumeContext && operationalFollowUpDecisionKind === "restore_contact") {
+      if (!generationResolvedCommercialOpportunityId) {
+        return {
+          ok: false,
+          error: "RESTORE_CONTACT_COMMERCIAL_OPPORTUNITY_MISSING",
+          message:
+            "A IA identificou reconsentimento de contato, mas nenhuma oportunidade comercial canonica exata foi resolvida.",
+          aiText,
+        };
+      }
+
+      try {
+        await restoreCommercialOpportunityContactConsentForExplicitCustomerRequest({
+          systemSupabase,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          commercialOpportunityId: generationResolvedCommercialOpportunityId,
+          sourceMessageId: generationAnchorMessageId,
+        });
+      } catch (restoreError: any) {
+        console.warn("[zion-ai-sales-followup] Falha ao restaurar consentimento por restore_contact", {
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          commercialOpportunityId: generationResolvedCommercialOpportunityId,
+          sourceMessageId: generationAnchorMessageId,
+          error: restoreError?.message || restoreError,
+        });
+
+        return {
+          ok: false,
+          error: "FOLLOWUP_CONTACT_RESTORE_FAILED",
+          message:
+            restoreError?.message ||
+            "Nao foi possivel restaurar o consentimento canonico antes da resposta automatica.",
+          aiText,
+        };
+      }
+    }
+
+    const salesAiExternalMetadata = generationResolvedCommercialOpportunityId
+      ? {
+          outbound_kind:
+            operationalFollowUpDecisionKind === "stop_contact"
+              ? "stop_contact_ack"
+              : "reactive_ai_reply",
+          source_message_id: generationAnchorMessageId,
+          commercial_opportunity_id: generationResolvedCommercialOpportunityId,
+        }
+      : null;
+
     let messageId: string | null = null;
 
     try {
@@ -4764,6 +4941,7 @@ export async function generateAndSaveAiSalesReply(
         storeId: canonicalStoreId,
         conversationId: canonicalConversationId,
         aiText,
+        salesAiExternalMetadata,
       });
     } catch (sendError: any) {
       return {
@@ -4845,15 +5023,12 @@ export async function generateAndSaveAiSalesReply(
       supabase,
       canonicalScope,
       leadId: normalizedConversation.lead_id || null,
-      decision: scheduledResumeContext
+      decision: scheduledResumeContext || operationalFollowUpDecisionKind === "restore_contact"
         ? {
             kind: "none",
             reason: "none",
           }
-        : generationResult.context?.operationalFollowUpDecision || {
-            kind: "none",
-            reason: "none",
-          },
+        : operationalFollowUpDecision,
       anchorMessageId: generationAnchorMessageId,
       lastCustomerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
       lastAiMessageAt: aiMessageTimestamp,
