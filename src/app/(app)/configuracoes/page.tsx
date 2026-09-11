@@ -2924,17 +2924,17 @@ function hasAgendaCapacityCanonicalShape(scheduleSettings?: ScheduleSettingsRow 
 
 function resolveHumanScheduleCardStatus(scheduleSettings?: ScheduleSettingsRow | null): { tone: ConfigurationCardTone; status: string } {
   if (!isConfiguredTimestamp(scheduleSettings?.human_schedule_configured_at)) {
-    return { tone: "yellow", status: "Precisa de atenÃ§Ã£o" };
+    return { tone: "yellow", status: "Precisa de atenção" };
   }
   if (!hasHumanScheduleCanonicalShape(scheduleSettings)) {
-    return { tone: "red", status: "ConfiguraÃ§Ã£o crÃ­tica" };
+    return { tone: "red", status: "Configuração crítica" };
   }
   return { tone: "blue", status: "Completo" };
 }
 
 function resolveAfterHoursCardStatus(scheduleSettings?: ScheduleSettingsRow | null): { tone: ConfigurationCardTone; status: string } {
   if (!isConfiguredTimestamp(scheduleSettings?.ai_after_hours_configured_at)) {
-    return { tone: "yellow", status: "Precisa de atenÃ§Ã£o" };
+    return { tone: "yellow", status: "Precisa de atenção" };
   }
   if (scheduleSettings?.ai_after_hours_enabled === false) {
     return { tone: "blue", status: "Completo" };
@@ -2950,15 +2950,15 @@ function resolveAfterHoursCardStatus(scheduleSettings?: ScheduleSettingsRow | nu
   ) {
     return { tone: "blue", status: "Completo" };
   }
-  return { tone: "red", status: "ConfiguraÃ§Ã£o crÃ­tica" };
+  return { tone: "red", status: "Configuração crítica" };
 }
 
 function resolveAgendaCapacityCardStatus(scheduleSettings?: ScheduleSettingsRow | null): { tone: ConfigurationCardTone; status: string } {
   if (!isConfiguredTimestamp(scheduleSettings?.agenda_capacity_configured_at)) {
-    return { tone: "yellow", status: "Precisa de atenÃ§Ã£o" };
+    return { tone: "yellow", status: "Precisa de atenção" };
   }
   if (!hasAgendaCapacityCanonicalShape(scheduleSettings)) {
-    return { tone: "red", status: "ConfiguraÃ§Ã£o crÃ­tica" };
+    return { tone: "red", status: "Configuração crítica" };
   }
   return { tone: "blue", status: "Completo" };
 }
