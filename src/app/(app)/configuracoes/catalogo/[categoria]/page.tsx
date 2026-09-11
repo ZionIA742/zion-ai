@@ -125,18 +125,18 @@ function resolveManualStockState(args: {
     };
   }
 
-  const parsedQuantity = Number(trimmedQuantity.replace(/[^\d-]/g, ""));
-  const normalizedQuantity = Number.isFinite(parsedQuantity) ? Math.max(0, Math.round(parsedQuantity)) : null;
-  if (normalizedQuantity == null) {
-    return {
-      stockQuantity: null,
-      stockStatus: "unknown" as const,
-    };
+  if (!/^\d+$/.test(trimmedQuantity)) {
+    throw new Error("O estoque deve ser um número inteiro igual ou maior que zero.");
+  }
+
+  const parsedQuantity = Number(trimmedQuantity);
+  if (!Number.isSafeInteger(parsedQuantity) || parsedQuantity < 0) {
+    throw new Error("O estoque deve ser um número inteiro igual ou maior que zero.");
   }
 
   return {
-    stockQuantity: normalizedQuantity,
-    stockStatus: normalizedQuantity > 0 ? ("available" as const) : ("zero" as const),
+    stockQuantity: parsedQuantity,
+    stockStatus: parsedQuantity > 0 ? ("available" as const) : ("zero" as const),
   };
 }
 
@@ -169,51 +169,38 @@ function toPriceInput(cents: number | null | undefined) {
   return (cents / 100).toFixed(2).replace(".", ",");
 }
 
-function priceInputToCents(value: string) {
-  const normalized = value
-    .replace(/\./g, "")
-    .replace(",", ".")
-    .replace(/[^\d.]/g, "")
-    .trim();
+function parsePriceInput(value: string) {
+  const raw = value.trim();
+  if (!raw) return null;
 
-  if (!normalized) return null;
+  const dotDecimal = /^-?\d+\.\d{1,2}$/.test(raw);
+  const brazilianPrice =
+    /^-?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?$/.test(raw) ||
+    /^-?\d+(?:,\d{1,2})?$/.test(raw);
 
+  if (!dotDecimal && !brazilianPrice) return Number.NaN;
+
+  const normalized = dotDecimal
+    ? raw
+    : raw.replace(/\./g, "").replace(",", ".");
   const parsed = Number(normalized);
-  if (!Number.isFinite(parsed)) return null;
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
 
+function priceInputToCents(value: string) {
+  const parsed = parsePriceInput(value);
+  if (parsed === null) return null;
+  if (!Number.isFinite(parsed)) return Number.NaN;
   return Math.round(parsed * 100);
 }
 
 function parseLooseNumber(value: string | null | undefined) {
-  const raw = String(value || "").trim();
+  const raw = String(value || "").trim().replace(/\s+/g, "");
   if (!raw) return null;
+  if (!/^-?\d+(?:[.,]\d+)?$/.test(raw)) return Number.NaN;
 
-  let normalized = raw.replace(/\s+/g, "");
-  const lastComma = normalized.lastIndexOf(",");
-  const lastDot = normalized.lastIndexOf(".");
-
-  if (lastComma >= 0 && lastDot >= 0) {
-    const decimalSeparator = lastComma > lastDot ? "," : ".";
-    const thousandSeparator = decimalSeparator === "," ? "." : ",";
-    normalized = normalized.replace(new RegExp(`\${thousandSeparator}`, "g"), "");
-    if (decimalSeparator === ",") normalized = normalized.replace(",", ".");
-  } else if (lastComma >= 0) {
-    normalized = normalized.replace(/\./g, "").replace(",", ".");
-  } else if ((normalized.match(/\./g) || []).length > 1) {
-    const lastDotIndex = normalized.lastIndexOf(".");
-    normalized =
-      normalized.slice(0, lastDotIndex).replace(/\./g, "") +
-      "." +
-      normalized.slice(lastDotIndex + 1);
-  }
-
-  normalized = normalized.replace(/[^\d.-]/g, "");
-  if (!normalized || normalized === "." || normalized === "-" || normalized === "-.") {
-    return null;
-  }
-
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
+  const parsed = Number(raw.replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
 function formatLooseNumber(value: unknown) {
@@ -831,17 +818,40 @@ export default function CatalogCategoryPage() {
       const currentItem = items.find((item) => item.id === itemId);
       if (!currentItem) throw new Error("Não foi possível localizar o item para salvar.");
 
-      const parsedStockQuantity = editForm.track_stock && editForm.stock_quantity.trim()
-        ? Number(editForm.stock_quantity.replace(/[^\d-]/g, ""))
-        : null;
+      const itemName = editForm.name.trim();
+      if (!itemName) {
+        throw new Error("Preencha o nome do item antes de salvar.");
+      }
+
       const stockState = resolveManualStockState({
         rawQuantity: editForm.stock_quantity,
         trackStock: editForm.track_stock,
       });
-      const priceCents = priceInputToCents(editForm.price);
 
-      if (editForm.track_stock && editForm.stock_quantity.trim() && !Number.isFinite(parsedStockQuantity)) {
-        throw new Error("A quantidade em estoque precisa ser um número válido.");
+      const priceCents = priceInputToCents(editForm.price);
+      if (editForm.price.trim() && !Number.isFinite(priceCents)) {
+        throw new Error("Preencha um preço numérico válido.");
+      }
+      if (priceCents !== null && priceCents < 0) {
+        throw new Error("O preço não pode ser negativo.");
+      }
+
+      const widthCm = parseLooseNumber(editForm.width_cm);
+      const heightCm = parseLooseNumber(editForm.height_cm);
+      const lengthCm = parseLooseNumber(editForm.length_cm);
+      const weightKg = parseLooseNumber(editForm.weight_kg);
+
+      if (editForm.width_cm.trim() && (!Number.isFinite(widthCm) || widthCm === null || widthCm <= 0)) {
+        throw new Error("A largura deve ser maior que zero.");
+      }
+      if (editForm.height_cm.trim() && (!Number.isFinite(heightCm) || heightCm === null || heightCm <= 0)) {
+        throw new Error("A altura deve ser maior que zero.");
+      }
+      if (editForm.length_cm.trim() && (!Number.isFinite(lengthCm) || lengthCm === null || lengthCm <= 0)) {
+        throw new Error("O comprimento deve ser maior que zero.");
+      }
+      if (editForm.weight_kg.trim() && (!Number.isFinite(weightKg) || weightKg === null || weightKg <= 0)) {
+        throw new Error("O peso deve ser maior que zero.");
       }
 
       const finalDescription = buildFinalEditedCatalogItemDescription({
@@ -864,10 +874,10 @@ export default function CatalogCategoryPage() {
         size_details: editForm.size_details.trim() || null,
         size: editForm.size_details.trim() || null,
         dimensions: editForm.size_details.trim() || null,
-        width_cm: parseLooseNumber(editForm.width_cm),
-        height_cm: parseLooseNumber(editForm.height_cm),
-        length_cm: parseLooseNumber(editForm.length_cm),
-        weight_kg: parseLooseNumber(editForm.weight_kg),
+        width_cm: widthCm,
+        height_cm: heightCm,
+        length_cm: lengthCm,
+        weight_kg: weightKg,
         weight: editForm.weight_kg.trim() || null,
         application: editForm.application.trim() || null,
         usage: editForm.application.trim() || null,
@@ -876,7 +886,7 @@ export default function CatalogCategoryPage() {
       };
 
       const payload = {
-        name: editForm.name.trim(),
+        name: itemName,
         sku: editForm.sku.trim() || null,
         description: finalDescription || null,
         price_cents: priceCents,
@@ -1437,7 +1447,7 @@ async function handleDeleteItem(itemId: string) {
                               )
                             }
                             className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="0"
+                            placeholder="Ex.: 0"
                           />
                         </div>
 

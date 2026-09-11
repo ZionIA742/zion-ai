@@ -830,24 +830,28 @@ function buildCatalogNormalizedPayload(args: {
   category: "quimicos" | "acessorios" | "outros";
   item: IntelligentImportReviewedSaveItem;
 }): Extract<IntelligentImportSaveApprovedNormalizedPayload, { type: "catalog_item" }> {
+  const normalizedPriceCents =
+    typeof args.item.priceCents === "number" && Number.isFinite(args.item.priceCents)
+      ? args.item.priceCents
+      : null;
+  const normalizedStockQuantity = parseFiniteNumber(args.item.stockQuantity);
+  const metadata = normalizeMetadata(args.item.metadata);
+
   return {
     category: args.category,
     currency: "BRL",
     description: normalizeDescription(args.item.description),
     destination: args.category,
     is_active: Boolean(args.item.isActive),
-    metadata: normalizeMetadata(args.item.metadata),
+    metadata: {
+      ...metadata,
+      categoria: args.category,
+    },
     name: String(args.item.name || "").trim(),
-    price_cents:
-      typeof args.item.priceCents === "number" && Number.isFinite(args.item.priceCents)
-        ? Math.round(args.item.priceCents)
-        : null,
+    price_cents: normalizedPriceCents,
     price_status: normalizeWritablePriceStatus(args.item.priceStatus) ?? "invalid",
     sku: String(args.item.sku || "").trim() || null,
-    stock_quantity:
-      parseFiniteNumber(args.item.stockQuantity) == null
-        ? null
-        : Math.max(0, Math.round(parseFiniteNumber(args.item.stockQuantity) as number)),
+    stock_quantity: normalizedStockQuantity,
     stock_status: normalizeWritableStockStatus(args.item.stockStatus) ?? "unknown",
     track_stock: Boolean(args.item.trackStock),
     type: "catalog_item",
@@ -859,26 +863,34 @@ function buildPoolNormalizedPayload(args: {
   poolPayload: IntelligentImportReviewedPoolPayload;
 }): Extract<IntelligentImportSaveApprovedNormalizedPayload, { type: "pool" }> {
   const normalizedStockQuantity = parseFiniteNumber(args.item.stockQuantity);
+  const widthM = parseFiniteNumber(args.poolPayload.width_m);
+  const lengthM = parseFiniteNumber(args.poolPayload.length_m);
+  const depthM = parseFiniteNumber(args.poolPayload.depth_m);
+  const rawCapacity = args.poolPayload.max_capacity_l;
+  const hasExplicitCapacity =
+    rawCapacity !== null &&
+    rawCapacity !== undefined &&
+    String(rawCapacity).trim() !== "";
+  const explicitCapacity = parseFiniteNumber(rawCapacity);
 
   return {
-    depth_m: parseFiniteNumber(args.poolPayload.depth_m),
+    depth_m: depthM,
     description: normalizeDescription(args.item.description),
     destination: "pool",
     is_active: Boolean(args.item.isActive),
-    length_m: parseFiniteNumber(args.poolPayload.length_m),
+    length_m: lengthM,
     material: String(args.poolPayload.material || "").trim() || null,
-    max_capacity_l: parseFiniteNumber(args.poolPayload.max_capacity_l),
+    max_capacity_l: hasExplicitCapacity ? explicitCapacity : null,
     name: String(args.item.name || "").trim(),
     price: parseFiniteNumber(args.poolPayload.price),
     price_status: normalizeWritablePriceStatus(args.item.priceStatus) ?? "invalid",
     shape: String(args.poolPayload.shape || "").trim() || null,
-    stock_quantity:
-      normalizedStockQuantity == null ? null : Math.max(0, Math.round(normalizedStockQuantity)),
+    stock_quantity: normalizedStockQuantity,
     stock_status: normalizeWritableStockStatus(args.item.stockStatus) ?? "unknown",
     track_stock: Boolean(args.item.trackStock),
     type: "pool",
     weight_kg: parseFiniteNumber(args.poolPayload.weight_kg),
-    width_m: parseFiniteNumber(args.poolPayload.width_m),
+    width_m: widthM,
   };
 }
 
@@ -923,6 +935,13 @@ function validateNormalizedStockState(args: {
 }): string | null {
   if (!args.stockStatus) {
     return "stock_status invalido para item importado.";
+  }
+
+  if (
+    args.stockQuantity != null &&
+    (!Number.isInteger(args.stockQuantity) || args.stockQuantity < 0)
+  ) {
+    return "stock_quantity exige numero inteiro igual ou maior que zero.";
   }
 
   if (args.stockStatus === "available") {
@@ -1441,8 +1460,31 @@ function validateReviewedImportedItem(
       trackStock: normalizedPayload.track_stock,
     });
     if (poolStockStateIssue) reasons.push(poolStockStateIssue);
-    if (normalizedPayload.width_m == null || normalizedPayload.length_m == null || normalizedPayload.depth_m == null) {
-      reasons.push("Piscina sem medidas obrigatorias.");
+
+    if (normalizedPayload.width_m == null) {
+      reasons.push("Piscina sem largura obrigatoria.");
+    } else if (normalizedPayload.width_m <= 0) {
+      reasons.push("Largura da piscina deve ser maior que zero.");
+    }
+
+    if (normalizedPayload.length_m == null) {
+      reasons.push("Piscina sem comprimento obrigatorio.");
+    } else if (normalizedPayload.length_m <= 0) {
+      reasons.push("Comprimento da piscina deve ser maior que zero.");
+    }
+
+    if (normalizedPayload.depth_m == null) {
+      reasons.push("Piscina sem profundidade obrigatoria.");
+    } else if (normalizedPayload.depth_m <= 0) {
+      reasons.push("Profundidade da piscina deve ser maior que zero.");
+    }
+
+    if (normalizedPayload.max_capacity_l == null || normalizedPayload.max_capacity_l <= 0) {
+      reasons.push("Capacidade da piscina deve ser maior que zero.");
+    }
+
+    if (normalizedPayload.weight_kg != null && normalizedPayload.weight_kg <= 0) {
+      reasons.push("Peso da piscina deve ser maior que zero.");
     }
 
     const normalizedPoolName = normalizeImportDedupText(normalizedPayload.name);
@@ -1484,7 +1526,10 @@ function validateReviewedImportedItem(
     item,
   });
   const normalizedSku = normalizeImportDedupSku(normalizedPayload.sku);
-  if (normalizedPayload.price_cents != null && normalizedPayload.price_cents < 0) {
+  if (
+    normalizedPayload.price_cents != null &&
+    (!Number.isInteger(normalizedPayload.price_cents) || normalizedPayload.price_cents < 0)
+  ) {
     reasons.push("Preco invalido para item de catalogo.");
   }
   const catalogPriceStateIssue = validateNormalizedPriceState({
@@ -2917,7 +2962,7 @@ async function insertValidatedItem(args: {
         depth_m: normalizedPayload.depth_m,
         shape: normalizedPayload.shape,
         material: normalizedPayload.material,
-        max_capacity_l: normalizedPayload.max_capacity_l ?? 0,
+        max_capacity_l: normalizedPayload.max_capacity_l,
         weight_kg: normalizedPayload.weight_kg,
         price: normalizedPayload.price,
         price_status: normalizedPayload.price_status,

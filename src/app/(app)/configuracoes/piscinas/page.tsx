@@ -92,18 +92,18 @@ function resolveManualStockState(args: {
     };
   }
 
+  if (!/^\d+$/.test(trimmedQuantity)) {
+    throw new Error("O estoque deve ser um número inteiro igual ou maior que zero.");
+  }
+
   const parsedQuantity = Number(trimmedQuantity);
-  const normalizedQuantity = Number.isFinite(parsedQuantity) ? Math.max(0, Math.round(parsedQuantity)) : null;
-  if (normalizedQuantity == null) {
-    return {
-      stockQuantity: null,
-      stockStatus: "unknown" as const,
-    };
+  if (!Number.isSafeInteger(parsedQuantity) || parsedQuantity < 0) {
+    throw new Error("O estoque deve ser um número inteiro igual ou maior que zero.");
   }
 
   return {
-    stockQuantity: normalizedQuantity,
-    stockStatus: normalizedQuantity > 0 ? ("available" as const) : ("zero" as const),
+    stockQuantity: parsedQuantity,
+    stockStatus: parsedQuantity > 0 ? ("available" as const) : ("zero" as const),
   };
 }
 
@@ -149,19 +149,30 @@ function formatPriceInput(value: string) {
 }
 
 function priceInputToNumber(value: string) {
-  const normalized = value.replace(/\./g, "").replace(",", ".").trim();
-  if (!normalized) return null;
+  const raw = value.trim();
+  if (!raw) return null;
+
+  const dotDecimal = /^-?\d+\.\d{1,2}$/.test(raw);
+  const brazilianPrice =
+    /^-?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?$/.test(raw) ||
+    /^-?\d+(?:,\d{1,2})?$/.test(raw);
+
+  if (!dotDecimal && !brazilianPrice) return Number.NaN;
+
+  const normalized = dotDecimal
+    ? raw
+    : raw.replace(/\./g, "").replace(",", ".");
   const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
 function parseLooseNumber(value: string | null | undefined) {
-  const raw = String(value || "").trim();
+  const raw = String(value || "").trim().replace(/\s+/g, "");
   if (!raw) return null;
-  const normalized = raw.replace(/\./g, "").replace(",", ".").replace(/[^\d.-]/g, "");
-  if (!normalized || normalized === "." || normalized === "-" || normalized === "-.") return null;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
+  if (!/^-?\d+(?:[.,]\d+)?$/.test(raw)) return Number.NaN;
+
+  const parsed = Number(raw.replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
 function formatLooseNumber(value: number | null | undefined) {
@@ -617,24 +628,47 @@ export default function PiscinasPage() {
     setSuccessText(null);
 
     try {
+      const poolName = editPoolForm.name.trim();
+      if (!poolName) {
+        throw new Error("Preencha o nome da piscina antes de salvar.");
+      }
+
       const parsedPrice = priceInputToNumber(editPoolForm.price);
+      if (editPoolForm.price.trim() && !Number.isFinite(parsedPrice)) {
+        throw new Error("Preencha um preço numérico válido.");
+      }
+      if (parsedPrice !== null && parsedPrice < 0) {
+        throw new Error("O preço não pode ser negativo.");
+      }
+
       const parsedWidth = parseLooseNumber(editPoolForm.width_m);
       const parsedLength = parseLooseNumber(editPoolForm.length_m);
       const parsedDepth = parseLooseNumber(editPoolForm.depth_m);
       const parsedWeight = parseLooseNumber(editPoolForm.weight_kg);
+
+      if (!Number.isFinite(parsedWidth) || parsedWidth === null || parsedWidth <= 0) {
+        throw new Error("A largura da piscina deve ser maior que zero.");
+      }
+      if (!Number.isFinite(parsedLength) || parsedLength === null || parsedLength <= 0) {
+        throw new Error("O comprimento da piscina deve ser maior que zero.");
+      }
+      if (!Number.isFinite(parsedDepth) || parsedDepth === null || parsedDepth <= 0) {
+        throw new Error("A profundidade da piscina deve ser maior que zero.");
+      }
+      if (editPoolForm.weight_kg.trim() && (!Number.isFinite(parsedWeight) || parsedWeight === null || parsedWeight <= 0)) {
+        throw new Error("O peso deve ser maior que zero.");
+      }
+
       const stockState = resolveManualStockState({
         rawQuantity: editPoolForm.stock_quantity,
         trackStock: editPoolForm.track_stock,
       });
-      const nextCapacity =
-        parsedWidth != null && parsedLength != null && parsedDepth != null
-          ? Math.max(1, Math.round(parsedWidth * parsedLength * parsedDepth * 1000))
-          : null;
+      const nextCapacity = Math.max(1, Math.round(parsedWidth * parsedLength * parsedDepth * 1000));
 
       const { error } = await supabase
         .from("pools")
         .update({
-          name: editPoolForm.name.trim() || null,
+          name: poolName,
           description: editPoolForm.description.trim() || null,
           price: parsedPrice,
           shape: editPoolForm.shape.trim() || null,
@@ -997,7 +1031,7 @@ export default function PiscinasPage() {
                                 current
                                   ? {
                                       ...current,
-                                      price: formatPriceInput(event.target.value),
+                                      price: event.target.value,
                                     }
                                   : current
                               )
@@ -1111,7 +1145,7 @@ export default function PiscinasPage() {
                               )
                             }
                             className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="0"
+                            placeholder="Ex.: 0"
                           />
                         </div>
 

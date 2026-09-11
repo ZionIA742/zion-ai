@@ -10206,6 +10206,23 @@ export default function ConfiguracoesPage() {
         setManualCatalogItemModalSuccess(null);
         return;
       }
+      if (widthM !== null && widthM <= 0) {
+        setManualCatalogItemModalError("A largura da piscina deve ser maior que zero.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
+      if (lengthM !== null && lengthM <= 0) {
+        setManualCatalogItemModalError("O comprimento da piscina deve ser maior que zero.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
+      if (depthM !== null && depthM <= 0) {
+        setManualCatalogItemModalError("A profundidade da piscina deve ser maior que zero.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
 
       if (priceInput && price === null) {
         setManualCatalogItemModalError("Preencha um preço numérico válido.");
@@ -10213,8 +10230,14 @@ export default function ConfiguracoesPage() {
         return;
       }
 
-      if (Number.isNaN(stockValue)) {
-        setManualCatalogItemModalError("Preencha um estoque inteiro válido.");
+      if (price !== null && price < 0) {
+        setManualCatalogItemModalError("O preço não pode ser negativo.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
+      if (Number.isNaN(stockValue) || (stockValue !== null && stockValue < 0)) {
+        setManualCatalogItemModalError("O estoque deve ser um número inteiro igual ou maior que zero.");
         setManualCatalogItemModalSuccess(null);
         return;
       }
@@ -10369,8 +10392,14 @@ export default function ConfiguracoesPage() {
       return;
     }
 
-    if (Number.isNaN(stockValue)) {
-      setManualCatalogItemModalError("Preencha um estoque inteiro válido.");
+    if (price !== null && price < 0) {
+      setManualCatalogItemModalError("O preço não pode ser negativo.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    if (Number.isNaN(stockValue) || (stockValue !== null && stockValue < 0)) {
+      setManualCatalogItemModalError("O estoque deve ser um número inteiro igual ou maior que zero.");
       setManualCatalogItemModalSuccess(null);
       return;
     }
@@ -10395,6 +10424,29 @@ export default function ConfiguracoesPage() {
 
     if (weightInput && weightKg === null) {
       setManualCatalogItemModalError("Preencha um peso válido em quilos.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+    if (widthCm !== null && widthCm <= 0) {
+      setManualCatalogItemModalError("A largura deve ser maior que zero.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    if (heightCm !== null && heightCm <= 0) {
+      setManualCatalogItemModalError("A altura deve ser maior que zero.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    if (lengthCm !== null && lengthCm <= 0) {
+      setManualCatalogItemModalError("O comprimento deve ser maior que zero.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    if (weightKg !== null && weightKg <= 0) {
+      setManualCatalogItemModalError("O peso deve ser maior que zero.");
       setManualCatalogItemModalSuccess(null);
       return;
     }
@@ -11707,14 +11759,14 @@ export default function ConfiguracoesPage() {
               onClick={() => setIsCatalogImportedFilesOpen((current) => !current)}
               className="w-full text-left"
             >
-              <div className={`h-0.5 w-full ${configurationCardBarClass(catalogImportedFiles.length > 0 ? "blue" : "yellow")}`} />
+              <div className={`h-0.5 w-full ${configurationCardBarClass("blue")}`} />
               <div className="flex items-start justify-between gap-4 p-5">
                 <div>
                   <h2 className="text-base font-semibold text-gray-950">Arquivos importados</h2>
                   <p className="mt-1 text-sm leading-5 text-gray-600">Consulte os arquivos brutos vinculados às importações da loja somente quando precisar.</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${configurationCardStatusClass(catalogImportedFiles.length > 0 ? "blue" : "yellow")}`}>
+                  <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${configurationCardStatusClass("blue")}`}>
                     {catalogImportedFiles.length > 0 ? `${catalogImportedFiles.length} arquivo(s)` : "Nenhum arquivo"}
                   </span>
                   <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 bg-white text-sm font-bold text-gray-700">
@@ -12425,7 +12477,7 @@ export default function ConfiguracoesPage() {
                           value={poolForm.stock_quantity}
                           onChange={(event) => handlePoolFormChange("stock_quantity", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="0"
+                          placeholder="Ex.: 0"
                         />
                       </label>
 
@@ -12641,7 +12693,7 @@ export default function ConfiguracoesPage() {
                           value={catalogForm.stock_quantity}
                           onChange={(event) => handleCatalogFormChange("stock_quantity", event.target.value)}
                           className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="0"
+                          placeholder="Ex.: 0"
                         />
                       </label>
 
