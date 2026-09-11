@@ -342,7 +342,7 @@ function buildEditForm(pool: PoolRow): EditPoolForm {
 
 function DetailChip({ value }: { value: string }) {
   return (
-    <span className="inline-flex rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-semibold text-gray-700">
+    <span className="inline-flex rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700">
       {value}
     </span>
   );
@@ -356,9 +356,43 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-3">
-      <h3 className="mb-2 text-sm font-semibold text-gray-900">{title}</h3>
+    <section className="border-t border-gray-200 pt-4 first:border-t-0 first:pt-0">
+      <h3 className="mb-3 text-sm font-bold text-gray-900">{title}</h3>
       {children}
+    </section>
+  );
+}
+
+function SelectField({
+  value,
+  onChange,
+  children,
+}: {
+  value: string;
+  onChange: (event: ChangeEvent<HTMLSelectElement>) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="relative min-w-[150px]">
+      <select
+        value={value}
+        onChange={onChange}
+        className="w-full appearance-none rounded-xl border border-gray-200 bg-white py-2.5 pl-3 pr-10 text-sm font-medium text-gray-700 outline-none transition hover:border-gray-300 focus:border-gray-400"
+      >
+        {children}
+      </select>
+      <svg
+        viewBox="0 0 20 20"
+        className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="m6 8 4 4 4-4" />
+      </svg>
     </div>
   );
 }
@@ -374,16 +408,18 @@ function CharacteristicsTable({
 
   return (
     <SectionCard title={title}>
-      <div className="overflow-hidden rounded-lg border border-gray-200">
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
         {rows.map((row, index) => (
           <div
             key={`${row.label}-${index}`}
-            className={`grid gap-1 px-3 py-2 text-sm sm:grid-cols-[150px_minmax(0,1fr)] ${
-              index % 2 === 0 ? "bg-gray-50" : "bg-white"
-            } ${index > 0 ? "border-t border-gray-200" : ""}`}
+            className="min-w-0 rounded-xl bg-gray-50 px-3 py-2.5"
           >
-            <div className="font-medium text-gray-600">{row.label}</div>
-            <div className="break-words text-gray-900">{row.value}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+              {row.label}
+            </div>
+            <div className="mt-1 break-words text-sm font-medium text-gray-900">
+              {row.value}
+            </div>
           </div>
         ))}
       </div>
@@ -415,8 +451,14 @@ export default function PiscinasPage() {
   } | null>(null);
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const advancedActionsRef = useRef<HTMLDetailsElement | null>(null);
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const [searchText, setSearchText] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
+  const [stockFilter, setStockFilter] = useState<"all" | "available" | "zero" | "unknown">("all");
+  const [sortBy, setSortBy] = useState<"recent" | "name" | "price_asc" | "price_desc">("recent");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [expandedPoolId, setExpandedPoolId] = useState<string | null>(null);
 
   async function fetchData() {
     if (!organizationId || !activeStoreId) {
@@ -493,7 +535,35 @@ export default function PiscinasPage() {
     void fetchData();
   }, [organizationId, activeStoreId]);
 
+  useEffect(() => {
+    function closeAdvancedActionsOnOutsidePointer(event: MouseEvent | TouchEvent) {
+      const details = advancedActionsRef.current;
+      if (!details?.open) return;
+      const target = event.target;
+      if (target instanceof Node && !details.contains(target)) {
+        details.removeAttribute("open");
+      }
+    }
+
+    function closeAdvancedActionsOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        advancedActionsRef.current?.removeAttribute("open");
+      }
+    }
+
+    document.addEventListener("mousedown", closeAdvancedActionsOnOutsidePointer);
+    document.addEventListener("touchstart", closeAdvancedActionsOnOutsidePointer);
+    document.addEventListener("keydown", closeAdvancedActionsOnEscape);
+
+    return () => {
+      document.removeEventListener("mousedown", closeAdvancedActionsOnOutsidePointer);
+      document.removeEventListener("touchstart", closeAdvancedActionsOnOutsidePointer);
+      document.removeEventListener("keydown", closeAdvancedActionsOnEscape);
+    };
+  }, []);
+
   function startEditing(pool: PoolRow) {
+    setExpandedPoolId(pool.id);
     setEditingPoolId(pool.id);
     setEditPoolForm(buildEditForm(pool));
     setErrorText(null);
@@ -861,36 +931,118 @@ export default function PiscinasPage() {
   }
 
   const totalPools = useMemo(() => pools.length, [pools]);
-  const filteredPools = useMemo(() => pools.filter((pool) => matchesPoolSearch(pool, searchText)), [pools, searchText]);
+  const filteredPools = useMemo(() => {
+    const next = pools.filter((pool) => {
+      if (!matchesPoolSearch(pool, searchText)) return false;
+      if (statusFilter === "active" && !pool.is_active) return false;
+      if (statusFilter === "inactive" && pool.is_active) return false;
+
+      const stockStatus = String(pool.stock_status || "").trim().toLowerCase();
+      if (stockFilter === "available" && stockStatus !== "available") return false;
+      if (stockFilter === "zero" && stockStatus !== "zero") return false;
+      if (
+        stockFilter === "unknown" &&
+        stockStatus !== "unknown" &&
+        stockStatus !== "not_tracked"
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+
+    if (sortBy === "name") {
+      return [...next].sort((a, b) =>
+        String(a.name || "").localeCompare(String(b.name || ""), "pt-BR")
+      );
+    }
+
+    if (sortBy === "price_asc" || sortBy === "price_desc") {
+      return [...next].sort((a, b) => {
+        const aPrice = typeof a.price === "number" ? a.price : Number.POSITIVE_INFINITY;
+        const bPrice = typeof b.price === "number" ? b.price : Number.POSITIVE_INFINITY;
+        return sortBy === "price_asc" ? aPrice - bPrice : bPrice - aPrice;
+      });
+    }
+
+    return next;
+  }, [pools, searchText, statusFilter, stockFilter, sortBy]);
+
+  const pageSize = 20;
+  const totalPages = Math.max(1, Math.ceil(filteredPools.length / pageSize));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const visiblePools = filteredPools.slice(
+    (safeCurrentPage - 1) * pageSize,
+    safeCurrentPage * pageSize
+  );
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchText, statusFilter, stockFilter, sortBy]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-black tracking-[-0.02em] text-black">
             Piscinas cadastradas
           </h1>
-          <p className="mt-1 text-sm text-gray-600">
-            Visualize e edite as piscinas sem ficar preso na rota errada.
-          </p>
-          <p className="mt-1 text-xs text-gray-500">Total de piscinas: {totalPools}</p>
+          <span className="rounded-full bg-gray-200 px-2.5 py-1 text-xs font-bold text-gray-700">
+            {totalPools} piscinas
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => void handleDeleteAllPools()}
-            disabled={!hasValidStoreContext || deletingAllPools || totalPools === 0}
-            className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+          <details ref={advancedActionsRef} className="relative">
+            <summary
+              className="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-xl border border-red-200 bg-red-50 text-red-600 transition hover:bg-red-100"
+              title="Apagar opções"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 6h18" />
+                <path d="M8 6V4h8v2" />
+                <path d="M19 6l-1 14H6L5 6" />
+                <path d="M10 11v6" />
+                <path d="M14 11v6" />
+              </svg>
+              <span className="sr-only">Abrir ações de apagar</span>
+            </summary>
+            <div className="absolute right-0 z-20 mt-2 w-64 rounded-xl border border-gray-200 bg-white p-2 shadow-xl">
+              <button
+                type="button"
+                onClick={() => void handleDeleteAllPools()}
+                disabled={!hasValidStoreContext || deletingAllPools || totalPools === 0}
+                className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {deletingAllPools ? "Apagando piscinas..." : "Apagar todas as piscinas"}
+              </button>
+              <p className="px-3 pb-1 pt-2 text-xs leading-5 text-gray-500">
+                Use apenas quando quiser remover todas as piscinas desta loja.
+              </p>
+            </div>
+          </details>
+
+          <Link
+            href="/configuracoes"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
           >
-            {deletingAllPools ? "Apagando piscinas..." : "Apagar todas as piscinas"}
-          </button>
-        <Link
-          href="/configuracoes"
-          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
-        >
-          Voltar para configurações
-        </Link>
+            Voltar para configurações
+          </Link>
         </div>
       </div>
 
@@ -906,32 +1058,77 @@ export default function PiscinasPage() {
         </div>
       ) : null}
 
-      <div className="rounded-xl border border-gray-200 bg-white p-3">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-gray-900">Buscar piscinas</div>
-            <div className="text-xs text-gray-500">Procure por nome, material, formato ou descrição.</div>
+      <div className="rounded-2xl border border-gray-200 bg-white p-3">
+        <div className="flex flex-col gap-2 xl:flex-row xl:items-center">
+          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5">
+            <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="7"></circle>
+              <path d="m20 20-3.5-3.5"></path>
+            </svg>
+            <input
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+              placeholder="Buscar por nome, material, formato ou descrição..."
+              className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+            />
           </div>
-          <div className="w-full md:max-w-md">
-            <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
-              <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="11" cy="11" r="7"></circle>
-                <path d="m20 20-3.5-3.5"></path>
-              </svg>
-              <input
-                value={searchText}
-                onChange={(event) => setSearchText(event.target.value)}
-                placeholder="Buscar piscina..."
-                className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
-              />
-            </div>
+
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:flex">
+            <SelectField
+              value={statusFilter}
+              onChange={(event) =>
+                setStatusFilter(event.target.value as "all" | "active" | "inactive")
+              }
+            >
+              <option value="all">Todos os status</option>
+              <option value="active">Ativas</option>
+              <option value="inactive">Inativas</option>
+            </SelectField>
+
+            <SelectField
+              value={stockFilter}
+              onChange={(event) =>
+                setStockFilter(event.target.value as "all" | "available" | "zero" | "unknown")
+              }
+            >
+              <option value="all">Todo estoque</option>
+              <option value="available">Com estoque</option>
+              <option value="zero">Estoque zerado</option>
+              <option value="unknown">Não informado</option>
+            </SelectField>
+
+            <SelectField
+              value={sortBy}
+              onChange={(event) =>
+                setSortBy(
+                  event.target.value as "recent" | "name" | "price_asc" | "price_desc"
+                )
+              }
+            >
+              <option value="recent">Mais recentes</option>
+              <option value="name">Nome A–Z</option>
+              <option value="price_asc">Menor preço</option>
+              <option value="price_desc">Maior preço</option>
+            </SelectField>
           </div>
         </div>
-        {searchText.trim() ? (
-          <div className="mt-2 text-xs text-gray-500">
-            {filteredPools.length} resultado(s) encontrado(s) para "{searchText.trim()}".
-          </div>
-        ) : null}
+
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-gray-500">
+          <span>{filteredPools.length} piscina(s) encontrada(s)</span>
+          {(searchText.trim() || statusFilter !== "all" || stockFilter !== "all") ? (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchText("");
+                setStatusFilter("all");
+                setStockFilter("all");
+              }}
+              className="font-semibold text-gray-700 hover:text-black"
+            >
+              Limpar filtros
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {!hasValidStoreContext ? (
@@ -947,12 +1144,22 @@ export default function PiscinasPage() {
           {searchText.trim() ? "Nenhuma piscina encontrada para essa busca." : "Nenhuma piscina cadastrada."}
         </div>
       ) : (
-        <div className="space-y-4">
-          {filteredPools.map((pool) => {
+        <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white">
+          <div className="hidden grid-cols-[minmax(280px,1.5fr)_minmax(170px,0.75fr)_minmax(120px,0.55fr)_minmax(210px,0.9fr)_96px] items-center gap-4 border-b border-gray-200 bg-gray-50 px-4 py-2.5 text-[11px] font-bold uppercase tracking-[0.08em] text-gray-500 lg:grid">
+            <div>Produto</div>
+            <div>Medidas</div>
+            <div>Preço</div>
+            <div>Situação</div>
+            <div className="text-right">Ações</div>
+          </div>
+
+          <div className="divide-y divide-gray-200">
+          {visiblePools.map((pool) => {
             const poolPhotos = photosByPoolId[pool.id] || [];
             const primaryPoolPhoto = poolPhotos[0] || null;
             const primaryPoolPhotoUrl = primaryPoolPhoto ? photoUrlByPhotoId[primaryPoolPhoto.id] || "" : "";
             const isEditing = editingPoolId === pool.id;
+            const isExpanded = expandedPoolId === pool.id;
             const characteristics = buildPoolCharacteristics(pool);
             const priceLabel = getCatalogPriceSemanticsFromNumber({
               priceStatus: pool.price_status,
@@ -969,41 +1176,94 @@ export default function PiscinasPage() {
             );
 
             return (
-              <section
-                key={pool.id}
-                className="overflow-hidden rounded-2xl border border-gray-200 bg-white"
-              >
-                <div className="border-b border-gray-200 px-3 py-3 sm:px-4">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="min-w-0">
-                      <h2 className="text-lg font-black leading-tight text-black">
-                        {pool.name || "Piscina sem nome"}
-                      </h2>
-                      <p className="mt-1 text-sm text-gray-600">
-                        {pool.shape && pool.material
-                          ? `${pool.shape} • ${pool.material}`
-                          : "Dados básicos da piscina"}
-                      </p>
+              <section key={pool.id} className={isExpanded || isEditing ? "bg-gray-50/40" : "bg-white"}>
+                <div className="grid gap-3 px-4 py-3.5 transition hover:bg-gray-50 lg:grid-cols-[minmax(280px,1.5fr)_minmax(170px,0.75fr)_minmax(120px,0.55fr)_minmax(210px,0.9fr)_96px] lg:items-center lg:gap-4">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedPoolId((current) => (current === pool.id ? null : pool.id))
+                    }
+                    disabled={isEditing}
+                    className="flex min-w-0 items-center gap-3 text-left disabled:cursor-default"
+                    aria-expanded={isExpanded}
+                  >
+                    <div className="flex h-14 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-gray-100 text-[11px] font-semibold text-gray-400">
+                      {primaryPoolPhotoUrl ? (
+                        <img
+                          src={primaryPoolPhotoUrl}
+                          alt={primaryPoolPhoto?.file_name || pool.name || "Foto da piscina"}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <span>Sem foto</span>
+                      )}
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                      <DetailChip value={priceLabel} />
-                      <DetailChip value={pool.is_active ? "Ativa" : "Inativa"} />
-                      <DetailChip value={stockLabel} />
-                      <button
-                        type="button"
-                        onClick={() => startEditing(pool)}
-                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
-                      >
-                        Editar
-                      </button>
+                    <div className="min-w-0">
+                      <div className="truncate text-base font-bold text-gray-950">
+                        {pool.name || "Piscina sem nome"}
+                      </div>
+                      <div className="mt-1 truncate text-sm text-gray-500">
+                        {[pool.shape, pool.material].filter(Boolean).join(" • ") || "Sem formato/material"}
+                      </div>
                     </div>
+                  </button>
+
+                  <div className="pl-[76px] text-sm text-gray-700 lg:pl-0">
+                    {pool.length_m != null && pool.width_m != null && pool.depth_m != null
+                      ? `${pool.length_m} × ${pool.width_m} × ${pool.depth_m} m`
+                      : "Não informadas"}
+                  </div>
+
+                  <div className="pl-[76px] text-sm font-bold text-gray-950 lg:pl-0">
+                    {priceLabel}
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5 pl-[76px] lg:pl-0">
+                    <DetailChip value={pool.is_active ? "Ativa" : "Inativa"} />
+                    <DetailChip value={stockLabel} />
+                  </div>
+
+                  <div className="flex items-center justify-end gap-1.5 pl-[76px] lg:pl-0">
+                    <button
+                      type="button"
+                      onClick={() => startEditing(pool)}
+                      className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs font-semibold text-gray-800 transition hover:bg-gray-50"
+                    >
+                      Editar
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedPoolId((current) => (current === pool.id ? null : pool.id))
+                      }
+                      disabled={isEditing}
+                      className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 transition hover:bg-gray-50 disabled:cursor-default disabled:opacity-50"
+                      aria-label={isExpanded ? "Ocultar detalhes" : "Ver detalhes"}
+                      title={isExpanded ? "Ocultar detalhes" : "Ver detalhes"}
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        className={`h-4 w-4 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                    </button>
                   </div>
                 </div>
 
-                <div className="space-y-3 px-3 py-3 sm:px-4">
+                {isExpanded || isEditing ? (
+                  <div className="space-y-5 border-t border-gray-200 bg-white px-4 py-5 sm:px-5">
                   {isEditing && editPoolForm ? (
-                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                    <div className="rounded-2xl bg-gray-50 p-4">
+                      <div className="mb-4">
+                        <div className="text-sm font-bold text-gray-950">Editar piscina</div>
+                        <div className="mt-1 text-xs text-gray-500">Atualize somente os dados que precisam mudar.</div>
+                      </div>
                       <div className="grid gap-3 lg:grid-cols-2">
                         <div>
                           <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
@@ -1181,7 +1441,7 @@ export default function PiscinasPage() {
                           </label>
                         </div>
 
-                        <div className="lg:col-span-2">
+                        <div className="border-t border-gray-200 pt-4 lg:col-span-2">
                           <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
                             Descrição
                           </label>
@@ -1230,49 +1490,24 @@ export default function PiscinasPage() {
                     </div>
                   ) : null}
 
-                  <CharacteristicsTable
-                    title="Características da piscina"
-                    rows={characteristics}
-                  />
+                  {!isEditing ? (
+                    <>
+                      <CharacteristicsTable
+                        title="Características da piscina"
+                        rows={characteristics}
+                      />
 
-                  {complementaryDescription ? (
-                    <SectionCard title="Descrição complementar">
-                      <div className="whitespace-pre-wrap text-sm leading-6 text-gray-800">
-                        {complementaryDescription}
-                      </div>
-                    </SectionCard>
+                      {complementaryDescription ? (
+                        <SectionCard title="Descrição complementar">
+                          <div className="whitespace-pre-wrap text-sm leading-6 text-gray-800">
+                            {complementaryDescription}
+                          </div>
+                        </SectionCard>
+                      ) : null}
+                    </>
                   ) : null}
 
                   <SectionCard title="Fotos da piscina">
-                    {!isEditing && primaryPoolPhoto ? (
-                      <div className="mb-3 overflow-hidden rounded-xl border border-gray-200 bg-gray-50">
-                        {primaryPoolPhotoUrl ? (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setExpandedPoolPhoto({
-                                url: primaryPoolPhotoUrl,
-                                alt: primaryPoolPhoto.file_name || pool.name || "Foto da piscina",
-                                fileName: primaryPoolPhoto.file_name || pool.name || "Foto da piscina",
-                              })
-                            }
-                            className="block w-full cursor-zoom-in bg-gray-100 text-left"
-                            aria-label="Abrir foto principal da piscina em tamanho grande"
-                          >
-                            <img
-                              src={primaryPoolPhotoUrl}
-                              alt={primaryPoolPhoto.file_name || pool.name || "Foto da piscina"}
-                              className="block h-48 w-full object-cover sm:h-56"
-                            />
-                          </button>
-                        ) : (
-                          <div className="flex h-48 items-center justify-center px-4 text-sm text-gray-500 sm:h-56">
-                            Carregando foto principal...
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-
                     {isEditing ? (
                       <div className="space-y-3">
                         <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
@@ -1427,9 +1662,40 @@ export default function PiscinasPage() {
                     )}
                   </SectionCard>
                 </div>
+                ) : null}
               </section>
             );
           })}
+          </div>
+
+          {filteredPools.length > pageSize ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 bg-gray-50 px-4 py-3">
+              <div className="text-xs text-gray-500">
+                Mostrando {(safeCurrentPage - 1) * pageSize + 1}–{Math.min(safeCurrentPage * pageSize, filteredPools.length)} de {filteredPools.length}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                  disabled={safeCurrentPage === 1}
+                  className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Anterior
+                </button>
+                <span className="text-sm font-semibold text-gray-700">
+                  {safeCurrentPage} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                  disabled={safeCurrentPage === totalPages}
+                  className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Próxima
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
 
