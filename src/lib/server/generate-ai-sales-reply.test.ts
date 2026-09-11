@@ -471,6 +471,18 @@ function flattenModelText(args: {
   ].join("\n");
 }
 
+function assertSystemSettingsReaderCall(
+  supabase: FakeSupabase,
+  fn: "read_store_payment_settings_by_system" | "read_store_channel_settings_by_system",
+) {
+  const call = supabase.rpcCalls.find((entry) => entry.fn === fn);
+
+  assert.deepEqual(call?.payload, {
+    p_organization_id: "org-1",
+    p_store_id: "store-1",
+  });
+}
+
 function buildCurrentStateFixtureText() {
   return [
     "- conversation.status atual: open",
@@ -494,6 +506,8 @@ function createGenerateAiSalesReplySupabase(args?: {
   catalogItemPhotos?: Row[];
   pools?: Row[];
   poolPhotos?: Row[];
+  paymentSettingsReaderResponse?: RpcMockEntry;
+  channelSettingsReaderResponse?: RpcMockEntry;
   canonicalReaderResponses?: Array<{ data: unknown; error: { message: string } | null }>;
   writerResponse?: RpcMockEntry;
   materializerResponse?: RpcMockEntry;
@@ -575,9 +589,7 @@ function createGenerateAiSalesReplySupabase(args?: {
       ],
       store_onboarding_answers: args?.onboardingAnswers ?? [],
       store_commercial_ai_settings: args?.commercialAiSettings ?? [],
-      store_payment_settings: args?.paymentSettings ?? [],
       store_operation_settings: args?.operationSettings ?? [],
-      store_channel_settings: args?.channelSettings ?? [],
       store_discount_settings: args?.discountSettings ?? [],
       store_high_value_discount_settings: args?.highValueDiscountSettings ?? [],
       store_catalog_items: args?.catalogItems ?? [],
@@ -655,6 +667,16 @@ function createGenerateAiSalesReplySupabase(args?: {
     },
     {},
     {
+      read_store_payment_settings_by_system:
+        args?.paymentSettingsReaderResponse ?? {
+          data: args?.paymentSettings ?? [],
+          error: null,
+        },
+      read_store_channel_settings_by_system:
+        args?.channelSettingsReaderResponse ?? {
+          data: args?.channelSettings ?? [],
+          error: null,
+        },
       write_commercial_message_intent_resolution_by_system:
         args?.cmirWriterResponse ??
         ((payload: Record<string, unknown>) => {
@@ -737,7 +759,7 @@ function createGenerateAiSalesReplySupabase(args?: {
           ],
           error: null,
         })),
-      materialize_commercial_opportunity_profile_from_qualification_by_system:
+      materialize_opportunity_profile_from_qualification_by_system:
         args?.materializerResponse ??
         {
           data: [createProfileMaterializationRow()],
@@ -3314,7 +3336,7 @@ test("qualification profile materializer calls only the guard rpc with canonical
     {},
     {},
     {
-      materialize_commercial_opportunity_profile_from_qualification_by_system: {
+      materialize_opportunity_profile_from_qualification_by_system: {
         data: [createProfileMaterializationRow()],
         error: null,
       },
@@ -3342,7 +3364,7 @@ test("qualification profile materializer calls only the guard rpc with canonical
   assert.equal(result.ok, true);
   assert.deepEqual(supabase.rpcCalls, [
     {
-      fn: "materialize_commercial_opportunity_profile_from_qualification_by_system",
+      fn: "materialize_opportunity_profile_from_qualification_by_system",
       payload: {
         p_organization_id: "org-1",
         p_store_id: "store-1",
@@ -3386,7 +3408,7 @@ test("qualification profile materializer source uses only the guard and never ma
 
   assert.equal(
     block.includes(
-      "materialize_commercial_opportunity_profile_from_qualification_by_system",
+      "materialize_opportunity_profile_from_qualification_by_system",
     ),
     true,
   );
@@ -3409,7 +3431,7 @@ test("qualification profile materializer treats preserved human and superior aut
       {},
       {},
       {
-        materialize_commercial_opportunity_profile_from_qualification_by_system: {
+        materialize_opportunity_profile_from_qualification_by_system: {
           data: [
             createProfileMaterializationRow({
               outcome,
@@ -3466,7 +3488,7 @@ test("qualification profile materializer fails closed on rpc error cardinality i
       {},
       {},
       {
-        materialize_commercial_opportunity_profile_from_qualification_by_system:
+        materialize_opportunity_profile_from_qualification_by_system:
           materializerResponse,
       },
     );
@@ -3491,7 +3513,7 @@ test("qualification profile materializer fails closed on rpc error cardinality i
         {},
         {},
         {
-          materialize_commercial_opportunity_profile_from_qualification_by_system:
+          materialize_opportunity_profile_from_qualification_by_system:
             {
               data: [createProfileMaterializationRow()],
               error: null,
@@ -3775,7 +3797,7 @@ test("generateAiSalesReply materializes profile with the initial qualification s
   const materializerCalls = supabase.rpcCalls.filter(
     (call) =>
       call.fn ===
-      "materialize_commercial_opportunity_profile_from_qualification_by_system",
+      "materialize_opportunity_profile_from_qualification_by_system",
   );
   assert.equal(materializerCalls.length, 1);
   assert.deepEqual(materializerCalls[0]?.payload, {
@@ -3863,7 +3885,7 @@ test("generateAiSalesReply materializes profile with the post-write qualificatio
   const materializerCall = supabase.rpcCalls.find(
     (call) =>
       call.fn ===
-      "materialize_commercial_opportunity_profile_from_qualification_by_system",
+      "materialize_opportunity_profile_from_qualification_by_system",
   );
   assert.equal(
     materializerCall?.payload.p_installation_evidence_state,
@@ -4071,9 +4093,10 @@ test("generateAiSalesReply requests blocking human handoff when customer explici
 
   assert.equal(
     supabase.fromCalls.includes("store_channel_settings"),
-    true,
-    "Sales AI must read canonical store_channel_settings",
+    false,
+    "Sales AI must not read store_channel_settings directly",
   );
+  assertSystemSettingsReaderCall(supabase, "read_store_channel_settings_by_system");
 
   const context = response.ok
     ? (response.context as Record<string, any>)
@@ -4167,8 +4190,9 @@ test("generateAiSalesReply honors canonical disabled human handoff over conflict
 
   assert.equal(
     supabase.fromCalls.includes("store_channel_settings"),
-    true,
+    false,
   );
+  assertSystemSettingsReaderCall(supabase, "read_store_channel_settings_by_system");
 
   const context = response.ok
     ? (response.context as Record<string, any>)
@@ -5473,7 +5497,8 @@ test("generateAiSalesReply uses canonical payment settings for Pix down payment 
   });
 
   assert.equal(result.ok, true);
-  assert.equal(supabase.fromCalls.includes("store_payment_settings"), true);
+  assert.equal(supabase.fromCalls.includes("store_payment_settings"), false);
+  assertSystemSettingsReaderCall(supabase, "read_store_payment_settings_by_system");
 
   const finalOpenAiCall = openai.calls[1] as Record<string, unknown>;
   const finalPayload = JSON.stringify(finalOpenAiCall);
@@ -5544,7 +5569,8 @@ test("generateAiSalesReply treats missing canonical payment and false technical 
   });
 
   assert.equal(result.ok, true);
-  assert.equal(supabase.fromCalls.includes("store_payment_settings"), true);
+  assert.equal(supabase.fromCalls.includes("store_payment_settings"), false);
+  assertSystemSettingsReaderCall(supabase, "read_store_payment_settings_by_system");
   assert.equal(supabase.fromCalls.includes("store_operation_settings"), true);
 
   const finalOpenAiCall = openai.calls[1] as Record<string, unknown>;
@@ -5555,6 +5581,108 @@ test("generateAiSalesReply treats missing canonical payment and false technical 
   assert.equal(finalPayload.includes("regra de entrada/sinal configurada atualmente: nao"), true);
   assert.equal(finalPayload.includes("LEGACY_PIX_SHOULD_NOT_WIN"), false);
   assert.equal(finalPayload.includes("LEGACY_VISIT_RULE_SHOULD_NOT_WIN"), false);
+});
+
+test("generateAiSalesReply fails closed when the payment settings reader errors", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    paymentSettingsReaderResponse: {
+      data: null,
+      error: { message: "permission denied for table store_payment_settings" },
+    },
+  });
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([]),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "LOAD_PAYMENT_SETTINGS_FAILED");
+  assert.equal(result.message, "permission denied for table store_payment_settings");
+  assert.equal(supabase.fromCalls.includes("store_payment_settings"), false);
+  assertSystemSettingsReaderCall(supabase, "read_store_payment_settings_by_system");
+});
+
+test("generateAiSalesReply fails closed when the payment settings reader returns more than one row", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    paymentSettingsReaderResponse: {
+      data: [
+        { organization_id: "org-1", store_id: "store-1" },
+        { organization_id: "org-1", store_id: "store-1" },
+      ],
+      error: null,
+    },
+  });
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([]),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "LOAD_PAYMENT_SETTINGS_FAILED");
+  assert.equal(result.message, "Invalid system reader cardinality.");
+  assert.equal(supabase.fromCalls.includes("store_payment_settings"), false);
+  assertSystemSettingsReaderCall(supabase, "read_store_payment_settings_by_system");
+});
+
+test("generateAiSalesReply fails closed when the channel settings reader errors", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    channelSettingsReaderResponse: {
+      data: null,
+      error: { message: "permission denied for table store_channel_settings" },
+    },
+  });
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([]),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "LOAD_CHANNEL_SETTINGS_FAILED");
+  assert.equal(result.message, "permission denied for table store_channel_settings");
+  assert.equal(supabase.fromCalls.includes("store_channel_settings"), false);
+  assertSystemSettingsReaderCall(supabase, "read_store_channel_settings_by_system");
+});
+
+test("generateAiSalesReply fails closed when the channel settings reader returns more than one row", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    channelSettingsReaderResponse: {
+      data: [
+        { organization_id: "org-1", store_id: "store-1" },
+        { organization_id: "org-1", store_id: "store-1" },
+      ],
+      error: null,
+    },
+  });
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([]),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "LOAD_CHANNEL_SETTINGS_FAILED");
+  assert.equal(result.message, "Invalid system reader cardinality.");
+  assert.equal(supabase.fromCalls.includes("store_channel_settings"), false);
+  assertSystemSettingsReaderCall(supabase, "read_store_channel_settings_by_system");
 });
 
 test("generateAiSalesReply ignores technical visit pricing residual when offers is false", async () => {
@@ -5933,7 +6061,7 @@ test("generateAiSalesReply skips structured extraction and writer when no explic
       (call) =>
         call.fn === "write_commercial_opportunity_qualification_fact_by_system" ||
         call.fn === "read_commercial_opportunity_qualification_facts_by_system" ||
-        call.fn === "materialize_commercial_opportunity_profile_from_qualification_by_system",
+        call.fn === "materialize_opportunity_profile_from_qualification_by_system",
     ),
     false,
   );
@@ -7890,6 +8018,114 @@ test("children context keeps customer preferences structured and cannot revive d
     });
 
   assert.equal(spaceQuestion, null);
+});
+
+async function generateDecisionForCustomerMessage(message: string) {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: message,
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Resposta comercial segura.",
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+
+  const context = result.context as Record<string, any>;
+  const finalPayload = JSON.stringify(openai.calls[1]);
+
+  return {
+    decision: context.commercialDecisionExplanation as Record<string, any>,
+    finalPayload,
+    normalizedPayload: finalPayload
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, ""),
+  };
+}
+
+test("descriptive family and maintenance pool context is not classified as a specific model", async () => {
+  const e2eMessage =
+    "Tenho um espaco de 8x5 metros. A piscina seria mais pros meus filhos e pra familia usarem nos fins de semana. O que mais me preocupa e ter muito trabalho com limpeza e manutencao, porque durante a semana a gente quase nao tem tempo";
+  const { decision, normalizedPayload } = await generateDecisionForCustomerMessage(e2eMessage);
+
+  assert.equal(decision.conversationPattern, "pool_children_context");
+  assert.notEqual(decision.conversationPattern, "specific_model_or_ad_request");
+  assert.notEqual(decision.primaryIntent, "specific_model");
+  assert.equal(normalizedPayload.includes("se o cliente citou nome/modelo especifico: nao"), true);
+});
+
+test("descriptive pool usage phrases do not become specific model references", async () => {
+  const negativeMessages = [
+    "A piscina seria para meus filhos",
+    "A piscina seria mais para a familia",
+    "Quero uma piscina para a familia",
+    "A piscina vai ser usada nos fins de semana",
+    "A piscina precisa ser facil de manter",
+    "A piscina seria para lazer",
+    "Tenho pouco tempo para cuidar da piscina",
+  ];
+
+  for (const message of negativeMessages) {
+    const { decision, normalizedPayload } = await generateDecisionForCustomerMessage(message);
+
+    assert.notEqual(
+      decision.conversationPattern,
+      "specific_model_or_ad_request",
+      message,
+    );
+    assert.notEqual(decision.primaryIntent, "specific_model", message);
+    assert.equal(
+      normalizedPayload.includes("se o cliente citou nome/modelo especifico: nao"),
+      true,
+      message,
+    );
+  }
+});
+
+test("real pool model references remain classified as specific references", async () => {
+  const positiveMessages = [
+    "Quero o modelo 305",
+    "Tem o modelo 305?",
+    "Vi o anuncio da piscina Itapema",
+    "Vi o an\u00fancio da piscina Itapema",
+    "Quero a Itapema",
+    "Tem a Itapema?",
+  ];
+
+  for (const message of positiveMessages) {
+    const { decision, normalizedPayload } = await generateDecisionForCustomerMessage(message);
+
+    assert.equal(decision.conversationPattern, "specific_model_or_ad_request", message);
+    assert.equal(decision.primaryIntent, "specific_model", message);
+    assert.equal(
+      normalizedPayload.includes("se o cliente citou nome/modelo especifico: nao"),
+      false,
+      message,
+    );
+  }
+});
+
+test("price and photo requests preserve the textual pool reference without treating descriptions as names", async () => {
+  for (const message of ["Quanto custa a Itapema?", "Tem foto da piscina Itapema?"]) {
+    const { normalizedPayload } = await generateDecisionForCustomerMessage(message);
+
+    assert.equal(normalizedPayload.includes("nome/modelo especifico citado: itapema"), true, message);
+  }
 });
 test("runtime qualification bridge never turns a canonical gap into a legacy question sentence", () => {
   const snapshot = createContextualQualificationSnapshot({

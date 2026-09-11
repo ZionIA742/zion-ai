@@ -1226,6 +1226,25 @@ function normalizeText(value: string | null | undefined): string {
     .trim();
 }
 
+function normalizeSystemReaderRow(data: unknown): {
+  row: any | null;
+  errorMessage: string | null;
+} {
+  const rows = data == null ? [] : Array.isArray(data) ? data : [data];
+
+  if (rows.length > 1) {
+    return {
+      row: null,
+      errorMessage: "Invalid system reader cardinality.",
+    };
+  }
+
+  return {
+    row: rows[0] ?? null,
+    errorMessage: null,
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -2674,7 +2693,7 @@ export async function materializeCommercialOpportunityProfileFromQualificationBy
     );
 
   const { data, error } = await args.supabase.rpc(
-    "materialize_commercial_opportunity_profile_from_qualification_by_system",
+    "materialize_opportunity_profile_from_qualification_by_system",
     {
       p_organization_id: args.organizationId,
       p_store_id: args.storeId,
@@ -4744,6 +4763,67 @@ function isGenericPoolReferenceToken(token: string): boolean {
   return GENERIC_POOL_REFERENCE_TOKENS.has(token);
 }
 
+const DESCRIPTIVE_POOL_REFERENCE_START_TOKENS = new Set([
+  "deve",
+  "ficar",
+  "pra",
+  "precisa",
+  "pro",
+  "pros",
+  "ser",
+  "seria",
+  "vai",
+]);
+
+const DESCRIPTIVE_POOL_REFERENCE_TOKENS = new Set([
+  "cuidar",
+  "familia",
+  "filha",
+  "filhas",
+  "filho",
+  "filhos",
+  "lazer",
+  "limpeza",
+  "manutencao",
+  "pratica",
+  "praticidade",
+  "usar",
+  "usada",
+  "usado",
+  "usarem",
+  "uso",
+]);
+
+function looksLikeDescriptivePoolReferenceCandidate(candidate: string): boolean {
+  const normalized = normalizeText(candidate)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+
+  if (!tokens.length) return true;
+
+  const startsAsClause =
+    DESCRIPTIVE_POOL_REFERENCE_START_TOKENS.has(tokens[0]) ||
+    (tokens[0] === "mais" &&
+      ["para", "pra", "pro", "pros"].includes(tokens[1] || ""));
+  const hasDescriptiveLanguage = tokens.some((token) =>
+    DESCRIPTIVE_POOL_REFERENCE_TOKENS.has(token)
+  );
+  const hasSpecificSyntax =
+    tokens.some((token) => /^\d{1,4}$/.test(token)) ||
+    /\b(?:modelo|cod(?:igo)?|sku)\b/i.test(normalized);
+  const singlePlausibleName =
+    tokens.length === 1 &&
+    tokens[0].length >= 4 &&
+    !isGenericPoolReferenceToken(tokens[0]);
+
+  return (
+    !hasSpecificSyntax &&
+    !singlePlausibleName &&
+    (startsAsClause || hasDescriptiveLanguage || looksLikePoolPreferenceLanguage(normalized))
+  );
+}
+
 const KNOWN_POOL_MODEL_TYPES = new Set([
   "vinil",
   "fibra",
@@ -4816,6 +4896,12 @@ function extractRequestedPoolReference(text: string): RequestedPoolReference | n
     /\bfoto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bimagem\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bimagem\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bquanto\s+custa\s+a\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bquanto\s+custa\s+o\s+(?:modelo\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bvi o anÃºncio da piscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bvi o anÃºncio da\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\banÃºncio da piscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\banÃºncio da\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bvi o anuncio da piscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bvi o anuncio da\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\banuncio da piscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
@@ -4844,6 +4930,9 @@ function extractRequestedPoolReference(text: string): RequestedPoolReference | n
     const effectiveCleaned = refinedCleaned || cleaned;
 
     if (!effectiveCleaned) continue;
+    if (looksLikeDescriptivePoolReferenceCandidate(effectiveCleaned)) {
+      continue;
+    }
     if (/\b(recomenda|recomendaria|indica|indicaria|melhor|opcao|opcoes|para um espaco|para uma area)\b/i.test(effectiveCleaned)) {
       continue;
     }
@@ -9709,15 +9798,13 @@ export async function generateAiSalesReply(
       };
     }
 
-    const { data: paymentSettings, error: paymentSettingsError } =
-      await supabase
-        .from("store_payment_settings")
-        .select(
-          "organization_id, store_id, accepted_payment_methods, pix_key_type, pix_key, pix_holder_name, down_payment_mode, down_payment_value_type, down_payment_percent, down_payment_amount_cents, installments_enabled, max_installments, installment_interest_policy, payment_notes, created_at, updated_at",
-        )
-        .eq("organization_id", organizationId)
-        .eq("store_id", resolvedStoreId)
-        .maybeSingle();
+    const {
+      data: paymentSettingsRows,
+      error: paymentSettingsError,
+    } = await supabase.rpc("read_store_payment_settings_by_system", {
+      p_organization_id: organizationId,
+      p_store_id: resolvedStoreId,
+    });
 
     if (paymentSettingsError) {
       return {
@@ -9726,6 +9813,18 @@ export async function generateAiSalesReply(
         message: paymentSettingsError.message,
       };
     }
+
+    const paymentSettingsResult = normalizeSystemReaderRow(paymentSettingsRows);
+
+    if (paymentSettingsResult.errorMessage) {
+      return {
+        ok: false,
+        error: "LOAD_PAYMENT_SETTINGS_FAILED",
+        message: paymentSettingsResult.errorMessage,
+      };
+    }
+
+    const paymentSettings = paymentSettingsResult.row;
 
     const { data: operationSettings, error: operationSettingsError } =
       await supabase
@@ -9745,15 +9844,13 @@ export async function generateAiSalesReply(
       };
     }
 
-    const { data: channelSettings, error: channelSettingsError } =
-      await supabase
-        .from("store_channel_settings")
-        .select(
-          "organization_id, store_id, commercial_channel_name, commercial_receives_real_clients, commercial_is_official_sales_channel, commercial_channel_type, commercial_entry_priority, commercial_human_handoff_enabled, commercial_channel_notes, integration_provider_name, integration_connection_mode, integrations_notes, created_at, updated_at",
-        )
-        .eq("organization_id", organizationId)
-        .eq("store_id", resolvedStoreId)
-        .maybeSingle();
+    const {
+      data: channelSettingsRows,
+      error: channelSettingsError,
+    } = await supabase.rpc("read_store_channel_settings_by_system", {
+      p_organization_id: organizationId,
+      p_store_id: resolvedStoreId,
+    });
 
     if (channelSettingsError) {
       return {
@@ -9762,6 +9859,18 @@ export async function generateAiSalesReply(
         message: channelSettingsError.message,
       };
     }
+
+    const channelSettingsResult = normalizeSystemReaderRow(channelSettingsRows);
+
+    if (channelSettingsResult.errorMessage) {
+      return {
+        ok: false,
+        error: "LOAD_CHANNEL_SETTINGS_FAILED",
+        message: channelSettingsResult.errorMessage,
+      };
+    }
+
+    const channelSettings = channelSettingsResult.row;
     const { data: discountSettings, error: discountSettingsError } =
       await supabase
         .from("store_discount_settings")
