@@ -1208,7 +1208,8 @@ type SettingsTabId =
   | "comercial"
   | "catalogo"
   | "contratos-marca"
-  | "canais-integracoes";
+  | "canais-integracoes"
+  | "plano-cobranca";
 
 function normalizeSettingsTabId(tab: string | null | undefined): SettingsTabId {
   switch (tab) {
@@ -1233,6 +1234,10 @@ function normalizeSettingsTabId(tab: string | null | undefined): SettingsTabId {
     case "canais-integracoes":
     case "responsavel-ativacao":
       return "canais-integracoes";
+    case "plano-cobranca":
+    case "plano":
+    case "planos":
+      return "plano-cobranca";
     default:
       return "geral";
   }
@@ -3433,10 +3438,12 @@ function CompactMetric({
 function SettingsTabButton({
   active,
   label,
+  badge,
   onClick,
 }: {
   active: boolean;
   label: string;
+  badge?: string;
   onClick: () => void;
 }) {
   return (
@@ -3444,13 +3451,18 @@ function SettingsTabButton({
       type="button"
       onClick={onClick}
       className={[
-        "min-w-0 w-full rounded-lg px-3 py-2 text-center transition",
+        "flex min-h-[46px] min-w-0 w-full flex-col items-center justify-center rounded-lg px-2.5 py-2 text-center transition",
         active
           ? "bg-black text-white shadow-sm"
           : "text-gray-600 hover:bg-gray-100 hover:text-gray-900",
       ].join(" ")}
     >
       <div className="break-words text-[13px] font-semibold leading-tight">{label}</div>
+      {badge ? (
+        <span className={`mt-1 inline-flex rounded-full px-1.5 py-0.5 text-[9px] font-semibold leading-none ${active ? "bg-white/15 text-white/85" : "bg-gray-100 text-gray-500"}`}>
+          {badge}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -3860,6 +3872,7 @@ export default function ConfiguracoesPage() {
       { id: "comercial" as const, label: "Comercial" },
       { id: "contratos-marca" as const, label: "Contratos e Marca" },
       { id: "canais-integracoes" as const, label: "Canais e Integrações" },
+      { id: "plano-cobranca" as const, label: "Plano e cobrança" },
     ],
     []
   );
@@ -10638,16 +10651,17 @@ export default function ConfiguracoesPage() {
 
       <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
         <div className="h-0.5 w-full bg-black" />
-        <div className="p-3">
-          <div className="mb-2 px-1 text-xs font-semibold uppercase tracking-[0.12em] text-gray-500">
+        <div className="p-2.5">
+          <div className="mb-1.5 px-1 text-xs font-semibold uppercase tracking-[0.12em] text-gray-500">
             Áreas de configuração
           </div>
-          <div className="grid grid-cols-2 gap-1.5 md:grid-cols-3 xl:grid-cols-6">
+          <div className="grid grid-cols-2 gap-1.5 md:grid-cols-4 xl:grid-cols-7">
             {tabs.map((tab) => (
               <SettingsTabButton
                 key={tab.id}
                 active={activeTab === tab.id}
                 label={tab.label}
+                badge={tab.id === "plano-cobranca" ? "Em breve" : undefined}
                 onClick={() => setActiveTab(tab.id)}
               />
             ))}
@@ -12308,6 +12322,12 @@ export default function ConfiguracoesPage() {
               </div>
             )}
           </SectionBlock>
+        </div>
+      ) : null}
+
+      {activeTab === "plano-cobranca" ? (
+        <div className="flex min-h-[420px] items-center justify-center">
+          <div className="text-center text-lg font-semibold text-gray-500">Em breve</div>
         </div>
       ) : null}
 
