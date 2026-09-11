@@ -128,14 +128,21 @@ function createBaseTables(overrides?: Partial<Record<string, TableResponse>>) {
     },
     store_schedule_settings: {
       single: {
+        human_schedule_configured_at: "2026-09-10T10:00:00.000Z",
+        agenda_capacity_configured_at: "2026-09-10T10:05:00.000Z",
         timezone_name: "America/Sao_Paulo",
         operating_days: ["monday", "tuesday"],
         operating_hours: {
           monday: { start: "08:00", end: "18:00" },
           tuesday: { start: "08:00", end: "18:00" },
         },
+        allow_multiple_appointments_per_day: false,
         allow_same_time_appointments: false,
-        same_time_capacity: null,
+        same_time_capacity: 1,
+        daily_limit_mode: "fixed_limit",
+        daily_limit: 1,
+        appointment_buffer_enabled: false,
+        appointment_buffer_minutes: null,
       },
     },
     pools: {
@@ -330,18 +337,107 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "existing schedule row without human configured timestamp does not make agenda ready",
+    run: async () => {
+      const { result } = await resolveWithTables({
+        store_schedule_settings: {
+          single: {
+            ...createBaseTables().store_schedule_settings.single,
+            human_schedule_configured_at: null,
+          },
+        },
+      });
+
+      assert.equal(result.capabilitiesByKey.agenda.state, "not_configured");
+      assert.deepEqual(result.capabilitiesByKey.agenda.reasonCodes, [
+        STORE_READINESS_REASON_CODES.SCHEDULE_HUMAN_NOT_CONFIGURED,
+      ]);
+      assert.deepEqual(result.capabilitiesByKey.agenda.missingFields, [
+        "store_schedule_settings.human_schedule_configured_at",
+      ]);
+    },
+  },
+  {
+    name: "valid human schedule and valid agenda capacity resolve agenda ready",
+    run: async () => {
+      const { result } = await resolveWithTables({
+        store_schedule_settings: {
+          single: {
+            ...createBaseTables().store_schedule_settings.single,
+            human_schedule_configured_at: "2026-09-10T10:00:00.000Z",
+            agenda_capacity_configured_at: "2026-09-10T10:05:00.000Z",
+          },
+        },
+      });
+
+      assert.equal(result.capabilitiesByKey.agenda.state, "ready");
+      assert.deepEqual(result.capabilitiesByKey.agenda.reasonCodes, []);
+    },
+  },
+  {
+    name: "agenda capacity timestamp missing does not treat capacity defaults as configured",
+    run: async () => {
+      const { result } = await resolveWithTables({
+        store_schedule_settings: {
+          single: {
+            ...createBaseTables().store_schedule_settings.single,
+            agenda_capacity_configured_at: null,
+            allow_multiple_appointments_per_day: false,
+            allow_same_time_appointments: false,
+            same_time_capacity: 1,
+          },
+        },
+      });
+
+      assert.equal(result.capabilitiesByKey.agenda.state, "not_configured");
+      assert.deepEqual(result.capabilitiesByKey.agenda.reasonCodes, [
+        STORE_READINESS_REASON_CODES.SCHEDULE_AGENDA_CAPACITY_NOT_CONFIGURED,
+      ]);
+      assert.deepEqual(result.capabilitiesByKey.agenda.missingFields, [
+        "store_schedule_settings.agenda_capacity_configured_at",
+      ]);
+    },
+  },
+  {
+    name: "configured agenda capacity with invalid payload resolves blocked",
+    run: async () => {
+      const { result } = await resolveWithTables({
+        store_schedule_settings: {
+          single: {
+            ...createBaseTables().store_schedule_settings.single,
+            allow_multiple_appointments_per_day: true,
+            allow_same_time_appointments: true,
+            same_time_capacity: 1,
+            daily_limit_mode: "fixed_limit",
+            daily_limit: 1,
+          },
+        },
+      });
+
+      assert.equal(result.capabilitiesByKey.agenda.state, "blocked");
+      assert.deepEqual(result.capabilitiesByKey.agenda.reasonCodes, [
+        STORE_READINESS_REASON_CODES.SCHEDULE_AGENDA_CAPACITY_INVALID,
+      ]);
+      assert.equal(
+        result.capabilitiesByKey.agenda.missingFields.includes(
+          "store_schedule_settings.same_time_capacity",
+        ),
+        true,
+      );
+    },
+  },
+  {
     name: "semantically invalid agenda resolves blocked",
     run: async () => {
       const { result } = await resolveWithTables({
         store_schedule_settings: {
           single: {
+            ...createBaseTables().store_schedule_settings.single,
             timezone_name: "America/Sao_Paulo",
             operating_days: ["monday"],
             operating_hours: {
               monday: { start: "18:00", end: "08:00" },
             },
-            allow_same_time_appointments: false,
-            same_time_capacity: null,
           },
         },
       });

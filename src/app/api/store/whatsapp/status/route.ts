@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   resolveStoreApiAccess,
   type ResolveStoreApiAccessDeps,
+  type StoreApiAccessRequirement,
   type StoreApiAccessDenied,
   type StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";
@@ -43,7 +44,7 @@ type PrivilegedClient = ReturnType<typeof createClient>;
 
 type StoreWhatsappStatusRouteDeps = {
   resolveAccess: (params: {
-    requirement: "active";
+    requirement: StoreApiAccessRequirement;
     deps?: Partial<ResolveStoreApiAccessDeps>;
   }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
   createPrivilegedClient: () => PrivilegedClient;
@@ -102,7 +103,7 @@ export function createStoreWhatsappStatusGetHandler(
 
   return async function GET(_request: Request) {
     const access = await resolveAccess({
-      requirement: "active",
+      requirement: "active_or_onboarding",
     });
 
     if (!access.ok) {

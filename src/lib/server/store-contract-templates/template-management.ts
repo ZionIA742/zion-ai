@@ -5,21 +5,29 @@ import { extractSuggestedContractRules } from "./contract-rule-extraction";
 
 const STORAGE_BUCKET = "zion-store-files";
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
-const ALLOWED_STATUS_TRANSITIONS_FOR_APPROVAL = new Set([
+const MUTABLE_TEMPLATE_VERSION_STATUSES = new Set([
   "uploaded",
+  "failed",
   "analyzed",
   "awaiting_review",
-  "approved",
-  "active",
 ]);
-const ALLOWED_STATUS_TRANSITIONS_FOR_ANALYSIS = new Set([
+
+const ANALYZABLE_TEMPLATE_VERSION_STATUSES = new Set([
   "uploaded",
-  "analyzing",
+  "failed",
+]);
+
+const REVIEWABLE_TEMPLATE_VERSION_STATUSES = new Set([
   "analyzed",
   "awaiting_review",
-  "approved",
 ]);
-const TERMINAL_VERSION_STATUSES = new Set(["archived", "failed"]);
+
+const FINAL_TEMPLATE_RULE_REVIEW_STATUSES = new Set([
+  "approved",
+  "rejected",
+  "edited",
+]);
+
 const ALLOWED_TEMPLATE_MIME_TYPES = new Set([
   "application/pdf",
   "application/msword",
@@ -841,73 +849,81 @@ export async function approveStoreContractTemplateVersion(args: {
   }
 
   const normalizedStatus = String(version.status || "").trim().toLowerCase();
-  if (TERMINAL_VERSION_STATUSES.has(normalizedStatus) || normalizedStatus === "rejected") {
-    throw new StoreContractTemplateAccessError(
-      409,
-      "TEMPLATE_VERSION_NOT_APPROVABLE",
-      "Esta versao do contrato base nao pode ser aprovada no status atual."
+  const normalizedTemplateStatus = String(template.status || "").trim().toLowerCase();
+
+  const isExactReplay =
+    normalizedStatus === "active" &&
+    normalizedTemplateStatus === "active" &&
+    template.active_version_id === version.id;
+
+  if (!isExactReplay) {
+    if (
+      !REVIEWABLE_TEMPLATE_VERSION_STATUSES.has(normalizedStatus) ||
+      version.rejected_at
+    ) {
+      throw new StoreContractTemplateAccessError(
+        409,
+        "TEMPLATE_VERSION_NOT_APPROVABLE",
+        "Essa versao ainda nao pode ser aprovada."
+      );
+    }
+
+    const versionRules = await loadTemplateExtractedRules({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      templateVersionIds: [version.id],
+    });
+
+    if (versionRules.length === 0) {
+      throw new StoreContractTemplateAccessError(
+        409,
+        "TEMPLATE_VERSION_HAS_NO_RULES",
+        "Essa versao precisa ter regras extraidas antes da aprovacao."
+      );
+    }
+
+    const hasPendingRule = versionRules.some(
+      (rule) =>
+        !FINAL_TEMPLATE_RULE_REVIEW_STATUSES.has(
+          String(rule.review_status || "").trim().toLowerCase()
+        )
     );
+
+    if (hasPendingRule) {
+      throw new StoreContractTemplateAccessError(
+        409,
+        "TEMPLATE_VERSION_HAS_PENDING_RULES",
+        "Revise todas as regras antes de aprovar essa versao."
+      );
+    }
   }
 
-  if (!ALLOWED_STATUS_TRANSITIONS_FOR_APPROVAL.has(normalizedStatus)) {
-    throw new StoreContractTemplateAccessError(
-      409,
-      "TEMPLATE_VERSION_NOT_APPROVABLE",
-      "Apenas versoes uploaded, analyzed ou awaiting_review podem ser ativadas."
+  const { error: activationError } = await scope.supabase.rpc(
+    "activate_store_contract_template_version_by_system",
+    {
+      p_version_id: version.id,
+      p_organization_id: scope.organizationId,
+      p_store_id: scope.store.id,
+      p_approved_by: scope.userId,
+    }
+  );
+
+  if (activationError) {
+    const message = String(activationError.message || "").trim();
+    const code = String(activationError.code || "").trim();
+
+    if (message.includes("P19A_CONTRACT_") || code === "23505") {
+      throw new StoreContractTemplateAccessError(
+        409,
+        "TEMPLATE_VERSION_NOT_APPROVABLE",
+        "Essa versao nao pode ser ativada no estado atual."
+      );
+    }
+
+    throw new Error(
+      message || "Falha ao ativar a versao do contrato base."
     );
-  }
-
-  const now = new Date().toISOString();
-
-  await scope.supabase
-    .from("store_contract_template_versions")
-    .update({
-      status: "archived",
-      updated_at: now,
-    })
-    .eq("template_id", template.id)
-    .eq("organization_id", scope.organizationId)
-    .eq("store_id", scope.store.id)
-    .eq("status", "active")
-    .neq("id", version.id);
-
-  const { data: updatedVersion, error: versionError } = await scope.supabase
-    .from("store_contract_template_versions")
-    .update({
-      status: "active",
-      approved_at: now,
-      approved_by: scope.userId,
-      rejected_at: null,
-      rejected_by: null,
-      rejection_reason: null,
-      updated_at: now,
-    })
-    .eq("id", version.id)
-    .eq("template_id", template.id)
-    .eq("organization_id", scope.organizationId)
-    .eq("store_id", scope.store.id)
-    .select(
-      "id, template_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, raw_extracted_text, analysis_summary, approved_at, approved_by, rejected_at, rejected_by, rejection_reason, metadata, created_at, updated_at"
-    )
-    .maybeSingle();
-
-  if (versionError || !updatedVersion?.id) {
-    throw new Error(versionError?.message || "Falha ao ativar a versao do contrato base.");
-  }
-
-  const { error: templateError } = await scope.supabase
-    .from("store_contract_templates")
-    .update({
-      active_version_id: updatedVersion.id,
-      status: "active",
-      updated_at: now,
-    })
-    .eq("id", template.id)
-    .eq("organization_id", scope.organizationId)
-    .eq("store_id", scope.store.id);
-
-  if (templateError) {
-    throw new Error(templateError.message || "Falha ao atualizar template ativo.");
   }
 
   const refreshedTemplate = await loadStoreContractTemplate({
@@ -915,12 +931,18 @@ export async function approveStoreContractTemplateVersion(args: {
     organizationId: scope.organizationId,
     storeId: scope.store.id,
   });
+
+  if (!refreshedTemplate?.id) {
+    throw new Error("Falha ao recarregar o template ativo.");
+  }
+
   const versions = await loadTemplateVersions({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
     storeId: scope.store.id,
-    templateId: template.id,
+    templateId: refreshedTemplate.id,
   });
+
   const extractedRules = await loadTemplateExtractedRules({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
@@ -928,11 +950,20 @@ export async function approveStoreContractTemplateVersion(args: {
     templateVersionIds: versions.map((item) => item.id),
   });
 
+  const approvedVersion =
+    versions.find((item) => item.id === version.id) || null;
+
+  if (!approvedVersion?.id || approvedVersion.status !== "active") {
+    throw new Error(
+      "A ativacao foi concluida sem retornar a versao ativa esperada."
+    );
+  }
+
   return {
     store: scope.store,
     organizationId: scope.organizationId,
     ...buildTemplateSummary(refreshedTemplate, versions, extractedRules),
-    approvedVersion: updatedVersion as StoreContractTemplateVersionRow,
+    approvedVersion,
   };
 }
 
@@ -968,49 +999,97 @@ export async function rejectStoreContractTemplateVersion(args: {
     );
   }
 
-  if (String(version.status || "").trim().toLowerCase() === "active") {
-    throw new StoreContractTemplateAccessError(
-      409,
-      "ACTIVE_TEMPLATE_VERSION_CANNOT_BE_REJECTED",
-      "A versao ativa do contrato base nao pode ser rejeitada."
-    );
-  }
-
-  const now = new Date().toISOString();
-  const { data: updatedVersion, error } = await scope.supabase
-    .from("store_contract_template_versions")
-    .update({
-      status: "rejected",
-      rejected_at: now,
-      rejected_by: scope.userId,
-      rejection_reason: cleanText(args.rejectionReason),
-      updated_at: now,
-    })
-    .eq("id", version.id)
-    .eq("organization_id", scope.organizationId)
-    .eq("store_id", scope.store.id)
-    .select(
-      "id, template_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, raw_extracted_text, analysis_summary, approved_at, approved_by, rejected_at, rejected_by, rejection_reason, metadata, created_at, updated_at"
-    )
-    .maybeSingle();
-
-  if (error || !updatedVersion?.id) {
-    throw new Error(error?.message || "Falha ao rejeitar versao do contrato base.");
-  }
-
   const template = await loadStoreContractTemplate({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
     storeId: scope.store.id,
   });
-  const versions = template?.id
+
+  if (!template?.id || template.id !== version.template_id) {
+    throw new StoreContractTemplateAccessError(
+      404,
+      "TEMPLATE_NOT_FOUND",
+      "Template do contrato base nao encontrado nessa loja."
+    );
+  }
+
+  const normalizedStatus = String(version.status || "").trim().toLowerCase();
+  let rejectedVersion = version;
+
+  // Exact replay: preserve rejected_at / rejected_by / reason.
+  if (normalizedStatus !== "rejected") {
+    if (
+      !MUTABLE_TEMPLATE_VERSION_STATUSES.has(normalizedStatus) ||
+      version.rejected_at
+    ) {
+      throw new StoreContractTemplateAccessError(
+        409,
+        "TEMPLATE_VERSION_NOT_REJECTABLE",
+        "Essa versao nao pode ser rejeitada no estado atual."
+      );
+    }
+
+    const now = new Date().toISOString();
+
+    const { data: updatedVersion, error } = await scope.supabase
+      .from("store_contract_template_versions")
+      .update({
+        status: "rejected",
+        rejected_at: now,
+        rejected_by: scope.userId,
+        rejection_reason: cleanText(args.rejectionReason),
+        updated_at: now,
+      })
+      .eq("id", version.id)
+      .eq("template_id", template.id)
+      .eq("organization_id", scope.organizationId)
+      .eq("store_id", scope.store.id)
+      .eq("status", normalizedStatus)
+      .select(
+        "id, template_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, raw_extracted_text, analysis_summary, approved_at, approved_by, rejected_at, rejected_by, rejection_reason, metadata, created_at, updated_at"
+      )
+      .maybeSingle();
+
+    if (error) {
+      const message = String(error.message || "").trim();
+
+      if (message.includes("P19A_CONTRACT_")) {
+        throw new StoreContractTemplateAccessError(
+          409,
+          "TEMPLATE_VERSION_NOT_REJECTABLE",
+          "Essa versao nao pode ser rejeitada no estado atual."
+        );
+      }
+
+      throw new Error(message || "Falha ao rejeitar versao do contrato base.");
+    }
+
+    if (!updatedVersion?.id) {
+      throw new StoreContractTemplateAccessError(
+        409,
+        "TEMPLATE_VERSION_REJECT_CONFLICT",
+        "O estado dessa versao mudou antes da rejeicao. Atualize e tente novamente."
+      );
+    }
+
+    rejectedVersion = updatedVersion as StoreContractTemplateVersionRow;
+  }
+
+  const refreshedTemplate = await loadStoreContractTemplate({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+  });
+
+  const versions = refreshedTemplate?.id
     ? await loadTemplateVersions({
         supabase: scope.supabase,
         organizationId: scope.organizationId,
         storeId: scope.store.id,
-        templateId: template.id,
+        templateId: refreshedTemplate.id,
       })
     : [];
+
   const extractedRules =
     versions.length > 0
       ? await loadTemplateExtractedRules({
@@ -1024,8 +1103,8 @@ export async function rejectStoreContractTemplateVersion(args: {
   return {
     store: scope.store,
     organizationId: scope.organizationId,
-    ...buildTemplateSummary(template, versions, extractedRules),
-    rejectedVersion: updatedVersion as StoreContractTemplateVersionRow,
+    ...buildTemplateSummary(refreshedTemplate, versions, extractedRules),
+    rejectedVersion,
   };
 }
 
@@ -1075,28 +1154,10 @@ export async function analyzeStoreContractTemplateVersion(args: {
   }
 
   const normalizedStatus = String(version.status || "").trim().toLowerCase();
-  const hasExtractedText = Boolean(cleanText(version.raw_extracted_text));
-  const isActiveWithoutExtractedText = normalizedStatus === "active" && !hasExtractedText;
-
-  if (normalizedStatus === "active" && !isActiveWithoutExtractedText) {
-    throw new StoreContractTemplateAccessError(
-      409,
-      "ACTIVE_TEMPLATE_VERSION_CANNOT_BE_ANALYZED",
-      "A versao ativa nao pode ser reanalisada por esta tela."
-    );
-  }
-
-  if (normalizedStatus === "rejected" || normalizedStatus === "archived") {
-    throw new StoreContractTemplateAccessError(
-      409,
-      "TEMPLATE_VERSION_NOT_ANALYZABLE",
-      "Essa versao nao pode ser analisada no status atual."
-    );
-  }
 
   if (
-    !ALLOWED_STATUS_TRANSITIONS_FOR_ANALYSIS.has(normalizedStatus) &&
-    !isActiveWithoutExtractedText
+    !ANALYZABLE_TEMPLATE_VERSION_STATUSES.has(normalizedStatus) ||
+    version.rejected_at
   ) {
     throw new StoreContractTemplateAccessError(
       409,
@@ -1105,44 +1166,51 @@ export async function analyzeStoreContractTemplateVersion(args: {
     );
   }
 
-  const analyzingVersion = isActiveWithoutExtractedText
-    ? (version as StoreContractTemplateVersionRow)
-    : await updateTemplateVersionStatus({
-        supabase: scope.supabase,
-        versionId: version.id,
-        organizationId: scope.organizationId,
-        storeId: scope.store.id,
-        status: "analyzing",
-        metadata: {
-          ...(version.metadata || {}),
-          analysis_started_at: new Date().toISOString(),
-          analysis_started_by_user_id: scope.userId,
-        },
-      });
+  const analyzingVersion = await updateTemplateVersionStatus({
+    supabase: scope.supabase,
+    versionId: version.id,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+    status: "analyzing",
+    metadata: {
+      ...(version.metadata || {}),
+      analysis_started_at: new Date().toISOString(),
+      analysis_started_by_user_id: scope.userId,
+    },
+  });
 
   try {
     const fileName =
       cleanText(analyzingVersion.original_filename) ||
       `contrato-base-v${String(analyzingVersion.version_number || 0).padStart(4, "0")}.pdf`;
-    const mimeType = cleanText(analyzingVersion.mime_type) || "application/octet-stream";
+
+    const mimeType =
+      cleanText(analyzingVersion.mime_type) ||
+      "application/octet-stream";
+
     const bucket = cleanText(analyzingVersion.storage_bucket);
     const storagePath = cleanText(analyzingVersion.storage_path);
 
     if (!bucket || !storagePath) {
-      throw new Error("O arquivo privado dessa versao nao esta disponivel para leitura.");
+      throw new Error(
+        "O arquivo privado dessa versao nao esta disponivel para leitura."
+      );
     }
 
-    const { data: fileData, error: downloadError } = await scope.supabase.storage
-      .from(bucket)
-      .download(storagePath);
+    const { data: fileData, error: downloadError } =
+      await scope.supabase.storage
+        .from(bucket)
+        .download(storagePath);
 
     if (downloadError || !fileData) {
       throw new Error(
-        downloadError?.message || "Nao foi possivel baixar o arquivo privado do contrato base."
+        downloadError?.message ||
+          "Nao foi possivel baixar o arquivo privado do contrato base."
       );
     }
 
     const fileBuffer = Buffer.from(await fileData.arrayBuffer());
+
     const extracted = await extractContractTextFromStoredFile({
       fileName,
       mimeType,
@@ -1160,7 +1228,7 @@ export async function analyzeStoreContractTemplateVersion(args: {
       versionId: version.id,
       organizationId: scope.organizationId,
       storeId: scope.store.id,
-      status: isActiveWithoutExtractedText ? "active" : "awaiting_review",
+      status: "awaiting_review",
       rawExtractedText: extracted.text,
       analysisSummary: extracted.summary,
       metadata: {
@@ -1175,7 +1243,7 @@ export async function analyzeStoreContractTemplateVersion(args: {
       versionId: version.id,
       organizationId: scope.organizationId,
       storeId: scope.store.id,
-      status: isActiveWithoutExtractedText ? "active" : "failed",
+      status: "failed",
       analysisSummary:
         error instanceof Error
           ? error.message
@@ -1195,12 +1263,14 @@ export async function analyzeStoreContractTemplateVersion(args: {
     organizationId: scope.organizationId,
     storeId: scope.store.id,
   });
+
   const versions = await loadTemplateVersions({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
     storeId: scope.store.id,
     templateId: template.id,
   });
+
   const extractedRules = await loadTemplateExtractedRules({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
@@ -1262,7 +1332,21 @@ export async function extractStoreContractTemplateRules(args: {
     );
   }
 
+  const normalizedStatus = String(version.status || "").trim().toLowerCase();
+
+  if (
+    !REVIEWABLE_TEMPLATE_VERSION_STATUSES.has(normalizedStatus) ||
+    version.rejected_at
+  ) {
+    throw new StoreContractTemplateAccessError(
+      409,
+      "TEMPLATE_VERSION_NOT_EXTRACTABLE",
+      "Essa versao nao pode ter regras extraidas no estado atual."
+    );
+  }
+
   const rawText = cleanText(version.raw_extracted_text);
+
   if (!rawText) {
     throw new StoreContractTemplateAccessError(
       409,
@@ -1271,72 +1355,75 @@ export async function extractStoreContractTemplateRules(args: {
     );
   }
 
-  const extractedRules = extractSuggestedContractRules(rawText);
-
-  await scope.supabase
-    .from("store_contract_template_extracted_rules")
-    .delete()
-    .eq("template_version_id", version.id)
-    .eq("organization_id", scope.organizationId)
-    .eq("store_id", scope.store.id);
-
-  if (extractedRules.length > 0) {
-    const now = new Date().toISOString();
-    const { error: insertError } = await scope.supabase
-      .from("store_contract_template_extracted_rules")
-      .insert(
-        extractedRules.map((rule) => ({
-          template_version_id: version.id,
-          organization_id: scope.organizationId,
-          store_id: scope.store.id,
-          rule_key: rule.ruleKey,
-          rule_group: rule.ruleGroup,
-          label: rule.label,
-          value_text: rule.valueText,
-          value_json: {},
-          source_excerpt: rule.sourceExcerpt,
-          confidence: rule.confidence,
-          review_status: "pending",
-          sort_order: rule.sortOrder,
-          created_at: now,
-          updated_at: now,
-        }))
-      );
-
-    if (insertError) {
-      throw new Error(insertError.message || "Falha ao salvar regras do contrato base.");
-    }
-  }
-
-  await updateTemplateVersionStatus({
+  const existingRules = await loadTemplateExtractedRules({
     supabase: scope.supabase,
-    versionId: version.id,
     organizationId: scope.organizationId,
     storeId: scope.store.id,
-    status: String(version.status || "").trim().toLowerCase() === "active" ? "active" : String(version.status || "").trim().toLowerCase() || "awaiting_review",
-    analysisSummary:
-      extractedRules.length > 0
-        ? `${extractedRules.length} regra(s) sugerida(s) para revisao humana.`
-        : "Nenhuma regra confiavel foi encontrada no contrato.",
-    metadata: {
-      ...(version.metadata || {}),
-      rules_extracted_at: new Date().toISOString(),
-      rules_extracted_by_user_id: scope.userId,
-      rules_extracted_count: extractedRules.length,
-    },
+    templateVersionIds: [version.id],
   });
+
+  if (existingRules.length > 0) {
+    throw new StoreContractTemplateAccessError(
+      409,
+      "TEMPLATE_RULES_ALREADY_EXTRACTED",
+      "Essa versao ja possui regras extraidas e nao pode ser reprocessada."
+    );
+  }
+
+  const extractedRules = extractSuggestedContractRules(rawText);
+
+  const rpcRules = extractedRules.map((rule) => ({
+    rule_key: rule.ruleKey,
+    rule_group: rule.ruleGroup,
+    label: rule.label,
+    value_text: rule.valueText,
+    value_json: {},
+    source_excerpt: rule.sourceExcerpt,
+    confidence: rule.confidence,
+    sort_order: rule.sortOrder,
+  }));
+
+  const { data: replacementCount, error: replacementError } =
+    await scope.supabase.rpc(
+      "replace_store_contract_template_rules_by_system",
+      {
+        p_version_id: version.id,
+        p_organization_id: scope.organizationId,
+        p_store_id: scope.store.id,
+        p_rules: rpcRules,
+        p_actor_id: scope.userId,
+      }
+    );
+
+  if (replacementError) {
+    const message = String(replacementError.message || "").trim();
+
+    if (message.includes("P19A_CONTRACT_")) {
+      throw new StoreContractTemplateAccessError(
+        409,
+        "TEMPLATE_RULE_EXTRACTION_NOT_ALLOWED",
+        "As regras dessa versao nao podem ser substituidas no estado atual."
+      );
+    }
+
+    throw new Error(
+      message || "Falha ao salvar regras do contrato base."
+    );
+  }
 
   const refreshedTemplate = await loadStoreContractTemplate({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
     storeId: scope.store.id,
   });
+
   const versions = await loadTemplateVersions({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
     storeId: scope.store.id,
     templateId: template.id,
   });
+
   const refreshedRules = await loadTemplateExtractedRules({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
@@ -1344,11 +1431,16 @@ export async function extractStoreContractTemplateRules(args: {
     templateVersionIds: versions.map((item) => item.id),
   });
 
+  const extractedRuleCount =
+    typeof replacementCount === "number"
+      ? replacementCount
+      : extractedRules.length;
+
   return {
     store: scope.store,
     organizationId: scope.organizationId,
     ...buildTemplateSummary(refreshedTemplate, versions, refreshedRules),
-    extractedRuleCount: extractedRules.length,
+    extractedRuleCount,
   };
 }
 
@@ -1394,30 +1486,7 @@ export async function reviewStoreContractTemplateRule(args: {
     );
   }
 
-  const nextValueText = cleanText(args.valueText);
-  const nextLabel = cleanText(args.label);
-  const now = new Date().toISOString();
-
-  const { data: updatedRule, error: updateError } = await scope.supabase
-    .from("store_contract_template_extracted_rules")
-    .update({
-      review_status: args.reviewStatus,
-      value_text: nextValueText ?? rule.value_text,
-      label: nextLabel ?? rule.label,
-      updated_at: now,
-    })
-    .eq("id", rule.id)
-    .eq("organization_id", scope.organizationId)
-    .eq("store_id", scope.store.id)
-    .select(
-      "id, template_version_id, organization_id, store_id, rule_key, rule_group, label, value_text, value_json, source_excerpt, confidence, review_status, sort_order, created_at, updated_at"
-    )
-    .maybeSingle();
-
-  if (updateError || !updatedRule?.id) {
-    throw new Error(updateError?.message || "Falha ao atualizar revisao da regra.");
-  }
-
+  // A versao dona da regra precisa ser validada ANTES de qualquer UPDATE.
   const version = await loadTemplateVersionById({
     supabase: scope.supabase,
     versionId: rule.template_version_id,
@@ -1447,12 +1516,100 @@ export async function reviewStoreContractTemplateRule(args: {
     );
   }
 
+  const normalizedVersionStatus = String(version.status || "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    !REVIEWABLE_TEMPLATE_VERSION_STATUSES.has(normalizedVersionStatus) ||
+    version.rejected_at
+  ) {
+    throw new StoreContractTemplateAccessError(
+      409,
+      "TEMPLATE_RULE_VERSION_READ_ONLY",
+      "Essa regra pertence a uma versao somente leitura."
+    );
+  }
+
+  const nextValueText = cleanText(args.valueText);
+  const nextLabel = cleanText(args.label);
+
+  if (args.reviewStatus === "edited" && !nextValueText) {
+    throw new StoreContractTemplateAccessError(
+      400,
+      "EDITED_RULE_VALUE_REQUIRED",
+      "Informe o texto ajustado da regra."
+    );
+  }
+
+  const effectiveValueText = nextValueText ?? rule.value_text;
+  const effectiveLabel = nextLabel ?? rule.label;
+  const normalizedCurrentReviewStatus = String(rule.review_status || "")
+    .trim()
+    .toLowerCase();
+
+  const isExactReplay =
+    normalizedCurrentReviewStatus === args.reviewStatus &&
+    effectiveValueText === rule.value_text &&
+    effectiveLabel === rule.label;
+
+  let reviewedRule = rule;
+
+  if (!isExactReplay) {
+    const now = new Date().toISOString();
+
+    const { data: updatedRule, error: updateError } = await scope.supabase
+      .from("store_contract_template_extracted_rules")
+      .update({
+        review_status: args.reviewStatus,
+        value_text: effectiveValueText,
+        label: effectiveLabel,
+        updated_at: now,
+      })
+      .eq("id", rule.id)
+      .eq("template_version_id", version.id)
+      .eq("organization_id", scope.organizationId)
+      .eq("store_id", scope.store.id)
+      .select(
+        "id, template_version_id, organization_id, store_id, rule_key, rule_group, label, value_text, value_json, source_excerpt, confidence, review_status, sort_order, created_at, updated_at"
+      )
+      .maybeSingle();
+
+    if (updateError) {
+      const message = String(updateError.message || "").trim();
+
+      if (message.includes("P19A_CONTRACT_")) {
+        throw new StoreContractTemplateAccessError(
+          409,
+          "TEMPLATE_RULE_VERSION_READ_ONLY",
+          "Essa regra pertence a uma versao somente leitura."
+        );
+      }
+
+      throw new Error(
+        message || "Falha ao atualizar revisao da regra."
+      );
+    }
+
+    if (!updatedRule?.id) {
+      throw new StoreContractTemplateAccessError(
+        409,
+        "TEMPLATE_RULE_REVIEW_CONFLICT",
+        "O estado dessa regra mudou antes da revisao. Atualize e tente novamente."
+      );
+    }
+
+    reviewedRule =
+      updatedRule as StoreContractTemplateExtractedRuleRow;
+  }
+
   const versions = await loadTemplateVersions({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
     storeId: scope.store.id,
     templateId: template.id,
   });
+
   const refreshedRules = await loadTemplateExtractedRules({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
@@ -1464,6 +1621,6 @@ export async function reviewStoreContractTemplateRule(args: {
     store: scope.store,
     organizationId: scope.organizationId,
     ...buildTemplateSummary(template, versions, refreshedRules),
-    reviewedRule: updatedRule as StoreContractTemplateExtractedRuleRow,
+    reviewedRule,
   };
 }

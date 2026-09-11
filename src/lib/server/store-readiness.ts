@@ -39,6 +39,10 @@ export const STORE_READINESS_REASON_CODES = {
   SCHEDULE_DAY_WINDOW_MISSING: "schedule_day_window_missing",
   SCHEDULE_DAY_WINDOW_INVALID: "schedule_day_window_invalid",
   SCHEDULE_SAME_TIME_CAPACITY_INVALID: "schedule_same_time_capacity_invalid",
+  SCHEDULE_HUMAN_NOT_CONFIGURED: "schedule_human_not_configured",
+  SCHEDULE_AGENDA_CAPACITY_NOT_CONFIGURED:
+    "schedule_agenda_capacity_not_configured",
+  SCHEDULE_AGENDA_CAPACITY_INVALID: "schedule_agenda_capacity_invalid",
   CATALOG_EMPTY: "catalog_empty",
   QUOTE_SETTINGS_MISSING: "quote_settings_missing",
   QUOTE_PDF_DISABLED_BY_POLICY: "quote_pdf_disabled_by_policy",
@@ -72,8 +76,15 @@ type StoreOnboardingRow = {
 };
 
 type StoreScheduleSettingsReadinessRow = {
+  human_schedule_configured_at: string | null;
+  agenda_capacity_configured_at: string | null;
+  allow_multiple_appointments_per_day: boolean | null;
   allow_same_time_appointments: boolean | null;
   same_time_capacity: number | null;
+  daily_limit_mode: string | null;
+  daily_limit: number | null;
+  appointment_buffer_enabled: boolean | null;
+  appointment_buffer_minutes: number | null;
   operating_days: string[] | null;
   operating_hours: Record<string, { start?: string; end?: string }> | null;
   timezone_name: string | null;
@@ -143,6 +154,88 @@ function parseScheduleTimeToMinutes(value: string | null | undefined) {
   return hour * 60 + minute;
 }
 
+function hasConfiguredTimestamp(value: unknown) {
+  return cleanText(value).length > 0;
+}
+
+function resolveAgendaCapacityInvalidFields(row: StoreScheduleSettingsReadinessRow) {
+  const invalidFields: string[] = [];
+  const allowsMultiple = row.allow_multiple_appointments_per_day;
+  const allowsSameTime = row.allow_same_time_appointments;
+  const sameTimeCapacity = Number(row.same_time_capacity);
+  const dailyLimitMode = cleanText(row.daily_limit_mode);
+  const dailyLimit = Number(row.daily_limit);
+  const bufferEnabled = row.appointment_buffer_enabled;
+  const bufferMinutes = Number(row.appointment_buffer_minutes);
+
+  if (allowsMultiple !== true && allowsMultiple !== false) {
+    invalidFields.push("store_schedule_settings.allow_multiple_appointments_per_day");
+  }
+
+  if (allowsSameTime !== true && allowsSameTime !== false) {
+    invalidFields.push("store_schedule_settings.allow_same_time_appointments");
+  }
+
+  if (!Number.isFinite(sameTimeCapacity) || sameTimeCapacity < 1) {
+    invalidFields.push("store_schedule_settings.same_time_capacity");
+  }
+
+  if (dailyLimitMode !== "no_fixed_limit" && dailyLimitMode !== "fixed_limit") {
+    invalidFields.push("store_schedule_settings.daily_limit_mode");
+  }
+
+  if (
+    dailyLimitMode === "no_fixed_limit" &&
+    row.daily_limit !== null &&
+    row.daily_limit !== undefined
+  ) {
+    invalidFields.push("store_schedule_settings.daily_limit");
+  }
+
+  if (
+    dailyLimitMode === "fixed_limit" &&
+    (!Number.isFinite(dailyLimit) || dailyLimit < (allowsMultiple === false ? 1 : 2))
+  ) {
+    invalidFields.push("store_schedule_settings.daily_limit");
+  }
+
+  if (allowsMultiple === false) {
+    if (dailyLimitMode !== "fixed_limit" || row.daily_limit !== 1) {
+      invalidFields.push("store_schedule_settings.daily_limit");
+    }
+
+    if (allowsSameTime !== false || row.same_time_capacity !== 1) {
+      invalidFields.push("store_schedule_settings.same_time_capacity");
+    }
+  }
+
+  if (allowsMultiple === true && allowsSameTime === false && row.same_time_capacity !== 1) {
+    invalidFields.push("store_schedule_settings.same_time_capacity");
+  }
+
+  if (allowsMultiple === true && allowsSameTime === true && sameTimeCapacity < 2) {
+    invalidFields.push("store_schedule_settings.same_time_capacity");
+  }
+
+  if (bufferEnabled !== true && bufferEnabled !== false) {
+    invalidFields.push("store_schedule_settings.appointment_buffer_enabled");
+  }
+
+  if (
+    bufferEnabled === false &&
+    row.appointment_buffer_minutes !== null &&
+    row.appointment_buffer_minutes !== undefined
+  ) {
+    invalidFields.push("store_schedule_settings.appointment_buffer_minutes");
+  }
+
+  if (bufferEnabled === true && (!Number.isFinite(bufferMinutes) || bufferMinutes <= 0)) {
+    invalidFields.push("store_schedule_settings.appointment_buffer_minutes");
+  }
+
+  return uniqueStrings(invalidFields);
+}
+
 export function normalizeStoreReadinessCapability(
   input: ResolvedCapabilityInput,
 ): StoreReadinessCapability {
@@ -202,7 +295,20 @@ async function loadScheduleSettingsRow(args: {
   const { data, error } = await args.supabase
     .from("store_schedule_settings")
     .select(
-      "allow_same_time_appointments, same_time_capacity, operating_days, operating_hours, timezone_name",
+      [
+        "human_schedule_configured_at",
+        "agenda_capacity_configured_at",
+        "allow_multiple_appointments_per_day",
+        "allow_same_time_appointments",
+        "same_time_capacity",
+        "daily_limit_mode",
+        "daily_limit",
+        "appointment_buffer_enabled",
+        "appointment_buffer_minutes",
+        "operating_days",
+        "operating_hours",
+        "timezone_name",
+      ].join(", "),
     )
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
@@ -367,6 +473,18 @@ export function resolveAgendaCapability(
     });
   }
 
+  if (!hasConfiguredTimestamp(row.human_schedule_configured_at)) {
+    reasonCodes.push(STORE_READINESS_REASON_CODES.SCHEDULE_HUMAN_NOT_CONFIGURED);
+    missingFields.push("store_schedule_settings.human_schedule_configured_at");
+  }
+
+  if (!hasConfiguredTimestamp(row.agenda_capacity_configured_at)) {
+    reasonCodes.push(
+      STORE_READINESS_REASON_CODES.SCHEDULE_AGENDA_CAPACITY_NOT_CONFIGURED,
+    );
+    missingFields.push("store_schedule_settings.agenda_capacity_configured_at");
+  }
+
   const timezoneName = cleanText(row.timezone_name);
   if (!timezoneName) {
     reasonCodes.push(STORE_READINESS_REASON_CODES.SCHEDULE_TIMEZONE_MISSING);
@@ -400,24 +518,6 @@ export function resolveAgendaCapability(
   if (!operatingHours) {
     reasonCodes.push(STORE_READINESS_REASON_CODES.SCHEDULE_OPERATING_HOURS_MISSING);
     missingFields.push("store_schedule_settings.operating_hours");
-  }
-
-  if (
-    row.allow_same_time_appointments === true &&
-    (!Number.isFinite(row.same_time_capacity) ||
-      Number(row.same_time_capacity) < 1)
-  ) {
-    return normalizeStoreReadinessCapability({
-      capabilityKey: "agenda",
-      state: "blocked",
-      reasonCodes: [
-        STORE_READINESS_REASON_CODES.SCHEDULE_SAME_TIME_CAPACITY_INVALID,
-      ],
-      missingFields: ["store_schedule_settings.same_time_capacity"],
-      blocksAccess: false,
-      blocksCapability: true,
-      blocksPilotGo: true,
-    });
   }
 
   if (reasonCodes.length === 0 && operatingHours) {
@@ -458,6 +558,24 @@ export function resolveAgendaCapability(
           blocksPilotGo: true,
         });
       }
+    }
+  }
+
+  if (hasConfiguredTimestamp(row.agenda_capacity_configured_at)) {
+    const invalidAgendaCapacityFields = resolveAgendaCapacityInvalidFields(row);
+
+    if (invalidAgendaCapacityFields.length > 0) {
+      return normalizeStoreReadinessCapability({
+        capabilityKey: "agenda",
+        state: "blocked",
+        reasonCodes: [
+          STORE_READINESS_REASON_CODES.SCHEDULE_AGENDA_CAPACITY_INVALID,
+        ],
+        missingFields: invalidAgendaCapacityFields,
+        blocksAccess: false,
+        blocksCapability: true,
+        blocksPilotGo: true,
+      });
     }
   }
 

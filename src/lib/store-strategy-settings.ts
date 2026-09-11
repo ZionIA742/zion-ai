@@ -38,6 +38,7 @@ export type StoreStrategySettingsRow = {
   service_region_modes: string[] | null;
   service_region_primary_mode: string | null;
   service_region_outside_consultation: boolean | null;
+  service_region_configured_at?: string | null;
   service_region_notes: string | null;
   store_services: string[] | null;
   store_services_other: string | null;

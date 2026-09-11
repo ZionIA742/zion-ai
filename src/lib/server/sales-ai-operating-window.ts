@@ -1,10 +1,21 @@
 export type SalesAiAfterHoursMode = "all_closed_hours" | "specific_window";
+export type StoreScheduleHolidayMode =
+  | "closed"
+  | "normal"
+  | "special"
+  | "case_by_case";
 
 export type StoreScheduleSettingsForSalesAiWindow = {
   operating_days: unknown;
   operating_hours: unknown;
   timezone_name: string | null;
   attends_holidays?: boolean | null;
+  human_schedule_configured_at?: string | null;
+  ai_after_hours_configured_at?: string | null;
+  holiday_mode?: string | null;
+  holiday_open_time?: string | null;
+  holiday_close_time?: string | null;
+  holiday_notes?: string | null;
   ai_after_hours_enabled?: boolean | null;
   ai_after_hours_mode?: string | null;
   ai_after_hours_start?: string | null;
@@ -149,7 +160,9 @@ function addDays(parts: { year: number; month: number; day: number }, days: numb
 }
 
 export function parseSalesAiScheduleTimeToMinutes(value: unknown): number | null {
-  const match = String(value || "").trim().match(/^(\d{1,2})(?::(\d{2}))?$/);
+  const match = String(value || "")
+    .trim()
+    .match(/^(\d{1,2})(?::(\d{2}))?(?::\d{2})?$/);
   if (!match) return null;
 
   const hour = Number(match[1]);
@@ -287,6 +300,55 @@ function resolveAfterHoursMode(value: unknown): SalesAiAfterHoursMode | null {
   return null;
 }
 
+function hasConfiguredTimestamp(value: unknown): boolean {
+  return String(value || "").trim().length > 0;
+}
+
+function resolveHolidayMode(value: unknown): StoreScheduleHolidayMode | null {
+  const normalized = normalizeText(value);
+  if (normalized === "closed") return "closed";
+  if (normalized === "normal") return "normal";
+  if (normalized === "special") return "special";
+  if (normalized === "case_by_case") return "case_by_case";
+  return null;
+}
+
+function resolveHumanWindowForLocalDay(args: {
+  settings: StoreScheduleSettingsForSalesAiWindow;
+  dayKey: string;
+  isHoliday: boolean;
+}): { start: string | null; end: string | null; closedReason: string | null } {
+  const holidayMode = resolveHolidayMode(args.settings.holiday_mode);
+
+  if (args.isHoliday) {
+    if (holidayMode === "closed" || holidayMode === "case_by_case") {
+      return { start: null, end: null, closedReason: "holiday_block" };
+    }
+
+    if (holidayMode === "special") {
+      return {
+        start: args.settings.holiday_open_time || null,
+        end: args.settings.holiday_close_time || null,
+        closedReason: null,
+      };
+    }
+
+    if (holidayMode === null && args.settings.attends_holidays !== true) {
+      return { start: null, end: null, closedReason: "holiday_block" };
+    }
+  }
+
+  const operatingDays = normalizeOperatingDays(args.settings.operating_days);
+  if (!operatingDays.includes(args.dayKey)) {
+    return { start: null, end: null, closedReason: "human_operating_window_unavailable" };
+  }
+
+  return {
+    ...readOperatingHours(args.settings, args.dayKey),
+    closedReason: null,
+  };
+}
+
 function resolveNextHumanOpenPeriod(args: {
   settings: StoreScheduleSettingsForSalesAiWindow;
   holidayBlocks: StoreScheduleHolidayBlockForSalesAiWindow[];
@@ -295,24 +357,20 @@ function resolveNextHumanOpenPeriod(args: {
 }): HumanOpenPeriod | null {
   const nowParts = getLocalParts(args.now, args.timeZone);
   const nowMinute = localMinute(nowParts);
-  const operatingDays = normalizeOperatingDays(args.settings.operating_days);
-  if (operatingDays.length === 0) return null;
 
   for (let offset = 0; offset <= 21; offset += 1) {
     const dayParts = addDays(nowParts, offset);
     const dayKey = getDayKey(dayParts);
-    if (!operatingDays.includes(dayKey)) continue;
-    if (
-      findHolidayBlockForLocalDay({
+    const holidayBlock = findHolidayBlockForLocalDay({
         holidayBlocks: args.holidayBlocks,
         parts: dayParts,
         timeZone: args.timeZone,
-      })
-    ) {
-      continue;
-    }
-
-    const hours = readOperatingHours(args.settings, dayKey);
+    });
+    const hours = resolveHumanWindowForLocalDay({
+      settings: args.settings,
+      dayKey,
+      isHoliday: Boolean(holidayBlock),
+    });
     const openingMinutes = parseSalesAiScheduleTimeToMinutes(hours.start);
     const closingMinutes = parseSalesAiScheduleTimeToMinutes(hours.end);
     if (openingMinutes === null || closingMinutes === null || openingMinutes >= closingMinutes) {
@@ -364,14 +422,16 @@ function resolveNextAiAllowedPeriod(args: {
 
   const nowParts = getLocalParts(args.now, args.timeZone);
   const nowTime = args.now.getTime();
+  const aiAfterHoursConfigured = hasConfiguredTimestamp(
+    args.settings.ai_after_hours_configured_at,
+  );
   const policy = {
-    enabled: args.settings.ai_after_hours_enabled === true,
+    enabled: aiAfterHoursConfigured && args.settings.ai_after_hours_enabled === true,
     mode: resolveAfterHoursMode(args.settings.ai_after_hours_mode),
     start: parseSalesAiScheduleTimeToMinutes(args.settings.ai_after_hours_start),
     end: parseSalesAiScheduleTimeToMinutes(args.settings.ai_after_hours_end),
-    attendsHolidays: args.settings.ai_attends_holidays === true,
+    attendsHolidays: aiAfterHoursConfigured && args.settings.ai_attends_holidays === true,
   };
-  const operatingDays = normalizeOperatingDays(args.settings.operating_days);
 
   for (let offset = 0; offset <= 21; offset += 1) {
     const dayParts = addDays(nowParts, offset);
@@ -381,14 +441,16 @@ function resolveNextAiAllowedPeriod(args: {
       parts: dayParts,
       timeZone: args.timeZone,
     });
-    const dayAllowsHumanWindow = !holidayBlock && operatingDays.includes(dayKey);
-    const hours = readOperatingHours(args.settings, dayKey);
+    const hours = resolveHumanWindowForLocalDay({
+      settings: args.settings,
+      dayKey,
+      isHoliday: Boolean(holidayBlock),
+    });
     const humanStart = parseSalesAiScheduleTimeToMinutes(hours.start);
     const humanEnd = parseSalesAiScheduleTimeToMinutes(hours.end);
     const intervals: Array<{ start: number; end: number; reason: string }> = [];
 
     if (
-      dayAllowsHumanWindow &&
       humanStart !== null &&
       humanEnd !== null &&
       humanStart < humanEnd
@@ -475,8 +537,12 @@ export function resolveSalesAiOperatingWindow(args: {
   const timeZone = safeSalesAiTimeZone(args.settings?.timezone_name);
   const localParts = getLocalParts(now, timeZone);
   const localNow = `${localDateString(localParts)} ${formatMinutes(localMinute(localParts))}`;
+  const aiAfterHoursConfigured = hasConfiguredTimestamp(
+    args.settings?.ai_after_hours_configured_at,
+  );
   const policy = {
-    aiAfterHoursEnabled: args.settings?.ai_after_hours_enabled === true,
+    aiAfterHoursEnabled:
+      aiAfterHoursConfigured && args.settings?.ai_after_hours_enabled === true,
     aiAfterHoursMode: resolveAfterHoursMode(args.settings?.ai_after_hours_mode),
     aiAfterHoursStart:
       parseSalesAiScheduleTimeToMinutes(args.settings?.ai_after_hours_start) === null
@@ -486,7 +552,8 @@ export function resolveSalesAiOperatingWindow(args: {
       parseSalesAiScheduleTimeToMinutes(args.settings?.ai_after_hours_end) === null
         ? null
         : formatMinutes(parseSalesAiScheduleTimeToMinutes(args.settings?.ai_after_hours_end) as number),
-    aiAttendsHolidays: args.settings?.ai_attends_holidays === true,
+    aiAttendsHolidays:
+      aiAfterHoursConfigured && args.settings?.ai_attends_holidays === true,
   };
 
   if (!args.settings) {
@@ -512,18 +579,19 @@ export function resolveSalesAiOperatingWindow(args: {
     parts: localParts,
     timeZone,
   });
-  const operatingDays = normalizeOperatingDays(args.settings.operating_days);
-  const hours = readOperatingHours(args.settings, dayKey);
+  const hours = resolveHumanWindowForLocalDay({
+    settings: args.settings,
+    dayKey,
+    isHoliday: Boolean(holidayBlock),
+  });
   const openingMinutes = parseSalesAiScheduleTimeToMinutes(hours.start);
   const closingMinutes = parseSalesAiScheduleTimeToMinutes(hours.end);
   const nowMinute = localMinute(localParts);
   const hasValidHumanWindow =
-    operatingDays.includes(dayKey) &&
     openingMinutes !== null &&
     closingMinutes !== null &&
     openingMinutes < closingMinutes;
   const humanAvailableNow =
-    !holidayBlock &&
     hasValidHumanWindow &&
     nowMinute >= (openingMinutes as number) &&
     nowMinute < (closingMinutes as number);
@@ -548,16 +616,16 @@ export function resolveSalesAiOperatingWindow(args: {
       humanUnavailableReason: null,
       timezoneName: timeZone,
       localNow,
-      isHolidayBlocked: false,
-      holidayBlockTitle: null,
+      isHolidayBlocked: Boolean(holidayBlock),
+      holidayBlockTitle: holidayBlock?.title || null,
       nextHumanOpenPeriod,
       nextAiAllowedPeriod,
       policy,
     };
   }
 
-  const humanUnavailableReason = holidayBlock
-    ? "holiday_block"
+  const humanUnavailableReason = hours.closedReason
+    ? hours.closedReason
     : hasValidHumanWindow
       ? "outside_human_operating_hours"
       : "human_operating_window_unavailable";
@@ -625,7 +693,28 @@ export async function loadSalesAiOperatingWindowAuthority(args: {
   now?: Date;
 }): Promise<SalesAiOperatingWindowContext> {
   const selectWithAiPolicy =
-    "operating_days, operating_hours, timezone_name, attends_holidays, ai_after_hours_enabled, ai_after_hours_mode, ai_after_hours_start, ai_after_hours_end, ai_attends_holidays";
+    [
+      "operating_days",
+      "operating_hours",
+      "timezone_name",
+      "attends_holidays",
+      "human_schedule_configured_at",
+      "ai_after_hours_configured_at",
+      "agenda_capacity_configured_at",
+      "holiday_mode",
+      "holiday_open_time",
+      "holiday_close_time",
+      "holiday_notes",
+      "daily_limit_mode",
+      "daily_limit",
+      "appointment_buffer_enabled",
+      "appointment_buffer_minutes",
+      "ai_after_hours_enabled",
+      "ai_after_hours_mode",
+      "ai_after_hours_start",
+      "ai_after_hours_end",
+      "ai_attends_holidays",
+    ].join(", ");
   const selectWithoutAiPolicy =
     "operating_days, operating_hours, timezone_name, attends_holidays";
   let scheduleResult = await args.supabase
@@ -635,7 +724,12 @@ export async function loadSalesAiOperatingWindowAuthority(args: {
     .eq("store_id", args.storeId)
     .maybeSingle();
 
-  if (scheduleResult.error && /ai_after_hours|ai_attends_holidays/i.test(scheduleResult.error.message || "")) {
+  if (
+    scheduleResult.error &&
+    /configured_at|holiday_|daily_limit|appointment_buffer|ai_after_hours|ai_attends_holidays/i.test(
+      scheduleResult.error.message || "",
+    )
+  ) {
     scheduleResult = await args.supabase
       .from("store_schedule_settings")
       .select(selectWithoutAiPolicy)

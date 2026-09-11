@@ -8,6 +8,7 @@ import {
 import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
+  StoreApiAccessRequirement,
 } from "@/lib/server/store-api-access";
 
 type TestCase = {
@@ -192,6 +193,26 @@ function buildRequest(url: string) {
   return new Request(url);
 }
 
+function createWhatsappQueryResponses(integrationRows: unknown[]): Partial<Record<string, QueryResult | QueryResult[]>> {
+  return {
+    external_integrations: {
+      data: integrationRows,
+      error: null,
+      count: null,
+    },
+    channel_whatsapp_inbox: [
+      { data: null, error: null },
+      { data: [], error: null, count: 0 },
+      { data: null, error: null },
+    ],
+    messages: [
+      { data: null, error: null },
+      { data: [], error: null, count: 0 },
+      { data: [], error: null, count: null },
+    ],
+  };
+}
+
 const tests: TestCase[] = [
   {
     name: "valid account reads whatsapp status only from canonical tenant scope",
@@ -246,9 +267,11 @@ const tests: TestCase[] = [
       });
       let resolveCount = 0;
       let clientCreateCount = 0;
+      let requestedRequirement: StoreApiAccessRequirement | null = null;
       const handler = createStoreWhatsappStatusGetHandler({
-        resolveAccess: async () => {
+        resolveAccess: async ({ requirement }) => {
           resolveCount += 1;
+          requestedRequirement = requirement;
           return createGrantedAccess();
         },
         createPrivilegedClient: () => {
@@ -266,6 +289,7 @@ const tests: TestCase[] = [
 
       assert.equal(response.status, 200);
       assert.equal(resolveCount, 1);
+      assert.equal(requestedRequirement, "active_or_onboarding");
       assert.equal(clientCreateCount, 1);
       assert.equal(body.ok, true);
       assert.equal(body.connected, true);
@@ -299,6 +323,118 @@ const tests: TestCase[] = [
         assert.equal(orgFilters.every((item) => item.value === "access-org"), true);
         assert.equal(storeFilters.every((item) => item.value === "access-store"), true);
       }
+    },
+  },
+  {
+    name: "onboarding account with active whatsapp integration can read status",
+    run: async () => {
+      const client = createPrivilegedClientMock(
+        createWhatsappQueryResponses([
+          {
+            provider: "whatsapp",
+            status: "active",
+            is_active: true,
+            display_phone_number: "+55 11 97807-1471",
+            phone_number_id: "phone-onboarding",
+            whatsapp_business_account_id: "waba-onboarding",
+          },
+        ]),
+      );
+      let requestedRequirement: StoreApiAccessRequirement | null = null;
+      const handler = createStoreWhatsappStatusGetHandler({
+        resolveAccess: async ({ requirement }) => {
+          requestedRequirement = requirement;
+          return createGrantedAccess({
+            resolution: {
+              ...createGrantedAccess().resolution,
+              status: "store_ready_onboarding_required",
+              safeHtmlDestination: "/onboarding",
+              apiDecision: "deny_409",
+              reasonCode: "onboarding_required",
+              message: "Onboarding pendente.",
+            },
+          });
+        },
+        createPrivilegedClient: () => client as never,
+      });
+
+      const response = await handler(
+        buildRequest(
+          "https://example.test/api/store/whatsapp/status?organizationId=query-org&storeId=query-store",
+        ),
+      );
+      const body = (await response.json()) as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(requestedRequirement, "active_or_onboarding");
+      assert.equal(body.ok, true);
+      assert.equal(body.connected, true);
+      assert.equal(body.status, "active");
+      assert.equal(body.isActive, true);
+      assert.equal(body.displayPhoneNumber, "+55 11 97807-1471");
+
+      const externalIntegrationCall = client.calls.find(
+        (call) => call.table === "external_integrations",
+      );
+      assert.equal(Boolean(externalIntegrationCall), true);
+      assert.equal(
+        externalIntegrationCall?.filters.some(
+          (item) => item.column === "organization_id" && item.value === "access-org",
+        ),
+        true,
+      );
+      assert.equal(
+        externalIntegrationCall?.filters.some(
+          (item) => item.column === "store_id" && item.value === "access-store",
+        ),
+        true,
+      );
+      assert.equal(
+        externalIntegrationCall?.filters.some(
+          (item) => item.column === "organization_id" && item.value === "query-org",
+        ),
+        false,
+      );
+      assert.equal(
+        externalIntegrationCall?.filters.some(
+          (item) => item.column === "store_id" && item.value === "query-store",
+        ),
+        false,
+      );
+    },
+  },
+  {
+    name: "onboarding account without whatsapp integration gets safe disconnected status",
+    run: async () => {
+      const client = createPrivilegedClientMock(createWhatsappQueryResponses([]));
+      const handler = createStoreWhatsappStatusGetHandler({
+        resolveAccess: async () =>
+          createGrantedAccess({
+            resolution: {
+              ...createGrantedAccess().resolution,
+              status: "store_ready_onboarding_required",
+              safeHtmlDestination: "/onboarding",
+              apiDecision: "deny_409",
+              reasonCode: "onboarding_required",
+              message: "Onboarding pendente.",
+            },
+          }),
+        createPrivilegedClient: () => client as never,
+      });
+
+      const response = await handler(
+        buildRequest("https://example.test/api/store/whatsapp/status"),
+      );
+      const body = (await response.json()) as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.connected, false);
+      assert.equal(body.provider, null);
+      assert.equal(body.status, null);
+      assert.equal(body.isActive, false);
+      assert.equal(body.displayPhoneNumber, null);
+      assert.equal(body.phoneNumberId, null);
     },
   },
   {
@@ -342,7 +478,8 @@ const tests: TestCase[] = [
 
       assert.equal(source.includes("resolveStoreApiAccess"), true);
       assert.equal(source.includes("createStoreApiDeniedResponse"), true);
-      assert.equal(source.includes('requirement: "active"'), true);
+      assert.equal(source.includes('requirement: "active_or_onboarding"'), true);
+      assert.equal(source.includes('requirement: "active"'), false);
       assert.equal(source.includes('searchParams.get("storeId")'), false);
       assert.equal(source.includes('searchParams.get("organizationId")'), false);
       assert.equal(source.includes("createSupabaseServerClient"), false);

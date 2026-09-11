@@ -62,6 +62,28 @@ import {
   type StoreOperationSettingsRow,
 } from "@/lib/store-operation-settings";
 
+import {
+  buildDeliveryExecutionPolicy,
+  buildInstallationExecutionPolicy,
+  buildPickupExecutionPolicy,
+  buildPoolReplacementExecutionPolicy,
+  buildTechnicalServicesExecutionPolicy,
+  buildTechnicalVisitExecutionPolicy,
+  deliveryPolicyToDraftPatch,
+  installationPolicyToDraftPatch,
+  parseVisitFixedFeeToCents,
+  pickupPolicyToDraftPatch,
+  poolReplacementPolicyToDraftPatch,
+  technicalServicesPolicyToDraftPatch,
+  technicalVisitPolicyToDraftPatch,
+  type DeliveryExecutionPolicy,
+  type InstallationExecutionPolicy,
+  type PickupExecutionPolicy,
+  type PoolReplacementExecutionPolicy,
+  type StoreOperationExecutionPoliciesRow,
+  type TechnicalServicesExecutionPolicy,
+  type TechnicalVisitExecutionPolicy,
+} from "@/lib/store-operation-execution-policies";
 type CountState = {
   pools: number;
   quimicos: number;
@@ -71,9 +93,36 @@ type CountState = {
 
 type CatalogItemRow = {
   id: string;
+  name?: string | null;
+  is_active?: boolean | null;
+  price_status?: string | null;
+  stock_status?: string | null;
   metadata?: {
     categoria?: string | null;
+    brand?: string | null;
   } | null;
+};
+
+type PoolCatalogSuggestionRow = {
+  id: string;
+  name: string | null;
+  is_active?: boolean | null;
+  price_status?: string | null;
+  stock_status?: string | null;
+};
+
+type CatalogQualityState = {
+  total: number;
+  withoutPrice: number;
+  unknownStock: number;
+  withoutPhotos: number;
+  inactive: number;
+};
+
+type CatalogSuggestionItem = {
+  key: string;
+  category: "piscinas" | "acessorios" | "quimicos" | "equipamentos" | "outros_catalogo";
+  label: string;
 };
 
 type CatalogPhotoRow = {
@@ -357,13 +406,379 @@ type OperationDraftState = {
   agenda_capacity_rule: string;
 };
 
+type GeneralAddressDraftState = {
+  has_public_address: string;
+  cep: string;
+  street: string;
+  number: string;
+  complement: string;
+  district: string;
+  city: string;
+  state: string;
+  customer_visit_mode: string;
+  reference_point: string;
+  directions_notes: string;
+};
+
+type StoreGeneralAddressSettingsRow = {
+  organization_id: string;
+  store_id: string;
+  has_public_address: boolean;
+  cep: string | null;
+  street: string | null;
+  number: string | null;
+  complement: string | null;
+  district: string | null;
+  city: string | null;
+  state: string | null;
+  customer_visit_mode: string | null;
+  reference_point: string | null;
+  directions_notes: string | null;
+  address_configured_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type StoreCepLookupApiResponse =
+  | {
+      ok: true;
+      found: true;
+      address: {
+        street?: string | null;
+        district?: string | null;
+        city?: string | null;
+        state?: string | null;
+      };
+    }
+  | {
+      ok: true;
+      found: false;
+      message?: string | null;
+    }
+  | {
+      ok: false;
+      message?: string | null;
+    };
+
+type OperationExperienceDraftState = {
+  team_same_hours: string;
+  team_days: string[];
+  team_open_time: string;
+  team_close_time: string;
+  team_day_hours: Record<string, { open: string; close: string }>;
+  holiday_mode: string;
+  holiday_open_time: string;
+  holiday_close_time: string;
+  holiday_notes: string;
+  ai_after_hours_enabled: string;
+  ai_after_hours_mode: string;
+  ai_after_hours_start: string;
+  ai_after_hours_end: string;
+  ai_attends_holidays: string;
+  agenda_daily_limit_mode: string;
+  agenda_daily_limit: string;
+  agenda_buffer_enabled: string;
+  agenda_buffer_minutes: string;
+  visit_required_situations: string[];
+  visit_required_other: string;
+  visit_optional_situations: string[];
+  visit_optional_other: string;
+  visit_requires_appointment: string;
+  visit_availability_mode: string;
+  visit_duration_mode: string;
+  visit_duration_minutes: string;
+  visit_duration_rule: string;
+  visit_team_mode: string;
+  visit_team_rule: string;
+  visit_pricing_mode: string;
+  visit_fixed_fee: string;
+  visit_case_by_case_rule: string;
+  visit_deductible: string;
+  visit_preconfirm_items: string[];
+  visit_preconfirm_other: string;
+  visit_other_notes: string;
+  installation_customer_can_buy_without: string;
+  installation_customer_can_buy_without_rule: string;
+  installation_third_party_pool: string;
+  installation_third_party_pool_rule: string;
+  installation_availability_mode: string;
+  installation_supply_mode: string;
+  installation_supplier_lead_time_mode: string;
+  installation_supplier_lead_time_value: string;
+  installation_supplier_lead_time_rule: string;
+  installation_start_lead_time_mode: string;
+  installation_start_lead_time_days: string;
+  installation_start_lead_time_rule: string;
+  installation_duration_mode: string;
+  installation_duration_value: string;
+  installation_duration_unit: string;
+  installation_duration_rule: string;
+  installation_has_multiple_teams: string;
+  installation_concurrent_capacity: string;
+  installation_schedule_gates: string[];
+  installation_schedule_gates_other: string;
+  installation_start_gates: string[];
+  installation_start_gates_other: string;
+  installation_includes: string[];
+  installation_includes_other: string;
+  installation_excludes_options: string[];
+  installation_excludes: string;
+  installation_notes: string;
+  pool_replacement_enabled: string;
+  pool_replacement_situations: string[];
+  pool_replacement_situations_other: string;
+  pool_replacement_removes_old: string;
+  pool_replacement_removes_old_rule: string;
+  pool_replacement_disposal_included: string;
+  pool_replacement_disposal_rule: string;
+  pool_replacement_requires_visit: string;
+  pool_replacement_visit_rule: string;
+  pool_replacement_uses_installation_team: string;
+  pool_replacement_team_rule: string;
+  pool_replacement_duration_mode: string;
+  pool_replacement_duration_value: string;
+  pool_replacement_duration_rule: string;
+  pool_replacement_includes: string[];
+  pool_replacement_excludes_options: string[];
+  pool_replacement_excludes: string;
+  pool_replacement_notes: string;
+  delivery_enabled: string;
+  delivery_items: string[];
+  delivery_items_other: string;
+  delivery_with_installation_mode: string;
+  delivery_with_installation_timing: string;
+  delivery_with_installation_notes: string;
+  delivery_provider: string;
+  delivery_provider_rule: string;
+  delivery_uses_installation_team: string;
+  delivery_installation_team_rule: string;
+  delivery_coverage_mode: string;
+  delivery_pricing_mode: string;
+  delivery_pricing_destination_mode: string;
+  delivery_pricing_destination_rule: string;
+  delivery_partner_pricing_mode: string;
+  delivery_partner_pricing_rule: string;
+  delivery_case_factors: string[];
+  delivery_case_rule: string;
+  delivery_fixed_fee: string;
+  delivery_requires_appointment: string;
+  delivery_lead_time_mode: string;
+  delivery_lead_time_days: string;
+  delivery_release_gates: string[];
+  delivery_release_gates_other: string;
+  delivery_unloading_mode: string;
+  delivery_notes: string;
+  pickup_enabled: string;
+  pickup_items: string[];
+  pickup_items_other: string;
+  pickup_location_mode: string;
+  pickup_other_location: string;
+  pickup_requires_appointment: string;
+  pickup_ready_mode: string;
+  pickup_ready_value: string;
+  pickup_third_party_allowed: string;
+  pickup_release_gates: string[];
+  pickup_release_gates_other: string;
+  pickup_notes: string;
+  region_outside_policy: string;
+  technical_services_enabled: string;
+  technical_service_types: string[];
+  technical_services_other: string;
+  technical_equipment_types: string[];
+  technical_equipment_other: string;
+  equipment_installation_origin_policy: string;
+  equipment_installation_origin_rule: string;
+  equipment_replacement_existing: string;
+  equipment_replacement_existing_rule: string;
+  technical_services_notes: string;
+};
+
+function createEmptyGeneralAddressDraft(): GeneralAddressDraftState {
+  return {
+    has_public_address: "Não definido",
+    cep: "",
+    street: "",
+    number: "",
+    complement: "",
+    district: "",
+    city: "",
+    state: "",
+    customer_visit_mode: "",
+    reference_point: "",
+    directions_notes: "",
+  };
+}
+
+function createGeneralAddressDraftFromSettings(
+  row: StoreGeneralAddressSettingsRow | null,
+): GeneralAddressDraftState {
+  if (!row) return createEmptyGeneralAddressDraft();
+
+  return {
+    has_public_address: row.has_public_address ? "Sim" : "Não",
+    cep: formatBrazilianCepInput(cleanText(row.cep)),
+    street: cleanText(row.street),
+    number: cleanText(row.number),
+    complement: cleanText(row.complement),
+    district: cleanText(row.district),
+    city: cleanText(row.city),
+    state: cleanText(row.state),
+    customer_visit_mode: cleanText(row.customer_visit_mode),
+    reference_point: cleanText(row.reference_point),
+    directions_notes: cleanText(row.directions_notes),
+  };
+}
+
+function createEmptyOperationExperienceDraft(): OperationExperienceDraftState {
+  return {
+    team_same_hours: "Sim",
+    team_days: ["segunda", "terca", "quarta", "quinta", "sexta"],
+    team_open_time: "08:00",
+    team_close_time: "18:00",
+    team_day_hours: {
+      segunda: { open: "08:00", close: "18:00" },
+      terca: { open: "08:00", close: "18:00" },
+      quarta: { open: "08:00", close: "18:00" },
+      quinta: { open: "08:00", close: "18:00" },
+      sexta: { open: "08:00", close: "18:00" },
+      sabado: { open: "08:00", close: "12:00" },
+      domingo: { open: "08:00", close: "12:00" },
+    },
+    holiday_mode: "",
+    holiday_open_time: "",
+    holiday_close_time: "",
+    holiday_notes: "",
+    ai_after_hours_enabled: "Não definido",
+    ai_after_hours_mode: "",
+    ai_after_hours_start: "",
+    ai_after_hours_end: "",
+    ai_attends_holidays: "",
+    agenda_daily_limit_mode: "",
+    agenda_daily_limit: "",
+    agenda_buffer_enabled: "",
+    agenda_buffer_minutes: "",
+    visit_required_situations: [],
+    visit_required_other: "",
+    visit_optional_situations: [],
+    visit_optional_other: "",
+    visit_requires_appointment: "",
+    visit_availability_mode: "",
+    visit_duration_mode: "",
+    visit_duration_minutes: "",
+    visit_duration_rule: "",
+    visit_team_mode: "",
+    visit_team_rule: "",
+    visit_pricing_mode: "",
+    visit_fixed_fee: "",
+    visit_case_by_case_rule: "",
+    visit_deductible: "",
+    visit_preconfirm_items: [],
+    visit_preconfirm_other: "",
+    visit_other_notes: "",
+    installation_customer_can_buy_without: "",
+    installation_customer_can_buy_without_rule: "",
+    installation_third_party_pool: "",
+    installation_third_party_pool_rule: "",
+    installation_availability_mode: "",
+    installation_supply_mode: "",
+    installation_supplier_lead_time_mode: "",
+    installation_supplier_lead_time_value: "",
+    installation_supplier_lead_time_rule: "",
+    installation_start_lead_time_mode: "",
+    installation_start_lead_time_days: "",
+    installation_start_lead_time_rule: "",
+    installation_duration_mode: "",
+    installation_duration_value: "",
+    installation_duration_unit: "horas",
+    installation_duration_rule: "",
+    installation_has_multiple_teams: "",
+    installation_concurrent_capacity: "",
+    installation_schedule_gates: [],
+    installation_schedule_gates_other: "",
+    installation_start_gates: [],
+    installation_start_gates_other: "",
+    installation_includes: [],
+    installation_includes_other: "",
+    installation_excludes_options: [],
+    installation_excludes: "",
+    installation_notes: "",
+    pool_replacement_enabled: "Não definido",
+    pool_replacement_situations: [],
+    pool_replacement_situations_other: "",
+    pool_replacement_removes_old: "",
+    pool_replacement_removes_old_rule: "",
+    pool_replacement_disposal_included: "",
+    pool_replacement_disposal_rule: "",
+    pool_replacement_requires_visit: "",
+    pool_replacement_visit_rule: "",
+    pool_replacement_uses_installation_team: "",
+    pool_replacement_team_rule: "",
+    pool_replacement_duration_mode: "",
+    pool_replacement_duration_value: "",
+    pool_replacement_duration_rule: "",
+    pool_replacement_includes: [],
+    pool_replacement_excludes_options: [],
+    pool_replacement_excludes: "",
+    pool_replacement_notes: "",
+    delivery_enabled: "Não definido",
+    delivery_items: [],
+    delivery_items_other: "",
+    delivery_with_installation_mode: "",
+    delivery_with_installation_timing: "",
+    delivery_with_installation_notes: "",
+    delivery_provider: "",
+    delivery_provider_rule: "",
+    delivery_uses_installation_team: "",
+    delivery_installation_team_rule: "",
+    delivery_coverage_mode: "",
+    delivery_pricing_mode: "",
+    delivery_pricing_destination_mode: "",
+    delivery_pricing_destination_rule: "",
+    delivery_partner_pricing_mode: "",
+    delivery_partner_pricing_rule: "",
+    delivery_case_factors: [],
+    delivery_case_rule: "",
+    delivery_fixed_fee: "",
+    delivery_requires_appointment: "",
+    delivery_lead_time_mode: "",
+    delivery_lead_time_days: "",
+    delivery_release_gates: [],
+    delivery_release_gates_other: "",
+    delivery_unloading_mode: "",
+    delivery_notes: "",
+    pickup_enabled: "Não definido",
+    pickup_items: [],
+    pickup_items_other: "",
+    pickup_location_mode: "",
+    pickup_other_location: "",
+    pickup_requires_appointment: "",
+    pickup_ready_mode: "",
+    pickup_ready_value: "",
+    pickup_third_party_allowed: "",
+    pickup_release_gates: [],
+    pickup_release_gates_other: "",
+    pickup_notes: "",
+    region_outside_policy: "",
+    technical_services_enabled: "Não definido",
+    technical_service_types: [],
+    technical_services_other: "",
+    technical_equipment_types: [],
+    technical_equipment_other: "",
+    equipment_installation_origin_policy: "",
+    equipment_installation_origin_rule: "",
+    equipment_replacement_existing: "",
+    equipment_replacement_existing_rule: "",
+    technical_services_notes: "",
+  };
+}
+
 type ScheduleSettingsRow = {
   id?: string;
   organization_id: string;
   store_id: string;
   allow_multiple_appointments_per_day: boolean;
   allow_same_time_appointments: boolean;
-  same_time_capacity: number;
+  same_time_capacity: number | null;
   attends_holidays: boolean;
   operating_days: unknown;
   operating_hours: unknown;
@@ -371,6 +786,24 @@ type ScheduleSettingsRow = {
   technical_visit_days: unknown;
   after_hours_behavior: string | null;
   notes: string | null;
+  enforce_operating_window?: boolean;
+  timezone_name?: string | null;
+  holiday_mode?: string | null;
+  holiday_open_time?: string | null;
+  holiday_close_time?: string | null;
+  holiday_notes?: string | null;
+  human_schedule_configured_at?: string | null;
+  ai_after_hours_configured_at?: string | null;
+  agenda_capacity_configured_at?: string | null;
+  daily_limit_mode?: string | null;
+  daily_limit?: number | null;
+  appointment_buffer_enabled?: boolean | null;
+  appointment_buffer_minutes?: number | null;
+  ai_after_hours_enabled?: boolean | null;
+  ai_after_hours_mode?: string | null;
+  ai_after_hours_start?: string | null;
+  ai_after_hours_end?: string | null;
+  ai_attends_holidays?: boolean | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -409,6 +842,250 @@ type CommercialDraftState = {
   commercial_ai_summary: string;
 };
 
+
+type CommercialExperienceDraftState = {
+  offering_products: string[];
+  offering_products_other: string;
+  offering_services: string[];
+  offering_services_other: string;
+  strategy_sell_more: string[];
+  strategy_sell_more_other: string;
+  strategy_sale_preference: string;
+  strategy_sale_preference_other: string;
+  strategy_customer_traits: string[];
+  strategy_customer_traits_other: string;
+  strategy_attention_cases: string[];
+  strategy_attention_other: string;
+  strategy_sale_value_range: string;
+  strategy_sale_value_custom: string;
+  brands_has_main: string;
+  brands_main_choice: string;
+  brands_main_other: string;
+  brands_worked: string[];
+  brands_worked_other: string;
+  brands_priority_enabled: string;
+  brands_priority: string[];
+  brands_priority_other: string;
+  ai_guidance_enabled: string;
+  ai_guidance_other: string;
+  price_context_other_enabled: boolean;
+  price_context_other: string;
+  suggestions_enabled: string;
+  suggestion_types: string[];
+  suggestion_catalog_item_keys: string[];
+  suggestion_services_detail: string;
+  suggestion_other: string;
+  better_option_policy: string;
+  payment_other_enabled: boolean;
+  payment_other_method: string;
+  down_payment_case_rule: string;
+  entry_due_trigger: string;
+  entry_due_other: string;
+  installments_interest_free_enabled: string;
+  installments_interest_free_max: string;
+  installment_interest_above_mode: string;
+  installment_interest_above_rule: string;
+  installment_minimum_enabled: string;
+  installment_minimum_amount: string;
+  financing_mode: string;
+  financing_partner_name: string;
+  financing_credit_analysis: string;
+  financing_simulation_by: string;
+  financing_ai_policy: string;
+  financing_other: string;
+  balance_due_trigger: string;
+  balance_due_other: string;
+  payment_blocking_actions: string[];
+  payment_blocking_other: string;
+  high_value_requires_human: string;
+  quote_validity: string;
+  quote_validity_other_days: string;
+  quote_customer_note_enabled: string;
+  quote_customer_note: string;
+  quote_internal_note_enabled: string;
+  quote_internal_note: string;
+  quote_preliminary_before_visit: string;
+  quote_definitive_requires_visit_result: string;
+  post_sale_duration: string;
+  post_sale_duration_other_days: string;
+  post_sale_start: string;
+  post_sale_start_other: string;
+  post_sale_checks: string[];
+  post_sale_checks_other: string;
+  warranty_extra_mode: string;
+  warranty_extra_rule: string;
+  warranty_items: string[];
+  warranty_items_other: string;
+  warranty_start: string;
+  warranty_start_other: string;
+  warranty_duration_value: string;
+  warranty_duration_unit: string;
+  warranty_conditions_enabled: string;
+  warranty_conditions: string;
+  cancellation_policy_exists: string;
+  cancellation_rule_situations: string[];
+  cancellation_after_contract_enabled: string;
+  cancellation_after_contract_rule: string;
+  cancellation_ordered_product_enabled: string;
+  cancellation_ordered_product_rule: string;
+  cancellation_custom_order_enabled: string;
+  cancellation_custom_order_rule: string;
+  cancellation_after_delivery_enabled: string;
+  cancellation_after_delivery_rule: string;
+  cancellation_service_started_enabled: string;
+  cancellation_service_started_rule: string;
+  cancellation_charge_or_retention_enabled: string;
+  cancellation_charge_or_retention_rule: string;
+  cancellation_refund_rule_enabled: string;
+  cancellation_refund_rule: string;
+  cancellation_policy_other_enabled: string;
+  cancellation_policy_other: string;
+};
+
+function createEmptyCommercialExperienceDraft(): CommercialExperienceDraftState {
+  return {
+    offering_products: [],
+    offering_products_other: "",
+    offering_services: [],
+    offering_services_other: "",
+    strategy_sell_more: [],
+    strategy_sell_more_other: "",
+    strategy_sale_preference: "",
+    strategy_sale_preference_other: "",
+    strategy_customer_traits: [],
+    strategy_customer_traits_other: "",
+    strategy_attention_cases: [],
+    strategy_attention_other: "",
+    strategy_sale_value_range: "",
+    strategy_sale_value_custom: "",
+    brands_has_main: "Não definido",
+    brands_main_choice: "",
+    brands_main_other: "",
+    brands_worked: [],
+    brands_worked_other: "",
+    brands_priority_enabled: "Não definido",
+    brands_priority: [],
+    brands_priority_other: "",
+    ai_guidance_enabled: "Não definido",
+    ai_guidance_other: "",
+    price_context_other_enabled: false,
+    price_context_other: "",
+    suggestions_enabled: "Não definido",
+    suggestion_types: [],
+    suggestion_catalog_item_keys: [],
+    suggestion_services_detail: "",
+    suggestion_other: "",
+    better_option_policy: "",
+    payment_other_enabled: false,
+    payment_other_method: "",
+    down_payment_case_rule: "",
+    entry_due_trigger: "",
+    entry_due_other: "",
+    installments_interest_free_enabled: "",
+    installments_interest_free_max: "",
+    installment_interest_above_mode: "",
+    installment_interest_above_rule: "",
+    installment_minimum_enabled: "",
+    installment_minimum_amount: "",
+    financing_mode: "",
+    financing_partner_name: "",
+    financing_credit_analysis: "",
+    financing_simulation_by: "",
+    financing_ai_policy: "",
+    financing_other: "",
+    balance_due_trigger: "",
+    balance_due_other: "",
+    payment_blocking_actions: [],
+    payment_blocking_other: "",
+    high_value_requires_human: "",
+    quote_validity: "",
+    quote_validity_other_days: "",
+    quote_customer_note_enabled: "",
+    quote_customer_note: "",
+    quote_internal_note_enabled: "",
+    quote_internal_note: "",
+    quote_preliminary_before_visit: "",
+    quote_definitive_requires_visit_result: "",
+    post_sale_duration: "",
+    post_sale_duration_other_days: "",
+    post_sale_start: "",
+    post_sale_start_other: "",
+    post_sale_checks: [],
+    post_sale_checks_other: "",
+    warranty_extra_mode: "",
+    warranty_extra_rule: "",
+    warranty_items: [],
+    warranty_items_other: "",
+    warranty_start: "",
+    warranty_start_other: "",
+    warranty_duration_value: "",
+    warranty_duration_unit: "meses",
+    warranty_conditions_enabled: "",
+    warranty_conditions: "",
+    cancellation_policy_exists: "",
+    cancellation_rule_situations: [],
+    cancellation_after_contract_enabled: "",
+    cancellation_after_contract_rule: "",
+    cancellation_ordered_product_enabled: "",
+    cancellation_ordered_product_rule: "",
+    cancellation_custom_order_enabled: "",
+    cancellation_custom_order_rule: "",
+    cancellation_after_delivery_enabled: "",
+    cancellation_after_delivery_rule: "",
+    cancellation_service_started_enabled: "",
+    cancellation_service_started_rule: "",
+    cancellation_charge_or_retention_enabled: "",
+    cancellation_charge_or_retention_rule: "",
+    cancellation_refund_rule_enabled: "",
+    cancellation_refund_rule: "",
+    cancellation_policy_other_enabled: "",
+    cancellation_policy_other: "",
+  };
+}
+
+type BrandExperienceDraftState = {
+  use_logo_on_quotes: string;
+  use_logo_on_contracts: string;
+  primary_color: string;
+  secondary_color: string;
+  document_footer: string;
+};
+
+type ContractExperienceDraftState = {
+  enabled: string;
+  applicability_mode: string;
+  applicability_cases: string[];
+  applicability_other: string;
+  high_value_amount: string;
+  formats: string[];
+  signed_before: string[];
+  signed_before_other: string;
+  notes: string;
+};
+
+function createEmptyBrandExperienceDraft(): BrandExperienceDraftState {
+  return {
+    use_logo_on_quotes: "Sim",
+    use_logo_on_contracts: "Sim",
+    primary_color: "#111111",
+    secondary_color: "#FFFFFF",
+    document_footer: "",
+  };
+}
+
+function createEmptyContractExperienceDraft(): ContractExperienceDraftState {
+  return {
+    enabled: "",
+    applicability_mode: "",
+    applicability_cases: [],
+    applicability_other: "",
+    high_value_amount: "",
+    formats: [],
+    signed_before: [],
+    signed_before_other: "",
+    notes: "",
+  };
+}
 
 type DiscountDraftState = {
   default_discount_percent: string;
@@ -493,6 +1170,13 @@ type PersistedConfiguracoesState = {
   strategyDraft: StoreStrategySettingsInput;
   operationDraft: OperationDraftState;
   commercialDraft: CommercialDraftState;
+  commercialExperienceDraft: CommercialExperienceDraftState;
+  savedCommercialExperience: CommercialExperienceDraftState;
+  brandExperienceDraft: BrandExperienceDraftState;
+  savedBrandExperience: BrandExperienceDraftState;
+  contractExperienceDraft: ContractExperienceDraftState;
+  savedContractExperience: ContractExperienceDraftState;
+  isCatalogImportedFilesOpen: boolean;
   discountDraft: DiscountDraftState;
   channelDraft: ChannelDraftState;
   primaryResponsibleDraft: ResponsiblePersonDraft;
@@ -516,27 +1200,42 @@ type ResponsiblePersonDraft = {
   notes: string;
 };
 
-type StatusTone = "green" | "amber" | "red" | "gray";
+type StatusTone = "green" | "amber" | "red" | "gray" | "blue";
 
 type SettingsTabId =
-  | "visao-geral"
-  | "estrategia"
-  | "catalogo"
-  | "piscinas"
-  | "produtos-acessorios"
+  | "geral"
   | "operacao"
-  | "comercial-ia"
-  | "responsavel-ativacao"
-  | "descontos"
-  | "canais-integracoes"
-  | "contratos"
-  | "identidade";
+  | "comercial"
+  | "catalogo"
+  | "contratos-marca"
+  | "canais-integracoes";
 
-function normalizeSettingsTabId(tab: SettingsTabId | null | undefined): SettingsTabId {
-  if (tab === "piscinas" || tab === "produtos-acessorios") {
-    return "catalogo";
+function normalizeSettingsTabId(tab: string | null | undefined): SettingsTabId {
+  switch (tab) {
+    case "geral":
+    case "visao-geral":
+      return "geral";
+    case "operacao":
+      return "operacao";
+    case "comercial":
+    case "estrategia":
+    case "comercial-ia":
+    case "descontos":
+      return "comercial";
+    case "catalogo":
+    case "piscinas":
+    case "produtos-acessorios":
+      return "catalogo";
+    case "contratos-marca":
+    case "contratos":
+    case "identidade":
+      return "contratos-marca";
+    case "canais-integracoes":
+    case "responsavel-ativacao":
+      return "canais-integracoes";
+    default:
+      return "geral";
   }
-  return tab ?? "visao-geral";
 }
 
 type Option = {
@@ -580,6 +1279,9 @@ const DAYS_OF_WEEK_OPTIONS: Option[] = [
   { value: "domingo", label: "Domingo" },
 ];
 
+const CANONICAL_OPERATION_DAYS = DAYS_OF_WEEK_OPTIONS.map((day) => day.value);
+const DEFAULT_SCHEDULE_TIMEZONE = "America/Sao_Paulo";
+
 const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
   { value: "precisa_agendar", label: "Precisa agendar antes" },
   { value: "confirmar_endereco", label: "Precisa confirmar endereço antes" },
@@ -594,6 +1296,210 @@ const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
   { value: "nao_passa_preco_sem_contexto", label: "Não passa preço sem entender o caso" },
   { value: "depende_avaliacao_tecnica", label: "Alguns casos dependem de avaliação técnica" },
   { value: "prazos_podem_variar", label: "Prazos podem variar conforme o projeto" },
+];
+
+const STORE_OFFERED_PRODUCT_OPTIONS: Option[] = [
+  { value: "piscinas", label: "Piscinas" },
+  { value: "quimicos", label: "Produtos químicos" },
+  { value: "acessorios", label: "Acessórios" },
+  { value: "equipamentos", label: "Equipamentos" },
+  { value: "pecas_componentes", label: "Peças e componentes" },
+  { value: "outro", label: "Outros produtos" },
+];
+
+const STORE_OFFERED_SERVICE_OPTIONS: Option[] = [
+  { value: "instalacao_piscina", label: "Instalação de piscina nova" },
+  { value: "troca_piscina", label: "Troca / substituição de piscina" },
+  { value: "instalacao_equipamentos", label: "Instalação de equipamentos" },
+  { value: "troca_equipamentos", label: "Troca de equipamentos" },
+  { value: "limpeza_manutencao", label: "Limpeza / manutenção de piscina" },
+  { value: "servico_tecnico", label: "Assistência / serviço técnico" },
+  { value: "visita_tecnica", label: "Visita técnica" },
+  { value: "outro", label: "Outros serviços" },
+];
+
+const COMMERCIAL_SELL_MORE_OPTIONS: Option[] = [
+  { value: "piscinas", label: "Piscinas" },
+  { value: "piscinas_instalacao", label: "Piscinas com instalação" },
+  { value: "acessorios", label: "Acessórios" },
+  { value: "quimicos", label: "Produtos químicos" },
+  { value: "equipamentos", label: "Equipamentos" },
+  { value: "servicos", label: "Serviços técnicos e manutenção" },
+  { value: "troca_equipamentos", label: "Troca de equipamentos" },
+  { value: "solucao_completa", label: "Pacotes / soluções completas" },
+  { value: "sem_prioridade", label: "Não existe uma prioridade específica" },
+  { value: "outro", label: "Outro" },
+];
+
+const COMMERCIAL_SALE_PREFERENCE_OPTIONS: Option[] = [
+  { value: "maior_valor", label: "Vendas de maior valor, mesmo que levem mais tempo" },
+  { value: "rapida_objetiva", label: "Venda rápida e objetiva" },
+  { value: "solucao_completa", label: "Solução completa para o cliente" },
+  { value: "produtos_individuais", label: "Venda de produtos individuais" },
+  { value: "sem_preferencia", label: "Não existe preferência" },
+  { value: "outro", label: "Outro" },
+];
+
+const COMMERCIAL_CUSTOMER_TRAIT_OPTIONS: Option[] = [
+  { value: "solucao_completa", label: "Quer uma solução completa" },
+  { value: "valoriza_qualidade", label: "Valoriza qualidade mais do que o menor preço" },
+  { value: "aceita_orientacao", label: "Está disposto a receber orientação" },
+  { value: "sabe_o_que_procura", label: "Já sabe mais ou menos o que procura" },
+  { value: "quer_instalacao", label: "Quer instalação junto com a compra" },
+  { value: "maior_valor", label: "Procura produtos ou projetos de maior valor" },
+  { value: "urgencia_real", label: "Tem urgência real para comprar" },
+  { value: "aceita_visita", label: "Está aberto a visita técnica quando necessária" },
+  { value: "recorrente", label: "É cliente recorrente" },
+  { value: "sem_preferencia", label: "Não existe preferência" },
+  { value: "outro", label: "Outra característica" },
+];
+
+const COMMERCIAL_ATTENTION_CASE_OPTIONS: Option[] = [
+  { value: "so_menor_preco", label: "Cliente procurando somente o menor preço" },
+  { value: "sem_informacoes", label: "Cliente ainda sem informações mínimas do projeto" },
+  { value: "fora_padrao", label: "Projeto muito fora do padrão" },
+  { value: "fora_regiao", label: "Cliente fora da região atendida" },
+  { value: "servico_nao_executado", label: "Cliente pedindo serviço que a loja não executa" },
+  { value: "condicao_muito_diferente", label: "Cliente querendo condição comercial muito diferente" },
+  { value: "nenhum", label: "Não existe nenhum caso específico" },
+  { value: "outro", label: "Outro caso" },
+];
+
+const COMMERCIAL_SALE_VALUE_OPTIONS: Option[] = [
+  { value: "ate_1000", label: "Até R$ 1.000" },
+  { value: "1000_5000", label: "R$ 1.000 a R$ 5.000" },
+  { value: "5000_10000", label: "R$ 5.000 a R$ 10.000" },
+  { value: "10000_20000", label: "R$ 10.000 a R$ 20.000" },
+  { value: "20000_50000", label: "R$ 20.000 a R$ 50.000" },
+  { value: "acima_50000", label: "Acima de R$ 50.000" },
+  { value: "varia_muito", label: "Varia muito conforme a venda" },
+  { value: "outra", label: "Quero informar outra faixa" },
+];
+
+const POOL_MARKET_BRAND_OPTIONS: Option[] = [
+  { value: "iGUi", label: "iGUi" },
+  { value: "Henrimar", label: "Henrimar" },
+  { value: "Fiber", label: "Fiber" },
+  { value: "Fibratec", label: "Fibratec" },
+  { value: "Sodramar", label: "Sodramar" },
+  { value: "Nautilus", label: "Nautilus" },
+  { value: "Jacuzzi", label: "Jacuzzi" },
+  { value: "Dancor", label: "Dancor" },
+  { value: "Syllent", label: "Syllent" },
+  { value: "Pooltec", label: "Pooltec" },
+  { value: "AstralPool", label: "AstralPool" },
+  { value: "Veico", label: "Veico" },
+  { value: "Albacete", label: "Albacete" },
+  { value: "Panozon", label: "Panozon" },
+  { value: "Sibrape / Pentair", label: "Sibrape / Pentair" },
+  { value: "HTH", label: "HTH" },
+  { value: "Genco", label: "Genco" },
+  { value: "Hidroall", label: "Hidroall" },
+  { value: "Maresias", label: "Maresias" },
+  { value: "CTX Professional", label: "CTX Professional" },
+  { value: "outro", label: "Outra marca" },
+];
+
+const STRATEGY_SERVICE_TO_OFFERING: Record<
+  string,
+  { key: "offering_products" | "offering_services"; value: string }
+> = {
+  venda_piscinas: { key: "offering_products", value: "piscinas" },
+  venda_produtos_quimicos: { key: "offering_products", value: "quimicos" },
+  venda_acessorios: { key: "offering_products", value: "acessorios" },
+  instalacao_piscinas: { key: "offering_services", value: "instalacao_piscina" },
+  visita_tecnica: { key: "offering_services", value: "visita_tecnica" },
+  manutencao: { key: "offering_services", value: "limpeza_manutencao" },
+};
+
+const OFFERING_TO_STRATEGY_SERVICE: Record<string, string> = Object.fromEntries(
+  Object.entries(STRATEGY_SERVICE_TO_OFFERING).map(([strategyValue, offering]) => [
+    `${offering.key}:${offering.value}`,
+    strategyValue,
+  ]),
+);
+
+const COMMERCIAL_SUGGESTION_TYPE_OPTIONS: Option[] = [
+  { value: "piscinas", label: "Piscinas" },
+  { value: "acessorios", label: "Acessórios" },
+  { value: "quimicos", label: "Produtos químicos" },
+  { value: "equipamentos", label: "Equipamentos" },
+  { value: "outros_catalogo", label: "Outros produtos do catálogo" },
+  { value: "servicos", label: "Serviços relacionados" },
+  { value: "outro", label: "Outro tipo de sugestão" },
+];
+
+const CATALOG_BACKED_SUGGESTION_TYPES = [
+  "piscinas",
+  "acessorios",
+  "quimicos",
+  "equipamentos",
+  "outros_catalogo",
+] as const;
+
+const PAYMENT_BLOCKING_ACTION_OPTIONS: Option[] = [
+  { value: "agendar_instalacao", label: "Agendar instalação" },
+  { value: "iniciar_instalacao", label: "Iniciar instalação" },
+  { value: "liberar_entrega", label: "Liberar entrega" },
+  { value: "liberar_retirada", label: "Liberar retirada" },
+  { value: "concluir_venda", label: "Concluir a venda" },
+  { value: "nenhuma", label: "Nenhuma dessas ações é bloqueada automaticamente" },
+  { value: "outro", label: "Outra ação" },
+];
+
+const POST_SALE_CHECK_OPTIONS: Option[] = [
+  { value: "satisfacao", label: "Se o cliente ficou satisfeito" },
+  { value: "produto_funciona", label: "Se o produto está funcionando corretamente" },
+  { value: "instalacao_ok", label: "Se a instalação ficou correta" },
+  { value: "orientacao_uso", label: "Se precisa de orientação de uso" },
+  { value: "manutencao", label: "Se precisa de produtos de manutenção" },
+  { value: "problema", label: "Se existe algum problema a resolver" },
+  { value: "outro", label: "Outro ponto" },
+];
+
+const WARRANTY_ITEM_OPTIONS: Option[] = [
+  { value: "piscina", label: "Piscina" },
+  { value: "instalacao", label: "Instalação" },
+  { value: "equipamentos", label: "Equipamentos" },
+  { value: "produtos", label: "Produtos" },
+  { value: "servicos", label: "Serviços técnicos" },
+  { value: "outro", label: "Outro" },
+];
+
+
+const CANCELLATION_RULE_SITUATION_OPTIONS: Option[] = [
+  { value: "after_contract", label: "Depois que o contrato já foi assinado" },
+  { value: "ordered_product", label: "Depois que o produto já foi encomendado ao fornecedor" },
+  { value: "custom_order", label: "Produto sob encomenda ou personalizado" },
+  { value: "after_delivery", label: "Depois da entrega ou retirada" },
+  { value: "service_started", label: "Instalação ou serviço já iniciado" },
+  { value: "charge_or_retention", label: "Multa, cobrança ou retenção previamente prevista" },
+  { value: "refund", label: "Regra própria de reembolso" },
+  { value: "other", label: "Outra situação" },
+];
+
+const CONTRACT_APPLICABILITY_CASE_OPTIONS: Option[] = [
+  { value: "piscina", label: "Venda de piscina" },
+  { value: "instalacao", label: "Venda com instalação" },
+  { value: "servico", label: "Serviço técnico / manutenção" },
+  { value: "sob_encomenda", label: "Produto sob encomenda ou personalizado" },
+  { value: "financiamento", label: "Venda com financiamento" },
+  { value: "alto_valor", label: "Venda acima de determinado valor" },
+  { value: "outro", label: "Outra situação" },
+];
+
+const CONTRACT_FORMAT_OPTIONS: Option[] = [
+  { value: "digital", label: "Digital / virtual" },
+  { value: "fisico", label: "Físico / impresso" },
+];
+
+const CONTRACT_SIGNED_BEFORE_OPTIONS: Option[] = [
+  { value: "encomendar", label: "Encomendar produto ao fornecedor" },
+  { value: "agendar_instalacao", label: "Agendar instalação" },
+  { value: "iniciar_instalacao", label: "Iniciar instalação ou serviço" },
+  { value: "entrega", label: "Liberar entrega" },
+  { value: "retirada", label: "Liberar retirada" },
+  { value: "outro", label: "Outro momento" },
 ];
 
 const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
@@ -673,15 +1579,15 @@ const PIX_KEY_TYPE_OPTIONS: Option[] = [
 ];
 
 const DOWN_PAYMENT_MODE_OPTIONS: Option[] = [
-  { value: "none", label: "Nao usa entrada" },
-  { value: "optional", label: "Entrada opcional" },
-  { value: "required", label: "Entrada obrigatoria" },
+  { value: "none", label: "Não exige entrada" },
+  { value: "optional", label: "Depende da venda" },
+  { value: "required", label: "Sim, a entrada é obrigatória" },
 ];
 
 const DOWN_PAYMENT_VALUE_TYPE_OPTIONS: Option[] = [
-  { value: "percent", label: "Percentual" },
+  { value: "percent", label: "Percentual da venda" },
   { value: "fixed", label: "Valor fixo" },
-  { value: "case_by_case", label: "Caso a caso" },
+  { value: "case_by_case", label: "Varia conforme a venda" },
 ];
 
 const INSTALLMENT_INTEREST_POLICY_OPTIONS: Option[] = [
@@ -697,16 +1603,16 @@ const PRICE_TALK_MODE_OPTIONS: Option[] = [
 ];
 
 const PRICE_ANSWER_POLICY_OPTIONS: Option[] = [
-  { value: "direct_when_asked", label: "Preço/base/faixa confiável quando perguntarem" },
-  { value: "range_only_when_asked", label: "Somente faixa inicial" },
-  { value: "human_required_for_price", label: "Humano necessário para preço" },
+  { value: "direct_when_asked", label: "Informar o preço quando existir um preço confiável no catálogo" },
+  { value: "range_only_when_asked", label: "Informar apenas uma faixa de preço" },
+  { value: "human_required_for_price", label: "Chamar uma pessoa da loja antes de informar preço" },
 ];
 
 const PRICE_CONTEXT_REQUIREMENT_OPTIONS: Option[] = [
-  { value: "need_summary", label: "Entender necessidade ou objetivo" },
-  { value: "interested_product_reference", label: "Entender produto ou tipo" },
-  { value: "space_or_measurements", label: "Entender espaço ou medidas" },
-  { value: "installation_scope", label: "Entender escopo de instalação" },
+  { value: "need_summary", label: "Entender a necessidade ou o objetivo do cliente" },
+  { value: "interested_product_reference", label: "Saber qual produto ou tipo o cliente procura" },
+  { value: "space_or_measurements", label: "Entender o espaço ou as medidas" },
+  { value: "installation_scope", label: "Saber se a venda inclui instalação" },
 ];
 
 const SALES_FLOW_FINAL_OPTIONS: Option[] = [
@@ -736,6 +1642,7 @@ function statusToneClass(tone: StatusTone) {
   if (tone === "green") return "border-emerald-200 bg-emerald-50 text-emerald-800";
   if (tone === "amber") return "border-amber-200 bg-amber-50 text-amber-900";
   if (tone === "red") return "border-red-200 bg-red-50 text-red-800";
+  if (tone === "blue") return "border-sky-200 bg-sky-50 text-sky-800";
   return "border-gray-200 bg-gray-50 text-gray-700";
 }
 
@@ -763,6 +1670,36 @@ function cleanText(value: unknown) {
   return String(value ?? "").trim();
 }
 
+function onlyCepDigits(value: unknown) {
+  return String(value ?? "").replace(/\D/g, "").slice(0, 8);
+}
+
+function formatBrazilianCepInput(value: unknown) {
+  const digits = onlyCepDigits(value);
+  if (digits.length <= 5) return digits;
+  return `${digits.slice(0, 5)}-${digits.slice(5)}`;
+}
+
+function isValidCustomerVisitMode(value: unknown) {
+  return ["sem_agendamento", "com_agendamento", "nao_recebe_clientes"].includes(
+    cleanText(value),
+  );
+}
+
+function isGeneralAddressComplete(address: GeneralAddressDraftState) {
+  if (address.has_public_address === "Não") return true;
+  if (address.has_public_address !== "Sim") return false;
+
+  return Boolean(
+    cleanText(address.street) &&
+      cleanText(address.number) &&
+      cleanText(address.district) &&
+      cleanText(address.city) &&
+      cleanText(address.state) &&
+      isValidCustomerVisitMode(address.customer_visit_mode),
+  );
+}
+
 function formatMonthlyGoalDraftAmount(value: number | null | undefined) {
   if (value == null || value <= 0) return "";
   return String(Math.round(value / 100));
@@ -776,10 +1713,9 @@ function parseMonthlyGoalDraftAmount(value: string) {
 }
 
 function normalizeMonthlySalesGoalApiValue(value: unknown) {
-  const record =
-    value && typeof value === "object"
-      ? (value as Record<string, unknown>)
-      : null;
+  const record = value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
 
   if (record && "enabled" in record) {
     return normalizeMonthlySalesGoalInput({
@@ -899,6 +1835,43 @@ function maskSensitiveContractPreview(value: string | null | undefined) {
     .replace(/\b(?:RUA|AVENIDA|AV\.|ALAMEDA|TRAVESSA|ESTRADA)\b[\s\S]{0,80}?\d{1,5}/gi, "[endereco oculto]");
 }
 
+function renderHighlightedContractText(
+  value: string,
+  query: string,
+  activeMatchIndex: number | null = null,
+) {
+  const normalizedQuery = cleanText(query);
+  if (!normalizedQuery) return value;
+
+  const escapedQuery = normalizedQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const matcher = new RegExp(`(${escapedQuery})`, "gi");
+  const exactMatcher = new RegExp(`^${escapedQuery}$`, "i");
+  let matchIndex = 0;
+
+  return value.split(matcher).map((part, index) => {
+    if (!exactMatcher.test(part)) return part;
+
+    const currentMatchIndex = matchIndex;
+    matchIndex += 1;
+    const isActiveMatch = activeMatchIndex === currentMatchIndex;
+
+    return (
+      <mark
+        key={`${part}-${index}`}
+        data-contract-search-match-index={currentMatchIndex}
+        data-contract-current-search-target={isActiveMatch ? "true" : undefined}
+        className={`rounded px-0.5 text-gray-950 transition ${
+          isActiveMatch
+            ? "bg-amber-400 ring-2 ring-amber-500/40"
+            : "bg-amber-200"
+        }`}
+      >
+        {part}
+      </mark>
+    );
+  });
+}
+
 function summarizeContractUiText(value: string | null | undefined, maxLength = 180) {
   const masked = maskSensitiveContractPreview(value);
   const normalized = cleanText(masked);
@@ -919,6 +1892,99 @@ function resolveContractRuleStatus(status: string | null | undefined) {
     return { label: "Ajustada", tone: "amber" as const };
   }
   return { label: "Aguardando revisao", tone: "amber" as const };
+}
+
+function normalizeContractReviewStatus(status: string | null | undefined) {
+  return cleanText(status).toLowerCase();
+}
+
+function normalizeContractVersionStatusValue(status: string | null | undefined) {
+  return cleanText(status).toLowerCase();
+}
+
+function isFinalContractRuleReviewStatus(status: string): status is ContractRuleReviewStatus {
+  return status === "approved" || status === "rejected" || status === "edited";
+}
+
+function isMutableStoreContractVersion({
+  version,
+  isActiveVersion,
+}: {
+  version: StoreContractTemplateVersionRow | null | undefined;
+  isActiveVersion: boolean;
+}) {
+  if (!version || isActiveVersion || version.rejected_at) return false;
+
+  const normalizedStatus = normalizeContractVersionStatusValue(version.status);
+  return ["uploaded", "failed", "analyzed", "awaiting_review"].includes(normalizedStatus);
+}
+
+function canAnalyzeStoreContractVersion({
+  version,
+  isActiveVersion,
+  hasReadText,
+}: {
+  version: StoreContractTemplateVersionRow | null | undefined;
+  isActiveVersion: boolean;
+  hasReadText: boolean;
+}) {
+  if (isActiveVersion) return false;
+  if (!isMutableStoreContractVersion({ version, isActiveVersion })) return false;
+
+  const normalizedStatus = normalizeContractVersionStatusValue(version?.status);
+  return normalizedStatus === "uploaded" || normalizedStatus === "failed";
+}
+
+function canExtractRulesForStoreContractVersion({
+  version,
+  versionRules,
+  isActiveVersion,
+  hasReadText,
+}: {
+  version: StoreContractTemplateVersionRow | null | undefined;
+  versionRules: StoreContractTemplateExtractedRuleRow[];
+  isActiveVersion: boolean;
+  hasReadText: boolean;
+}) {
+  if (!hasReadText || versionRules.length > 0) return false;
+  if (!isMutableStoreContractVersion({ version, isActiveVersion })) return false;
+
+  const normalizedStatus = normalizeContractVersionStatusValue(version?.status);
+  return normalizedStatus === "analyzed" || normalizedStatus === "awaiting_review";
+}
+
+function canReviewRulesForStoreContractVersion({
+  version,
+  isActiveVersion,
+}: {
+  version: StoreContractTemplateVersionRow | null | undefined;
+  isActiveVersion: boolean;
+}) {
+  if (!isMutableStoreContractVersion({ version, isActiveVersion })) return false;
+
+  const normalizedStatus = normalizeContractVersionStatusValue(version?.status);
+  return normalizedStatus === "analyzed" || normalizedStatus === "awaiting_review";
+}
+
+function canApproveStoreContractVersion({
+  version,
+  versionRules,
+  isActiveVersion,
+}: {
+  version: StoreContractTemplateVersionRow | null | undefined;
+  versionRules: StoreContractTemplateExtractedRuleRow[];
+  isActiveVersion: boolean;
+}) {
+  if (!version) return false;
+
+  const normalizedStatus = normalizeContractVersionStatusValue(version.status);
+  if (isActiveVersion || normalizedStatus === "rejected" || version.rejected_at) return false;
+  if (!["analyzed", "awaiting_review"].includes(normalizedStatus)) return false;
+  if (versionRules.length === 0) return false;
+
+  return versionRules.every((rule) =>
+    isFinalContractRuleReviewStatus(normalizeContractReviewStatus(rule.review_status))
+  );
 }
 
 function resolveContractRuleGroupLabel(group: string | null | undefined) {
@@ -1154,6 +2220,12 @@ function createOperationDraftFromAnswers(
     scheduleSettings?.operating_hours && typeof scheduleSettings.operating_hours === "object"
       ? JSON.stringify(scheduleSettings.operating_hours)
       : "";
+  const humanScheduleConfigured = isConfiguredTimestamp(
+    scheduleSettings?.human_schedule_configured_at,
+  );
+  const agendaCapacityConfigured = isConfiguredTimestamp(
+    scheduleSettings?.agenda_capacity_configured_at,
+  );
 
   return {
     operating_days: operatingDaysFromSettings,
@@ -1163,15 +2235,20 @@ function createOperationDraftFromAnswers(
     serves_saturday: deriveCanonicalWeekendAvailabilityLabel("sabado", scheduleSettings),
     serves_sunday: deriveCanonicalWeekendAvailabilityLabel("domingo", scheduleSettings),
     serves_holiday:
-      scheduleSettings && typeof scheduleSettings.attends_holidays === "boolean"
-        ? yesNoLabel(scheduleSettings.attends_holidays)
+      humanScheduleConfigured && cleanText(scheduleSettings?.holiday_mode)
+        ? optionLabel(toUiHolidayMode(scheduleSettings?.holiday_mode), [
+            { value: "fechado", label: "NÃ£o" },
+            { value: "normal", label: "Sim" },
+            { value: "especial", label: "Sim" },
+            { value: "caso_a_caso", label: "Caso a caso" },
+          ])
         : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL,
     allow_multiple_appointments_per_day:
-      scheduleSettings && typeof scheduleSettings.allow_multiple_appointments_per_day === "boolean"
+      agendaCapacityConfigured && typeof scheduleSettings?.allow_multiple_appointments_per_day === "boolean"
         ? yesNoLabel(scheduleSettings.allow_multiple_appointments_per_day)
         : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL,
     allow_same_time_appointments:
-      scheduleSettings && typeof scheduleSettings.allow_same_time_appointments === "boolean"
+      agendaCapacityConfigured && typeof scheduleSettings?.allow_same_time_appointments === "boolean"
         ? yesNoLabel(scheduleSettings.allow_same_time_appointments)
         : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL,
     offers_installation: yesNoLabel(operationInput.offersInstallation),
@@ -1181,9 +2258,24 @@ function createOperationDraftFromAnswers(
     technical_visit_rules_selected: operationInput.technicalVisitRules,
     technical_visit_rules_other: operationInput.technicalVisitRulesOther,
     agenda_capacity_rule:
-      scheduleSettings && Number.isFinite(Number(scheduleSettings.same_time_capacity))
-        ? String(scheduleSettings.same_time_capacity)
+      agendaCapacityConfigured && Number.isFinite(Number(scheduleSettings?.same_time_capacity))
+        ? String(scheduleSettings?.same_time_capacity)
         : "",
+  };
+}
+
+function restoreOperationDraftWithoutScheduleAuthority(
+  current: OperationDraftState,
+  persisted: Partial<OperationDraftState>,
+) {
+  const normalized = normalizePersistedOperationDraft(current, persisted);
+  return {
+    ...normalized,
+    serves_holiday: current.serves_holiday,
+    allow_multiple_appointments_per_day:
+      current.allow_multiple_appointments_per_day,
+    allow_same_time_appointments: current.allow_same_time_appointments,
+    agenda_capacity_rule: current.agenda_capacity_rule,
   };
 }
 
@@ -1562,6 +2654,99 @@ function parseArrayAnswer(value: unknown): string[] {
   return [];
 }
 
+function normalizeOptionToken(value: unknown) {
+  return cleanText(value).toLocaleLowerCase("pt-BR");
+}
+
+function uniqueCleanStrings(values: string[]) {
+  return Array.from(new Set(values.map((value) => cleanText(value)).filter(Boolean)));
+}
+
+function resolveBrandsWorkedFromStrategy(value: unknown) {
+  const selected: string[] = [];
+  const otherValues: string[] = [];
+
+  for (const item of parseArrayAnswer(value)) {
+    const normalizedItem = normalizeOptionToken(item);
+    const matched = POOL_MARKET_BRAND_OPTIONS.find(
+      (option) =>
+        option.value !== "outro" &&
+        (normalizeOptionToken(option.value) === normalizedItem ||
+          normalizeOptionToken(option.label) === normalizedItem),
+    );
+
+    if (matched) {
+      selected.push(matched.value);
+    } else {
+      otherValues.push(item);
+    }
+  }
+
+  if (otherValues.length > 0) selected.push("outro");
+
+  return {
+    brandsWorked: uniqueCleanStrings(selected),
+    brandsWorkedOther: uniqueCleanStrings(otherValues).join(", "),
+  };
+}
+
+function buildBrandsWorkedForStrategy(values: string[], other: string) {
+  return joinSelectedLabels(
+    values.filter((value) => value !== "outro"),
+    POOL_MARKET_BRAND_OPTIONS,
+    values.includes("outro") ? other : "",
+  );
+}
+
+function createCanonicalCommercialExperienceDraft(
+  baseDraft: CommercialExperienceDraftState,
+  strategyInput: StoreStrategySettingsInput,
+): CommercialExperienceDraftState {
+  const offeringProducts: string[] = [];
+  const offeringServices: string[] = [];
+
+  for (const service of strategyInput.storeServices) {
+    const mapped = STRATEGY_SERVICE_TO_OFFERING[service];
+    if (!mapped) continue;
+    if (mapped.key === "offering_products") offeringProducts.push(mapped.value);
+    else offeringServices.push(mapped.value);
+  }
+
+  if (cleanText(strategyInput.storeServicesOther)) {
+    offeringServices.push("outro");
+  }
+
+  const brands = resolveBrandsWorkedFromStrategy(strategyInput.brandsWorked);
+
+  return {
+    ...baseDraft,
+    offering_products: uniqueCleanStrings(offeringProducts),
+    offering_products_other: "",
+    offering_services: uniqueCleanStrings(offeringServices),
+    offering_services_other: cleanText(strategyInput.storeServicesOther),
+    brands_worked: brands.brandsWorked,
+    brands_worked_other: brands.brandsWorkedOther,
+  };
+}
+
+function buildStrategyServicesFromOfferings(input: CommercialExperienceDraftState) {
+  return uniqueCleanStrings([
+    ...input.offering_products.map(
+      (value) => OFFERING_TO_STRATEGY_SERVICE[`offering_products:${value}`] || "",
+    ),
+    ...input.offering_services.map(
+      (value) => OFFERING_TO_STRATEGY_SERVICE[`offering_services:${value}`] || "",
+    ),
+  ]);
+}
+
+function buildStoreServicesOtherFromOfferings(input: CommercialExperienceDraftState) {
+  return uniqueCleanStrings([
+    input.offering_products.includes("outro") ? input.offering_products_other : "",
+    input.offering_services.includes("outro") ? input.offering_services_other : "",
+  ]).join(", ");
+}
+
 function yesNoLabel(value: unknown) {
   if (typeof value === "boolean") return value ? "Sim" : "Não";
   const normalized = cleanText(value).toLowerCase();
@@ -1593,6 +2778,324 @@ function parseOptionalPositiveInteger(value: unknown) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : Number.NaN;
 }
 
+function isConfiguredTimestamp(value: unknown) {
+  return Boolean(cleanText(value));
+}
+
+function normalizeTimeInput(value: unknown) {
+  return cleanText(value).slice(0, 5);
+}
+
+function isValidTimeRange(open: string, close: string) {
+  return Boolean(open && close && open < close);
+}
+
+function toCanonicalHolidayMode(value: unknown) {
+  const normalized = normalizeLoose(value);
+  if (normalized === "fechado") return "closed";
+  if (normalized === "normal") return "normal";
+  if (normalized === "especial") return "special";
+  if (normalized === "caso_a_caso") return "case_by_case";
+  return null;
+}
+
+function toUiHolidayMode(value: unknown) {
+  const normalized = normalizeLoose(value);
+  if (normalized === "closed") return "fechado";
+  if (normalized === "normal") return "normal";
+  if (normalized === "special") return "especial";
+  if (normalized === "case_by_case") return "caso_a_caso";
+  return "";
+}
+
+function toCanonicalAfterHoursMode(value: unknown) {
+  const normalized = normalizeLoose(value);
+  if (normalized === "todo_fechado") return "all_closed_hours";
+  if (normalized === "janela") return "specific_window";
+  return null;
+}
+
+function toUiAfterHoursMode(value: unknown) {
+  const normalized = normalizeLoose(value);
+  if (normalized === "all_closed_hours") return "todo_fechado";
+  if (normalized === "specific_window") return "janela";
+  return "";
+}
+
+function toCanonicalAgendaDailyLimitMode(value: unknown) {
+  const normalized = normalizeLoose(value);
+  if (normalized === "limite") return "fixed_limit";
+  if (normalized === "sem_limite") return "no_fixed_limit";
+  return null;
+}
+
+function toUiAgendaDailyLimitMode(value: unknown) {
+  const normalized = normalizeLoose(value);
+  if (normalized === "fixed_limit") return "limite";
+  if (normalized === "no_fixed_limit") return "sem_limite";
+  return "";
+}
+
+function readCanonicalOperatingDays(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => cleanText(item))
+    .filter((day) => CANONICAL_OPERATION_DAYS.includes(day));
+}
+
+function readCanonicalDayHours(value: unknown) {
+  const fallback = createEmptyOperationExperienceDraft().team_day_hours;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
+
+  const source = value as Record<string, unknown>;
+  return CANONICAL_OPERATION_DAYS.reduce<Record<string, { open: string; close: string }>>(
+    (acc, day) => {
+      const row = source[day];
+      if (row && typeof row === "object" && !Array.isArray(row)) {
+        const dayRow = row as Record<string, unknown>;
+        acc[day] = {
+          open: normalizeTimeInput(dayRow.start ?? dayRow.open) || fallback[day]?.open || "08:00",
+          close: normalizeTimeInput(dayRow.end ?? dayRow.close) || fallback[day]?.close || "18:00",
+        };
+      } else {
+        acc[day] = fallback[day] ?? { open: "08:00", close: "18:00" };
+      }
+      return acc;
+    },
+    {},
+  );
+}
+
+function hasHumanScheduleCanonicalShape(scheduleSettings?: ScheduleSettingsRow | null) {
+  if (!scheduleSettings || !isConfiguredTimestamp(scheduleSettings.human_schedule_configured_at)) {
+    return false;
+  }
+
+  const days = readCanonicalOperatingDays(scheduleSettings.operating_days);
+  if (days.length === 0) return false;
+
+  const hours = readCanonicalDayHours(scheduleSettings.operating_hours);
+  const hoursComplete = days.every((day) => {
+    const window = hours[day];
+    return isValidTimeRange(window?.open ?? "", window?.close ?? "");
+  });
+  if (!hoursComplete) return false;
+
+  const holidayMode = cleanText(scheduleSettings.holiday_mode);
+  if (!["closed", "normal", "special", "case_by_case"].includes(holidayMode)) {
+    return false;
+  }
+  if (
+    holidayMode === "special" &&
+    !isValidTimeRange(
+      normalizeTimeInput(scheduleSettings.holiday_open_time),
+      normalizeTimeInput(scheduleSettings.holiday_close_time),
+    )
+  ) {
+    return false;
+  }
+  if (holidayMode === "case_by_case" && !cleanText(scheduleSettings.holiday_notes)) {
+    return false;
+  }
+  return true;
+}
+
+function hasAgendaCapacityCanonicalShape(scheduleSettings?: ScheduleSettingsRow | null) {
+  if (!scheduleSettings || !isConfiguredTimestamp(scheduleSettings.agenda_capacity_configured_at)) {
+    return false;
+  }
+
+  if (typeof scheduleSettings.allow_multiple_appointments_per_day !== "boolean") return false;
+  if (typeof scheduleSettings.allow_same_time_appointments !== "boolean") return false;
+  if (scheduleSettings.allow_same_time_appointments) {
+    const capacity = Number(scheduleSettings.same_time_capacity);
+    if (!Number.isInteger(capacity) || capacity < 2) return false;
+  }
+  if (scheduleSettings.daily_limit_mode === "fixed_limit") {
+    const dailyLimit = Number(scheduleSettings.daily_limit);
+    if (!Number.isInteger(dailyLimit) || dailyLimit < 2) return false;
+  }
+  if (scheduleSettings.appointment_buffer_enabled) {
+    const minutes = Number(scheduleSettings.appointment_buffer_minutes);
+    if (!Number.isInteger(minutes) || minutes < 1) return false;
+  }
+  return true;
+}
+
+function resolveHumanScheduleCardStatus(scheduleSettings?: ScheduleSettingsRow | null): { tone: ConfigurationCardTone; status: string } {
+  if (!isConfiguredTimestamp(scheduleSettings?.human_schedule_configured_at)) {
+    return { tone: "yellow", status: "Precisa de atenÃ§Ã£o" };
+  }
+  if (!hasHumanScheduleCanonicalShape(scheduleSettings)) {
+    return { tone: "red", status: "ConfiguraÃ§Ã£o crÃ­tica" };
+  }
+  return { tone: "blue", status: "Completo" };
+}
+
+function resolveAfterHoursCardStatus(scheduleSettings?: ScheduleSettingsRow | null): { tone: ConfigurationCardTone; status: string } {
+  if (!isConfiguredTimestamp(scheduleSettings?.ai_after_hours_configured_at)) {
+    return { tone: "yellow", status: "Precisa de atenÃ§Ã£o" };
+  }
+  if (scheduleSettings?.ai_after_hours_enabled === false) {
+    return { tone: "blue", status: "Completo" };
+  }
+  if (
+    scheduleSettings?.ai_after_hours_enabled === true &&
+    (scheduleSettings.ai_after_hours_mode === "all_closed_hours" ||
+      (scheduleSettings.ai_after_hours_mode === "specific_window" &&
+        isValidTimeRange(
+          normalizeTimeInput(scheduleSettings.ai_after_hours_start),
+          normalizeTimeInput(scheduleSettings.ai_after_hours_end),
+        )))
+  ) {
+    return { tone: "blue", status: "Completo" };
+  }
+  return { tone: "red", status: "ConfiguraÃ§Ã£o crÃ­tica" };
+}
+
+function resolveAgendaCapacityCardStatus(scheduleSettings?: ScheduleSettingsRow | null): { tone: ConfigurationCardTone; status: string } {
+  if (!isConfiguredTimestamp(scheduleSettings?.agenda_capacity_configured_at)) {
+    return { tone: "yellow", status: "Precisa de atenÃ§Ã£o" };
+  }
+  if (!hasAgendaCapacityCanonicalShape(scheduleSettings)) {
+    return { tone: "red", status: "ConfiguraÃ§Ã£o crÃ­tica" };
+  }
+  return { tone: "blue", status: "Completo" };
+}
+
+function buildHumanScheduleConfigurationPayload(
+  draft: OperationExperienceDraftState,
+  scheduleSettings?: ScheduleSettingsRow | null,
+):
+  | {
+      error: string;
+    }
+  | {
+      operatingDays: string[];
+      operatingHours: Record<string, { start: string; end: string }>;
+      timezoneName: string;
+      holidayMode: string;
+      holidayOpenTime: string | null;
+      holidayCloseTime: string | null;
+      holidayNotes: string | null;
+    } {
+  const selectedDays = CANONICAL_OPERATION_DAYS.filter((day) =>
+    draft.team_days.includes(day),
+  );
+  if (selectedDays.length === 0) {
+    return { error: "Informe pelo menos um dia de atendimento da equipe." };
+  }
+
+  const sameHours = normalizeLoose(draft.team_same_hours) !== "nao";
+  const operatingHours: Record<string, { start: string; end: string }> = {};
+
+  for (const day of selectedDays) {
+    const open = sameHours
+      ? normalizeTimeInput(draft.team_open_time)
+      : normalizeTimeInput(draft.team_day_hours[day]?.open);
+    const close = sameHours
+      ? normalizeTimeInput(draft.team_close_time)
+      : normalizeTimeInput(draft.team_day_hours[day]?.close);
+
+    if (!isValidTimeRange(open, close)) {
+      return { error: `Informe um horario valido para ${optionLabel(day, DAYS_OF_WEEK_OPTIONS)}.` };
+    }
+    operatingHours[day] = { start: open, end: close };
+  }
+
+  const holidayMode = toCanonicalHolidayMode(draft.holiday_mode);
+  if (!holidayMode) {
+    return { error: "Informe como a loja funciona em feriados." };
+  }
+
+  const holidayOpenTime =
+    holidayMode === "special" ? normalizeTimeInput(draft.holiday_open_time) : null;
+  const holidayCloseTime =
+    holidayMode === "special" ? normalizeTimeInput(draft.holiday_close_time) : null;
+  const holidayNotes =
+    holidayMode === "case_by_case" ? cleanText(draft.holiday_notes) : null;
+
+  if (holidayMode === "special" && !isValidTimeRange(holidayOpenTime || "", holidayCloseTime || "")) {
+    return { error: "Informe um horario especial valido para feriados." };
+  }
+  if (holidayMode === "case_by_case" && !holidayNotes) {
+    return { error: "Explique como o atendimento em feriados e definido caso a caso." };
+  }
+
+  return {
+    operatingDays: selectedDays,
+    operatingHours,
+    timezoneName: cleanText(scheduleSettings?.timezone_name) || DEFAULT_SCHEDULE_TIMEZONE,
+    holidayMode,
+    holidayOpenTime,
+    holidayCloseTime,
+    holidayNotes,
+  };
+}
+
+function createScheduleOperationExperienceDraftFromSettings(
+  scheduleSettings?: ScheduleSettingsRow | null,
+  fallback: OperationExperienceDraftState = createEmptyOperationExperienceDraft(),
+) {
+  if (!scheduleSettings) return fallback;
+
+  const operatingDays = readCanonicalOperatingDays(scheduleSettings.operating_days);
+  const teamDayHours = readCanonicalDayHours(scheduleSettings.operating_hours);
+  const selectedDays = operatingDays.length ? operatingDays : fallback.team_days;
+  const firstWindow = teamDayHours[selectedDays[0]];
+  const sameHours =
+    Boolean(firstWindow) &&
+    selectedDays.every(
+      (day) =>
+        teamDayHours[day]?.open === firstWindow.open &&
+        teamDayHours[day]?.close === firstWindow.close,
+    );
+  const afterHoursConfigured = isConfiguredTimestamp(scheduleSettings.ai_after_hours_configured_at);
+  const agendaConfigured = isConfiguredTimestamp(scheduleSettings.agenda_capacity_configured_at);
+
+  return {
+    ...fallback,
+    team_days: selectedDays,
+    team_same_hours: sameHours ? "Sim" : "NÃ£o",
+    team_open_time: firstWindow?.open || fallback.team_open_time,
+    team_close_time: firstWindow?.close || fallback.team_close_time,
+    team_day_hours: teamDayHours,
+    holiday_mode: toUiHolidayMode(scheduleSettings.holiday_mode),
+    holiday_open_time: normalizeTimeInput(scheduleSettings.holiday_open_time),
+    holiday_close_time: normalizeTimeInput(scheduleSettings.holiday_close_time),
+    holiday_notes: cleanText(scheduleSettings.holiday_notes),
+    ai_after_hours_enabled: afterHoursConfigured
+      ? yesNoLabel(scheduleSettings.ai_after_hours_enabled)
+      : "NÃ£o definido",
+    ai_after_hours_mode: afterHoursConfigured
+      ? toUiAfterHoursMode(scheduleSettings.ai_after_hours_mode)
+      : "",
+    ai_after_hours_start: afterHoursConfigured
+      ? normalizeTimeInput(scheduleSettings.ai_after_hours_start)
+      : "",
+    ai_after_hours_end: afterHoursConfigured
+      ? normalizeTimeInput(scheduleSettings.ai_after_hours_end)
+      : "",
+    ai_attends_holidays: afterHoursConfigured
+      ? yesNoLabel(scheduleSettings.ai_attends_holidays)
+      : "",
+    agenda_daily_limit_mode: agendaConfigured
+      ? toUiAgendaDailyLimitMode(scheduleSettings.daily_limit_mode)
+      : "",
+    agenda_daily_limit:
+      agendaConfigured && scheduleSettings.daily_limit != null
+        ? String(scheduleSettings.daily_limit)
+        : "",
+    agenda_buffer_enabled: agendaConfigured
+      ? yesNoLabel(scheduleSettings.appointment_buffer_enabled)
+      : "",
+    agenda_buffer_minutes:
+      agendaConfigured && scheduleSettings.appointment_buffer_minutes != null
+        ? String(scheduleSettings.appointment_buffer_minutes)
+        : "",
+  };
+}
+
 function optionLabel(value: string, options: Option[]) {
   return options.find((option) => option.value === value)?.label || value;
 }
@@ -1608,28 +3111,168 @@ function buildBulletRows(items: Array<{ label: string; value: string }>) {
   return items.filter((item) => cleanText(item.value)).map((item) => `${item.label}: ${item.value}`);
 }
 
+type ConfigurationCardTone = "blue" | "yellow" | "red";
+
+function resolveCommercialPaymentCardStatus({
+  paymentSettings,
+  commercialDraft,
+  commercialExperienceDraft,
+}: {
+  paymentSettings: StorePaymentSettingsRow | null;
+  commercialDraft: CommercialDraftState;
+  commercialExperienceDraft: CommercialExperienceDraftState;
+}): { tone: ConfigurationCardTone; status: string } {
+  if (!paymentSettings) {
+    return { tone: "red", status: "Configuração crítica" };
+  }
+
+  const acceptedPaymentMethods = commercialDraft.accepted_payment_methods;
+  const pixIsIncomplete =
+    acceptedPaymentMethods.includes("pix") &&
+    (!cleanText(commercialDraft.pix_key_type) || !cleanText(commercialDraft.pix_key));
+  const installmentsEnabled = normalizeLoose(commercialDraft.installments_enabled) === "sim";
+  const maxInstallments = Number.parseInt(cleanText(commercialDraft.max_installments), 10);
+  const installmentsAreIncomplete =
+    installmentsEnabled &&
+    (!Number.isInteger(maxInstallments) ||
+      maxInstallments <= 0 ||
+      !cleanText(commercialDraft.installment_interest_policy) ||
+      !cleanText(commercialExperienceDraft.installments_interest_free_enabled) ||
+      (commercialExperienceDraft.installments_interest_free_enabled === "Sim" &&
+        (() => {
+          const interestFreeMax = Number.parseInt(
+            cleanText(commercialExperienceDraft.installments_interest_free_max),
+            10,
+          );
+          return (
+            !Number.isInteger(interestFreeMax) ||
+            interestFreeMax <= 0 ||
+            interestFreeMax > maxInstallments
+          );
+        })()) ||
+      (["regra_propria", "depende", "outro"].includes(
+        commercialExperienceDraft.installment_interest_above_mode,
+      ) &&
+        !cleanText(commercialExperienceDraft.installment_interest_above_rule)) ||
+      (commercialExperienceDraft.installment_minimum_enabled === "Sim" &&
+        !cleanText(commercialExperienceDraft.installment_minimum_amount)));
+  const financingIsIncomplete =
+    acceptedPaymentMethods.includes("financiamento") &&
+    (!cleanText(commercialExperienceDraft.financing_mode) ||
+      (commercialExperienceDraft.financing_mode === "parceiro" &&
+        !cleanText(commercialExperienceDraft.financing_partner_name)) ||
+      (["depende", "outro"].includes(commercialExperienceDraft.financing_mode) &&
+        !cleanText(commercialExperienceDraft.financing_other)) ||
+      !cleanText(commercialExperienceDraft.financing_credit_analysis) ||
+      !cleanText(commercialExperienceDraft.financing_simulation_by) ||
+      !cleanText(commercialExperienceDraft.financing_ai_policy));
+
+  if (
+    acceptedPaymentMethods.length === 0 ||
+    pixIsIncomplete ||
+    installmentsAreIncomplete ||
+    financingIsIncomplete
+  ) {
+    return { tone: "yellow", status: "Precisa de atenção" };
+  }
+
+  return { tone: "blue", status: "Configurado" };
+}
+
+function configurationCardBarClass(tone: ConfigurationCardTone) {
+  if (tone === "yellow") return "bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-300";
+  if (tone === "red") return "bg-gradient-to-r from-red-500 via-rose-500 to-red-400";
+  return "bg-gradient-to-r from-sky-500 via-cyan-500 to-cyan-400";
+}
+
+function configurationCardStatusClass(tone: ConfigurationCardTone) {
+  if (tone === "yellow") return "border-amber-200 bg-amber-50 text-amber-900";
+  if (tone === "red") return "border-red-200 bg-red-50 text-red-800";
+  return "border-sky-200 bg-sky-50 text-sky-800";
+}
+
 function SectionBlock({
   title,
   description,
   actions,
+  status,
+  tone = "blue",
+  className = "",
   children,
 }: {
   title: string;
   description?: string;
   actions?: React.ReactNode;
+  status?: string;
+  tone?: ConfigurationCardTone;
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-gray-200 bg-white p-4 md:p-5">
-      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-gray-900">{title}</h2>
-          {description ? <p className="mt-1 text-sm text-gray-600">{description}</p> : null}
+    <section className={`self-start overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm ${className}`}>
+      <div className={`h-0.5 w-full ${configurationCardBarClass(tone)}`} />
+      <div className="p-5">
+        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-gray-950">{title}</h2>
+            {description ? <p className="mt-1 max-w-3xl text-sm leading-5 text-gray-600">{description}</p> : null}
+          </div>
+          {status || actions ? (
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {status ? (
+                <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${configurationCardStatusClass(tone)}`}>
+                  {status}
+                </span>
+              ) : null}
+              {actions}
+            </div>
+          ) : null}
         </div>
-        {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+        {children}
       </div>
-      {children}
     </section>
+  );
+}
+
+function PreparedEditButton() {
+  return (
+    <button
+      type="button"
+      disabled
+      title="A edição será habilitada quando esta autoridade for conectada ao fluxo correspondente."
+      className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-semibold text-gray-400"
+    >
+      Editar
+    </button>
+  );
+}
+
+function PreparedSettingsCard({
+  title,
+  description,
+  items,
+  tone = "yellow",
+  status = "Aguardando configuração",
+  className = "",
+}: {
+  title: string;
+  description: string;
+  items: Array<{ label: string; value: string }>;
+  tone?: ConfigurationCardTone;
+  status?: string;
+  className?: string;
+}) {
+  return (
+    <SectionBlock
+      title={title}
+      description={description}
+      tone={tone}
+      status={status}
+      className={className}
+      actions={<PreparedEditButton />}
+    >
+      <SummaryList items={buildBulletRows(items)} />
+    </SectionBlock>
   );
 }
 
@@ -1645,16 +3288,14 @@ function QuickCard({
   return (
     <Link
       href={href}
-      className="group rounded-xl border border-gray-200 bg-white px-3 py-2 transition hover:border-black/20 hover:bg-gray-50"
+      className="group flex min-h-[44px] items-center justify-between rounded-xl border border-gray-200 bg-gray-50/70 px-3.5 py-2 transition hover:border-cyan-300 hover:bg-cyan-50/40"
     >
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="min-w-0 text-sm font-semibold text-gray-900">{title}</h3>
-        {typeof count === "number" ? (
-          <span className="inline-flex min-w-[1.7rem] shrink-0 justify-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-700">
-            {count}
-          </span>
-        ) : null}
-      </div>
+      <h3 className="min-w-0 text-sm font-semibold text-gray-700 transition group-hover:text-gray-950">{title}</h3>
+      {typeof count === "number" ? (
+        <span className="ml-4 inline-flex min-w-10 shrink-0 justify-center rounded-lg bg-white px-2.5 py-1 text-sm font-bold tabular-nums text-gray-950 ring-1 ring-gray-200">
+          {count}
+        </span>
+      ) : null}
     </Link>
   );
 }
@@ -1688,7 +3329,7 @@ function StatusCard({
   hint?: string;
 }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-3">
+    <div className="min-h-[104px] rounded-2xl border border-gray-200 bg-gray-50/70 px-4 py-3.5">
       <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
         {label}
       </div>
@@ -1702,7 +3343,18 @@ function StatusCard({
         </span>
       </div>
       {hint ? (
-        <div className="mt-2 max-h-[4.5rem] overflow-hidden text-xs leading-5 text-gray-600">{hint}</div>
+        <div
+          className="mt-2 text-xs leading-5 text-gray-600"
+          title={hint}
+          style={{
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+          }}
+        >
+          {hint}
+        </div>
       ) : null}
     </div>
   );
@@ -1710,19 +3362,43 @@ function StatusCard({
 
 function SummaryList({ items }: { items: string[] }) {
   if (items.length === 0) {
-    return <div className="text-sm text-gray-500">Nada relevante para mostrar ainda.</div>;
+    return <div className="py-2 text-sm text-gray-500">Nada relevante para mostrar ainda.</div>;
   }
 
   return (
-    <div className="space-y-2">
-      {items.map((item, index) => (
-        <div
-          key={`${item}-${index}`}
-          className="min-w-0 overflow-hidden break-words whitespace-pre-wrap rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm leading-6 text-gray-700"
-        >
-          {item}
-        </div>
-      ))}
+    <div className="divide-y divide-gray-100">
+      {items.map((item, index) => {
+        const separatorIndex = item.indexOf(":");
+        const hasLabel = separatorIndex > 0 && separatorIndex < 48;
+        const label = hasLabel ? item.slice(0, separatorIndex).trim() : "";
+        const value = hasLabel ? item.slice(separatorIndex + 1).trim() : item.trim();
+
+        return (
+          <div
+            key={`${item}-${index}`}
+            className="grid gap-1 py-2.5 sm:grid-cols-[minmax(150px,0.42fr)_minmax(0,1fr)] sm:gap-5"
+          >
+            {hasLabel ? (
+              <div className="text-[13px] font-medium text-gray-500">{label}</div>
+            ) : null}
+            <div
+              title={value}
+              className={[
+                "min-w-0 break-words text-sm font-semibold leading-5 text-gray-950",
+                hasLabel ? "" : "sm:col-span-2",
+              ].join(" ")}
+              style={{
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+              }}
+            >
+              {value}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1768,10 +3444,10 @@ function SettingsTabButton({
       type="button"
       onClick={onClick}
       className={[
-        "min-w-0 w-full rounded-xl border px-3 py-2 text-left transition",
+        "min-w-0 w-full rounded-lg px-3 py-2 text-center transition",
         active
-          ? "border-black bg-black text-white"
-          : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
+          ? "bg-black text-white shadow-sm"
+          : "text-gray-600 hover:bg-gray-100 hover:text-gray-900",
       ].join(" ")}
     >
       <div className="break-words text-[13px] font-semibold leading-tight">{label}</div>
@@ -1812,6 +3488,151 @@ function ChoiceButtonGroup({
   );
 }
 
+function RepeatableBrandSelect({
+  values,
+  onChange,
+  options,
+  addLabel = "Adicionar mais uma opção",
+  selectPlaceholder = "Selecione uma opção",
+}: {
+  values: string[];
+  onChange: (values: string[]) => void;
+  options: Option[];
+  addLabel?: string;
+  selectPlaceholder?: string;
+}) {
+  const rows = values.length > 0 ? values : [""];
+
+  const updateRow = (index: number, nextValue: string) => {
+    const next = [...rows];
+    next[index] = nextValue;
+    onChange(next.filter((item, itemIndex) => cleanText(item) || itemIndex <= index));
+  };
+
+  const removeRow = (index: number) => {
+    const next = rows.filter((_, itemIndex) => itemIndex !== index);
+    onChange(next.length > 0 ? next : []);
+  };
+
+  return (
+    <div className="space-y-2">
+      {rows.map((rowValue, index) => (
+        <div key={`brand-row-${index}`} className="flex items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <select
+              value={rowValue}
+              onChange={(event) => updateRow(index, event.target.value)}
+              className="w-full appearance-none rounded-xl border border-gray-200 bg-white py-2.5 pl-3 pr-11 text-sm outline-none focus:border-black"
+            >
+              <option value="">{selectPlaceholder}</option>
+              {options.map((option) => {
+                const alreadyUsed =
+                  option.value !== "outro" &&
+                  rows.some((value, itemIndex) => itemIndex !== index && value === option.value);
+                return (
+                  <option key={option.value} value={option.value} disabled={alreadyUsed}>
+                    {option.label}
+                  </option>
+                );
+              })}
+            </select>
+            <span aria-hidden="true" className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-sm font-bold text-gray-500">⌄</span>
+          </div>
+          {(rows.length > 1 || cleanText(rowValue)) ? (
+            <button
+              type="button"
+              onClick={() => removeRow(index)}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+              aria-label="Remover item"
+            >
+              Remover
+            </button>
+          ) : null}
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={() => onChange([...rows.filter((item) => cleanText(item)), ""])}
+        className="inline-flex items-center gap-2 rounded-xl border border-dashed border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:border-cyan-300 hover:bg-cyan-50/40"
+      >
+        <span className="text-base leading-none">+</span>
+        {addLabel}
+      </button>
+    </div>
+  );
+}
+
+
+function MultiSelectBoxGroup({
+  values,
+  onToggle,
+  options,
+  columns = "md:grid-cols-2",
+  disabled = false,
+}: {
+  values: string[];
+  onToggle: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+  columns?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className={`grid gap-2 ${columns}`}>
+      {options.map((option) => {
+        const active = values.includes(option.value);
+        return (
+          <button
+            key={option.value}
+            type="button"
+            disabled={disabled}
+            onClick={() => onToggle(option.value)}
+            className={[
+              "rounded-xl border px-3 py-2.5 text-left text-sm transition",
+              disabled
+                ? "cursor-not-allowed border-gray-200 bg-gray-50 text-gray-400"
+                : active
+                  ? "border-cyan-500 bg-cyan-50 text-cyan-950"
+                  : "border-gray-200 bg-white text-gray-700 hover:border-cyan-300 hover:bg-cyan-50/40",
+            ].join(" ")}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function RequiredOperationDetailField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  rows = 2,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  rows?: number;
+}) {
+  return (
+    <label className="mt-3 block space-y-1.5 rounded-xl border border-amber-200 bg-amber-50/60 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-950">{label}</span>
+        <span className="rounded-full border border-amber-300 bg-white px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-amber-800">Obrigatório para salvar</span>
+      </div>
+      <textarea
+        required
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        rows={rows}
+        className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100"
+      />
+    </label>
+  );
+}
 
 export default function ConfiguracoesPage() {
   const { organizationId, activeStoreId, activeStore, refreshStores } = useStoreContext();
@@ -1826,6 +3647,16 @@ export default function ConfiguracoesPage() {
     acessorios: 0,
     outros: 0,
   });
+  const [poolCatalogSuggestionRows, setPoolCatalogSuggestionRows] = useState<PoolCatalogSuggestionRow[]>([]);
+  const [catalogSuggestionRows, setCatalogSuggestionRows] = useState<CatalogItemRow[]>([]);
+  const [catalogQuality, setCatalogQuality] = useState<CatalogQualityState>({
+    total: 0,
+    withoutPrice: 0,
+    unknownStock: 0,
+    withoutPhotos: 0,
+    inactive: 0,
+  });
+  const [isCatalogImportedFilesOpen, setIsCatalogImportedFilesOpen] = useState(false);
   const [onboarding, setOnboarding] = useState<OnboardingRow | null>(null);
   const [answers, setAnswers] = useState<AnswersMap>({});
   const [scheduleSettings, setScheduleSettings] = useState<ScheduleSettingsRow | null>(null);
@@ -1843,24 +3674,60 @@ export default function ConfiguracoesPage() {
     useState<StoreMonthlySalesGoalInput>(
       normalizeStoreMonthlySalesGoalRow(null),
     );
-  const [isMonthlySalesGoalEditing, setIsMonthlySalesGoalEditing] =
-    useState(false);
+  const [isMonthlySalesGoalEditing, setIsMonthlySalesGoalEditing] = useState(false);
   const [discountSettings, setDiscountSettings] = useState<StoreDiscountSettingsRow | null>(null);
   const [highValueDiscountSettings, setHighValueDiscountSettings] =
     useState<StoreHighValueDiscountSettingsRow | null>(null);
-  const [activeTab, setActiveTab] = useState<SettingsTabId>("visao-geral");
+  const [activeTab, setActiveTab] = useState<SettingsTabId>("geral");
   const [isOverviewEditing, setIsOverviewEditing] = useState(false);
+  const [overviewEditTarget, setOverviewEditTarget] = useState<"store" | "address" | "responsible" | null>(null);
   const [isStrategyEditing, setIsStrategyEditing] = useState(false);
+  const [strategyEditTarget, setStrategyEditTarget] = useState<"region" | "services" | "offerings" | "strategy" | "brands" | "ai" | null>(null);
   const [isOperationEditing, setIsOperationEditing] = useState(false);
+  const [operationEditTarget, setOperationEditTarget] = useState<
+    | "hours"
+    | "after_hours"
+    | "agenda"
+    | "region"
+    | "technical_visit"
+    | "installation"
+    | "pool_replacement"
+    | "delivery"
+    | "pickup"
+    | "technical_services"
+    | null
+  >(null);
+  const [generalAddressDraft, setGeneralAddressDraft] = useState<GeneralAddressDraftState>(createEmptyGeneralAddressDraft());
+  const [savedGeneralAddress, setSavedGeneralAddress] = useState<GeneralAddressDraftState>(createEmptyGeneralAddressDraft());
+  const [generalAddressCepLookupLoading, setGeneralAddressCepLookupLoading] = useState(false);
+  const [generalAddressCepLookupMessage, setGeneralAddressCepLookupMessage] = useState<string | null>(null);
+  const [operationExperienceDraft, setOperationExperienceDraft] = useState<OperationExperienceDraftState>(createEmptyOperationExperienceDraft());
+  const [savedOperationExperience, setSavedOperationExperience] = useState<OperationExperienceDraftState>(createEmptyOperationExperienceDraft());
+  const [operationExecutionPolicies, setOperationExecutionPolicies] =
+    useState<StoreOperationExecutionPoliciesRow | null>(null);
   const [overviewDraft, setOverviewDraft] = useState<Record<string, string>>({});
   const [strategyDraft, setStrategyDraft] = useState<StoreStrategySettingsInput>(
     createStoreStrategySettingsInputFromSources({}),
   );
   const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}, null, null));
   const [isCommercialEditing, setIsCommercialEditing] = useState(false);
+  const [commercialEditTarget, setCommercialEditTarget] = useState<"ai_price" | "payments" | null>(null);
   const [commercialDraft, setCommercialDraft] = useState<CommercialDraftState>(
     createCommercialDraftFromAnswersWithPaymentSettings({}),
   );
+  const [commercialExperienceDraft, setCommercialExperienceDraft] =
+    useState<CommercialExperienceDraftState>(createEmptyCommercialExperienceDraft());
+  const [savedCommercialExperience, setSavedCommercialExperience] =
+    useState<CommercialExperienceDraftState>(createEmptyCommercialExperienceDraft());
+  const [commercialExperienceEditTarget, setCommercialExperienceEditTarget] = useState<
+    | "suggestions"
+    | "payment_blocks"
+    | "quote"
+    | "post_sale"
+    | "warranty"
+    | "cancellation"
+    | null
+  >(null);
   const [isDiscountEditing, setIsDiscountEditing] = useState(false);
   const [discountDraft, setDiscountDraft] = useState<DiscountDraftState>(
     createDiscountDraftFromAnswers({}, null, null),
@@ -1871,6 +3738,16 @@ export default function ConfiguracoesPage() {
     createChannelDraftFromSources({}, null),
   );
   const [isActivationEditing, setIsActivationEditing] = useState(false);
+  const [responsibleEditTarget, setResponsibleEditTarget] = useState<"primary" | "additional" | null>(null);
+  const [isBrandEditing, setIsBrandEditing] = useState(false);
+  const [brandExperienceDraft, setBrandExperienceDraft] = useState<BrandExperienceDraftState>(createEmptyBrandExperienceDraft());
+  const [savedBrandExperience, setSavedBrandExperience] = useState<BrandExperienceDraftState>(createEmptyBrandExperienceDraft());
+  const [isContractPolicyEditing, setIsContractPolicyEditing] = useState(false);
+  const [contractExperienceDraft, setContractExperienceDraft] = useState<ContractExperienceDraftState>(createEmptyContractExperienceDraft());
+  const [savedContractExperience, setSavedContractExperience] = useState<ContractExperienceDraftState>(createEmptyContractExperienceDraft());
+  const [isContractsEditing, setIsContractsEditing] = useState(false);
+  const [commercialWhatsappDraft, setCommercialWhatsappDraft] = useState("");
+  const [isCommercialWhatsappEditing, setIsCommercialWhatsappEditing] = useState(false);
   const [primaryResponsibleDraft, setPrimaryResponsibleDraft] = useState<ResponsiblePersonDraft>(createEmptyResponsibleDraft(true));
   const [additionalResponsiblesDraft, setAdditionalResponsiblesDraft] = useState<ResponsiblePersonDraft[]>([]);
   const [activationConfirmInformationDraft, setActivationConfirmInformationDraft] = useState(false);
@@ -1895,6 +3772,7 @@ export default function ConfiguracoesPage() {
   const [manualCatalogItemModalSuccess, setManualCatalogItemModalSuccess] = useState<string | null>(null);
   const [storeBranding, setStoreBranding] = useState<StoreBrandingSettingsRow | null>(null);
   const [storeLogoPreviewUrl, setStoreLogoPreviewUrl] = useState<string | null>(null);
+  const [isIdentityEditing, setIsIdentityEditing] = useState(false);
   const [storeWhatsappStatus, setStoreWhatsappStatus] = useState<StoreWhatsappStatusApiResponse | null>(null);
   const [storeWhatsappStatusLoading, setStoreWhatsappStatusLoading] = useState(false);
   const [storeWhatsappStatusErrorText, setStoreWhatsappStatusErrorText] = useState<string | null>(null);
@@ -1904,6 +3782,7 @@ export default function ConfiguracoesPage() {
   const [storeContractTemplate, setStoreContractTemplate] = useState<StoreContractTemplateRow | null>(null);
   const [storeContractActiveVersion, setStoreContractActiveVersion] = useState<StoreContractTemplateVersionRow | null>(null);
   const [storeContractVersions, setStoreContractVersions] = useState<StoreContractTemplateVersionRow[]>([]);
+  const [showContractVersionHistory, setShowContractVersionHistory] = useState(false);
   const [storeContractExtractedRules, setStoreContractExtractedRules] = useState<
     StoreContractTemplateExtractedRuleRow[]
   >([]);
@@ -1930,6 +3809,9 @@ export default function ConfiguracoesPage() {
       }
     | null
   >(null);
+  const [contractContentSearchQuery, setContractContentSearchQuery] = useState("");
+  const [contractContentSearchIndex, setContractContentSearchIndex] = useState(0);
+  const contractContentModalRef = useRef<HTMLDivElement | null>(null);
   const [canonicalPrimaryResponsible, setCanonicalPrimaryResponsible] =
     useState<CanonicalPrimaryResponsible | null>(null);
   const [hasLoadedCanonicalPrimaryResponsible, setHasLoadedCanonicalPrimaryResponsible] =
@@ -1946,6 +3828,19 @@ export default function ConfiguracoesPage() {
   );
   const storeLogoInputRef = useRef<HTMLInputElement | null>(null);
   const contractBaseInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!contractContentModal || !cleanText(contractContentSearchQuery)) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      const target = contractContentModalRef.current?.querySelector<HTMLElement>(
+        '[data-contract-current-search-target="true"]',
+      );
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [contractContentModal, contractContentSearchIndex, contractContentSearchQuery]);
   const configDraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStoreId) return null;
     return `zion_configuracoes_draft:${organizationId}:${activeStoreId}`;
@@ -1959,19 +3854,16 @@ export default function ConfiguracoesPage() {
 
   const tabs = useMemo(
     () => [
-      { id: "visao-geral" as const, label: "Visão Geral" },
-      { id: "estrategia" as const, label: "Estratégia" },
-      { id: "catalogo" as const, label: "Catálogo" },
+      { id: "geral" as const, label: "Geral" },
       { id: "operacao" as const, label: "Operação" },
-      { id: "comercial-ia" as const, label: "Comercial e IA" },
-      { id: "responsavel-ativacao" as const, label: "Responsável e ativação" },
-      { id: "descontos" as const, label: "Descontos" },
-      { id: "canais-integracoes" as const, label: "Canais e integrações" },
-      { id: "contratos" as const, label: "Contratos" },
-      { id: "identidade" as const, label: "Identidade da loja" },
+      { id: "catalogo" as const, label: "Catálogo" },
+      { id: "comercial" as const, label: "Comercial" },
+      { id: "contratos-marca" as const, label: "Contratos e Marca" },
+      { id: "canais-integracoes" as const, label: "Canais e Integrações" },
     ],
     []
   );
+
 
   async function fetchStoreBrandingFromApi(storeIdOverride?: string | null) {
     const resolvedStoreId = cleanText(storeIdOverride) || cleanText(activeStoreId);
@@ -2149,6 +4041,7 @@ export default function ConfiguracoesPage() {
       applyStoreContractTemplateResponse(result);
       setContractsSuccessText("Contrato base enviado com sucesso.");
       setSelectedContractBaseFile(null);
+      if (contractBaseInputRef.current) contractBaseInputRef.current.value = "";
     } catch (error: any) {
       setContractsErrorText(error?.message || "Erro ao enviar o contrato base.");
     } finally {
@@ -2156,9 +4049,34 @@ export default function ConfiguracoesPage() {
     }
   }
 
+  function resolveStoreContractVersionAccess(versionId: string) {
+    const version = storeContractVersions.find((item) => item.id === versionId);
+    const normalizedStatus = normalizeContractVersionStatusValue(version?.status);
+    const isActiveVersion =
+      storeContractActiveVersion?.id === versionId || normalizedStatus === "active";
+    const versionRules = storeContractExtractedRules.filter(
+      (rule) => rule.template_version_id === versionId
+    );
+    const hasReadText = Boolean(cleanText(version?.raw_extracted_text));
+
+    return {
+      version,
+      versionRules,
+      isActiveVersion,
+      hasReadText,
+    };
+  }
+
   async function handleApproveContractVersion(versionId: string) {
     if (!activeStoreId) {
       setContractsErrorText("Nenhuma loja ativa foi encontrada para aprovar essa versao.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    const versionAccess = resolveStoreContractVersionAccess(versionId);
+    if (!canApproveStoreContractVersion(versionAccess)) {
+      setContractsErrorText("Essa versao ainda nao pode ser aprovada.");
       setContractsSuccessText(null);
       return;
     }
@@ -2199,6 +4117,13 @@ export default function ConfiguracoesPage() {
   async function handleRejectContractVersion(versionId: string) {
     if (!activeStoreId) {
       setContractsErrorText("Nenhuma loja ativa foi encontrada para rejeitar essa versao.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    const versionAccess = resolveStoreContractVersionAccess(versionId);
+    if (!isMutableStoreContractVersion(versionAccess)) {
+      setContractsErrorText("Essa versao nao pode mais ser rejeitada.");
       setContractsSuccessText(null);
       return;
     }
@@ -2249,6 +4174,13 @@ export default function ConfiguracoesPage() {
       return;
     }
 
+    const versionAccess = resolveStoreContractVersionAccess(versionId);
+    if (!canAnalyzeStoreContractVersion(versionAccess)) {
+      setContractsErrorText("Essa versao nao pode ser analisada novamente.");
+      setContractsSuccessText(null);
+      return;
+    }
+
     setContractActionVersionId(versionId);
     setContractActionType("analyze");
     setContractsErrorText(null);
@@ -2285,6 +4217,13 @@ export default function ConfiguracoesPage() {
   async function handleExtractContractRules(versionId: string) {
     if (!activeStoreId) {
       setContractsErrorText("Nenhuma loja ativa foi encontrada para buscar regras.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    const versionAccess = resolveStoreContractVersionAccess(versionId);
+    if (!canExtractRulesForStoreContractVersion(versionAccess)) {
+      setContractsErrorText("Essa versao nao pode ter regras extraidas agora.");
       setContractsSuccessText(null);
       return;
     }
@@ -2333,6 +4272,16 @@ export default function ConfiguracoesPage() {
   }) {
     if (!activeStoreId) {
       setContractsErrorText("Nenhuma loja ativa foi encontrada para revisar essa regra.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    const rule = storeContractExtractedRules.find((item) => item.id === args.ruleId);
+    const versionAccess = rule
+      ? resolveStoreContractVersionAccess(rule.template_version_id)
+      : null;
+    if (!versionAccess || !canReviewRulesForStoreContractVersion(versionAccess)) {
+      setContractsErrorText("Essa regra pertence a uma versao somente leitura.");
       setContractsSuccessText(null);
       return;
     }
@@ -2390,6 +4339,9 @@ export default function ConfiguracoesPage() {
   const fetchPageData = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
       setCounts({ pools: 0, quimicos: 0, acessorios: 0, outros: 0 });
+      setPoolCatalogSuggestionRows([]);
+      setCatalogSuggestionRows([]);
+      setCatalogQuality({ total: 0, withoutPrice: 0, unknownStock: 0, withoutPhotos: 0, inactive: 0 });
       setOnboarding(null);
       setAnswers({});
       setScheduleSettings(null);
@@ -2435,12 +4387,12 @@ export default function ConfiguracoesPage() {
       ] = await Promise.all([
         supabase
           .from("pools")
-          .select("id", { count: "exact", head: true })
+          .select("id, name, is_active, price_status, stock_status", { count: "exact" })
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId),
         supabase
           .from("store_catalog_items")
-          .select("id, metadata")
+          .select("id, name, is_active, price_status, stock_status, metadata")
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId),
         supabase.rpc("onboarding_get_store_onboarding_scoped", {
@@ -2453,14 +4405,14 @@ export default function ConfiguracoesPage() {
         }),
         supabase
           .from("store_schedule_settings")
-          .select("id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, technical_visit_days, after_hours_behavior, notes, created_at, updated_at")
+          .select("id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, technical_visit_days, after_hours_behavior, notes, enforce_operating_window, timezone_name, holiday_mode, holiday_open_time, holiday_close_time, holiday_notes, human_schedule_configured_at, ai_after_hours_configured_at, agenda_capacity_configured_at, daily_limit_mode, daily_limit, appointment_buffer_enabled, appointment_buffer_minutes, ai_after_hours_enabled, ai_after_hours_mode, ai_after_hours_start, ai_after_hours_end, ai_attends_holidays, created_at, updated_at")
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
           .maybeSingle(),
         supabase
           .from("store_operation_settings")
           .select(
-            "organization_id, store_id, offers_installation, average_installation_time_days, installation_days_rule, installation_process_notes, offers_technical_visit, technical_visit_days_rule, technical_visit_rules, technical_visit_rules_other, created_at, updated_at",
+            "organization_id, store_id, offers_installation, average_installation_time_days, installation_days_rule, installation_process_notes, offers_technical_visit, technical_visit_days_rule, technical_visit_rules, technical_visit_rules_other, technical_visit_pricing_mode, technical_visit_fixed_fee_cents, technical_visit_case_by_case_rule, technical_visit_fee_deductible_from_purchase, created_at, updated_at",
           )
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
@@ -2468,7 +4420,7 @@ export default function ConfiguracoesPage() {
         supabase
           .from("store_strategy_settings")
           .select(
-            "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, created_at, updated_at",
+            "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_configured_at, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, created_at, updated_at",
           )
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
@@ -2551,31 +4503,23 @@ export default function ConfiguracoesPage() {
       }
       const nextCanonicalPrimaryResponsible =
         primaryResponsibleResult.responsible ?? null;
-
       const monthlySalesGoalResult =
         (await monthlySalesGoalResponse.json().catch(() => null)) as
-          | {
-              ok: true;
-              goal:
-                | StoreMonthlySalesGoalRow
-                | StoreMonthlySalesGoalInput
-                | null;
-            }
+          | { ok: true; goal: StoreMonthlySalesGoalRow | StoreMonthlySalesGoalInput | null }
           | { ok: false; message?: string | null }
           | null;
 
       if (!monthlySalesGoalResponse.ok || !monthlySalesGoalResult?.ok) {
-        const failure =
-          monthlySalesGoalResult as { message?: string | null } | null;
-
+        const failure = monthlySalesGoalResult as { message?: string | null } | null;
         throw new Error(
           failure?.message ||
             "Nao foi possivel carregar a meta mensal da loja.",
         );
       }
 
-      const nextMonthlySalesGoal =
-        normalizeMonthlySalesGoalApiValue(monthlySalesGoalResult.goal);
+      const nextMonthlySalesGoal = normalizeMonthlySalesGoalApiValue(
+        monthlySalesGoalResult.goal,
+      );
 
       const nextCounts: CountState = {
         pools: poolsResult.count ?? 0,
@@ -2649,6 +4593,63 @@ export default function ConfiguracoesPage() {
         return bTime - aTime;
       });
 
+      const poolRowsForQuality = (poolsResult.data ?? []) as PoolCatalogSuggestionRow[];
+      const catalogRowsForQuality = (catalogResult.data ?? []) as CatalogItemRow[];
+      const poolIdsForQuality = poolRowsForQuality.map((item) => item.id).filter(Boolean);
+      const catalogIdsForQuality = catalogRowsForQuality.map((item) => item.id).filter(Boolean);
+      const poolIdsWithPhotos = new Set<string>();
+      const catalogIdsWithPhotos = new Set<string>();
+
+      for (const ids of chunkArray(poolIdsForQuality, 100)) {
+        if (ids.length === 0) continue;
+        const { data: photoRows, error: photoError } = await supabase
+          .from("pool_photos")
+          .select("pool_id")
+          .in("pool_id", ids);
+        if (photoError) throw photoError;
+        for (const row of (photoRows ?? []) as Array<{ pool_id: string }>) {
+          if (row.pool_id) poolIdsWithPhotos.add(row.pool_id);
+        }
+      }
+
+      for (const ids of chunkArray(catalogIdsForQuality, 100)) {
+        if (ids.length === 0) continue;
+        const { data: photoRows, error: photoError } = await supabase
+          .from("store_catalog_item_photos")
+          .select("catalog_item_id")
+          .in("catalog_item_id", ids);
+        if (photoError) throw photoError;
+        for (const row of (photoRows ?? []) as Array<{ catalog_item_id: string }>) {
+          if (row.catalog_item_id) catalogIdsWithPhotos.add(row.catalog_item_id);
+        }
+      }
+
+      const allQualityRows = [
+        ...poolRowsForQuality.map((item) => ({
+          id: item.id,
+          isActive: item.is_active !== false,
+          priceStatus: cleanText(item.price_status),
+          stockStatus: cleanText(item.stock_status),
+          hasPhoto: poolIdsWithPhotos.has(item.id),
+        })),
+        ...catalogRowsForQuality.map((item) => ({
+          id: item.id,
+          isActive: item.is_active !== false,
+          priceStatus: cleanText(item.price_status),
+          stockStatus: cleanText(item.stock_status),
+          hasPhoto: catalogIdsWithPhotos.has(item.id),
+        })),
+      ];
+
+      const activeQualityRows = allQualityRows.filter((item) => item.isActive);
+      const nextCatalogQuality: CatalogQualityState = {
+        total: allQualityRows.length,
+        withoutPrice: activeQualityRows.filter((item) => normalizeLoose(item.priceStatus) !== "valid").length,
+        unknownStock: activeQualityRows.filter((item) => ["", "unknown"].includes(normalizeLoose(item.stockStatus))).length,
+        withoutPhotos: activeQualityRows.filter((item) => !item.hasPhoto).length,
+        inactive: allQualityRows.filter((item) => !item.isActive).length,
+      };
+
       const nextAnswers = (answersResult.data ?? {}) as AnswersMap;
       const nextStrategySettings =
         (strategySettingsResult.data ?? null) as StoreStrategySettingsRow | null;
@@ -2658,6 +4659,9 @@ export default function ConfiguracoesPage() {
       });
 
       setCounts(nextCounts);
+      setPoolCatalogSuggestionRows(poolRowsForQuality);
+      setCatalogSuggestionRows(catalogRowsForQuality);
+      setCatalogQuality(nextCatalogQuality);
       setOnboarding((onboardingResult.data ?? null) as OnboardingRow | null);
       setAnswers({
         ...nextAnswers,
@@ -2693,7 +4697,21 @@ export default function ConfiguracoesPage() {
         strategy_ai_store_summary:
           deriveStoreStrategyAiStoreSummary(nextStrategyInput),
       });
-      setScheduleSettings((scheduleSettingsResult.data ?? null) as ScheduleSettingsRow | null);
+      const nextScheduleSettings =
+        (scheduleSettingsResult.data ?? null) as ScheduleSettingsRow | null;
+      setScheduleSettings(nextScheduleSettings);
+      setSavedOperationExperience((current) =>
+        createScheduleOperationExperienceDraftFromSettings(
+          nextScheduleSettings,
+          current,
+        ),
+      );
+      setOperationExperienceDraft((current) =>
+        createScheduleOperationExperienceDraftFromSettings(
+          nextScheduleSettings,
+          current,
+        ),
+      );
       setOperationSettings(
         (operationSettingsResult.data ?? null) as StoreOperationSettingsRow | null,
       );
@@ -2885,10 +4903,49 @@ export default function ConfiguracoesPage() {
       if (parsed.strategyDraft) setStrategyDraft(parsed.strategyDraft);
       if (parsed.operationDraft) {
         setOperationDraft((current) =>
-          normalizePersistedOperationDraft(current, parsed.operationDraft),
+          restoreOperationDraftWithoutScheduleAuthority(current, parsed.operationDraft ?? {}),
         );
       }
       if (parsed.commercialDraft) setCommercialDraft(parsed.commercialDraft);
+      if (parsed.commercialExperienceDraft) {
+        setCommercialExperienceDraft({
+          ...createEmptyCommercialExperienceDraft(),
+          ...parsed.commercialExperienceDraft,
+        });
+      }
+      if (parsed.savedCommercialExperience) {
+        setSavedCommercialExperience({
+          ...createEmptyCommercialExperienceDraft(),
+          ...parsed.savedCommercialExperience,
+        });
+      }
+      if (parsed.brandExperienceDraft) {
+        setBrandExperienceDraft({
+          ...createEmptyBrandExperienceDraft(),
+          ...parsed.brandExperienceDraft,
+        });
+      }
+      if (parsed.savedBrandExperience) {
+        setSavedBrandExperience({
+          ...createEmptyBrandExperienceDraft(),
+          ...parsed.savedBrandExperience,
+        });
+      }
+      if (parsed.contractExperienceDraft) {
+        setContractExperienceDraft({
+          ...createEmptyContractExperienceDraft(),
+          ...parsed.contractExperienceDraft,
+        });
+      }
+      if (parsed.savedContractExperience) {
+        setSavedContractExperience({
+          ...createEmptyContractExperienceDraft(),
+          ...parsed.savedContractExperience,
+        });
+      }
+      if (typeof parsed.isCatalogImportedFilesOpen === "boolean") {
+        setIsCatalogImportedFilesOpen(parsed.isCatalogImportedFilesOpen);
+      }
       if (parsed.discountDraft) setDiscountDraft(parsed.discountDraft);
       if (parsed.channelDraft) setChannelDraft(parsed.channelDraft);
       if (parsed.primaryResponsibleDraft) setPrimaryResponsibleDraft(parsed.primaryResponsibleDraft);
@@ -2939,6 +4996,13 @@ export default function ConfiguracoesPage() {
       strategyDraft,
       operationDraft,
       commercialDraft,
+      commercialExperienceDraft,
+      savedCommercialExperience,
+      brandExperienceDraft,
+      savedBrandExperience,
+      contractExperienceDraft,
+      savedContractExperience,
+      isCatalogImportedFilesOpen,
       discountDraft,
       channelDraft,
       primaryResponsibleDraft,
@@ -2966,6 +5030,13 @@ export default function ConfiguracoesPage() {
     strategyDraft,
     operationDraft,
     commercialDraft,
+    commercialExperienceDraft,
+    savedCommercialExperience,
+    brandExperienceDraft,
+    savedBrandExperience,
+    contractExperienceDraft,
+    savedContractExperience,
+    isCatalogImportedFilesOpen,
     discountDraft,
     channelDraft,
     primaryResponsibleDraft,
@@ -3055,6 +5126,61 @@ export default function ConfiguracoesPage() {
     [counts]
   );
 
+
+  const catalogSuggestionItems = useMemo<CatalogSuggestionItem[]>(() => {
+    const items: CatalogSuggestionItem[] = [];
+
+    for (const pool of poolCatalogSuggestionRows) {
+      if (pool.is_active === false) continue;
+      const name = cleanText(pool.name);
+      if (!name) continue;
+      items.push({
+        key: `pool:${pool.id}`,
+        category: "piscinas",
+        label: name,
+      });
+    }
+
+    for (const item of catalogSuggestionRows) {
+      if (item.is_active === false) continue;
+      const name = cleanText(item.name);
+      if (!name) continue;
+
+      const rawCategory = normalizeLoose(item.metadata?.categoria);
+      let category: CatalogSuggestionItem["category"] = "outros_catalogo";
+      if (rawCategory === "quimicos" || rawCategory === "quimico") category = "quimicos";
+      else if (rawCategory === "acessorios" || rawCategory === "acessorio") category = "acessorios";
+      else if (rawCategory === "equipamentos" || rawCategory === "equipamento") category = "equipamentos";
+
+      const brand = cleanText(item.metadata?.brand);
+      items.push({
+        key: `catalog:${item.id}`,
+        category,
+        label: brand ? `${name} • ${brand}` : name,
+      });
+    }
+
+    return items.sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+  }, [catalogSuggestionRows, poolCatalogSuggestionRows]);
+
+
+  const suggestionsCommercialConfigured = useMemo(() => {
+    if (savedCommercialExperience.suggestions_enabled === "Não") return true;
+    if (savedCommercialExperience.suggestions_enabled !== "Sim") return false;
+    if (savedCommercialExperience.suggestion_types.length === 0) return false;
+    if (!cleanText(savedCommercialExperience.better_option_policy)) return false;
+    if (savedCommercialExperience.suggestion_types.includes("outro") && !cleanText(savedCommercialExperience.suggestion_other)) return false;
+
+    return CATALOG_BACKED_SUGGESTION_TYPES.filter((type) =>
+      savedCommercialExperience.suggestion_types.includes(type),
+    ).every((type) => {
+      const availableItems = catalogSuggestionItems.filter((item) => item.category === type);
+      return availableItems.length > 0 && availableItems.some((item) =>
+        savedCommercialExperience.suggestion_catalog_item_keys.includes(item.key),
+      );
+    });
+  }, [catalogSuggestionItems, savedCommercialExperience]);
+
   const onboardingStatus = useMemo(
     () => resolveOnboardingLabel(onboarding?.status),
     [onboarding?.status]
@@ -3068,6 +5194,20 @@ export default function ConfiguracoesPage() {
       }),
     [answers, strategySettings],
   );
+
+  const canonicalCommercialExperience = useMemo(
+    () => createCanonicalCommercialExperienceDraft(savedCommercialExperience, strategySettingsInput),
+    [savedCommercialExperience, strategySettingsInput],
+  );
+
+  useEffect(() => {
+    setSavedCommercialExperience((current) =>
+      createCanonicalCommercialExperienceDraft(current, strategySettingsInput),
+    );
+    setCommercialExperienceDraft((current) =>
+      createCanonicalCommercialExperienceDraft(current, strategySettingsInput),
+    );
+  }, [strategySettingsInput]);
 
   const derivedStrategyAiStoreSummary = useMemo(
     () => deriveStoreStrategyAiStoreSummary(strategySettingsInput),
@@ -3114,7 +5254,7 @@ export default function ConfiguracoesPage() {
     return buildBulletRows([
       { label: "Tipo de loja / foco comercial", value: cleanText(strategySettingsInput.storeDescription) },
       { label: "Principal foco da loja", value: cleanText(strategySettingsInput.strategyPrimaryFocus) },
-      { label: "O que quer vender mais", value: cleanText(strategySettingsInput.strategySellMore) },
+      { label: "Prioridades de venda", value: cleanText(strategySettingsInput.strategySellMore) },
       { label: "Tipo de cliente mais comum", value: cleanText(strategySettingsInput.strategyCommonCustomer) },
       { label: "Tipo de cliente ideal", value: cleanText(strategySettingsInput.strategyIdealCustomer) },
       { label: "Faixa de ticket mais comum", value: cleanText(strategySettingsInput.strategyTicketRange) },
@@ -3285,6 +5425,81 @@ export default function ConfiguracoesPage() {
     [answers, operationSettings],
   );
 
+  const isTechnicalVisitConfigured = isConfiguredTimestamp(
+    operationExecutionPolicies?.technical_visit_configured_at,
+  );
+
+  const isInstallationConfigured = isConfiguredTimestamp(
+    operationExecutionPolicies?.installation_configured_at,
+  );
+
+  const isPoolReplacementConfigured = isConfiguredTimestamp(
+    operationExecutionPolicies?.pool_replacement_configured_at,
+  );
+
+  const isDeliveryConfigured = isConfiguredTimestamp(
+    operationExecutionPolicies?.delivery_configured_at,
+  );
+
+  const isPickupConfigured = isConfiguredTimestamp(
+    operationExecutionPolicies?.pickup_configured_at,
+  );
+
+  const isTechnicalServicesConfigured = isConfiguredTimestamp(
+    operationExecutionPolicies?.technical_services_configured_at,
+  );
+
+  const technicalVisitExecutionPolicy = isTechnicalVisitConfigured
+    ? operationExecutionPolicies?.technical_visit_policy ?? null
+    : null;
+
+  const installationExecutionPolicy = isInstallationConfigured
+    ? operationExecutionPolicies?.installation_policy ?? null
+    : null;
+
+  const poolReplacementExecutionPolicy = isPoolReplacementConfigured
+    ? operationExecutionPolicies?.pool_replacement_policy ?? null
+    : null;
+
+  const deliveryExecutionPolicy = isDeliveryConfigured
+    ? operationExecutionPolicies?.delivery_policy ?? null
+    : null;
+
+  const pickupExecutionPolicy = isPickupConfigured
+    ? operationExecutionPolicies?.pickup_policy ?? null
+    : null;
+
+  const technicalServicesExecutionPolicy = isTechnicalServicesConfigured
+    ? operationExecutionPolicies?.technical_services_policy ?? null
+    : null;
+
+  const technicalVisitCardIsComplete =
+    isTechnicalVisitConfigured &&
+    operationSettingsInput.offersTechnicalVisit !== null &&
+    (
+      operationSettingsInput.offersTechnicalVisit === false ||
+      technicalVisitExecutionPolicy !== null
+    );
+
+  const installationCardIsComplete =
+    isInstallationConfigured &&
+    operationSettingsInput.offersInstallation !== null &&
+    (
+      operationSettingsInput.offersInstallation === false ||
+      installationExecutionPolicy !== null
+    );
+
+  const poolReplacementCardIsComplete =
+    isPoolReplacementConfigured;
+
+  const deliveryCardIsComplete =
+    isDeliveryConfigured;
+
+  const pickupCardIsComplete =
+    isPickupConfigured;
+
+  const technicalServicesCardIsComplete =
+    isTechnicalServicesConfigured;
   const technicalVisitRulesLabel = useMemo(
     () =>
       joinSelectedLabels(
@@ -3303,10 +5518,26 @@ export default function ConfiguracoesPage() {
     () => deriveCanonicalWeekendAvailabilityLabel("domingo", scheduleSettings),
     [scheduleSettings],
   );
-  const servesHolidayLabel = scheduleSettings
-    ? yesNoLabel(scheduleSettings.attends_holidays)
-    : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL;
+  const servesHolidayLabel =
+    isConfiguredTimestamp(scheduleSettings?.human_schedule_configured_at) &&
+    cleanText(scheduleSettings?.holiday_mode)
+      ? optionLabel(toUiHolidayMode(scheduleSettings?.holiday_mode), [
+          { value: "fechado", label: "NÃ£o atende" },
+          { value: "normal", label: "HorÃ¡rio normal" },
+          { value: "especial", label: "HorÃ¡rio especial" },
+          { value: "caso_a_caso", label: "Caso a caso" },
+        ])
+      : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL;
 
+  const isRegionConfigured = isConfiguredTimestamp(
+    strategySettings?.service_region_configured_at,
+  );
+
+  const canonicalRegionOutsidePolicy = isRegionConfigured
+    ? strategySettings?.service_region_outside_consultation === true
+      ? "consulta"
+      : "nao"
+    : "";
   const operationReadinessMetrics = useMemo(() => {
     const hasOperationalSchedule = Boolean(scheduleSettings);
     const hasInstallation = operationSettingsInput.offersInstallation === true;
@@ -3381,7 +5612,7 @@ export default function ConfiguracoesPage() {
           { label: "Regra complementar da visita técnica", value: operationSettingsInput.technicalVisitDaysRule },
           { label: "Atende sábado", value: servesSaturdayLabel },
           { label: "Atende domingo", value: servesSundayLabel },
-          { label: "Atende feriado", value: scheduleSettings ? yesNoLabel(scheduleSettings.attends_holidays) : servesHolidayLabel },
+          { label: "Atende feriado", value: servesHolidayLabel },
         ]),
       },
       {
@@ -3511,27 +5742,44 @@ export default function ConfiguracoesPage() {
     storeWhatsappStatus?.lastSafeError,
   );
 
+  const commercialPaymentCardStatus = useMemo(
+    () =>
+      resolveCommercialPaymentCardStatus({
+        paymentSettings,
+        commercialDraft,
+        commercialExperienceDraft,
+      }),
+    [commercialDraft, commercialExperienceDraft, paymentSettings],
+  );
+
   const commercialPaymentItems = useMemo(() => {
     const paymentPresentation = createStorePaymentPresentationFromSources({
       answers,
       settings: paymentSettings,
     });
+    const pixConfigured = commercialDraft.accepted_payment_methods.includes("pix")
+      ? cleanText(commercialDraft.pix_key_type) && cleanText(commercialDraft.pix_key)
+        ? "Configurado"
+        : "Pendente"
+      : "Não aceita Pix";
+    const financingConfigured = commercialDraft.accepted_payment_methods.includes("financiamento")
+      ? savedCommercialExperience.financing_mode
+        ? optionLabel(savedCommercialExperience.financing_mode, [
+            { value: "parceiro", label: "Banco / financeira parceira" },
+            { value: "loja", label: "Intermediado pela loja" },
+            { value: "cliente", label: "Cliente busca diretamente" },
+            { value: "depende", label: "Depende do caso" },
+            { value: "outro", label: "Outro modelo" },
+          ])
+        : "Precisa configurar"
+      : "Não aceita";
     return buildBulletRows([
-      {
-        label: "Formas de pagamento",
-        value: paymentPresentation.paymentSummary || "Nao definido",
-      },
-      {
-        label: "Dados antigos para revisar",
-        value: paymentPresentation.legacyConditionSummary || "Nenhum",
-      },
-      {
-        label: "Politica global de desconto",
-        value: discountPresentation.policySummary || "Nao definido",
-      },
-      { label: "Ticket médio da loja", value: cleanText(answers.average_ticket) ? `R$ ${cleanText(answers.average_ticket)}` : "Não definido" },
+      { label: "Formas aceitas", value: paymentPresentation.paymentSummary || "Não definido" },
+      { label: "Pix", value: pixConfigured },
+      { label: "Parcelamento", value: normalizeLoose(commercialDraft.installments_enabled) === "sim" ? `Até ${cleanText(commercialDraft.max_installments) || "?"}x` : normalizeLoose(commercialDraft.installments_enabled) === "nao" ? "Não parcela" : "Não definido" },
+      { label: "Financiamento", value: financingConfigured },
     ]);
-  }, [answers, discountPresentation, paymentSettings]);
+  }, [answers, commercialDraft, paymentSettings, savedCommercialExperience.financing_mode]);
 
   const commercialNegotiationItems = useMemo(() => {
     return buildBulletRows([
@@ -3638,44 +5886,37 @@ export default function ConfiguracoesPage() {
   }, [answers, onboarding?.status, primaryResponsibleName, primaryResponsibleWhatsapp]);
 
   const discountItems = useMemo(() => {
+    const autonomyLabel =
+      discountPresentation.autonomyMode === "within_limit"
+        ? "Pode confirmar descontos dentro do limite"
+        : discountPresentation.autonomyMode === "guided"
+          ? "Pode negociar aos poucos dentro do limite"
+          : "Sempre precisa de aprovação humana";
     return buildBulletRows([
       {
-        label: "Primeiro degrau normal",
-        value:
-          discountPresentation.defaultDiscountPercent == null
-            ? "Não definido"
-            : `${discountPresentation.defaultDiscountPercent}%`,
+        label: "Desconto inicial para negociar",
+        value: discountPresentation.defaultDiscountPercent == null ? "Não definido" : `${discountPresentation.defaultDiscountPercent}%`,
       },
       {
-        label: "Teto normal",
-        value:
-          discountPresentation.maxDiscountPercent == null
-            ? "Não definido"
-            : `${discountPresentation.maxDiscountPercent}%`,
+        label: "Maior desconto da negociação normal",
+        value: discountPresentation.maxDiscountPercent == null ? "Não definido" : `${discountPresentation.maxDiscountPercent}%`,
       },
+      { label: "A IA pode confirmar sozinha", value: autonomyLabel },
+      { label: "Pode consultar acima do limite", value: discountPresentation.allowAskAboveMaxDiscount ? "Sim" : "Não" },
       {
-        label: "Pode consultar acima do teto",
-        value: discountPresentation.allowAskAboveMaxDiscount ? "Sim" : "Não",
-      },
-      {
-        label: "Modo de autonomia",
-        value: discountPresentation.autonomyMode || "approval_required",
-      },
-      {
-        label: "Política de alto valor",
+        label: "Regra para vendas de valor alto",
         value: discountPresentation.highValueEnabled
-          ? `Ativa${discountPresentation.highValueDiscountPercent == null ? "" : ` • ${discountPresentation.highValueDiscountPercent}%`}`
-          : "Desativada",
+          ? `A partir do valor configurado${discountPresentation.highValueDiscountPercent == null ? "" : ` • desconto ${discountPresentation.highValueDiscountPercent}%`}`
+          : "Não usa regra diferente",
       },
       {
-        label: "Quando precisa aprovação humana",
-        value: discountDraft.human_help_discount_summary || "Não definido",
+        label: "Aprovação em venda de valor alto",
+        value: discountPresentation.highValueEnabled
+          ? savedCommercialExperience.high_value_requires_human || "Não definido"
+          : "Não se aplica",
       },
-      { label: "Quem aprova", value: discountDraft.discount_approver || "Não definido" },
-      { label: "Regras especiais", value: discountPresentation.discountSpecialRules || "Nao definido" },
-      { label: "Como funciona", value: cleanText(answers.discount_explanation) || "A IA pode trabalhar com desconto apenas dentro da regra definida pela loja. Quando o pedido sai do limite ou exige condição especial, ela deve chamar aprovação humana antes de confirmar qualquer valor." },
     ]);
-  }, [answers, discountDraft, discountPresentation]);
+  }, [discountPresentation, savedCommercialExperience.high_value_requires_human]);
 
   const channelsOverviewMetrics = useMemo(() => {
     const integrationStatus =
@@ -3931,9 +6172,650 @@ export default function ConfiguracoesPage() {
     return list;
   }, [counts.pools, totalCatalogo, onboardingStatus.label, primaryResponsibleName, primaryResponsibleWhatsapp]);
 
-  const shouldShowQuickAccess =
-    activeTab === "visao-geral" ||
-    activeTab === "catalogo";
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!organizationId || !activeStoreId) {
+      setSavedGeneralAddress(createEmptyGeneralAddressDraft());
+      setGeneralAddressDraft(createEmptyGeneralAddressDraft());
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setSavedGeneralAddress(createEmptyGeneralAddressDraft());
+    setGeneralAddressDraft(createEmptyGeneralAddressDraft());
+
+    void (async () => {
+      const { data, error } = await supabase.rpc(
+        "read_store_general_address_settings_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+        },
+      );
+
+      if (cancelled) return;
+
+      if (error) {
+        console.error(
+          "Nao foi possivel carregar o endereco canonico da loja.",
+          error,
+        );
+        return;
+      }
+
+      const row = (
+        Array.isArray(data)
+          ? data[0] ?? null
+          : data ?? null
+      ) as StoreGeneralAddressSettingsRow | null;
+
+      const nextAddress = createGeneralAddressDraftFromSettings(row);
+
+      setSavedGeneralAddress(nextAddress);
+      setGeneralAddressDraft(nextAddress);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeStoreId, organizationId]);
+
+  useEffect(() => {
+    setGeneralAddressDraft((current) => {
+      if (cleanText(current.city) || cleanText(current.state)) return current;
+      const next = {
+        ...current,
+        city: cleanText(strategySettingsInput.city),
+        state: cleanText(strategySettingsInput.state),
+      };
+
+      return next;
+    });
+  }, [strategySettingsInput.city, strategySettingsInput.state]);
+
+  const updateGeneralAddressDraft = useCallback(<K extends keyof GeneralAddressDraftState>(
+    key: K,
+    value: GeneralAddressDraftState[K],
+  ) => {
+    setGeneralAddressDraft((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const lookupGeneralAddressCep = useCallback(async (cepDigits: string) => {
+    if (cepDigits.length !== 8) return;
+
+    setGeneralAddressCepLookupLoading(true);
+    setGeneralAddressCepLookupMessage(null);
+
+    try {
+      const response = await fetch(`/api/store/cep?cep=${encodeURIComponent(cepDigits)}`, {
+        method: "GET",
+        cache: "no-store",
+        credentials: "include",
+      });
+      const result = (await response.json().catch(() => null)) as StoreCepLookupApiResponse | null;
+
+      if (!result) {
+        throw new Error("Nao foi possivel consultar o CEP agora. Voce pode preencher o endereco manualmente.");
+      }
+
+      if (!response.ok || !result.ok) {
+        const failureMessage = "message" in result ? result.message : null;
+        setGeneralAddressCepLookupMessage(
+          failureMessage || "Nao foi possivel consultar o CEP agora. Voce pode preencher o endereco manualmente.",
+        );
+        return;
+      }
+
+      if (!result.found) {
+        setGeneralAddressCepLookupMessage(
+          result.message || "CEP nao encontrado. Voce pode preencher o endereco manualmente.",
+        );
+        return;
+      }
+
+      setGeneralAddressDraft((current) => ({
+        ...current,
+        street: cleanText(result.address.street) || current.street,
+        district: cleanText(result.address.district) || current.district,
+        city: cleanText(result.address.city) || current.city,
+        state: cleanText(result.address.state) || current.state,
+      }));
+      setGeneralAddressCepLookupMessage(null);
+    } catch {
+      setGeneralAddressCepLookupMessage(
+        "Nao foi possivel consultar o CEP agora. Voce pode preencher o endereco manualmente.",
+      );
+    } finally {
+      setGeneralAddressCepLookupLoading(false);
+    }
+  }, []);
+
+  const handleGeneralAddressCepChange = useCallback((value: string) => {
+    const formattedCep = formatBrazilianCepInput(value);
+    const digits = onlyCepDigits(formattedCep);
+
+    setGeneralAddressDraft((current) => ({ ...current, cep: formattedCep }));
+    setGeneralAddressCepLookupMessage(null);
+
+    if (digits.length === 8) {
+      void lookupGeneralAddressCep(digits);
+    }
+  }, [lookupGeneralAddressCep]);
+
+  const handleGeneralAddressSave = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar o endereço.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const hasPublicAddress =
+      generalAddressDraft.has_public_address === "Sim"
+        ? true
+        : generalAddressDraft.has_public_address === "Não"
+          ? false
+          : null;
+
+    if (hasPublicAddress == null) {
+      setErrorText("Informe se a loja possui um endereço físico que pode ser informado aos clientes.");
+      setSuccessText(null);
+      return false;
+    }
+
+    if (hasPublicAddress && !isGeneralAddressComplete(generalAddressDraft)) {
+      setErrorText("Preencha rua, número, bairro, cidade, estado e como clientes podem ir até a loja.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const cepDigits = onlyCepDigits(generalAddressDraft.cep);
+
+    if (hasPublicAddress && cleanText(generalAddressDraft.cep) && cepDigits.length !== 8) {
+      setErrorText("Informe um CEP válido com 8 dígitos ou deixe o CEP em branco.");
+      setSuccessText(null);
+      return false;
+    }
+
+    try {
+      const { data, error } = await supabase.rpc(
+        "upsert_store_general_address_settings_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_has_public_address: hasPublicAddress,
+          p_cep: hasPublicAddress && cepDigits ? cepDigits : null,
+          p_street: hasPublicAddress ? cleanText(generalAddressDraft.street) || null : null,
+          p_number: hasPublicAddress ? cleanText(generalAddressDraft.number) || null : null,
+          p_complement: hasPublicAddress ? cleanText(generalAddressDraft.complement) || null : null,
+          p_district: hasPublicAddress ? cleanText(generalAddressDraft.district) || null : null,
+          p_city: hasPublicAddress ? cleanText(generalAddressDraft.city) || null : null,
+          p_state: hasPublicAddress ? cleanText(generalAddressDraft.state) || null : null,
+          p_customer_visit_mode: hasPublicAddress ? cleanText(generalAddressDraft.customer_visit_mode) || null : null,
+          p_reference_point: hasPublicAddress ? cleanText(generalAddressDraft.reference_point) || null : null,
+          p_directions_notes: hasPublicAddress ? cleanText(generalAddressDraft.directions_notes) || null : null,
+        },
+      );
+
+      if (error) throw error;
+
+      const savedRow = (
+        Array.isArray(data)
+          ? data[0] ?? null
+          : data ?? null
+      ) as StoreGeneralAddressSettingsRow | null;
+
+      if (!savedRow) {
+        throw new Error("O writer do endereço não retornou a configuração salva.");
+      }
+
+      const nextAddress = createGeneralAddressDraftFromSettings(savedRow);
+      setSavedGeneralAddress(nextAddress);
+      setGeneralAddressDraft(nextAddress);
+      setErrorText(null);
+      setSuccessText("Endereço da loja salvo com sucesso.");
+      setOverviewEditTarget(null);
+      return true;
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Não foi possível salvar o endereço da loja.");
+      setSuccessText(null);
+      return false;
+    }
+  }, [activeStoreId, generalAddressDraft, organizationId]);
+
+  const updateOperationExperienceDraft = useCallback(<K extends keyof OperationExperienceDraftState>(
+    key: K,
+    value: OperationExperienceDraftState[K],
+  ) => {
+    setOperationExperienceDraft((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const updateOperationDayHours = useCallback((
+    day: string,
+    field: "open" | "close",
+    value: string,
+  ) => {
+    setOperationExperienceDraft((current) => ({
+      ...current,
+      team_day_hours: {
+        ...current.team_day_hours,
+        [day]: {
+          ...(current.team_day_hours[day] ?? { open: "08:00", close: "18:00" }),
+          [field]: value,
+        },
+      },
+    }));
+  }, []);
+
+  const toggleOperationExperienceArrayValue = useCallback((
+    key: keyof OperationExperienceDraftState,
+    value: string,
+  ) => {
+    setOperationExperienceDraft((current) => {
+      const currentValue = current[key];
+      if (!Array.isArray(currentValue)) return current;
+      const nextValue = currentValue.includes(value)
+        ? currentValue.filter((item) => item !== value)
+        : [...currentValue, value];
+      return { ...current, [key]: nextValue } as OperationExperienceDraftState;
+    });
+  }, []);
+
+  const validateOperationExperienceDraft = useCallback((target: string) => {
+    const required = (condition: boolean, value: unknown, message: string) =>
+      condition && !cleanText(value) ? message : null;
+
+    if (target === "hours") {
+      return (
+        required(operationExperienceDraft.team_days.includes("sabado"), operationExperienceDraft.team_day_hours.sabado?.open, "Informe o horário de abertura de sábado.") ||
+        required(operationExperienceDraft.team_days.includes("sabado"), operationExperienceDraft.team_day_hours.sabado?.close, "Informe o horário de fechamento de sábado.") ||
+        required(operationExperienceDraft.team_days.includes("domingo"), operationExperienceDraft.team_day_hours.domingo?.open, "Informe o horário de abertura de domingo.") ||
+        required(operationExperienceDraft.team_days.includes("domingo"), operationExperienceDraft.team_day_hours.domingo?.close, "Informe o horário de fechamento de domingo.") ||
+        required(operationExperienceDraft.holiday_mode === "caso_a_caso", operationExperienceDraft.holiday_notes, "Explique como o atendimento em feriados é definido caso a caso.")
+      );
+    }
+
+    if (target === "technical_visit") {
+      if (normalizeLoose(operationDraft.offers_technical_visit) !== "sim") return null;
+      return (
+        required(operationExperienceDraft.visit_required_situations.includes("outro"), operationExperienceDraft.visit_required_other, "Especifique em quais outras situações a visita técnica é obrigatória.") ||
+        required(operationExperienceDraft.visit_optional_situations.includes("outro"), operationExperienceDraft.visit_optional_other, "Especifique em quais outras situações a visita técnica pode ser oferecida.") ||
+        required(["outro_time", "caso_a_caso"].includes(operationExperienceDraft.visit_team_mode), operationExperienceDraft.visit_team_rule, "Explique quem realiza a visita técnica nessa situação.") ||
+        required(operationExperienceDraft.visit_duration_mode === "personalizado", operationExperienceDraft.visit_duration_minutes, "Informe quantos minutos devem ser reservados para o outro tempo de visita.") ||
+        required(operationExperienceDraft.visit_duration_mode === "varia", operationExperienceDraft.visit_duration_rule, "Explique o que define a duração da visita técnica.") ||
+        required(operationExperienceDraft.visit_pricing_mode === "case_by_case", operationExperienceDraft.visit_case_by_case_rule, "Explique como o valor da visita técnica é calculado caso a caso.") ||
+        required(operationExperienceDraft.visit_preconfirm_items.includes("outro"), operationExperienceDraft.visit_preconfirm_other, "Especifique o que mais deve ser confirmado antes de agendar a visita.")
+      );
+    }
+
+    if (target === "installation") {
+      if (normalizeLoose(operationDraft.offers_installation) !== "sim") return null;
+      const supplierLeadApplies = ["sob_encomenda", "misto"].includes(operationExperienceDraft.installation_supply_mode);
+      return (
+        required(operationExperienceDraft.installation_customer_can_buy_without === "depende", operationExperienceDraft.installation_customer_can_buy_without_rule, "Explique para quais piscinas/projetos a compra sem instalação é permitida.") ||
+        required(operationExperienceDraft.installation_third_party_pool === "depende", operationExperienceDraft.installation_third_party_pool_rule, "Explique em quais casos a loja instala piscinas compradas de terceiros.") ||
+        required(supplierLeadApplies, operationExperienceDraft.installation_supplier_lead_time_mode, "Informe como funciona o prazo de chegada da fábrica/fornecedor para piscinas sob encomenda.") ||
+        required(supplierLeadApplies && operationExperienceDraft.installation_supplier_lead_time_mode === "outro", operationExperienceDraft.installation_supplier_lead_time_value, "Informe o prazo normal de chegada da fábrica/fornecedor.") ||
+        required(supplierLeadApplies && operationExperienceDraft.installation_supplier_lead_time_mode === "varia", operationExperienceDraft.installation_supplier_lead_time_rule, "Explique o que faz o prazo da fábrica/fornecedor variar.") ||
+        required(operationExperienceDraft.installation_start_lead_time_mode === "outro", operationExperienceDraft.installation_start_lead_time_days, "Informe o prazo normal entre a disponibilidade da piscina e o início da instalação.") ||
+        required(operationExperienceDraft.installation_start_lead_time_mode === "varia", operationExperienceDraft.installation_start_lead_time_rule, "Explique o que define quando a instalação pode começar.") ||
+        required(operationExperienceDraft.installation_duration_mode === "varia", operationExperienceDraft.installation_duration_rule, "Explique o que define quanto tempo a instalação ocupa uma equipe.") ||
+        required(operationExperienceDraft.installation_has_multiple_teams === "Sim", operationExperienceDraft.installation_concurrent_capacity, "Informe quantas equipes podem realizar instalações ao mesmo tempo.") ||
+        required(operationExperienceDraft.installation_schedule_gates.includes("outro"), operationExperienceDraft.installation_schedule_gates_other, "Especifique o outro requisito antes de agendar a instalação.") ||
+        required(operationExperienceDraft.installation_start_gates.includes("outro"), operationExperienceDraft.installation_start_gates_other, "Especifique o outro requisito antes de iniciar a instalação.") ||
+        required(operationExperienceDraft.installation_includes.includes("outro"), operationExperienceDraft.installation_includes_other, "Especifique o outro serviço ou etapa incluído na instalação.") ||
+        required(operationExperienceDraft.installation_excludes_options.includes("outro"), operationExperienceDraft.installation_excludes, "Especifique o outro item que a instalação da loja não inclui.")
+      );
+    }
+
+    if (target === "pool_replacement") {
+      if (operationExperienceDraft.pool_replacement_enabled !== "Sim") return null;
+      return (
+        required(operationExperienceDraft.pool_replacement_situations.includes("caso_a_caso"), operationExperienceDraft.pool_replacement_situations_other, "Explique quais outros tipos de troca a loja aceita mediante avaliação.") ||
+        required(operationExperienceDraft.pool_replacement_uses_installation_team === "depende", operationExperienceDraft.pool_replacement_team_rule, "Explique em quais casos a troca usa a mesma equipe de instalação.") ||
+        required(operationExperienceDraft.pool_replacement_removes_old === "caso_a_caso", operationExperienceDraft.pool_replacement_removes_old_rule, "Explique em quais casos a loja remove a piscina antiga.") ||
+        required(operationExperienceDraft.pool_replacement_disposal_included === "caso_a_caso", operationExperienceDraft.pool_replacement_disposal_rule, "Explique em quais casos o descarte da piscina antiga está incluído.") ||
+        required(operationExperienceDraft.pool_replacement_requires_visit === "depende", operationExperienceDraft.pool_replacement_visit_rule, "Explique em quais casos a troca exige visita técnica.") ||
+        required(operationExperienceDraft.pool_replacement_duration_mode === "varia", operationExperienceDraft.pool_replacement_duration_rule, "Explique o que define quanto tempo a troca ocupa a equipe.") ||
+        required(operationExperienceDraft.pool_replacement_includes.includes("outro"), operationExperienceDraft.pool_replacement_notes, "Especifique o outro serviço incluído na troca.") ||
+        required(operationExperienceDraft.pool_replacement_excludes_options.includes("outro"), operationExperienceDraft.pool_replacement_excludes, "Especifique o outro serviço que a loja não faz durante a troca.")
+      );
+    }
+
+    if (target === "delivery") {
+      if (operationExperienceDraft.delivery_enabled !== "Sim") return null;
+      return (
+        required(operationExperienceDraft.delivery_items.includes("outros"), operationExperienceDraft.delivery_items_other, "Especifique quais outros produtos do catálogo a loja entrega.") ||
+        required(["depende"].includes(operationExperienceDraft.delivery_with_installation_mode) || operationExperienceDraft.delivery_with_installation_timing === "depende", operationExperienceDraft.delivery_with_installation_notes, "Explique o que define como a entrega é organizada em relação à instalação.") ||
+        required(["ambos", "caso_a_caso"].includes(operationExperienceDraft.delivery_provider), operationExperienceDraft.delivery_provider_rule, "Explique como a loja decide quem realiza a entrega.") ||
+        required(operationExperienceDraft.delivery_uses_installation_team === "depende", operationExperienceDraft.delivery_installation_team_rule, "Explique em quais pedidos a entrega usa a mesma equipe de instalação.") ||
+        required(operationExperienceDraft.delivery_partner_pricing_mode === "depende", operationExperienceDraft.delivery_partner_pricing_rule, "Explique quando e como o valor do parceiro é repassado ao cliente.") ||
+        required(operationExperienceDraft.delivery_pricing_mode === "destino" && operationExperienceDraft.delivery_pricing_destination_mode === "outra", operationExperienceDraft.delivery_pricing_destination_rule, "Explique a outra regra usada para calcular o frete por destino.") ||
+        required(operationExperienceDraft.delivery_pricing_mode === "caso_a_caso", operationExperienceDraft.delivery_case_rule, "Explique como a equipe calcula o frete caso a caso.") ||
+        required(operationExperienceDraft.delivery_case_factors.includes("outro"), operationExperienceDraft.delivery_case_rule, "Especifique o outro fator usado para calcular o frete.") ||
+        required(operationExperienceDraft.delivery_release_gates.includes("outro"), operationExperienceDraft.delivery_release_gates_other, "Especifique o outro requisito antes de liberar a entrega.") ||
+        required(operationExperienceDraft.delivery_unloading_mode === "depende", operationExperienceDraft.delivery_notes, "Explique quando a equipe apenas transporta, descarrega ou posiciona o produto.")
+      );
+    }
+
+    if (target === "pickup") {
+      if (operationExperienceDraft.pickup_enabled !== "Sim") return null;
+      return (
+        required(operationExperienceDraft.pickup_items.includes("outros"), operationExperienceDraft.pickup_items_other, "Especifique quais outros itens do catálogo podem ser retirados.") ||
+        required(operationExperienceDraft.pickup_location_mode === "outro", operationExperienceDraft.pickup_other_location, "Informe o outro local de retirada.") ||
+        required(operationExperienceDraft.pickup_release_gates.includes("outro"), operationExperienceDraft.pickup_release_gates_other, "Especifique o outro requisito antes de liberar a retirada.")
+      );
+    }
+
+    if (target === "technical_services") {
+      if (operationExperienceDraft.technical_services_enabled !== "Sim") return null;
+      return (
+        required(operationExperienceDraft.technical_service_types.includes("outro"), operationExperienceDraft.technical_services_other, "Especifique quais outros serviços técnicos a loja realiza.") ||
+        required(operationExperienceDraft.technical_equipment_types.includes("outros"), operationExperienceDraft.technical_equipment_other, "Especifique em quais outros equipamentos a loja trabalha.") ||
+        required(operationExperienceDraft.equipment_installation_origin_policy === "depende", operationExperienceDraft.equipment_installation_origin_rule, "Explique de quais equipamentos depende a instalação de itens comprados fora da loja.") ||
+        required(operationExperienceDraft.equipment_replacement_existing === "caso_a_caso", operationExperienceDraft.equipment_replacement_existing_rule, "Explique em quais casos a loja substitui equipamentos já existentes.")
+      );
+    }
+
+    return null;
+  }, [operationDraft.offers_installation, operationDraft.offers_technical_visit, operationExperienceDraft]);
+
+  const saveOperationExperienceCard = useCallback((target: string, close = true) => {
+    const validationError = validateOperationExperienceDraft(target);
+    if (validationError) {
+      setErrorText(validationError);
+      setSuccessText(null);
+      return false;
+    }
+
+    setSavedOperationExperience(operationExperienceDraft);
+    setErrorText(null);
+    setSuccessText("Alterações de operação revisadas com sucesso.");
+    if (close) setOperationEditTarget(null);
+    return true;
+  }, [operationExperienceDraft, validateOperationExperienceDraft]);
+
+  const saveHumanScheduleCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar os horarios.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const payload = buildHumanScheduleConfigurationPayload(
+      operationExperienceDraft,
+      scheduleSettings,
+    );
+    if ("error" in payload) {
+      setErrorText(payload.error);
+      setSuccessText(null);
+      return false;
+    }
+
+    try {
+      const { data: savedScheduleSettings, error: scheduleError } =
+        await supabase.rpc(
+          "upsert_store_human_schedule_configuration_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_operating_days: payload.operatingDays,
+            p_operating_hours: payload.operatingHours,
+            p_timezone_name: payload.timezoneName,
+            p_holiday_mode: payload.holidayMode,
+            p_holiday_open_time: payload.holidayOpenTime,
+            p_holiday_close_time: payload.holidayCloseTime,
+            p_holiday_notes: payload.holidayNotes,
+          },
+        );
+
+      if (scheduleError) throw scheduleError;
+
+      const nextScheduleSettings =
+        (savedScheduleSettings ?? null) as ScheduleSettingsRow | null;
+      setScheduleSettings(nextScheduleSettings);
+      const nextDraft = createScheduleOperationExperienceDraftFromSettings(
+        nextScheduleSettings,
+        operationExperienceDraft,
+      );
+      setSavedOperationExperience(nextDraft);
+      setOperationExperienceDraft(nextDraft);
+      setErrorText(null);
+      setSuccessText("Horarios da equipe salvos com sucesso.");
+      setOperationEditTarget(null);
+      await fetchPageData();
+      return true;
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Nao foi possivel salvar os horarios da equipe.");
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    fetchPageData,
+    operationExperienceDraft,
+    organizationId,
+    scheduleSettings,
+  ]);
+
+  const saveAfterHoursCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar a IA fora do horario.");
+      setSuccessText(null);
+      return false;
+    }
+    if (!scheduleSettings) {
+      setErrorText("Configure os horarios da equipe antes da IA fora do horario.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const enabled = parseYesNoToNullableBoolean(
+      operationExperienceDraft.ai_after_hours_enabled,
+    );
+    if (enabled == null) {
+      setErrorText("Informe se a IA pode atender fora do horario.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const mode = enabled
+      ? toCanonicalAfterHoursMode(operationExperienceDraft.ai_after_hours_mode)
+      : null;
+    if (enabled && !mode) {
+      setErrorText("Informe quando a IA pode atender fora do horario.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const afterHoursStart =
+      enabled && mode === "specific_window"
+        ? normalizeTimeInput(operationExperienceDraft.ai_after_hours_start)
+        : null;
+    const afterHoursEnd =
+      enabled && mode === "specific_window"
+        ? normalizeTimeInput(operationExperienceDraft.ai_after_hours_end)
+        : null;
+    if (enabled && mode === "specific_window" && !isValidTimeRange(afterHoursStart || "", afterHoursEnd || "")) {
+      setErrorText("Informe uma janela valida para a IA fora do horario.");
+      setSuccessText(null);
+      return false;
+    }
+
+    try {
+      const { data: savedScheduleSettings, error: scheduleError } =
+        await supabase.rpc(
+          "upsert_store_schedule_ai_after_hours_policy_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_ai_after_hours_enabled: enabled,
+            p_ai_after_hours_mode: mode,
+            p_ai_after_hours_start: afterHoursStart,
+            p_ai_after_hours_end: afterHoursEnd,
+            p_ai_attends_holidays: enabled
+              ? parseYesNoToBoolean(operationExperienceDraft.ai_attends_holidays, false)
+              : false,
+          },
+        );
+
+      if (scheduleError) throw scheduleError;
+
+      const nextScheduleSettings =
+        (savedScheduleSettings ?? null) as ScheduleSettingsRow | null;
+      setScheduleSettings(nextScheduleSettings);
+      const nextDraft = createScheduleOperationExperienceDraftFromSettings(
+        nextScheduleSettings,
+        operationExperienceDraft,
+      );
+      setSavedOperationExperience(nextDraft);
+      setOperationExperienceDraft(nextDraft);
+      setErrorText(null);
+      setSuccessText("Politica de IA fora do horario salva com sucesso.");
+      setOperationEditTarget(null);
+      await fetchPageData();
+      return true;
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Nao foi possivel salvar a IA fora do horario.");
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    fetchPageData,
+    operationExperienceDraft,
+    organizationId,
+    scheduleSettings,
+  ]);
+
+  const saveAgendaCapacityCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar a agenda.");
+      setSuccessText(null);
+      return false;
+    }
+    if (!scheduleSettings) {
+      setErrorText("Configure os horarios da equipe antes da agenda e capacidade.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const allowMultipleAppointmentsPerDay = parseYesNoToNullableBoolean(
+      operationDraft.allow_multiple_appointments_per_day,
+    );
+    if (allowMultipleAppointmentsPerDay == null) {
+      setErrorText("Informe se a agenda pode ter mais de um compromisso no mesmo dia.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const allowSameTimeAppointments = allowMultipleAppointmentsPerDay
+      ? parseYesNoToNullableBoolean(operationDraft.allow_same_time_appointments)
+      : false;
+    const appointmentBufferEnabled = allowMultipleAppointmentsPerDay
+      ? parseYesNoToNullableBoolean(operationExperienceDraft.agenda_buffer_enabled)
+      : false;
+
+    if (allowMultipleAppointmentsPerDay && allowSameTimeAppointments == null) {
+      setErrorText("Informe se a agenda permite compromissos no mesmo horario.");
+      setSuccessText(null);
+      return false;
+    }
+    if (allowMultipleAppointmentsPerDay && appointmentBufferEnabled == null) {
+      setErrorText("Informe se existe intervalo entre compromissos.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const dailyLimitMode = allowMultipleAppointmentsPerDay
+      ? toCanonicalAgendaDailyLimitMode(operationExperienceDraft.agenda_daily_limit_mode)
+      : null;
+    if (allowMultipleAppointmentsPerDay && !dailyLimitMode) {
+      setErrorText("Informe se existe limite diario fixo.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const dailyLimit =
+      allowMultipleAppointmentsPerDay && dailyLimitMode === "fixed_limit"
+        ? parseOptionalPositiveInteger(operationExperienceDraft.agenda_daily_limit)
+        : null;
+    if (Number.isNaN(dailyLimit) || (dailyLimitMode === "fixed_limit" && (!dailyLimit || dailyLimit < 2))) {
+      setErrorText("Informe um limite diario de pelo menos 2 compromissos.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const sameTimeCapacity =
+      allowMultipleAppointmentsPerDay && allowSameTimeAppointments
+        ? parseOptionalPositiveInteger(operationDraft.agenda_capacity_rule)
+        : null;
+    if (Number.isNaN(sameTimeCapacity) || (allowSameTimeAppointments && (!sameTimeCapacity || sameTimeCapacity < 2))) {
+      setErrorText("Informe capacidade simultanea de pelo menos 2 compromissos.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const appointmentBufferMinutes =
+      allowMultipleAppointmentsPerDay && appointmentBufferEnabled
+        ? parseOptionalPositiveInteger(operationExperienceDraft.agenda_buffer_minutes)
+        : null;
+    if (Number.isNaN(appointmentBufferMinutes) || (appointmentBufferEnabled && !appointmentBufferMinutes)) {
+      setErrorText("Informe o intervalo minimo em minutos.");
+      setSuccessText(null);
+      return false;
+    }
+
+    try {
+      const { data: savedScheduleSettings, error: scheduleError } =
+        await supabase.rpc(
+          "upsert_store_agenda_capacity_configuration_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_allow_multiple_appointments_per_day: allowMultipleAppointmentsPerDay,
+            p_allow_same_time_appointments: allowSameTimeAppointments ?? false,
+            p_appointment_buffer_enabled: appointmentBufferEnabled ?? false,
+            p_daily_limit_mode: dailyLimitMode,
+            p_daily_limit: dailyLimit,
+            p_same_time_capacity: sameTimeCapacity,
+            p_appointment_buffer_minutes: appointmentBufferMinutes,
+          },
+        );
+
+      if (scheduleError) throw scheduleError;
+
+      const nextScheduleSettings =
+        (savedScheduleSettings ?? null) as ScheduleSettingsRow | null;
+      setScheduleSettings(nextScheduleSettings);
+      const nextDraft = createScheduleOperationExperienceDraftFromSettings(
+        nextScheduleSettings,
+        operationExperienceDraft,
+      );
+      setSavedOperationExperience(nextDraft);
+      setOperationExperienceDraft(nextDraft);
+      setErrorText(null);
+      setSuccessText("Agenda e capacidade salvas com sucesso.");
+      setOperationEditTarget(null);
+      setIsOperationEditing(false);
+      await fetchPageData();
+      return true;
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Nao foi possivel salvar a agenda e capacidade.");
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    fetchPageData,
+    operationDraft,
+    operationExperienceDraft,
+    organizationId,
+    scheduleSettings,
+  ]);
 
   const handleOverviewDraftChange = useCallback((key: string, value: string) => {
     setOverviewDraft((current) => ({
@@ -3953,6 +6835,7 @@ export default function ConfiguracoesPage() {
       final_activation_notes: cleanText(answers.final_activation_notes),
     });
     setIsOverviewEditing(false);
+    setOverviewEditTarget(null);
   }, [answers, canonicalPrimaryResponsibleDraft, operationSettingsInput, storeName]);
 
   const handleOverviewEditSave = useCallback(async () => {
@@ -3970,6 +6853,7 @@ export default function ConfiguracoesPage() {
     if (!saved) return;
 
     setIsOverviewEditing(false);
+    setOverviewEditTarget(null);
   }, [overviewDraft, upsertConfigAnswers]);
 
   const handleStrategyDraftChange = useCallback(<K extends keyof StoreStrategySettingsInput>(
@@ -4008,7 +6892,7 @@ export default function ConfiguracoesPage() {
     if (!organizationId || !activeStoreId) {
       setErrorText("Nenhuma loja ativa foi encontrada para salvar a estrategia.");
       setSuccessText(null);
-      return;
+      return false;
     }
 
     const normalizedStrategySettings = normalizeStoreStrategySettingsInput(strategyDraft);
@@ -4076,37 +6960,222 @@ export default function ConfiguracoesPage() {
       setSuccessText("Alteracoes da estrategia salvas com sucesso.");
       setIsStrategyEditing(false);
       await fetchPageData();
+      return true;
     } catch (error: any) {
       setErrorText(error?.message ?? "Nao foi possivel salvar as alteracoes da estrategia.");
       setSuccessText(null);
+      return false;
     }
   }, [activeStoreId, fetchPageData, organizationId, strategyDraft]);
+
+  const handleRegionEditSave = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar a região.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const outsidePolicy = cleanText(
+      operationExperienceDraft.region_outside_policy,
+    );
+
+    if (!["consulta", "nao"].includes(outsidePolicy)) {
+      setErrorText(
+        "Informe se a loja atende fora da cobertura somente sob consulta ou não atende.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    const normalizedRegion = normalizeStoreStrategySettingsInput({
+      ...strategyDraft,
+      serviceRegionOutsideConsultation: outsidePolicy === "consulta",
+    });
+
+    const primaryMode = normalizedRegion.value.serviceRegionPrimaryMode;
+
+    if (!primaryMode) {
+      setErrorText("Escolha a cobertura principal da loja.");
+      setSuccessText(null);
+      return false;
+    }
+
+    if (
+      primaryMode === "grande_regiao" &&
+      !cleanText(normalizedRegion.value.serviceRegions)
+    ) {
+      setErrorText(
+        "Informe quais cidades, regiões ou limites fazem parte da cobertura.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    try {
+      const { data: savedStrategySettings, error: strategySaveError } =
+        await supabase.rpc(
+          "upsert_store_strategy_region_configuration_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_service_regions: normalizedRegion.value.serviceRegions,
+            p_service_region_modes: normalizedRegion.value.serviceRegionModes,
+            p_service_region_primary_mode: primaryMode,
+            p_service_region_outside_consultation:
+              outsidePolicy === "consulta",
+            p_service_region_notes: normalizedRegion.value.serviceRegionNotes,
+          },
+        );
+
+      if (strategySaveError) throw strategySaveError;
+
+      const savedRow =
+        (savedStrategySettings ?? null) as StoreStrategySettingsRow | null;
+
+      setStrategySettings(savedRow);
+
+      if (savedRow) {
+        setStrategyDraft(
+          createStoreStrategySettingsInputFromSources({
+            settings: savedRow,
+          }),
+        );
+      }
+
+      setErrorText(null);
+      setSuccessText("Região de atendimento salva com sucesso.");
+      setOperationEditTarget(null);
+      setIsStrategyEditing(false);
+
+      await fetchPageData();
+      return true;
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Não foi possível salvar a região de atendimento.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    fetchPageData,
+    operationExperienceDraft.region_outside_policy,
+    organizationId,
+    strategyDraft,
+  ]);
+  const handleGeneralInformationSave = useCallback(async () => {
+    const strategySaved = await handleStrategyEditSave();
+    if (!strategySaved) return;
+
+    const saved = await upsertConfigAnswers(
+      {
+        store_display_name: overviewDraft.store_display_name,
+      },
+      "Informações da loja salvas com sucesso.",
+    );
+
+    if (!saved) return;
+    setOverviewEditTarget(null);
+    setIsOverviewEditing(false);
+  }, [handleStrategyEditSave, overviewDraft.store_display_name, upsertConfigAnswers]);
 
 
   useEffect(() => {
     setOperationDraft(createOperationDraftFromAnswers(answers, scheduleSettings, operationSettings));
   }, [answers, scheduleSettings, operationSettings]);
 
-  const handleOperationDraftChange = useCallback((key: keyof OperationDraftState, value: string) => {
-    if (
-      !scheduleSettings &&
-      (
-        key === "serves_saturday" ||
-        key === "serves_sunday" ||
-        key === "serves_holiday" ||
-        key === "allow_multiple_appointments_per_day" ||
-        key === "allow_same_time_appointments" ||
-        key === "agenda_capacity_rule"
-      )
-    ) {
-      return;
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!organizationId || !activeStoreId) {
+      setOperationExecutionPolicies(null);
+
+      return () => {
+        cancelled = true;
+      };
     }
 
+    // Fail-closed during store changes: never keep another store's
+    // execution policy visible while the next scoped read is pending.
+    setOperationExecutionPolicies(null);
+
+    void (async () => {
+      const { data, error } = await supabase.rpc(
+        "read_store_operation_execution_policies_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+        },
+      );
+
+      if (cancelled) return;
+
+      if (error) {
+        console.error(
+          "Nao foi possivel carregar as execution policies de Operacao.",
+          error,
+        );
+        setOperationExecutionPolicies(null);
+        return;
+      }
+
+      const row = (
+        Array.isArray(data)
+          ? data[0] ?? null
+          : data ?? null
+      ) as StoreOperationExecutionPoliciesRow | null;
+
+      setOperationExecutionPolicies(row);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeStoreId, organizationId]);
+
+  useEffect(() => {
+    const technicalVisitPatch = technicalVisitPolicyToDraftPatch(
+      technicalVisitExecutionPolicy,
+      {
+        mode: operationSettingsInput.technicalVisitPricingMode,
+        fixedFeeCents: operationSettingsInput.technicalVisitFixedFeeCents,
+        caseByCaseRule:
+          operationSettingsInput.technicalVisitCaseByCaseRule,
+        deductible:
+          operationSettingsInput.technicalVisitFeeDeductibleFromPurchase,
+      },
+    );
+
+    const installationPatch = installationPolicyToDraftPatch(
+      installationExecutionPolicy,
+    );
+
+    setSavedOperationExperience((current) => ({
+      ...current,
+      ...technicalVisitPatch,
+      ...installationPatch,
+    }));
+
+    setOperationExperienceDraft((current) => ({
+      ...current,
+      ...technicalVisitPatch,
+      ...installationPatch,
+    }));
+  }, [
+    installationExecutionPolicy,
+    operationSettingsInput.technicalVisitCaseByCaseRule,
+    operationSettingsInput.technicalVisitFeeDeductibleFromPurchase,
+    operationSettingsInput.technicalVisitFixedFeeCents,
+    operationSettingsInput.technicalVisitPricingMode,
+    technicalVisitExecutionPolicy,
+  ]);
+  const handleOperationDraftChange = useCallback((key: keyof OperationDraftState, value: string) => {
     setOperationDraft((current) => ({
       ...current,
       [key]: value,
     }));
-  }, [scheduleSettings]);
+  }, []);
 
   const handleOperationTechnicalVisitRuleToggle = useCallback(
     (value: StoreOperationTechnicalVisitRule) => {
@@ -4124,11 +7193,737 @@ export default function ConfiguracoesPage() {
     [],
   );
 
+  useEffect(() => {
+    const poolReplacementPatch = poolReplacementPolicyToDraftPatch(
+      poolReplacementExecutionPolicy,
+      isPoolReplacementConfigured,
+    );
+
+    const deliveryPatch = deliveryPolicyToDraftPatch(
+      deliveryExecutionPolicy,
+      isDeliveryConfigured,
+    );
+
+    const pickupPatch = pickupPolicyToDraftPatch(
+      pickupExecutionPolicy,
+      isPickupConfigured,
+    );
+
+    const technicalServicesPatch = technicalServicesPolicyToDraftPatch(
+      technicalServicesExecutionPolicy,
+      isTechnicalServicesConfigured,
+    );
+
+    setSavedOperationExperience((current) => ({
+      ...current,
+      ...poolReplacementPatch,
+      ...deliveryPatch,
+      ...pickupPatch,
+      ...technicalServicesPatch,
+    }));
+
+    setOperationExperienceDraft((current) => ({
+      ...current,
+      ...poolReplacementPatch,
+      ...deliveryPatch,
+      ...pickupPatch,
+      ...technicalServicesPatch,
+    }));
+  }, [
+    deliveryExecutionPolicy,
+    isDeliveryConfigured,
+    isPickupConfigured,
+    isPoolReplacementConfigured,
+    isTechnicalServicesConfigured,
+    pickupExecutionPolicy,
+    poolReplacementExecutionPolicy,
+    technicalServicesExecutionPolicy,
+  ]);
   const handleOperationEditCancel = useCallback(() => {
     setOperationDraft(createOperationDraftFromAnswers(answers, scheduleSettings, operationSettings));
     setIsOperationEditing(false);
+    setOperationEditTarget(null);
   }, [answers, scheduleSettings, operationSettings]);
 
+  const saveTechnicalVisitConfigurationCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText(
+        "Nenhuma loja ativa foi encontrada para salvar a visita técnica.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    const offersTechnicalVisit = parseYesNoToNullableBoolean(
+      operationDraft.offers_technical_visit,
+    );
+
+    if (offersTechnicalVisit == null) {
+      setErrorText("Defina se a loja oferece visita técnica.");
+      setSuccessText(null);
+      return false;
+    }
+
+    let technicalVisitPolicy: TechnicalVisitExecutionPolicy | null = null;
+    let pricingMode: string | null = null;
+    let fixedFeeCents: number | null = null;
+    let caseByCaseRule: string | null = null;
+    let deductible: boolean | null = null;
+
+    if (offersTechnicalVisit) {
+      const policyResult = buildTechnicalVisitExecutionPolicy(
+        operationExperienceDraft,
+      );
+
+      if (!policyResult.ok) {
+        setErrorText(policyResult.error);
+        setSuccessText(null);
+        return false;
+      }
+
+      technicalVisitPolicy = policyResult.value;
+      pricingMode = cleanText(
+        operationExperienceDraft.visit_pricing_mode,
+      );
+
+      if (!["free", "fixed", "case_by_case"].includes(pricingMode)) {
+        setErrorText("Defina como a visita técnica é cobrada.");
+        setSuccessText(null);
+        return false;
+      }
+
+      if (pricingMode === "fixed") {
+        fixedFeeCents = parseVisitFixedFeeToCents(
+          operationExperienceDraft.visit_fixed_fee,
+        );
+
+        if (fixedFeeCents == null) {
+          setErrorText(
+            "Informe um valor válido e positivo para a visita técnica.",
+          );
+          setSuccessText(null);
+          return false;
+        }
+
+        deductible = parseYesNoToNullableBoolean(
+          operationExperienceDraft.visit_deductible,
+        );
+
+        if (deductible == null) {
+          setErrorText(
+            "Defina se o valor da visita é descontado quando o cliente fecha a compra.",
+          );
+          setSuccessText(null);
+          return false;
+        }
+      }
+
+      if (pricingMode === "case_by_case") {
+        caseByCaseRule = cleanText(
+          operationExperienceDraft.visit_case_by_case_rule,
+        );
+
+        if (!caseByCaseRule) {
+          setErrorText(
+            "Explique como o valor da visita técnica é calculado.",
+          );
+          setSuccessText(null);
+          return false;
+        }
+
+        deductible = parseYesNoToNullableBoolean(
+          operationExperienceDraft.visit_deductible,
+        );
+
+        if (deductible == null) {
+          setErrorText(
+            "Defina se o valor da visita é descontado quando o cliente fecha a compra.",
+          );
+          setSuccessText(null);
+          return false;
+        }
+      }
+    }
+
+    try {
+      const { data, error } = await supabase.rpc(
+        "upsert_store_operation_technical_visit_configuration_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_offers_technical_visit: offersTechnicalVisit,
+          p_technical_visit_policy: technicalVisitPolicy,
+          p_technical_visit_pricing_mode: pricingMode,
+          p_technical_visit_fixed_fee_cents: fixedFeeCents,
+          p_technical_visit_case_by_case_rule: caseByCaseRule,
+          p_technical_visit_fee_deductible_from_purchase: deductible,
+        },
+      );
+
+      if (error) throw error;
+
+      const savedRow = (
+        Array.isArray(data)
+          ? data[0] ?? null
+          : data ?? null
+      ) as StoreOperationExecutionPoliciesRow | null;
+
+      if (!savedRow) {
+        throw new Error(
+          "O writer da visita técnica não retornou a configuração salva.",
+        );
+      }
+
+      setOperationExecutionPolicies(savedRow);
+
+      const canonicalPatch = technicalVisitPolicyToDraftPatch(
+        savedRow.technical_visit_policy,
+        {
+          mode: pricingMode,
+          fixedFeeCents,
+          caseByCaseRule,
+          deductible,
+        },
+      );
+
+      setSavedOperationExperience((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setOperationExperienceDraft((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setErrorText(null);
+      setSuccessText("Visita técnica salva com sucesso.");
+      setOperationEditTarget(null);
+      setIsOperationEditing(false);
+
+      await fetchPageData();
+      return true;
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Não foi possível salvar a configuração da visita técnica.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    fetchPageData,
+    operationDraft.offers_technical_visit,
+    operationExperienceDraft,
+    organizationId,
+  ]);
+
+  const saveInstallationConfigurationCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText(
+        "Nenhuma loja ativa foi encontrada para salvar a instalação.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    const offersInstallation = parseYesNoToNullableBoolean(
+      operationDraft.offers_installation,
+    );
+
+    if (offersInstallation == null) {
+      setErrorText("Defina se a loja instala piscinas novas.");
+      setSuccessText(null);
+      return false;
+    }
+
+    let installationPolicy: InstallationExecutionPolicy | null = null;
+
+    if (offersInstallation) {
+      const policyResult = buildInstallationExecutionPolicy(
+        operationExperienceDraft,
+      );
+
+      if (!policyResult.ok) {
+        setErrorText(policyResult.error);
+        setSuccessText(null);
+        return false;
+      }
+
+      installationPolicy = policyResult.value;
+    }
+
+    try {
+      const { data, error } = await supabase.rpc(
+        "upsert_store_operation_installation_configuration_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_offers_installation: offersInstallation,
+          p_installation_policy: installationPolicy,
+        },
+      );
+
+      if (error) throw error;
+
+      const savedRow = (
+        Array.isArray(data)
+          ? data[0] ?? null
+          : data ?? null
+      ) as StoreOperationExecutionPoliciesRow | null;
+
+      if (!savedRow) {
+        throw new Error(
+          "O writer da instalação não retornou a configuração salva.",
+        );
+      }
+
+      setOperationExecutionPolicies(savedRow);
+
+      const canonicalPatch = installationPolicyToDraftPatch(
+        savedRow.installation_policy,
+      );
+
+      setSavedOperationExperience((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setOperationExperienceDraft((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setErrorText(null);
+      setSuccessText("Instalação salva com sucesso.");
+      setOperationEditTarget(null);
+      setIsOperationEditing(false);
+
+      await fetchPageData();
+      return true;
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Não foi possível salvar a configuração da instalação.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    fetchPageData,
+    operationDraft.offers_installation,
+    operationExperienceDraft,
+    organizationId,
+  ]);
+  const savePoolReplacementConfigurationCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText(
+        "Nenhuma loja ativa foi encontrada para salvar a configuração de troca.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    const enabled = parseYesNoToNullableBoolean(
+      operationExperienceDraft.pool_replacement_enabled,
+    );
+
+    if (enabled == null) {
+      setErrorText(
+        "Defina se a loja realiza troca ou substituição de piscina existente.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    let policy: PoolReplacementExecutionPolicy | null = null;
+
+    if (enabled) {
+      const policyResult = buildPoolReplacementExecutionPolicy(
+        operationExperienceDraft,
+      );
+
+      if (!policyResult.ok) {
+        setErrorText(policyResult.error);
+        setSuccessText(null);
+        return false;
+      }
+
+      policy = policyResult.value;
+    }
+
+    try {
+      const { data, error } = await supabase.rpc(
+        "upsert_store_operation_pool_replacement_configuration_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_enabled: enabled,
+          p_policy: policy,
+        },
+      );
+
+      if (error) throw error;
+
+      const savedRow = (
+        Array.isArray(data)
+          ? data[0] ?? null
+          : data ?? null
+      ) as StoreOperationExecutionPoliciesRow | null;
+
+      if (!savedRow) {
+        throw new Error(
+          "O writer de troca de piscina não retornou a configuração salva.",
+        );
+      }
+
+      setOperationExecutionPolicies(savedRow);
+
+      const canonicalPatch = poolReplacementPolicyToDraftPatch(
+        savedRow.pool_replacement_policy,
+        isConfiguredTimestamp(
+          savedRow.pool_replacement_configured_at,
+        ),
+      );
+
+      setSavedOperationExperience((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setOperationExperienceDraft((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setErrorText(null);
+      setSuccessText("Troca de piscina salva com sucesso.");
+      setOperationEditTarget(null);
+      setIsOperationEditing(false);
+
+      await fetchPageData();
+      return true;
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Não foi possível salvar a configuração de troca de piscina.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    fetchPageData,
+    operationExperienceDraft,
+    organizationId,
+  ]);
+
+  const saveDeliveryConfigurationCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText(
+        "Nenhuma loja ativa foi encontrada para salvar a configuração de entrega.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    const enabled = parseYesNoToNullableBoolean(
+      operationExperienceDraft.delivery_enabled,
+    );
+
+    if (enabled == null) {
+      setErrorText(
+        "Defina se a loja entrega produtos no endereço do cliente.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    let policy: DeliveryExecutionPolicy | null = null;
+
+    if (enabled) {
+      const policyResult = buildDeliveryExecutionPolicy(
+        operationExperienceDraft,
+      );
+
+      if (!policyResult.ok) {
+        setErrorText(policyResult.error);
+        setSuccessText(null);
+        return false;
+      }
+
+      policy = policyResult.value;
+    }
+
+    try {
+      const { data, error } = await supabase.rpc(
+        "upsert_store_operation_delivery_configuration_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_enabled: enabled,
+          p_policy: policy,
+        },
+      );
+
+      if (error) throw error;
+
+      const savedRow = (
+        Array.isArray(data)
+          ? data[0] ?? null
+          : data ?? null
+      ) as StoreOperationExecutionPoliciesRow | null;
+
+      if (!savedRow) {
+        throw new Error(
+          "O writer de entrega não retornou a configuração salva.",
+        );
+      }
+
+      setOperationExecutionPolicies(savedRow);
+
+      const canonicalPatch = deliveryPolicyToDraftPatch(
+        savedRow.delivery_policy,
+        isConfiguredTimestamp(savedRow.delivery_configured_at),
+      );
+
+      setSavedOperationExperience((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setOperationExperienceDraft((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setErrorText(null);
+      setSuccessText("Entrega salva com sucesso.");
+      setOperationEditTarget(null);
+      setIsOperationEditing(false);
+
+      await fetchPageData();
+      return true;
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Não foi possível salvar a configuração de entrega.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    fetchPageData,
+    operationExperienceDraft,
+    organizationId,
+  ]);
+
+  const savePickupConfigurationCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText(
+        "Nenhuma loja ativa foi encontrada para salvar a configuração de retirada.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    const enabled = parseYesNoToNullableBoolean(
+      operationExperienceDraft.pickup_enabled,
+    );
+
+    if (enabled == null) {
+      setErrorText(
+        "Defina se a loja permite que clientes retirem produtos.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    let policy: PickupExecutionPolicy | null = null;
+
+    if (enabled) {
+      const policyResult = buildPickupExecutionPolicy(
+        operationExperienceDraft,
+      );
+
+      if (!policyResult.ok) {
+        setErrorText(policyResult.error);
+        setSuccessText(null);
+        return false;
+      }
+
+      policy = policyResult.value;
+    }
+
+    try {
+      const { data, error } = await supabase.rpc(
+        "upsert_store_operation_pickup_configuration_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_enabled: enabled,
+          p_policy: policy,
+        },
+      );
+
+      if (error) throw error;
+
+      const savedRow = (
+        Array.isArray(data)
+          ? data[0] ?? null
+          : data ?? null
+      ) as StoreOperationExecutionPoliciesRow | null;
+
+      if (!savedRow) {
+        throw new Error(
+          "O writer de retirada não retornou a configuração salva.",
+        );
+      }
+
+      setOperationExecutionPolicies(savedRow);
+
+      const canonicalPatch = pickupPolicyToDraftPatch(
+        savedRow.pickup_policy,
+        isConfiguredTimestamp(savedRow.pickup_configured_at),
+      );
+
+      setSavedOperationExperience((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setOperationExperienceDraft((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setErrorText(null);
+      setSuccessText("Retirada salva com sucesso.");
+      setOperationEditTarget(null);
+      setIsOperationEditing(false);
+
+      await fetchPageData();
+      return true;
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Não foi possível salvar a configuração de retirada.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    fetchPageData,
+    operationExperienceDraft,
+    organizationId,
+  ]);
+
+  const saveTechnicalServicesConfigurationCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText(
+        "Nenhuma loja ativa foi encontrada para salvar os serviços técnicos.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    const enabled = parseYesNoToNullableBoolean(
+      operationExperienceDraft.technical_services_enabled,
+    );
+
+    if (enabled == null) {
+      setErrorText(
+        "Defina se a loja realiza serviços técnicos além da instalação de piscinas.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+
+    let policy: TechnicalServicesExecutionPolicy | null = null;
+
+    if (enabled) {
+      const policyResult = buildTechnicalServicesExecutionPolicy(
+        operationExperienceDraft,
+      );
+
+      if (!policyResult.ok) {
+        setErrorText(policyResult.error);
+        setSuccessText(null);
+        return false;
+      }
+
+      policy = policyResult.value;
+    }
+
+    try {
+      const { data, error } = await supabase.rpc(
+        "upsert_store_operation_technical_services_configuration_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_enabled: enabled,
+          p_policy: policy,
+        },
+      );
+
+      if (error) throw error;
+
+      const savedRow = (
+        Array.isArray(data)
+          ? data[0] ?? null
+          : data ?? null
+      ) as StoreOperationExecutionPoliciesRow | null;
+
+      if (!savedRow) {
+        throw new Error(
+          "O writer de serviços técnicos não retornou a configuração salva.",
+        );
+      }
+
+      setOperationExecutionPolicies(savedRow);
+
+      const canonicalPatch = technicalServicesPolicyToDraftPatch(
+        savedRow.technical_services_policy,
+        isConfiguredTimestamp(
+          savedRow.technical_services_configured_at,
+        ),
+      );
+
+      setSavedOperationExperience((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setOperationExperienceDraft((current) => ({
+        ...current,
+        ...canonicalPatch,
+      }));
+
+      setErrorText(null);
+      setSuccessText("Serviços técnicos salvos com sucesso.");
+      setOperationEditTarget(null);
+      setIsOperationEditing(false);
+
+      await fetchPageData();
+      return true;
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Não foi possível salvar a configuração de serviços técnicos.",
+      );
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    fetchPageData,
+    operationExperienceDraft,
+    organizationId,
+  ]);
   const handleOperationEditSave = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
       setErrorText("Nenhuma loja ativa foi encontrada para salvar a operação.");
@@ -4238,12 +8033,14 @@ export default function ConfiguracoesPage() {
             p_installation_days: Array.isArray(scheduleSettings.installation_days)
               ? scheduleSettings.installation_days
               : [],
-            p_after_hours_behavior: scheduleSettings.after_hours_behavior,
-            p_notes: scheduleSettings.notes,
+            p_after_hours_behavior: scheduleSettings.after_hours_behavior ?? null,
+            p_notes: scheduleSettings.notes ?? null,
+            p_enforce_operating_window: scheduleSettings.enforce_operating_window ?? false,
+            p_timezone_name: scheduleSettings.timezone_name || "America/Sao_Paulo",
           });
 
-      if (scheduleSettingsError) throw scheduleSettingsError;
-      savedScheduleSettings = (scheduleData ?? null) as ScheduleSettingsRow | null;
+        if (scheduleSettingsError) throw scheduleSettingsError;
+        savedScheduleSettings = (scheduleData ?? null) as ScheduleSettingsRow | null;
       }
 
       setOperationSettings(
@@ -4255,6 +8052,7 @@ export default function ConfiguracoesPage() {
       setErrorText(null);
       setSuccessText("Alterações da operação salvas com sucesso.");
       setIsOperationEditing(false);
+      setOperationEditTarget(null);
       await fetchPageData();
     } catch (error: any) {
       setErrorText(error?.message ?? "Erro ao salvar alterações da operação.");
@@ -4342,6 +8140,280 @@ export default function ConfiguracoesPage() {
     });
   }, []);
 
+  const updateCommercialExperienceDraft = useCallback(<K extends keyof CommercialExperienceDraftState>(
+    key: K,
+    value: CommercialExperienceDraftState[K],
+  ) => {
+    setCommercialExperienceDraft((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const toggleCommercialExperienceArrayValue = useCallback((
+    key: keyof CommercialExperienceDraftState,
+    value: string,
+  ) => {
+    setCommercialExperienceDraft((current) => {
+      const currentValue = current[key];
+      if (!Array.isArray(currentValue)) return current;
+      const nextValue = currentValue.includes(value)
+        ? currentValue.filter((item) => item !== value)
+        : [...currentValue, value];
+      return { ...current, [key]: nextValue } as CommercialExperienceDraftState;
+    });
+  }, []);
+
+  const saveCommercialExperienceCard = useCallback(async (target: string) => {
+    const required = (condition: boolean, value: unknown, message: string) =>
+      condition && !cleanText(value) ? message : "";
+
+    let validationError = "";
+
+    if (target === "offerings") {
+      validationError =
+        (commercialExperienceDraft.offering_products.length === 0 && commercialExperienceDraft.offering_services.length === 0
+          ? "Selecione pelo menos um tipo de produto ou serviço que a loja oferece."
+          : "") ||
+        required(commercialExperienceDraft.offering_products.includes("outro"), commercialExperienceDraft.offering_products_other, "Explique quais outros produtos a loja vende.") ||
+        required(commercialExperienceDraft.offering_services.includes("outro"), commercialExperienceDraft.offering_services_other, "Explique quais outros serviços a loja oferece.");
+    }
+
+    if (target === "strategy") {
+      validationError =
+        required(commercialExperienceDraft.strategy_sell_more.includes("outro"), commercialExperienceDraft.strategy_sell_more_other, "Explique a outra prioridade comercial da loja.") ||
+        required(commercialExperienceDraft.strategy_sale_preference === "outro", commercialExperienceDraft.strategy_sale_preference_other, "Explique que tipo de venda a loja prefere.") ||
+        required(commercialExperienceDraft.strategy_customer_traits.includes("outro"), commercialExperienceDraft.strategy_customer_traits_other, "Explique a outra característica de cliente.") ||
+        required(commercialExperienceDraft.strategy_attention_cases.includes("outro"), commercialExperienceDraft.strategy_attention_other, "Explique o outro tipo de atendimento que exige mais cuidado.") ||
+        required(["outra", "varia_muito"].includes(commercialExperienceDraft.strategy_sale_value_range), commercialExperienceDraft.strategy_sale_value_custom, commercialExperienceDraft.strategy_sale_value_range === "varia_muito" ? "Explique como o valor das vendas costuma variar." : "Informe a outra faixa de valor das vendas.");
+    }
+
+    if (target === "brands") {
+      const workedBrands = commercialExperienceDraft.brands_worked.filter((item) => cleanText(item));
+      const priorityBrands = commercialExperienceDraft.brands_priority.filter((item) => cleanText(item));
+      validationError =
+        required(true, commercialExperienceDraft.brands_has_main, "Informe se a loja trabalha com uma marca principal.") ||
+        required(commercialExperienceDraft.brands_has_main === "Sim", commercialExperienceDraft.brands_main_choice, "Escolha a marca principal da loja.") ||
+        required(commercialExperienceDraft.brands_main_choice === "outro", commercialExperienceDraft.brands_main_other, "Informe qual é a outra marca principal.") ||
+        required(workedBrands.includes("outro"), commercialExperienceDraft.brands_worked_other, "Informe qual é a outra marca que a loja trabalha.") ||
+        required(true, commercialExperienceDraft.brands_priority_enabled, "Informe se a loja possui alguma marca preferida entre opções adequadas e disponíveis.") ||
+        (commercialExperienceDraft.brands_priority_enabled === "Sim" && priorityBrands.length === 0 ? "Adicione pelo menos uma marca que deve receber preferência." : "") ||
+        required(priorityBrands.includes("outro"), commercialExperienceDraft.brands_priority_other, "Informe a outra marca preferida.");
+    }
+
+    if (target === "ai") {
+      validationError =
+        required(commercialExperienceDraft.ai_guidance_enabled === "Sim", commercialExperienceDraft.ai_guidance_other, "Explique a orientação comercial adicional da loja.");
+    }
+
+    if (target === "suggestions") {
+      const selectedCatalogSuggestionTypes = CATALOG_BACKED_SUGGESTION_TYPES.filter((type) =>
+        commercialExperienceDraft.suggestion_types.includes(type),
+      );
+      const missingCatalogType = selectedCatalogSuggestionTypes.find((type) => {
+        const availableItems = catalogSuggestionItems.filter((item) => item.category === type);
+        if (availableItems.length === 0) return true;
+        return !availableItems.some((item) =>
+          commercialExperienceDraft.suggestion_catalog_item_keys.includes(item.key),
+        );
+      });
+      const missingCatalogTypeLabel = missingCatalogType
+        ? optionLabel(missingCatalogType, COMMERCIAL_SUGGESTION_TYPE_OPTIONS)
+        : "";
+
+      validationError =
+        (commercialExperienceDraft.suggestions_enabled === "Sim" && commercialExperienceDraft.suggestion_types.length === 0 ? "Selecione o que a IA pode sugerir." : "") ||
+        (missingCatalogType ? `Selecione pelo menos um item real do catálogo para: ${missingCatalogTypeLabel}. Se ainda não houver item cadastrado, configure o Catálogo primeiro.` : "") ||
+        required(commercialExperienceDraft.suggestion_types.includes("servicos"), commercialExperienceDraft.suggestion_services_detail, "Explique quais serviços relacionados a IA pode sugerir.") ||
+        required(commercialExperienceDraft.suggestion_types.includes("outro"), commercialExperienceDraft.suggestion_other, "Explique o outro tipo de sugestão.") ||
+        required(commercialExperienceDraft.suggestions_enabled === "Sim", commercialExperienceDraft.better_option_policy, "Defina quando a IA pode apresentar uma opção melhor ou mais completa.");
+    }
+
+    if (target === "payment_blocks") {
+      validationError =
+        required(true, commercialExperienceDraft.entry_due_trigger, "Defina quando a entrada precisa estar paga ou informe que a loja não exige entrada.") ||
+        required(commercialExperienceDraft.entry_due_trigger === "outro", commercialExperienceDraft.entry_due_other, "Explique quando a entrada precisa estar paga.") ||
+        required(true, commercialExperienceDraft.balance_due_trigger, "Defina quando o restante do valor precisa estar pago.") ||
+        required(commercialExperienceDraft.balance_due_trigger === "outro", commercialExperienceDraft.balance_due_other, "Explique quando o restante do valor precisa estar pago.") ||
+        (commercialExperienceDraft.payment_blocking_actions.length === 0 ? "Selecione quais etapas ficam bloqueadas ou marque que nenhuma delas é bloqueada automaticamente." : "") ||
+        required(commercialExperienceDraft.payment_blocking_actions.includes("outro"), commercialExperienceDraft.payment_blocking_other, "Explique a outra ação que não pode avançar com pagamento pendente.");
+    }
+
+    if (target === "quote") {
+      validationError =
+        required(true, commercialExperienceDraft.quote_validity, "Defina por quantos dias um orçamento normalmente é válido.") ||
+        required(commercialExperienceDraft.quote_validity === "outro", commercialExperienceDraft.quote_validity_other_days, "Informe por quantos dias o orçamento é válido.") ||
+        required(true, commercialExperienceDraft.quote_customer_note_enabled, "Informe se a loja usa uma mensagem padrão nos orçamentos.") ||
+        required(commercialExperienceDraft.quote_customer_note_enabled === "Sim", commercialExperienceDraft.quote_customer_note, "Informe a mensagem padrão que deve aparecer no orçamento.") ||
+        required(true, commercialExperienceDraft.quote_internal_note_enabled, "Informe se a loja usa uma observação interna padrão.") ||
+        required(commercialExperienceDraft.quote_internal_note_enabled === "Sim", commercialExperienceDraft.quote_internal_note, "Informe a observação interna padrão.") ||
+        required(true, commercialExperienceDraft.quote_preliminary_before_visit, "Defina se a loja pode enviar orçamento inicial antes de uma visita técnica obrigatória.") ||
+        required(true, commercialExperienceDraft.quote_definitive_requires_visit_result, "Defina se o resultado da visita é necessário para o orçamento final.");
+    }
+
+    if (target === "post_sale") {
+      validationError =
+        required(commercialExperienceDraft.post_sale_duration === "outro", commercialExperienceDraft.post_sale_duration_other_days, "Informe por quantos dias a loja acompanha o cliente.") ||
+        required(commercialExperienceDraft.post_sale_start === "depende", commercialExperienceDraft.post_sale_start_other, "Explique quando o pós-venda começa em cada tipo de venda.") ||
+        required(commercialExperienceDraft.post_sale_checks.includes("outro"), commercialExperienceDraft.post_sale_checks_other, "Explique o outro ponto que a loja verifica no pós-venda.");
+    }
+
+    if (target === "warranty") {
+      validationError =
+        required(commercialExperienceDraft.warranty_extra_mode === "depende", commercialExperienceDraft.warranty_extra_rule, "Explique quando existe garantia própria da loja.") ||
+        required(commercialExperienceDraft.warranty_items.includes("outro"), commercialExperienceDraft.warranty_items_other, "Informe o outro item ou serviço com garantia.") ||
+        required(commercialExperienceDraft.warranty_start === "outro", commercialExperienceDraft.warranty_start_other, "Explique quando começa a contar a garantia.") ||
+        required(commercialExperienceDraft.warranty_extra_mode === "Sim", commercialExperienceDraft.warranty_duration_value, "Informe quanto tempo dura a garantia própria da loja.") ||
+        required(commercialExperienceDraft.warranty_conditions_enabled === "Sim", commercialExperienceDraft.warranty_conditions, "Explique as condições importantes da garantia.");
+    }
+
+    if (target === "cancellation") {
+      const hasPolicy = commercialExperienceDraft.cancellation_policy_exists === "Sim";
+      const situations = commercialExperienceDraft.cancellation_rule_situations;
+      validationError =
+        (hasPolicy && situations.length === 0 ? "Selecione pelo menos uma situação em que a política da loja possui uma regra específica." : "") ||
+        required(hasPolicy && situations.includes("after_contract"), commercialExperienceDraft.cancellation_after_contract_rule, "Explique a regra aplicável após a assinatura do contrato.") ||
+        required(hasPolicy && situations.includes("ordered_product"), commercialExperienceDraft.cancellation_ordered_product_rule, "Explique a regra para produto já encomendado ao fornecedor.") ||
+        required(hasPolicy && situations.includes("custom_order"), commercialExperienceDraft.cancellation_custom_order_rule, "Explique a regra para produtos sob encomenda ou personalizados.") ||
+        required(hasPolicy && situations.includes("after_delivery"), commercialExperienceDraft.cancellation_after_delivery_rule, "Explique a regra aplicável depois da entrega ou retirada.") ||
+        required(hasPolicy && situations.includes("service_started"), commercialExperienceDraft.cancellation_service_started_rule, "Explique a regra quando instalação ou serviço já começou.") ||
+        required(hasPolicy && situations.includes("charge_or_retention"), commercialExperienceDraft.cancellation_charge_or_retention_rule, "Explique a regra validada de multa, cobrança ou retenção.") ||
+        required(hasPolicy && situations.includes("refund"), commercialExperienceDraft.cancellation_refund_rule, "Explique a regra de reembolso da loja.") ||
+        required(hasPolicy && situations.includes("other"), commercialExperienceDraft.cancellation_policy_other, "Explique a outra regra da política.");
+    }
+
+    if (validationError) {
+      setErrorText(validationError);
+      setSuccessText(null);
+      return false;
+    }
+
+    const normalizedCommercialExperience =
+      target === "brands"
+        ? {
+            ...commercialExperienceDraft,
+            brands_worked: commercialExperienceDraft.brands_worked.filter((item) => cleanText(item)),
+            brands_priority: commercialExperienceDraft.brands_priority.filter((item) => cleanText(item)),
+          }
+        : commercialExperienceDraft;
+
+    const nextStrategyInput =
+      target === "offerings"
+        ? {
+            ...strategySettingsInput,
+            storeServices: buildStrategyServicesFromOfferings(normalizedCommercialExperience),
+            storeServicesOther: buildStoreServicesOtherFromOfferings(
+              normalizedCommercialExperience,
+            ),
+          }
+        : target === "brands"
+          ? {
+              ...strategySettingsInput,
+              brandsWorked: buildBrandsWorkedForStrategy(
+                normalizedCommercialExperience.brands_worked,
+                normalizedCommercialExperience.brands_worked_other,
+              ),
+            }
+          : strategySettingsInput;
+
+    if (target === "offerings" || target === "brands") {
+      if (!organizationId || !activeStoreId) {
+        setErrorText("Nenhuma loja ativa foi encontrada para salvar a estrategia.");
+        setSuccessText(null);
+        return false;
+      }
+
+      const normalizedStrategySettings = normalizeStoreStrategySettingsInput(nextStrategyInput);
+
+      try {
+        const { data: savedStrategySettings, error: strategySaveError } =
+          await supabase.rpc(
+            "upsert_store_strategy_settings_with_legacy_mirror_scoped",
+            {
+              p_organization_id: organizationId,
+              p_store_id: activeStoreId,
+              p_city: normalizedStrategySettings.value.city,
+              p_state: normalizedStrategySettings.value.state,
+              p_service_regions: normalizedStrategySettings.value.serviceRegions,
+              p_service_region_modes: normalizedStrategySettings.value.serviceRegionModes,
+              p_service_region_primary_mode:
+                normalizedStrategySettings.value.serviceRegionPrimaryMode,
+              p_service_region_outside_consultation:
+                normalizedStrategySettings.value.serviceRegionOutsideConsultation,
+              p_service_region_notes: normalizedStrategySettings.value.serviceRegionNotes,
+              p_store_services: normalizedStrategySettings.value.storeServices,
+              p_store_services_other: normalizedStrategySettings.value.storeServicesOther,
+              p_store_description: normalizedStrategySettings.value.storeDescription,
+              p_main_store_brand: normalizedStrategySettings.value.mainStoreBrand,
+              p_brands_worked: normalizedStrategySettings.value.brandsWorked,
+              p_strategy_service_exclusions:
+                normalizedStrategySettings.value.strategyServiceExclusions,
+              p_strategy_primary_focus:
+                normalizedStrategySettings.value.strategyPrimaryFocus,
+              p_strategy_sell_more: normalizedStrategySettings.value.strategySellMore,
+              p_strategy_common_customer:
+                normalizedStrategySettings.value.strategyCommonCustomer,
+              p_strategy_ideal_customer:
+                normalizedStrategySettings.value.strategyIdealCustomer,
+              p_strategy_ticket_range:
+                normalizedStrategySettings.value.strategyTicketRange,
+              p_strategy_positioning:
+                normalizedStrategySettings.value.strategyPositioning,
+              p_strategy_priority_brands:
+                normalizedStrategySettings.value.strategyPriorityBrands,
+              p_strategy_non_worked_brands:
+                normalizedStrategySettings.value.strategyNonWorkedBrands,
+              p_strategy_top_lines: normalizedStrategySettings.value.strategyTopLines,
+              p_strategy_top_products:
+                normalizedStrategySettings.value.strategyTopProducts,
+              p_strategy_differentials:
+                normalizedStrategySettings.value.strategyDifferentials,
+              p_strategy_promise_limits:
+                normalizedStrategySettings.value.strategyPromiseLimits,
+              p_strategy_ai_presentation:
+                normalizedStrategySettings.value.strategyAiPresentation,
+              p_strategy_ai_priorities:
+                normalizedStrategySettings.value.strategyAiPriorities,
+              p_strategy_ai_never_forget:
+                normalizedStrategySettings.value.strategyAiNeverForget,
+            },
+          );
+
+        if (strategySaveError) throw strategySaveError;
+
+        setStrategySettings(
+          (savedStrategySettings ?? null) as StoreStrategySettingsRow | null,
+        );
+      } catch (error: any) {
+        setErrorText(error?.message ?? "Nao foi possivel salvar as alteracoes da estrategia.");
+        setSuccessText(null);
+        return false;
+      }
+    }
+
+    const nextCommercialExperience = createCanonicalCommercialExperienceDraft(
+      normalizedCommercialExperience,
+      nextStrategyInput,
+    );
+
+    setCommercialExperienceDraft(nextCommercialExperience);
+    setSavedCommercialExperience(nextCommercialExperience);
+    setErrorText(null);
+    setSuccessText("Configuração comercial atualizada.");
+
+    if (["offerings", "strategy", "brands", "ai"].includes(target)) {
+      setStrategyEditTarget(null);
+      setIsStrategyEditing(false);
+    } else {
+      setCommercialExperienceEditTarget(null);
+    }
+
+    return true;
+  }, [
+    activeStoreId,
+    catalogSuggestionItems,
+    commercialExperienceDraft,
+    organizationId,
+    strategySettingsInput,
+  ]);
+
   const handleCommercialEditCancel = useCallback(() => {
     setCommercialDraft(
       createCommercialDraftFromAnswersWithPaymentSettings(
@@ -4353,13 +8425,17 @@ export default function ConfiguracoesPage() {
         strategySettingsInput,
       ),
     );
+    setCommercialExperienceDraft(savedCommercialExperience);
     setIsCommercialEditing(false);
+    setCommercialEditTarget(null);
   }, [
     answers,
     commercialAiSettings,
     discountSettings,
     highValueDiscountSettings,
     paymentSettings,
+    savedCommercialExperience,
+    strategySettingsInput,
   ]);
 
   const handleCommercialEditSave = useCallback(async () => {
@@ -4367,6 +8443,85 @@ export default function ConfiguracoesPage() {
       setErrorText("Nenhuma loja ativa foi encontrada para salvar essas alteraÃ§Ãµes.");
       setSuccessText(null);
       return;
+    }
+
+    if (commercialEditTarget === "ai_price" && commercialExperienceDraft.price_context_other_enabled && !cleanText(commercialExperienceDraft.price_context_other)) {
+      setErrorText("Explique qual é o outro contexto necessário antes de informar preço.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (commercialEditTarget === "payments") {
+      if (commercialExperienceDraft.payment_other_enabled && !cleanText(commercialExperienceDraft.payment_other_method)) {
+        setErrorText("Informe qual é a outra forma de pagamento aceita pela loja.");
+        setSuccessText(null);
+        return;
+      }
+
+      if (["optional", "required"].includes(commercialDraft.down_payment_mode) && commercialDraft.down_payment_value_type === "case_by_case" && !cleanText(commercialExperienceDraft.down_payment_case_rule)) {
+        setErrorText("Explique como a entrada é definida quando varia conforme a venda.");
+        setSuccessText(null);
+        return;
+      }
+
+      if (normalizeLoose(commercialDraft.installments_enabled) === "sim") {
+        const maxInstallments = Number.parseInt(cleanText(commercialDraft.max_installments), 10);
+        if (!Number.isInteger(maxInstallments) || maxInstallments <= 0) {
+          setErrorText("Informe em até quantas vezes a loja parcela.");
+          setSuccessText(null);
+          return;
+        }
+
+        if (!cleanText(commercialExperienceDraft.installments_interest_free_enabled)) {
+          setErrorText("Informe se existe parcelamento sem juros.");
+          setSuccessText(null);
+          return;
+        }
+
+        if (commercialExperienceDraft.installments_interest_free_enabled === "Sim") {
+          const interestFreeMax = Number.parseInt(cleanText(commercialExperienceDraft.installments_interest_free_max), 10);
+          if (!Number.isInteger(interestFreeMax) || interestFreeMax <= 0 || interestFreeMax > maxInstallments) {
+            setErrorText("Informe um número válido de parcelas sem juros, sem ultrapassar o máximo de parcelas.");
+            setSuccessText(null);
+            return;
+          }
+        }
+
+        if (["regra_propria", "depende", "outro"].includes(commercialExperienceDraft.installment_interest_above_mode) && !cleanText(commercialExperienceDraft.installment_interest_above_rule)) {
+          setErrorText("Explique como funcionam os juros acima do parcelamento sem juros.");
+          setSuccessText(null);
+          return;
+        }
+
+        if (commercialExperienceDraft.installment_minimum_enabled === "Sim" && !cleanText(commercialExperienceDraft.installment_minimum_amount)) {
+          setErrorText("Informe o valor mínimo de cada parcela.");
+          setSuccessText(null);
+          return;
+        }
+      }
+
+      if (commercialDraft.accepted_payment_methods.includes("financiamento")) {
+        if (!cleanText(commercialExperienceDraft.financing_mode)) {
+          setErrorText("Explique como funciona o financiamento oferecido aos clientes.");
+          setSuccessText(null);
+          return;
+        }
+        if (commercialExperienceDraft.financing_mode === "parceiro" && !cleanText(commercialExperienceDraft.financing_partner_name)) {
+          setErrorText("Informe o banco ou financeira parceira.");
+          setSuccessText(null);
+          return;
+        }
+        if (["depende", "outro"].includes(commercialExperienceDraft.financing_mode) && !cleanText(commercialExperienceDraft.financing_other)) {
+          setErrorText("Explique como funciona o financiamento nesse caso.");
+          setSuccessText(null);
+          return;
+        }
+        if (!cleanText(commercialExperienceDraft.financing_credit_analysis) || !cleanText(commercialExperienceDraft.financing_simulation_by) || !cleanText(commercialExperienceDraft.financing_ai_policy)) {
+          setErrorText("Complete as perguntas sobre análise de crédito, simulação e o que a IA pode informar sobre financiamento.");
+          setSuccessText(null);
+          return;
+        }
+      }
     }
 
     const normalizedPaymentSettings = normalizeStorePaymentSettingsInput({
@@ -4475,60 +8630,49 @@ export default function ConfiguracoesPage() {
 
     if (!saved) return;
 
+    setSavedCommercialExperience(commercialExperienceDraft);
     setIsCommercialEditing(false);
-  }, [activeStoreId, commercialDraft, organizationId, upsertConfigAnswers]);
+    setCommercialEditTarget(null);
+  }, [
+    activeStoreId,
+    commercialDraft,
+    commercialEditTarget,
+    commercialExperienceDraft,
+    organizationId,
+    upsertConfigAnswers,
+  ]);
 
   const handleMonthlySalesGoalSave = useCallback(async () => {
     try {
-      const normalized =
-        normalizeMonthlySalesGoalInput(monthlySalesGoalDraft);
-
+      const normalized = normalizeMonthlySalesGoalInput(monthlySalesGoalDraft);
       const response = await fetch("/api/store/monthly-sales-goal", {
         method: "POST",
         cache: "no-store",
         credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           enabled: normalized.enabled,
           amountCents: normalized.amountCents,
         }),
       });
-
       const body = (await response.json().catch(() => null)) as
-        | {
-            ok: true;
-            goal:
-              | StoreMonthlySalesGoalInput
-              | StoreMonthlySalesGoalRow
-              | null;
-          }
+        | { ok: true; goal: StoreMonthlySalesGoalInput | StoreMonthlySalesGoalRow | null }
         | { ok: false; message?: string | null }
         | null;
 
       if (!response.ok || !body?.ok) {
         const failure = body as { message?: string | null } | null;
-
-        throw new Error(
-          failure?.message ||
-            "Nao foi possivel salvar a meta mensal.",
-        );
+        throw new Error(failure?.message || "Nao foi possivel salvar a meta mensal.");
       }
 
-      const nextGoal =
-        normalizeMonthlySalesGoalApiValue(body.goal);
-
+      const nextGoal = normalizeMonthlySalesGoalApiValue(body.goal);
       setMonthlySalesGoal(nextGoal);
       setMonthlySalesGoalDraft(nextGoal);
       setIsMonthlySalesGoalEditing(false);
       setErrorText(null);
       setSuccessText("Meta mensal salva com sucesso.");
     } catch (error: any) {
-      setErrorText(
-        error?.message ||
-          "Nao foi possivel salvar a meta mensal.",
-      );
+      setErrorText(error?.message ?? "Nao foi possivel salvar a meta mensal.");
       setSuccessText(null);
     }
   }, [monthlySalesGoalDraft]);
@@ -4554,6 +8698,33 @@ export default function ConfiguracoesPage() {
       [key]: value,
     }));
   }, []);
+  const handleDiscountNegotiationEnabledChange = useCallback((value: string) => {
+    if (value === "Não") {
+      setDiscountDraft((current) => ({
+        ...current,
+        default_discount_percent: "0",
+        max_discount_percent: "0",
+        allow_ask_above_max_discount: false,
+        discount_autonomy_mode: "approval_required",
+        high_value_enabled: false,
+      }));
+      setCommercialExperienceDraft((current) => ({
+        ...current,
+        high_value_requires_human: "Não definido",
+      }));
+      return;
+    }
+
+    setDiscountDraft((current) => ({
+      ...current,
+      default_discount_percent: cleanText(current.default_discount_percent) && current.default_discount_percent !== "0" ? current.default_discount_percent : "5",
+      max_discount_percent: cleanText(current.max_discount_percent) && current.max_discount_percent !== "0" ? current.max_discount_percent : "10",
+      discount_autonomy_mode:
+        current.discount_autonomy_mode && current.discount_autonomy_mode !== "approval_required"
+          ? current.discount_autonomy_mode
+          : "within_limit",
+    }));
+  }, []);
 
   const handleDiscountEditCancel = useCallback(() => {
     setDiscountDraft(
@@ -4568,6 +8739,12 @@ export default function ConfiguracoesPage() {
 
   const handleDiscountEditSave = useCallback(async () => {
     if (!organizationId || !activeStoreId) return;
+
+    if (discountDraft.high_value_enabled && !cleanText(commercialExperienceDraft.high_value_requires_human)) {
+      setErrorText("Informe se vendas de valor alto precisam de aprovação humana.");
+      setSuccessText(null);
+      return;
+    }
 
     const normalizedDiscountSettings = normalizeStoreDiscountSettingsInput({
       defaultDiscountPercent: discountDraft.default_discount_percent,
@@ -4640,8 +8817,15 @@ export default function ConfiguracoesPage() {
 
     if (!saved) return;
 
+    setSavedCommercialExperience(commercialExperienceDraft);
     setIsDiscountEditing(false);
-  }, [activeStoreId, discountDraft, organizationId, upsertConfigAnswers]);
+  }, [
+    activeStoreId,
+    commercialExperienceDraft,
+    discountDraft,
+    organizationId,
+    upsertConfigAnswers,
+  ]);
 
   useEffect(() => {
     setChannelDraft(createChannelDraftFromSources(answers, channelSettings, loadedCanonicalPrimaryResponsible));
@@ -4847,7 +9031,6 @@ export default function ConfiguracoesPage() {
         responsible_whatsapp: cleanText(primaryResponsibleDraft.whatsapp),
         responsible_role: cleanText(primaryResponsibleDraft.role),
         responsible_notes: cleanText(primaryResponsibleDraft.notes),
-        ai_should_notify_responsible: primaryResponsibleDraft.receives_ai_alerts,
         confirm_information_is_correct: activationConfirmInformationDraft,
         responsible_notification_cases_other: cleanText(activationNotificationCasesDraft),
         activation_preferences_other: cleanText(activationPreferencesDraft),
@@ -4857,9 +9040,10 @@ export default function ConfiguracoesPage() {
       "Alterações de responsável e ativação salvas com sucesso."
     );
 
-    if (!saved) return;
+    if (!saved) return false;
 
     setIsActivationEditing(false);
+    return true;
   }, [
     primaryResponsibleDraft,
     additionalResponsiblesDraft,
@@ -5360,17 +9544,17 @@ export default function ConfiguracoesPage() {
     if (!organizationId || !activeStoreId) {
       setErrorText("Nenhuma loja ativa foi encontrada para enviar a logo.");
       setSuccessText(null);
-      return;
+      return false;
     }
 
     if (!selectedStoreLogoFile) {
       setErrorText("Selecione uma imagem antes de enviar a logo.");
       setSuccessText(null);
-      return;
+      return false;
     }
 
     if (savingStoreLogo) {
-      return;
+      return false;
     }
 
     setSavingStoreLogo(true);
@@ -5396,9 +9580,11 @@ export default function ConfiguracoesPage() {
       setStoreLogoPreviewUrl(result.signedUrl || null);
       setSelectedStoreLogoFile(null);
       setSuccessText(result.warning ? `Logo salva com sucesso. ${result.warning}` : "Logo salva com sucesso.");
+      return true;
     } catch (error: any) {
       setErrorText(error?.message ?? "Nao foi possivel salvar a logo.");
       setSuccessText(null);
+      return false;
     } finally {
       setSavingStoreLogo(false);
     }
@@ -5466,6 +9652,159 @@ export default function ConfiguracoesPage() {
     storeBranding?.id,
     storeBranding?.logo_storage_path,
   ]);
+
+  const updateBrandExperienceDraft = useCallback(<K extends keyof BrandExperienceDraftState>(
+    key: K,
+    value: BrandExperienceDraftState[K],
+  ) => {
+    setBrandExperienceDraft((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const handleBrandSettingsCancel = useCallback(() => {
+    setSelectedStoreLogoFile(null);
+    setBrandExperienceDraft(savedBrandExperience);
+    setIsBrandEditing(false);
+    setErrorText(null);
+  }, [savedBrandExperience]);
+
+  const handleBrandSettingsSave = useCallback(async () => {
+    const colorPattern = /^#[0-9A-Fa-f]{6}$/;
+    if (!colorPattern.test(cleanText(brandExperienceDraft.primary_color))) {
+      setErrorText("Informe uma cor principal válida no formato #RRGGBB.");
+      setSuccessText(null);
+      return;
+    }
+    if (cleanText(brandExperienceDraft.secondary_color) && !colorPattern.test(cleanText(brandExperienceDraft.secondary_color))) {
+      setErrorText("Informe uma cor secundária válida no formato #RRGGBB.");
+      setSuccessText(null);
+      return;
+    }
+    if (!["Sim", "Não"].includes(brandExperienceDraft.use_logo_on_quotes)) {
+      setErrorText("Informe se a logo deve aparecer nos orçamentos.");
+      setSuccessText(null);
+      return;
+    }
+    if (!["Sim", "Não"].includes(brandExperienceDraft.use_logo_on_contracts)) {
+      setErrorText("Informe se a logo deve aparecer nos contratos.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (selectedStoreLogoFile) {
+      const logoSaved = await handleSaveStoreLogo();
+      if (!logoSaved) return;
+    }
+
+    setSavedBrandExperience(brandExperienceDraft);
+    setErrorText(null);
+    setSuccessText("Configurações de marca atualizadas.");
+    setIsBrandEditing(false);
+  }, [brandExperienceDraft, handleSaveStoreLogo, selectedStoreLogoFile]);
+
+  const updateContractExperienceDraft = useCallback(<K extends keyof ContractExperienceDraftState>(
+    key: K,
+    value: ContractExperienceDraftState[K],
+  ) => {
+    setContractExperienceDraft((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const toggleContractExperienceArrayValue = useCallback((
+    key: "applicability_cases" | "formats" | "signed_before",
+    value: string,
+  ) => {
+    setContractExperienceDraft((current) => {
+      const currentValues = current[key];
+      return {
+        ...current,
+        [key]: currentValues.includes(value)
+          ? currentValues.filter((item) => item !== value)
+          : [...currentValues, value],
+      };
+    });
+  }, []);
+
+  const handleContractPolicyCancel = useCallback(() => {
+    setContractExperienceDraft(savedContractExperience);
+    setIsContractPolicyEditing(false);
+    setErrorText(null);
+  }, [savedContractExperience]);
+
+  const handleContractPolicySave = useCallback(() => {
+    const draft = contractExperienceDraft;
+    if (!["Sim", "Não"].includes(draft.enabled)) {
+      setErrorText("Informe se a loja utiliza contrato nas vendas.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (draft.enabled === "Sim") {
+      if (!cleanText(draft.applicability_mode)) {
+        setErrorText("Defina quando o contrato é usado pela loja.");
+        setSuccessText(null);
+        return;
+      }
+      if (draft.applicability_mode === "depende" && draft.applicability_cases.length === 0) {
+        setErrorText("Selecione em quais situações o contrato é exigido.");
+        setSuccessText(null);
+        return;
+      }
+      if (draft.applicability_cases.includes("outro") && !cleanText(draft.applicability_other)) {
+        setErrorText("Explique a outra situação em que o contrato é usado.");
+        setSuccessText(null);
+        return;
+      }
+      if (draft.applicability_cases.includes("alto_valor") && !cleanText(draft.high_value_amount)) {
+        setErrorText("Informe a partir de qual valor a regra de contrato de alto valor se aplica.");
+        setSuccessText(null);
+        return;
+      }
+      if (draft.formats.length === 0) {
+        setErrorText("Selecione se a loja trabalha com contrato digital, físico ou ambos.");
+        setSuccessText(null);
+        return;
+      }
+      if (draft.signed_before.length === 0) {
+        setErrorText("Defina antes de qual etapa o contrato precisa estar assinado.");
+        setSuccessText(null);
+        return;
+      }
+      if (draft.signed_before.includes("outro") && !cleanText(draft.signed_before_other)) {
+        setErrorText("Explique o outro momento em que o contrato precisa estar assinado.");
+        setSuccessText(null);
+        return;
+      }
+    }
+
+    setSavedContractExperience(draft);
+    setErrorText(null);
+    setSuccessText("Regras de uso do contrato atualizadas.");
+    setIsContractPolicyEditing(false);
+  }, [contractExperienceDraft]);
+
+  useEffect(() => {
+    setCommercialWhatsappDraft(cleanText(answers.commercial_whatsapp));
+  }, [answers.commercial_whatsapp, activeStoreId]);
+
+  const handleCommercialWhatsappSave = useCallback(async () => {
+    const phone = cleanText(commercialWhatsappDraft);
+    if (!phone) {
+      setErrorText("Informe o número comercial que a loja pretende conectar ao WhatsApp.");
+      setSuccessText(null);
+      return;
+    }
+    const saved = await upsertConfigAnswers(
+      { commercial_whatsapp: phone },
+      "Número comercial da loja salvo com sucesso.",
+    );
+    if (!saved) return;
+    setIsCommercialWhatsappEditing(false);
+  }, [commercialWhatsappDraft, upsertConfigAnswers]);
+
+  const handleCommercialWhatsappCancel = useCallback(() => {
+    setCommercialWhatsappDraft(cleanText(answers.commercial_whatsapp));
+    setIsCommercialWhatsappEditing(false);
+    setErrorText(null);
+  }, [answers.commercial_whatsapp]);
 
   const handleDeleteAllCatalog = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -6225,10 +10564,7 @@ export default function ConfiguracoesPage() {
   ]);
 
   return (
-    <div className="space-y-4 overflow-x-hidden">
-      <div>
-        <h1 className="text-2xl font-black tracking-[-0.02em] text-black">Configurações</h1>
-      </div>
+    <div className="mx-auto w-full max-w-[1180px] space-y-4 overflow-x-hidden pb-10 pt-5">
 
       {!hasValidStoreContext ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -6248,13 +10584,13 @@ export default function ConfiguracoesPage() {
         </div>
       ) : null}
 
-      <section className="rounded-2xl border border-gray-200 bg-white px-4 py-3">
-        <div className="mb-3">
-          <h2 className="text-sm font-semibold text-gray-900">Áreas da configuração</h2>
-        </div>
-
-        <div className="px-1 pb-1">
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+      <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+        <div className="h-0.5 w-full bg-black" />
+        <div className="p-3">
+          <div className="mb-2 px-1 text-xs font-semibold uppercase tracking-[0.12em] text-gray-500">
+            Áreas de configuração
+          </div>
+          <div className="grid grid-cols-2 gap-1.5 md:grid-cols-3 xl:grid-cols-6">
             {tabs.map((tab) => (
               <SettingsTabButton
                 key={tab.id}
@@ -6267,2997 +10603,1312 @@ export default function ConfiguracoesPage() {
         </div>
       </section>
 
-      {shouldShowQuickAccess ? (
-        <SectionBlock
-          title="Acessos rápidos"
-          actions={loading ? <span className="text-xs text-gray-500">Carregando...</span> : null}
-        >
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-            <QuickCard href="/configuracoes/piscinas" title="Piscinas" count={counts.pools} />
-            <QuickCard href="/configuracoes/catalogo/quimicos" title="Químicos" count={counts.quimicos} />
-            <QuickCard href="/configuracoes/catalogo/acessorios" title="Acessórios" count={counts.acessorios} />
-            <QuickCard href="/configuracoes/catalogo/outros" title="Outros" count={counts.outros} />
-          </div>
-        </SectionBlock>
-      ) : null}
-
-      {activeTab === "catalogo" ? (
-        <div className="space-y-4 overflow-x-hidden">
-          <div className="rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
-            <button
-              type="button"
-              onClick={() => {
-                setManualCatalogItemModalError(null);
-                setManualCatalogItemModalSuccess(null);
-                setIsManualCatalogItemModalOpen(true);
-              }}
-              className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-            >
-              Adicionar item manualmente
-            </button>
-          </div>
-
+      {activeTab === "geral" ? (
+        <div className="grid items-stretch gap-4 xl:grid-cols-2 [&>section]:h-full [&>section]:self-stretch">
           <SectionBlock
-            title="Upload inteligente"
-            description="Envie arquivos para importar catálogo, piscinas e materiais da loja usando o fluxo já existente."
+            title="Informações da loja"
+            description="Informações básicas que identificam a loja no ZION e ajudam as IAs a apresentá-la corretamente."
+            tone={!cleanText(storeName) ? "red" : !cleanText(strategySettingsInput.storeDescription) ? "yellow" : "blue"}
+            status={!cleanText(storeName) ? "Configuração crítica" : !cleanText(strategySettingsInput.storeDescription) ? "Precisa de atenção" : "Completo"}
+            className={overviewEditTarget === "store" ? "xl:col-span-2" : ""}
+            actions={
+              overviewEditTarget === "store" ? (
+                <>
+                  <button type="button" onClick={() => void handleGeneralInformationSave()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button>
+                  <button type="button" onClick={() => { handleOverviewEditCancel(); setStrategyDraft(strategySettingsInput); setOverviewEditTarget(null); }} className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800">Cancelar</button>
+                </>
+              ) : (
+                <button type="button" onClick={() => { setStrategyDraft(strategySettingsInput); setOverviewEditTarget("store"); setIsOverviewEditing(true); }} className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800">Editar</button>
+              )
+            }
           >
-            <IntelligentCatalogImportPanel
-              organizationId={organizationId}
-              storeId={activeStoreId}
-              storageKey={intelligentImportStorageKey}
-              source="configuracoes_intelligent_import"
-              disabled={!hasValidStoreContext}
-              supabaseClient={supabase}
-              onError={(message) => {
-                setErrorText(message);
-                if (message) setSuccessText(null);
-              }}
-              onSuccess={(message) => {
-                setSuccessText(message);
-                if (message) setErrorText(null);
-              }}
-              onSaved={async () => {
-                await fetchPageData();
-              }}
-            />
-          </SectionBlock>
-
-          <SectionBlock
-            title="Arquivos importados"
-            description="Veja os arquivos enviados para importação do catálogo e remova arquivos individuais quando necessário."
-          >
-            <details className="group rounded-2xl border border-gray-200 bg-gray-50">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
-                <div>
-                  <div className="text-sm font-semibold text-gray-900">Arquivos importados</div>
-                  <div className="mt-1 text-xs text-gray-600">
-                    {catalogImportedFiles.length > 0
-                      ? `${catalogImportedFiles.length} arquivo(s) disponível(is) para consulta`
-                      : "Nenhum arquivo importado disponível no momento"}
-                  </div>
-                </div>
-                <span className="text-xs font-semibold text-gray-500 transition group-open:rotate-180">▼</span>
-              </summary>
-
-              <div className="border-t border-gray-200 px-4 py-4">
-                {catalogImportedFiles.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-gray-300 bg-white px-4 py-4 text-sm text-gray-600">
-                    Nenhum arquivo importado foi encontrado para esta loja ainda.
-                  </div>
-                ) : (
-                  <div className="space-y-2.5">
-                    {catalogImportedFiles.map((file, index) => (
-                      <div
-                        key={buildImportFileKey(file, index)}
-                        className="rounded-2xl border border-gray-200 bg-white p-3"
-                      >
-                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                          <div className="min-w-0">
-                            <div className="break-words text-sm font-semibold text-gray-900">
-                              {cleanText(file.original_file_name) || "Arquivo sem nome"}
-                            </div>
-                            <div className="mt-1 text-xs text-gray-500">
-                              Importado em {formatImportDate(file.created_at)}
-                            </div>
-                            <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-gray-600">
-                              <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-gray-200">
-                                Tipo: {cleanText(file.extension)?.toUpperCase() || cleanText(file.mime_type) || "Não definido"}
-                              </span>
-                              <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-gray-200">
-                                Tamanho: {formatFileSize(file.size_bytes)}
-                              </span>
-                              <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-gray-200">
-                                Status: {cleanText(file.status) || "Não definido"}
-                              </span>
-                              <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-gray-200">
-                                {getImportSummaryText(file.import_summary || null)}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="flex shrink-0 flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={() => void handleDownloadImportFile(file)}
-                              disabled={
-                                downloadingImportFileId === file.id ||
-                                deletingImportFileId === file.id
-                              }
-                              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-800 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {downloadingImportFileId === file.id ? "Gerando..." : "Baixar"}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => void handleDeleteImportFile(file)}
-                              disabled={deletingImportFileId === file.id}
-                              className="rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {deletingImportFileId === file.id ? "Excluindo..." : "Excluir"}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+            {overviewEditTarget === "store" ? (
+              <div className="grid gap-3">
+                <label className="space-y-1.5">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual nome da loja deve aparecer para clientes e no ZION?</span>
+                  <input value={overviewDraft.store_display_name ?? ""} onChange={(e) => handleOverviewDraftChange("store_display_name", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100" />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como você descreveria a loja em poucas frases?</span>
+                  <textarea value={strategyDraft.storeDescription} onChange={(e) => handleStrategyDraftChange("storeDescription", e.target.value)} rows={4} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100" />
+                </label>
               </div>
-            </details>
-          </SectionBlock>
-        </div>
-      ) : null}
-
-      {activeTab === "visao-geral" ? (
-        <SectionBlock title="Controle da configuração">
-          <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_220px_220px]">
-            <div className="flex items-start">
-              <button
-                type="button"
-                onClick={() => void handleDeleteAllStoreCatalog()}
-                disabled={!hasValidStoreContext || deletingCatalog || totalCatalogo === 0}
-                className="rounded-xl border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {deletingCatalog ? "Apagando catálogo..." : "Apagar todo o catálogo"}
-              </button>
-            </div>
-
-            <CompactMetric
-              label="Total do catálogo"
-              value={String(totalCatalogo)}
-              tone={totalCatalogo > 0 ? "green" : "gray"}
-            />
-
-            <CompactMetric
-              label="Status da configuração"
-              value={onboardingStatus.label}
-              tone={onboardingStatus.tone}
-            />
-          </div>
-        </SectionBlock>
-      ) : null}
-
-      {activeTab === "visao-geral" ? (
-        <SectionBlock
-          title="1. Visão Geral"
-          description="Tela-resumo da loja com status, pendências e prontidão operacional."
-          actions={
-            isOverviewEditing ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleOverviewEditSave}
-                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                >
-                  Salvar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleOverviewEditCancel}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-                >
-                  Cancelar
-                </button>
-              </>
             ) : (
-              <button
-                type="button"
-                onClick={() => setIsOverviewEditing(true)}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-              >
-                Editar
-              </button>
-            )
-          }
-        >
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <StatusCard
-              label="Configuração da loja"
-              value={onboardingStatus.label}
-              tone={onboardingStatus.tone}
-              hint="Status geral do onboarding principal."
-            />
-            <StatusCard
-              label="Canal comercial"
-              value={cleanText(answers.commercial_whatsapp) ? "Configurado" : "Pendente"}
-              tone={cleanText(answers.commercial_whatsapp) ? "green" : "red"}
-              hint={cleanText(answers.commercial_whatsapp) || "WhatsApp comercial ainda não definido"}
-            />
-            <StatusCard
-              label="Canal da assistente"
-              value={primaryResponsibleWhatsapp ? "Configurado" : "Pendente"}
-              tone={primaryResponsibleWhatsapp ? "green" : "amber"}
-              hint={primaryResponsibleWhatsapp || "Canal do responsável ainda não definido"}
-            />
-            <StatusCard
-              label="Agenda"
-              value={scheduleSettings ? "Configurada" : "Pendente"}
-              tone={scheduleSettings ? "green" : "amber"}
-              hint={scheduleSettings ? "Regras de disponibilidade e operação" : "Agenda canônica ainda não configurada"}
-            />
-            <StatusCard
-              label="Prontidão da IA"
-              value={iaReadiness.value}
-              tone={iaReadiness.tone}
-              hint={iaReadiness.hint}
-            />
-          </div>
+              <SummaryList items={buildBulletRows([
+                { label: "Nome da loja", value: storeName || "Não definido" },
+                { label: "Descrição", value: cleanText(strategySettingsInput.storeDescription) || "Não definida" },
+              ])} />
+            )}
+          </SectionBlock>
 
-          {isOverviewEditing ? (
-            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="mb-3 text-sm font-semibold text-gray-900">Editar visão geral na mesma página</div>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Nome da loja
-                  </span>
-                  <input
-                    value={overviewDraft.store_display_name ?? ""}
-                    onChange={(event) => handleOverviewDraftChange("store_display_name", event.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
+          <SectionBlock
+            title="Endereço da loja"
+            description="Defina onde a loja está localizada e como a IA deve orientar um cliente que queira ir até o estabelecimento."
+            tone={isGeneralAddressComplete(savedGeneralAddress) ? "blue" : "yellow"}
+            status={isGeneralAddressComplete(savedGeneralAddress) ? "Completo" : "Precisa de atenção"}
+            className={overviewEditTarget === "address" ? "xl:col-span-2" : ""}
+            actions={overviewEditTarget === "address" ? <><button type="button" onClick={() => { void handleGeneralAddressSave(); }} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setGeneralAddressDraft(savedGeneralAddress); setOverviewEditTarget(null); }} className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800">Cancelar</button></> : <button type="button" onClick={() => { setGeneralAddressDraft(savedGeneralAddress); setOverviewEditTarget("address"); }} className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800">Editar</button>}
+          >
+            {overviewEditTarget === "address" ? (
+              <div className="space-y-4">
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja possui um endereço físico que pode ser informado aos clientes?</span>
+                  <ChoiceButtonGroup value={generalAddressDraft.has_public_address} onChange={(value) => updateGeneralAddressDraft("has_public_address", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />
                 </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Responsável principal
-                  </span>
-                  <input
-                    value={overviewDraft.responsible_name ?? ""}
-                    onChange={(event) => handleOverviewDraftChange("responsible_name", event.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    WhatsApp do responsável
-                  </span>
-                  <input
-                    value={overviewDraft.responsible_whatsapp ?? ""}
-                    onChange={(event) => handleOverviewDraftChange("responsible_whatsapp", event.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    WhatsApp comercial
-                  </span>
-                  <input
-                    value={overviewDraft.commercial_whatsapp ?? ""}
-                    onChange={(event) => handleOverviewDraftChange("commercial_whatsapp", event.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Regra principal da agenda
-                  </span>
-                  <input
-                    value={overviewDraft.installation_days_rule ?? ""}
-                    readOnly
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Regra de visita técnica
-                  </span>
-                  <input
-                    value={overviewDraft.technical_visit_days_rule ?? ""}
-                    readOnly
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Observações da configuração
-                  </span>
-                  <textarea
-                    value={overviewDraft.final_activation_notes ?? ""}
-                    onChange={(event) => handleOverviewDraftChange("final_activation_notes", event.target.value)}
-                    rows={4}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
+                {generalAddressDraft.has_public_address !== "Não" ? (
+                  <fieldset disabled={generalAddressDraft.has_public_address !== "Sim"} className={generalAddressDraft.has_public_address === "Sim" ? "space-y-3" : "space-y-3 opacity-45"}>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">CEP</span><input value={generalAddressDraft.cep} onChange={(e) => handleGeneralAddressCepChange(e.target.value)} placeholder="00000-000" inputMode="numeric" className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" />{generalAddressCepLookupLoading ? <span className="block text-xs text-gray-500">Consultando CEP...</span> : null}{generalAddressCepLookupMessage ? <span className="block text-xs text-amber-700">{generalAddressCepLookupMessage}</span> : null}</label>
+                      <label className="space-y-1.5 md:col-span-2"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Rua / avenida</span><input value={generalAddressDraft.street} onChange={(e) => updateGeneralAddressDraft("street", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                      <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Número</span><input value={generalAddressDraft.number} onChange={(e) => updateGeneralAddressDraft("number", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                      <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Complemento</span><input value={generalAddressDraft.complement} onChange={(e) => updateGeneralAddressDraft("complement", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                      <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Bairro</span><input value={generalAddressDraft.district} onChange={(e) => updateGeneralAddressDraft("district", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                      <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cidade</span><input value={generalAddressDraft.city} onChange={(e) => updateGeneralAddressDraft("city", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                      <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Estado</span><input value={generalAddressDraft.state} onChange={(e) => updateGeneralAddressDraft("state", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                      <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Ponto de referência</span><input value={generalAddressDraft.reference_point} onChange={(e) => updateGeneralAddressDraft("reference_point", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                    </div>
+                    <div>
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como clientes podem ir até a loja?</div>
+                      <ChoiceButtonGroup value={generalAddressDraft.customer_visit_mode} onChange={(value) => updateGeneralAddressDraft("customer_visit_mode", value)} options={[{ value: "sem_agendamento", label: "Podem comparecer sem agendar" }, { value: "com_agendamento", label: "Somente com agendamento" }, { value: "nao_recebe_clientes", label: "O endereço não recebe clientes" }]} />
+                    </div>
+                    <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Orientações adicionais para chegar ao local</span><textarea value={generalAddressDraft.directions_notes} onChange={(e) => updateGeneralAddressDraft("directions_notes", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                  </fieldset>
+                ) : null}
               </div>
-            </div>
-          ) : null}
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Resumo curto da loja</div>
-              <SummaryList items={overviewSummary} />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">
-                Pendências para ativação real
-              </div>
-              <SummaryList items={activationPendencies} />
-            </div>
-          </div>
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Responsáveis e acesso</div>
-              <SummaryList
-                items={buildBulletRows([
-                  { label: "Responsável principal", value: primaryResponsibleName },
-                  { label: "WhatsApp do responsável", value: primaryResponsibleWhatsapp },
-                  { label: "Quem tem acesso ao sistema", value: primaryResponsibleName || "Responsável principal da loja" },
-                ])}
-              />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Acesso rápido para outras abas</div>
-              <SummaryList
-                items={[
-                  "Estratégia para revisar a base da loja.",
-                  "Piscinas para revisar a oferta de piscinas.",
-                  "Produtos/Acessórios para revisar catálogo, estoque e SKU.",
-                  "Operação, Comercial e IA e Ativação para validar o comportamento real da loja.",
-                ]}
-              />
-            </div>
-          </div>
-        </SectionBlock>
-      ) : null}
-
-      {activeTab === "estrategia" ? (
-        <SectionBlock
-          title="2. Estratégia"
-          description="Base principal da loja para contexto comercial, regiões, serviços e posicionamento."
-          actions={
-            isStrategyEditing ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleStrategyEditSave}
-                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                >
-                  Salvar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleStrategyEditCancel}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-                >
-                  Cancelar
-                </button>
-              </>
             ) : (
-              <button
-                type="button"
-                onClick={handleStrategyEditOpen}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-              >
-                Editar
-              </button>
-            )
-          }
-        >
-          {isStrategyEditing ? (
-            <div className="space-y-4 overflow-x-hidden">
-              <div className="rounded-2xl border border-black/10 bg-gray-50 p-4">
-                <div className="mb-1 text-sm font-semibold text-gray-900">Editar estratégia na mesma página</div>
-                <div className="mb-3 text-xs text-gray-600">
-                  Aqui você pode completar ou adicionar informações que estejam faltando no onboarding.
-                </div>
-
-                <div className="space-y-4 overflow-x-hidden">
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">1. Base de atuação da loja</div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cidade principal</span>
-                        <input
-                          value={strategyDraft.city ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("city", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Estado</span>
-                        <input
-                          value={strategyDraft.state ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("state", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Região principal de atendimento</span>
-                        <input
-                          value={strategyDraft.serviceRegions}
-                          onChange={(event) => handleStrategyDraftChange("serviceRegions", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cobertura principal</span>
-                        <select
-                          value={strategyDraft.serviceRegionPrimaryMode}
-                          onChange={(event) =>
-                            handleStrategyDraftChange("serviceRegionPrimaryMode", event.target.value)
-                          }
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        >
-                          <option value="">Selecione</option>
-                          {SERVICE_REGION_MODE_OPTIONS.filter((option) => option.value !== "sob_consulta").map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fora da rota</span>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleStrategyDraftChange(
-                              "serviceRegionOutsideConsultation",
-                              !strategyDraft.serviceRegionOutsideConsultation
-                            )
-                          }
-                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
-                            strategyDraft.serviceRegionOutsideConsultation
-                              ? "border-black bg-black text-white"
-                              : "border-gray-200 bg-white text-gray-800 hover:bg-gray-50"
-                          }`}
-                        >
-                          <span>Atende fora da rota somente sob consulta</span>
-                          <span>{strategyDraft.serviceRegionOutsideConsultation ? "Sim" : "Nao"}</span>
-                        </button>
-                      </label>
-
-                      <div className="space-y-2 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Modos adicionais de cobertura</span>
-                        <div className="flex flex-wrap gap-2">
-                          {SERVICE_REGION_MODE_OPTIONS.filter((option) => option.value !== "sob_consulta").map((option) => {
-                            const isSelected =
-                              strategyDraft.serviceRegionModes.includes(option.value) ||
-                              strategyDraft.serviceRegionPrimaryMode === option.value;
-                            return (
-                              <button
-                                key={option.value}
-                                type="button"
-                                onClick={() => handleStrategyMultiValueToggle("serviceRegionModes", option.value)}
-                                className={`rounded-full border px-3 py-1 text-sm transition ${
-                                  isSelected
-                                    ? "border-black bg-black text-white"
-                                    : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
-                                }`}
-                              >
-                                {option.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações sobre cobertura</span>
-                        <textarea
-                          value={strategyDraft.serviceRegionNotes}
-                          onChange={(event) => handleStrategyDraftChange("serviceRegionNotes", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">2. Serviços que a loja oferece</div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <div className="space-y-2 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Serviços principais</span>
-                        <div className="flex flex-wrap gap-2">
-                          {STORE_SERVICE_OPTIONS.map((option) => {
-                            const isSelected = strategyDraft.storeServices.includes(option.value);
-                            return (
-                              <button
-                                key={option.value}
-                                type="button"
-                                onClick={() => handleStrategyMultiValueToggle("storeServices", option.value)}
-                                className={`rounded-full border px-3 py-1 text-sm transition ${
-                                  isSelected
-                                    ? "border-black bg-black text-white"
-                                    : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
-                                }`}
-                              >
-                                {option.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Outros serviços</span>
-                        <input
-                          value={strategyDraft.storeServicesOther}
-                          onChange={(event) => handleStrategyDraftChange("storeServicesOther", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Serviços que não faz</span>
-                        <input
-                          value={strategyDraft.strategyServiceExclusions}
-                          onChange={(event) => handleStrategyDraftChange("strategyServiceExclusions", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: não faz obra do entorno, não faz manutenção..."
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">3. Foco comercial da loja</div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de loja / foco comercial</span>
-                        <textarea
-                          value={strategyDraft.storeDescription}
-                          onChange={(event) => handleStrategyDraftChange("storeDescription", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Principal foco da loja</span>
-                        <input
-                          value={strategyDraft.strategyPrimaryFocus}
-                          onChange={(event) => handleStrategyDraftChange("strategyPrimaryFocus", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que quer vender mais</span>
-                        <input
-                          value={strategyDraft.strategySellMore}
-                          onChange={(event) => handleStrategyDraftChange("strategySellMore", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de cliente mais comum</span>
-                        <input
-                          value={strategyDraft.strategyCommonCustomer}
-                          onChange={(event) => handleStrategyDraftChange("strategyCommonCustomer", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de cliente ideal</span>
-                        <input
-                          value={strategyDraft.strategyIdealCustomer}
-                          onChange={(event) => handleStrategyDraftChange("strategyIdealCustomer", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Faixa de ticket mais comum</span>
-                        <input
-                          value={strategyDraft.strategyTicketRange}
-                          onChange={(event) => handleStrategyDraftChange("strategyTicketRange", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Posicionamento comercial</span>
-                        <input
-                          value={strategyDraft.strategyPositioning}
-                          onChange={(event) => handleStrategyDraftChange("strategyPositioning", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: consultiva, premium, técnica, popular..."
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">4. Marcas, linhas e produtos trabalhados</div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marca principal</span>
-                        <input
-                          value={strategyDraft.mainStoreBrand}
-                          onChange={(event) => handleStrategyDraftChange("mainStoreBrand", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Outras marcas</span>
-                        <input
-                          value={strategyDraft.brandsWorked}
-                          onChange={(event) => handleStrategyDraftChange("brandsWorked", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marcas que prefere priorizar</span>
-                        <input
-                          value={strategyDraft.strategyPriorityBrands}
-                          onChange={(event) => handleStrategyDraftChange("strategyPriorityBrands", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marcas ou linhas que não trabalha</span>
-                        <input
-                          value={strategyDraft.strategyNonWorkedBrands}
-                          onChange={(event) => handleStrategyDraftChange("strategyNonWorkedBrands", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Linhas principais vendidas</span>
-                        <input
-                          value={strategyDraft.strategyTopLines}
-                          onChange={(event) => handleStrategyDraftChange("strategyTopLines", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Produtos com maior giro</span>
-                        <input
-                          value={strategyDraft.strategyTopProducts}
-                          onChange={(event) => handleStrategyDraftChange("strategyTopProducts", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">5. Diferenciais, limites e restrições</div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Diferenciais da loja</span>
-                        <textarea
-                          value={strategyDraft.strategyDifferentials}
-                          onChange={(event) => handleStrategyDraftChange("strategyDifferentials", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: frete grátis, envio no mesmo dia, instalação própria..."
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a loja não promete</span>
-                        <textarea
-                          value={strategyDraft.strategyPromiseLimits}
-                          onChange={(event) => handleStrategyDraftChange("strategyPromiseLimits", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 p-3 md:col-span-2">
-                        <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                          Campos legacy fora da autoridade canonica
-                        </div>
-                        <div className="mt-2 grid gap-2 text-sm text-gray-700 md:grid-cols-3">
-                          <div>Visita: {cleanText(answers.strategy_requires_visit) || "Nao informado"}</div>
-                          <div>Humano: {cleanText(answers.strategy_requires_human) || "Nao informado"}</div>
-                          <div>Excecoes: {cleanText(answers.strategy_exception_cases) || "Nao informado"}</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">6. Resumo estratégico para a IA</div>
-                    <div className="grid gap-3">
-                      <div className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a IA deve entender a loja</span>
-                        <textarea
-                          value={derivedStrategyAiStoreSummary}
-                          readOnly
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 outline-none"
-                        />
-                        <div className="text-xs text-gray-500">
-                          Este resumo e derivado da configuracao canonica e nao vira autoridade manual.
-                        </div>
-                      </div>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a IA deve apresentar a loja</span>
-                        <textarea
-                          value={strategyDraft.strategyAiPresentation}
-                          onChange={(event) => handleStrategyDraftChange("strategyAiPresentation", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a IA deve priorizar</span>
-                        <textarea
-                          value={strategyDraft.strategyAiPriorities}
-                          onChange={(event) => handleStrategyDraftChange("strategyAiPriorities", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a IA nunca deve esquecer</span>
-                        <textarea
-                          value={strategyDraft.strategyAiNeverForget}
-                          onChange={(event) => handleStrategyDraftChange("strategyAiNeverForget", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-4 overflow-x-hidden">
-              <div className="grid gap-4 xl:grid-cols-2">
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">1. Base de atuação da loja</div>
-                  <SummaryList items={strategyBaseItems} />
-                </div>
-
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">2. Serviços que a loja oferece</div>
-                  <SummaryList items={strategyServicesItems} />
-                </div>
-
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">3. Foco comercial da loja</div>
-                  <SummaryList items={strategyCommercialFocusItems} />
-                </div>
-
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">4. Marcas, linhas e produtos trabalhados</div>
-                  <SummaryList items={strategyBrandsItems} />
-                </div>
-              </div>
-
-              <div className="grid gap-4 xl:grid-cols-[1fr_1.2fr]">
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">5. Diferenciais, limites e restrições</div>
-                  <SummaryList items={strategyDifferentialsItems} />
-                </div>
-
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">6. Resumo estratégico para a IA</div>
-                  <SummaryList items={strategyAiSummaryItems} />
-                </div>
-              </div>
-            </div>
-          )}
-        </SectionBlock>
-      ) : null}
-
-      {activeTab === "piscinas" ? (
-        <div className="space-y-4 overflow-x-hidden">
-          <SectionBlock
-            title="Adicionar piscina manualmente"
-            description="Cadastre uma piscina por aqui sem depender do onboarding. Você pode subir até 10 fotos por item, com no máximo 50 MB por foto."
-          >
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <label className="space-y-1 md:col-span-2 xl:col-span-2">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome da piscina</span>
-                <input
-                  value={poolForm.name}
-                  onChange={(event) => handlePoolFormChange("name", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Ex.: Piscina Fibra Premium 7x3"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marca</span>
-                <input
-                  value={poolForm.brand}
-                  onChange={(event) => handlePoolFormChange("brand", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Ex.: iGUi"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Material</span>
-                <input
-                  value={poolForm.material}
-                  onChange={(event) => handlePoolFormChange("material", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Fibra, vinil, alvenaria..."
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Formato</span>
-                <input
-                  value={poolForm.shape}
-                  onChange={(event) => handlePoolFormChange("shape", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Retangular, oval..."
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cor</span>
-                <input
-                  value={poolForm.color}
-                  onChange={(event) => handlePoolFormChange("color", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Azul, branca, areia..."
-                />
-              </label>
-
-              <label className="space-y-1 md:col-span-2">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Acabamento / linha</span>
-                <input
-                  value={poolForm.finish}
-                  onChange={(event) => handlePoolFormChange("finish", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Premium, borda molhada, com hidro..."
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Largura (m)</span>
-                <input
-                  value={poolForm.width_m}
-                  onChange={(event) => handlePoolFormChange("width_m", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="3.00"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Comprimento (m)</span>
-                <input
-                  value={poolForm.length_m}
-                  onChange={(event) => handlePoolFormChange("length_m", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="7.00"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Profundidade (m)</span>
-                <input
-                  value={poolForm.depth_m}
-                  onChange={(event) => handlePoolFormChange("depth_m", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="1.40"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Preço</span>
-                <input
-                  value={poolForm.price}
-                  onChange={(event) => handlePoolFormChange("price", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="15990.00"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Estoque</span>
-                <input
-                  value={poolForm.stock_quantity}
-                  onChange={(event) => handlePoolFormChange("stock_quantity", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="0"
-                />
-              </label>
-
-              <label className="space-y-1 md:col-span-2 xl:col-span-4">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Descrição completa</span>
-                <textarea
-                  value={poolForm.description}
-                  onChange={(event) => handlePoolFormChange("description", event.target.value)}
-                  rows={4}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Descreva acabamento, diferenciais, instalação, cor, acessórios inclusos e qualquer detalhe importante."
-                />
-              </label>
-
-              <label className="space-y-1 md:col-span-2">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Itens inclusos</span>
-                <textarea
-                  value={poolForm.included_items}
-                  onChange={(event) => handlePoolFormChange("included_items", event.target.value)}
-                  rows={3}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Ex.: dispositivo, casa de máquinas, hidro, iluminação..."
-                />
-              </label>
-
-              <label className="space-y-1 md:col-span-2">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações de instalação</span>
-                <textarea
-                  value={poolForm.installation_notes}
-                  onChange={(event) => handlePoolFormChange("installation_notes", event.target.value)}
-                  rows={3}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Ex.: precisa de visita técnica, prazo médio, condições do terreno..."
-                />
-              </label>
-
-              <label className="space-y-1 md:col-span-2 xl:col-span-4">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fotos da piscina</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={(event) => handlePoolPhotosChange(event.target.files)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
-                />
-                <div className="text-xs text-gray-500">Máximo de 10 fotos por piscina. Cada foto pode ter até 50 MB.</div>
-                {poolPhotos.length > 0 ? (
-                  <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                    {poolPhotos.length} foto(s) selecionada(s): {poolPhotos.map((file) => file.name).join(", ")}
-                  </div>
-                ) : null}
-              </label>
-            </div>
-
-            <div className="mt-4 flex flex-wrap gap-3">
-              <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={poolForm.is_active}
-                  onChange={(event) => handlePoolFormChange("is_active", event.target.checked)}
-                />
-                Piscina em estado vendível / ativa
-              </label>
-
-              <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={poolForm.track_stock}
-                  onChange={(event) => handlePoolFormChange("track_stock", event.target.checked)}
-                />
-                Controlar estoque desta piscina
-              </label>
-            </div>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void handleSaveManualPool()}
-                disabled={!hasValidStoreContext || savingPool}
-                className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {savingPool ? "Salvando piscina..." : "Salvar piscina"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPoolForm(createEmptyPoolForm());
-                  setPoolPhotos([]);
-                }}
-                disabled={savingPool}
-                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Limpar formulário
-              </button>
-            </div>
+              <SummaryList items={buildBulletRows([
+                { label: "Endereço pode ser informado", value: savedGeneralAddress.has_public_address },
+                ...(savedGeneralAddress.has_public_address === "Sim" ? [
+                  { label: "Endereço", value: [savedGeneralAddress.street, savedGeneralAddress.number, savedGeneralAddress.district].filter(Boolean).join(", ") || "Não definido" },
+                  { label: "Cidade / Estado", value: [savedGeneralAddress.city, savedGeneralAddress.state].filter(Boolean).join(" / ") || "Não definidos" },
+                  { label: "Como recebe clientes", value: savedGeneralAddress.customer_visit_mode ? optionLabel(savedGeneralAddress.customer_visit_mode, [{ value: "sem_agendamento", label: "Sem agendamento" }, { value: "com_agendamento", label: "Somente com agendamento" }, { value: "nao_recebe_clientes", label: "Não recebe clientes no endereço" }]) : "Não definido" },
+                ] : []),
+              ])} />
+            )}
           </SectionBlock>
-
-          <SectionBlock
-            title="3. Piscinas"
-            description="Visão mais forte da oferta de piscinas da loja, sem depender só de texto corrido."
-          >
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              {poolsOverviewMetrics.map((item) => (
-                <StatusCard
-                  key={item.label}
-                  label={item.label}
-                  value={item.value}
-                  tone={item.tone}
-                  hint={item.hint}
-                />
-              ))}
-            </div>
-
-            <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-              <div>
-                <div className="mb-2 text-sm font-semibold text-gray-900">Base comercial de piscinas</div>
-                <SummaryList items={poolsOperationalItems} />
-              </div>
-              <div>
-                <div className="mb-2 text-sm font-semibold text-gray-900">Contagem rápida</div>
-                <SummaryList
-                  items={[
-                    `Piscinas cadastradas: ${counts.pools}.`,
-                    `Tipos-base configurados: ${poolTypesLabel || "Ainda não definidos"}.`,
-                    `Marca principal ligada à operação: ${cleanText(strategySettingsInput.mainStoreBrand) || cleanText(strategySettingsInput.brandsWorked) || "Ainda não definida"}.`,
-                    "Cadastro manual e importação inteligente podem coexistir sem conflito.",
-                  ]}
-                />
-              </div>
-            </div>
-          </SectionBlock>
-
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={() => setRawImportFilesModalTab("pools")}
-              className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm transition hover:bg-gray-50"
-            >
-              Ver arquivos brutos importados ({poolImportFiles.length})
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {activeTab === "produtos-acessorios" ? (
-        <div className="space-y-4 overflow-x-hidden">
-          <SectionBlock
-            title="Catálogo Inteligente"
-            description="Envie fotos, PDF, Word, Excel ou PowerPoint para o ZION tentar identificar piscinas, produtos, acessórios e outros itens. Você poderá revisar a leitura antes de salvar no catálogo."
-          >
-            <IntelligentCatalogImportPanel
-              organizationId={organizationId}
-              storeId={activeStoreId}
-              storageKey={intelligentImportStorageKey}
-              source="configuracoes_intelligent_import"
-              disabled={!hasValidStoreContext}
-              supabaseClient={supabase}
-              onError={(message) => {
-                setErrorText(message);
-                if (message) setSuccessText(null);
-              }}
-              onSuccess={(message) => {
-                setSuccessText(message);
-                if (message) setErrorText(null);
-              }}
-              onSaved={async () => {
-                await fetchPageData();
-              }}
-            />
-          </SectionBlock>
-
-          <SectionBlock
-            title="Adicionar item manualmente"
-            description="Cadastre produtos químicos, acessórios e outros itens do catálogo por aqui. Você pode subir até 10 fotos por item, com no máximo 50 MB por foto."
-          >
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Categoria</span>
-                <select
-                  value={catalogForm.category}
-                  onChange={(event) => handleCatalogFormChange("category", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                >
-                  <option value="quimicos">Químicos</option>
-                  <option value="acessorios">Acessórios</option>
-                  <option value="outros">Outros</option>
-                </select>
-              </label>
-
-              <label className="space-y-1 md:col-span-2 xl:col-span-2">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome do item</span>
-                <input
-                  value={catalogForm.name}
-                  onChange={(event) => handleCatalogFormChange("name", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Ex.: Cloro granulado premium"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">SKU</span>
-                <input
-                  value={catalogForm.sku}
-                  onChange={(event) => handleCatalogFormChange("sku", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Opcional"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marca</span>
-                <input
-                  value={catalogForm.brand}
-                  onChange={(event) => handleCatalogFormChange("brand", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Marca do item"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Linha / modelo</span>
-                <input
-                  value={catalogForm.line}
-                  onChange={(event) => handleCatalogFormChange("line", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Ex.: Premium, Manutenção..."
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Unidade</span>
-                <input
-                  value={catalogForm.unit_label}
-                  onChange={(event) => handleCatalogFormChange("unit_label", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Un, kg, L, kit..."
-                />
-              </label>
-
-              <label className="space-y-1 md:col-span-2">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tamanho / variação</span>
-                <input
-                  value={catalogForm.size_details}
-                  onChange={(event) => handleCatalogFormChange("size_details", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Ex.: 10kg, 1L, 1,5 polegada..."
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Largura (cm)</span>
-                <input
-                  value={catalogForm.width_cm}
-                  onChange={(event) => handleCatalogFormChange("width_cm", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Opcional"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Altura (cm)</span>
-                <input
-                  value={catalogForm.height_cm}
-                  onChange={(event) => handleCatalogFormChange("height_cm", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Opcional"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Comprimento (cm)</span>
-                <input
-                  value={catalogForm.length_cm}
-                  onChange={(event) => handleCatalogFormChange("length_cm", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Opcional"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Peso (kg)</span>
-                <input
-                  value={catalogForm.weight_kg}
-                  onChange={(event) => handleCatalogFormChange("weight_kg", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Opcional"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Preço</span>
-                <input
-                  value={catalogForm.price}
-                  onChange={(event) => handleCatalogFormChange("price", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="59.90"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Estoque</span>
-                <input
-                  value={catalogForm.stock_quantity}
-                  onChange={(event) => handleCatalogFormChange("stock_quantity", event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="0"
-                />
-              </label>
-
-              <label className="space-y-1 md:col-span-2 xl:col-span-4">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Descrição completa</span>
-                <textarea
-                  value={catalogForm.description}
-                  onChange={(event) => handleCatalogFormChange("description", event.target.value)}
-                  rows={4}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Descreva composição, litragem, aplicação, medidas, uso recomendado e detalhes importantes."
-                />
-              </label>
-
-              <label className="space-y-1 md:col-span-2">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Aplicação / uso recomendado</span>
-                <textarea
-                  value={catalogForm.application}
-                  onChange={(event) => handleCatalogFormChange("application", event.target.value)}
-                  rows={3}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Ex.: tratamento semanal, aspiração, conexão hidráulica..."
-                />
-              </label>
-
-              <label className="space-y-1 md:col-span-2">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações técnicas</span>
-                <textarea
-                  value={catalogForm.technical_notes}
-                  onChange={(event) => handleCatalogFormChange("technical_notes", event.target.value)}
-                  rows={3}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="Ex.: compatibilidade, concentração, conexão, restrições..."
-                />
-              </label>
-
-              <label className="space-y-1 md:col-span-2 xl:col-span-4">
-                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fotos do item</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={(event) => handleCatalogPhotosChange(event.target.files)}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
-                />
-                <div className="text-xs text-gray-500">Máximo de 10 fotos por item. Cada foto pode ter até 50 MB.</div>
-                {catalogPhotos.length > 0 ? (
-                  <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                    {catalogPhotos.length} foto(s) selecionada(s): {catalogPhotos.map((file) => file.name).join(", ")}
-                  </div>
-                ) : null}
-              </label>
-            </div>
-
-            <div className="mt-4 flex flex-wrap gap-3">
-              <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={catalogForm.is_active}
-                  onChange={(event) => handleCatalogFormChange("is_active", event.target.checked)}
-                />
-                Item em estado vendível / ativo
-              </label>
-
-              <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={catalogForm.track_stock}
-                  onChange={(event) => handleCatalogFormChange("track_stock", event.target.checked)}
-                />
-                Controlar estoque deste item
-              </label>
-            </div>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void handleSaveManualCatalogItem()}
-                disabled={!hasValidStoreContext || savingCatalogItem}
-                className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {savingCatalogItem ? "Salvando item..." : "Salvar item"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setCatalogForm(createEmptyCatalogForm());
-                  setCatalogPhotos([]);
-                }}
-                disabled={savingCatalogItem}
-                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Limpar formulário
-              </button>
-            </div>
-          </SectionBlock>
-
-          <SectionBlock
-            title="4. Produtos/Acessórios"
-            description="Visão mais forte do catálogo, com cadastro manual completo e leitura rápida da base já cadastrada."
-          >
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              {catalogOverviewMetrics.map((item) => (
-                <StatusCard
-                  key={item.label}
-                  label={item.label}
-                  value={item.value}
-                  tone={item.tone}
-                  hint={item.hint}
-                />
-              ))}
-            </div>
-
-            <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-              <div>
-                <div className="mb-2 text-sm font-semibold text-gray-900">Base operacional do catálogo</div>
-                <SummaryList items={catalogOperationalItems} />
-              </div>
-              <div>
-                <div className="mb-2 text-sm font-semibold text-gray-900">Contagem rápida</div>
-                <SummaryList
-                  items={[
-                    `Produtos químicos cadastrados: ${counts.quimicos}.`,
-                    `Acessórios cadastrados: ${counts.acessorios}.`,
-                    `Outros itens cadastrados: ${counts.outros}.`,
-                    "Cadastro manual e importação inteligente podem coexistir sem conflito.",
-                  ]}
-                />
-              </div>
-            </div>
-          </SectionBlock>
-
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={() => setRawImportFilesModalTab("catalog")}
-              className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm transition hover:bg-gray-50"
-            >
-              Ver arquivos brutos importados ({catalogImportFiles.length})
-            </button>
-          </div>
         </div>
       ) : null}
 
       {activeTab === "operacao" ? (
-        <SectionBlock
-          title="5. Operação"
-          description="Regras reais da operação da loja, capacidade da agenda e limites que a IA deve respeitar."
-          actions={
-            isOperationEditing ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleOperationEditSave}
-                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                >
-                  Salvar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleOperationEditCancel}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-                >
-                  Cancelar
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setIsOperationEditing(true)}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-              >
-                Editar
-              </button>
-            )
-          }
-        >
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {operationReadinessMetrics.map((item) => (
-              <StatusCard
-                key={item.label}
-                label={item.label}
-                value={item.value}
-                tone={item.tone}
-                hint={item.hint}
-              />
-            ))}
-          </div>
-
-          {isOperationEditing ? (
-            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="mb-3 text-sm font-semibold text-gray-900">Editar operação na mesma página</div>
-              {!scheduleSettings ? (
-                <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                  Agenda canonica ainda nao configurada; estes controles ficam somente leitura por enquanto.
+        <div className="grid items-stretch gap-4 xl:grid-cols-2 [&>section]:h-full [&>section]:self-stretch">
+          <SectionBlock
+            title="Horários da equipe"
+            description="Defina quando a equipe humana da loja trabalha. As IAs usam isso para saber quando um humano pode realmente assumir uma situação."
+            tone={resolveHumanScheduleCardStatus(scheduleSettings).tone}
+            status={resolveHumanScheduleCardStatus(scheduleSettings).status}
+            className={operationEditTarget === "hours" ? "xl:col-span-2" : ""}
+            actions={operationEditTarget === "hours" ? <><button type="button" onClick={() => void saveHumanScheduleCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setOperationExperienceDraft(savedOperationExperience); setOperationEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setOperationExperienceDraft(savedOperationExperience); setOperationEditTarget("hours"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {operationEditTarget === "hours" ? (
+              <div className="space-y-4">
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Em quais dias a equipe humana atende?</div>
+                  <MultiSelectBoxGroup values={operationExperienceDraft.team_days} onToggle={(value) => toggleOperationExperienceArrayValue("team_days", value)} columns="sm:grid-cols-2 lg:grid-cols-4" options={DAYS_OF_WEEK_OPTIONS} />
                 </div>
-              ) : null}
-              <div
-                className={scheduleSettings ? "grid gap-4 md:grid-cols-2" : "grid gap-4 md:grid-cols-2 operation-schedule-controls-read-only"}
-              >
-                {!scheduleSettings ? (
-                  <style jsx>{`
-                    .operation-schedule-controls-read-only > :nth-child(3),
-                    .operation-schedule-controls-read-only > :nth-child(4),
-                    .operation-schedule-controls-read-only > :nth-child(5),
-                    .operation-schedule-controls-read-only > :nth-child(12),
-                    .operation-schedule-controls-read-only > :nth-child(13),
-                    .operation-schedule-controls-read-only > :nth-child(14) {
-                      opacity: 0.55;
-                      pointer-events: none;
-                    }
-
-                    .operation-schedule-controls-read-only > :nth-child(3) select,
-                    .operation-schedule-controls-read-only > :nth-child(4) select,
-                    .operation-schedule-controls-read-only > :nth-child(5) select,
-                    .operation-schedule-controls-read-only > :nth-child(12) select,
-                    .operation-schedule-controls-read-only > :nth-child(13) select,
-                    .operation-schedule-controls-read-only > :nth-child(14) input {
-                      background: #f3f4f6;
-                      cursor: not-allowed;
-                    }
-                  `}</style>
-                ) : null}
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra complementar da instalação</span>
-                  <input value={operationDraft.installation_days_rule} onChange={(e)=>handleOperationDraftChange("installation_days_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra complementar da visita técnica</span>
-                  <input value={operationDraft.technical_visit_days_rule} onChange={(e)=>handleOperationDraftChange("technical_visit_days_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Atende sábado</span>
-                  <select value={operationDraft.serves_saturday} onChange={(e)=>handleOperationDraftChange("serves_saturday", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Atende domingo</span>
-                  <select value={operationDraft.serves_sunday} onChange={(e)=>handleOperationDraftChange("serves_sunday", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Atende feriado</span>
-                  <select value={operationDraft.serves_holiday} onChange={(e)=>handleOperationDraftChange("serves_holiday", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Faz instalação</span>
-                  <select value={operationDraft.offers_installation} onChange={(e)=>handleOperationDraftChange("offers_installation", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prazo médio de instalação</span>
-                  <input value={operationDraft.average_installation_time_days} onChange={(e)=>handleOperationDraftChange("average_installation_time_days", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações operacionais da instalação</span>
-                  <textarea value={operationDraft.installation_process_summary} onChange={(e)=>handleOperationDraftChange("installation_process_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Faz visita técnica</span>
-                  <select value={operationDraft.offers_technical_visit} onChange={(e)=>handleOperationDraftChange("offers_technical_visit", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                </label>
-                <div className="space-y-2 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regras estruturadas da visita técnica</span>
-                  <div className="grid gap-2 md:grid-cols-2">
-                    {TECHNICAL_VISIT_RULE_OPTIONS.map((option) => (
-                      <label key={option.value} className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800">
-                        <input
-                          type="checkbox"
-                          checked={operationDraft.technical_visit_rules_selected.includes(option.value as StoreOperationTechnicalVisitRule)}
-                          onChange={() => handleOperationTechnicalVisitRuleToggle(option.value as StoreOperationTechnicalVisitRule)}
-                          className="h-4 w-4 rounded border-gray-300 text-gray-900"
-                        />
-                        <span>{option.label}</span>
-                      </label>
-                    ))}
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A equipe usa o mesmo horário em todos os dias selecionados?</div>
+                  <ChoiceButtonGroup value={operationExperienceDraft.team_same_hours} onChange={(value) => updateOperationExperienceDraft("team_same_hours", value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não, alguns dias têm horários diferentes"}]} />
+                </div>
+                {operationExperienceDraft.team_same_hours === "Sim" ? (
+                  <div className="space-y-3">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Abertura padrão nos dias úteis</span><input type="time" value={operationExperienceDraft.team_open_time} onChange={(e) => updateOperationExperienceDraft("team_open_time", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                      <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fechamento padrão nos dias úteis</span><input type="time" value={operationExperienceDraft.team_close_time} onChange={(e) => updateOperationExperienceDraft("team_close_time", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                    </div>
                   </div>
-                </div>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observação adicional da visita técnica</span>
-                  <textarea value={operationDraft.technical_visit_rules_other} onChange={(e)=>handleOperationDraftChange("technical_visit_rules_other", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Vários compromissos no mesmo dia</span>
-                  <select value={operationDraft.allow_multiple_appointments_per_day} onChange={(e)=>handleOperationDraftChange("allow_multiple_appointments_per_day", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Compromissos no mesmo horário</span>
-                  <select value={operationDraft.allow_same_time_appointments} onChange={(e)=>handleOperationDraftChange("allow_same_time_appointments", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Não</option><option>Sim</option></select>
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Capacidade no mesmo horário</span>
-                  <input value={operationDraft.agenda_capacity_rule} onChange={(e)=>handleOperationDraftChange("agenda_capacity_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            {operationSections.map((section) => (
-              <div key={section.title}>
-                <div className="mb-2 text-sm font-semibold text-gray-900">{section.title}</div>
-                <SummaryList items={section.items} />
-              </div>
-            ))}
-          </div>
-        </SectionBlock>
-      ) : null}
-
-      {activeTab === "comercial-ia" ? (
-        <SectionBlock
-          title="6. Comercial e IA"
-          description="Fonte viva das regras comerciais da IA, sem texto cru, sem códigos internos aparentes e sem rolagem lateral."
-          actions={
-            isCommercialEditing ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleCommercialEditSave}
-                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                >
-                  Salvar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCommercialEditCancel}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-                >
-                  Cancelar
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setIsCommercialEditing(true)}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-              >
-                Editar
-              </button>
-            )
-          }
-        >
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {commercialOverviewMetrics.map((item) => (
-              <StatusCard
-                key={item.label}
-                label={item.label}
-                value={item.value}
-                tone={item.tone}
-                hint={item.hint}
-              />
-            ))}
-          </div>
-
-          {isCommercialEditing ? (
-            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="mb-3 text-sm font-semibold text-gray-900">Editar Comercial e IA na mesma página</div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome da IA no atendimento</span>
-                  <input value={commercialDraft.ai_display_name} onChange={(e)=>handleCommercialDraftChange("ai_display_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a IA se apresenta</span>
-                  <input value={commercialDraft.ai_presentation_mode} readOnly className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tom comercial da IA</span>
-                  <textarea value={commercialDraft.ai_tone_summary} onChange={(e)=>handleCommercialDraftChange("ai_tone_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fala como</span>
-                  <input value={commercialDraft.ai_speaks_as} onChange={(e)=>handleCommercialDraftChange("ai_speaks_as", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Política de resposta de preço</span>
-                  <select value={commercialDraft.price_answer_policy} onChange={(e)=>handleCommercialDraftChange("price_answer_policy", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black">
-                    {PRICE_ANSWER_POLICY_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <div className="space-y-3 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Requisitos antes de preço fechado/não-catalogado</span>
-                  <div className="grid gap-2 md:grid-cols-2">
-                    {PRICE_CONTEXT_REQUIREMENT_OPTIONS.map((option) => {
-                      const selected = commercialDraft.price_context_requirements.includes(option.value);
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          onClick={() => handleCommercialPriceContextRequirementToggle(option.value)}
-                          className={selected ? "rounded-xl border border-black bg-black px-3 py-2 text-sm font-medium text-white" : "rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700"}
-                        >
-                          {option.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra principal de preço</span>
-                  <textarea value={commercialDraftPriceRulePreview} readOnly rows={3} className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando deve chamar humano</span>
-                  <textarea value={commercialDraft.human_help_summary} onChange={(e)=>handleCommercialDraftChange("human_help_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <div className="space-y-3 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Formas de pagamento canonicas</span>
-                  <div className="grid gap-2 md:grid-cols-3">
-                    {PAYMENT_METHOD_MAIN_OPTIONS.map((option) => {
-                      const selected = commercialDraft.accepted_payment_methods.includes(option.value);
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          onClick={() => handleCommercialPaymentMethodToggle(option.value)}
-                          className={selected ? "rounded-xl border border-black bg-black px-3 py-2 text-sm font-medium text-white" : "rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700"}
-                        >
-                          {option.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div className="grid gap-2 md:grid-cols-3">
-                    {commercialDraft.legacy_payment_condition_tags.length > 0 ? (
-                      <div className="md:col-span-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                        Dados antigos para revisar: {commercialDraft.legacy_payment_condition_tags
-                          .map((value) => getStorePaymentLegacyConditionTagLabel(value as StorePaymentLegacyConditionTag))
-                          .join(", ")}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-                {commercialDraft.accepted_payment_methods.includes("pix") ? (
-                  <>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo da chave Pix</span>
-                      <select value={commercialDraft.pix_key_type} onChange={(e)=>handleCommercialDraftChange("pix_key_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black">
-                        <option value="">Nao definido</option>
-                        {PIX_KEY_TYPE_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Chave Pix</span>
-                      <input value={commercialDraft.pix_key} onChange={(e)=>handleCommercialDraftChange("pix_key", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Titular da chave Pix</span>
-                      <input value={commercialDraft.pix_holder_name} onChange={(e)=>handleCommercialDraftChange("pix_holder_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                  </>
-                ) : null}
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra de entrada</span>
-                  <select value={commercialDraft.down_payment_mode} onChange={(e)=>handleCommercialDraftChange("down_payment_mode", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black">
-                    {DOWN_PAYMENT_MODE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                </label>
-                {commercialDraft.down_payment_mode !== "none" ? (
-                  <label className="space-y-1">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo do valor da entrada</span>
-                    <select value={commercialDraft.down_payment_value_type} onChange={(e)=>handleCommercialDraftChange("down_payment_value_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black">
-                      <option value="">Nao definido</option>
-                      {DOWN_PAYMENT_VALUE_TYPE_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
-                {commercialDraft.down_payment_mode !== "none" && commercialDraft.down_payment_value_type === "percent" ? (
-                  <label className="space-y-1">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Percentual da entrada</span>
-                    <input value={commercialDraft.down_payment_percent} onChange={(e)=>handleCommercialDraftChange("down_payment_percent", formatStorePaymentPercentInput(e.target.value))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                  </label>
-                ) : null}
-                {commercialDraft.down_payment_mode !== "none" && commercialDraft.down_payment_value_type === "fixed" ? (
-                  <label className="space-y-1">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Valor fixo da entrada</span>
-                    <input value={commercialDraft.down_payment_amount} onChange={(e)=>handleCommercialDraftChange("down_payment_amount", formatStorePaymentCurrencyInput(e.target.value))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                  </label>
-                ) : null}
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Trabalha com parcelamento</span>
-                  <select value={commercialDraft.installments_enabled} onChange={(e)=>handleCommercialDraftChange("installments_enabled", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option value="nao">Nao</option><option value="sim">Sim</option></select>
-                </label>
-                {commercialDraft.installments_enabled === "sim" ? (
-                  <>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Maximo de parcelas</span>
-                      <input value={commercialDraft.max_installments} onChange={(e)=>handleCommercialDraftChange("max_installments", formatStorePaymentInstallmentsInput(e.target.value))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Politica de juros</span>
-                      <select value={commercialDraft.installment_interest_policy} onChange={(e)=>handleCommercialDraftChange("installment_interest_policy", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black">
-                        <option value="">Nao definido</option>
-                        {INSTALLMENT_INTEREST_POLICY_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </>
-                ) : null}
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observacao complementar de pagamento</span>
-                  <textarea value={commercialDraft.payment_notes} onChange={(e)=>handleCommercialDraftChange("payment_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo derivado de pagamento</span>
-                  <textarea value={commercialDraft.payment_methods_summary} readOnly rows={2} className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Política de desconto</span>
-                  <textarea value={discountPresentation.policySummary || commercialDraft.discount_policy_summary} readOnly rows={2} className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regras de negociação</span>
-                  <textarea value={commercialDraft.negotiation_rules_summary} onChange={(e)=>handleCommercialDraftChange("negotiation_rules_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Limites de promessa da IA</span>
-                  <textarea value={commercialDraft.promise_limits_summary} onChange={(e)=>handleCommercialDraftChange("promise_limits_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pós-venda</span>
-                  <textarea value={commercialDraft.post_sale_summary} onChange={(e)=>handleCommercialDraftChange("post_sale_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Comportamento fora do horário</span>
-                  <textarea value={commercialDraft.after_hours_summary} onChange={(e)=>handleCommercialDraftChange("after_hours_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo comercial para a IA</span>
-                  <textarea value={commercialDraft.commercial_ai_summary} onChange={(e)=>handleCommercialDraftChange("commercial_ai_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Identidade comercial da IA</div>
-              <SummaryList items={commercialIdentityItems} />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Regra de preço</div>
-              <SummaryList items={commercialPriceItems} />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Quando chamar humano</div>
-              <SummaryList items={commercialHumanHelpItems} />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Pagamento e desconto</div>
-              <SummaryList items={commercialPaymentItems} />
-            </div>
-            <div className="lg:col-span-2">
-              <div className="mb-2 text-sm font-semibold text-gray-900">Regras de negociação, promessas e pós-venda</div>
-              <SummaryList items={commercialNegotiationItems} />
-            </div>
-          </div>
-
-          <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-gray-900">
-                  Meta mensal
-                </div>
-                <div className="mt-1 text-xs leading-5 text-gray-600">
-                  Meta comercial mensal usada pelo Dashboard.
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                {isMonthlySalesGoalEditing ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => void handleMonthlySalesGoalSave()}
-                      className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                    >
-                      Salvar
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMonthlySalesGoalDraft(monthlySalesGoal);
-                        setIsMonthlySalesGoalEditing(false);
-                      }}
-                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-                    >
-                      Cancelar
-                    </button>
-                  </>
                 ) : (
+                  <div className="space-y-2">
+                    {DAYS_OF_WEEK_OPTIONS.filter((day) => operationExperienceDraft.team_days.includes(day.value)).map((day) => (
+                      <div key={day.value} className="grid items-end gap-3 rounded-xl border border-gray-200 bg-gray-50/50 p-3 sm:grid-cols-[1fr_1fr_1fr]">
+                        <div className="pb-2 text-sm font-semibold text-gray-800">{day.label}</div>
+                        <label className="space-y-1"><span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">Abre</span><input type="time" value={operationExperienceDraft.team_day_hours[day.value]?.open ?? "08:00"} onChange={(e) => updateOperationDayHours(day.value,"open",e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm" /></label>
+                        <label className="space-y-1"><span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">Fecha</span><input type="time" value={operationExperienceDraft.team_day_hours[day.value]?.close ?? "18:00"} onChange={(e) => updateOperationDayHours(day.value,"close",e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm" /></label>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a loja funciona em feriados?</div><ChoiceButtonGroup value={operationExperienceDraft.holiday_mode} onChange={(value) => updateOperationExperienceDraft("holiday_mode", value)} options={[{value:"fechado",label:"Não atende"},{value:"normal",label:"Atende no horário normal"},{value:"especial",label:"Atende em horário especial"},{value:"caso_a_caso",label:"É definido caso a caso"}]} /></div>
+                {operationExperienceDraft.holiday_mode === "especial" ? <div className="grid gap-3 sm:grid-cols-2"><input type="time" value={operationExperienceDraft.holiday_open_time} onChange={(e)=>updateOperationExperienceDraft("holiday_open_time",e.target.value)} className="rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/><input type="time" value={operationExperienceDraft.holiday_close_time} onChange={(e)=>updateOperationExperienceDraft("holiday_close_time",e.target.value)} className="rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/></div> : null}
+                {operationExperienceDraft.holiday_mode === "caso_a_caso" ? <RequiredOperationDetailField label="Como o atendimento em feriados é definido caso a caso?" value={operationExperienceDraft.holiday_notes} onChange={(value)=>updateOperationExperienceDraft("holiday_notes",value)} placeholder="Explique como a equipe decide se atende e qual horário usa em cada feriado." rows={3} /> : null}
+                <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm"><span className="font-semibold">Fuso horário:</span> {cleanText(scheduleSettings?.timezone_name) || DEFAULT_SCHEDULE_TIMEZONE}</div>
+              </div>
+            ) : <SummaryList items={buildBulletRows([{label:"Dias",value:hasHumanScheduleCanonicalShape(scheduleSettings) ? savedOperationExperience.team_days.map((day)=>optionLabel(day,DAYS_OF_WEEK_OPTIONS)).join(", ") || "Não definidos" : "Não definido"},{label:"Horário",value:hasHumanScheduleCanonicalShape(scheduleSettings) ? savedOperationExperience.team_same_hours === "Sim" && savedOperationExperience.team_open_time && savedOperationExperience.team_close_time ? `${savedOperationExperience.team_open_time}–${savedOperationExperience.team_close_time}` : "Definido por dia" : "Não definido"},{label:"Feriados",value:isConfiguredTimestamp(scheduleSettings?.human_schedule_configured_at) && savedOperationExperience.holiday_mode ? optionLabel(savedOperationExperience.holiday_mode,[{value:"fechado",label:"Não atende"},{value:"normal",label:"Horário normal"},{value:"especial",label:"Horário especial"},{value:"caso_a_caso",label:"Caso a caso"}]) : "Não definido"},{label:"Fuso horário",value:cleanText(scheduleSettings?.timezone_name) || DEFAULT_SCHEDULE_TIMEZONE}])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="IA fora do horário"
+            description="Defina quando a IA pode continuar atendendo clientes enquanto a equipe humana estiver fechada."
+            tone={resolveAfterHoursCardStatus(scheduleSettings).tone}
+            status={resolveAfterHoursCardStatus(scheduleSettings).status}
+            className={operationEditTarget === "after_hours" ? "xl:col-span-2" : ""}
+            actions={operationEditTarget === "after_hours" ? <><button type="button" onClick={()=>void saveAfterHoursCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget(null);}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget("after_hours");}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {operationEditTarget === "after_hours" ? <div className="space-y-4"><label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA pode continuar atendendo clientes quando a equipe humana estiver fechada?</span><ChoiceButtonGroup value={operationExperienceDraft.ai_after_hours_enabled} onChange={(value)=>updateOperationExperienceDraft("ai_after_hours_enabled",value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></label>{operationExperienceDraft.ai_after_hours_enabled !== "Não" ? <fieldset disabled={operationExperienceDraft.ai_after_hours_enabled !== "Sim"} className={operationExperienceDraft.ai_after_hours_enabled === "Sim" ? "space-y-4" : "space-y-4 opacity-45"}><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando a IA pode continuar atendendo?</div><ChoiceButtonGroup value={operationExperienceDraft.ai_after_hours_mode} onChange={(value)=>updateOperationExperienceDraft("ai_after_hours_mode",value)} options={[{value:"todo_fechado",label:"Durante todo o período em que a equipe estiver fechada"},{value:"janela",label:"Apenas dentro de uma janela específica"}]} /></div>{operationExperienceDraft.ai_after_hours_mode === "janela" ? <div className="grid gap-3 sm:grid-cols-2"><input type="time" value={operationExperienceDraft.ai_after_hours_start} onChange={(e)=>updateOperationExperienceDraft("ai_after_hours_start",e.target.value)} className="rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/><input type="time" value={operationExperienceDraft.ai_after_hours_end} onChange={(e)=>updateOperationExperienceDraft("ai_after_hours_end",e.target.value)} className="rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/></div> : null}<div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA pode atender em feriados quando a equipe humana não estiver disponível?</div><ChoiceButtonGroup value={operationExperienceDraft.ai_attends_holidays} onChange={(value)=>updateOperationExperienceDraft("ai_attends_holidays",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"}]} /></div></fieldset> : null}</div> : <SummaryList items={buildBulletRows([{label:"Atende fora do horário",value:savedOperationExperience.ai_after_hours_enabled},{label:"Modo",value:savedOperationExperience.ai_after_hours_mode ? optionLabel(savedOperationExperience.ai_after_hours_mode,[{value:"todo_fechado",label:"Todo o período fechado"},{value:"janela",label:"Janela específica"}]) : "Não definido"},{label:"Feriados",value:savedOperationExperience.ai_attends_holidays || "Não definido"}])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Agenda e capacidade"
+            description="Defina quantos compromissos a agenda pode receber e como funciona a capacidade simultânea."
+            tone={resolveAgendaCapacityCardStatus(scheduleSettings).tone}
+            status={resolveAgendaCapacityCardStatus(scheduleSettings).status}
+            className={operationEditTarget === "agenda" ? "xl:col-span-2" : ""}
+            actions={operationEditTarget === "agenda" ? <><button type="button" onClick={() => void saveAgendaCapacityCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={handleOperationEditCancel} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget("agenda");}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {operationEditTarget === "agenda" ? (
+              <div className="space-y-4">
+                <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A agenda pode ter mais de um compromisso no mesmo dia?</span><ChoiceButtonGroup value={operationDraft.allow_multiple_appointments_per_day} onChange={(value)=>handleOperationDraftChange("allow_multiple_appointments_per_day",value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></label>
+                {normalizeLoose(operationDraft.allow_multiple_appointments_per_day) !== "nao" ? (
+                  <fieldset disabled={normalizeLoose(operationDraft.allow_multiple_appointments_per_day) !== "sim"} className={normalizeLoose(operationDraft.allow_multiple_appointments_per_day) === "sim" ? "space-y-4" : "space-y-4 opacity-45"}>
+                    <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Existe um limite máximo de compromissos por dia?</div><ChoiceButtonGroup value={operationExperienceDraft.agenda_daily_limit_mode} onChange={(value)=>updateOperationExperienceDraft("agenda_daily_limit_mode",value)} options={[{value:"limite",label:"Sim, existe um limite"},{value:"sem_limite",label:"Não há limite diário fixo"}]} /></div>
+                    {operationExperienceDraft.agenda_daily_limit_mode === "limite" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quantos compromissos no máximo podem ser marcados no mesmo dia?</span><input inputMode="numeric" value={operationExperienceDraft.agenda_daily_limit} onChange={(e)=>updateOperationExperienceDraft("agenda_daily_limit",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}
+                    <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pode haver mais de um compromisso no mesmo horário?</span><ChoiceButtonGroup value={operationDraft.allow_same_time_appointments} onChange={(value)=>handleOperationDraftChange("allow_same_time_appointments",value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></label>
+                    {normalizeLoose(operationDraft.allow_same_time_appointments) === "sim" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quantos compromissos podem acontecer ao mesmo tempo?</span><input inputMode="numeric" value={operationDraft.agenda_capacity_rule} onChange={(e)=>handleOperationDraftChange("agenda_capacity_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}
+                    <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Existe um intervalo mínimo necessário entre compromissos?</div><ChoiceButtonGroup value={operationExperienceDraft.agenda_buffer_enabled} onChange={(value)=>updateOperationExperienceDraft("agenda_buffer_enabled",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"}]} /></div>
+                    {operationExperienceDraft.agenda_buffer_enabled === "Sim" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quantos minutos de intervalo?</span><input inputMode="numeric" value={operationExperienceDraft.agenda_buffer_minutes} onChange={(e)=>updateOperationExperienceDraft("agenda_buffer_minutes",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}
+                  </fieldset>
+                ) : null}
+              </div>
+            ) : <SummaryList items={buildBulletRows([{label:"Vários compromissos no dia",value:isConfiguredTimestamp(scheduleSettings?.agenda_capacity_configured_at) ? yesNoLabel(scheduleSettings?.allow_multiple_appointments_per_day ?? null) : "Não definido"},{label:"Mesmo horário",value:isConfiguredTimestamp(scheduleSettings?.agenda_capacity_configured_at) ? yesNoLabel(scheduleSettings?.allow_same_time_appointments ?? null) : "Não definido"},{label:"Capacidade simultânea",value:isConfiguredTimestamp(scheduleSettings?.agenda_capacity_configured_at) && scheduleSettings?.same_time_capacity ? String(scheduleSettings.same_time_capacity) : "Não definida"}])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Região de atendimento"
+            description="Defina onde a loja atende e quais restrições a IA deve respeitar quando um pedido estiver fora da cobertura principal."
+            tone={isRegionConfigured ? "blue" : "yellow"}
+            status={isRegionConfigured ? "Completo" : "Precisa de atenção"}
+            className={operationEditTarget === "region" ? "xl:col-span-2" : ""}
+            actions={
+              operationEditTarget === "region" ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handleRegionEditSave()}
+                    className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white"
+                  >
+                    Salvar
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
-                      setMonthlySalesGoalDraft(monthlySalesGoal);
-                      setIsMonthlySalesGoalEditing(true);
+                      setStrategyDraft(strategySettingsInput);
+                      setOperationExperienceDraft((current) => ({
+                        ...current,
+                        region_outside_policy: canonicalRegionOutsidePolicy,
+                      }));
+                      setOperationEditTarget(null);
+                      setIsStrategyEditing(false);
                     }}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                    className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold"
                   >
-                    Editar
+                    Cancelar
                   </button>
-                )}
-              </div>
-            </div>
-
-            {isMonthlySalesGoalEditing ? (
-              <div className="mt-4 grid gap-4 md:grid-cols-2">
-                <label className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm text-gray-800">
-                  <input
-                    type="checkbox"
-                    checked={monthlySalesGoalDraft.enabled}
-                    onChange={(event) =>
-                      setMonthlySalesGoalDraft((current) => ({
-                        enabled: event.target.checked,
-                        amountCents: event.target.checked
-                          ? current.amountCents
-                          : null,
-                      }))
-                    }
-                  />
-                  Usar meta mensal de vendas
-                </label>
-
-                {monthlySalesGoalDraft.enabled ? (
-                  <label className="space-y-1">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                      Valor da meta (R$)
-                    </span>
-                    <input
-                      inputMode="numeric"
-                      value={formatMonthlyGoalDraftAmount(
-                        monthlySalesGoalDraft.amountCents,
-                      )}
-                      onChange={(event) =>
-                        setMonthlySalesGoalDraft((current) => ({
-                          ...current,
-                          amountCents: parseMonthlyGoalDraftAmount(
-                            event.target.value,
-                          ),
-                        }))
-                      }
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    />
-                  </label>
-                ) : null}
-              </div>
-            ) : (
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                <div className="rounded-xl border border-gray-200 bg-white px-3 py-3">
-                  <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Status
-                  </div>
-                  <div className="mt-1 text-sm font-semibold text-gray-900">
-                    {monthlySalesGoal.enabled
-                      ? "Meta ativa"
-                      : "Meta nao definida"}
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-gray-200 bg-white px-3 py-3">
-                  <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Valor
-                  </div>
-                  <div className="mt-1 text-sm font-semibold text-gray-900">
-                    {monthlySalesGoal.amountCents
-                      ? new Intl.NumberFormat("pt-BR", {
-                          style: "currency",
-                          currency: "BRL",
-                        }).format(
-                          monthlySalesGoal.amountCents / 100,
-                        )
-                      : "Nao definido"}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </SectionBlock>
-      ) : null}
-
-      {activeTab === "responsavel-ativacao" ? (
-        <SectionBlock
-          title="7. Responsável e ativação"
-          description="Gerencie o responsável principal, cadastre outros responsáveis da loja e revise a base mínima de ativação."
-          actions={
-            isActivationEditing ? (
-              <>
+                </>
+              ) : (
                 <button
                   type="button"
-                  onClick={handleActivationEditSave}
-                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                >
-                  Salvar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleActivationEditCancel}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-                >
-                  Cancelar
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setIsActivationEditing(true)}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                  onClick={() => {
+                    setStrategyDraft(strategySettingsInput);
+                    setOperationExperienceDraft((current) => ({
+                      ...current,
+                      region_outside_policy: canonicalRegionOutsidePolicy,
+                    }));
+                    setOperationEditTarget("region");
+                    setIsStrategyEditing(true);
+                  }}
+                  className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold"
                 >
                   Editar
                 </button>
-                <button
-                  type="button"
-                  onClick={handleAddResponsible}
-                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                >
-                  Adicionar responsável
-                </button>
-              </>
-            )
-          }
-        >
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <StatusCard
-              label="Responsável principal"
-              value={cleanText(primaryResponsibleDraft.name) || "Não cadastrado"}
-              tone={cleanText(primaryResponsibleDraft.name) ? "green" : "amber"}
-              hint={cleanText(primaryResponsibleDraft.whatsapp) || "Cadastre o contato principal da loja"}
-            />
-            <StatusCard
-              label="Outros responsáveis"
-              value={String(additionalResponsiblesDraft.filter((item) => cleanText(item.name) || cleanText(item.whatsapp)).length)}
-              tone={additionalResponsiblesDraft.length > 0 ? "green" : "gray"}
-              hint="Contatos extras para aviso, operação e exceções"
-            />
-            <StatusCard
-              label="Recebe alertas da IA"
-              value={yesNoLabel(answers.ai_should_notify_responsible)}
-              tone={yesNoLabel(answers.ai_should_notify_responsible) === "Sim" ? "green" : "amber"}
-              hint="Lead quente, visita, instalação, pagamento e urgências"
-            />
-            <StatusCard
-              label="Status da ativação"
-              value={resolveOnboardingLabel(onboarding?.status).label}
-              tone={resolveOnboardingLabel(onboarding?.status).tone}
-              hint="Base mínima da loja para ativação operacional"
-            />
-          </div>
-
-          {isActivationEditing ? (
-            <div className="mt-4 space-y-4">
-              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                <div className="mb-3 text-sm font-semibold text-gray-900">Responsável principal</div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <label className="space-y-1">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome</span>
-                    <input
-                      value={primaryResponsibleDraft.name}
-                      onChange={(e) => handlePrimaryResponsibleChange("name", e.target.value)}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    />
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">WhatsApp</span>
-                    <input
-                      value={primaryResponsibleDraft.whatsapp}
-                      onChange={(e) => handlePrimaryResponsibleChange("whatsapp", e.target.value)}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    />
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cargo / função</span>
-                    <input
-                      value={primaryResponsibleDraft.role}
-                      onChange={(e) => handlePrimaryResponsibleChange("role", e.target.value)}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    />
-                  </label>
-                  <label className="space-y-1 md:col-span-2">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações</span>
-                    <textarea
-                      value={primaryResponsibleDraft.notes}
-                      onChange={(e) => handlePrimaryResponsibleChange("notes", e.target.value)}
-                      rows={3}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    />
-                  </label>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-3">
-                  <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                    <input
-                      type="checkbox"
-                      checked={primaryResponsibleDraft.receives_ai_alerts}
-                      onChange={(e) => handlePrimaryResponsibleChange("receives_ai_alerts", e.target.checked)}
-                    />
-                    Recebe alertas da IA
-                  </label>
-                  <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                    <input
-                      type="checkbox"
-                      checked={primaryResponsibleDraft.can_approve_discount}
-                      onChange={(e) => handlePrimaryResponsibleChange("can_approve_discount", e.target.checked)}
-                    />
-                    Pode aprovar desconto
-                  </label>
-                  <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                    <input
-                      type="checkbox"
-                      checked={primaryResponsibleDraft.can_approve_exceptions}
-                      onChange={(e) => handlePrimaryResponsibleChange("can_approve_exceptions", e.target.checked)}
-                    />
-                    Pode aprovar exceções
-                  </label>
-                  <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                    <input
-                      type="checkbox"
-                      checked={primaryResponsibleDraft.can_assume_human}
-                      onChange={(e) => handlePrimaryResponsibleChange("can_assume_human", e.target.checked)}
-                    />
-                    Pode assumir conversa humana
-                  </label>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                <div className="mb-3 text-sm font-semibold text-gray-900">Ativação da IA e avisos</div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <label className="space-y-1">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA deve avisar o responsável?</span>
-                    <select
-                      value={primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não"}
-                      onChange={(e) => handlePrimaryResponsibleChange("receives_ai_alerts", e.target.value === "Sim")}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    >
-                      <option>Sim</option>
-                      <option>Não</option>
-                    </select>
-                  </label>
-
-                  <label className="space-y-1">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dados mínimos estão corretos?</span>
-                    <select
-                      value={activationConfirmInformationDraft ? "Sim" : "Não"}
-                      onChange={(e) => setActivationConfirmInformationDraft(e.target.value === "Sim")}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    >
-                      <option>Sim</option>
-                      <option>Não</option>
-                    </select>
-                  </label>
-
-                  <label className="space-y-1 md:col-span-2">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Em quais casos a IA deve avisar</span>
-                    <textarea
-                      value={activationNotificationCasesDraft}
-                      onChange={(e) => setActivationNotificationCasesDraft(e.target.value)}
-                      rows={3}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                      placeholder="Ex.: pedido de desconto, cliente quase fechando, dúvida técnica, visita, instalação, pagamento..."
-                    />
-                  </label>
-
-                  <label className="space-y-1 md:col-span-2">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Orientações finais para ativação da IA</span>
-                    <textarea
-                      value={activationPreferencesDraft}
-                      onChange={(e) => setActivationPreferencesDraft(e.target.value)}
-                      rows={4}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                      placeholder="Ex.: mais humanizada, priorizar qualificação antes de preço, nunca prometer fora do escopo, chamar humano em casos críticos..."
-                    />
-                  </label>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div className="text-sm font-semibold text-gray-900">Outros responsáveis</div>
-                  <button
-                    type="button"
-                    onClick={handleAddResponsible}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-                  >
-                    Adicionar responsável
-                  </button>
-                </div>
-
-                {additionalResponsiblesDraft.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-gray-300 bg-white px-4 py-4 text-sm text-gray-600">
-                    Nenhum outro responsável cadastrado ainda. Você pode adicionar manualmente por aqui.
+              )
+            }
+          >
+            {operationEditTarget === "region" ? (
+              <div className="space-y-4">
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Qual é a cobertura principal da loja?
                   </div>
-                ) : (
+                  <ChoiceButtonGroup
+                    value={strategyDraft.serviceRegionPrimaryMode}
+                    onChange={(value) =>
+                      setStrategyDraft((current) => ({
+                        ...current,
+                        serviceRegionPrimaryMode: value,
+                        serviceRegionModes: [value],
+                        serviceRegions:
+                          value === "grande_regiao"
+                            ? current.serviceRegions
+                            : "",
+                      }))
+                    }
+                    options={SERVICE_REGION_MODE_OPTIONS.filter(
+                      (option) => option.value !== "sob_consulta",
+                    )}
+                  />
+                </div>
+
+                {strategyDraft.serviceRegionPrimaryMode === "grande_regiao" ? (
+                  <label className="block space-y-1.5">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                      Quais cidades, regiões ou limites fazem parte da cobertura?
+                    </span>
+                    <textarea
+                      value={strategyDraft.serviceRegions}
+                      onChange={(e) =>
+                        handleStrategyDraftChange(
+                          "serviceRegions",
+                          e.target.value,
+                        )
+                      }
+                      rows={3}
+                      className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"
+                    />
+                  </label>
+                ) : null}
+
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    A loja atende pedidos fora dessa cobertura principal?
+                  </div>
+                  <ChoiceButtonGroup
+                    value={operationExperienceDraft.region_outside_policy}
+                    onChange={(value) =>
+                      updateOperationExperienceDraft(
+                        "region_outside_policy",
+                        value,
+                      )
+                    }
+                    options={[
+                      {
+                        value: "consulta",
+                        label: "Sim, mas somente sob consulta",
+                      },
+                      {
+                        value: "nao",
+                        label: "Não",
+                      },
+                    ]}
+                  />
+                </div>
+
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Há alguma regra de cobertura que a IA deve saber?
+                  </span>
+                  <textarea
+                    value={strategyDraft.serviceRegionNotes}
+                    onChange={(e) =>
+                      handleStrategyDraftChange(
+                        "serviceRegionNotes",
+                        e.target.value,
+                      )
+                    }
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"
+                  />
+                </label>
+              </div>
+            ) : (
+              <SummaryList
+                items={buildBulletRows([
+                  {
+                    label: "Cobertura principal",
+                    value: isRegionConfigured
+                      ? optionLabel(
+                          strategySettingsInput.serviceRegionPrimaryMode,
+                          SERVICE_REGION_MODE_OPTIONS,
+                        ) ||
+                        strategySettingsInput.serviceRegions ||
+                        "Não definida"
+                      : "Não definida",
+                  },
+                  {
+                    label: "Fora da cobertura",
+                    value: isRegionConfigured
+                      ? strategySettingsInput.serviceRegionOutsideConsultation
+                        ? "Somente sob consulta"
+                        : "Não atende"
+                      : "Não definido",
+                  },
+                  {
+                    label: "Observações",
+                    value: isRegionConfigured
+                      ? strategySettingsInput.serviceRegionNotes || "Nenhuma"
+                      : "Não definida",
+                  },
+                ])}
+              />
+            )}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Visita técnica"
+            description="Defina quando a visita técnica é oferecida, quando é obrigatória, quanto tempo ocupa na agenda e como deve ser executada e cobrada."
+            tone={technicalVisitCardIsComplete ? "blue" : "yellow"}
+            status={
+              technicalVisitCardIsComplete
+                ? "Completo"
+                : "Precisa de atenção"
+            }            className={operationEditTarget === "technical_visit" ? "xl:col-span-2" : ""}
+            actions={operationEditTarget === "technical_visit" ? <><button type="button" onClick={()=>void saveTechnicalVisitConfigurationCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);handleOperationEditCancel();}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget("technical_visit");setIsOperationEditing(true);}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {operationEditTarget === "technical_visit" ? <div className="space-y-4">
+              <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja oferece visita técnica?</span><ChoiceButtonGroup value={operationDraft.offers_technical_visit} onChange={(value)=>handleOperationDraftChange("offers_technical_visit",value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></label>
+              {normalizeLoose(operationDraft.offers_technical_visit)!=="nao" ? <fieldset disabled={normalizeLoose(operationDraft.offers_technical_visit)!=="sim"} className={normalizeLoose(operationDraft.offers_technical_visit)==="sim" ? "space-y-5" : "space-y-5 opacity-45"}>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando uma visita técnica é obrigatória?</div><MultiSelectBoxGroup values={operationExperienceDraft.visit_required_situations} onToggle={(value)=>toggleOperationExperienceArrayValue("visit_required_situations",value)} options={[{value:"toda_venda_piscina",label:"Em toda venda de piscina"},{value:"piscina_com_instalacao",label:"Quando a piscina também será instalada pela loja"},{value:"instalacao_sem_venda",label:"Instalação de piscina sem uma venda nova"},{value:"troca_piscina",label:"Troca/substituição de uma piscina existente"},{value:"instalacao_equipamento",label:"Instalação de equipamento ou acessório"},{value:"projeto_fora_padrao",label:"Projeto fora do padrão"},{value:"medidas",label:"Quando medidas ainda precisam ser confirmadas"},{value:"viabilidade",label:"Dúvida sobre terreno, acesso ou viabilidade"},{value:"equipe_tecnica",label:"Quando a equipe técnica determinar"},{value:"outro",label:"Outro"}]} />{operationExperienceDraft.visit_required_situations.includes("outro") ? <RequiredOperationDetailField label="Quais outras situações tornam a visita obrigatória?" value={operationExperienceDraft.visit_required_other} onChange={(value)=>updateOperationExperienceDraft("visit_required_other",value)} placeholder="Descreva claramente as outras situações em que a visita é obrigatória." /> : null}{operationExperienceDraft.visit_required_situations.includes("toda_venda_piscina") ? <div className="mt-2 rounded-xl border border-cyan-200 bg-cyan-50 px-3 py-2 text-xs text-cyan-900">“Em toda venda de piscina” já abrange vendas de piscina que também terão instalação da loja. As demais opções continuam úteis para operações sem uma nova venda de piscina, como troca ou instalação avulsa.</div> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando a visita pode ser oferecida mesmo sem ser obrigatória?</div><MultiSelectBoxGroup values={operationExperienceDraft.visit_optional_situations} onToggle={(value)=>toggleOperationExperienceArrayValue("visit_optional_situations",value)} options={[{value:"cliente_pedir",label:"Quando o cliente pedir"},{value:"avaliar_local",label:"Para avaliar melhor o local"},{value:"confirmar_medidas",label:"Para confirmar medidas"},{value:"orcamento_preciso",label:"Para preparar um orçamento mais preciso"},{value:"outro",label:"Outro"}]} />{operationExperienceDraft.visit_optional_situations.includes("outro") ? <RequiredOperationDetailField label="Quais outras situações permitem oferecer a visita?" value={operationExperienceDraft.visit_optional_other} onChange={(value)=>updateOperationExperienceDraft("visit_optional_other",value)} placeholder="Explique quando a visita pode ser oferecida mesmo sem ser obrigatória." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quem normalmente realiza a visita técnica?</div><ChoiceButtonGroup value={operationExperienceDraft.visit_team_mode} onChange={(value)=>updateOperationExperienceDraft("visit_team_mode",value)} options={[{value:"dono_loja",label:"Dono da loja"},{value:"mesma_instalacao",label:"A mesma equipe que faz instalações"},{value:"equipe_tecnica",label:"Uma equipe técnica própria separada"},{value:"outro_time",label:"Outro funcionário/equipe da loja"},{value:"parceiro",label:"Parceiro/terceiro"},{value:"caso_a_caso",label:"Depende do caso"}]} />{["outro_time","caso_a_caso"].includes(operationExperienceDraft.visit_team_mode) ? <RequiredOperationDetailField label="Quem realiza a visita nessa situação?" value={operationExperienceDraft.visit_team_rule} onChange={(value)=>updateOperationExperienceDraft("visit_team_rule",value)} placeholder="Informe o funcionário/equipe ou explique de quais casos depende." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A visita precisa ser agendada?</div><ChoiceButtonGroup value={operationExperienceDraft.visit_requires_appointment} onChange={(value)=>updateOperationExperienceDraft("visit_requires_appointment",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"}]} /></div>
+                {operationExperienceDraft.visit_requires_appointment === "Sim" ? <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quanto tempo deve ser reservado na agenda para cada visita técnica?</div><ChoiceButtonGroup value={operationExperienceDraft.visit_duration_mode} onChange={(value)=>{updateOperationExperienceDraft("visit_duration_mode",value); if(["30","60","90","120"].includes(value)) updateOperationExperienceDraft("visit_duration_minutes",value);}} options={[{value:"30",label:"30 minutos"},{value:"60",label:"1 hora"},{value:"90",label:"1h30"},{value:"120",label:"2 horas"},{value:"personalizado",label:"Outro tempo"},{value:"varia",label:"Varia conforme o caso"}]} /></div> : null}
+                {operationExperienceDraft.visit_duration_mode === "personalizado" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quantos minutos devem ser reservados?</span><input inputMode="numeric" value={operationExperienceDraft.visit_duration_minutes} onChange={(e)=>updateOperationExperienceDraft("visit_duration_minutes",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/></label> : null}
+                {operationExperienceDraft.visit_duration_mode === "varia" ? <RequiredOperationDetailField label="O que faz a duração variar?" value={operationExperienceDraft.visit_duration_rule} onChange={(value)=>updateOperationExperienceDraft("visit_duration_rule",value)} placeholder="Explique o que define quanto tempo deve ser reservado para a visita." /> : null}
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a visita é cobrada?</div><ChoiceButtonGroup value={operationExperienceDraft.visit_pricing_mode} onChange={(value)=>updateOperationExperienceDraft("visit_pricing_mode",value)} options={[{value:"free",label:"Gratuita"},{value:"fixed",label:"Valor fixo"},{value:"case_by_case",label:"Calculada caso a caso"}]} /></div>
+                {operationExperienceDraft.visit_pricing_mode==="fixed" ? <div className="grid gap-3 sm:grid-cols-2"><input placeholder="Valor da visita (R$)" value={operationExperienceDraft.visit_fixed_fee} onChange={(e)=>updateOperationExperienceDraft("visit_fixed_fee",e.target.value)} className="rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se o cliente fechar a compra, o valor da visita é descontado do valor final?</div><ChoiceButtonGroup value={operationExperienceDraft.visit_deductible} onChange={(value)=>updateOperationExperienceDraft("visit_deductible",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"}]} /></div></div> : null}
+                {operationExperienceDraft.visit_pricing_mode==="case_by_case" ? <div className="space-y-3"><RequiredOperationDetailField label="Como o valor é calculado?" value={operationExperienceDraft.visit_case_by_case_rule} onChange={(value)=>updateOperationExperienceDraft("visit_case_by_case_rule",value)} placeholder="Explique os critérios usados para calcular o valor da visita." rows={3} /><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se o cliente fechar a compra, o valor da visita é descontado do valor final?</div><ChoiceButtonGroup value={operationExperienceDraft.visit_deductible} onChange={(value)=>updateOperationExperienceDraft("visit_deductible",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"}]} /></div></div> : null}
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que deve ser confirmado antes de agendar a visita?</div><MultiSelectBoxGroup values={operationExperienceDraft.visit_preconfirm_items} onToggle={(value)=>toggleOperationExperienceArrayValue("visit_preconfirm_items",value)} options={[{value:"endereco",label:"Endereço"},{value:"contato",label:"Telefone/contato"},{value:"interesse",label:"Produto ou serviço de interesse"},{value:"medidas",label:"Medidas aproximadas"},{value:"fotos",label:"Fotos do local"},{value:"outro",label:"Outro"}]} />{operationExperienceDraft.visit_preconfirm_items.includes("outro") ? <RequiredOperationDetailField label="O que mais deve ser confirmado?" value={operationExperienceDraft.visit_preconfirm_other} onChange={(value)=>updateOperationExperienceDraft("visit_preconfirm_other",value)} placeholder="Especifique o outro requisito antes do agendamento." /> : null}</div>
+                <textarea placeholder="Observações ou orientações adicionais para a visita" value={operationExperienceDraft.visit_other_notes} onChange={(e)=>updateOperationExperienceDraft("visit_other_notes",e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/>
+              </fieldset> : null}
+            </div> : <SummaryList items={buildBulletRows([{label:"Oferece visita",value:yesNoLabel(operationSettingsInput.offersTechnicalVisit)},{label:"Obrigatória em",value:savedOperationExperience.visit_required_situations.length ? `${savedOperationExperience.visit_required_situations.length} situação(ões)` : "Não definido"},{label:"Tempo reservado",value:savedOperationExperience.visit_duration_minutes ? `${savedOperationExperience.visit_duration_minutes} min` : savedOperationExperience.visit_duration_mode === "varia" ? "Varia" : "Não definido"},{label:"Cobrança",value:savedOperationExperience.visit_pricing_mode ? optionLabel(savedOperationExperience.visit_pricing_mode,[{value:"free",label:"Gratuita"},{value:"fixed",label:"Valor fixo"},{value:"case_by_case",label:"Caso a caso"}]) : "Não definida"}])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Instalação de piscina nova"
+            description="Defina como funciona a instalação de uma piscina nova, quanto tempo uma equipe fica ocupada e quais requisitos precisam estar cumpridos antes de agendar e iniciar o serviço."
+            tone={installationCardIsComplete ? "blue" : "yellow"}
+            status={
+              installationCardIsComplete
+                ? "Completo"
+                : "Precisa de atenção"
+            }            className={operationEditTarget === "installation" ? "xl:col-span-2" : ""}
+            actions={operationEditTarget === "installation" ? <><button type="button" onClick={()=>void saveInstallationConfigurationCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);handleOperationEditCancel();}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget("installation");setIsOperationEditing(true);}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {operationEditTarget === "installation" ? <div className="space-y-4">
+              <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja instala piscinas novas?</span><ChoiceButtonGroup value={operationDraft.offers_installation} onChange={(value)=>handleOperationDraftChange("offers_installation",value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></label>
+              {normalizeLoose(operationDraft.offers_installation)!=="nao" ? <fieldset disabled={normalizeLoose(operationDraft.offers_installation)!=="sim"} className={normalizeLoose(operationDraft.offers_installation)==="sim" ? "space-y-5" : "space-y-5 opacity-45"}>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O cliente pode comprar a piscina sem contratar a instalação da loja?</div><ChoiceButtonGroup value={operationExperienceDraft.installation_customer_can_buy_without} onChange={(value)=>updateOperationExperienceDraft("installation_customer_can_buy_without",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"},{value:"depende",label:"Depende do tipo de piscina/projeto"}]} />{operationExperienceDraft.installation_customer_can_buy_without === "depende" ? <RequiredOperationDetailField label="De quais piscinas ou projetos depende?" value={operationExperienceDraft.installation_customer_can_buy_without_rule} onChange={(value)=>updateOperationExperienceDraft("installation_customer_can_buy_without_rule",value)} placeholder="Ex.: determinados modelos, tamanhos ou condições comerciais." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja instala piscina comprada de terceiros?</div><ChoiceButtonGroup value={operationExperienceDraft.installation_third_party_pool} onChange={(value)=>updateOperationExperienceDraft("installation_third_party_pool",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"},{value:"depende",label:"Depende do caso"}]} />{operationExperienceDraft.installation_third_party_pool === "depende" ? <RequiredOperationDetailField label="Em quais casos a loja instala piscina de terceiros?" value={operationExperienceDraft.installation_third_party_pool_rule} onChange={(value)=>updateOperationExperienceDraft("installation_third_party_pool_rule",value)} placeholder="Explique os tipos de piscina, condições ou limitações." /> : null}</div>
+                <div className="rounded-2xl border border-gray-200 bg-gray-50/60 p-4 space-y-4">
+                  <div>
+                    <div className="text-sm font-semibold text-gray-950">Disponibilidade da piscina depois da venda</div>
+                    <p className="mt-1 text-xs leading-5 text-gray-600">Separe o prazo de fábrica/fornecedor do prazo da própria equipe. Isso evita prometer instalação imediata quando a loja trabalha sob encomenda.</p>
+                  </div>
+                  <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a loja normalmente obtém a piscina depois da venda confirmada?</div><ChoiceButtonGroup value={operationExperienceDraft.installation_supply_mode} onChange={(value)=>updateOperationExperienceDraft("installation_supply_mode",value)} options={[{value:"disponivel",label:"Normalmente já está disponível para a loja"},{value:"sob_encomenda",label:"Normalmente é encomendada da fábrica/fornecedor"},{value:"misto",label:"Depende do modelo: algumas disponíveis e outras sob encomenda"}]} /></div>
+                  {["sob_encomenda","misto"].includes(operationExperienceDraft.installation_supply_mode) ? <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando depende da fábrica/fornecedor, qual é o prazo normal para a piscina ficar disponível para a loja?</div><ChoiceButtonGroup value={operationExperienceDraft.installation_supplier_lead_time_mode} onChange={(value)=>updateOperationExperienceDraft("installation_supplier_lead_time_mode",value)} options={[{value:"1_3",label:"1 a 3 dias"},{value:"4_7",label:"4 a 7 dias"},{value:"8_15",label:"8 a 15 dias"},{value:"varia",label:"Varia conforme modelo/fornecedor"},{value:"outro",label:"Outro prazo"}]} /></div> : null}
+                  {operationExperienceDraft.installation_supplier_lead_time_mode === "outro" ? <RequiredOperationDetailField label="Qual é o outro prazo normal?" value={operationExperienceDraft.installation_supplier_lead_time_value} onChange={(value)=>updateOperationExperienceDraft("installation_supplier_lead_time_value",value)} placeholder="Ex.: cerca de 20 dias corridos após a confirmação da venda." /> : null}
+                  {operationExperienceDraft.installation_supplier_lead_time_mode === "varia" ? <RequiredOperationDetailField label="O que faz o prazo da fábrica/fornecedor variar?" value={operationExperienceDraft.installation_supplier_lead_time_rule} onChange={(value)=>updateOperationExperienceDraft("installation_supplier_lead_time_rule",value)} placeholder="Ex.: modelo, tamanho, fabricante, época do ano ou disponibilidade." /> : null}
+                  <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Depois que a piscina estiver disponível e os demais requisitos estiverem concluídos, em quanto tempo a equipe normalmente consegue iniciar a instalação?</div><ChoiceButtonGroup value={operationExperienceDraft.installation_start_lead_time_mode} onChange={(value)=>updateOperationExperienceDraft("installation_start_lead_time_mode",value)} options={[{value:"mesmo_dia",label:"No mesmo dia"},{value:"1_dia",label:"1 dia útil"},{value:"2_3_dias",label:"2 a 3 dias úteis"},{value:"4_7_dias",label:"4 a 7 dias úteis"},{value:"varia",label:"Depende da agenda/projeto"},{value:"outro",label:"Outro prazo"}]} /><div className="mt-2 text-xs text-gray-500">Aqui começa a contar a disponibilidade da equipe, não o tempo de fabricação ou transporte da piscina.</div></div>
+                  {operationExperienceDraft.installation_start_lead_time_mode === "outro" ? <RequiredOperationDetailField label="Qual é o outro prazo para iniciar?" value={operationExperienceDraft.installation_start_lead_time_days} onChange={(value)=>updateOperationExperienceDraft("installation_start_lead_time_days",value)} placeholder="Informe o prazo normal depois que piscina e requisitos estiverem prontos." /> : null}
+                  {operationExperienceDraft.installation_start_lead_time_mode === "varia" ? <RequiredOperationDetailField label="O que define quando a equipe consegue iniciar?" value={operationExperienceDraft.installation_start_lead_time_rule} onChange={(value)=>updateOperationExperienceDraft("installation_start_lead_time_rule",value)} placeholder="Ex.: agenda disponível, complexidade do projeto, região ou equipe necessária." /> : null}
+                </div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Por quanto tempo uma instalação normalmente ocupa uma equipe?</div><ChoiceButtonGroup value={operationExperienceDraft.installation_duration_mode} onChange={(value)=>{updateOperationExperienceDraft("installation_duration_mode",value); if(value==="horas") updateOperationExperienceDraft("installation_duration_unit","horas"); if(value==="dias_uteis") updateOperationExperienceDraft("installation_duration_unit","dias_uteis"); if(value==="dias_corridos") updateOperationExperienceDraft("installation_duration_unit","dias_corridos");}} options={[{value:"horas",label:"Algumas horas no mesmo dia"},{value:"dias_uteis",label:"Um ou mais dias úteis"},{value:"dias_corridos",label:"Um ou mais dias corridos"},{value:"varia",label:"Varia conforme o projeto"}]} /></div>
+                {operationExperienceDraft.installation_duration_mode && operationExperienceDraft.installation_duration_mode !== "varia" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">{operationExperienceDraft.installation_duration_mode === "horas" ? "Quantas horas a equipe fica ocupada?" : "Quantos dias a equipe fica ocupada?"}</span><input inputMode="numeric" value={operationExperienceDraft.installation_duration_value} onChange={(e)=>updateOperationExperienceDraft("installation_duration_value",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/></label> : null}
+                {operationExperienceDraft.installation_duration_mode === "varia" ? <RequiredOperationDetailField label="O que faz o tempo de instalação variar?" value={operationExperienceDraft.installation_duration_rule} onChange={(value)=>updateOperationExperienceDraft("installation_duration_rule",value)} placeholder="Explique quais características do projeto alteram o tempo de ocupação da equipe." /> : null}
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Sua loja tem mais de uma equipe capaz de fazer instalações em locais diferentes ao mesmo tempo?</div><ChoiceButtonGroup value={operationExperienceDraft.installation_has_multiple_teams} onChange={(value)=>{updateOperationExperienceDraft("installation_has_multiple_teams",value); if(value === "Não") updateOperationExperienceDraft("installation_concurrent_capacity","1");}} options={[{value:"Sim",label:"Sim, existem equipes simultâneas"},{value:"Não",label:"Não, existe uma única equipe de instalação"}]} /></div>
+                {operationExperienceDraft.installation_has_multiple_teams === "Sim" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quantas equipes podem realizar instalações ao mesmo tempo?</span><input inputMode="numeric" min="2" value={operationExperienceDraft.installation_concurrent_capacity} onChange={(e)=>updateOperationExperienceDraft("installation_concurrent_capacity",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/><span className="block text-xs text-gray-500">Durante todo o tempo informado acima, cada equipe ocupada deve ficar indisponível para outra instalação.</span></label> : null}
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que precisa estar concluído antes de agendar a instalação?</div><MultiSelectBoxGroup values={operationExperienceDraft.installation_schedule_gates} onToggle={(value)=>toggleOperationExperienceArrayValue("installation_schedule_gates",value)} options={[{value:"visita",label:"Visita técnica concluída, quando aplicável"},{value:"endereco",label:"Endereço do cliente confirmado"},{value:"produto",label:"Piscina/produto definido"},{value:"orcamento",label:"Orçamento aprovado"},{value:"pagamento",label:"Entrada/pagamento exigido para agendamento confirmado"},{value:"contrato",label:"Contrato concluído, quando aplicável"},{value:"outro",label:"Outro requisito"}]} />{operationExperienceDraft.installation_schedule_gates.includes("outro") ? <RequiredOperationDetailField label="Qual é o outro requisito para agendar?" value={operationExperienceDraft.installation_schedule_gates_other} onChange={(value)=>updateOperationExperienceDraft("installation_schedule_gates_other",value)} placeholder="Especifique o requisito adicional antes do agendamento." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que precisa estar concluído antes de iniciar a instalação?</div><MultiSelectBoxGroup values={operationExperienceDraft.installation_start_gates} onToggle={(value)=>toggleOperationExperienceArrayValue("installation_start_gates",value)} options={[{value:"visita",label:"Visita técnica concluída, quando aplicável"},{value:"pagamento",label:"Pagamentos exigidos para início confirmados"},{value:"produto",label:"Piscina e materiais necessários disponíveis"},{value:"contrato",label:"Contrato concluído, quando aplicável"},{value:"local",label:"Local do cliente preparado para iniciar a instalação"},{value:"outro",label:"Outro requisito"}]} />{operationExperienceDraft.installation_start_gates.includes("outro") ? <RequiredOperationDetailField label="Qual é o outro requisito para iniciar?" value={operationExperienceDraft.installation_start_gates_other} onChange={(value)=>updateOperationExperienceDraft("installation_start_gates_other",value)} placeholder="Especifique o requisito adicional antes do início do serviço." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quais etapas e serviços a instalação da loja normalmente inclui?</div><MultiSelectBoxGroup values={operationExperienceDraft.installation_includes} onToggle={(value)=>toggleOperationExperienceArrayValue("installation_includes",value)} columns="sm:grid-cols-2 lg:grid-cols-3" options={[{value:"entrega",label:"Entrega da piscina no local da instalação"},{value:"escavacao",label:"Escavação e preparação do terreno"},{value:"base",label:"Preparação da base/berço da piscina"},{value:"posicionamento",label:"Posicionamento e assentamento da piscina"},{value:"hidraulica",label:"Ligação hidráulica da piscina e equipamentos"},{value:"eletrica",label:"Ligação elétrica dos equipamentos"},{value:"bomba_filtro",label:"Instalação de bomba e filtro"},{value:"acessorios",label:"Instalação dos acessórios contratados"},{value:"testes",label:"Testes de funcionamento e verificação final"},{value:"enchimento",label:"Enchimento inicial da piscina"},{value:"tratamento",label:"Tratamento inicial da água"},{value:"orientacao",label:"Orientação inicial de uso e cuidados ao cliente"},{value:"acabamento",label:"Acabamento do entorno da piscina"},{value:"residuos",label:"Retirada de entulho e resíduos da instalação"},{value:"outro",label:"Outro serviço/etapa"}]} />{operationExperienceDraft.installation_includes.includes("outro") ? <RequiredOperationDetailField label="Qual outro serviço ou etapa está incluído?" value={operationExperienceDraft.installation_includes_other} onChange={(value)=>updateOperationExperienceDraft("installation_includes_other",value)} placeholder="Especifique o outro serviço incluído na instalação." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a instalação da loja normalmente não inclui?</div><MultiSelectBoxGroup values={operationExperienceDraft.installation_excludes_options} onToggle={(value)=>toggleOperationExperienceArrayValue("installation_excludes_options",value)} columns="sm:grid-cols-2 lg:grid-cols-3" options={[{value:"entorno",label:"Piso, deck, calçada ou acabamento do entorno"},{value:"paisagismo",label:"Paisagismo e acabamento decorativo"},{value:"eletrica_externa",label:"Adequações elétricas fora do conjunto instalado"},{value:"hidraulica_externa",label:"Adequações hidráulicas externas ao escopo da piscina"},{value:"entulho",label:"Retirada de terra/entulho excedente"},{value:"acessos",label:"Reparos em muro, portão ou acesso ao imóvel"},{value:"outro",label:"Outro item não incluído"}]} /></div>
+                <textarea placeholder="Detalhes adicionais sobre o que a instalação NÃO inclui" value={operationExperienceDraft.installation_excludes} onChange={(e)=>updateOperationExperienceDraft("installation_excludes",e.target.value)} rows={3} className={`w-full rounded-xl border px-3 py-2.5 text-sm ${operationExperienceDraft.installation_excludes_options.includes("outro") ? "border-amber-300 bg-amber-50/40" : "border-gray-200"}`}/>
+                <textarea placeholder="Regras, limitações ou observações de instalação" value={operationExperienceDraft.installation_notes} onChange={(e)=>updateOperationExperienceDraft("installation_notes",e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/>
+              </fieldset> : null}
+            </div> : <SummaryList items={buildBulletRows([{label:"Instala piscinas",value:yesNoLabel(operationSettingsInput.offersInstallation)},{label:"Prazo para começar",value:savedOperationExperience.installation_start_lead_time_mode ? optionLabel(savedOperationExperience.installation_start_lead_time_mode,[{value:"mesmo_dia",label:"Mesmo dia"},{value:"1_dia",label:"1 dia útil"},{value:"2_3_dias",label:"2–3 dias úteis"},{value:"4_7_dias",label:"4–7 dias úteis"},{value:"varia",label:"Varia"},{value:"outro",label:"Outro"}]) : "Não definido"},{label:"Tempo de ocupação da equipe",value:savedOperationExperience.installation_duration_value ? `${savedOperationExperience.installation_duration_value} ${savedOperationExperience.installation_duration_unit === "horas" ? "hora(s)" : savedOperationExperience.installation_duration_unit === "dias_uteis" ? "dia(s) útil(eis)" : "dia(s)"}` : savedOperationExperience.installation_duration_mode === "varia" ? "Varia conforme o projeto" : "Não definido"},{label:"Equipes simultâneas",value:savedOperationExperience.installation_concurrent_capacity || "Não definido"}])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Troca de piscina existente"
+            description="Defina se a loja substitui uma piscina antiga por outra, quanto tempo esse serviço ocupa uma equipe e quais partes da troca realmente executa."
+            tone={poolReplacementCardIsComplete ? "blue" : "yellow"}
+            status={poolReplacementCardIsComplete ? "Completo" : "Precisa de atenção"}
+            className={operationEditTarget === "pool_replacement" ? "xl:col-span-2" : ""}
+            actions={operationEditTarget === "pool_replacement" ? <><button type="button" onClick={()=>void savePoolReplacementConfigurationCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget(null);}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget("pool_replacement");}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {operationEditTarget === "pool_replacement" ? <div className="space-y-4">
+              <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja realiza troca/substituição de piscina existente?</span><ChoiceButtonGroup value={operationExperienceDraft.pool_replacement_enabled} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_enabled",value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></label>
+              {operationExperienceDraft.pool_replacement_enabled !== "Não" ? <fieldset disabled={operationExperienceDraft.pool_replacement_enabled !== "Sim"} className={operationExperienceDraft.pool_replacement_enabled === "Sim" ? "space-y-4" : "space-y-4 opacity-45"}>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Em quais situações?</div><button type="button" disabled={operationExperienceDraft.pool_replacement_enabled !== "Sim"} onClick={()=>{const all=["nova_da_loja","nova_terceiro","danificada","modelo_diferente","caso_a_caso"];updateOperationExperienceDraft("pool_replacement_situations", all.every((value)=>operationExperienceDraft.pool_replacement_situations.includes(value)) ? [] : all);}} className={`mb-2 w-full rounded-xl border px-3 py-2.5 text-left text-sm font-semibold ${["nova_da_loja","nova_terceiro","danificada","modelo_diferente","caso_a_caso"].every((value)=>operationExperienceDraft.pool_replacement_situations.includes(value)) ? "border-cyan-500 bg-cyan-50 text-cyan-950" : "border-gray-200 bg-white text-gray-700"}`}>Todas as opções</button><MultiSelectBoxGroup values={operationExperienceDraft.pool_replacement_situations} onToggle={(value)=>toggleOperationExperienceArrayValue("pool_replacement_situations",value)} options={[{value:"nova_da_loja",label:"Troca uma piscina antiga por uma nova vendida pela loja"},{value:"nova_terceiro",label:"Troca mesmo quando a nova piscina não foi comprada na loja"},{value:"danificada",label:"Substitui uma piscina danificada por uma nova"},{value:"modelo_diferente",label:"Substitui por modelo ou tamanho diferente"},{value:"caso_a_caso",label:"Aceita outros tipos de troca mediante avaliação"}]} />{operationExperienceDraft.pool_replacement_situations.includes("caso_a_caso") ? <RequiredOperationDetailField label="Quais outros tipos de troca são avaliados?" value={operationExperienceDraft.pool_replacement_situations_other} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_situations_other",value)} placeholder="Explique quais situações entram nessa avaliação." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A troca utiliza uma das mesmas equipes que fazem instalação de piscina nova?</div><ChoiceButtonGroup value={operationExperienceDraft.pool_replacement_uses_installation_team} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_uses_installation_team",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não, há outra equipe"},{value:"depende",label:"Depende do caso"}]} />{operationExperienceDraft.pool_replacement_uses_installation_team === "depende" ? <RequiredOperationDetailField label="Em quais casos usa a mesma equipe?" value={operationExperienceDraft.pool_replacement_team_rule} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_team_rule",value)} placeholder="Explique quando a troca usa a equipe de instalação nova e quando não usa." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Por quanto tempo uma troca normalmente ocupa a equipe responsável?</div><ChoiceButtonGroup value={operationExperienceDraft.pool_replacement_duration_mode} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_duration_mode",value)} options={[{value:"horas",label:"Algumas horas no mesmo dia"},{value:"dias",label:"Um ou mais dias"},{value:"varia",label:"Varia conforme o caso"}]} /></div>
+                {operationExperienceDraft.pool_replacement_duration_mode === "horas" || operationExperienceDraft.pool_replacement_duration_mode === "dias" ? <input inputMode="numeric" placeholder={operationExperienceDraft.pool_replacement_duration_mode === "horas" ? "Quantas horas?" : "Quantos dias?"} value={operationExperienceDraft.pool_replacement_duration_value} onChange={(e)=>updateOperationExperienceDraft("pool_replacement_duration_value",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/> : null}
+                {operationExperienceDraft.pool_replacement_duration_mode === "varia" ? <RequiredOperationDetailField label="O que faz o tempo da troca variar?" value={operationExperienceDraft.pool_replacement_duration_rule} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_duration_rule",value)} placeholder="Explique quais condições da troca alteram o tempo de ocupação da equipe." /> : null}
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A piscina antiga é removida pela própria loja?</div><ChoiceButtonGroup value={operationExperienceDraft.pool_replacement_removes_old} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_removes_old",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"},{value:"caso_a_caso",label:"Caso a caso"}]} />{operationExperienceDraft.pool_replacement_removes_old === "caso_a_caso" ? <RequiredOperationDetailField label="Em quais casos a loja remove a piscina antiga?" value={operationExperienceDraft.pool_replacement_removes_old_rule} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_removes_old_rule",value)} placeholder="Explique as condições para a remoção." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O descarte/retirada da piscina antiga está incluído?</div><ChoiceButtonGroup value={operationExperienceDraft.pool_replacement_disposal_included} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_disposal_included",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"},{value:"caso_a_caso",label:"Caso a caso"}]} />{operationExperienceDraft.pool_replacement_disposal_included === "caso_a_caso" ? <RequiredOperationDetailField label="Em quais casos o descarte está incluído?" value={operationExperienceDraft.pool_replacement_disposal_rule} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_disposal_rule",value)} placeholder="Explique quando a loja assume o descarte e quando não assume." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A troca exige visita técnica antes?</div><ChoiceButtonGroup value={operationExperienceDraft.pool_replacement_requires_visit} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_requires_visit",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"},{value:"depende",label:"Depende do caso"}]} />{operationExperienceDraft.pool_replacement_requires_visit === "depende" ? <RequiredOperationDetailField label="Em quais casos a visita técnica é exigida?" value={operationExperienceDraft.pool_replacement_visit_rule} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_visit_rule",value)} placeholder="Explique os casos em que a troca precisa de visita antes." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que normalmente está incluído na troca?</div><MultiSelectBoxGroup values={operationExperienceDraft.pool_replacement_includes} onToggle={(value)=>toggleOperationExperienceArrayValue("pool_replacement_includes",value)} options={[{value:"desconexao",label:"Desconexão da piscina/equipamentos existentes"},{value:"retirada_antiga",label:"Retirada da piscina antiga"},{value:"preparacao_base",label:"Preparação ou ajuste da base"},{value:"posicionamento",label:"Posicionamento da nova piscina"},{value:"hidraulica",label:"Reconexão/adequação hidráulica da nova piscina"},{value:"equipamentos",label:"Reinstalação dos equipamentos contratados"},{value:"testes",label:"Testes e verificação final"},{value:"descarte",label:"Descarte da piscina antiga, quando contratado"},{value:"outro",label:"Outro serviço"}]} /></div>
+                <textarea placeholder="Detalhes adicionais sobre o que está incluído na troca" value={operationExperienceDraft.pool_replacement_notes} onChange={(e)=>updateOperationExperienceDraft("pool_replacement_notes",e.target.value)} rows={3} className={`w-full rounded-xl border px-3 py-2.5 text-sm ${operationExperienceDraft.pool_replacement_includes.includes("outro") ? "border-amber-300 bg-amber-50/40" : "border-gray-200"}`}/>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a loja normalmente não faz durante a troca?</div><MultiSelectBoxGroup values={operationExperienceDraft.pool_replacement_excludes_options} onToggle={(value)=>toggleOperationExperienceArrayValue("pool_replacement_excludes_options",value)} options={[{value:"descarte",label:"Descarte/transporte da piscina antiga"},{value:"obra_entorno",label:"Piso, deck ou acabamento do entorno"},{value:"paisagismo",label:"Paisagismo e acabamento decorativo"},{value:"estrutura",label:"Obra estrutural adicional no local"},{value:"eletrica_externa",label:"Adequações elétricas externas"},{value:"hidraulica_externa",label:"Adequações hidráulicas fora do escopo da troca"},{value:"outro",label:"Outro serviço que não faz"}]} /></div>
+                <textarea placeholder="Detalhes adicionais sobre o que a loja NÃO faz durante a troca" value={operationExperienceDraft.pool_replacement_excludes} onChange={(e)=>updateOperationExperienceDraft("pool_replacement_excludes",e.target.value)} rows={3} className={`w-full rounded-xl border px-3 py-2.5 text-sm ${operationExperienceDraft.pool_replacement_excludes_options.includes("outro") ? "border-amber-300 bg-amber-50/40" : "border-gray-200"}`}/>
+              </fieldset> : null}
+            </div> : <SummaryList items={buildBulletRows([{label:"Realiza troca",value:savedOperationExperience.pool_replacement_enabled},{label:"Situações atendidas",value:savedOperationExperience.pool_replacement_situations.length ? `${savedOperationExperience.pool_replacement_situations.length} configurada(s)` : "Não definidas"},{label:"Tempo de ocupação",value:savedOperationExperience.pool_replacement_duration_value ? `${savedOperationExperience.pool_replacement_duration_value} ${savedOperationExperience.pool_replacement_duration_mode === "horas" ? "hora(s)" : "dia(s)"}` : savedOperationExperience.pool_replacement_duration_mode === "varia" ? "Varia" : "Não definido"},{label:"Usa equipe de instalação",value:savedOperationExperience.pool_replacement_uses_installation_team || "Não definido"}])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Entrega"
+            description="Entrega é o transporte de um produto vendido pela loja até o endereço indicado pelo cliente. Defina exatamente o que é entregue, quem realiza o transporte, como o frete é calculado e o que acontece no local."
+            tone={deliveryCardIsComplete ? "blue" : "yellow"}
+            status={deliveryCardIsComplete ? "Completo" : "Precisa de atenção"}
+            className={operationEditTarget === "delivery" ? "xl:col-span-2" : ""}
+            actions={operationEditTarget === "delivery" ? <><button type="button" onClick={()=>void saveDeliveryConfigurationCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget(null);}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget("delivery");}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {operationEditTarget === "delivery" ? <div className="space-y-4">
+              <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja entrega produtos no endereço do cliente?</span><ChoiceButtonGroup value={operationExperienceDraft.delivery_enabled} onChange={(value)=>updateOperationExperienceDraft("delivery_enabled",value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></label>
+              {operationExperienceDraft.delivery_enabled !== "Não" ? <fieldset disabled={operationExperienceDraft.delivery_enabled !== "Sim"} className={operationExperienceDraft.delivery_enabled === "Sim" ? "space-y-4" : "space-y-4 opacity-45"}>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a loja entrega?</div><MultiSelectBoxGroup values={operationExperienceDraft.delivery_items} onToggle={(value)=>toggleOperationExperienceArrayValue("delivery_items",value)} options={[{value:"piscina_sem_instalacao",label:"Piscina vendida sem instalação da loja"},{value:"piscina_com_instalacao",label:"Piscina que será instalada pela própria loja"},{value:"equipamentos",label:"Equipamentos — bomba, filtro, aquecedor etc."},{value:"acessorios",label:"Acessórios"},{value:"quimicos",label:"Produtos químicos"},{value:"outros",label:"Outros produtos do catálogo"}]} />{operationExperienceDraft.delivery_items.includes("outros") ? <RequiredOperationDetailField label="Quais outros produtos a loja entrega?" value={operationExperienceDraft.delivery_items_other} onChange={(value)=>updateOperationExperienceDraft("delivery_items_other",value)} placeholder="Especifique os outros produtos do catálogo." /> : null}</div>
+                {operationExperienceDraft.delivery_items.includes("piscina_com_instalacao") ? <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando a piscina será instalada pela própria loja, como o transporte da piscina até o local é organizado?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_with_installation_mode} onChange={(value)=>updateOperationExperienceDraft("delivery_with_installation_mode",value)} options={[{value:"parte_instalacao",label:"A entrega já faz parte do serviço de instalação"},{value:"separado",label:"A entrega é agendada separadamente da instalação"},{value:"depende",label:"A forma de entrega depende do projeto"}]} /></div> : null}
+                {operationExperienceDraft.delivery_with_installation_mode === "parte_instalacao" ? <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando a entrega costuma acontecer em relação à instalação?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_with_installation_timing} onChange={(value)=>updateOperationExperienceDraft("delivery_with_installation_timing",value)} options={[{value:"mesmo_dia",label:"No mesmo dia da instalação"},{value:"antes",label:"Antes do dia da instalação"},{value:"depende",label:"Depende do projeto"}]} /></div> : null}
+                {operationExperienceDraft.delivery_with_installation_mode === "separado" ? <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A entrega precisa acontecer antes do dia da instalação?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_with_installation_timing} onChange={(value)=>updateOperationExperienceDraft("delivery_with_installation_timing",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"},{value:"depende",label:"Depende do projeto"}]} /></div> : null}
+                {(operationExperienceDraft.delivery_with_installation_mode === "depende" || operationExperienceDraft.delivery_with_installation_timing === "depende") ? <RequiredOperationDetailField label="De que depende a relação entre entrega e instalação?" value={operationExperienceDraft.delivery_with_installation_notes} onChange={(value)=>updateOperationExperienceDraft("delivery_with_installation_notes",value)} placeholder="Explique em quais projetos a entrega acontece junto, antes ou separadamente da instalação." /> : null}
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quem normalmente realiza a entrega?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_provider} onChange={(value)=>updateOperationExperienceDraft("delivery_provider",value)} options={[{value:"propria",label:"Equipe/frota própria da loja"},{value:"parceiro",label:"Transportadora ou parceiro"},{value:"ambos",label:"A loja usa os dois, dependendo do tipo de pedido"},{value:"caso_a_caso",label:"É definido individualmente para cada pedido"}]} /></div>
+                {operationExperienceDraft.delivery_provider === "ambos" ? <RequiredOperationDetailField label="Quando a loja entrega e quando usa parceiro?" value={operationExperienceDraft.delivery_provider_rule} onChange={(value)=>updateOperationExperienceDraft("delivery_provider_rule",value)} placeholder="Explique como essa decisão é tomada." /> : null}
+                {operationExperienceDraft.delivery_provider === "caso_a_caso" ? <RequiredOperationDetailField label="Como a forma de entrega é definida caso a caso?" value={operationExperienceDraft.delivery_provider_rule} onChange={(value)=>updateOperationExperienceDraft("delivery_provider_rule",value)} placeholder="Explique quem decide e com base em quais critérios." /> : null}
+                {(operationExperienceDraft.delivery_provider === "propria" || operationExperienceDraft.delivery_provider === "ambos" || operationExperienceDraft.delivery_provider === "caso_a_caso") ? <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando a própria loja faz a entrega, ela usa uma das mesmas equipes de instalação?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_uses_installation_team} onChange={(value)=>updateOperationExperienceDraft("delivery_uses_installation_team",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não, há equipe/frota separada"},{value:"depende",label:"Depende do pedido"}]} />{operationExperienceDraft.delivery_uses_installation_team === "depende" ? <RequiredOperationDetailField label="Em quais pedidos a entrega usa a equipe de instalação?" value={operationExperienceDraft.delivery_installation_team_rule} onChange={(value)=>updateOperationExperienceDraft("delivery_installation_team_rule",value)} placeholder="Explique em quais casos a equipe de instalação também fica ocupada com a entrega." /> : null}</div> : null}
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como o frete é cobrado do cliente?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_pricing_mode} onChange={(value)=>updateOperationExperienceDraft("delivery_pricing_mode",value)} options={[{value:"gratuito",label:"Não há cobrança de frete"},{value:"incluido",label:"O frete já está incluído no preço da venda"},{value:"fixo",label:"A loja cobra um valor fixo"},{value:"destino",label:"O valor é calculado conforme distância ou região"},{value:"parceiro",label:"O valor é definido pela transportadora/parceiro"},{value:"caso_a_caso",label:"A equipe calcula individualmente para cada pedido"}]} /></div>
+                {operationExperienceDraft.delivery_pricing_mode === "fixo" ? <input placeholder="Valor padrão do frete (R$)" value={operationExperienceDraft.delivery_fixed_fee} onChange={(e)=>updateOperationExperienceDraft("delivery_fixed_fee",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/> : null}
+                {operationExperienceDraft.delivery_pricing_mode === "destino" ? <div className="space-y-3"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como o valor é calculado?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_pricing_destination_mode} onChange={(value)=>updateOperationExperienceDraft("delivery_pricing_destination_mode",value)} options={[{value:"distancia",label:"Por distância"},{value:"regiao",label:"Por cidade/região"},{value:"faixa",label:"Por faixa de distância"},{value:"outra",label:"Outra regra"}]} /></div>{operationExperienceDraft.delivery_pricing_destination_mode === "outra" ? <RequiredOperationDetailField label="Qual é a outra regra de cálculo?" value={operationExperienceDraft.delivery_pricing_destination_rule} onChange={(value)=>updateOperationExperienceDraft("delivery_pricing_destination_rule",value)} placeholder="Descreva claramente a outra regra usada para calcular o frete." /> : <textarea placeholder="Descreva a regra de cálculo para a IA saber quando precisa consultar a equipe." value={operationExperienceDraft.delivery_pricing_destination_rule} onChange={(e)=>updateOperationExperienceDraft("delivery_pricing_destination_rule",e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/>}</div> : null}
+                {operationExperienceDraft.delivery_pricing_mode === "parceiro" ? <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Depois da cotação da transportadora/parceiro, como o valor chega ao cliente?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_partner_pricing_mode} onChange={(value)=>updateOperationExperienceDraft("delivery_partner_pricing_mode",value)} options={[{value:"repasse",label:"É repassado integralmente ao cliente"},{value:"loja_define",label:"A loja define o preço depois da cotação"},{value:"depende",label:"Depende do pedido"}]} />{operationExperienceDraft.delivery_partner_pricing_mode === "depende" ? <RequiredOperationDetailField label="De que depende o valor cobrado ao cliente?" value={operationExperienceDraft.delivery_partner_pricing_rule} onChange={(value)=>updateOperationExperienceDraft("delivery_partner_pricing_rule",value)} placeholder="Explique quando há repasse integral e quando a loja define outro valor." /> : null}</div> : null}
+                {operationExperienceDraft.delivery_pricing_mode === "caso_a_caso" ? <div className="space-y-3"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a equipe considera para definir o frete?</div><MultiSelectBoxGroup values={operationExperienceDraft.delivery_case_factors} onToggle={(value)=>toggleOperationExperienceArrayValue("delivery_case_factors",value)} options={[{value:"distancia",label:"Distância"},{value:"peso_tamanho",label:"Tamanho/peso do produto"},{value:"veiculo",label:"Necessidade de veículo especial"},{value:"regiao",label:"Região"},{value:"acesso",label:"Acesso ao local"},{value:"outro",label:"Outro"}]} /></div><RequiredOperationDetailField label={operationExperienceDraft.delivery_case_factors.includes("outro") ? "Como o frete é calculado e qual é o outro fator?" : "Como a equipe calcula o frete caso a caso?"} value={operationExperienceDraft.delivery_case_rule} onChange={(value)=>updateOperationExperienceDraft("delivery_case_rule",value)} placeholder="Explique como esses fatores são usados para chegar ao valor cobrado do cliente." /></div> : null}
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que deve estar concluído antes de liberar a entrega?</div><MultiSelectBoxGroup values={operationExperienceDraft.delivery_release_gates} onToggle={(value)=>toggleOperationExperienceArrayValue("delivery_release_gates",value)} options={[{value:"pagamento",label:"Pagamento confirmado"},{value:"produto",label:"Produto disponível"},{value:"endereco",label:"Endereço confirmado"},{value:"contrato",label:"Contrato, quando aplicável"},{value:"outro",label:"Outro"}]} />{operationExperienceDraft.delivery_release_gates.includes("outro") ? <RequiredOperationDetailField label="Qual é o outro requisito para liberar a entrega?" value={operationExperienceDraft.delivery_release_gates_other} onChange={(value)=>updateOperationExperienceDraft("delivery_release_gates_other",value)} placeholder="Especifique o requisito adicional." /> : null}</div>
+                <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando a loja entrega itens grandes, o que a equipe faz no local?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_unloading_mode} onChange={(value)=>updateOperationExperienceDraft("delivery_unloading_mode",value)} options={[{value:"transporta",label:"Apenas transporta até o endereço"},{value:"descarrega",label:"Transporta e descarrega"},{value:"posiciona",label:"Transporta, descarrega e posiciona no local indicado"},{value:"depende",label:"Depende do produto ou projeto"}]} /></div>
+                {operationExperienceDraft.delivery_unloading_mode === "depende" ? <RequiredOperationDetailField label="De quais produtos ou projetos depende o atendimento no local?" value={operationExperienceDraft.delivery_notes} onChange={(value)=>updateOperationExperienceDraft("delivery_notes",value)} placeholder="Explique quando a equipe apenas transporta, quando descarrega e quando também posiciona o produto." /> : <textarea placeholder="Observações ou restrições da entrega" value={operationExperienceDraft.delivery_notes} onChange={(e)=>updateOperationExperienceDraft("delivery_notes",e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/>}
+              </fieldset> : null}
+            </div> : <SummaryList items={buildBulletRows([{label:"Oferece entrega",value:savedOperationExperience.delivery_enabled},{label:"O que entrega",value:savedOperationExperience.delivery_items.length ? `${savedOperationExperience.delivery_items.length} categoria(s)` : "Não definido"},{label:"Quem entrega",value:savedOperationExperience.delivery_provider ? optionLabel(savedOperationExperience.delivery_provider,[{value:"propria",label:"Equipe própria"},{value:"parceiro",label:"Parceiro"},{value:"ambos",label:"Loja e parceiro"},{value:"caso_a_caso",label:"Caso a caso"}]) : "Não definido"},{label:"Frete",value:savedOperationExperience.delivery_pricing_mode ? optionLabel(savedOperationExperience.delivery_pricing_mode,[{value:"gratuito",label:"Sem cobrança"},{value:"incluido",label:"Incluído"},{value:"fixo",label:"Fixo"},{value:"destino",label:"Por distância/região"},{value:"parceiro",label:"Definido pelo parceiro"},{value:"caso_a_caso",label:"Caso a caso"}]) : "Não definido"}])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Retirada"
+            description="Retirada é quando o cliente ou alguém autorizado busca na loja um produto comprado. Defina quais itens podem ser retirados e como funciona a liberação."
+            tone={pickupCardIsComplete ? "blue" : "yellow"}
+            status={pickupCardIsComplete ? "Completo" : "Precisa de atenção"}
+            className={operationEditTarget === "pickup" ? "xl:col-span-2" : ""}
+            actions={operationEditTarget === "pickup" ? <><button type="button" onClick={()=>void savePickupConfigurationCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget(null);}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget("pickup");}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {operationEditTarget === "pickup" ? <div className="space-y-4"><label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja permite que clientes retirem produtos?</span><ChoiceButtonGroup value={operationExperienceDraft.pickup_enabled} onChange={(value)=>updateOperationExperienceDraft("pickup_enabled",value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></label>{operationExperienceDraft.pickup_enabled !== "Não" ? <fieldset disabled={operationExperienceDraft.pickup_enabled !== "Sim"} className={operationExperienceDraft.pickup_enabled === "Sim" ? "space-y-4" : "space-y-4 opacity-45"}><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que pode ser retirado?</div><MultiSelectBoxGroup values={operationExperienceDraft.pickup_items} onToggle={(value)=>toggleOperationExperienceArrayValue("pickup_items",value)} options={[{value:"piscinas",label:"Piscinas"},{value:"equipamentos",label:"Equipamentos"},{value:"acessorios",label:"Acessórios"},{value:"quimicos",label:"Produtos químicos"},{value:"outros",label:"Outros itens do catálogo"}]} />{operationExperienceDraft.pickup_items.includes("outros") ? <RequiredOperationDetailField label="Quais outros itens podem ser retirados?" value={operationExperienceDraft.pickup_items_other} onChange={(value)=>updateOperationExperienceDraft("pickup_items_other",value)} placeholder="Especifique os outros itens do catálogo." /> : null}</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Onde a retirada acontece?</div><ChoiceButtonGroup value={operationExperienceDraft.pickup_location_mode} onChange={(value)=>updateOperationExperienceDraft("pickup_location_mode",value)} options={[{value:"loja",label:"Endereço principal da loja"},{value:"outro",label:"Outro local"}]} /></div>{operationExperienceDraft.pickup_location_mode==="outro" ? <input placeholder="Informe o outro local de retirada" value={operationExperienceDraft.pickup_other_location} onChange={(e)=>updateOperationExperienceDraft("pickup_other_location",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/> : null}<div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É necessário agendar?</div><ChoiceButtonGroup value={operationExperienceDraft.pickup_requires_appointment} onChange={(value)=>updateOperationExperienceDraft("pickup_requires_appointment",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"}]} /></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quem pode retirar?</div><ChoiceButtonGroup value={operationExperienceDraft.pickup_third_party_allowed} onChange={(value)=>updateOperationExperienceDraft("pickup_third_party_allowed",value)} options={[{value:"comprador",label:"Somente comprador"},{value:"autorizado",label:"Comprador ou pessoa autorizada"}]} /></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que deve estar confirmado antes de liberar a retirada?</div><MultiSelectBoxGroup values={operationExperienceDraft.pickup_release_gates} onToggle={(value)=>toggleOperationExperienceArrayValue("pickup_release_gates",value)} options={[{value:"pagamento",label:"Pagamento confirmado"},{value:"separado",label:"Produto separado/pronto"},{value:"identificacao",label:"Documento/identificação"},{value:"autorizacao",label:"Autorização quando terceiro"},{value:"outro",label:"Outro"}]} />{operationExperienceDraft.pickup_release_gates.includes("outro") ? <RequiredOperationDetailField label="Qual é o outro requisito para liberar a retirada?" value={operationExperienceDraft.pickup_release_gates_other} onChange={(value)=>updateOperationExperienceDraft("pickup_release_gates_other",value)} placeholder="Especifique o requisito adicional." /> : null}</div><textarea placeholder="Observações da retirada" value={operationExperienceDraft.pickup_notes} onChange={(e)=>updateOperationExperienceDraft("pickup_notes",e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/></fieldset> : null}</div> : <SummaryList items={buildBulletRows([{label:"Permite retirada",value:savedOperationExperience.pickup_enabled},{label:"Itens",value:savedOperationExperience.pickup_items.length ? `${savedOperationExperience.pickup_items.length} categoria(s)` : "Não definido"},{label:"Agendamento",value:savedOperationExperience.pickup_requires_appointment || "Não definido"}])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Serviços técnicos e manutenção"
+            description="Defina quais serviços técnicos a loja executa além da instalação de piscinas e em quais equipamentos trabalha."
+            tone={technicalServicesCardIsComplete ? "blue" : "yellow"}
+            status={technicalServicesCardIsComplete ? "Completo" : "Precisa de atenção"}
+            className={operationEditTarget === "technical_services" ? "xl:col-span-2" : ""}
+            actions={operationEditTarget === "technical_services" ? <><button type="button" onClick={()=>void saveTechnicalServicesConfigurationCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget(null);}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={()=>{setOperationExperienceDraft(savedOperationExperience);setOperationEditTarget("technical_services");}} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {operationEditTarget === "technical_services" ? <div className="space-y-4"><label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja realiza serviços técnicos além da instalação de piscinas?</span><ChoiceButtonGroup value={operationExperienceDraft.technical_services_enabled} onChange={(value)=>updateOperationExperienceDraft("technical_services_enabled",value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></label>{operationExperienceDraft.technical_services_enabled !== "Não" ? <fieldset disabled={operationExperienceDraft.technical_services_enabled !== "Sim"} className={operationExperienceDraft.technical_services_enabled === "Sim" ? "space-y-4" : "space-y-4 opacity-45"}><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quais serviços a loja realiza?</div><MultiSelectBoxGroup values={operationExperienceDraft.technical_service_types} onToggle={(value)=>toggleOperationExperienceArrayValue("technical_service_types",value)} options={[{value:"limpeza",label:"Limpeza / manutenção de piscina"},{value:"agua",label:"Tratamento da água"},{value:"diagnostico",label:"Diagnóstico técnico"},{value:"reparo",label:"Reparo de equipamentos"},{value:"instalacao_equipamento",label:"Instalação de equipamento novo"},{value:"troca_equipamento",label:"Substituição de equipamento existente"},{value:"outro",label:"Outro serviço"}]} />{operationExperienceDraft.technical_service_types.includes("outro") ? <RequiredOperationDetailField label="Qual outro serviço a loja realiza?" value={operationExperienceDraft.technical_services_other} onChange={(value)=>updateOperationExperienceDraft("technical_services_other",value)} placeholder="Especifique o outro serviço técnico ou de manutenção." /> : null}</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Em quais equipamentos a loja trabalha?</div><MultiSelectBoxGroup values={operationExperienceDraft.technical_equipment_types} onToggle={(value)=>toggleOperationExperienceArrayValue("technical_equipment_types",value)} columns="md:grid-cols-3" options={[{value:"bombas",label:"Bombas"},{value:"filtros",label:"Filtros"},{value:"aquecedores",label:"Aquecedores"},{value:"iluminacao",label:"Iluminação"},{value:"automacao",label:"Automação"},{value:"cascata_hidro",label:"Cascatas / hidromassagem"},{value:"outros",label:"Outros"}]} />{operationExperienceDraft.technical_equipment_types.includes("outros") ? <RequiredOperationDetailField label="Quais outros equipamentos?" value={operationExperienceDraft.technical_equipment_other} onChange={(value)=>updateOperationExperienceDraft("technical_equipment_other",value)} placeholder="Especifique os outros equipamentos atendidos pela loja." /> : null}</div>{operationExperienceDraft.technical_service_types.includes("instalacao_equipamento") ? <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O equipamento precisa ter sido vendido pela loja?</div><ChoiceButtonGroup value={operationExperienceDraft.equipment_installation_origin_policy} onChange={(value)=>updateOperationExperienceDraft("equipment_installation_origin_policy",value)} options={[{value:"somente_loja",label:"Sim, apenas equipamento vendido pela loja"},{value:"tambem_cliente",label:"Não, também instala equipamento comprado pelo cliente"},{value:"depende",label:"Depende do equipamento"}]} />{operationExperienceDraft.equipment_installation_origin_policy === "depende" ? <RequiredOperationDetailField label="De quais equipamentos depende?" value={operationExperienceDraft.equipment_installation_origin_rule} onChange={(value)=>updateOperationExperienceDraft("equipment_installation_origin_rule",value)} placeholder="Explique quais equipamentos comprados fora da loja podem ou não ser instalados." /> : null}</div> : null}{operationExperienceDraft.technical_service_types.includes("troca_equipamento") ? <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja substitui equipamentos que o cliente já possui há algum tempo?</div><ChoiceButtonGroup value={operationExperienceDraft.equipment_replacement_existing} onChange={(value)=>updateOperationExperienceDraft("equipment_replacement_existing",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"},{value:"caso_a_caso",label:"Caso a caso"}]} />{operationExperienceDraft.equipment_replacement_existing === "caso_a_caso" ? <RequiredOperationDetailField label="Em quais casos a loja faz a substituição?" value={operationExperienceDraft.equipment_replacement_existing_rule} onChange={(value)=>updateOperationExperienceDraft("equipment_replacement_existing_rule",value)} placeholder="Explique os casos em que a loja aceita substituir o equipamento existente." /> : null}</div> : null}<textarea placeholder="Regras, limites e observações dos serviços técnicos" value={operationExperienceDraft.technical_services_notes} onChange={(e)=>updateOperationExperienceDraft("technical_services_notes",e.target.value)} rows={4} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/></fieldset> : null}</div> : <SummaryList items={buildBulletRows([{label:"Realiza serviços técnicos",value:savedOperationExperience.technical_services_enabled},{label:"Serviços",value:savedOperationExperience.technical_service_types.length ? `${savedOperationExperience.technical_service_types.length} configurado(s)` : "Não definidos"},{label:"Equipamentos",value:savedOperationExperience.technical_equipment_types.length ? `${savedOperationExperience.technical_equipment_types.length} tipo(s)` : "Não definidos"}])} />}
+          </SectionBlock>
+        </div>
+      ) : null}
+
+      {activeTab === "comercial" ? (
+        <div className="grid items-stretch gap-4 xl:grid-cols-2 [&>section]:h-full [&>section]:self-stretch">
+          <SectionBlock
+            title="O que a loja vende e oferece"
+            description="Defina as categorias de produtos e serviços que fazem parte da operação da loja. Isso estabelece o escopo comercial geral sem substituir o catálogo real."
+            tone={canonicalCommercialExperience.offering_products.length > 0 || canonicalCommercialExperience.offering_services.length > 0 ? "blue" : "yellow"}
+            status={canonicalCommercialExperience.offering_products.length > 0 || canonicalCommercialExperience.offering_services.length > 0 ? "Completo" : "Precisa de atenção"}
+            className={strategyEditTarget === "offerings" ? "xl:col-span-2" : ""}
+            actions={strategyEditTarget === "offerings" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("offerings")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(canonicalCommercialExperience); setStrategyEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(canonicalCommercialExperience); setStrategyEditTarget("offerings"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {strategyEditTarget === "offerings" ? (
+              <div className="space-y-5">
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quais tipos de produtos sua loja vende?</div>
+                  <p className="mb-2 text-xs leading-5 text-gray-500">Marque as linhas que fazem parte da operação. Isso não significa que todo produto dessa categoria está disponível; a disponibilidade concreta continua vindo do catálogo e do estado real do item.</p>
+                  <MultiSelectBoxGroup values={commercialExperienceDraft.offering_products} onToggle={(value) => toggleCommercialExperienceArrayValue("offering_products", value)} options={STORE_OFFERED_PRODUCT_OPTIONS} columns="md:grid-cols-3" />
+                  {commercialExperienceDraft.offering_products.includes("outro") ? <RequiredOperationDetailField label="Quais outros produtos a loja vende?" value={commercialExperienceDraft.offering_products_other} onChange={(value) => updateCommercialExperienceDraft("offering_products_other", value)} placeholder="Especifique as outras linhas de produtos vendidas pela loja." /> : null}
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quais serviços sua loja oferece?</div>
+                  <p className="mb-2 text-xs leading-5 text-gray-500">Marque apenas serviços que a loja realmente presta. As regras de como cada serviço funciona continuam sendo definidas em Operação.</p>
+                  <MultiSelectBoxGroup values={commercialExperienceDraft.offering_services} onToggle={(value) => toggleCommercialExperienceArrayValue("offering_services", value)} options={STORE_OFFERED_SERVICE_OPTIONS} columns="md:grid-cols-2" />
+                  {commercialExperienceDraft.offering_services.includes("outro") ? <RequiredOperationDetailField label="Quais outros serviços a loja oferece?" value={commercialExperienceDraft.offering_services_other} onChange={(value) => updateCommercialExperienceDraft("offering_services_other", value)} placeholder="Especifique os outros serviços prestados pela loja." /> : null}
+                </div>
+                <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">Esta configuração define o escopo comercial geral da loja. O catálogo continua sendo a fonte dos produtos concretos, preços, estoque e disponibilidade; Operação continua sendo a fonte de como os serviços são executados.</div>
+              </div>
+            ) : <SummaryList items={buildBulletRows([
+              { label: "Tipos de produtos vendidos", value: joinSelectedLabels(canonicalCommercialExperience.offering_products, STORE_OFFERED_PRODUCT_OPTIONS, canonicalCommercialExperience.offering_products_other) || "Não definido" },
+              { label: "Serviços oferecidos", value: joinSelectedLabels(canonicalCommercialExperience.offering_services, STORE_OFFERED_SERVICE_OPTIONS, canonicalCommercialExperience.offering_services_other) || "Não definido" },
+              { label: "Disponibilidade concreta", value: "Continua vindo do catálogo e das fontes vivas" },
+            ])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Estratégia comercial"
+            description="Defina o que a loja quer priorizar nas vendas, quais vendas combinam melhor com a operação e quais atendimentos normalmente exigem mais cuidado. As prioridades não limitam os outros produtos e serviços oferecidos pela loja."
+            tone={savedCommercialExperience.strategy_sell_more.length > 0 && cleanText(savedCommercialExperience.strategy_sale_preference) ? "blue" : "yellow"}
+            status={savedCommercialExperience.strategy_sell_more.length > 0 && cleanText(savedCommercialExperience.strategy_sale_preference) ? "Completo" : "Precisa de atenção"}
+            className={strategyEditTarget === "strategy" ? "xl:col-span-2" : ""}
+            actions={strategyEditTarget === "strategy" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("strategy")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setStrategyEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setStrategyEditTarget("strategy"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {strategyEditTarget === "strategy" ? (
+              <div className="space-y-5">
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que sua loja quer priorizar nas vendas?</div>
+                  <p className="mb-2 text-xs leading-5 text-gray-500">Essa preferência ajuda a IA a dar mais atenção a essas oportunidades quando fizer sentido. Ela não impede a venda de nenhum outro produto ou serviço que a loja realmente ofereça.</p>
+                  <MultiSelectBoxGroup values={commercialExperienceDraft.strategy_sell_more} onToggle={(value) => toggleCommercialExperienceArrayValue("strategy_sell_more", value)} options={COMMERCIAL_SELL_MORE_OPTIONS} columns="md:grid-cols-3" />
+                  {commercialExperienceDraft.strategy_sell_more.includes("outro") ? <RequiredOperationDetailField label="Qual é a outra prioridade comercial?" value={commercialExperienceDraft.strategy_sell_more_other} onChange={(value) => updateCommercialExperienceDraft("strategy_sell_more_other", value)} placeholder="Especifique o produto, serviço ou tipo de venda que a loja quer priorizar." /> : null}
+                </div>
+
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Que tipo de venda sua loja prefere?</div>
+                  <ChoiceButtonGroup value={commercialExperienceDraft.strategy_sale_preference} onChange={(value) => updateCommercialExperienceDraft("strategy_sale_preference", value)} options={COMMERCIAL_SALE_PREFERENCE_OPTIONS} />
+                  {commercialExperienceDraft.strategy_sale_preference === "outro" ? <RequiredOperationDetailField label="Que outro tipo de venda a loja prefere?" value={commercialExperienceDraft.strategy_sale_preference_other} onChange={(value) => updateCommercialExperienceDraft("strategy_sale_preference_other", value)} placeholder="Explique de forma simples qual tipo de venda a loja prefere." /> : null}
+                </div>
+
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Que características têm os clientes que costumam combinar melhor com a operação da loja?</div>
+                  <p className="mb-2 text-xs leading-5 text-gray-500">Isso ajuda a IA a entender quais oportunidades costumam encaixar melhor na operação, sem tratar outros clientes de forma pior.</p>
+                  <MultiSelectBoxGroup values={commercialExperienceDraft.strategy_customer_traits} onToggle={(value) => toggleCommercialExperienceArrayValue("strategy_customer_traits", value)} options={COMMERCIAL_CUSTOMER_TRAIT_OPTIONS} />
+                  {commercialExperienceDraft.strategy_customer_traits.includes("outro") ? <RequiredOperationDetailField label="Qual é a outra característica?" value={commercialExperienceDraft.strategy_customer_traits_other} onChange={(value) => updateCommercialExperienceDraft("strategy_customer_traits_other", value)} placeholder="Descreva a característica de forma objetiva." /> : null}
+                </div>
+
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quais tipos de atendimento normalmente exigem mais cuidado?</div>
+                  <p className="mb-2 text-xs leading-5 text-gray-500">Marque situações em que a IA deve ser mais cuidadosa, coletar mais contexto ou envolver uma pessoa da loja quando necessário.</p>
+                  <MultiSelectBoxGroup values={commercialExperienceDraft.strategy_attention_cases} onToggle={(value) => toggleCommercialExperienceArrayValue("strategy_attention_cases", value)} options={COMMERCIAL_ATTENTION_CASE_OPTIONS} />
+                  {commercialExperienceDraft.strategy_attention_cases.includes("outro") ? <RequiredOperationDetailField label="Qual é o outro tipo de atendimento?" value={commercialExperienceDraft.strategy_attention_other} onChange={(value) => updateCommercialExperienceDraft("strategy_attention_other", value)} placeholder="Explique qual situação exige mais cuidado." /> : null}
+                </div>
+
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual costuma ser o valor total das vendas da loja?</div>
+                  <p className="mb-2 text-xs leading-5 text-gray-500">Considere o valor total normalmente pago pelo cliente em uma venda, incluindo os itens e serviços que costumam fazer parte do negócio.</p>
+                  <ChoiceButtonGroup value={commercialExperienceDraft.strategy_sale_value_range} onChange={(value) => updateCommercialExperienceDraft("strategy_sale_value_range", value)} options={COMMERCIAL_SALE_VALUE_OPTIONS} />
+                  {["outra", "varia_muito"].includes(commercialExperienceDraft.strategy_sale_value_range) ? <RequiredOperationDetailField label={commercialExperienceDraft.strategy_sale_value_range === "varia_muito" ? "Como o valor das vendas costuma variar?" : "Qual é a outra faixa de valor?"} value={commercialExperienceDraft.strategy_sale_value_custom} onChange={(value) => updateCommercialExperienceDraft("strategy_sale_value_custom", value)} placeholder={commercialExperienceDraft.strategy_sale_value_range === "varia_muito" ? "Ex.: produtos avulsos costumam ficar entre R$ 200 e R$ 2.000; projetos com piscina e instalação normalmente ficam entre R$ 15.000 e R$ 40.000." : "Ex.: de R$ 15.000 a R$ 35.000."} rows={3} /> : null}
+                </div>
+              </div>
+            ) : <SummaryList items={buildBulletRows([
+              { label: "Quer vender mais", value: joinSelectedLabels(savedCommercialExperience.strategy_sell_more, COMMERCIAL_SELL_MORE_OPTIONS, savedCommercialExperience.strategy_sell_more_other) || "Não definido" },
+              { label: "Tipo de venda preferido", value: savedCommercialExperience.strategy_sale_preference ? optionLabel(savedCommercialExperience.strategy_sale_preference, COMMERCIAL_SALE_PREFERENCE_OPTIONS) : "Não definido" },
+              { label: "Clientes que combinam melhor", value: savedCommercialExperience.strategy_customer_traits.length ? `${savedCommercialExperience.strategy_customer_traits.length} característica(s) selecionada(s)` : "Não definido" },
+              { label: "Atendimentos que exigem mais cuidado", value: savedCommercialExperience.strategy_attention_cases.length ? `${savedCommercialExperience.strategy_attention_cases.length} situação(ões) selecionada(s)` : "Não definido" },
+              { label: "Valor típico das vendas", value: savedCommercialExperience.strategy_sale_value_range ? (["outra", "varia_muito"].includes(savedCommercialExperience.strategy_sale_value_range) ? (savedCommercialExperience.strategy_sale_value_range === "varia_muito" ? `Varia conforme a venda${cleanText(savedCommercialExperience.strategy_sale_value_custom) ? ` • ${savedCommercialExperience.strategy_sale_value_custom}` : ""}` : savedCommercialExperience.strategy_sale_value_custom) : optionLabel(savedCommercialExperience.strategy_sale_value_range, COMMERCIAL_SALE_VALUE_OPTIONS)) : "Não definido" },
+            ])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Marcas trabalhadas e preferência"
+            description="Defina a marca principal, as demais marcas que fazem parte da operação e, quando houver mais de uma opção adequada e disponível, quais marcas podem receber preferência. A lista de marcas não cria estoque nem disponibilidade."
+            tone={canonicalCommercialExperience.brands_worked.length > 0 ? "blue" : "yellow"}
+            status={canonicalCommercialExperience.brands_worked.length > 0 ? "Completo" : "Precisa de atenção"}
+            className={strategyEditTarget === "brands" ? "xl:col-span-2" : ""}
+            actions={strategyEditTarget === "brands" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("brands")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(canonicalCommercialExperience); setStrategyEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(canonicalCommercialExperience); setStrategyEditTarget("brands"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {strategyEditTarget === "brands" ? (
+              <div className="space-y-5">
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja trabalha com uma marca principal?</div>
+                  <ChoiceButtonGroup
+                    value={commercialExperienceDraft.brands_has_main}
+                    onChange={(value) => updateCommercialExperienceDraft("brands_has_main", value)}
+                    options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]}
+                  />
+                </div>
+
+                {commercialExperienceDraft.brands_has_main === "Sim" ? (
                   <div className="space-y-3">
-                    {additionalResponsiblesDraft.map((person, index) => (
-                      <div key={person.id} className="rounded-2xl border border-gray-200 bg-white p-4">
-                        <div className="mb-3 flex items-center justify-between gap-3">
-                          <div className="text-sm font-semibold text-gray-900">
-                            Responsável extra {index + 1}
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual é a marca principal?</span>
+                      <select
+                        value={commercialExperienceDraft.brands_main_choice}
+                        onChange={(event) => updateCommercialExperienceDraft("brands_main_choice", event.target.value)}
+                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-black"
+                      >
+                        <option value="">Selecione uma marca</option>
+                        {POOL_MARKET_BRAND_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                      </select>
+                    </label>
+                    {commercialExperienceDraft.brands_main_choice === "outro" ? (
+                      <RequiredOperationDetailField
+                        label="Qual é a outra marca principal?"
+                        value={commercialExperienceDraft.brands_main_other}
+                        onChange={(value) => updateCommercialExperienceDraft("brands_main_other", value)}
+                        placeholder="Informe a marca principal da loja."
+                      />
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quais outras marcas sua loja trabalha?</div>
+                  <p className="mb-3 text-xs leading-5 text-gray-500">Adicione uma marca por vez. Esta lista informa quais marcas fazem parte da operação; disponibilidade real continua vindo do catálogo, estoque e fontes vivas.</p>
+                  <RepeatableBrandSelect
+                    values={commercialExperienceDraft.brands_worked}
+                    onChange={(values) => updateCommercialExperienceDraft("brands_worked", values)}
+                    options={POOL_MARKET_BRAND_OPTIONS.filter((option) => option.value === "outro" || option.value !== commercialExperienceDraft.brands_main_choice)}
+                    addLabel="Adicionar mais uma marca"
+                    selectPlaceholder="Selecione uma marca"
+                  />
+                  {commercialExperienceDraft.brands_worked.includes("outro") ? (
+                    <RequiredOperationDetailField
+                      label="Qual é a outra marca?"
+                      value={commercialExperienceDraft.brands_worked_other}
+                      onChange={(value) => updateCommercialExperienceDraft("brands_worked_other", value)}
+                      placeholder="Informe a marca que não aparece na lista. Se houver mais de uma, separe por vírgulas."
+                    />
+                  ) : null}
+                </div>
+
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando houver mais de uma opção adequada e disponível, existe alguma marca que a loja prefere oferecer primeiro?</div>
+                  <ChoiceButtonGroup
+                    value={commercialExperienceDraft.brands_priority_enabled}
+                    onChange={(value) => updateCommercialExperienceDraft("brands_priority_enabled", value)}
+                    options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não, escolha conforme a necessidade do cliente" }]}
+                  />
+                  {commercialExperienceDraft.brands_priority_enabled === "Sim" ? (
+                    <div className="mt-3 space-y-3">
+                      <p className="text-xs leading-5 text-gray-500">Adicione as marcas preferidas em ordem de prioridade. A preferência só vale entre opções realmente adequadas e disponíveis.</p>
+                      <RepeatableBrandSelect
+                        values={commercialExperienceDraft.brands_priority}
+                        onChange={(values) => updateCommercialExperienceDraft("brands_priority", values)}
+                        addLabel="Adicionar mais uma marca preferida"
+                        selectPlaceholder="Selecione uma marca preferida"
+                        options={POOL_MARKET_BRAND_OPTIONS.filter((option) =>
+                          option.value === "outro" ||
+                          option.value === commercialExperienceDraft.brands_main_choice ||
+                          commercialExperienceDraft.brands_worked.includes(option.value)
+                        )}
+                      />
+                      {commercialExperienceDraft.brands_priority.includes("outro") ? (
+                        <RequiredOperationDetailField
+                          label="Qual é a outra marca preferida?"
+                          value={commercialExperienceDraft.brands_priority_other}
+                          onChange={(value) => updateCommercialExperienceDraft("brands_priority_other", value)}
+                          placeholder="Informe a marca que pode receber preferência."
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : <SummaryList items={buildBulletRows([
+              { label: "Marca principal", value: canonicalCommercialExperience.brands_has_main === "Não" ? "Não usa marca principal" : canonicalCommercialExperience.brands_main_choice ? (canonicalCommercialExperience.brands_main_choice === "outro" ? canonicalCommercialExperience.brands_main_other : canonicalCommercialExperience.brands_main_choice) : "Não definida" },
+              { label: "Marcas trabalhadas", value: joinSelectedLabels(canonicalCommercialExperience.brands_worked.filter((item) => cleanText(item) && item !== "outro"), POOL_MARKET_BRAND_OPTIONS, canonicalCommercialExperience.brands_worked.includes("outro") ? canonicalCommercialExperience.brands_worked_other : "") || "Não definidas" },
+              { label: "Preferência entre opções válidas", value: canonicalCommercialExperience.brands_priority_enabled === "Sim" ? (canonicalCommercialExperience.brands_priority.filter((item) => cleanText(item)).length ? canonicalCommercialExperience.brands_priority.filter((item) => cleanText(item)).map((item) => item === "outro" ? canonicalCommercialExperience.brands_priority_other : item).filter(Boolean).join(" → ") : "Não definida") : canonicalCommercialExperience.brands_priority_enabled === "Não" ? "Sem preferência fixa" : "Não definido" },
+            ])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Orientações comerciais para a IA"
+            description="Registre somente uma orientação comercial adicional da loja que não esteja coberta pelas outras configurações. As regras de segurança, verdade, autoridade e funcionamento do ZION continuam sempre ativas e prevalecem em qualquer conflito."
+            tone={savedCommercialExperience.ai_guidance_enabled === "Não definido" ? "yellow" : "blue"}
+            status={savedCommercialExperience.ai_guidance_enabled === "Não definido" ? "Precisa de atenção" : "Completo"}
+            className={strategyEditTarget === "ai" ? "xl:col-span-2" : ""}
+            actions={strategyEditTarget === "ai" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("ai")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setStrategyEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setStrategyEditTarget("ai"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {strategyEditTarget === "ai" ? <div className="space-y-4">
+              <div>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Existe alguma orientação específica da loja que a IA precisa considerar durante uma venda?</div>
+                <ChoiceButtonGroup value={commercialExperienceDraft.ai_guidance_enabled} onChange={(value) => updateCommercialExperienceDraft("ai_guidance_enabled", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />
+              </div>
+              {commercialExperienceDraft.ai_guidance_enabled === "Sim" ? <RequiredOperationDetailField label="Qual orientação comercial adicional a IA deve considerar?" value={commercialExperienceDraft.ai_guidance_other} onChange={(value) => updateCommercialExperienceDraft("ai_guidance_other", value)} placeholder="Descreva somente uma particularidade real da loja que não esteja coberta nas outras configurações. Esta orientação não pode alterar regras universais do ZION nem criar produto, preço, estoque, disponibilidade, desconto, prazo ou autorização." rows={4} /> : null}
+              <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">Comportamentos como informar corretamente que um item é sob encomenda, respeitar quando a instalação é opcional e explicar dependências reais de visita técnica não são opcionais: quando essas condições forem verdadeiras nas fontes do sistema, a IA deve respeitá-las automaticamente. Sugestões de alternativas ficam no card “Sugestões comerciais”.</div>
+            </div> : <SummaryList items={buildBulletRows([
+              { label: "Orientação adicional", value: savedCommercialExperience.ai_guidance_enabled === "Sim" ? summarizeMetricText(savedCommercialExperience.ai_guidance_other, 110) || "Não definida" : savedCommercialExperience.ai_guidance_enabled === "Não" ? "Nenhuma orientação adicional" : "Não definido" },
+              { label: "Regras do ZION", value: "Continuam sempre ativas" },
+            ])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Preços"
+            description="Defina o que a IA pode informar quando um cliente pergunta preço e quais informações ela precisa entender quando o valor depende do projeto."
+            tone={commercialAiSettings ? "blue" : "yellow"}
+            status={commercialAiSettings ? "Completo" : "Precisa de atenção"}
+            className={commercialEditTarget === "ai_price" ? "xl:col-span-2" : ""}
+            actions={commercialEditTarget === "ai_price" ? <><button type="button" onClick={() => void handleCommercialEditSave()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={handleCommercialEditCancel} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialEditTarget("ai_price"); setIsCommercialEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {commercialEditTarget === "ai_price" ? <div className="space-y-4">
+              <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando um cliente perguntar o preço de um produto, o que a IA pode fazer?</div><ChoiceButtonGroup value={commercialDraft.price_answer_policy} onChange={(value) => handleCommercialDraftChange("price_answer_policy", value)} options={PRICE_ANSWER_POLICY_OPTIONS} /></div>
+              <div><div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Antes de falar um preço que depende do projeto, o que a IA precisa saber?</div><p className="mb-2 text-xs leading-5 text-gray-500">Um preço já cadastrado no catálogo é diferente de um valor que depende de medidas, instalação, visita ou outras condições do projeto.</p><MultiSelectBoxGroup values={commercialDraft.price_context_requirements} onToggle={handleCommercialPriceContextRequirementToggle} options={PRICE_CONTEXT_REQUIREMENT_OPTIONS} /><button type="button" onClick={() => updateCommercialExperienceDraft("price_context_other_enabled", !commercialExperienceDraft.price_context_other_enabled)} className={`mt-2 w-full rounded-xl border px-3 py-2.5 text-left text-sm transition ${commercialExperienceDraft.price_context_other_enabled ? "border-cyan-500 bg-cyan-50 text-cyan-950" : "border-gray-200 bg-white text-gray-700"}`}>Outro contexto necessário</button>{commercialExperienceDraft.price_context_other_enabled ? <RequiredOperationDetailField label="Qual outro contexto a IA precisa entender?" value={commercialExperienceDraft.price_context_other} onChange={(value) => updateCommercialExperienceDraft("price_context_other", value)} placeholder="Explique a informação adicional necessária antes de informar um preço que depende do projeto." /> : null}</div>
+            </div> : <SummaryList items={commercialPriceItems} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Sugestões comerciais"
+            description="Defina quais tipos de sugestões a IA pode fazer e, para produtos, escolha itens reais do catálogo. A IA continua sugerindo somente quando houver benefício e contexto adequados."
+            tone={suggestionsCommercialConfigured ? "blue" : "yellow"}
+            status={suggestionsCommercialConfigured ? "Completo" : "Precisa de atenção"}
+            className={commercialExperienceEditTarget === "suggestions" ? "xl:col-span-2" : ""}
+            actions={commercialExperienceEditTarget === "suggestions" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("suggestions")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget("suggestions"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {commercialExperienceEditTarget === "suggestions" ? (
+              <div className="space-y-5">
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA pode sugerir produtos ou serviços adicionais quando eles realmente fizerem sentido para o cliente?</div>
+                  <ChoiceButtonGroup value={commercialExperienceDraft.suggestions_enabled} onChange={(value) => updateCommercialExperienceDraft("suggestions_enabled", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />
+                </div>
+                {commercialExperienceDraft.suggestions_enabled === "Sim" ? <>
+                  <div>
+                    <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Que tipos de itens ou serviços ela pode sugerir?</div>
+                    <p className="mb-2 text-xs leading-5 text-gray-500">Ao marcar uma categoria de produto, escolha abaixo os itens reais já cadastrados. Isso evita que uma preferência manual crie um produto que não existe no catálogo.</p>
+                    <MultiSelectBoxGroup values={commercialExperienceDraft.suggestion_types} onToggle={(value) => toggleCommercialExperienceArrayValue("suggestion_types", value)} options={COMMERCIAL_SUGGESTION_TYPE_OPTIONS} />
+                    {commercialExperienceDraft.suggestion_types.includes("servicos") ? <RequiredOperationDetailField label="Quais serviços relacionados a IA pode sugerir?" value={commercialExperienceDraft.suggestion_services_detail} onChange={(value) => updateCommercialExperienceDraft("suggestion_services_detail", value)} placeholder="Ex.: instalação, manutenção preventiva ou visita técnica, quando fizerem sentido para a necessidade do cliente." rows={3} /> : null}
+                    {commercialExperienceDraft.suggestion_types.includes("outro") ? <RequiredOperationDetailField label="Qual é o outro tipo de sugestão?" value={commercialExperienceDraft.suggestion_other} onChange={(value) => updateCommercialExperienceDraft("suggestion_other", value)} placeholder="Especifique o outro tipo de complemento ou serviço." /> : null}
+                  </div>
+
+                  {CATALOG_BACKED_SUGGESTION_TYPES.filter((type) => commercialExperienceDraft.suggestion_types.includes(type)).map((type) => {
+                    const itemsForType = catalogSuggestionItems.filter((item) => item.category === type);
+                    const typeLabel = optionLabel(type, COMMERCIAL_SUGGESTION_TYPE_OPTIONS);
+                    const selectedKeysForType = commercialExperienceDraft.suggestion_catalog_item_keys.filter((key) => itemsForType.some((item) => item.key === key));
+                    const remainingKeys = commercialExperienceDraft.suggestion_catalog_item_keys.filter((key) => !itemsForType.some((item) => item.key === key));
+                    return (
+                      <div key={type} className="rounded-2xl border border-gray-200 bg-gray-50/50 p-4">
+                        <div className="text-sm font-semibold text-gray-950">{typeLabel}</div>
+                        <p className="mt-1 text-xs leading-5 text-gray-500">Escolha os itens desta categoria usando uma lista por vez. Assim a configuração fica mais enxuta mesmo quando existir muita opção no catálogo.</p>
+                        {itemsForType.length > 0 ? (
+                          <div className="mt-3">
+                            <RepeatableBrandSelect
+                              values={selectedKeysForType}
+                              onChange={(values) => updateCommercialExperienceDraft("suggestion_catalog_item_keys", [...remainingKeys, ...values.filter((value) => cleanText(value))])}
+                              options={itemsForType.map((item) => ({ value: item.key, label: item.label }))}
+                              addLabel={`Adicionar mais um item de ${typeLabel.toLowerCase()}`}
+                              selectPlaceholder={`Selecione um item de ${typeLabel.toLowerCase()}`}
+                            />
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveResponsible(person.id)}
-                            className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100"
-                          >
-                            Remover
-                          </button>
+                        ) : (
+                          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                            <div className="font-semibold">Nenhum item ativo dessa categoria foi encontrado no catálogo.</div>
+                            <div className="mt-1 text-xs leading-5">Cadastre ou importe o catálogo antes de concluir esta seleção.</div>
+                            <button type="button" onClick={() => setActiveTab("catalogo")} className="mt-3 rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-950">Ir para Catálogo</button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA pode mostrar uma opção melhor ou mais completa do que a que o cliente pediu?</div>
+                    <ChoiceButtonGroup value={commercialExperienceDraft.better_option_policy} onChange={(value) => updateCommercialExperienceDraft("better_option_policy", value)} options={[{ value: "beneficio", label: "Sim, quando houver benefício claro para o cliente" }, { value: "se_pedir", label: "Somente se o cliente pedir alternativas" }, { value: "nao", label: "Não" }]} />
+                  </div>
+                  <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">Selecionar um item aqui não garante estoque nem disponibilidade. No atendimento real, a IA ainda precisa validar o catálogo e as fontes vivas antes de oferecer qualquer opção.</div>
+                </> : null}
+              </div>
+            ) : <SummaryList items={buildBulletRows([
+              { label: "Sugestões complementares", value: savedCommercialExperience.suggestions_enabled === "Sim" ? "Permitidas quando fizerem sentido" : savedCommercialExperience.suggestions_enabled === "Não" ? "Não permitidas" : "Não definido" },
+              { label: "Tipos de sugestão", value: savedCommercialExperience.suggestion_types.length ? `${savedCommercialExperience.suggestion_types.length} tipo(s)` : "Não definido" },
+              { label: "Itens específicos do catálogo", value: savedCommercialExperience.suggestion_catalog_item_keys.length ? `${savedCommercialExperience.suggestion_catalog_item_keys.length} item(ns) selecionado(s)` : savedCommercialExperience.suggestions_enabled === "Sim" ? "Nenhum selecionado" : "Não se aplica" },
+              { label: "Opção mais completa", value: savedCommercialExperience.better_option_policy ? optionLabel(savedCommercialExperience.better_option_policy, [{ value: "beneficio", label: "Quando houver benefício claro" }, { value: "se_pedir", label: "Somente quando o cliente pedir" }, { value: "nao", label: "Não oferecer" }]) : "Não definido" },
+            ])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Meta mensal"
+            description="Defina se a loja trabalha com uma meta de vendas por mês e qual valor o Dashboard deve usar."
+            tone={monthlySalesGoal.enabled ? "blue" : "yellow"}
+            status={monthlySalesGoal.enabled ? "Configurada" : "Precisa de atenção"}
+            className={isMonthlySalesGoalEditing ? "xl:col-span-2" : ""}
+            actions={isMonthlySalesGoalEditing ? <><button type="button" onClick={() => void handleMonthlySalesGoalSave()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setMonthlySalesGoalDraft(monthlySalesGoal); setIsMonthlySalesGoalEditing(false); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setMonthlySalesGoalDraft(monthlySalesGoal); setIsMonthlySalesGoalEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {isMonthlySalesGoalEditing ? <div className="space-y-4"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Sua loja trabalha com uma meta de vendas por mês?</div><ChoiceButtonGroup value={monthlySalesGoalDraft.enabled ? "Sim" : "Não"} onChange={(value) => setMonthlySalesGoalDraft((current) => ({ ...current, enabled: value === "Sim", amountCents: value === "Sim" ? current.amountCents : null }))} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{monthlySalesGoalDraft.enabled ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual é a meta de vendas do mês? (R$)</span><input value={formatMonthlyGoalDraftAmount(monthlySalesGoalDraft.amountCents)} onChange={(e) => setMonthlySalesGoalDraft((current) => ({ ...current, amountCents: parseMonthlyGoalDraftAmount(e.target.value) }))} inputMode="numeric" className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}</div> : <SummaryList items={buildBulletRows([{ label: "Usa meta mensal", value: monthlySalesGoal.enabled ? "Sim" : "Não" }, { label: "Meta", value: monthlySalesGoal.enabled && monthlySalesGoal.amountCents ? `R$ ${(monthlySalesGoal.amountCents / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : "Não se aplica" }])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Pagamentos"
+            description="Defina quais formas de pagamento a loja aceita e como funcionam Pix, parcelamento e financiamento. As regras de entrada e liberação do pedido ficam no próximo bloco."
+            tone={commercialPaymentCardStatus.tone}
+            status={commercialPaymentCardStatus.status}
+            className={commercialEditTarget === "payments" ? "xl:col-span-2" : ""}
+            actions={commercialEditTarget === "payments" ? <><button type="button" onClick={() => void handleCommercialEditSave()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={handleCommercialEditCancel} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialEditTarget("payments"); setIsCommercialEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {commercialEditTarget === "payments" ? <div className="space-y-6">
+              <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quais formas de pagamento sua loja aceita?</div><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{PAYMENT_METHOD_MAIN_OPTIONS.map((option) => { const selected = commercialDraft.accepted_payment_methods.includes(option.value); return <button key={option.value} type="button" onClick={() => handleCommercialPaymentMethodToggle(option.value)} className={`rounded-xl border px-3 py-2.5 text-sm transition ${selected ? "border-cyan-500 bg-cyan-50 text-cyan-950" : "border-gray-200 bg-white text-gray-700"}`}>{option.label}</button>; })}<button type="button" onClick={() => updateCommercialExperienceDraft("payment_other_enabled", !commercialExperienceDraft.payment_other_enabled)} className={`rounded-xl border px-3 py-2.5 text-sm transition ${commercialExperienceDraft.payment_other_enabled ? "border-cyan-500 bg-cyan-50 text-cyan-950" : "border-gray-200 bg-white text-gray-700"}`}>Outra forma</button></div>{commercialExperienceDraft.payment_other_enabled ? <RequiredOperationDetailField label="Qual é a outra forma de pagamento?" value={commercialExperienceDraft.payment_other_method} onChange={(value) => updateCommercialExperienceDraft("payment_other_method", value)} placeholder="Informe a outra forma de pagamento aceita." /> : null}</div>
+
+              {commercialDraft.accepted_payment_methods.includes("pix") ? <div className="rounded-2xl border border-gray-200 p-4"><div className="mb-3 text-sm font-semibold text-gray-950">Pix</div><div className="grid gap-3 md:grid-cols-3"><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual tipo de chave Pix a loja usa?</span><select value={commercialDraft.pix_key_type} onChange={(e) => handleCommercialDraftChange("pix_key_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm">{PIX_KEY_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></label><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Chave Pix</span><input value={commercialDraft.pix_key} onChange={(e) => handleCommercialDraftChange("pix_key", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome do titular</span><input value={commercialDraft.pix_holder_name} onChange={(e) => handleCommercialDraftChange("pix_holder_name", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label></div></div> : null}
+
+
+              <div className="rounded-2xl border border-gray-200 p-4"><div className="mb-3 text-sm font-semibold text-gray-950">Parcelamento</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja aceita parcelamento?</div><ChoiceButtonGroup value={commercialDraft.installments_enabled} onChange={(value) => handleCommercialDraftChange("installments_enabled", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{normalizeLoose(commercialDraft.installments_enabled) === "sim" ? <div className="mt-4 space-y-4"><label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Em até quantas vezes?</span><input inputMode="numeric" value={commercialDraft.max_installments} onChange={(e) => handleCommercialDraftChange("max_installments", formatStorePaymentInstallmentsInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Existe parcelamento sem juros?</div><ChoiceButtonGroup value={commercialExperienceDraft.installments_interest_free_enabled} onChange={(value) => updateCommercialExperienceDraft("installments_interest_free_enabled", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{commercialExperienceDraft.installments_interest_free_enabled === "Sim" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Até quantas vezes sem juros?</span><input inputMode="numeric" value={commercialExperienceDraft.installments_interest_free_max} onChange={(e) => updateCommercialExperienceDraft("installments_interest_free_max", e.target.value.replace(/\D/g, ""))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}<div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando houver juros, como eles são definidos?</div><ChoiceButtonGroup value={commercialExperienceDraft.installment_interest_above_mode} onChange={(value) => { updateCommercialExperienceDraft("installment_interest_above_mode", value); handleCommercialDraftChange("installment_interest_policy", value === "operadora" || value === "regra_propria" ? "with_interest" : "case_by_case"); }} options={[{ value: "operadora", label: "A operadora / cartão calcula" }, { value: "regra_propria", label: "A loja possui uma regra própria" }, { value: "depende", label: "Depende da condição" }, { value: "outro", label: "Outro" }]} /></div>{["regra_propria", "depende", "outro"].includes(commercialExperienceDraft.installment_interest_above_mode) ? <RequiredOperationDetailField label="Como funcionam os juros?" value={commercialExperienceDraft.installment_interest_above_rule} onChange={(value) => updateCommercialExperienceDraft("installment_interest_above_rule", value)} placeholder="Explique a regra de juros de forma simples." /> : null}<div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Existe valor mínimo por parcela?</div><ChoiceButtonGroup value={commercialExperienceDraft.installment_minimum_enabled} onChange={(value) => updateCommercialExperienceDraft("installment_minimum_enabled", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{commercialExperienceDraft.installment_minimum_enabled === "Sim" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Valor mínimo por parcela (R$)</span><input value={commercialExperienceDraft.installment_minimum_amount} onChange={(e) => updateCommercialExperienceDraft("installment_minimum_amount", formatStorePaymentCurrencyInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}</div> : null}</div>
+
+              {commercialDraft.accepted_payment_methods.includes("financiamento") ? <div className="rounded-2xl border border-gray-200 p-4"><div className="mb-3 text-sm font-semibold text-gray-950">Financiamento</div><div className="space-y-4"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como funciona o financiamento oferecido aos clientes?</div><ChoiceButtonGroup value={commercialExperienceDraft.financing_mode} onChange={(value) => updateCommercialExperienceDraft("financing_mode", value)} options={[{ value: "parceiro", label: "Banco / financeira parceira" }, { value: "loja", label: "Financiamento intermediado pela loja" }, { value: "cliente", label: "O próprio cliente busca o financiamento" }, { value: "depende", label: "Depende do caso" }, { value: "outro", label: "Outro" }]} /></div>{commercialExperienceDraft.financing_mode === "parceiro" ? <RequiredOperationDetailField label="Qual banco ou financeira parceira?" value={commercialExperienceDraft.financing_partner_name} onChange={(value) => updateCommercialExperienceDraft("financing_partner_name", value)} placeholder="Informe o nome da instituição ou parceiro." /> : null}{["depende", "outro"].includes(commercialExperienceDraft.financing_mode) ? <RequiredOperationDetailField label="Como funciona o financiamento nesse caso?" value={commercialExperienceDraft.financing_other} onChange={(value) => updateCommercialExperienceDraft("financing_other", value)} placeholder="Explique o fluxo de financiamento." /> : null}<div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O financiamento depende de análise de crédito?</div><ChoiceButtonGroup value={commercialExperienceDraft.financing_credit_analysis} onChange={(value) => updateCommercialExperienceDraft("financing_credit_analysis", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }, { value: "depende", label: "Depende da instituição" }]} /></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quem faz a simulação?</div><ChoiceButtonGroup value={commercialExperienceDraft.financing_simulation_by} onChange={(value) => updateCommercialExperienceDraft("financing_simulation_by", value)} options={[{ value: "loja", label: "A loja" }, { value: "financeira", label: "Banco / financeira" }, { value: "cliente", label: "Cliente diretamente" }, { value: "outro", label: "Outro" }]} /></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a IA pode fazer quando o cliente perguntar sobre financiamento?</div><ChoiceButtonGroup value={commercialExperienceDraft.financing_ai_policy} onChange={(value) => updateCommercialExperienceDraft("financing_ai_policy", value)} options={[{ value: "explica", label: "Explicar somente as regras cadastradas" }, { value: "explica_chama", label: "Explicar as regras e chamar uma pessoa para a simulação" }, { value: "chama", label: "Chamar uma pessoa antes de falar detalhes" }]} /></div></div></div> : null}
+
+              <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observação adicional sobre pagamentos</span><textarea value={commercialDraft.payment_notes} onChange={(e) => handleCommercialDraftChange("payment_notes", e.target.value)} rows={3} placeholder="Use apenas se existir uma regra importante que não ficou coberta pelas perguntas acima." className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+            </div> : <SummaryList items={commercialPaymentItems} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Entradas e liberação do pedido"
+            description="Defina quando a entrada e o restante do valor precisam estar pagos e quais etapas do pedido só podem ser liberadas depois da confirmação do pagamento."
+            tone={cleanText(savedCommercialExperience.balance_due_trigger) || savedCommercialExperience.payment_blocking_actions.length ? "blue" : "yellow"}
+            status={cleanText(savedCommercialExperience.balance_due_trigger) || savedCommercialExperience.payment_blocking_actions.length ? "Completo" : "Precisa de atenção"}
+            className={commercialExperienceEditTarget === "payment_blocks" ? "xl:col-span-2" : ""}
+            actions={commercialExperienceEditTarget === "payment_blocks" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("payment_blocks")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget("payment_blocks"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {commercialExperienceEditTarget === "payment_blocks" ? <div className="space-y-5"><div className="rounded-2xl border border-gray-200 bg-gray-50/50 p-4"><div className="mb-3 text-sm font-semibold text-gray-950">Entrada</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja exige entrada em algum tipo de venda?</div><ChoiceButtonGroup value={commercialDraft.down_payment_mode} onChange={(value) => handleCommercialDraftChange("down_payment_mode", value)} options={DOWN_PAYMENT_MODE_OPTIONS} /></div>{["optional", "required"].includes(commercialDraft.down_payment_mode) ? <div className="mt-4 space-y-3"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a entrada é calculada?</div><ChoiceButtonGroup value={commercialDraft.down_payment_value_type} onChange={(value) => handleCommercialDraftChange("down_payment_value_type", value)} options={DOWN_PAYMENT_VALUE_TYPE_OPTIONS} /></div>{commercialDraft.down_payment_value_type === "percent" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual percentual da venda?</span><input value={commercialDraft.down_payment_percent} onChange={(e) => handleCommercialDraftChange("down_payment_percent", formatStorePaymentPercentInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}{commercialDraft.down_payment_value_type === "fixed" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual valor fixo? (R$)</span><input value={commercialDraft.down_payment_amount} onChange={(e) => handleCommercialDraftChange("down_payment_amount", formatStorePaymentCurrencyInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}{commercialDraft.down_payment_value_type === "case_by_case" ? <RequiredOperationDetailField label="Como a entrada é definida quando varia conforme a venda?" value={commercialExperienceDraft.down_payment_case_rule} onChange={(value) => updateCommercialExperienceDraft("down_payment_case_rule", value)} placeholder="Explique de quais fatores depende a entrada." /> : null}<div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se a loja exigir entrada, quando ela precisa estar paga?</div><ChoiceButtonGroup value={commercialExperienceDraft.entry_due_trigger} onChange={(value) => updateCommercialExperienceDraft("entry_due_trigger", value)} options={[{ value: "fechamento", label: "No fechamento da venda" }, { value: "antes_pedido", label: "Antes de encomendar o produto" }, { value: "antes_agendar", label: "Antes de agendar instalação" }, { value: "antes_iniciar", label: "Antes de iniciar instalação" }, { value: "outro", label: "Outro momento" }]} />{commercialExperienceDraft.entry_due_trigger === "outro" ? <RequiredOperationDetailField label="Quando a entrada precisa estar paga?" value={commercialExperienceDraft.entry_due_other} onChange={(value) => updateCommercialExperienceDraft("entry_due_other", value)} placeholder="Explique o momento em que a entrada precisa estar confirmada." /> : null}</div></div> : <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">Como a loja não exige entrada, as próximas regras deste bloco tratam apenas do restante do pagamento e da liberação do pedido.</div>}</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando o restante do valor precisa estar pago?</div><ChoiceButtonGroup value={commercialExperienceDraft.balance_due_trigger} onChange={(value) => updateCommercialExperienceDraft("balance_due_trigger", value)} options={[{ value: "fechamento", label: "No fechamento da venda" }, { value: "antes_entrega", label: "Antes da entrega" }, { value: "antes_retirada", label: "Antes da retirada" }, { value: "antes_instalacao", label: "Antes de iniciar instalação" }, { value: "apos_instalacao", label: "Após a instalação" }, { value: "parcelas", label: "Conforme as parcelas acordadas" }, { value: "outro", label: "Outro momento" }]} />{commercialExperienceDraft.balance_due_trigger === "outro" ? <RequiredOperationDetailField label="Quando o restante precisa estar pago?" value={commercialExperienceDraft.balance_due_other} onChange={(value) => updateCommercialExperienceDraft("balance_due_other", value)} placeholder="Explique o momento ou regra de vencimento do saldo." /> : null}</div><div><div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Enquanto houver um pagamento obrigatório pendente, quais etapas do pedido devem ficar bloqueadas?</div><p className="mb-2 text-xs leading-5 text-gray-500">Marque as etapas que só podem ser liberadas depois da confirmação do pagamento. Se nenhuma delas depender disso, selecione a opção correspondente.</p><MultiSelectBoxGroup values={commercialExperienceDraft.payment_blocking_actions} onToggle={(value) => toggleCommercialExperienceArrayValue("payment_blocking_actions", value)} options={PAYMENT_BLOCKING_ACTION_OPTIONS} />{commercialExperienceDraft.payment_blocking_actions.includes("outro") ? <RequiredOperationDetailField label="Qual outra ação deve ficar bloqueada?" value={commercialExperienceDraft.payment_blocking_other} onChange={(value) => updateCommercialExperienceDraft("payment_blocking_other", value)} placeholder="Especifique a ação que não pode avançar." /> : null}</div></div> : <SummaryList items={buildBulletRows([{ label: "A loja exige entrada", value: optionLabel(commercialDraft.down_payment_mode, DOWN_PAYMENT_MODE_OPTIONS) || "Não definido" }, { label: "Quando a entrada precisa estar paga", value: commercialDraft.down_payment_mode === "disabled" ? "Não se aplica" : savedCommercialExperience.entry_due_trigger ? optionLabel(savedCommercialExperience.entry_due_trigger, [{ value: "fechamento", label: "No fechamento" }, { value: "antes_pedido", label: "Antes de encomendar" }, { value: "antes_agendar", label: "Antes de agendar instalação" }, { value: "antes_iniciar", label: "Antes de iniciar instalação" }, { value: "outro", label: savedCommercialExperience.entry_due_other || "Outro momento" }]) : "Não definido" }, { label: "Saldo precisa estar pago", value: savedCommercialExperience.balance_due_trigger ? optionLabel(savedCommercialExperience.balance_due_trigger, [{ value: "fechamento", label: "No fechamento" }, { value: "antes_entrega", label: "Antes da entrega" }, { value: "antes_retirada", label: "Antes da retirada" }, { value: "antes_instalacao", label: "Antes da instalação" }, { value: "apos_instalacao", label: "Após a instalação" }, { value: "parcelas", label: "Conforme parcelas" }, { value: "outro", label: savedCommercialExperience.balance_due_other || "Outro momento" }]) : "Não definido" }, { label: "Ações bloqueadas", value: savedCommercialExperience.payment_blocking_actions.length ? `${savedCommercialExperience.payment_blocking_actions.length} ação(ões)` : "Nenhuma definida" }])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Descontos e aprovação"
+            description="Defina quanto desconto pode ser usado numa negociação e quando uma pessoa da loja precisa aprovar."
+            tone={discountSettings ? "blue" : "yellow"}
+            status={discountSettings ? "Completo" : "Precisa de atenção"}
+            className={isDiscountEditing ? "xl:col-span-2" : ""}
+            actions={isDiscountEditing ? <><button type="button" onClick={() => void handleDiscountEditSave()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { handleDiscountEditCancel(); setCommercialExperienceDraft(savedCommercialExperience); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setIsDiscountEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {isDiscountEditing ? <div className="space-y-5"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA está autorizada a negociar dando algum tipo de desconto?</div><ChoiceButtonGroup value={(Number.parseFloat(String(discountDraft.max_discount_percent || "0").replace(",", ".")) > 0 || Number.parseFloat(String(discountDraft.default_discount_percent || "0").replace(",", ".")) > 0) ? "Sim" : "Não"} onChange={handleDiscountNegotiationEnabledChange} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{(Number.parseFloat(String(discountDraft.max_discount_percent || "0").replace(",", ".")) > 0 || Number.parseFloat(String(discountDraft.default_discount_percent || "0").replace(",", ".")) > 0) ? <div className="space-y-5"><div className="grid items-start gap-4 md:grid-cols-2"><label className="flex h-full flex-col"><span className="min-h-8 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual desconto inicial a IA pode oferecer? (%)</span><input value={discountDraft.default_discount_percent} onChange={(e) => handleDiscountDraftChange("default_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /><span className="mt-1.5 block text-xs leading-5 text-gray-500">A IA só usa esse percentual quando houver motivo real para negociar; ele não é oferecido automaticamente.</span></label><label className="flex h-full flex-col"><span className="min-h-8 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual é o limite máximo de desconto? (%)</span><input value={discountDraft.max_discount_percent} onChange={(e) => handleDiscountDraftChange("max_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /><span className="mt-1.5 block text-xs leading-5 text-gray-500">Acima deste limite, a IA não confirma um desconto usando a regra normal da loja.</span></label></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dentro desse limite, a IA pode confirmar descontos sozinha?</div><ChoiceButtonGroup value={discountDraft.discount_autonomy_mode} onChange={(value) => handleDiscountDraftChange("discount_autonomy_mode", value)} options={[{ value: "within_limit", label: "Sim, dentro do limite permitido" }, { value: "guided", label: "Sim, mas deve negociar aos poucos" }, { value: "approval_required", label: "Não. Sempre precisa de aprovação" }]} /></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se o cliente pedir mais desconto do que o limite, a IA pode consultar uma pessoa da loja?</div><ChoiceButtonGroup value={discountDraft.allow_ask_above_max_discount ? "Sim" : "Não"} onChange={(value) => handleDiscountDraftChange("allow_ask_above_max_discount", value === "Sim")} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /><p className="mt-2 text-xs leading-5 text-gray-500">Se marcar “Não”, a IA informa que não pode confirmar um desconto acima do limite e continua a venda normalmente dentro das condições permitidas. Isso não encerra a negociação.</p></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Vendas de valor alto têm uma regra de desconto diferente?</div><ChoiceButtonGroup value={discountDraft.high_value_enabled ? "Sim" : "Não"} onChange={(value) => handleDiscountDraftChange("high_value_enabled", value === "Sim")} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{discountDraft.high_value_enabled ? <div className="rounded-2xl border border-gray-200 p-4"><div className="grid gap-3 md:grid-cols-2"><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A partir de qual valor uma venda é considerada de valor alto? (R$)</span><input value={discountDraft.high_value_threshold_amount} onChange={(e) => handleDiscountDraftChange("high_value_threshold_amount", formatStoreDiscountMoneyInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual desconto pode ser usado nessas vendas? (%)</span><input value={discountDraft.high_value_discount_percent} onChange={(e) => handleDiscountDraftChange("high_value_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label></div><div className="mt-4"><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Esse desconto precisa de aprovação humana?</div><ChoiceButtonGroup value={commercialExperienceDraft.high_value_requires_human} onChange={(value) => updateCommercialExperienceDraft("high_value_requires_human", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não, pode seguir a regra acima" }]} /></div></div> : null}</div> : <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">Com esta opção desligada, a IA não negocia usando desconto. Se um cliente insistir, o caso segue para análise humana.</div>}</div> : <SummaryList items={discountItems} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Orçamento"
+            description="Defina as regras padrão dos novos orçamentos e como uma visita técnica obrigatória interfere no orçamento inicial e no orçamento final."
+            tone={cleanText(savedCommercialExperience.quote_validity) && cleanText(savedCommercialExperience.quote_customer_note_enabled) && cleanText(savedCommercialExperience.quote_internal_note_enabled) && cleanText(savedCommercialExperience.quote_preliminary_before_visit) && cleanText(savedCommercialExperience.quote_definitive_requires_visit_result) ? "blue" : "yellow"}
+            status={cleanText(savedCommercialExperience.quote_validity) && cleanText(savedCommercialExperience.quote_customer_note_enabled) && cleanText(savedCommercialExperience.quote_internal_note_enabled) && cleanText(savedCommercialExperience.quote_preliminary_before_visit) && cleanText(savedCommercialExperience.quote_definitive_requires_visit_result) ? "Completo" : "Precisa de atenção"}
+            className={commercialExperienceEditTarget === "quote" ? "xl:col-span-2" : ""}
+            actions={commercialExperienceEditTarget === "quote" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("quote")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget("quote"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {commercialExperienceEditTarget === "quote" ? (
+              <div className="space-y-6">
+                <div>
+                  <div className="mb-3 text-sm font-semibold text-gray-950">Regras padrão do orçamento</div>
+                  <div className="space-y-5">
+                    <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Por quantos dias um orçamento normalmente é válido?</div><ChoiceButtonGroup value={commercialExperienceDraft.quote_validity} onChange={(value) => updateCommercialExperienceDraft("quote_validity", value)} options={[{ value: "3", label: "3 dias" }, { value: "5", label: "5 dias" }, { value: "7", label: "7 dias" }, { value: "10", label: "10 dias" }, { value: "15", label: "15 dias" }, { value: "30", label: "30 dias" }, { value: "outro", label: "Outro prazo" }]} />{commercialExperienceDraft.quote_validity === "outro" ? <RequiredOperationDetailField label="Quantos dias?" value={commercialExperienceDraft.quote_validity_other_days} onChange={(value) => updateCommercialExperienceDraft("quote_validity_other_days", value.replace(/\D/g, ""))} placeholder="Informe o número de dias." /> : null}</div>
+                    <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Existe uma mensagem que deve aparecer em todos os orçamentos?</div><ChoiceButtonGroup value={commercialExperienceDraft.quote_customer_note_enabled} onChange={(value) => updateCommercialExperienceDraft("quote_customer_note_enabled", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />{commercialExperienceDraft.quote_customer_note_enabled === "Sim" ? <RequiredOperationDetailField label="Qual mensagem deve aparecer para o cliente?" value={commercialExperienceDraft.quote_customer_note} onChange={(value) => updateCommercialExperienceDraft("quote_customer_note", value)} placeholder="Informe a observação padrão destinada ao cliente." /> : null}</div>
+                    <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Existe alguma observação interna padrão para a equipe?</div><ChoiceButtonGroup value={commercialExperienceDraft.quote_internal_note_enabled} onChange={(value) => updateCommercialExperienceDraft("quote_internal_note_enabled", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />{commercialExperienceDraft.quote_internal_note_enabled === "Sim" ? <RequiredOperationDetailField label="Qual é a observação interna?" value={commercialExperienceDraft.quote_internal_note} onChange={(value) => updateCommercialExperienceDraft("quote_internal_note", value)} placeholder="Essa observação é interna e não é destinada ao cliente." /> : null}</div>
+                  </div>
+                </div>
+
+                <div className="border-t border-gray-100 pt-5">
+                  <div className="mb-1 text-sm font-semibold text-gray-950">Quando houver visita técnica obrigatória</div>
+                  <p className="mb-4 text-xs leading-5 text-gray-500">Estas regras definem somente como a visita interfere no orçamento. As regras de quando a visita é necessária continuam em Operação.</p>
+                  <div className="space-y-5">
+                    <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja pode enviar um orçamento inicial antes da visita?</div><ChoiceButtonGroup value={commercialExperienceDraft.quote_preliminary_before_visit} onChange={(value) => updateCommercialExperienceDraft("quote_preliminary_before_visit", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>
+                    {commercialExperienceDraft.quote_preliminary_before_visit === "Sim" ? <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-sm leading-5 text-sky-950">O orçamento inicial deve deixar claro que valores ou condições que dependem da visita ainda podem mudar depois da avaliação técnica.</div> : null}
+                    <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Para enviar o orçamento final, o resultado da visita precisa estar concluído?</div><ChoiceButtonGroup value={commercialExperienceDraft.quote_definitive_requires_visit_result} onChange={(value) => updateCommercialExperienceDraft("quote_definitive_requires_visit_result", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>
+                  </div>
+                </div>
+              </div>
+            ) : <SummaryList items={buildBulletRows([
+              { label: "Validade padrão", value: savedCommercialExperience.quote_validity ? (savedCommercialExperience.quote_validity === "outro" ? `${savedCommercialExperience.quote_validity_other_days || "?"} dias` : `${savedCommercialExperience.quote_validity} dias`) : "Não definida" },
+              { label: "Mensagem padrão ao cliente", value: savedCommercialExperience.quote_customer_note_enabled === "Sim" ? "Configurada" : savedCommercialExperience.quote_customer_note_enabled === "Não" ? "Não usa" : "Não definido" },
+              { label: "Observação interna padrão", value: savedCommercialExperience.quote_internal_note_enabled === "Sim" ? "Configurada" : savedCommercialExperience.quote_internal_note_enabled === "Não" ? "Não usa" : "Não definido" },
+              { label: "Orçamento inicial antes de visita obrigatória", value: savedCommercialExperience.quote_preliminary_before_visit || "Não definido" },
+              { label: "Resultado da visita exigido para orçamento final", value: savedCommercialExperience.quote_definitive_requires_visit_result || "Não definido" },
+            ])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Pós-venda"
+            description="Defina por quanto tempo a loja acompanha o cliente depois da venda e o que costuma verificar nesse contato."
+            tone={cleanText(savedCommercialExperience.post_sale_duration) && cleanText(savedCommercialExperience.post_sale_start) ? "blue" : "yellow"}
+            status={cleanText(savedCommercialExperience.post_sale_duration) && cleanText(savedCommercialExperience.post_sale_start) ? "Completo" : "Precisa de atenção"}
+            className={commercialExperienceEditTarget === "post_sale" ? "xl:col-span-2" : ""}
+            actions={commercialExperienceEditTarget === "post_sale" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("post_sale")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget("post_sale"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {commercialExperienceEditTarget === "post_sale" ? <div className="space-y-5"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Por quanto tempo a loja normalmente acompanha o cliente depois da venda?</div><ChoiceButtonGroup value={commercialExperienceDraft.post_sale_duration} onChange={(value) => updateCommercialExperienceDraft("post_sale_duration", value)} options={[{ value: "7", label: "7 dias" }, { value: "15", label: "15 dias" }, { value: "30", label: "30 dias" }, { value: "60", label: "60 dias" }, { value: "90", label: "90 dias" }, { value: "outro", label: "Outro período" }]} />{commercialExperienceDraft.post_sale_duration === "outro" ? <RequiredOperationDetailField label="Por quantos dias?" value={commercialExperienceDraft.post_sale_duration_other_days} onChange={(value) => updateCommercialExperienceDraft("post_sale_duration_other_days", value.replace(/\D/g, ""))} placeholder="Informe o número de dias." /> : null}</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando esse acompanhamento começa?</div><ChoiceButtonGroup value={commercialExperienceDraft.post_sale_start} onChange={(value) => updateCommercialExperienceDraft("post_sale_start", value)} options={[{ value: "entrega", label: "Após a entrega" }, { value: "instalacao", label: "Após a instalação" }, { value: "retirada", label: "Após a retirada" }, { value: "venda", label: "Após a conclusão da venda quando não houver outra execução" }, { value: "depende", label: "Depende do tipo de venda" }]} />{commercialExperienceDraft.post_sale_start === "depende" ? <RequiredOperationDetailField label="Quando o pós-venda começa em cada caso?" value={commercialExperienceDraft.post_sale_start_other} onChange={(value) => updateCommercialExperienceDraft("post_sale_start_other", value)} placeholder="Explique de forma simples quando começa para cada tipo de venda." /> : null}</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a loja costuma verificar no pós-venda?</div><MultiSelectBoxGroup values={commercialExperienceDraft.post_sale_checks} onToggle={(value) => toggleCommercialExperienceArrayValue("post_sale_checks", value)} options={POST_SALE_CHECK_OPTIONS} />{commercialExperienceDraft.post_sale_checks.includes("outro") ? <RequiredOperationDetailField label="O que mais a loja verifica?" value={commercialExperienceDraft.post_sale_checks_other} onChange={(value) => updateCommercialExperienceDraft("post_sale_checks_other", value)} placeholder="Informe o outro ponto verificado no pós-venda." /> : null}</div></div> : <SummaryList items={buildBulletRows([{ label: "Duração do acompanhamento", value: savedCommercialExperience.post_sale_duration ? (savedCommercialExperience.post_sale_duration === "outro" ? `${savedCommercialExperience.post_sale_duration_other_days || "?"} dias` : `${savedCommercialExperience.post_sale_duration} dias`) : "Não definida" }, { label: "Quando começa", value: savedCommercialExperience.post_sale_start ? optionLabel(savedCommercialExperience.post_sale_start, [{ value: "entrega", label: "Após a entrega" }, { value: "instalacao", label: "Após a instalação" }, { value: "retirada", label: "Após a retirada" }, { value: "venda", label: "Após a conclusão da venda" }, { value: "depende", label: "Depende do tipo de venda" }]) : "Não definido" }, { label: "O que verifica", value: savedCommercialExperience.post_sale_checks.length ? `${savedCommercialExperience.post_sale_checks.length} ponto(s)` : "Não definido" }])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Garantia"
+            description="Defina se a loja oferece alguma garantia própria além da garantia do fabricante e em quais situações ela se aplica."
+            tone={cleanText(savedCommercialExperience.warranty_extra_mode) ? "blue" : "yellow"}
+            status={cleanText(savedCommercialExperience.warranty_extra_mode) ? "Completo" : "Precisa de atenção"}
+            className={commercialExperienceEditTarget === "warranty" ? "xl:col-span-2" : ""}
+            actions={commercialExperienceEditTarget === "warranty" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("warranty")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget("warranty"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {commercialExperienceEditTarget === "warranty" ? <div className="space-y-5"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja oferece alguma garantia própria além da garantia do fabricante?</div><ChoiceButtonGroup value={commercialExperienceDraft.warranty_extra_mode} onChange={(value) => updateCommercialExperienceDraft("warranty_extra_mode", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }, { value: "depende", label: "Depende do produto ou serviço" }]} />{commercialExperienceDraft.warranty_extra_mode === "depende" ? <RequiredOperationDetailField label="Quando existe garantia própria da loja?" value={commercialExperienceDraft.warranty_extra_rule} onChange={(value) => updateCommercialExperienceDraft("warranty_extra_rule", value)} placeholder="Explique para quais produtos ou serviços a loja oferece garantia própria." /> : null}</div>{commercialExperienceDraft.warranty_extra_mode !== "Não" && cleanText(commercialExperienceDraft.warranty_extra_mode) ? <><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A garantia própria pode existir para quais itens?</div><MultiSelectBoxGroup values={commercialExperienceDraft.warranty_items} onToggle={(value) => toggleCommercialExperienceArrayValue("warranty_items", value)} options={WARRANTY_ITEM_OPTIONS} />{commercialExperienceDraft.warranty_items.includes("outro") ? <RequiredOperationDetailField label="Qual outro item ou serviço?" value={commercialExperienceDraft.warranty_items_other} onChange={(value) => updateCommercialExperienceDraft("warranty_items_other", value)} placeholder="Especifique o outro item ou serviço." /> : null}</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando começa a contar o prazo da garantia própria?</div><ChoiceButtonGroup value={commercialExperienceDraft.warranty_start} onChange={(value) => updateCommercialExperienceDraft("warranty_start", value)} options={[{ value: "compra", label: "Data da compra" }, { value: "entrega", label: "Data da entrega" }, { value: "instalacao", label: "Data da instalação" }, { value: "servico", label: "Conclusão do serviço" }, { value: "outro", label: "Outro momento" }]} />{commercialExperienceDraft.warranty_start === "outro" ? <RequiredOperationDetailField label="Quando começa a garantia?" value={commercialExperienceDraft.warranty_start_other} onChange={(value) => updateCommercialExperienceDraft("warranty_start_other", value)} placeholder="Explique quando começa a contar o prazo." /> : null}</div><div className="grid gap-3 md:grid-cols-2"><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quanto tempo dura?</span><input inputMode="numeric" value={commercialExperienceDraft.warranty_duration_value} onChange={(e) => updateCommercialExperienceDraft("warranty_duration_value", e.target.value.replace(/\D/g, ""))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Unidade</span><select value={commercialExperienceDraft.warranty_duration_unit} onChange={(e) => updateCommercialExperienceDraft("warranty_duration_unit", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm"><option value="dias">Dias</option><option value="meses">Meses</option><option value="anos">Anos</option></select></label></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Existe alguma condição importante que o cliente precisa cumprir?</div><ChoiceButtonGroup value={commercialExperienceDraft.warranty_conditions_enabled} onChange={(value) => updateCommercialExperienceDraft("warranty_conditions_enabled", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />{commercialExperienceDraft.warranty_conditions_enabled === "Sim" ? <RequiredOperationDetailField label="Quais são as condições importantes?" value={commercialExperienceDraft.warranty_conditions} onChange={(value) => updateCommercialExperienceDraft("warranty_conditions", value)} placeholder="Informe somente condições reais que a loja consegue sustentar e comunicar ao cliente." /> : null}</div></> : null}</div> : <SummaryList items={buildBulletRows([{ label: "Garantia própria da loja", value: savedCommercialExperience.warranty_extra_mode || "Não definido" }, { label: "Itens cobertos", value: savedCommercialExperience.warranty_items.length ? `${savedCommercialExperience.warranty_items.length} tipo(s)` : savedCommercialExperience.warranty_extra_mode === "Não" ? "Não se aplica" : "Não definido" }, { label: "Duração", value: savedCommercialExperience.warranty_duration_value ? `${savedCommercialExperience.warranty_duration_value} ${savedCommercialExperience.warranty_duration_unit}` : savedCommercialExperience.warranty_extra_mode === "Não" ? "Não se aplica" : "Não definida" }])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Cancelamento, rescisão e reembolso"
+            description="Registre somente regras próprias e já validadas da loja. A IA pode explicar a política cadastrada, mas pedidos concretos, cálculos e decisões finais continuam no fluxo humano correto."
+            tone={savedCommercialExperience.cancellation_policy_exists === "Não" || (savedCommercialExperience.cancellation_policy_exists === "Sim" && savedCommercialExperience.cancellation_rule_situations.length > 0) ? "blue" : "yellow"}
+            status={savedCommercialExperience.cancellation_policy_exists === "Não" || (savedCommercialExperience.cancellation_policy_exists === "Sim" && savedCommercialExperience.cancellation_rule_situations.length > 0) ? "Completo" : "Precisa de atenção"}
+            className={commercialExperienceEditTarget === "cancellation" ? "xl:col-span-2" : ""}
+            actions={commercialExperienceEditTarget === "cancellation" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("cancellation")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget("cancellation"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {commercialExperienceEditTarget === "cancellation" ? (
+              <div className="space-y-5">
+                <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 text-sm leading-5 text-amber-950">
+                  A IA nunca decide por conta própria se o cliente tem direito a cancelar, rescindir ou receber determinado valor. Ela não calcula multa, retenção ou reembolso. Ela pode explicar apenas regras previamente validadas e encaminhar o pedido para análise humana.
+                </div>
+
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja possui uma política própria e validada de cancelamento, rescisão ou reembolso?</div>
+                  <ChoiceButtonGroup
+                    value={commercialExperienceDraft.cancellation_policy_exists}
+                    onChange={(value) => updateCommercialExperienceDraft("cancellation_policy_exists", value)}
+                    options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]}
+                  />
+                  {commercialExperienceDraft.cancellation_policy_exists === "Não" ? (
+                    <div className="mt-3 rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">
+                      Sem uma política própria cadastrada, a IA não inventa condições. Ela registra o pedido e encaminha o caso para a análise humana apropriada.
+                    </div>
+                  ) : null}
+                </div>
+
+                {commercialExperienceDraft.cancellation_policy_exists === "Sim" ? (
+                  <>
+                    <div>
+                      <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Em quais situações a política da loja possui uma regra específica?</div>
+                      <p className="mb-3 text-xs leading-5 text-gray-500">Marque somente situações realmente previstas na política. Ao marcar uma situação, descreva a regra validada logo abaixo.</p>
+                      <MultiSelectBoxGroup
+                        values={commercialExperienceDraft.cancellation_rule_situations}
+                        onToggle={(value) => toggleCommercialExperienceArrayValue("cancellation_rule_situations", value)}
+                        options={CANCELLATION_RULE_SITUATION_OPTIONS}
+                      />
+                    </div>
+
+                    {commercialExperienceDraft.cancellation_rule_situations.includes("after_contract") ? (
+                      <RequiredOperationDetailField
+                        label="Qual é a regra após a assinatura do contrato?"
+                        value={commercialExperienceDraft.cancellation_after_contract_rule}
+                        onChange={(value) => updateCommercialExperienceDraft("cancellation_after_contract_rule", value)}
+                        placeholder="Descreva somente a regra já validada pela loja para esse momento da venda."
+                        rows={3}
+                      />
+                    ) : null}
+
+                    {commercialExperienceDraft.cancellation_rule_situations.includes("ordered_product") ? (
+                      <RequiredOperationDetailField
+                        label="Como funciona quando o produto já foi encomendado ao fornecedor?"
+                        value={commercialExperienceDraft.cancellation_ordered_product_rule}
+                        onChange={(value) => updateCommercialExperienceDraft("cancellation_ordered_product_rule", value)}
+                        placeholder="Explique a regra validada para pedidos que já foram enviados ao fornecedor."
+                        rows={3}
+                      />
+                    ) : null}
+
+                    {commercialExperienceDraft.cancellation_rule_situations.includes("custom_order") ? (
+                      <RequiredOperationDetailField
+                        label="Qual é a regra para produtos sob encomenda ou personalizados?"
+                        value={commercialExperienceDraft.cancellation_custom_order_rule}
+                        onChange={(value) => updateCommercialExperienceDraft("cancellation_custom_order_rule", value)}
+                        placeholder="Explique quais pedidos entram nessa regra e como a política da loja os trata."
+                        rows={3}
+                      />
+                    ) : null}
+
+                    {commercialExperienceDraft.cancellation_rule_situations.includes("after_delivery") ? (
+                      <RequiredOperationDetailField
+                        label="Qual é a regra depois da entrega ou retirada?"
+                        value={commercialExperienceDraft.cancellation_after_delivery_rule}
+                        onChange={(value) => updateCommercialExperienceDraft("cancellation_after_delivery_rule", value)}
+                        placeholder="Explique a regra validada para pedidos já entregues ou retirados."
+                        rows={3}
+                      />
+                    ) : null}
+
+                    {commercialExperienceDraft.cancellation_rule_situations.includes("service_started") ? (
+                      <RequiredOperationDetailField
+                        label="Qual é a regra quando a instalação ou o serviço já começou?"
+                        value={commercialExperienceDraft.cancellation_service_started_rule}
+                        onChange={(value) => updateCommercialExperienceDraft("cancellation_service_started_rule", value)}
+                        placeholder="Explique como a política trata instalação ou serviço iniciado, parcial ou concluído."
+                        rows={3}
+                      />
+                    ) : null}
+
+                    {commercialExperienceDraft.cancellation_rule_situations.includes("charge_or_retention") ? (
+                      <RequiredOperationDetailField
+                        label="Qual é a regra validada de multa, cobrança ou retenção?"
+                        value={commercialExperienceDraft.cancellation_charge_or_retention_rule}
+                        onChange={(value) => updateCommercialExperienceDraft("cancellation_charge_or_retention_rule", value)}
+                        placeholder="Descreva quando essa regra existe e como está definida. A IA não calcula nem confirma a aplicação ao caso concreto."
+                        rows={3}
+                      />
+                    ) : null}
+
+                    {commercialExperienceDraft.cancellation_rule_situations.includes("refund") ? (
+                      <RequiredOperationDetailField
+                        label="Como funciona a regra de reembolso?"
+                        value={commercialExperienceDraft.cancellation_refund_rule}
+                        onChange={(value) => updateCommercialExperienceDraft("cancellation_refund_rule", value)}
+                        placeholder="Explique as condições gerais já validadas. O valor e a decisão de um caso concreto continuam exigindo análise humana."
+                        rows={3}
+                      />
+                    ) : null}
+
+                    {commercialExperienceDraft.cancellation_rule_situations.includes("other") ? (
+                      <RequiredOperationDetailField
+                        label="Qual é a outra regra?"
+                        value={commercialExperienceDraft.cancellation_policy_other}
+                        onChange={(value) => updateCommercialExperienceDraft("cancellation_policy_other", value)}
+                        placeholder="Descreva a regra de forma objetiva e sem substituir a análise do caso concreto."
+                        rows={3}
+                      />
+                    ) : null}
+
+                    <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">
+                      Essas respostas descrevem a política da loja; elas não dão à IA autoridade para decidir direitos, aplicar multa, calcular retenção ou confirmar reembolso.
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            ) : <SummaryList items={buildBulletRows([
+              { label: "Política própria", value: savedCommercialExperience.cancellation_policy_exists || "Não definido" },
+              { label: "Situações com regra específica", value: savedCommercialExperience.cancellation_policy_exists === "Sim" ? (savedCommercialExperience.cancellation_rule_situations.length ? `${savedCommercialExperience.cancellation_rule_situations.length} situação(ões)` : "Não definidas") : "Não se aplica" },
+              { label: "Resumo", value: savedCommercialExperience.cancellation_policy_exists === "Sim" && savedCommercialExperience.cancellation_rule_situations.length ? savedCommercialExperience.cancellation_rule_situations.map((item) => optionLabel(item, CANCELLATION_RULE_SITUATION_OPTIONS)).join(", ") : savedCommercialExperience.cancellation_policy_exists === "Não" ? "Pedidos seguem para análise humana sem regra própria cadastrada" : "Não definido" },
+              { label: "Decisão final", value: "Sempre segue análise humana e a autoridade correta" },
+            ])} />}
+          </SectionBlock>
+        </div>
+      ) : null}
+
+
+      {activeTab === "catalogo" ? (
+        <div className="space-y-4">
+          <SectionBlock
+            title="Resumo do catálogo"
+            description="Visão rápida da base atual da loja."
+            tone="blue"
+            status={`${totalCatalogo} itens`}
+          >
+            <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
+              <QuickCard href="/configuracoes/piscinas" title="Piscinas" count={counts.pools} />
+              <QuickCard href="/configuracoes/catalogo/quimicos" title="Químicos" count={counts.quimicos} />
+              <QuickCard href="/configuracoes/catalogo/acessorios" title="Acessórios" count={counts.acessorios} />
+              <QuickCard href="/configuracoes/catalogo/outros" title="Outros" count={counts.outros} />
+            </div>
+          </SectionBlock>
+
+          <SectionBlock
+            title="Cadastro manual e importação inteligente"
+            description="Use este bloco tanto para adicionar um item individualmente quanto para importar arquivos do catálogo."
+          >
+            <div className="space-y-5">
+              <div className="rounded-2xl border border-gray-200 bg-gray-50/50 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-gray-950">Adicionar um item manualmente</div>
+                    <p className="mt-1 text-sm leading-5 text-gray-600">Use esta opção quando quiser cadastrar apenas um item por vez.</p>
+                  </div>
+                  <button type="button" onClick={() => { setManualCatalogItemModalError(null); setManualCatalogItemModalSuccess(null); setIsManualCatalogItemModalOpen(true); }} className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white">Adicionar item</button>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-200 bg-gray-50/50 p-4">
+                <div className="mb-3">
+                  <div className="text-sm font-semibold text-gray-950">Importar arquivos do catálogo</div>
+                  <p className="mt-1 text-sm leading-5 text-gray-600">Use esta opção quando já existir um arquivo com vários itens e você quiser aproveitar a importação inteligente.</p>
+                </div>
+                <IntelligentCatalogImportPanel
+                  organizationId={organizationId}
+                  storeId={activeStoreId}
+                  storageKey={intelligentImportStorageKey}
+                  source="configuracoes_intelligent_import"
+                  disabled={!hasValidStoreContext}
+                  supabaseClient={supabase}
+                  onError={(message) => {
+                    setErrorText(message);
+                    if (message) setSuccessText(null);
+                  }}
+                  onSuccess={(message) => {
+                    setSuccessText(message);
+                    if (message) setErrorText(null);
+                  }}
+                  onSaved={async () => {
+                    await fetchPageData();
+                  }}
+                />
+              </div>
+            </div>
+          </SectionBlock>
+
+          <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+            <button
+              type="button"
+              onClick={() => setIsCatalogImportedFilesOpen((current) => !current)}
+              className="w-full text-left"
+            >
+              <div className={`h-0.5 w-full ${configurationCardBarClass(catalogImportedFiles.length > 0 ? "blue" : "yellow")}`} />
+              <div className="flex items-start justify-between gap-4 p-5">
+                <div>
+                  <h2 className="text-base font-semibold text-gray-950">Arquivos importados</h2>
+                  <p className="mt-1 text-sm leading-5 text-gray-600">Consulte os arquivos brutos vinculados às importações da loja somente quando precisar.</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${configurationCardStatusClass(catalogImportedFiles.length > 0 ? "blue" : "yellow")}`}>
+                    {catalogImportedFiles.length > 0 ? `${catalogImportedFiles.length} arquivo(s)` : "Nenhum arquivo"}
+                  </span>
+                  <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 bg-white text-sm font-bold text-gray-700">
+                    {isCatalogImportedFilesOpen ? "▲" : "▼"}
+                  </span>
+                </div>
+              </div>
+            </button>
+            {isCatalogImportedFilesOpen ? (
+              <div className="border-t border-gray-100 px-5 pb-5 pt-4">
+                {catalogImportedFiles.length > 0 ? (
+                  <div className="space-y-2">
+                    {catalogImportedFiles.slice(0, 12).map((file, index) => (
+                      <div key={buildImportFileKey(file, index)} className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold text-gray-900">{cleanText(file.original_file_name) || "Arquivo importado"}</div>
+                          <div className="text-xs text-gray-500">{formatImportDate(file.created_at)} • {formatFileSize(file.size_bytes)}</div>
                         </div>
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <label className="space-y-1">
-                            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome</span>
-                            <input
-                              value={person.name}
-                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "name", e.target.value)}
-                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                            />
-                          </label>
-                          <label className="space-y-1">
-                            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">WhatsApp</span>
-                            <input
-                              value={person.whatsapp}
-                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "whatsapp", e.target.value)}
-                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                            />
-                          </label>
-                          <label className="space-y-1">
-                            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cargo / função</span>
-                            <input
-                              value={person.role}
-                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "role", e.target.value)}
-                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                            />
-                          </label>
-                          <label className="space-y-1 md:col-span-2">
-                            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações</span>
-                            <textarea
-                              value={person.notes}
-                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "notes", e.target.value)}
-                              rows={2}
-                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                            />
-                          </label>
-                        </div>
-                        <div className="mt-4 flex flex-wrap gap-3">
-                          <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                            <input
-                              type="checkbox"
-                              checked={person.receives_ai_alerts}
-                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "receives_ai_alerts", e.target.checked)}
-                            />
-                            Recebe alertas da IA
-                          </label>
-                          <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                            <input
-                              type="checkbox"
-                              checked={person.can_approve_discount}
-                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "can_approve_discount", e.target.checked)}
-                            />
-                            Pode aprovar desconto
-                          </label>
-                          <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                            <input
-                              type="checkbox"
-                              checked={person.can_approve_exceptions}
-                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "can_approve_exceptions", e.target.checked)}
-                            />
-                            Pode aprovar exceções
-                          </label>
-                          <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                            <input
-                              type="checkbox"
-                              checked={person.can_assume_human}
-                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "can_assume_human", e.target.checked)}
-                            />
-                            Pode assumir conversa humana
-                          </label>
-                        </div>
+                        <button type="button" onClick={(event) => { event.stopPropagation(); void handleDownloadImportFile(file); }} className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold">Baixar</button>
                       </div>
                     ))}
                   </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="mt-4 space-y-4">
-              <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">Responsável principal</div>
-                  <SummaryList
-                    items={buildBulletRows([
-                      { label: "Nome", value: cleanText(primaryResponsibleDraft.name) || "Não cadastrado" },
-                      { label: "WhatsApp", value: cleanText(primaryResponsibleDraft.whatsapp) || "Não cadastrado" },
-                      { label: "Cargo / função", value: cleanText(primaryResponsibleDraft.role) || "Não definido" },
-                      { label: "Recebe alertas da IA", value: primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não" },
-                      { label: "Pode aprovar desconto", value: primaryResponsibleDraft.can_approve_discount ? "Sim" : "Não" },
-                      { label: "Pode aprovar exceções", value: primaryResponsibleDraft.can_approve_exceptions ? "Sim" : "Não" },
-                      { label: "Pode assumir conversa humana", value: primaryResponsibleDraft.can_assume_human ? "Sim" : "Não" },
-                      { label: "Observações", value: cleanText(primaryResponsibleDraft.notes) },
-                    ])}
-                  />
-                </div>
-
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">Status de ativação</div>
-                  <SummaryList
-                    items={buildBulletRows([
-                      { label: "A IA avisa o responsável", value: yesNoLabel(answers.ai_should_notify_responsible) },
-                      { label: "Dados mínimos para ativação", value: yesNoLabel(answers.confirm_information_is_correct) },
-                      { label: "Checklist de ativação real", value: joinSelectedLabels(parseArrayAnswer(answers.responsible_notification_cases), RESPONSIBLE_NOTIFICATION_CASE_OPTIONS, cleanText(answers.responsible_notification_cases_other)) || cleanText(answers.responsible_notification_cases_other) },
-                      { label: "Orientações finais da IA", value: joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS], cleanText(answers.activation_preferences_other)) || cleanText(answers.final_activation_notes) },
-                      { label: "Status da ativação da loja", value: resolveOnboardingLabel(onboarding?.status).label },
-                    ])}
-                  />
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                <div className="mb-2 text-sm font-semibold text-gray-900">Outros responsáveis</div>
-                {additionalResponsiblesDraft.filter((item) => cleanText(item.name) || cleanText(item.whatsapp)).length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-gray-300 bg-white px-4 py-4 text-sm text-gray-600">
-                    Nenhum outro responsável cadastrado ainda. Use o botão "Adicionar responsável" para cadastrar manualmente.
-                  </div>
-                ) : (
-                  <div className="grid gap-3 md:grid-cols-2">
-                    {additionalResponsiblesDraft
-                      .filter((item) => cleanText(item.name) || cleanText(item.whatsapp))
-                      .map((person) => (
-                        <div key={person.id} className="rounded-2xl border border-gray-200 bg-white p-4">
-                          <div className="mb-2 text-sm font-semibold text-gray-900">{cleanText(person.name) || "Responsável extra"}</div>
-                          <SummaryList
-                            items={buildBulletRows([
-                              { label: "WhatsApp", value: cleanText(person.whatsapp) },
-                              { label: "Cargo / função", value: cleanText(person.role) },
-                              { label: "Recebe alertas da IA", value: person.receives_ai_alerts ? "Sim" : "Não" },
-                              { label: "Pode aprovar desconto", value: person.can_approve_discount ? "Sim" : "Não" },
-                              { label: "Pode aprovar exceções", value: person.can_approve_exceptions ? "Sim" : "Não" },
-                              { label: "Pode assumir conversa humana", value: person.can_assume_human ? "Sim" : "Não" },
-                              { label: "Observações", value: cleanText(person.notes) },
-                            ])}
-                          />
-                        </div>
-                      ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </SectionBlock>
-      ) : null}
-
-      {activeTab === "descontos" ? (
-        <SectionBlock
-          title="8. Descontos"
-          description="Defina a política global de desconto, a autonomia normal da IA e a policy opcional de alto valor sem transformar exceções de venda em configuração."
-          actions={
-            isDiscountEditing ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleDiscountEditSave}
-                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                >
-                  Salvar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDiscountEditCancel}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-                >
-                  Cancelar
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setIsDiscountEditing(true)}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-              >
-                Editar
-              </button>
-            )
-          }
-        >
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <StatusCard
-              label="Primeiro degrau"
-              value={discountPresentation.defaultDiscountPercent == null ? "Não definido" : `${discountPresentation.defaultDiscountPercent}%`}
-              tone={discountPresentation.defaultDiscountPercent == null ? "gray" : "green"}
-              hint="Primeira concessão normal permitida pela política global."
-            />
-            <StatusCard
-              label="Teto normal"
-              value={discountPresentation.maxDiscountPercent == null ? "Não definido" : `${discountPresentation.maxDiscountPercent}%`}
-              tone={discountPresentation.maxDiscountPercent == null ? "gray" : "green"}
-              hint="Teto normal da política de desconto."
-            />
-            <StatusCard
-              label="Autonomia"
-              value={discountPresentation.autonomyMode || "approval_required"}
-              tone="gray"
-              hint="Define quando a IA pode conceder dentro da política normal."
-            />
-            <StatusCard
-              label="Alto valor"
-              value={discountPresentation.highValueEnabled ? "Ativo" : "Desativado"}
-              tone={discountPresentation.highValueEnabled ? "green" : "gray"}
-              hint="Policy global opcional para quotes elegíveis de maior valor."
-            />
-          </div>
-
-          {discountPresentation.hasHistoricalConflict ? (
-            <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              Há valores históricos divergentes nesta política. Revise os percentuais antes de salvar uma nova configuração.
-              <div className="mt-1 text-amber-800">
-                {discountPresentation.historicalConflictSummary}
-              </div>
-            </div>
-          ) : null}
-
-          {isDiscountEditing ? (
-            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="mb-3 text-sm font-semibold text-gray-900">Editar descontos na mesma página</div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Primeiro degrau normal</span>
-                  <input
-                    value={discountDraft.default_discount_percent}
-                    onChange={(e) => handleDiscountDraftChange("default_discount_percent", formatStoreDiscountPercentInput(e.target.value))}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    placeholder="Ex.: 5"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Teto normal de desconto</span>
-                  <input
-                    value={discountDraft.max_discount_percent}
-                    onChange={(e) => handleDiscountDraftChange("max_discount_percent", formatStoreDiscountPercentInput(e.target.value))}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    placeholder="Ex.: 10 ou 15"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Modo de autonomia</span>
-                  <select
-                    value={discountDraft.discount_autonomy_mode}
-                    onChange={(e) => handleDiscountDraftChange("discount_autonomy_mode", e.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  >
-                    <option value="approval_required">approval_required</option>
-                    <option value="default_step_autonomous">default_step_autonomous</option>
-                    <option value="within_policy_autonomous">within_policy_autonomous</option>
-                  </select>
-                </label>
-
-                <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                  <input
-                    type="checkbox"
-                    checked={discountDraft.allow_ask_above_max_discount}
-                    onChange={(e) =>
-                      handleDiscountDraftChange(
-                        "allow_ask_above_max_discount",
-                        e.target.checked,
-                      )
-                    }
-                  />
-                  Pode consultar humano acima do teto normal
-                </label>
-
-                <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 md:col-span-2">
-                  <input
-                    type="checkbox"
-                    checked={discountDraft.high_value_enabled}
-                    onChange={(e) =>
-                      handleDiscountDraftChange("high_value_enabled", e.target.checked)
-                    }
-                  />
-                  Ativar política global de alto valor
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Threshold alto valor (R$ inteiros)</span>
-                  <input
-                    value={discountDraft.high_value_threshold_amount}
-                    onChange={(e) => handleDiscountDraftChange("high_value_threshold_amount", formatStoreDiscountMoneyInput(e.target.value))}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    placeholder="Ex.: 50000"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Percentual alto valor</span>
-                  <input
-                    value={discountDraft.high_value_discount_percent}
-                    onChange={(e) => handleDiscountDraftChange("high_value_discount_percent", formatStoreDiscountPercentInput(e.target.value))}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    placeholder="Ex.: 18"
-                  />
-                </label>
-
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando precisa aprovação humana</span>
-                  <textarea
-                    value={discountDraft.human_help_discount_summary}
-                    readOnly
-                    rows={3}
-                    className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quem aprova desconto</span>
-                  <input
-                    value={discountDraft.discount_approver}
-                    readOnly
-                    className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none"
-                  />
-                </label>
-
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regras especiais</span>
-                  <textarea
-                    value={discountDraft.special_discount_rules}
-                    onChange={(e) => handleDiscountDraftChange("special_discount_rules", e.target.value)}
-                    rows={3}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    placeholder="Ex.: em piscina completa pode negociar dentro da faixa, químico tem margem menor..."
-                  />
-                </label>
-
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como essa parte funciona</span>
-                  <textarea
-                    value={discountDraft.discount_explanation}
-                    onChange={(e) => handleDiscountDraftChange("discount_explanation", e.target.value)}
-                    rows={4}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    placeholder="Explique a lógica que a IA deve seguir para trabalhar com desconto."
-                  />
-                </label>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_1.1fr]">
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Regras atuais de desconto</div>
-              <SummaryList items={discountItems} />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Como essa parte funciona</div>
-              <SummaryList
-                items={[
-                  "A IA só deve oferecer desconto quando a loja permitir isso nesta aba.",
-                  "O teto normal define o limite máximo da política normal. Quem pode conceder dentro desse limite depende do modo de autonomia.",
-                  "Quando o pedido ultrapassa o limite ou exige condição especial, a IA deve chamar aprovação humana antes de confirmar qualquer valor.",
-                  "Essa aba serve para proteger margem, padronizar negociação e evitar promessa comercial errada.",
-                ]}
-              />
-            </div>
-          </div>
-        </SectionBlock>
-      ) : null}
-
-      
-      {activeTab === "canais-integracoes" ? (
-        <SectionBlock
-          title="9. Canais e integrações"
-          description="Deixe esta parte rápida de preencher: primeiro só o essencial, depois os detalhes avançados."
-          actions={
-            isChannelsEditing ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleChannelsEditSave}
-                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                >
-                  Salvar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleChannelsEditCancel}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-                >
-                  Cancelar
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setIsChannelsEditing(true)}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-              >
-                Editar
-              </button>
-            )
-          }
-        >
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {channelGuidedStatusMetrics.map((item) => (
-              <StatusCard
-                key={item.label}
-                label={item.label}
-                value={item.value}
-                tone={item.tone}
-                hint={item.hint}
-              />
-            ))}
-          </div>
-
-          <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4 md:p-5">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <div className="text-base font-semibold text-gray-900">WhatsApp da loja</div>
-                <p className="mt-1 max-w-3xl text-sm text-gray-600">
-                  Status real e seguro da integracao oficial da loja com o WhatsApp Cloud API da Meta.
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span
-                  className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${statusToneClass(
-                    storeWhatsappVisualStatus.tone
-                  )}`}
-                >
-                  {storeWhatsappVisualStatus.label}
-                </span>
-                <button
-                  type="button"
-                  disabled
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-500 opacity-80"
-                >
-                  Solicitar conexao do WhatsApp
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {storeWhatsappStatusMetrics.map((item) => (
-                <StatusCard
-                  key={item.label}
-                  label={item.label}
-                  value={item.value}
-                  tone={item.tone}
-                  hint={item.hint}
-                />
-              ))}
-            </div>
-
-            <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-              <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                <div className="mb-2 text-sm font-semibold text-gray-900">Resumo seguro da integracao</div>
-                <SummaryList
-                  items={[
-                    "Canal: WhatsApp Cloud API / Meta",
-                    `Numero conectado: ${cleanText(storeWhatsappStatus?.displayPhoneNumber) || "Nao informado"}`,
-                    `WABA ID: ${cleanText(storeWhatsappStatus?.whatsappBusinessAccountId) || "Nao informado"}`,
-                    `Phone Number ID: ${cleanText(storeWhatsappStatus?.phoneNumberId) || "Nao informado"}`,
-                    `Status recente de entrega: ${Number(storeWhatsappStatus?.recentDeliveryStatus?.sentCount ?? 0)} envio(s), ${Number(storeWhatsappStatus?.recentDeliveryStatus?.deliveredCount ?? 0)} entregue(s), ${Number(storeWhatsappStatus?.recentDeliveryStatus?.readCount ?? 0)} lido(s)`,
-                  ]}
-                />
-              </div>
-
-              <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                <div className="mb-2 text-sm font-semibold text-gray-900">Saude operacional</div>
-                <SummaryList
-                  items={[
-                    storeWhatsappSafeErrorText
-                      ? `${
-                          storeWhatsappStatus?.connected && storeWhatsappStatus?.isActive
-                            ? "Ultimo aviso registrado"
-                            : "Ultimo erro seguro"
-                        }: ${storeWhatsappSafeErrorText}`
-                      : `${
-                          storeWhatsappStatus?.connected && storeWhatsappStatus?.isActive
-                            ? "Nenhum aviso recente encontrado."
-                            : "Nenhum erro seguro recente encontrado."
-                        }`,
-                    "A conexao do WhatsApp e acompanhada pela equipe ZION. A loja nao precisa configurar tokens, Webhook, WABA ou Phone Number ID manualmente.",
-                    "Processamento automatico frequente ainda depende de infraestrutura adequada. No piloto, a rota de processamento esta pronta, mas o cron por minuto nao esta ativo no plano Hobby da Vercel.",
-                  ]}
-                />
-              </div>
-            </div>
-
-            {storeWhatsappStatusLoading ? (
-              <div className="mt-4 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
-                Carregando status real do WhatsApp da loja...
+                ) : <div className="text-sm text-gray-500">Nenhum arquivo bruto importado ainda.</div>}
               </div>
             ) : null}
+          </section>
+        </div>
+      ) : null}
 
-            {storeWhatsappStatusErrorText ? (
-              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {storeWhatsappStatusErrorText}
-              </div>
-            ) : null}
-          </div>
-
-
-          <div className="mt-4 grid gap-4 xl:grid-cols-3">
-            <div className="rounded-2xl border border-gray-200 bg-white p-4">
-              <div className="mb-2 text-sm font-semibold text-gray-900">Como preencher rápido</div>
-              <SummaryList
-                items={[
-                  "Confirme o WhatsApp comercial conectado e revise o responsável principal derivado.",
-                  "Edite aqui apenas a descrição comercial canônica e a configuração permanente da integração principal.",
-                  "Os comportamentos operacionais do responsável e da Assistente ficam fora desta família.",
-                ]}
-              />
-            </div>
-            <div className="rounded-2xl border border-gray-200 bg-white p-4">
-              <div className="mb-2 text-sm font-semibold text-gray-900">O que é obrigatório para ativar bem</div>
-              <SummaryList
-                items={[
-                  "Um canal real para clientes.",
-                  "Um canal real para o responsável.",
-                  "Uma integração principal definida.",
-                  "Os 10 campos canônicos desta família revisados quando necessário.",
-                ]}
-              />
-            </div>
-            <div className="rounded-2xl border border-gray-200 bg-white p-4">
-              <div className="mb-2 text-sm font-semibold text-gray-900">O que pode ficar para depois</div>
-              <SummaryList
-                items={[
-                  "Detalhes operacionais do responsável e da Assistente.",
-                  "Chat interno, alertas, urgências e relatórios.",
-                  "Fallback e roteamentos operacionais legados.",
-                ]}
-              />
-            </div>
-          </div>
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-              <div className="mb-2 text-sm font-semibold text-amber-900">Pendências essenciais</div>
-              <SummaryList
-                items={
-                  channelEssentialPendencies.length > 0
-                    ? channelEssentialPendencies
-                    : ["Nada essencial pendente nesta aba."]
-                }
-              />
-            </div>
-            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="mb-2 text-sm font-semibold text-gray-900">Pendências recomendadas</div>
-              <SummaryList
-                items={
-                  channelRecommendedPendencies.length > 0
-                    ? channelRecommendedPendencies
-                    : ["Nada recomendado pendente nesta aba."]
-                }
-              />
-            </div>
-          </div>
-
-          {isChannelsEditing ? (
-            <div className="mt-4 space-y-4">
-              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                <div className="mb-1 text-sm font-semibold text-gray-900">Preenchimento rápido</div>
-                <div className="mb-4 text-xs text-gray-600">
-                  Primeiro preencha só o que é mais importante. Os detalhes mais técnicos ficam escondidos em opções avançadas.
+      {activeTab === "contratos-marca" ? (
+        <div className="space-y-4">
+          <SectionBlock
+            title="Marca e identidade"
+            description="Defina a identidade visual usada nos documentos gerados pelo ZION sem duplicar os dados básicos da loja que já ficam em Geral."
+            tone={hasStoredLogo ? "blue" : "yellow"}
+            status={hasStoredLogo ? "Logo cadastrada" : "Precisa de atenção"}
+            className={isBrandEditing ? "xl:col-span-2" : ""}
+            actions={isBrandEditing ? <><button type="button" onClick={() => void handleBrandSettingsSave()} disabled={savingStoreLogo} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:opacity-40">Salvar</button><button type="button" onClick={handleBrandSettingsCancel} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setBrandExperienceDraft(savedBrandExperience); setIsBrandEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {isBrandEditing ? (
+              <div className="space-y-5">
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Logo da loja</div>
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                    <div className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-2xl border border-gray-200 bg-gray-50">
+                      {storeLogoPreviewUrl ? <img src={storeLogoPreviewUrl} alt="Logo da loja" className="h-full w-full object-contain" /> : <span className="text-xs text-gray-500">Sem logo</span>}
+                    </div>
+                    <div className="flex-1">
+                      <input ref={storeLogoInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => handleStoreLogoFileChange(event.target.files)} className="block w-full text-sm" />
+                      <div className="mt-2 text-xs text-gray-500">PNG, JPEG ou WebP • até 2 MB.</div>
+                    </div>
+                  </div>
+                  {hasStoredLogo ? <button type="button" onClick={() => void handleRemoveStoreLogo()} disabled={removingStoreLogo} className="mt-3 rounded-xl border border-red-200 px-3 py-2 text-sm font-semibold text-red-700">Remover logo atual</button> : null}
                 </div>
 
-                <div className="grid gap-4 xl:grid-cols-2">
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">1. Canal dos clientes</div>
-                    <div className="grid gap-3">
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual é o WhatsApp que fala com clientes?</span>
-                        <input
-                          value={connectedCommercialWhatsapp}
-                          readOnly
-                          className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none"
-                          placeholder="Conecte o canal oficial da loja"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome desse canal</span>
-                        <input
-                          value={channelDraft.commercial_channel_name}
-                          onChange={(e) => handleChannelDraftChange("commercial_channel_name", e.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: WhatsApp comercial principal"
-                        />
-                      </label>
-
-                      <div className="rounded-2xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-700">
-                        O WhatsApp comercial oficial é derivado da fonte viva da integração. Esta aba só mantém a descrição canônica do canal.
-                      </div>
-
-                      <div className="space-y-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA usa esse canal como oficial de vendas?</span>
-                        <ChoiceButtonGroup
-                          value={channelDraft.commercial_is_official_sales_channel}
-                          onChange={(value) => handleChannelDraftChange("commercial_is_official_sales_channel", value)}
-                          options={[
-                            { value: "Sim", label: "Sim" },
-                            { value: "Não", label: "Não" },
-                          ]}
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se precisar, pode passar para humano?</span>
-                        <ChoiceButtonGroup
-                          value={channelDraft.commercial_human_handoff_enabled}
-                          onChange={(value) => handleChannelDraftChange("commercial_human_handoff_enabled", value)}
-                          options={[
-                            { value: "Sim", label: "Sim" },
-                            { value: "Não", label: "Não" },
-                          ]}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">2. Canal do responsável</div>
-                    <div className="grid gap-3">
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">WhatsApp do responsável principal</span>
-                        <input
-                          value={primaryResponsibleWhatsapp}
-                          readOnly
-                          className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none"
-                          placeholder="Defina o responsável principal na configuração canônica"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal derivado do responsável</span>
-                        <input
-                          value={primaryResponsibleChannelLabel}
-                          readOnly
-                          className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none"
-                          placeholder="Canal do responsável principal"
-                        />
-                      </label>
-
-                      <div className="rounded-2xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-700">
-                        Alertas, urgências, relatórios e comandos humanos do responsável pertencem ao Bloco 5 e não são editados nesta família.
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">3. Integração externa</div>
-                    <div className="grid gap-3">
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual integração vocês usam?</span>
-                        <input
-                          value={channelDraft.integration_provider_name}
-                          onChange={(e) => handleChannelDraftChange("integration_provider_name", e.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: WhatsApp Cloud API, Evolution, Z-API..."
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como ela se conecta?</span>
-                        <input
-                          value={channelDraft.integration_connection_mode}
-                          onChange={(e) => handleChannelDraftChange("integration_connection_mode", e.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: API, webhook, painel externo..."
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status real da integração oficial</span>
-                        <input
-                          value={storeWhatsappVisualStatus.label}
-                          readOnly
-                          className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none"
-                          placeholder="Status derivado da fonte viva"
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4 xl:col-span-2">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">4. Escopo desta família</div>
-                    <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
-                      Esta edição salva somente os 10 campos canônicos de canal comercial e integração principal. Chat interno, alertas, urgências, relatórios e roteamentos operacionais permanecem fora desta família.
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-
-              <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                <div className="mb-3 text-sm font-semibold text-gray-900">Prévia da configuração em linguagem simples</div>
-                <div className="grid gap-4 lg:grid-cols-2">
+                <div className="grid gap-4 md:grid-cols-2">
                   <div>
-                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo do canal comercial</div>
-                    <SummaryList
-                      items={[
-                        `Canal comercial: ${channelDraft.commercial_channel_name || "Não definido"}`,
-                        `WhatsApp comercial: ${connectedCommercialWhatsapp || "Não definido"}`,
-                        `Status real do WhatsApp: ${storeWhatsappVisualStatus.label || "Não definido"}`,
-                        `Canal oficial da IA: ${channelDraft.commercial_is_official_sales_channel || "Não definido"}`,
-                      ]}
-                    />
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Usar a logo nos orçamentos?</div>
+                    <ChoiceButtonGroup value={brandExperienceDraft.use_logo_on_quotes} onChange={(value) => updateBrandExperienceDraft("use_logo_on_quotes", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />
                   </div>
                   <div>
-                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo do canal do responsável</div>
-                    <SummaryList
-                      items={[
-                        `Canal do responsável: ${primaryResponsibleChannelLabel || "Não definido"}`,
-                        `WhatsApp do responsável: ${primaryResponsibleWhatsapp || "Não definido"}`,
-                        "Origem: configuração canônica de responsáveis.",
-                        "Alertas, urgências e relatórios operacionais ficam fora desta família.",
-                      ]}
-                    />
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Usar a logo nos contratos?</div>
+                    <ChoiceButtonGroup value={brandExperienceDraft.use_logo_on_contracts} onChange={(value) => updateBrandExperienceDraft("use_logo_on_contracts", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />
                   </div>
                 </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="space-y-1.5">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cor principal da marca</span>
+                    <div className="flex items-center gap-2">
+                      <input type="color" value={brandExperienceDraft.primary_color || "#111111"} onChange={(event) => updateBrandExperienceDraft("primary_color", event.target.value.toUpperCase())} className="h-11 w-14 rounded-lg border border-gray-200 bg-white p-1" />
+                      <input value={brandExperienceDraft.primary_color} onChange={(event) => updateBrandExperienceDraft("primary_color", event.target.value.toUpperCase())} className="min-w-0 flex-1 rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="#111111" />
+                    </div>
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cor secundária</span>
+                    <div className="flex items-center gap-2">
+                      <input type="color" value={brandExperienceDraft.secondary_color || "#FFFFFF"} onChange={(event) => updateBrandExperienceDraft("secondary_color", event.target.value.toUpperCase())} className="h-11 w-14 rounded-lg border border-gray-200 bg-white p-1" />
+                      <input value={brandExperienceDraft.secondary_color} onChange={(event) => updateBrandExperienceDraft("secondary_color", event.target.value.toUpperCase())} className="min-w-0 flex-1 rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="#FFFFFF" />
+                    </div>
+                  </label>
+                </div>
+
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Rodapé ou assinatura padrão dos documentos</span>
+                  <textarea value={brandExperienceDraft.document_footer} onChange={(event) => updateBrandExperienceDraft("document_footer", event.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="Opcional. Ex.: agradecimento, contato da loja ou orientação curta que deve acompanhar documentos." />
+                </label>
               </div>
+            ) : <SummaryList items={buildBulletRows([
+              { label: "Logo", value: hasStoredLogo ? displayedLogoFileName : "Não enviada" },
+              { label: "Logo em orçamentos", value: savedBrandExperience.use_logo_on_quotes || "Não definido" },
+              { label: "Logo em contratos", value: savedBrandExperience.use_logo_on_contracts || "Não definido" },
+              { label: "Cor principal", value: savedBrandExperience.primary_color || "Não definida" },
+              { label: "Cor secundária", value: savedBrandExperience.secondary_color || "Não definida" },
+              { label: "Rodapé dos documentos", value: cleanText(savedBrandExperience.document_footer) || "Não definido" },
+            ])} />}
+          </SectionBlock>
 
-              <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold text-gray-900">Opções avançadas</div>
-                    <div className="text-xs text-gray-600">
-                      Abra só se quiser detalhar observações permanentes do canal comercial e da integração principal.
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowChannelsAdvanced((current) => !current)}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-                  >
-                    {showChannelsAdvanced ? "Ocultar opções avançadas" : "Mostrar opções avançadas"}
-                  </button>
+          <SectionBlock
+            title="Uso do contrato"
+            description="Defina se a loja usa contrato, em quais vendas ele é necessário, quais formatos aceita e antes de qual etapa precisa estar assinado."
+            tone={savedContractExperience.enabled === "Não" || (savedContractExperience.enabled === "Sim" && cleanText(savedContractExperience.applicability_mode) && savedContractExperience.formats.length > 0 && savedContractExperience.signed_before.length > 0) ? "blue" : "yellow"}
+            status={savedContractExperience.enabled === "Não" || (savedContractExperience.enabled === "Sim" && cleanText(savedContractExperience.applicability_mode) && savedContractExperience.formats.length > 0 && savedContractExperience.signed_before.length > 0) ? "Completo" : "Precisa de atenção"}
+            className={isContractPolicyEditing ? "xl:col-span-2" : ""}
+            actions={isContractPolicyEditing ? <><button type="button" onClick={handleContractPolicySave} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={handleContractPolicyCancel} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setContractExperienceDraft(savedContractExperience); setIsContractPolicyEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {isContractPolicyEditing ? (
+              <div className="space-y-5">
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja utiliza contrato nas vendas?</div>
+                  <ChoiceButtonGroup value={contractExperienceDraft.enabled} onChange={(value) => updateContractExperienceDraft("enabled", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />
                 </div>
 
-                {showChannelsAdvanced ? (
-                  <div className="mt-4 grid gap-4 xl:grid-cols-2">
-                    <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                      <div className="mb-3 text-sm font-semibold text-gray-900">Canal comercial — detalhes</div>
-                      <div className="grid gap-3">
-                        <label className="space-y-1">
-                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe clientes reais</span>
-                          <ChoiceButtonGroup
-                            value={channelDraft.commercial_receives_real_clients}
-                            onChange={(value) => handleChannelDraftChange("commercial_receives_real_clients", value)}
-                            options={[
-                              { value: "Sim", label: "Sim" },
-                              { value: "Não", label: "Não" },
-                              { value: "Não definido", label: "Não definido" },
-                            ]}
-                          />
-                        </label>
-                        <label className="space-y-1">
-                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de canal</span>
-                          <input value={channelDraft.commercial_channel_type} onChange={(e)=>handleChannelDraftChange("commercial_channel_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                        </label>
-                        <label className="space-y-1">
-                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prioridade de entrada</span>
-                          <input value={channelDraft.commercial_entry_priority} onChange={(e)=>handleChannelDraftChange("commercial_entry_priority", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                        </label>
-                        <label className="space-y-1">
-                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações</span>
-                          <textarea value={channelDraft.commercial_channel_notes} onChange={(e)=>handleChannelDraftChange("commercial_channel_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                        </label>
-                      </div>
+                {contractExperienceDraft.enabled === "Sim" ? (
+                  <>
+                    <div>
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando o contrato é usado?</div>
+                      <ChoiceButtonGroup
+                        value={contractExperienceDraft.applicability_mode}
+                        onChange={(value) => updateContractExperienceDraft("applicability_mode", value)}
+                        options={[
+                          { value: "sempre", label: "É obrigatório em todas as vendas" },
+                          { value: "depende", label: "É obrigatório apenas em algumas vendas" },
+                          { value: "opcional", label: "É opcional" },
+                        ]}
+                      />
+                      <p className="mt-2 text-xs leading-5 text-gray-500">“Todas as vendas” significa qualquer venda da loja. Se o contrato só for obrigatório em certos tipos de venda, escolha “apenas em algumas vendas” e selecione as situações abaixo.</p>
                     </div>
 
-                    <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                      <div className="mb-3 text-sm font-semibold text-gray-900">Integração principal — detalhes</div>
-                      <div className="grid gap-3">
-                        <label className="space-y-1">
-                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status real da integração oficial</span>
-                          <input value={storeWhatsappVisualStatus.label} readOnly className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none" />
-                        </label>
-                        <label className="space-y-1">
-                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações permanentes da integração</span>
-                          <textarea value={channelDraft.integrations_notes} onChange={(e)=>handleChannelDraftChange("integrations_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                        </label>
+                    {contractExperienceDraft.applicability_mode === "depende" ? (
+                      <div>
+                        <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Em quais situações o contrato é exigido?</div>
+                        <MultiSelectBoxGroup values={contractExperienceDraft.applicability_cases} onToggle={(value) => toggleContractExperienceArrayValue("applicability_cases", value)} options={CONTRACT_APPLICABILITY_CASE_OPTIONS} />
+                        {contractExperienceDraft.applicability_cases.includes("alto_valor") ? (
+                          <label className="mt-3 block space-y-1.5">
+                            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A partir de qual valor?</span>
+                            <input value={contractExperienceDraft.high_value_amount} onChange={(event) => updateContractExperienceDraft("high_value_amount", formatStorePaymentCurrencyInput(event.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="R$ 0,00" />
+                          </label>
+                        ) : null}
+                        {contractExperienceDraft.applicability_cases.includes("outro") ? (
+                          <RequiredOperationDetailField label="Qual é a outra situação?" value={contractExperienceDraft.applicability_other} onChange={(value) => updateContractExperienceDraft("applicability_other", value)} placeholder="Explique em qual outra situação o contrato é exigido." />
+                        ) : null}
                       </div>
+                    ) : null}
+
+                    <div>
+                      <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quais formatos a loja aceita?</div>
+                      <p className="mb-2 text-xs leading-5 text-gray-500">A loja pode trabalhar com contrato digital, físico ou ambos. Isso não cria modelos concorrentes: o ZION continua mantendo um contrato padrão ativo por loja.</p>
+                      <MultiSelectBoxGroup values={contractExperienceDraft.formats} onToggle={(value) => toggleContractExperienceArrayValue("formats", value)} options={CONTRACT_FORMAT_OPTIONS} />
                     </div>
-                  </div>
+
+                    <div>
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Antes de quais etapas o contrato precisa estar assinado?</div>
+                      <MultiSelectBoxGroup values={contractExperienceDraft.signed_before} onToggle={(value) => toggleContractExperienceArrayValue("signed_before", value)} options={CONTRACT_SIGNED_BEFORE_OPTIONS} />
+                      {contractExperienceDraft.signed_before.includes("outro") ? (
+                        <RequiredOperationDetailField label="Qual é o outro momento?" value={contractExperienceDraft.signed_before_other} onChange={(value) => updateContractExperienceDraft("signed_before_other", value)} placeholder="Explique antes de qual outra etapa o contrato precisa estar assinado." />
+                      ) : null}
+                    </div>
+
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações sobre o uso do contrato</span>
+                      <textarea value={contractExperienceDraft.notes} onChange={(event) => updateContractExperienceDraft("notes", event.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="Opcional. Registre somente particularidades reais da loja que não estejam cobertas acima." />
+                    </label>
+                  </>
                 ) : null}
               </div>
-            </div>
-          ) : null}
+            ) : <SummaryList items={buildBulletRows([
+              { label: "Usa contrato", value: savedContractExperience.enabled || "Não definido" },
+              { label: "Quando usa", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.applicability_mode ? optionLabel(savedContractExperience.applicability_mode, [{ value: "sempre", label: "Obrigatório em todas as vendas" }, { value: "depende", label: "É obrigatório apenas em algumas vendas" }, { value: "opcional", label: "Opcional" }]) : "Não definido") : savedContractExperience.enabled === "Não" ? "Não se aplica" : "Não definido" },
+              { label: "Formatos", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.formats.length ? joinSelectedLabels(savedContractExperience.formats, CONTRACT_FORMAT_OPTIONS) : "Não definidos") : "Não se aplica" },
+              { label: "Precisa estar assinado antes de", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.signed_before.length ? joinSelectedLabels(savedContractExperience.signed_before, CONTRACT_SIGNED_BEFORE_OPTIONS, savedContractExperience.signed_before_other) : "Não definido") : "Não se aplica" },
+            ])} />}
+          </SectionBlock>
 
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Canal comercial da loja</div>
-              <SummaryList items={channelCommercialItems} />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Canal do responsável</div>
-              <SummaryList items={channelResponsibleItems} />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Integrações externas</div>
-              <SummaryList items={channelOtherAndIntegrationItems} />
-            </div>
-          </div>
-        </SectionBlock>
-      ) : null}
+          <SectionBlock
+            title="Contrato padrão da loja"
+            description="Envie, revise e aprove o contrato base oficial da loja. O ZION mantém uma única versão ativa por vez e preserva as versões anteriores no histórico."
+            tone={storeContractActiveVersion ? "blue" : savedContractExperience.enabled === "Não" ? "blue" : "yellow"}
+            status={storeContractActiveVersion ? "Versão ativa" : savedContractExperience.enabled === "Não" ? "Não aplicável" : "Precisa de atenção"}
+            actions={<button type="button" onClick={() => setIsContractsEditing((current) => !current)} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">{isContractsEditing ? "Fechar" : "Gerenciar contrato"}</button>}
+          >
+            <div className="space-y-4">
+              {contractsLoading ? <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-600">Carregando contratos da loja...</div> : null}
+              {contractsErrorText ? <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800">{contractsErrorText}</div> : null}
+              {contractsSuccessText ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{contractsSuccessText}</div> : null}
 
-      {activeTab === "contratos" ? (
-        <SectionBlock
-          title="10. Contratos"
-          description="Envie, acompanhe e aprove o contrato base oficial da loja."
-          actions={
-            contractsLoading ? (
-              <span className="text-xs text-gray-500">Carregando...</span>
-            ) : null
-          }
-        >
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="space-y-2 text-sm text-gray-700">
-                <p>
-                  Envie aqui o contrato base oficial da sua loja. O ZION usara esse
-                  contrato como referencia para gerar contratos futuros e entender
-                  regras como pagamento, instalacao, garantia, obrigacoes da loja e
-                  obrigacoes do cliente.
-                </p>
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                  O contrato base so sera usado depois de revisao e aprovacao do
-                  responsavel da loja.
-                </div>
-              </div>
-            </div>
-
-            {contractsErrorText ? (
-              <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {contractsErrorText}
-              </div>
-            ) : null}
-
-            {contractsSuccessText ? (
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                {contractsSuccessText}
-              </div>
-            ) : null}
-
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-              <div className="space-y-4">
+              <div className="grid gap-4 lg:grid-cols-2">
                 <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="text-sm font-semibold text-gray-900">Enviar contrato base</div>
-
+                  <div className="text-sm font-semibold text-gray-950">Enviar contrato base</div>
+                  <p className="mt-1 text-xs leading-5 text-gray-500">Formatos aceitos: PDF, DOC e DOCX. O envio cria uma nova versão para revisão; ele não substitui silenciosamente a versão ativa.</p>
                   <input
                     ref={contractBaseInputRef}
                     type="file"
                     accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    className="hidden"
                     onChange={(event) => {
                       const nextFile = event.target.files?.[0] ?? null;
                       setSelectedContractBaseFile(nextFile);
@@ -9265,490 +11916,347 @@ export default function ConfiguracoesPage() {
                       setContractsSuccessText(null);
                       event.currentTarget.value = "";
                     }}
+                    className="hidden"
                   />
-
-                  <div className="mt-3 flex flex-wrap gap-2">
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       onClick={() => contractBaseInputRef.current?.click()}
                       disabled={!hasValidStoreContext || uploadingContractBase || contractsLoading}
-                      className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       Escolher arquivo
                     </button>
                     <button
                       type="button"
                       onClick={() => void handleUploadContractBase()}
-                      disabled={
-                        !hasValidStoreContext ||
-                        !selectedContractBaseFile ||
-                        uploadingContractBase ||
-                        contractsLoading
-                      }
-                      className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={!hasValidStoreContext || !selectedContractBaseFile || uploadingContractBase || contractsLoading}
+                      className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {uploadingContractBase ? "Enviando contrato base..." : "Enviar contrato base"}
                     </button>
                   </div>
-
-                  <div className="mt-3 space-y-2 text-sm text-gray-700">
-                    <div>
-                      <span className="font-semibold text-gray-900">Arquivo selecionado:</span>{" "}
-                      {selectedContractBaseFile?.name || "Nenhum arquivo selecionado"}
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      Formatos aceitos: PDF, DOC e DOCX. Tamanho maximo sugerido: 15 MB.
-                    </div>
-                  </div>
+                  <div className="mt-3 text-sm text-gray-700"><span className="font-semibold">Arquivo selecionado:</span> {selectedContractBaseFile?.name || "Nenhum arquivo selecionado"}</div>
                 </div>
 
                 <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="mb-3 text-sm font-semibold text-gray-900">Versoes enviadas</div>
-
-                  {contractsLoading && storeContractVersions.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
-                      Carregando contratos base da loja...
-                    </div>
-                  ) : storeContractVersions.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
-                      <div className="font-semibold text-gray-900">
-                        Nenhum contrato base enviado ainda.
-                      </div>
-                      <div className="mt-1">
-                        Envie o contrato oficial usado pela sua loja para comecar.
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {storeContractVersions.map((version) => {
-                        const status = resolveContractVersionStatus(version.status);
-                        const isActiveVersion =
-                          storeContractActiveVersion?.id === version.id ||
-                          cleanText(version.status).toLowerCase() === "active";
-                        const normalizedStatus = cleanText(version.status).toLowerCase();
-                        const hasExtractedText = Boolean(cleanText(version.raw_extracted_text));
-                        const isVersionBusy = contractActionVersionId === version.id;
-                        const isAnalyzeBusy =
-                          isVersionBusy && contractActionType === "analyze";
-                        const isExtractRulesBusy =
-                          isVersionBusy && contractActionType === "extract-rules";
-                        const isApproveBusy =
-                          isVersionBusy && contractActionType === "approve";
-                        const isRejectBusy =
-                          isVersionBusy && contractActionType === "reject";
-                        const canAnalyze =
-                          (isActiveVersion && !hasExtractedText) ||
-                          (!isActiveVersion && ["uploaded", "failed"].includes(normalizedStatus));
-                        const canExtractRules = hasExtractedText;
-                        const canApprove =
-                          !isActiveVersion &&
-                          ["uploaded", "analyzed", "awaiting_review", "approved"].includes(
-                            normalizedStatus
-                          );
-                        const canReject = !isActiveVersion;
-                        const versionRules = storeContractExtractedRules.filter(
-                          (rule) => rule.template_version_id === version.id
-                        );
-                        const pendingRulesCount = versionRules.filter(
-                          (rule) =>
-                            String(rule.review_status || "").trim().toLowerCase() === "pending"
-                        ).length;
-                        const approvedRulesCount = versionRules.filter(
-                          (rule) =>
-                            String(rule.review_status || "").trim().toLowerCase() === "approved"
-                        ).length;
-                        const rejectedRulesCount = versionRules.filter(
-                          (rule) =>
-                            String(rule.review_status || "").trim().toLowerCase() === "rejected"
-                        ).length;
-                        const editedRulesCount = versionRules.filter(
-                          (rule) =>
-                            String(rule.review_status || "").trim().toLowerCase() === "edited"
-                        ).length;
-                        const maskedTextPreview = summarizeContractUiText(
-                          version.raw_extracted_text,
-                          160
-                        );
-                        const maskedAnalysisSummary = summarizeContractUiText(
-                          version.analysis_summary,
-                          140
-                        );
-
-                        return (
-                          <div
-                            key={version.id}
-                            className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
-                          >
-                            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                              <div className="min-w-0 space-y-2">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <div className="text-sm font-semibold text-gray-900">
-                                    Versao {version.version_number ?? "-"}
-                                  </div>
-                                  <span
-                                    className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${statusToneClass(
-                                      status.tone
-                                    )}`}
-                                  >
-                                    {status.label}
-                                  </span>
-                                  {isActiveVersion ? (
-                                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">
-                                      Ativo
-                                    </span>
-                                  ) : null}
-                                </div>
-
-                                <div className="break-words text-sm text-gray-700">
-                                  <span className="font-semibold text-gray-900">Arquivo:</span>{" "}
-                                  {cleanText(version.original_filename) || "Arquivo sem nome"}
-                                </div>
-
-                                <div className="flex flex-wrap gap-2 text-xs text-gray-600">
-                                  <span className="rounded-full bg-white px-2 py-1 ring-1 ring-gray-200">
-                                    Enviado em {formatImportDate(version.created_at)}
-                                  </span>
-                                  <span className="rounded-full bg-white px-2 py-1 ring-1 ring-gray-200">
-                                    Tamanho: {formatFileSize(version.size_bytes)}
-                                  </span>
-                                  {version.approved_at ? (
-                                    <span className="rounded-full bg-white px-2 py-1 ring-1 ring-gray-200">
-                                      Aprovado em {formatImportDate(version.approved_at)}
-                                    </span>
-                                  ) : null}
-                                </div>
-
-                                {cleanText(version.rejection_reason) ? (
-                                  <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                                    Motivo da rejeicao: {cleanText(version.rejection_reason)}
-                                  </div>
-                                ) : null}
-
-                                {cleanText(version.analysis_summary) ? (
-                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
-                                    {maskedAnalysisSummary}
-                                  </div>
-                                ) : null}
-
-                                <div className="grid gap-2 sm:grid-cols-2">
-                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
-                                    <span className="font-semibold text-gray-900">Texto lido:</span>{" "}
-                                    {hasExtractedText ? "Disponivel" : "Ainda nao lido"}
-                                  </div>
-                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
-                                    <span className="font-semibold text-gray-900">Regras encontradas:</span>{" "}
-                                    {versionRules.length}
-                                  </div>
-                                </div>
-
-                                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
-                                    <span className="font-semibold text-gray-900">Aguardando revisao:</span>{" "}
-                                    {pendingRulesCount}
-                                  </div>
-                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
-                                    <span className="font-semibold text-gray-900">Aprovadas:</span>{" "}
-                                    {approvedRulesCount}
-                                  </div>
-                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
-                                    <span className="font-semibold text-gray-900">Ignoradas:</span>{" "}
-                                    {rejectedRulesCount}
-                                  </div>
-                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
-                                    <span className="font-semibold text-gray-900">Ajustadas:</span>{" "}
-                                    {editedRulesCount}
-                                  </div>
-                                </div>
-
-                                {hasExtractedText ? (
-                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
-                                    <span className="font-semibold text-gray-900">Resumo curto:</span>{" "}
-                                    {maskedTextPreview}
-                                  </div>
-                                ) : null}
-                              </div>
-
-                              <div className="w-full max-w-sm space-y-2">
-                                <div className="flex flex-wrap gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleAnalyzeContractVersion(version.id)}
-                                    disabled={
-                                      !canAnalyze ||
-                                      isVersionBusy ||
-                                      uploadingContractBase ||
-                                      contractsLoading
-                                    }
-                                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    {isAnalyzeBusy ? "Lendo arquivo..." : "Analisar contrato"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setContractContentModal({
-                                        type: "text",
-                                        versionId: version.id,
-                                      })
-                                    }
-                                    disabled={!hasExtractedText}
-                                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    Ver texto lido
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleExtractContractRules(version.id)}
-                                    disabled={
-                                      !canExtractRules ||
-                                      isVersionBusy ||
-                                      uploadingContractBase ||
-                                      contractsLoading
-                                    }
-                                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    {isExtractRulesBusy ? "Buscando regras..." : "Encontrar regras do contrato"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setContractContentModal({
-                                        type: "rules",
-                                        versionId: version.id,
-                                      })
-                                    }
-                                    disabled={versionRules.length === 0}
-                                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    Ver regras encontradas
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleApproveContractVersion(version.id)}
-                                    disabled={
-                                      !canApprove ||
-                                      isVersionBusy ||
-                                      uploadingContractBase ||
-                                      contractsLoading
-                                    }
-                                    className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    {isApproveBusy ? "Aprovando..." : "Aprovar versao"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleRejectContractVersion(version.id)}
-                                    disabled={
-                                      !canReject ||
-                                      isVersionBusy ||
-                                      uploadingContractBase ||
-                                      contractsLoading
-                                    }
-                                    className="rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    {isRejectBusy ? "Rejeitando..." : "Rejeitar versao"}
-                                  </button>
-                                </div>
-
-                                {!isActiveVersion ? (
-                                  <textarea
-                                    value={contractRejectReasonDrafts[version.id] || ""}
-                                    onChange={(event) =>
-                                      setContractRejectReasonDrafts((current) => ({
-                                        ...current,
-                                        [version.id]: event.target.value,
-                                      }))
-                                    }
-                                    rows={2}
-                                    placeholder="Motivo da rejeicao (opcional)"
-                                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                                  />
-                                ) : (
-                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-500">
-                                    A versao ativa nao pode ser rejeitada pela interface.
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="text-sm font-semibold text-gray-900">Contrato base ativo</div>
-
+                  <div className="text-sm font-semibold text-gray-950">Contrato base ativo</div>
                   {storeContractActiveVersion ? (
                     <div className="mt-3 space-y-2 text-sm text-gray-700">
-                      <div className="break-words">
-                        <span className="font-semibold text-gray-900">Arquivo:</span>{" "}
-                        {cleanText(storeContractActiveVersion.original_filename) || "Arquivo sem nome"}
-                      </div>
-                      <div>
-                        <span className="font-semibold text-gray-900">Versao:</span>{" "}
-                        {storeContractActiveVersion.version_number ?? "-"}
-                      </div>
-                      <div>
-                        <span className="font-semibold text-gray-900">Data de aprovacao:</span>{" "}
-                        {formatImportDate(storeContractActiveVersion.approved_at)}
-                      </div>
-                      <div>
-                        <span className="font-semibold text-gray-900">Status:</span>{" "}
-                        Ativo
-                      </div>
+                      <div><span className="font-semibold">Arquivo:</span> {cleanText(storeContractActiveVersion.original_filename) || "Sem nome"}</div>
+                      <div><span className="font-semibold">Versão:</span> {storeContractActiveVersion.version_number ?? "?"}</div>
+                      <div><span className="font-semibold">Status:</span> {resolveContractVersionStatus(storeContractActiveVersion.status).label}</div>
+                      <div><span className="font-semibold">Aprovado em:</span> {formatImportDate(storeContractActiveVersion.approved_at)}</div>
                     </div>
-                  ) : (
-                    <div className="mt-3 rounded-xl border border-dashed border-gray-300 bg-white px-4 py-4 text-sm text-gray-600">
-                      Nenhum contrato base ativo no momento.
-                    </div>
-                  )}
-                </div>
-
-                <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="mb-3 text-sm font-semibold text-gray-900">
-                    Resumo rapido
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <CompactMetric
-                      label="Versoes enviadas"
-                      value={String(storeContractVersions.length)}
-                      tone={storeContractVersions.length > 0 ? "green" : "gray"}
-                    />
-                    <CompactMetric
-                      label="Status atual"
-                      value={
-                        storeContractActiveVersion
-                          ? "Ativo"
-                          : storeContractTemplate
-                            ? resolveContractVersionStatus(storeContractTemplate?.status).label
-                            : "Sem envio"
-                      }
-                      tone={storeContractActiveVersion ? "green" : "gray"}
-                    />
-                  </div>
+                  ) : <div className="mt-3 text-sm text-gray-500">Nenhuma versão aprovada está ativa no momento.</div>}
                 </div>
               </div>
+
+              {isContractsEditing ? (
+                <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-950">Versões enviadas</div>
+                        <p className="mt-1 text-xs leading-5 text-gray-500">Analise, revise as regras encontradas e aprove somente a versão correta.</p>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+  <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-semibold text-gray-700">
+    {storeContractVersions.length} versão(ões)
+  </span>
+
+  {storeContractVersions.some((version) =>
+    ["archived", "rejected"].includes(
+      normalizeContractVersionStatusValue(version.status)
+    )
+  ) ? (
+    <button
+      type="button"
+      onClick={() =>
+        setShowContractVersionHistory((current) => !current)
+      }
+      className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-semibold text-gray-700 transition hover:bg-gray-50"
+    >
+      {showContractVersionHistory
+        ? "Ocultar histórico de versões"
+        : `Ver histórico de versões (${storeContractVersions.filter((version) =>
+            ["archived", "rejected"].includes(
+              normalizeContractVersionStatusValue(version.status)
+            )
+          ).length})`}
+    </button>
+  ) : null}
+</div>
+                    </div>
+
+                    {storeContractVersions.length === 0 ? (
+                      <div className="mt-4 rounded-xl border border-dashed border-gray-300 p-4 text-sm text-gray-500">Nenhuma versão enviada ainda.</div>
+                    ) : (
+                      <div className="mt-4 space-y-3">
+                        {storeContractVersions
+  .filter((version) => {
+    const normalizedStatus =
+      normalizeContractVersionStatusValue(version.status);
+
+    const isHistoricalVersion =
+      normalizedStatus === "archived" ||
+      normalizedStatus === "rejected";
+
+    return showContractVersionHistory || !isHistoricalVersion;
+  })
+  .map((version) => {
+                          const status = resolveContractVersionStatus(version.status);
+                          const normalizedStatus = normalizeContractVersionStatusValue(version.status);
+                          const isActiveVersion =
+                            storeContractActiveVersion?.id === version.id || normalizedStatus === "active";
+                          const hasReadText = Boolean(cleanText(version.raw_extracted_text));
+                          const busy = contractActionVersionId === version.id;
+                          const isAnalyzeBusy = busy && contractActionType === "analyze";
+                          const isExtractRulesBusy = busy && contractActionType === "extract-rules";
+                          const isApproveBusy = busy && contractActionType === "approve";
+                          const isRejectBusy = busy && contractActionType === "reject";
+                          const versionRules = storeContractExtractedRules.filter((rule) => rule.template_version_id === version.id);
+                          const canAnalyze = canAnalyzeStoreContractVersion({
+                            version,
+                            isActiveVersion,
+                            hasReadText,
+                          });
+                          const canExtractRules = canExtractRulesForStoreContractVersion({
+                            version,
+                            versionRules,
+                            isActiveVersion,
+                            hasReadText,
+                          });
+                          const canApprove = canApproveStoreContractVersion({
+                            version,
+                            versionRules,
+                            isActiveVersion,
+                          });
+                          const canReject = isMutableStoreContractVersion({
+                            version,
+                            isActiveVersion,
+                          });
+                          const pendingRules = versionRules.filter((rule) => !cleanText(rule.review_status) || rule.review_status === "pending").length;
+                          const approvedRules = versionRules.filter((rule) => rule.review_status === "approved").length;
+                          const rejectedRules = versionRules.filter((rule) => rule.review_status === "rejected").length;
+                          const editedRules = versionRules.filter((rule) => rule.review_status === "edited").length;
+
+                          return (
+                            <div key={version.id} className="rounded-2xl border border-gray-200 bg-gray-50/70 p-4">
+                              <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <div className="text-sm font-semibold text-gray-950">Versão {version.version_number ?? "?"}</div>
+                                    <span className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${statusToneClass(status.tone)}`}>{status.label}</span>
+                                    {isActiveVersion ? <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-800">Ativa</span> : null}
+                                  </div>
+                                  <div className="mt-2 break-all text-sm text-gray-700"><span className="font-semibold">Arquivo:</span> {cleanText(version.original_filename) || "Arquivo sem nome"}</div>
+                                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-600">
+                                    <span className="rounded-full border border-gray-200 bg-white px-2 py-1">Enviado em {formatImportDate(version.created_at)}</span>
+                                    <span className="rounded-full border border-gray-200 bg-white px-2 py-1">Tamanho: {formatFileSize(version.size_bytes)}</span>
+                                    {version.approved_at ? <span className="rounded-full border border-gray-200 bg-white px-2 py-1">Aprovado em {formatImportDate(version.approved_at)}</span> : null}
+                                  </div>
+
+                                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                    <CompactMetric label="Aguardando revisão" value={String(pendingRules)} tone={pendingRules > 0 ? "amber" : "green"} />
+                                    <CompactMetric label="Aprovadas" value={String(approvedRules)} tone="green" />
+                                    <CompactMetric label="Ignoradas" value={String(rejectedRules)} tone={rejectedRules > 0 ? "gray" : "green"} />
+                                    <CompactMetric label="Ajustadas" value={String(editedRules)} tone={editedRules > 0 ? "blue" : "gray"} />
+                                  </div>
+
+                                  {cleanText(version.analysis_summary) ? <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3 text-xs leading-5 text-gray-700"><span className="font-semibold">Resumo da análise:</span> {maskSensitiveContractPreview(cleanText(version.analysis_summary))}</div> : null}
+                                </div>
+
+                                <div className="flex w-full flex-col gap-2 xl:w-52">
+                                  {canAnalyze ? (
+                                    <button
+                                      type="button"
+                                      disabled={busy || uploadingContractBase || contractsLoading}
+                                      onClick={() => void handleAnalyzeContractVersion(version.id)}
+                                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                      {isAnalyzeBusy ? "Lendo arquivo..." : "Analisar contrato"}
+                                    </button>
+                                  ) : null}
+                                  {hasReadText ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setContractContentSearchIndex(0);
+                                        setContractContentModal({ type: "text", versionId: version.id });
+                                      }}
+                                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
+                                    >
+                                      Ver texto lido
+                                    </button>
+                                  ) : null}
+                                  {canExtractRules ? (
+                                    <button
+                                      type="button"
+                                      disabled={busy || uploadingContractBase || contractsLoading}
+                                      onClick={() => void handleExtractContractRules(version.id)}
+                                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                      {isExtractRulesBusy ? "Buscando regras..." : "Encontrar regras do contrato"}
+                                    </button>
+                                  ) : null}
+                                  {versionRules.length > 0 ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setContractContentSearchIndex(0);
+                                        setContractContentModal({ type: "rules", versionId: version.id });
+                                      }}
+                                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
+                                    >
+                                      Ver regras encontradas
+                                    </button>
+                                  ) : null}
+                                  {canApprove ? (
+                                    <button
+                                      type="button"
+                                      disabled={busy || uploadingContractBase || contractsLoading}
+                                      onClick={() => void handleApproveContractVersion(version.id)}
+                                      className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                      {isApproveBusy ? "Aprovando..." : "Aprovar versão"}
+                                    </button>
+                                  ) : null}
+                                  {canReject ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        disabled={busy || uploadingContractBase || contractsLoading}
+                                        onClick={() => void handleRejectContractVersion(version.id)}
+                                        className="rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+                                      >
+                                        {isRejectBusy ? "Rejeitando..." : "Rejeitar versão"}
+                                      </button>
+                                      <textarea
+                                        value={contractRejectReasonDrafts[version.id] || ""}
+                                        onChange={(event) =>
+                                          setContractRejectReasonDrafts((current) => ({
+                                            ...current,
+                                            [version.id]: event.target.value,
+                                          }))
+                                        }
+                                        rows={2}
+                                        placeholder="Motivo da rejeição (opcional)"
+                                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                                      />
+                                    </>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="text-sm font-semibold text-gray-950">Resumo rápido</div>
+                    <div className="mt-3 space-y-2">
+                      <CompactMetric label="Versões enviadas" value={String(storeContractVersions.length)} tone={storeContractVersions.length > 0 ? "green" : "gray"} />
+                      <CompactMetric label="Status atual" value={storeContractActiveVersion ? "Ativo" : "Sem versão ativa"} tone={storeContractActiveVersion ? "green" : "amber"} />
+                      <CompactMetric
+                        label="Regras da versao ativa"
+                        value={String(
+                          storeContractActiveVersion
+                            ? storeContractExtractedRules.filter(
+                                (rule) => rule.template_version_id === storeContractActiveVersion.id
+                              ).length
+                            : 0
+                        )}
+                        tone={storeContractActiveVersion ? "blue" : "gray"}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <SummaryList items={buildBulletRows([
+                  { label: "Arquivo ativo", value: cleanText(storeContractActiveVersion?.original_filename) || "Nenhum contrato ativo" },
+                  { label: "Status", value: storeContractActiveVersion ? resolveContractVersionStatus(storeContractActiveVersion.status).label : "Sem versão ativa" },
+                  { label: "Versões enviadas", value: String(storeContractVersions.length) },
+                  { label: "Regras extraídas", value: String(storeContractExtractedRules.length) },
+                ])} />
+              )}
             </div>
-          </div>
-        </SectionBlock>
+          </SectionBlock>
+        </div>
       ) : null}
 
-      {activeTab === "identidade" ? (
-        <SectionBlock
-          title="11. Identidade da loja"
-          description="Nome, assinatura e dados institucionais usados pela IA e pelos documentos da loja."
-        >
-          <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="text-sm font-semibold text-gray-900">Logo da loja</div>
-              <p className="mt-1 text-sm text-gray-600">
-                Essa logo sera usada nos orcamentos em PDF.
-              </p>
-
-              <div className="mt-4 flex min-h-[220px] items-center justify-center rounded-2xl border border-dashed border-gray-300 bg-white p-4">
-                {storeLogoPreviewUrl ? (
-                  <img
-                    src={storeLogoPreviewUrl}
-                    alt={`Logo da loja ${storeName}`}
-                    className="max-h-44 w-full object-contain"
-                  />
-                ) : (
-                  <div className="text-center text-sm text-gray-500">
-                    Nenhuma logo enviada ainda.
-                  </div>
-                )}
+      {activeTab === "canais-integracoes" ? (
+        <div className="space-y-4">
+          <SectionBlock
+            title="WhatsApp comercial"
+            description="Canal oficial usado pelos clientes para conversar com a IA Vendedora. Depois de conectado, o número não pode ser trocado diretamente pela loja."
+            tone={storeWhatsappStatus?.connected && storeWhatsappStatus?.isActive ? "blue" : "yellow"}
+            status={storeWhatsappStatus?.connected && storeWhatsappStatus?.isActive ? "Conectado" : "Ainda não conectado"}
+          >
+            {storeWhatsappStatus?.connected && storeWhatsappStatus?.isActive ? (
+              <div className="space-y-4">
+                <SummaryList items={buildBulletRows([
+                  { label: "Número comercial", value: connectedCommercialWhatsapp || "Número conectado não informado" },
+                  { label: "Status", value: storeWhatsappVisualStatus.label },
+                  { label: "Recebimento de mensagens", value: storeWhatsappStatus?.connected ? "Disponível" : "Indisponível" },
+                  { label: "Envio de mensagens", value: storeWhatsappStatus?.isActive ? "Disponível" : "Indisponível" },
+                  { label: "Última mensagem recebida", value: formatImportDate(storeWhatsappStatus?.lastInboundAt) },
+                  { label: "Última mensagem enviada", value: formatImportDate(storeWhatsappStatus?.lastOutboundAt) },
+                ])} />
+                <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">
+                  Para trocar o número comercial, será necessário iniciar um processo de troca assistida pelo ZION. A loja não altera esse número diretamente em Configurações, e o ZION não precisa acessar a conta Meta do cliente.
+                </div>
               </div>
-
-              <div className="mt-4 space-y-2 text-sm text-gray-700">
-                <div className="break-words">
-                  <span className="font-semibold text-gray-900">Arquivo:</span>{" "}
-                  {displayedLogoFileName}
+            ) : (
+              <div className="space-y-3">
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-950">
+                  <div className="font-semibold">WhatsApp comercial ainda não conectado.</div>
+                  <div className="mt-1">A conexão inicial será concluída no fluxo de implantação/onboarding autorizado da loja. Configurações mostra somente o estado real da integração e não cria uma conexão apenas porque um número foi digitado.</div>
                 </div>
-                <div>
-                  <span className="font-semibold text-gray-900">Tamanho:</span>{" "}
-                  {formatFileSize(displayedLogoSize)}
-                </div>
-                <div>
-                  <span className="font-semibold text-gray-900">Enviada em:</span>{" "}
-                  {storeBranding?.logo_uploaded_at
-                    ? formatImportDate(storeBranding.logo_uploaded_at)
-                    : "Ainda nao enviada"}
-                </div>
-                {selectedStoreLogoFile ? (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                    Nova logo selecionada. Clique em salvar para atualizar a identidade da loja.
-                  </div>
+                {cleanText(answers.commercial_whatsapp) ? (
+                  <div className="text-xs leading-5 text-gray-500">Número informado anteriormente para implantação: <span className="font-semibold text-gray-700">{cleanText(answers.commercial_whatsapp)}</span>. Ele só se torna o número comercial ativo depois da conexão real ser validada.</div>
                 ) : null}
               </div>
-            </div>
+            )}
+          </SectionBlock>
 
-            <div className="space-y-4">
-              <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                <input
-                  ref={storeLogoInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  className="hidden"
-                  onChange={(event) => {
-                    handleStoreLogoFileChange(event.target.files);
-                    event.currentTarget.value = "";
-                  }}
-                />
-
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => storeLogoInputRef.current?.click()}
-                    disabled={!hasValidStoreContext || savingStoreLogo || removingStoreLogo}
-                    className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {hasStoredLogo || selectedStoreLogoFile ? "Trocar logo" : "Enviar logo"}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => void handleSaveStoreLogo()}
-                    disabled={
-                      !hasValidStoreContext ||
-                      !selectedStoreLogoFile ||
-                      savingStoreLogo ||
-                      removingStoreLogo
-                    }
-                    className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {savingStoreLogo ? "Salvando logo..." : "Salvar logo"}
-                  </button>
-
-                  {hasStoredLogo ? (
-                    <button
-                      type="button"
-                      onClick={() => void handleRemoveStoreLogo()}
-                      disabled={!hasValidStoreContext || savingStoreLogo || removingStoreLogo}
-                      className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {removingStoreLogo ? "Removendo..." : "Remover logo"}
-                    </button>
-                  ) : null}
+          <SectionBlock
+            title="Responsável principal"
+            description="Pessoa autorizada com quem a IA Assistente fala quando precisa de decisão, confirmação, contexto ou ação humana da loja."
+            tone={!primaryResponsibleName || !primaryResponsibleWhatsapp ? "red" : "blue"}
+            status={!primaryResponsibleName || !primaryResponsibleWhatsapp ? "Configuração crítica" : "Completo"}
+            className={responsibleEditTarget === "primary" ? "" : ""}
+            actions={responsibleEditTarget === "primary" ? <><button type="button" onClick={async () => { const saved = await handleActivationEditSave(); if (saved) setResponsibleEditTarget(null); }} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { handleActivationEditCancel(); setResponsibleEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setResponsibleEditTarget("primary"); setIsActivationEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {responsibleEditTarget === "primary" ? (
+              <div className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome</span><input value={primaryResponsibleDraft.name} onChange={(event) => handlePrimaryResponsibleChange("name", event.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                  <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Função</span><input value={primaryResponsibleDraft.role} onChange={(event) => handlePrimaryResponsibleChange("role", event.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                  <label className="space-y-1.5 md:col-span-2"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">WhatsApp autorizado do responsável</span><input value={primaryResponsibleDraft.whatsapp} onChange={(event) => handlePrimaryResponsibleChange("whatsapp", event.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="Ex.: +55 15 99999-9999" /></label>
                 </div>
-
-                <div className="mt-3 text-xs text-gray-500">
-                  Formatos aceitos: PNG, JPEG e WebP. Tamanho maximo sugerido: 2 MB.
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950">
+                  Este número não é apenas um contato: ele identifica quem terá o privilégio de responsável no canal da IA Assistente. Ao trocar o número e salvar, o novo número deve assumir essa autorização e o anterior deve deixar de ter esse privilégio no runtime canônico.
                 </div>
               </div>
-
-              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                <div className="mb-2 text-sm font-semibold text-gray-900">
-                  Resumo da identidade
+            ) : (
+              <div className="space-y-4">
+                <SummaryList items={buildBulletRows([
+                  { label: "Nome", value: primaryResponsibleName || "Não definido" },
+                  { label: "Função", value: cleanText(loadedCanonicalPrimaryResponsible?.role) || "Não definida" },
+                  { label: "WhatsApp autorizado", value: primaryResponsibleWhatsapp || "Não definido" },
+                  { label: "Destino das mensagens desse responsável", value: primaryResponsibleWhatsapp ? "IA Assistente" : "Aguardando número autorizado" },
+                  { label: "Números não autorizados", value: "Sem privilégio de responsável" },
+                ])} />
+                <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">
+                  Clientes continuam sendo atendidos pela IA Vendedora no WhatsApp comercial. Quando o número autorizado do responsável falar com esse mesmo canal, o ZION deverá reconhecê-lo e encaminhar a conversa para a IA Assistente.
                 </div>
-                <SummaryList items={identityItems} />
               </div>
-            </div>
-          </div>
-        </SectionBlock>
+            )}
+          </SectionBlock>
+        </div>
       ) : null}
 
       {isManualCatalogItemModalOpen ? (
@@ -10240,11 +12748,16 @@ export default function ConfiguracoesPage() {
 
       {contractContentModal ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6"
-          onClick={() => setContractContentModal(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-5"
+          onClick={() => {
+            setContractContentModal(null);
+            setContractContentSearchQuery("");
+            setContractContentSearchIndex(0);
+          }}
         >
           <div
-            className="flex max-h-[82vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+            ref={contractContentModalRef}
+            className="flex h-[94vh] w-[96vw] max-w-[1500px] flex-col overflow-hidden rounded-3xl border border-gray-200 bg-gray-100 shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             {(() => {
@@ -10256,85 +12769,235 @@ export default function ConfiguracoesPage() {
               );
               const isTextModal = contractContentModal.type === "text";
               const title = isTextModal ? "Texto lido do contrato" : "Regras encontradas";
+              const maskedContractText = maskSensitiveContractPreview(
+                cleanText(selectedVersion?.raw_extracted_text) || "Nenhum texto lido disponível."
+              );
+              const normalizedSearchQuery = cleanText(contractContentSearchQuery)?.toLowerCase() || "";
+              const visibleRules = normalizedSearchQuery
+                ? selectedRules.filter((rule) => {
+                    const searchable = [
+                      cleanText(rule.label),
+                      cleanText(rule.value_text),
+                      cleanText(rule.source_excerpt),
+                      resolveContractRuleGroupLabel(rule.rule_group),
+                    ]
+                      .filter(Boolean)
+                      .join(" ")
+                      .toLowerCase();
+                    return searchable.includes(normalizedSearchQuery);
+                  })
+                : selectedRules;
+              const textMatchCount = normalizedSearchQuery
+                ? maskedContractText.toLowerCase().split(normalizedSearchQuery).length - 1
+                : 0;
+              const searchResultCount = isTextModal ? textMatchCount : visibleRules.length;
+              const safeSearchIndex = searchResultCount > 0
+                ? Math.min(contractContentSearchIndex, searchResultCount - 1)
+                : 0;
+              const versionStatus = resolveContractVersionStatus(selectedVersion?.status);
+              const selectedVersionNormalizedStatus = normalizeContractVersionStatusValue(selectedVersion?.status);
+              const isSelectedActiveVersion =
+                storeContractActiveVersion?.id === contractContentModal.versionId ||
+                selectedVersionNormalizedStatus === "active";
+              const canReviewSelectedVersionRules = canReviewRulesForStoreContractVersion({
+                version: selectedVersion,
+                isActiveVersion: isSelectedActiveVersion,
+              });
+
+              const moveSearchResult = (direction: -1 | 1) => {
+                if (searchResultCount <= 0) return;
+                setContractContentSearchIndex((current) => {
+                  const normalizedCurrent = Math.min(current, searchResultCount - 1);
+                  return (normalizedCurrent + direction + searchResultCount) % searchResultCount;
+                });
+              };
+
+              const closeModal = () => {
+                setContractContentModal(null);
+                setContractContentSearchQuery("");
+                setContractContentSearchIndex(0);
+              };
 
               return (
                 <>
-                  <div className="flex items-start justify-between gap-3 bg-gray-950 px-5 py-4 text-white">
-                    <div>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-gray-400">
-                        Contratos
+                  <div className="sticky top-0 z-10 border-b border-gray-200 bg-white px-5 py-4 sm:px-7 sm:py-5">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-gray-500">
+                          Contratos
+                        </div>
+                        <h2 className="mt-1 text-xl font-bold text-gray-950 sm:text-2xl">{title}</h2>
+                        <p className="mt-1 break-words text-sm text-gray-600">
+                          {cleanText(selectedVersion?.original_filename) || "Arquivo sem nome"}
+                        </p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-semibold text-gray-700">
+                            Versão {selectedVersion?.version_number ?? "—"}
+                          </span>
+                          <span
+                            className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusToneClass(
+                              versionStatus.tone
+                            )}`}
+                          >
+                            {versionStatus.label}
+                          </span>
+                          <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-800">
+                            Dados sensíveis ocultos
+                          </span>
+                        </div>
                       </div>
-                      <h2 className="mt-1 text-lg font-bold">{title}</h2>
-                      <p className="mt-1 text-xs text-gray-300">
-                        {cleanText(selectedVersion?.original_filename) || "Arquivo sem nome"}
-                      </p>
+
+                      <button
+                        type="button"
+                        onClick={closeModal}
+                        className="shrink-0 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
+                      >
+                        Fechar
+                      </button>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => setContractContentModal(null)}
-                      className="rounded-xl border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20"
-                    >
-                      Fechar
-                    </button>
+                    <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <div className="relative min-w-0 flex-1">
+                        <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-gray-400">⌕</span>
+                        <input
+                          value={contractContentSearchQuery}
+                          onChange={(event) => {
+                            setContractContentSearchQuery(event.target.value);
+                            setContractContentSearchIndex(0);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" || !normalizedSearchQuery) return;
+                            event.preventDefault();
+                            moveSearchResult(event.shiftKey ? -1 : 1);
+                          }}
+                          placeholder={isTextModal ? "Buscar no contrato" : "Buscar nas regras encontradas"}
+                          className="w-full rounded-xl border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition focus:border-gray-400 focus:bg-white"
+                        />
+                      </div>
+                      {normalizedSearchQuery ? (
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <span className="min-w-[72px] text-center text-xs font-medium text-gray-500">
+                            {searchResultCount > 0 ? `${safeSearchIndex + 1} de ${searchResultCount}` : "0 de 0"}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => moveSearchResult(-1)}
+                            disabled={searchResultCount === 0}
+                            aria-label="Resultado anterior"
+                            title="Resultado anterior (Shift + Enter)"
+                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-base font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-35"
+                          >↑</button>
+                          <button
+                            type="button"
+                            onClick={() => moveSearchResult(1)}
+                            disabled={searchResultCount === 0}
+                            aria-label="Próximo resultado"
+                            title="Próximo resultado (Enter)"
+                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-base font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-35"
+                          >↓</button>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
 
-                  <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                  <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-7 sm:py-6">
                     {isTextModal ? (
-                      <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
-                        <div className="mb-2 text-sm font-semibold text-gray-900">
-                          Texto mascarado para revisao
+                      <div className="mx-auto max-w-[1120px]">
+                        <div className="mb-4 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm leading-6 text-sky-950">
+                          <div className="font-semibold">Conteúdo extraído</div>
+                          <div className="mt-1 text-xs leading-5 text-sky-900">
+                            O ZION identificou o texto abaixo no arquivo. Dados pessoais sensíveis são ocultados nesta visualização para facilitar uma revisão segura.
+                          </div>
                         </div>
-                        <div className="whitespace-pre-wrap">
-                          {maskSensitiveContractPreview(
-                            cleanText(selectedVersion?.raw_extracted_text) ||
-                              "Nenhum texto lido disponivel."
-                          )}
-                        </div>
+
+                        <article className="min-h-[68vh] rounded-2xl border border-gray-200 bg-white px-6 py-7 shadow-sm sm:px-10 sm:py-10">
+                          <div className="mb-6 border-b border-gray-100 pb-4">
+                            <div className="text-xs font-semibold uppercase tracking-[0.12em] text-gray-400">
+                              Documento extraído
+                            </div>
+                            <div className="mt-1 text-sm font-semibold text-gray-700">
+                              {cleanText(selectedVersion?.original_filename) || "Arquivo sem nome"}
+                            </div>
+                          </div>
+                          <div className="whitespace-pre-wrap break-words font-sans text-[15px] leading-7 text-gray-800 sm:text-base sm:leading-8">
+                            {renderHighlightedContractText(maskedContractText, contractContentSearchQuery, normalizedSearchQuery ? safeSearchIndex : null)}
+                          </div>
+                        </article>
                       </div>
                     ) : selectedRules.length === 0 ? (
-                      <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
+                      <div className="mx-auto max-w-[1120px] rounded-2xl border border-dashed border-gray-300 bg-white px-5 py-8 text-center text-sm text-gray-600">
                         Nenhuma regra encontrada ainda.
                       </div>
+                    ) : visibleRules.length === 0 ? (
+                      <div className="mx-auto max-w-[1120px] rounded-2xl border border-dashed border-gray-300 bg-white px-5 py-8 text-center text-sm text-gray-600">
+                        Nenhuma regra corresponde à busca atual.
+                      </div>
                     ) : (
-                      <div className="space-y-3">
-                        {selectedRules.map((rule) => (
+                      <div className="mx-auto max-w-[1220px] space-y-4">
+                        <div className="rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm leading-6 text-sky-950">
+                          <div className="font-semibold">Revisão das regras encontradas</div>
+                          <div className="mt-1 text-xs leading-5 text-sky-900">
+                            Revise cada regra antes de usá-la como referência. Você pode aprovar, ignorar ou ajustar o texto encontrado sem alterar o arquivo original.
+                          </div>
+                        </div>
+
+                        {visibleRules.map((rule, ruleResultIndex) => (
                           (() => {
                             const ruleStatus = resolveContractRuleStatus(rule.review_status);
-                            const isEditing = contractRuleEditingIds[rule.id] === true;
+                            const isEditing =
+                              canReviewSelectedVersionRules && contractRuleEditingIds[rule.id] === true;
                             const isRuleBusy = contractRuleActionRuleId === rule.id;
                             const ruleDraft =
                               contractRuleEditDrafts[rule.id] ?? cleanText(rule.value_text) ?? "";
+                            const ruleValue = maskSensitiveContractPreview(
+                              cleanText(rule.value_text) || "Trecho não disponível"
+                            );
+                            const sourceExcerpt = cleanText(rule.source_excerpt)
+                              ? maskSensitiveContractPreview(cleanText(rule.source_excerpt))
+                              : null;
 
                             return (
-                              <div
+                              <section
                                 key={rule.id}
-                                className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                                data-contract-rule-result-index={ruleResultIndex}
+                                data-contract-current-search-target={
+                                  normalizedSearchQuery && ruleResultIndex === safeSearchIndex ? "true" : undefined
+                                }
+                                className={`rounded-2xl border bg-white p-5 shadow-sm transition sm:p-6 ${
+                                  normalizedSearchQuery && ruleResultIndex === safeSearchIndex
+                                    ? "border-amber-300 ring-2 ring-amber-300/40"
+                                    : "border-gray-200"
+                                }`}
                               >
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <div className="text-sm font-semibold text-gray-900">
-                                    {cleanText(rule.label) || "Regra encontrada"}
+                                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="text-base font-bold text-gray-950 sm:text-lg">
+                                      {renderHighlightedContractText(
+                                        cleanText(rule.label) || "Regra encontrada",
+                                        contractContentSearchQuery
+                                      )}
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      <span
+                                        className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusToneClass(
+                                          ruleStatus.tone
+                                        )}`}
+                                      >
+                                        {ruleStatus.label}
+                                      </span>
+                                      <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-semibold text-gray-600">
+                                        {resolveContractRuleGroupLabel(rule.rule_group)}
+                                      </span>
+                                    </div>
                                   </div>
-                                  <span
-                                    className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${statusToneClass(
-                                      ruleStatus.tone
-                                    )}`}
-                                  >
-                                    {ruleStatus.label}
-                                  </span>
-                                  <span className="rounded-full border border-gray-200 bg-white px-2 py-1 text-[11px] font-semibold text-gray-600">
-                                    {resolveContractRuleGroupLabel(rule.rule_group)}
-                                  </span>
                                 </div>
 
                                 {!isEditing ? (
-                                  <div className="mt-2 text-sm text-gray-700">
-                                    {maskSensitiveContractPreview(
-                                      cleanText(rule.value_text) || "Trecho nao disponivel"
-                                    )}
+                                  <div className="mt-5 rounded-2xl border border-gray-100 bg-gray-50 px-4 py-4 text-[15px] leading-7 text-gray-800">
+                                    {renderHighlightedContractText(ruleValue, contractContentSearchQuery)}
                                   </div>
                                 ) : (
-                                  <div className="mt-3 space-y-2">
+                                  <div className="mt-5 space-y-2">
                                     <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
                                       Editar texto
                                     </div>
@@ -10346,25 +13009,26 @@ export default function ConfiguracoesPage() {
                                           [rule.id]: event.target.value,
                                         }))
                                       }
-                                      rows={5}
-                                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                                      rows={7}
+                                      className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[15px] leading-7 text-gray-900 outline-none transition focus:border-black"
                                     />
                                   </div>
                                 )}
 
-                                {cleanText(rule.source_excerpt) ? (
-                                  <div className="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-3 text-xs text-gray-600">
-                                    <div className="mb-1 font-semibold text-gray-900">
-                                      Trecho encontrado no contrato
+                                {sourceExcerpt ? (
+                                  <details className="mt-4 rounded-2xl border border-gray-200 bg-white px-4 py-3">
+                                    <summary className="cursor-pointer select-none text-sm font-semibold text-gray-900">
+                                      Ver trecho encontrado no contrato
+                                    </summary>
+                                    <div className="mt-3 whitespace-pre-wrap break-words border-t border-gray-100 pt-3 text-sm leading-6 text-gray-600">
+                                      {renderHighlightedContractText(sourceExcerpt, contractContentSearchQuery)}
                                     </div>
-                                    <div className="whitespace-pre-wrap">
-                                      {maskSensitiveContractPreview(cleanText(rule.source_excerpt))}
-                                    </div>
-                                  </div>
+                                  </details>
                                 ) : null}
 
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                  {isEditing ? (
+                                {canReviewSelectedVersionRules ? (
+                                  <div className="mt-5 flex flex-wrap gap-2 border-t border-gray-100 pt-4">
+                                    {isEditing ? (
                                     <>
                                       <button
                                         type="button"
@@ -10375,7 +13039,7 @@ export default function ConfiguracoesPage() {
                                           })
                                         }
                                         disabled={isRuleBusy}
-                                        className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                                        className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                                       >
                                         {isRuleBusy && contractRuleActionType === "save-edit"
                                           ? "Salvando..."
@@ -10394,12 +13058,12 @@ export default function ConfiguracoesPage() {
                                           }));
                                         }}
                                         disabled={isRuleBusy}
-                                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                        className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                                       >
                                         Cancelar
                                       </button>
                                     </>
-                                  ) : (
+                                    ) : (
                                     <>
                                       <button
                                         type="button"
@@ -10410,7 +13074,7 @@ export default function ConfiguracoesPage() {
                                           }))
                                         }
                                         disabled={isRuleBusy}
-                                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                        className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                                       >
                                         Editar texto
                                       </button>
@@ -10423,7 +13087,7 @@ export default function ConfiguracoesPage() {
                                           })
                                         }
                                         disabled={isRuleBusy}
-                                        className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                                        className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                                       >
                                         {isRuleBusy && contractRuleActionType === "approve"
                                           ? "Aprovando..."
@@ -10438,22 +13102,20 @@ export default function ConfiguracoesPage() {
                                           })
                                         }
                                         disabled={isRuleBusy}
-                                        className="rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                        className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                                       >
                                         {isRuleBusy && contractRuleActionType === "reject"
                                           ? "Ignorando..."
                                           : "Ignorar"}
                                       </button>
                                     </>
-                                  )}
-                                </div>
-                              </div>
+                                    )}
+                                  </div>
+                                ) : null}
+                              </section>
                             );
                           })()
                         ))}
-                        <div className="text-xs text-gray-500">
-                          Revise essas informacoes antes de usar no contrato final.
-                        </div>
                       </div>
                     )}
                   </div>

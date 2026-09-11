@@ -27,6 +27,12 @@ function baseSchedule(
     },
     timezone_name: "America/Sao_Paulo",
     attends_holidays: false,
+    human_schedule_configured_at: "2026-09-10T10:00:00.000Z",
+    ai_after_hours_configured_at: "2026-09-10T10:05:00.000Z",
+    holiday_mode: null,
+    holiday_open_time: null,
+    holiday_close_time: null,
+    holiday_notes: null,
     ai_after_hours_enabled: false,
     ai_after_hours_mode: null,
     ai_after_hours_start: null,
@@ -156,6 +162,153 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "holiday mode closed makes the human team unavailable",
+    run: () => {
+      const result = resolveSalesAiOperatingWindow({
+        settings: baseSchedule({
+          holiday_mode: "closed",
+          attends_holidays: false,
+        }),
+        holidayBlocks: [
+          holidayBlock("2026-09-01T03:00:00.000Z", "2026-09-02T03:00:00.000Z"),
+        ],
+        now: new Date("2026-09-01T15:00:00.000Z"),
+      });
+
+      assert.equal(result.decision, "AI_NOT_ALLOWED_NOW");
+      assert.equal(result.humanAvailableNow, false);
+      assert.equal(result.humanUnavailableReason, "holiday_block");
+    },
+  },
+  {
+    name: "holiday mode normal uses the normal operating hours",
+    run: () => {
+      const result = resolveSalesAiOperatingWindow({
+        settings: baseSchedule({
+          holiday_mode: "normal",
+          attends_holidays: true,
+        }),
+        holidayBlocks: [
+          holidayBlock("2026-09-01T03:00:00.000Z", "2026-09-02T03:00:00.000Z"),
+        ],
+        now: new Date("2026-09-01T15:00:00.000Z"),
+      });
+
+      assert.equal(result.decision, "HUMAN_OPEN");
+      assert.equal(result.humanAvailableNow, true);
+      assert.equal(result.isHolidayBlocked, true);
+    },
+  },
+  {
+    name: "holiday mode special uses the special holiday window",
+    run: () => {
+      const result = resolveSalesAiOperatingWindow({
+        settings: baseSchedule({
+          holiday_mode: "special",
+          holiday_open_time: "10:00:00",
+          holiday_close_time: "12:00:00",
+        }),
+        holidayBlocks: [
+          holidayBlock("2026-09-01T03:00:00.000Z", "2026-09-02T03:00:00.000Z"),
+        ],
+        now: new Date("2026-09-01T14:00:00.000Z"),
+      });
+
+      assert.equal(result.decision, "HUMAN_OPEN");
+      assert.equal(result.humanAvailableNow, true);
+      assert.equal(result.nextHumanOpenPeriod?.startTime, "11:00");
+    },
+  },
+  {
+    name: "holiday mode special outside the special window stays closed",
+    run: () => {
+      const result = resolveSalesAiOperatingWindow({
+        settings: baseSchedule({
+          holiday_mode: "special",
+          holiday_open_time: "10:00:00",
+          holiday_close_time: "12:00:00",
+        }),
+        holidayBlocks: [
+          holidayBlock("2026-09-01T03:00:00.000Z", "2026-09-02T03:00:00.000Z"),
+        ],
+        now: new Date("2026-09-01T12:00:00.000Z"),
+      });
+
+      assert.equal(result.decision, "AI_NOT_ALLOWED_NOW");
+      assert.equal(result.humanAvailableNow, false);
+      assert.equal(result.humanUnavailableReason, "outside_human_operating_hours");
+    },
+  },
+  {
+    name: "holiday mode case by case fails closed",
+    run: () => {
+      const result = resolveSalesAiOperatingWindow({
+        settings: baseSchedule({
+          holiday_mode: "case_by_case",
+          holiday_notes: "Confirmar manualmente com a equipe.",
+        }),
+        holidayBlocks: [
+          holidayBlock("2026-09-01T03:00:00.000Z", "2026-09-02T03:00:00.000Z"),
+        ],
+        now: new Date("2026-09-01T15:00:00.000Z"),
+      });
+
+      assert.equal(result.decision, "AI_NOT_ALLOWED_NOW");
+      assert.equal(result.humanAvailableNow, false);
+      assert.equal(result.humanUnavailableReason, "holiday_block");
+    },
+  },
+  {
+    name: "holiday mode null preserves legacy attends holidays compatibility",
+    run: () => {
+      const result = resolveSalesAiOperatingWindow({
+        settings: baseSchedule({
+          holiday_mode: null,
+          attends_holidays: true,
+        }),
+        holidayBlocks: [
+          holidayBlock("2026-09-01T03:00:00.000Z", "2026-09-02T03:00:00.000Z"),
+        ],
+        now: new Date("2026-09-01T15:00:00.000Z"),
+      });
+
+      assert.equal(result.decision, "HUMAN_OPEN");
+      assert.equal(result.humanAvailableNow, true);
+      assert.equal(result.isHolidayBlocked, true);
+    },
+  },
+  {
+    name: "ai after-hours configured timestamp missing does not allow technical defaults or flags",
+    run: () => {
+      const result = resolveSalesAiOperatingWindow({
+        settings: baseSchedule({
+          ai_after_hours_configured_at: null,
+          ai_after_hours_enabled: true,
+          ai_after_hours_mode: "all_closed_hours",
+        }),
+        now: new Date("2026-09-02T01:00:00.000Z"),
+      });
+
+      assert.equal(result.decision, "AI_NOT_ALLOWED_NOW");
+      assert.equal(result.policy.aiAfterHoursEnabled, false);
+    },
+  },
+  {
+    name: "explicitly configured disabled after-hours policy blocks AI outside human hours",
+    run: () => {
+      const result = resolveSalesAiOperatingWindow({
+        settings: baseSchedule({
+          ai_after_hours_configured_at: "2026-09-10T10:05:00.000Z",
+          ai_after_hours_enabled: false,
+        }),
+        now: new Date("2026-09-02T01:00:00.000Z"),
+      });
+
+      assert.equal(result.decision, "AI_NOT_ALLOWED_NOW");
+      assert.equal(result.policy.aiAfterHoursEnabled, false);
+    },
+  },
+  {
     name: "store timezone is respected for the same instant",
     run: () => {
       const tokyo = resolveSalesAiOperatingWindow({
@@ -282,6 +435,31 @@ const tests: TestCase[] = [
       assert.equal(source.includes("where schedule_row.organization_id = p_organization_id"), true);
       assert.equal(source.includes("and schedule_row.store_id = p_store_id"), true);
       assert.equal(source.includes("grant execute on function public.upsert_store_schedule_ai_after_hours_policy_scoped"), true);
+    },
+  },
+  {
+    name: "authority reader selects explicit card and holiday fields",
+    run: () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/lib/server/sales-ai-operating-window.ts"),
+        "utf8",
+      );
+
+      for (const field of [
+        "human_schedule_configured_at",
+        "ai_after_hours_configured_at",
+        "agenda_capacity_configured_at",
+        "holiday_mode",
+        "holiday_open_time",
+        "holiday_close_time",
+        "holiday_notes",
+        "daily_limit_mode",
+        "daily_limit",
+        "appointment_buffer_enabled",
+        "appointment_buffer_minutes",
+      ]) {
+        assert.equal(source.includes(`\"${field}\"`), true, field);
+      }
     },
   },
 ];

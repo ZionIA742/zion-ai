@@ -1,400 +1,181 @@
-
 "use client";
+
 import {
+  useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
-  useCallback,
-  type Dispatch,
   type FormEvent,
-  type SetStateAction,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import OrgGuard from "../../components/OrgGuard";
 import { StoreProvider, useStoreContext } from "../../components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
-import IntelligentCatalogImportPanel from "@/components/catalog/IntelligentCatalogImportPanel";
 import {
-  createStoreCommercialAiSettingsInputFromSources,
-  deriveStoreCommercialAiLegacyMirrors,
-  normalizeStoreCommercialAiSettingsInput,
-  type StoreCommercialAiSettingsRow,
-} from "@/lib/store-commercial-ai-settings";
-import {
-  formatStoreDiscountPercentInput,
-  normalizeStoreDiscountSettingsInput,
-  type StoreDiscountSettingsRow,
-} from "@/lib/store-discount-settings";
-import {
-  createStorePaymentSettingsInputFromSources,
-  formatStorePaymentCurrencyInput,
-  formatStorePaymentInstallmentsInput,
-  formatStorePaymentPercentInput,
-  normalizeStorePaymentSettingsInput,
-  type StorePaymentSettingsRow,
-} from "@/lib/store-payment-settings";
-import {
-  createStoreStrategySettingsLegacySeedInputFromAnswers,
   createStoreStrategySettingsInputFromSources,
   normalizeStoreStrategySettingsInput,
   type StoreStrategySettingsInput,
   type StoreStrategySettingsRow,
 } from "@/lib/store-strategy-settings";
-import {
-  createStoreOperationSettingsInputFromSources,
-  normalizeOperatingDays,
-  normalizeOperationTechnicalVisitRules,
-  normalizeStoreOperationSettingsInput,
-  parseOperationAverageInstallationTimeInput,
-  type StoreOperationSettingsInput,
-  type StoreOperationSettingsRow,
-} from "@/lib/store-operation-settings";
-type Step1FormData = {
-  store_display_name: string;
-  store_description: string;
-  city: string;
-  state: string;
-  service_regions: string;
-  commercial_whatsapp: string;
-  store_services: string[];
-  store_services_other: string;
-  service_region_modes: string[];
-  service_region_notes: string;
-  service_region_primary_mode: string;
-  service_region_outside_consultation: boolean;
-};
-type Step2FormData = {
-  pool_types: string;
-  sells_chemicals: string;
-  sells_accessories: string;
-  offers_installation: string;
-  offers_technical_visit: string;
-  brands_worked: string;
-  pool_types_selected: string[];
-  pool_types_other: string;
-  main_store_brand: string;
-};
-type Step3FormData = {
-  average_installation_time_days: string;
-  installation_days_rule: string;
-  installation_available_days: string[];
-  technical_visit_days_rule: string;
-  technical_visit_available_days: string[];
-  average_human_response_time: string;
-  installation_process_steps: string[];
-  installation_process_other: string;
-  technical_visit_rules_selected: string[];
-  technical_visit_rules_other: string;
-  attends_holidays: string;
-  important_limitations_selected: string[];
-  important_limitations_other: string;
-  sales_flow_start_steps: string[];
-  sales_flow_middle_steps: string[];
-  sales_flow_final_steps: string[];
-  sales_flow_notes: string;
-  sales_flow_start_confirmed: boolean;
-  sales_flow_middle_confirmed: boolean;
-  sales_flow_final_confirmed: boolean;
-};
-type Step2StringField = Exclude<keyof Step2FormData, "pool_types_selected">;
-type Step3StringField =
-  | "average_installation_time_days"
-  | "installation_days_rule"
-  | "technical_visit_days_rule"
-  | "average_human_response_time"
-  | "installation_process_other"
-  | "technical_visit_rules_other"
-  | "attends_holidays"
-  | "important_limitations_other"
-  | "sales_flow_notes";
-type Step3StringArrayField =
-  | "installation_process_steps"
-  | "important_limitations_selected"
-  | "sales_flow_start_steps"
-  | "sales_flow_middle_steps"
-  | "sales_flow_final_steps";
-type Step3BooleanField =
-  | "sales_flow_start_confirmed"
-  | "sales_flow_middle_confirmed"
-  | "sales_flow_final_confirmed";
-type Step4FormData = {
-  average_ticket: string;
-  can_offer_discount: string;
-  default_discount_percent: string;
-  max_discount_percent: string;
-  allow_ask_above_max_discount: boolean;
-  discount_autonomy_mode: string;
-  discount_special_rules: string;
-  high_value_enabled: boolean;
-  high_value_threshold_amount: string;
-  high_value_discount_percent: string;
-  accepted_payment_methods: string[];
-  pix_key_type: string;
-  pix_key: string;
-  pix_holder_name: string;
-  down_payment_mode: string;
-  down_payment_value_type: string;
-  down_payment_percent: string;
-  down_payment_amount: string;
-  installments_enabled: string;
-  max_installments: string;
-  installment_interest_policy: string;
-  payment_notes: string;
-  ai_can_send_price_directly: string;
-  price_direct_rule: string;
-  human_help_discount_cases: string;
-  human_help_custom_project_cases: string;
-  human_help_payment_cases: string;
-  price_direct_conditions: string[];
-  price_direct_rule_other: string;
-  human_help_discount_cases_selected: string[];
-  human_help_discount_cases_other: string;
-  human_help_custom_project_cases_selected: string[];
-  human_help_custom_project_cases_other: string;
-  human_help_payment_cases_selected: string[];
-  human_help_payment_cases_other: string;
-  price_needs_human_help: string;
-  price_talk_mode: string;
-  price_must_understand_before: string[];
-};
-type Step5FormData = {
-  responsible_name: string;
-  responsible_whatsapp: string;
-  ai_should_notify_responsible: string;
-  final_activation_notes: string;
-  confirm_information_is_correct: boolean;
-  responsible_notification_cases: string[];
-  responsible_notification_cases_other: string;
-  activation_preferences: string[];
-  activation_preferences_other: string;
-};
+
 type AnswersMap = Record<string, unknown>;
-type DiscountSettingsRow = {
-  store_id: string;
-  organization_id: string;
-  default_discount_percent: number | null;
-  max_discount_percent: number | null;
-  allow_ask_above_max_discount: boolean | null;
-  discount_autonomy_mode?: string | null;
-  discount_special_rules?: string | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-};
-type ExistingCatalogItemRow = {
-  id: string;
-  sku: string | null;
-  price_cents: number | null;
-  stock_quantity: number | null;
-  description: string | null;
-  metadata: Record<string, unknown> | null;
-};
-type ScheduleSettingsRow = {
-  id?: string;
-  organization_id: string;
-  store_id: string;
-  allow_multiple_appointments_per_day: boolean;
-  allow_same_time_appointments: boolean;
-  same_time_capacity: number;
-  attends_holidays: boolean | null;
-  operating_days: unknown;
-  operating_hours: unknown;
-  installation_days: unknown;
-  technical_visit_days: unknown;
-  after_hours_behavior: string | null;
-  notes: string | null;
-  enforce_operating_window: boolean;
-  timezone_name: string | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-};
+
 type Option = {
   value: string;
   label: string;
   hint?: string;
 };
-const YES_NO_OPTIONS: Option[] = [
-  { value: "sim", label: "Sim" },
-  { value: "não", label: "Não" },
-];
+
+type Step1FormData = {
+  store_display_name: string;
+  store_description: string;
+  city: string;
+  state: string;
+};
+
+type Step2FormData = {
+  store_services: string[];
+  store_services_other: string;
+  brands_worked: string[];
+  brands_worked_other: string;
+};
+
+type Step3FormData = {
+  responsible_name: string;
+  responsible_whatsapp: string;
+};
+
+type CanonicalPrimaryResponsible = {
+  name?: string | null;
+  whatsappNumber?: string | null;
+  role?: string | null;
+};
+
+type StorePrimaryResponsibleApiResponse = {
+  ok: boolean;
+  responsible?: CanonicalPrimaryResponsible | null;
+  error?: string;
+  message?: string;
+};
+
+type StoreWhatsappStatusApiResponse = {
+  ok: boolean;
+  connected?: boolean;
+  provider?: string | null;
+  status?: string | null;
+  isActive?: boolean;
+  displayPhoneNumber?: string | null;
+  phoneNumberId?: string | null;
+  lastInboundAt?: string | null;
+  lastOutboundAt?: string | null;
+  lastSafeError?: string | null;
+  error?: string;
+  message?: string;
+};
+
+function isKnownWhatsappOperationalUnavailability(
+  response: Response,
+  result: StoreWhatsappStatusApiResponse | null,
+): boolean {
+  if (response.ok || !result) return false;
+
+  const safeMessage = cleanText(result.message);
+  return Boolean(
+    result.ok === false &&
+      safeMessage &&
+      (response.status === 400 || response.status === 401 || response.status === 403),
+  );
+}
+
 const STORE_SERVICE_OPTIONS: Option[] = [
   { value: "venda_piscinas", label: "Venda de piscinas" },
+  { value: "venda_produtos_quimicos", label: "Produtos químicos" },
+  { value: "venda_acessorios", label: "Acessórios" },
   { value: "instalacao_piscinas", label: "Instalação de piscinas" },
-  { value: "venda_produtos_quimicos", label: "Venda de produtos químicos" },
-  { value: "venda_acessorios", label: "Venda de acessórios" },
   { value: "visita_tecnica", label: "Visita técnica" },
-  { value: "manutencao", label: "Limpeza / manutenção" },
+  { value: "manutencao", label: "Manutenção / limpeza" },
+  { value: "outro", label: "Outro produto ou serviço" },
 ];
-const SERVICE_REGION_MODE_OPTIONS: Option[] = [
-  { value: "somente_cidade_loja", label: "Somente a cidade da loja" },
-  { value: "cidade_e_vizinhas", label: "Cidade da loja + cidades vizinhas" },
-  { value: "grande_regiao", label: "Atende várias cidades da região" },
-  { value: "todo_estado", label: "Todo o estado" },
-  { value: "sob_consulta", label: "Fora da região, só sob consulta" },
+
+const POOL_MARKET_BRAND_OPTIONS: Option[] = [
+  { value: "iGUi", label: "iGUi" },
+  { value: "Henrimar", label: "Henrimar" },
+  { value: "Fiber", label: "Fiber" },
+  { value: "Fibratec", label: "Fibratec" },
+  { value: "Sodramar", label: "Sodramar" },
+  { value: "Nautilus", label: "Nautilus" },
+  { value: "Jacuzzi", label: "Jacuzzi" },
+  { value: "Dancor", label: "Dancor" },
+  { value: "Syllent", label: "Syllent" },
+  { value: "Pooltec", label: "Pooltec" },
+  { value: "AstralPool", label: "AstralPool" },
+  { value: "Veico", label: "Veico" },
+  { value: "Albacete", label: "Albacete" },
+  { value: "Panozon", label: "Panozon" },
+  { value: "Sibrape / Pentair", label: "Sibrape / Pentair" },
+  { value: "HTH", label: "HTH" },
+  { value: "Genco", label: "Genco" },
+  { value: "Hidroall", label: "Hidroall" },
+  { value: "Maresias", label: "Maresias" },
+  { value: "CTX Professional", label: "CTX Professional" },
+  { value: "outro", label: "Outra marca" },
 ];
-const POOL_TYPE_OPTIONS: Option[] = [
-  { value: "fibra", label: "Fibra" },
-  { value: "vinil", label: "Vinil" },
-  { value: "alvenaria", label: "Alvenaria" },
-  { value: "pastilha", label: "Pastilha / revestida" },
-  { value: "spa", label: "SPA / hidromassagem" },
-  { value: "prainha", label: "Prainha / complemento" },
-];
-const DAYS_OF_WEEK_OPTIONS: Option[] = [
-  { value: "segunda", label: "Segunda" },
-  { value: "terca", label: "Terça" },
-  { value: "quarta", label: "Quarta" },
-  { value: "quinta", label: "Quinta" },
-  { value: "sexta", label: "Sexta" },
-  { value: "sabado", label: "Sábado" },
-  { value: "domingo", label: "Domingo" },
-];
-const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
-  { value: "precisa_agendar", label: "Precisa agendar antes" },
-  { value: "confirmar_endereco", label: "Precisa confirmar endereço antes" },
-  { value: "analise_do_local", label: "Pode depender de avaliação do local" },
-  { value: "pode_ter_taxa", label: "Pode ter taxa de deslocamento" },
-];
-const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
-  { value: "nao_atende_domingo", label: "Não atende domingo" },
-  { value: "nao_atende_fora_regiao", label: "Não atende fora da região definida" },
-  { value: "nao_faz_obra_entorno", label: "Não faz a obra estética completa do entorno" },
-  { value: "nao_passa_preco_sem_contexto", label: "Não passa preço sem entender o caso" },
-  { value: "depende_avaliacao_tecnica", label: "Alguns casos dependem de avaliação técnica" },
-  { value: "prazos_podem_variar", label: "Prazos podem variar conforme o projeto" },
-];
-const SALES_FLOW_START_OPTIONS: Option[] = [
-  { value: "primeiro_atendimento", label: "Primeiro atendimento" },
-  { value: "cliente_explica_o_que_quer", label: "Cliente explica o que quer" },
-  { value: "cliente_manda_foto_do_local", label: "Cliente manda foto do local" },
-  { value: "cliente_pergunta_preco", label: "Cliente pergunta preço" },
-  { value: "cliente_pede_visita_tecnica", label: "Cliente pede visita técnica" },
-  { value: "cliente_pede_orcamento", label: "Cliente pede orçamento" },
-];
-const SALES_FLOW_MIDDLE_OPTIONS: Option[] = [
-  { value: "entender_melhor_a_necessidade", label: "Entender melhor a necessidade" },
-  { value: "mostrar_opcoes_de_piscina", label: "Mostrar opções de piscina" },
-  { value: "passar_faixa_de_valor", label: "Passar faixa de valor" },
-  { value: "montar_orcamento", label: "Montar orçamento" },
-  { value: "tirar_duvidas_tecnicas", label: "Tirar dúvidas técnicas" },
-  { value: "negociar_condicao", label: "Negociar condição" },
-  { value: "agendar_visita_tecnica", label: "Agendar visita técnica" },
-];
-const SALES_FLOW_FINAL_OPTIONS: Option[] = [
-  { value: "aprovacao_do_orcamento", label: "Aprovação do orçamento" },
-  { value: "pagamento_sinal", label: "Pagamento / sinal" },
-  { value: "confirmacao_do_pagamento", label: "Confirmação do pagamento" },
-  { value: "agendamento_da_instalacao", label: "Agendamento da instalação" },
-  { value: "instalacao", label: "Instalação" },
-  { value: "entrega_final", label: "Entrega final" },
-  { value: "pos_venda", label: "Pós-venda" },
-];
-const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
-  { value: "pix", label: "Pix" },
-  { value: "cartao_credito", label: "Cartão de crédito" },
-  { value: "cartao_debito", label: "Cartão de débito" },
-  { value: "boleto", label: "Boleto" },
-  { value: "dinheiro", label: "Dinheiro" },
-  { value: "transferencia", label: "Transferência" },
-];
-const PAYMENT_METHOD_CONDITION_OPTIONS: Option[] = [
-  { value: "parcelado", label: "Aceita parcelamento" },
-  { value: "financiamento", label: "Trabalha com financiamento" },
-];
-const PIX_KEY_TYPE_OPTIONS: Option[] = [
-  { value: "cpf", label: "CPF" },
-  { value: "cnpj", label: "CNPJ" },
-  { value: "email", label: "E-mail" },
-  { value: "phone", label: "Telefone" },
-  { value: "random", label: "Chave aleatoria" },
-];
-const DOWN_PAYMENT_MODE_OPTIONS: Option[] = [
-  { value: "none", label: "Nao usa entrada" },
-  { value: "optional", label: "Entrada opcional" },
-  { value: "required", label: "Entrada obrigatoria" },
-];
-const DOWN_PAYMENT_VALUE_TYPE_OPTIONS: Option[] = [
-  { value: "percent", label: "Percentual" },
-  { value: "fixed", label: "Valor fixo" },
-  { value: "case_by_case", label: "Caso a caso" },
-];
-const DISCOUNT_AUTONOMY_MODE_OPTIONS: Option[] = [
-  { value: "approval_required", label: "Sempre com aprovação humana" },
-  { value: "default_step_autonomous", label: "IA pode conceder só o primeiro degrau" },
-  { value: "within_policy_autonomous", label: "IA pode conceder dentro da política" },
-];
-const INSTALLMENT_INTEREST_POLICY_OPTIONS: Option[] = [
-  { value: "interest_free", label: "Sem juros" },
-  { value: "with_interest", label: "Com juros" },
-  { value: "case_by_case", label: "Juros caso a caso" },
-];
-const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
-  { value: "so_apos_entender_objetivo", label: "Só depois de entender o que o cliente quer" },
-  {
-    value: "so_apos_identificar_interesse_real",
-    label: "Só depois de perceber interesse real",
-  },
-  {
-    value: "so_apos_entender_tipo",
-    label: "Só depois de entender o tipo de piscina ou produto",
-  },
-  {
-    value: "so_apos_entender_medidas",
-    label: "Só depois de entender medidas ou porte do projeto",
-  },
-  {
-    value: "so_apos_entender_instalacao",
-    label: "Só depois de entender se precisa instalação",
-  },
-];
-const PRICE_TALK_MODE_OPTIONS: Option[] = [
-  {
-    value: "quando_cliente_perguntar",
-    label: "Pode falar preço quando o cliente perguntar",
-  },
-  {
-    value: "apenas_faixa_inicial",
-    label: "Pode falar só uma faixa inicial, não valor fechado",
-  },
-  { value: "nao_falar_sozinha", label: "Não deve falar preço sozinha" },
-];
-const HUMAN_HELP_DISCOUNT_OPTIONS: Option[] = [
-  { value: "pediu_desconto_maior", label: "Pediu desconto maior que o permitido" },
-  { value: "quer_condicao_especial", label: "Quer condição especial" },
-  { value: "fechamento_imediato", label: "Cliente quer fechar agora" },
-  { value: "cliente_importante", label: "Cliente com alto potencial de fechar" },
-];
-const HUMAN_HELP_CUSTOM_PROJECT_OPTIONS: Option[] = [
-  { value: "projeto_fora_padrao", label: "Projeto fora do padrão" },
-  { value: "terreno_dificil", label: "Local ou terreno com dificuldade" },
-  { value: "duvida_tecnica_complexa", label: "Dúvida técnica complexa" },
-  { value: "pedido_muito_personalizado", label: "Pedido muito personalizado" },
-  { value: "obra_complementar", label: "Pedido com obra extra além da piscina" },
-];
-const HUMAN_HELP_PAYMENT_OPTIONS: Option[] = [
-  { value: "parcelamento_diferente", label: "Parcelamento diferente do padrão" },
-  { value: "financiamento_especifico", label: "Pedido de financiamento específico" },
-  { value: "prazo_especial", label: "Prazo especial de pagamento" },
-  { value: "comprovante_pagamento", label: "Validação manual de pagamento" },
-];
-const RESPONSIBLE_NOTIFICATION_CASE_OPTIONS: Option[] = [
-  { value: "pedido_desconto", label: "Pedido de desconto" },
-  { value: "cliente_quase_fechando", label: "Cliente com alta chance de fechar" },
-  { value: "duvida_tecnica", label: "Dúvida técnica importante" },
-  { value: "pedido_visita", label: "Pedido de visita técnica" },
-  { value: "pedido_instalacao", label: "Pedido de instalação" },
-  { value: "problema_pagamento", label: "Problema de pagamento" },
-];
-const ACTIVATION_STYLE_OPTIONS: Option[] = [
-  { value: "ia_direta", label: "Mais direta" },
-  { value: "ia_humanizada", label: "Mais humana" },
-  { value: "priorizar_qualificacao", label: "Priorizar qualificação antes de preço" },
-  { value: "priorizar_agendamento", label: "Priorizar visita ou agendamento" },
-];
-const ACTIVATION_GUARDRAIL_OPTIONS: Option[] = [
-  { value: "nao_prometer_fora_escopo", label: "Nunca prometer fora do escopo" },
-  { value: "encaminhar_humano_casos_criticos", label: "Chamar humano em casos críticos" },
-];
+
+function cleanText(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function extractOnboardingStatus(value: unknown) {
+  if (Array.isArray(value)) return extractOnboardingStatus(value[0]);
+  if (value && typeof value === "object" && "status" in value) {
+    return cleanText((value as { status?: unknown }).status).toLowerCase();
+  }
+  return cleanText(value).toLowerCase();
+}
+
+function mapOnboardingCompletionError(error: unknown) {
+  const value = error as {
+    code?: unknown;
+    message?: unknown;
+    details?: unknown;
+    hint?: unknown;
+  } | null;
+  const raw = [
+    value?.code,
+    value?.message,
+    value?.details,
+    value?.hint,
+  ]
+    .map(cleanText)
+    .join(" ");
+
+  if (raw.includes("P19A_ONBOARDING_NOT_READY:STORE_NAME")) {
+    return "Os dados da loja ainda não foram salvos. Revise a Etapa 1 e tente novamente.";
+  }
+  if (
+    raw.includes("P19A_ONBOARDING_NOT_READY:STORE_DESCRIPTION") ||
+    raw.includes("P19A_ONBOARDING_NOT_READY:CITY") ||
+    raw.includes("P19A_ONBOARDING_NOT_READY:STATE")
+  ) {
+    return "Revise a Etapa 1 do onboarding e salve os dados essenciais da loja novamente.";
+  }
+  if (raw.includes("P19A_ONBOARDING_NOT_READY:STORE_SERVICES")) {
+    return "Revise a Etapa 2 do onboarding e salve as atividades principais da loja novamente.";
+  }
+  if (
+    raw.includes("P19A_ONBOARDING_NOT_READY:PRIMARY_RESPONSIBLE") ||
+    raw.includes("P19A_ONBOARDING_NOT_READY:RESPONSIBLE_NAME") ||
+    raw.includes("P19A_ONBOARDING_NOT_READY:RESPONSIBLE_WHATSAPP")
+  ) {
+    return "Revise a Etapa 3 do onboarding e salve o responsável principal novamente.";
+  }
+  if (raw.includes("P19A_ONBOARDING_NOT_READY:WHATSAPP_COMMERCIAL")) {
+    return "O WhatsApp comercial ainda não está pronto. Confira a conexão oficial e tente novamente.";
+  }
+
+  return "Não foi possível confirmar todos os dados essenciais salvos. Revise as etapas do onboarding e tente novamente.";
+}
+
 function parseArrayAnswer(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String).filter(Boolean);
   if (typeof value === "string") {
@@ -405,186 +186,77 @@ function parseArrayAnswer(value: unknown): string[] {
   }
   return [];
 }
-function parseYesNoValue(value: unknown): boolean | null {
-  if (typeof value === "boolean") return value;
-  if (typeof value !== "string") return null;
 
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
+function normalizeOptionToken(value: unknown) {
+  return cleanText(value).toLocaleLowerCase("pt-BR");
+}
 
-  if (normalized === "sim") return true;
-  if (normalized === "nao") return false;
-  return null;
-}
-function yesNoFormValue(value: boolean | null | undefined): string {
-  if (value === true) return "sim";
-  if (value === false) return "n\u00e3o";
-  return "";
-}
-function canonicalDaysFromSource(value: unknown): string[] {
-  return normalizeOperatingDays(value);
-}
-function operationRulesFromSource(value: unknown) {
-  return normalizeOperationTechnicalVisitRules(value);
-}
-function ensureScheduleSettingsPayloadCanPreserve(row: ScheduleSettingsRow) {
-  if (!Number.isInteger(row.same_time_capacity)) {
-    throw new Error(
-      "Agenda canonica invalida: same_time_capacity nao pode ser preservado.",
+function resolveMultiChoiceFromStored(value: unknown, options: Option[]) {
+  const storedValues = parseArrayAnswer(value);
+  const selected: string[] = [];
+  const otherValues: string[] = [];
+
+  for (const item of storedValues) {
+    const normalizedItem = normalizeOptionToken(item);
+    const matched = options.find(
+      (option) =>
+        option.value !== "outro" &&
+        (normalizeOptionToken(option.value) === normalizedItem ||
+          normalizeOptionToken(option.label) === normalizedItem),
     );
-  }
 
-  if (
-    row.operating_days === null ||
-    typeof row.operating_days === "undefined" ||
-    row.operating_hours === null ||
-    typeof row.operating_hours === "undefined"
-  ) {
-    throw new Error(
-      "Agenda canonica invalida: operating_days/operating_hours nao podem ser preservados.",
-    );
-  }
-}
-function mergePersistedStep2Draft(
-  currentDraft: Step2FormData,
-  persistedDraft: unknown,
-): Step2FormData {
-  if (
-    !persistedDraft ||
-    typeof persistedDraft !== "object" ||
-    Array.isArray(persistedDraft)
-  ) {
-    return currentDraft;
-  }
-
-  const persisted = persistedDraft as Record<string, unknown>;
-  const next = { ...currentDraft };
-  const stringFields: Step2StringField[] = [
-    "pool_types",
-    "sells_chemicals",
-    "sells_accessories",
-    "offers_installation",
-    "offers_technical_visit",
-    "brands_worked",
-    "pool_types_other",
-    "main_store_brand",
-  ];
-
-  for (const field of stringFields) {
-    if (typeof persisted[field] === "string") {
-      next[field] = persisted[field];
+    if (matched) {
+      if (!selected.includes(matched.value)) selected.push(matched.value);
+    } else if (item) {
+      otherValues.push(item);
     }
   }
 
-  if (Array.isArray(persisted.pool_types_selected)) {
-    next.pool_types_selected = persisted.pool_types_selected
-      .map((item) => (typeof item === "string" ? item : ""))
-      .filter(Boolean);
-  }
-
-  return next;
+  if (otherValues.length > 0) selected.push("outro");
+  return { selected, other: otherValues.join(", ") };
 }
-function mergePersistedStep3Draft(
-  currentDraft: Step3FormData,
-  persistedDraft: unknown,
-): Step3FormData {
-  if (
-    !persistedDraft ||
-    typeof persistedDraft !== "object" ||
-    Array.isArray(persistedDraft)
-  ) {
-    return currentDraft;
-  }
 
-  const persisted = persistedDraft as Record<string, unknown>;
-  const next = { ...currentDraft };
-  const stringFields: Step3StringField[] = [
-    "average_installation_time_days",
-    "installation_days_rule",
-    "technical_visit_days_rule",
-    "average_human_response_time",
-    "installation_process_other",
-    "technical_visit_rules_other",
-    "attends_holidays",
-    "important_limitations_other",
-    "sales_flow_notes",
-  ];
-  const stringArrayFields: Step3StringArrayField[] = [
-    "installation_process_steps",
-    "important_limitations_selected",
-    "sales_flow_start_steps",
-    "sales_flow_middle_steps",
-    "sales_flow_final_steps",
-  ];
-  const booleanFields: Step3BooleanField[] = [
-    "sales_flow_start_confirmed",
-    "sales_flow_middle_confirmed",
-    "sales_flow_final_confirmed",
-  ];
-
-  for (const field of stringFields) {
-    if (typeof persisted[field] === "string") {
-      next[field] = persisted[field];
-    }
-  }
-
-  for (const field of stringArrayFields) {
-    if (Array.isArray(persisted[field])) {
-      next[field] = persisted[field]
-        .map((item) => (typeof item === "string" ? item : ""))
-        .filter(Boolean);
-    }
-  }
-
-  for (const field of booleanFields) {
-    if (typeof persisted[field] === "boolean") {
-      next[field] = persisted[field];
-    }
-  }
-
-  if (Object.prototype.hasOwnProperty.call(persisted, "installation_available_days")) {
-    next.installation_available_days = canonicalDaysFromSource(
-      persisted.installation_available_days,
-    );
-  }
-  if (Object.prototype.hasOwnProperty.call(persisted, "technical_visit_available_days")) {
-    next.technical_visit_available_days = canonicalDaysFromSource(
-      persisted.technical_visit_available_days,
-    );
-  }
-  if (Object.prototype.hasOwnProperty.call(persisted, "technical_visit_rules_selected")) {
-    next.technical_visit_rules_selected = operationRulesFromSource(
-      persisted.technical_visit_rules_selected,
-    );
-  }
-
-  return next;
+function resolveMultiChoiceText(values: string[], other: string, options: Option[]) {
+  return [
+    ...values
+      .filter((value) => value !== "outro")
+      .map((value) => options.find((option) => option.value === value)?.label || value),
+    values.includes("outro") ? cleanText(other) : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
 }
-function joinSelectedLabels(values: string[], options: Option[], extra?: string) {
-  const labels = values
-    .map((value) => options.find((option) => option.value === value)?.label || value)
-    .filter(Boolean);
-  if (extra?.trim()) labels.push(extra.trim());
-  return labels.join(", ");
+
+function normalizeWhatsappDigits(value: string) {
+  let digits = value.replace(/[^\d]/g, "");
+  if (digits.startsWith("55")) digits = digits.slice(2);
+  digits = digits.slice(0, 11);
+  return digits ? `55${digits}` : "";
 }
-function formatBrazilCurrencyInput(value: string) {
-  return value.replace(/[^\d.]/g, "");
-}
-function formatPercentInput(value: string) {
-  return value.replace(/[^\d]/g, "");
-}
+
 function formatWhatsappInput(value: string) {
-  return value.replace(/[^\d]/g, "");
+  const canonical = normalizeWhatsappDigits(value);
+  if (!canonical) return "";
+
+  const national = canonical.slice(2);
+  const ddd = national.slice(0, 2);
+  const local = national.slice(2);
+
+  if (!ddd) return "+55";
+  if (!local) return `+55 ${ddd}`;
+
+  if (local.length <= 4) return `+55 ${ddd} ${local}`;
+
+  const splitAt = local.length > 8 ? local.length - 4 : 4;
+  return `+55 ${ddd} ${local.slice(0, splitAt)}-${local.slice(splitAt)}`;
 }
+
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
+
 function persistToLocalStorageSafe(key: string, value: string) {
   if (typeof window === "undefined") return;
-
   try {
     window.localStorage.setItem(key, value);
   } catch (error) {
@@ -594,7 +266,6 @@ function persistToLocalStorageSafe(key: string, value: string) {
 
 function removeFromLocalStorageSafe(key: string) {
   if (typeof window === "undefined") return;
-
   try {
     window.localStorage.removeItem(key);
   } catch (error) {
@@ -614,6 +285,7 @@ function StepBadge({
   onClick: () => void;
 }) {
   const active = step === currentStep;
+
   return (
     <button
       type="button"
@@ -622,7 +294,7 @@ function StepBadge({
         "rounded-xl border px-4 py-3 text-left transition",
         active
           ? "border-black bg-black text-white"
-          : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+          : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50",
       )}
     >
       <p className="text-xs font-medium opacity-80">Etapa {step}</p>
@@ -630,36 +302,32 @@ function StepBadge({
     </button>
   );
 }
-function SectionTitle({
-  title,
-  hint,
-}: {
-  title: string;
-  hint?: string;
-}) {
+
+function SectionTitle({ title, hint }: { title: string; hint?: string }) {
   return (
     <div className="mb-3">
       <h2 className="text-sm font-medium text-gray-900">{title}</h2>
-      {hint ? <p className="mt-1 text-sm text-gray-500">{hint}</p> : null}
+      {hint ? <p className="mt-1 text-sm leading-6 text-gray-500">{hint}</p> : null}
     </div>
   );
 }
+
 function InfoBlock({
   title,
   description,
-  subtle = false,
+  tone = "subtle",
 }: {
   title: string;
   description: string;
-  subtle?: boolean;
+  tone?: "subtle" | "warning" | "success";
 }) {
   return (
     <div
       className={cx(
         "rounded-xl border px-4 py-3",
-        subtle
-          ? "border-gray-200 bg-gray-50 text-gray-700"
-          : "border-amber-300 bg-amber-50 text-amber-900"
+        tone === "warning" && "border-amber-300 bg-amber-50 text-amber-900",
+        tone === "success" && "border-emerald-200 bg-emerald-50 text-emerald-900",
+        tone === "subtle" && "border-gray-200 bg-gray-50 text-gray-700",
       )}
     >
       <p className="text-sm font-semibold">{title}</p>
@@ -667,17 +335,20 @@ function InfoBlock({
     </div>
   );
 }
+
 function SelectorGrid({
   options,
   selectedValues,
   onToggle,
+  columns = "md:grid-cols-2",
 }: {
   options: Option[];
   selectedValues: string[];
   onToggle: (value: string) => void;
+  columns?: string;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+    <div className={cx("grid grid-cols-1 gap-3", columns)}>
       {options.map((option) => {
         const selected = selectedValues.includes(option.value);
         return (
@@ -689,16 +360,16 @@ function SelectorGrid({
               "rounded-xl border px-4 py-3 text-left transition",
               selected
                 ? "border-black bg-black text-white"
-                : "border-gray-300 bg-white text-gray-800 hover:bg-gray-50"
+                : "border-gray-300 bg-white text-gray-800 hover:bg-gray-50",
             )}
           >
             <div className="flex items-center gap-3">
               <span
                 className={cx(
-                  "inline-flex h-6 w-6 items-center justify-center rounded-full border text-xs",
+                  "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs",
                   selected
                     ? "border-white bg-white text-black"
-                    : "border-gray-300 bg-white text-transparent"
+                    : "border-gray-300 bg-white text-transparent",
                 )}
               >
                 ✓
@@ -718,1151 +389,446 @@ function SelectorGrid({
     </div>
   );
 }
-function SingleSelectorGrid({
-  options,
-  value,
+
+function BrandSelectList({
+  values,
   onChange,
+  otherValue,
+  onOtherChange,
 }: {
-  options: Option[];
-  value: string;
-  onChange: (value: string) => void;
+  values: string[];
+  onChange: (values: string[]) => void;
+  otherValue: string;
+  onOtherChange: (value: string) => void;
 }) {
+  const rows = values.length > 0 ? values : [""];
+
+  function updateRow(index: number, value: string) {
+    const next = [...rows];
+    next[index] = value;
+    onChange(next);
+  }
+
+  function addRow() {
+    onChange([...rows, ""]);
+  }
+
+  const hasOther = rows.includes("outro");
+
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-      {options.map((option) => {
-        const selected = value === option.value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            onClick={() => onChange(option.value)}
-            className={cx(
-              "rounded-xl border px-4 py-3 text-left transition",
-              selected
-                ? "border-black bg-black text-white"
-                : "border-gray-300 bg-white text-gray-800 hover:bg-gray-50"
-            )}
-          >
-            <div className="flex items-center gap-3">
-              <span
-                className={cx(
-                  "inline-flex h-6 w-6 items-center justify-center rounded-full border text-xs",
-                  selected
-                    ? "border-white bg-white text-black"
-                    : "border-gray-300 bg-white text-transparent"
-                )}
-              >
-                ✓
-              </span>
-              <div>
-                <p className="text-sm font-medium">{option.label}</p>
-                {option.hint ? (
-                  <p className={cx("mt-1 text-xs", selected ? "text-white/80" : "text-gray-500")}>
-                    {option.hint}
-                  </p>
-                ) : null}
-              </div>
-            </div>
-          </button>
-        );
-      })}
+    <div className="space-y-3">
+      {rows.map((value, index) => (
+        <select
+          key={`brand-row-${index}`}
+          value={value}
+          onChange={(event) => updateRow(index, event.target.value)}
+          className="w-full rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm outline-none focus:border-black"
+        >
+          <option value="">Selecione uma marca</option>
+          {POOL_MARKET_BRAND_OPTIONS.map((option) => (
+            <option
+              key={option.value}
+              value={option.value}
+              disabled={
+                option.value !== value &&
+                option.value !== "outro" &&
+                rows.includes(option.value)
+              }
+            >
+              {option.label}
+            </option>
+          ))}
+        </select>
+      ))}
+
+      <button
+        type="button"
+        onClick={addRow}
+        className="rounded-xl border border-dashed border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+      >
+        + Adicionar mais uma marca
+      </button>
+
+      {hasOther ? (
+        <input
+          type="text"
+          value={otherValue}
+          onChange={(event) => onOtherChange(event.target.value)}
+          className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+          placeholder="Qual é a outra marca? Se forem várias, separe por vírgula."
+        />
+      ) : null}
     </div>
   );
 }
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid gap-1 border-b border-gray-100 py-3 last:border-b-0 md:grid-cols-[190px_minmax(0,1fr)] md:gap-4">
+      <span className="text-sm text-gray-500">{label}</span>
+      <span className="text-sm font-medium text-gray-900">{value || "Não definido"}</span>
+    </div>
+  );
+}
+
 function OnboardingContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { activeStore, organizationId, loading: storeLoading, refreshStores } = useStoreContext();
+
   const [currentStep, setCurrentStep] = useState(1);
   const [saving, setSaving] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [answers, setAnswers] = useState<AnswersMap>({});
-  const [hasCompletedOnboardingOnce, setHasCompletedOnboardingOnce] = useState(false);
-  const [onboardingStatus, setOnboardingStatus] = useState<string>("");
-  const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(null);
-  const isOnboardingReviewMode = hasCompletedOnboardingOnce || onboardingStatus === "completed";
-  const [step1DraftRecovered, setStep1DraftRecovered] = useState(false);
-  const [step2DraftRecovered, setStep2DraftRecovered] = useState(false);
-  const [step3DraftRecovered, setStep3DraftRecovered] = useState(false);
-  const [step4DraftRecovered, setStep4DraftRecovered] = useState(false);
-  const [step5DraftRecovered, setStep5DraftRecovered] = useState(false);
-  const scrollRestoreTimeoutRef = useRef<number | null>(null);
-  const lastRestoredScrollRef = useRef<number | null>(null);
+  const [onboardingStatus, setOnboardingStatus] = useState("");
+  const [strategySettings, setStrategySettings] = useState<StoreStrategySettingsRow | null>(null);
+  const [primaryResponsible, setPrimaryResponsible] = useState<CanonicalPrimaryResponsible | null>(null);
+  const [whatsappStatus, setWhatsappStatus] = useState<StoreWhatsappStatusApiResponse | null>(null);
+  const [whatsappStatusLoading, setWhatsappStatusLoading] = useState(false);
+  const [whatsappStatusError, setWhatsappStatusError] = useState<string | null>(null);
+
   const [step1Form, setStep1Form] = useState<Step1FormData>({
     store_display_name: "",
     store_description: "",
     city: "",
     state: "",
-    service_regions: "",
-    commercial_whatsapp: "",
+  });
+
+  const [step2Form, setStep2Form] = useState<Step2FormData>({
     store_services: [],
     store_services_other: "",
-    service_region_modes: [],
-    service_region_notes: "",
-    service_region_primary_mode: "",
-    service_region_outside_consultation: false,
+    brands_worked: [],
+    brands_worked_other: "",
   });
-  const [step2Form, setStep2Form] = useState<Step2FormData>({
-    pool_types: "",
-    sells_chemicals: "",
-    sells_accessories: "",
-    offers_installation: "",
-    offers_technical_visit: "",
-    brands_worked: "",
-    pool_types_selected: [],
-    pool_types_other: "",
-    main_store_brand: "",
-  });
+
   const [step3Form, setStep3Form] = useState<Step3FormData>({
-    average_installation_time_days: "",
-    installation_days_rule: "",
-    installation_available_days: [],
-    technical_visit_days_rule: "",
-    technical_visit_available_days: [],
-    average_human_response_time: "",
-    installation_process_steps: [],
-    installation_process_other: "",
-    technical_visit_rules_selected: [],
-    technical_visit_rules_other: "",
-    attends_holidays: "",
-    important_limitations_selected: [],
-    important_limitations_other: "",
-    sales_flow_start_steps: [],
-    sales_flow_middle_steps: [],
-    sales_flow_final_steps: [],
-    sales_flow_notes: "",
-    sales_flow_start_confirmed: false,
-    sales_flow_middle_confirmed: false,
-    sales_flow_final_confirmed: false,
-  });
-  const [step4Form, setStep4Form] = useState<Step4FormData>({
-    average_ticket: "",
-    can_offer_discount: "",
-    default_discount_percent: "",
-    max_discount_percent: "",
-    allow_ask_above_max_discount: false,
-    discount_autonomy_mode: "approval_required",
-    discount_special_rules: "",
-    high_value_enabled: false,
-    high_value_threshold_amount: "",
-    high_value_discount_percent: "",
-    accepted_payment_methods: [],
-    pix_key_type: "",
-    pix_key: "",
-    pix_holder_name: "",
-    down_payment_mode: "none",
-    down_payment_value_type: "",
-    down_payment_percent: "",
-    down_payment_amount: "",
-    installments_enabled: "nao",
-    max_installments: "",
-    installment_interest_policy: "",
-    payment_notes: "",
-    ai_can_send_price_directly: "",
-    price_direct_rule: "",
-    human_help_discount_cases: "",
-    human_help_custom_project_cases: "",
-    human_help_payment_cases: "",
-    price_direct_conditions: [],
-    price_direct_rule_other: "",
-    human_help_discount_cases_selected: [],
-    human_help_discount_cases_other: "",
-    human_help_custom_project_cases_selected: [],
-    human_help_custom_project_cases_other: "",
-    human_help_payment_cases_selected: [],
-    human_help_payment_cases_other: "",
-    price_needs_human_help: "",
-    price_talk_mode: "",
-    price_must_understand_before: [],
-  });
-  const [step5Form, setStep5Form] = useState<Step5FormData>({
     responsible_name: "",
     responsible_whatsapp: "",
-    ai_should_notify_responsible: "",
-    final_activation_notes: "",
-    confirm_information_is_correct: false,
-    responsible_notification_cases: [],
-    responsible_notification_cases_other: "",
-    activation_preferences: [],
-    activation_preferences_other: "",
   });
-  const [paymentSettings, setPaymentSettings] =
-    useState<StorePaymentSettingsRow | null>(null);
-  const [commercialAiSettings, setCommercialAiSettings] =
-    useState<StoreCommercialAiSettingsRow | null>(null);
-  const [strategySettings, setStrategySettings] =
-    useState<StoreStrategySettingsRow | null>(null);
-  const [operationSettings, setOperationSettings] =
-    useState<StoreOperationSettingsRow | null>(null);
-  const [scheduleSettings, setScheduleSettings] =
-    useState<ScheduleSettingsRow | null>(null);
-  const step1DraftStorageKey = useMemo(() => {
-    if (!organizationId || !activeStore?.id) return null;
-    return `zion_onboarding_step1_draft:${organizationId}:${activeStore.id}`;
-  }, [organizationId, activeStore?.id]);
-  const step2DraftStorageKey = useMemo(() => {
-    if (!organizationId || !activeStore?.id) return null;
-    return `zion_onboarding_step2_draft:${organizationId}:${activeStore.id}`;
-  }, [organizationId, activeStore?.id]);
-  const step3DraftStorageKey = useMemo(() => {
-    if (!organizationId || !activeStore?.id) return null;
-    return `zion_onboarding_step3_draft:${organizationId}:${activeStore.id}`;
-  }, [organizationId, activeStore?.id]);
-  const step4DraftStorageKey = useMemo(() => {
-    if (!organizationId || !activeStore?.id) return null;
-    return `zion_onboarding_step4_draft:${organizationId}:${activeStore.id}`;
-  }, [organizationId, activeStore?.id]);
-  const step5DraftStorageKey = useMemo(() => {
-    if (!organizationId || !activeStore?.id) return null;
-    return `zion_onboarding_step5_draft:${organizationId}:${activeStore.id}`;
-  }, [organizationId, activeStore?.id]);
-  const currentStepStorageKey = useMemo(() => {
-    if (!organizationId || !activeStore?.id) return null;
-    return `zion_onboarding_current_step:${organizationId}:${activeStore.id}`;
-  }, [organizationId, activeStore?.id]);
-  const pageScrollStorageKey = useMemo(() => {
-    if (!organizationId || !activeStore?.id) return null;
-    return `zion_onboarding_scroll:${organizationId}:${activeStore.id}`;
-  }, [organizationId, activeStore?.id]);
-  const intelligentImportStorageKey = useMemo(() => {
-    if (!organizationId || !activeStore?.id) return null;
-    return `zion_onboarding_intelligent_import:${organizationId}:${activeStore.id}`;
-  }, [organizationId, activeStore?.id]);
-  const ignoreNextStepScrollRef = useRef(false);
-  const savePageScroll = useCallback(() => {
-    if (!pageScrollStorageKey || typeof window === "undefined") return;
-    persistToLocalStorageSafe(pageScrollStorageKey, String(window.scrollY || 0));
-  }, [pageScrollStorageKey]);
-  const restorePageScroll = useCallback((delay = 0) => {
-    if (!pageScrollStorageKey || typeof window === "undefined") return;
-    const runRestore = () => {
-      const raw = window.localStorage.getItem(pageScrollStorageKey);
-      if (!raw) return;
-      const scroll = Number(raw);
-      if (!Number.isFinite(scroll)) return;
-      lastRestoredScrollRef.current = scroll;
-      window.scrollTo({ top: scroll, behavior: "auto" });
-    };
-    if (scrollRestoreTimeoutRef.current !== null) {
-      window.clearTimeout(scrollRestoreTimeoutRef.current);
-      scrollRestoreTimeoutRef.current = null;
-    }
-    if (delay <= 0) {
-      window.requestAnimationFrame(runRestore);
-      return;
-    }
-    scrollRestoreTimeoutRef.current = window.setTimeout(() => {
-      runRestore();
-      scrollRestoreTimeoutRef.current = null;
-    }, delay);
-  }, [pageScrollStorageKey]);
-  const storeHasInstallation = useMemo(
-    () => step1Form.store_services.includes("instalacao_piscinas"),
-    [step1Form.store_services]
-  );
-  const storeHasTechnicalVisit = useMemo(
-    () => step1Form.store_services.includes("visita_tecnica"),
-    [step1Form.store_services]
-  );
-  const persistAllOnboardingDrafts = useCallback(() => {
-    if (typeof window === "undefined") return;
 
-    if (step1DraftStorageKey) {
-      persistToLocalStorageSafe(step1DraftStorageKey, JSON.stringify(step1Form));
-    }
-    if (step2DraftStorageKey) {
-      persistToLocalStorageSafe(step2DraftStorageKey, JSON.stringify(step2Form));
-    }
-    if (step3DraftStorageKey) {
-      persistToLocalStorageSafe(step3DraftStorageKey, JSON.stringify(step3Form));
-    }
-    if (step4DraftStorageKey) {
-      persistToLocalStorageSafe(step4DraftStorageKey, JSON.stringify(step4Form));
-    }
-    if (step5DraftStorageKey) {
-      persistToLocalStorageSafe(step5DraftStorageKey, JSON.stringify(step5Form));
-    }
-    if (currentStepStorageKey) {
-      persistToLocalStorageSafe(currentStepStorageKey, String(currentStep));
-    }
-    if (pageScrollStorageKey) {
-      persistToLocalStorageSafe(pageScrollStorageKey, String(window.scrollY || 0));
-    }
-  }, [
-    currentStep,
-    currentStepStorageKey,
-    pageScrollStorageKey,
-    step1DraftStorageKey,
-    step1Form,
-    step2DraftStorageKey,
-    step2Form,
-    step3DraftStorageKey,
-    step3Form,
-    step4DraftStorageKey,
-    step4Form,
-    step5DraftStorageKey,
-    step5Form,
-  ]);
+  const storagePrefix = useMemo(() => {
+    if (!organizationId || !activeStore?.id) return null;
+    return `zion_onboarding_v2:${organizationId}:${activeStore.id}`;
+  }, [organizationId, activeStore?.id]);
+
+  const currentStepStorageKey = storagePrefix ? `${storagePrefix}:current_step` : null;
+  const step1DraftStorageKey = storagePrefix ? `${storagePrefix}:step1` : null;
+  const step2DraftStorageKey = storagePrefix ? `${storagePrefix}:step2` : null;
+  const step3DraftStorageKey = storagePrefix ? `${storagePrefix}:step3` : null;
+
   const updateStep1Field = <K extends keyof Step1FormData>(field: K, value: Step1FormData[K]) => {
-    setStep1Form((prev) => ({ ...prev, [field]: value }));
+    setStep1Form((current) => ({ ...current, [field]: value }));
   };
+
   const updateStep2Field = <K extends keyof Step2FormData>(field: K, value: Step2FormData[K]) => {
-    setStep2Form((prev) => ({ ...prev, [field]: value }));
+    setStep2Form((current) => ({ ...current, [field]: value }));
   };
+
   const updateStep3Field = <K extends keyof Step3FormData>(field: K, value: Step3FormData[K]) => {
-    setStep3Form((prev) => ({ ...prev, [field]: value }));
+    setStep3Form((current) => ({ ...current, [field]: value }));
   };
-  const updateStep4Field = <K extends keyof Step4FormData>(field: K, value: Step4FormData[K]) => {
-    setStep4Form((prev) => ({ ...prev, [field]: value }));
-  };
-  const updateStep5Field = <K extends keyof Step5FormData>(field: K, value: Step5FormData[K]) => {
-    setStep5Form((prev) => ({ ...prev, [field]: value }));
-  };
-  const toggleArrayValue = <T extends string>(
-    setter: Dispatch<SetStateAction<T[]>>,
-    value: T
-  ) => {
-    setter((prev) => (prev.includes(value) ? prev.filter((item) => item !== value) : [...prev, value]));
-  };
-  const toggleStep1ArrayField = (field: "store_services" | "service_region_modes", value: string) => {
-    setStep1Form((prev) => ({
-      ...prev,
-      [field]: prev[field].includes(value)
-        ? prev[field].filter((item) => item !== value)
-        : [...prev[field], value],
-    }));
-  };
-  const toggleStep2ArrayField = (field: "pool_types_selected", value: string) => {
-    setStep2Form((prev) => ({
-      ...prev,
-      [field]: prev[field].includes(value)
-        ? prev[field].filter((item) => item !== value)
-        : [...prev[field], value],
-    }));
-  };
-  const toggleStep3ArrayField = (
-    field:
-      | "installation_available_days"
-      | "technical_visit_available_days"
-      | "installation_process_steps"
-      | "technical_visit_rules_selected"
-      | "important_limitations_selected"
-      | "sales_flow_start_steps"
-      | "sales_flow_middle_steps"
-      | "sales_flow_final_steps",
-    value: string
-  ) => {
-    setStep3Form((prev) => ({
-      ...prev,
-      [field]: prev[field].includes(value)
-        ? prev[field].filter((item) => item !== value)
-        : [...prev[field], value],
-    }));
-  };
-  const toggleStep4ArrayField = (
-    field:
-      | "accepted_payment_methods"
-      | "price_direct_conditions"
-      | "human_help_discount_cases_selected"
-      | "human_help_custom_project_cases_selected"
-      | "human_help_payment_cases_selected"
-      | "price_must_understand_before",
-    value: string
-  ) => {
-    setStep4Form((prev) => ({
-      ...prev,
-      [field]: prev[field].includes(value)
-        ? prev[field].filter((item) => item !== value)
-        : [...prev[field], value],
-    }));
-  };
-  const toggleStep5ArrayField = (
-    field: "responsible_notification_cases" | "activation_preferences",
-    value: string
-  ) => {
-    setStep5Form((prev) => ({
-      ...prev,
-      [field]: prev[field].includes(value)
-        ? prev[field].filter((item) => item !== value)
-        : [...prev[field], value],
-    }));
-  };
+
   function changeStep(step: number) {
-    ignoreNextStepScrollRef.current = false;
+    setFormError(null);
+    setSuccessMessage(null);
     setCurrentStep(step);
-  }
-  function navigateWithFallback(path: string) {
-    persistAllOnboardingDrafts();
-    savePageScroll();
-    try {
-      router.push(path);
-    } catch (error) {
-      console.error("[OnboardingPage] router push error:", error);
-    }
     if (typeof window !== "undefined") {
-      window.setTimeout(() => {
-        if (window.location.pathname !== path) {
-          window.location.href = path;
-        }
-      }, 120);
+      window.scrollTo({ top: 0, behavior: "smooth" });
     }
   }
+
+  const toggleStoreService = (value: string) => {
+    setStep2Form((current) => ({
+      ...current,
+      store_services: current.store_services.includes(value)
+        ? current.store_services.filter((item) => item !== value)
+        : [...current.store_services, value],
+    }));
+  };
 
   const loadOnboardingStatus = useCallback(async () => {
     if (!organizationId || !activeStore?.id) return "";
 
-    try {
-      const { data: onboardingData, error: onboardingRpcError } = await supabase.rpc(
-        "onboarding_get_store_onboarding_scoped",
-        {
-          p_organization_id: organizationId,
-          p_store_id: activeStore.id,
-        }
-      );
+    const { data, error } = await supabase.rpc("onboarding_get_store_onboarding_scoped", {
+      p_organization_id: organizationId,
+      p_store_id: activeStore.id,
+    });
 
-      if (onboardingRpcError) throw onboardingRpcError;
-
-      const normalizedRpcStatus = String(
-        Array.isArray(onboardingData)
-          ? onboardingData[0]?.status ?? ""
-          : onboardingData?.status ?? ""
-      )
-        .trim()
-        .toLowerCase();
-
-      if (normalizedRpcStatus) {
-        setOnboardingStatus(normalizedRpcStatus);
-        setHasCompletedOnboardingOnce(normalizedRpcStatus === "completed");
-        return normalizedRpcStatus;
-      }
-    } catch (rpcError) {
-      console.error("[OnboardingPage] loadOnboardingStatus RPC error:", rpcError);
-    }
-
-    try {
-      const { data: onboardingRow, error: onboardingSelectError } = await supabase
-        .from("store_onboarding")
-        .select("status")
-        .eq("organization_id", organizationId)
-        .eq("store_id", activeStore.id)
-        .maybeSingle();
-
-      if (onboardingSelectError) throw onboardingSelectError;
-
-      const normalizedSelectStatus = String(onboardingRow?.status ?? "")
-        .trim()
-        .toLowerCase();
-      setOnboardingStatus(normalizedSelectStatus);
-      setHasCompletedOnboardingOnce(normalizedSelectStatus === "completed");
-      return normalizedSelectStatus;
-    } catch (selectError) {
-      console.error("[OnboardingPage] loadOnboardingStatus select error:", selectError);
-      setOnboardingStatus("");
-      setHasCompletedOnboardingOnce(false);
+    if (error) {
+      console.error("[OnboardingPage] loadOnboardingStatus error:", error);
       return "";
     }
+
+    const status = cleanText(Array.isArray(data) ? data[0]?.status : data?.status).toLowerCase();
+    setOnboardingStatus(status);
+    return status;
   }, [organizationId, activeStore?.id]);
 
-  function blockReviewModeEditing() {
-    setFormError(
-      "O onboarding está em modo revisão. Para alterar dados atuais da loja, use a aba Configurações."
-    );
-  }
-  async function upsertAnswers(
-    payloads: Array<[string, unknown]>,
-    nextSuccessMessage: string,
-    nextStep?: number,
-    finalStatus?: "in_progress" | "completed"
-  ) {
-    if (!organizationId || !activeStore?.id) return;
-    setSaving(true);
-    setFormError(null);
-    setSuccessMessage(null);
-    try {
-      const nextStoreName = payloads.find(([questionKey]) => questionKey === "store_display_name");
+  const fetchWhatsappStatus = useCallback(async () => {
+    if (!activeStore?.id) return;
 
-      for (const [questionKey, answer] of payloads) {
-        const { error: rpcError } = await supabase.rpc("onboarding_upsert_answer_scoped", {
+    setWhatsappStatusLoading(true);
+    setWhatsappStatusError(null);
+
+    try {
+      const response = await fetch(
+        `/api/store/whatsapp/status?storeId=${encodeURIComponent(activeStore.id)}`,
+        {
+          method: "GET",
+          cache: "no-store",
+          credentials: "include",
+        },
+      );
+
+      const result = (await response.json().catch(() => null)) as StoreWhatsappStatusApiResponse | null;
+
+      if (result && isKnownWhatsappOperationalUnavailability(response, result)) {
+        setWhatsappStatus({
+          ...result,
+          connected: false,
+          isActive: false,
+          displayPhoneNumber: result.displayPhoneNumber ?? null,
+        });
+        setWhatsappStatusError(cleanText(result.message));
+        return;
+      }
+
+      if (!result) {
+        throw new Error("Não foi possível carregar o status do WhatsApp da loja.");
+      }
+
+      if (!response.ok || !result.ok) {
+        throw new Error(result.message || "Não foi possível carregar o status do WhatsApp da loja.");
+      }
+
+      setWhatsappStatus(result);
+    } catch (error) {
+      console.error("[OnboardingPage] fetchWhatsappStatus error:", error);
+      setWhatsappStatus(null);
+      setWhatsappStatusError(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível carregar o status do WhatsApp da loja.",
+      );
+    } finally {
+      setWhatsappStatusLoading(false);
+    }
+  }, [activeStore?.id]);
+
+  const loadBaseData = useCallback(async () => {
+    if (!organizationId || !activeStore?.id) return;
+
+    try {
+      const [answersResult, strategySettingsResult, responsibleResponse] = await Promise.all([
+        supabase.rpc("onboarding_get_answers_scoped", {
           p_organization_id: organizationId,
           p_store_id: activeStore.id,
-          p_question_key: questionKey,
-          p_answer: answer,
-        });
-        if (rpcError) throw new Error(`Falha ao salvar campo: ${questionKey}`);
+        }),
+        supabase
+          .from("store_strategy_settings")
+          .select(
+            "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, created_at, updated_at",
+          )
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStore.id)
+          .maybeSingle(),
+        fetch("/api/store/primary-responsible", {
+          method: "GET",
+          cache: "no-store",
+          credentials: "include",
+        }),
+      ]);
+
+      if (answersResult.error) throw answersResult.error;
+      if (strategySettingsResult.error) throw strategySettingsResult.error;
+
+      const responsibleResult = (await responsibleResponse.json().catch(() => null)) as
+        | StorePrimaryResponsibleApiResponse
+        | null;
+
+      if (!responsibleResponse.ok || !responsibleResult?.ok) {
+        throw new Error(
+          responsibleResult?.message || "Não foi possível carregar o responsável principal da loja.",
+        );
       }
 
-      const resolvedStoreName =
-        typeof nextStoreName?.[1] === "string" ? nextStoreName[1].trim() : "";
-
-      if (resolvedStoreName) {
-        const response = await fetch("/api/store/update-name", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            storeId: activeStore.id,
-            name: resolvedStoreName,
-          }),
-        });
-
-        const result = (await response.json().catch(() => null)) as
-          | { ok?: boolean; message?: string; error?: string }
-          | null;
-
-        if (!response.ok || !result?.ok) {
-          throw new Error(
-            result?.message || "Falha ao atualizar o nome oficial da loja."
-          );
-        }
-
-        await refreshStores();
-      }
-
-      const { error: statusError } = await supabase.rpc("onboarding_upsert_store_onboarding_scoped", {
-        p_organization_id: organizationId,
-        p_store_id: activeStore.id,
-        p_status: finalStatus ?? "in_progress",
+      const nextAnswers = (answersResult.data ?? {}) as AnswersMap;
+      const nextStrategySettings = (strategySettingsResult.data ?? null) as StoreStrategySettingsRow | null;
+      const strategyInput = createStoreStrategySettingsInputFromSources({
+        answers: nextAnswers,
+        settings: nextStrategySettings,
       });
-      if (statusError) throw new Error("Falha ao atualizar status do onboarding.");
-      const nextResolvedStatus = (finalStatus ?? "in_progress").trim().toLowerCase();
-      setOnboardingStatus(nextResolvedStatus);
-      setHasCompletedOnboardingOnce(nextResolvedStatus === "completed");
-      setSuccessMessage(nextSuccessMessage);
-      if (typeof nextStep === "number") {
-        ignoreNextStepScrollRef.current = false;
-        setCurrentStep(nextStep);
-      }
-    } catch (err) {
-      console.error("[OnboardingPage] upsertAnswers error:", err);
-      setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
-    } finally {
-      setSaving(false);
+      const nextResponsible = responsibleResult.responsible ?? null;
+
+      setAnswers(nextAnswers);
+      setStrategySettings(nextStrategySettings);
+      setPrimaryResponsible(nextResponsible);
+
+      const storedBrands = resolveMultiChoiceFromStored(
+        strategyInput.brandsWorked,
+        POOL_MARKET_BRAND_OPTIONS,
+      );
+
+      setStep1Form((current) => ({
+        store_display_name:
+          current.store_display_name || cleanText(nextAnswers.store_display_name) || cleanText(activeStore.name),
+        store_description:
+          current.store_description || cleanText(strategyInput.storeDescription),
+        city: current.city || strategyInput.city,
+        state: current.state || strategyInput.state,
+      }));
+
+      const baseStoreServices =
+        strategyInput.storeServices.length > 0
+          ? strategyInput.storeServices
+          : parseArrayAnswer(nextAnswers.store_services);
+      const storeServicesWithOther =
+        strategyInput.storeServicesOther && !baseStoreServices.includes("outro")
+          ? [...baseStoreServices, "outro"]
+          : baseStoreServices;
+
+      setStep2Form((current) => ({
+        store_services:
+          current.store_services.length > 0 ? current.store_services : storeServicesWithOther,
+        store_services_other: current.store_services_other || strategyInput.storeServicesOther,
+        brands_worked:
+          current.brands_worked.length > 0 ? current.brands_worked : storedBrands.selected,
+        brands_worked_other: current.brands_worked_other || storedBrands.other,
+      }));
+
+      setStep3Form((current) => ({
+        responsible_name:
+          current.responsible_name || cleanText(nextResponsible?.name) || cleanText(nextAnswers.responsible_name),
+        responsible_whatsapp:
+          current.responsible_whatsapp ||
+          formatWhatsappInput(
+            cleanText(nextResponsible?.whatsappNumber) || cleanText(nextAnswers.responsible_whatsapp),
+          ),
+      }));
+    } catch (error) {
+      console.error("[OnboardingPage] loadBaseData error:", error);
+      setFatalError("Falha ao carregar os dados iniciais do onboarding.");
     }
-  }
+  }, [organizationId, activeStore?.id, activeStore?.name]);
+
+  useEffect(() => {
+    loadBaseData();
+    loadOnboardingStatus();
+    fetchWhatsappStatus();
+  }, [loadBaseData, loadOnboardingStatus, fetchWhatsappStatus]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") return;
+    if (onboardingStatus === "completed") {
+      router.replace("/dashboard");
+    }
+  }, [onboardingStatus, router]);
+
   useEffect(() => {
     if (!currentStepStorageKey || typeof window === "undefined") return;
-    const storedStep = window.localStorage.getItem(currentStepStorageKey);
+
     const paramStep = Number(searchParams.get("step"));
-    if (paramStep >= 1 && paramStep <= 5) {
+    if (paramStep >= 1 && paramStep <= 4) {
       setCurrentStep(paramStep);
       return;
     }
-    if (storedStep) {
-      const parsedStep = Number(storedStep);
-      if (parsedStep >= 1 && parsedStep <= 5) {
-        setCurrentStep(parsedStep);
-      }
-    }
+
+    const stored = Number(window.localStorage.getItem(currentStepStorageKey));
+    if (stored >= 1 && stored <= 4) setCurrentStep(stored);
   }, [currentStepStorageKey, searchParams]);
+
   useEffect(() => {
     if (!currentStepStorageKey || typeof window === "undefined") return;
     persistToLocalStorageSafe(currentStepStorageKey, String(currentStep));
   }, [currentStep, currentStepStorageKey]);
-  useEffect(() => {
-    if (!pageScrollStorageKey || typeof window === "undefined") return;
-    if ("scrollRestoration" in window.history) {
-      window.history.scrollRestoration = "manual";
-    }
-    restorePageScroll();
-    restorePageScroll(120);
-    return () => {
-      if (scrollRestoreTimeoutRef.current !== null) {
-        window.clearTimeout(scrollRestoreTimeoutRef.current);
-        scrollRestoreTimeoutRef.current = null;
-      }
-    };
-  }, [pageScrollStorageKey, currentStep, restorePageScroll]);
-  useEffect(() => {
-    if (!pageScrollStorageKey || typeof window === "undefined") return;
-    const onScroll = () => savePageScroll();
-    const onPageHide = () => {
-      persistAllOnboardingDrafts();
-      savePageScroll();
-    };
-    const onBeforeUnload = () => {
-      persistAllOnboardingDrafts();
-      savePageScroll();
-    };
-    const onPageShow = () => restorePageScroll(30);
-    const onFocus = () => restorePageScroll(30);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        persistAllOnboardingDrafts();
-        savePageScroll();
-        return;
-      }
-      restorePageScroll(30);
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("pagehide", onPageHide);
-    window.addEventListener("beforeunload", onBeforeUnload);
-    window.addEventListener("pageshow", onPageShow);
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      persistAllOnboardingDrafts();
-      savePageScroll();
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("pagehide", onPageHide);
-      window.removeEventListener("beforeunload", onBeforeUnload);
-      window.removeEventListener("pageshow", onPageShow);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [pageScrollStorageKey, persistAllOnboardingDrafts, restorePageScroll, savePageScroll]);
+
   useEffect(() => {
     if (!step1DraftStorageKey || typeof window === "undefined") return;
     const raw = window.localStorage.getItem(step1DraftStorageKey);
     if (!raw) return;
     try {
-      const parsed = JSON.parse(raw) as Step1FormData;
-      setStep1Form((prev) => ({ ...prev, ...parsed }));
-      setStep1DraftRecovered(true);
+      const parsed = JSON.parse(raw) as Partial<Step1FormData> & {
+        store_description_other?: string;
+      };
+      setStep1Form((current) => ({
+        ...current,
+        store_display_name: cleanText(parsed.store_display_name) || current.store_display_name,
+        store_description:
+          cleanText(parsed.store_description) ||
+          cleanText(parsed.store_description_other) ||
+          current.store_description,
+        city: cleanText(parsed.city) || current.city,
+        state: cleanText(parsed.state) || current.state,
+      }));
     } catch {}
   }, [step1DraftStorageKey]);
+
   useEffect(() => {
     if (!step2DraftStorageKey || typeof window === "undefined") return;
     const raw = window.localStorage.getItem(step2DraftStorageKey);
     if (!raw) return;
     try {
-      const parsed = JSON.parse(raw) as Step2FormData;
-      setStep2Form((prev) => mergePersistedStep2Draft(prev, parsed));
-      setStep2DraftRecovered(true);
+      const parsed = JSON.parse(raw) as Partial<Step2FormData> & {
+        brands_worked?: string[] | string;
+      };
+      const normalizedBrands = Array.isArray(parsed.brands_worked)
+        ? { selected: parsed.brands_worked.map(String).filter(Boolean), other: cleanText(parsed.brands_worked_other) }
+        : resolveMultiChoiceFromStored(parsed.brands_worked, POOL_MARKET_BRAND_OPTIONS);
+
+      setStep2Form((current) => ({
+        ...current,
+        ...parsed,
+        store_services: Array.isArray(parsed.store_services)
+          ? parsed.store_services.map(String).filter(Boolean)
+          : current.store_services,
+        brands_worked:
+          normalizedBrands.selected.length > 0 ? normalizedBrands.selected : current.brands_worked,
+        brands_worked_other:
+          cleanText(parsed.brands_worked_other) || normalizedBrands.other || current.brands_worked_other,
+      }));
     } catch {}
   }, [step2DraftStorageKey]);
+
   useEffect(() => {
     if (!step3DraftStorageKey || typeof window === "undefined") return;
     const raw = window.localStorage.getItem(step3DraftStorageKey);
     if (!raw) return;
     try {
-      const parsed = JSON.parse(raw) as Step3FormData;
-      setStep3Form((prev) => mergePersistedStep3Draft(prev, parsed));
-      setStep3DraftRecovered(true);
+      const parsed = JSON.parse(raw) as Partial<Step3FormData>;
+      setStep3Form((current) => ({
+        ...current,
+        ...parsed,
+        responsible_whatsapp: formatWhatsappInput(
+          cleanText(parsed.responsible_whatsapp) || current.responsible_whatsapp,
+        ),
+      }));
     } catch {}
   }, [step3DraftStorageKey]);
-  useEffect(() => {
-    if (!step4DraftStorageKey || typeof window === "undefined") return;
-    const raw = window.localStorage.getItem(step4DraftStorageKey);
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as Step4FormData;
-      setStep4Form((prev) => ({ ...prev, ...parsed }));
-      setStep4DraftRecovered(true);
-    } catch {}
-  }, [step4DraftStorageKey]);
-  useEffect(() => {
-    if (!step5DraftStorageKey || typeof window === "undefined") return;
-    const raw = window.localStorage.getItem(step5DraftStorageKey);
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as Step5FormData;
-      setStep5Form((prev) => ({ ...prev, ...parsed }));
-      setStep5DraftRecovered(true);
-    } catch {}
-  }, [step5DraftStorageKey]);
-  useEffect(() => {
-    if (!step1DraftStorageKey || typeof window === "undefined") return;
-    persistToLocalStorageSafe(step1DraftStorageKey, JSON.stringify(step1Form));
-  }, [step1Form, step1DraftStorageKey]);
-  useEffect(() => {
-    if (!step2DraftStorageKey || typeof window === "undefined") return;
-    persistToLocalStorageSafe(step2DraftStorageKey, JSON.stringify(step2Form));
-  }, [step2Form, step2DraftStorageKey]);
-  useEffect(() => {
-    if (!step3DraftStorageKey || typeof window === "undefined") return;
-    persistToLocalStorageSafe(step3DraftStorageKey, JSON.stringify(step3Form));
-  }, [step3Form, step3DraftStorageKey]);
-  useEffect(() => {
-    if (!step4DraftStorageKey || typeof window === "undefined") return;
-    persistToLocalStorageSafe(step4DraftStorageKey, JSON.stringify(step4Form));
-  }, [step4Form, step4DraftStorageKey]);
-  useEffect(() => {
-    if (!step5DraftStorageKey || typeof window === "undefined") return;
-    persistToLocalStorageSafe(step5DraftStorageKey, JSON.stringify(step5Form));
-  }, [step5Form, step5DraftStorageKey]);
-  useEffect(() => {
-    const loadAnswers = async () => {
-      if (!organizationId || !activeStore?.id) return;
-      try {
-        const [
-          answersResult,
-          paymentSettingsResult,
-          commercialAiSettingsResult,
-          strategySettingsResult,
-          operationSettingsResult,
-          scheduleSettingsResult,
-        ] = await Promise.all([
-          supabase.rpc("onboarding_get_answers_scoped", {
-            p_organization_id: organizationId,
-            p_store_id: activeStore.id,
-          }),
-          supabase
-            .from("store_payment_settings")
-            .select(
-              "organization_id, store_id, accepted_payment_methods, pix_key_type, pix_key, pix_holder_name, down_payment_mode, down_payment_value_type, down_payment_percent, down_payment_amount_cents, installments_enabled, max_installments, installment_interest_policy, payment_notes, created_at, updated_at",
-            )
-            .eq("organization_id", organizationId)
-            .eq("store_id", activeStore.id)
-            .maybeSingle(),
-          supabase
-            .from("store_commercial_ai_settings")
-            .select(
-              "organization_id, store_id, price_answer_policy, price_context_requirements, created_at, updated_at",
-            )
-            .eq("organization_id", organizationId)
-            .eq("store_id", activeStore.id)
-            .maybeSingle(),
-          supabase
-            .from("store_strategy_settings")
-            .select(
-              "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, created_at, updated_at",
-            )
-            .eq("organization_id", organizationId)
-            .eq("store_id", activeStore.id)
-            .maybeSingle(),
-          supabase
-            .from("store_operation_settings")
-            .select(
-              "organization_id, store_id, offers_installation, average_installation_time_days, installation_days_rule, installation_process_notes, offers_technical_visit, technical_visit_days_rule, technical_visit_rules, technical_visit_rules_other, created_at, updated_at",
-            )
-            .eq("organization_id", organizationId)
-            .eq("store_id", activeStore.id)
-            .maybeSingle(),
-          supabase
-            .from("store_schedule_settings")
-            .select(
-              "id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, technical_visit_days, after_hours_behavior, notes, enforce_operating_window, timezone_name, created_at, updated_at",
-            )
-            .eq("organization_id", organizationId)
-            .eq("store_id", activeStore.id)
-            .maybeSingle(),
-        ]);
-        if (answersResult.error) {
-          console.error("[OnboardingPage] loadAnswers RPC error:", answersResult.error);
-          setFatalError("Falha ao carregar respostas do onboarding.");
-          return;
-        }
-        if (paymentSettingsResult.error) {
-          console.error(
-            "[OnboardingPage] loadPaymentSettings error:",
-            paymentSettingsResult.error,
-          );
-          setFatalError("Falha ao carregar configuracoes canonicas de pagamento.");
-          return;
-        }
-        if (commercialAiSettingsResult.error) {
-          console.error(
-            "[OnboardingPage] loadCommercialAiSettings error:",
-            commercialAiSettingsResult.error,
-          );
-          setFatalError("Falha ao carregar configuracoes canonicas comerciais.");
-          return;
-        }
-        if (strategySettingsResult.error) {
-          console.error(
-            "[OnboardingPage] loadStrategySettings error:",
-            strategySettingsResult.error,
-          );
-          setFatalError("Falha ao carregar configuracoes canonicas de estrategia.");
-          return;
-        }
-        if (operationSettingsResult.error) {
-          console.error(
-            "[OnboardingPage] loadOperationSettings error:",
-            operationSettingsResult.error,
-          );
-          setFatalError("Falha ao carregar configuracoes canonicas de operacao.");
-          return;
-        }
-        if (scheduleSettingsResult.error) {
-          console.error(
-            "[OnboardingPage] loadScheduleSettings error:",
-            scheduleSettingsResult.error,
-          );
-          setFatalError("Falha ao carregar configuracoes canonicas de agenda.");
-          return;
-        }
-        const answers = (answersResult.data ?? {}) as AnswersMap;
-        setAnswers(answers);
-        const canonicalPaymentSettings =
-          (paymentSettingsResult.data ?? null) as StorePaymentSettingsRow | null;
-        const canonicalCommercialAiSettings =
-          (commercialAiSettingsResult.data ?? null) as StoreCommercialAiSettingsRow | null;
-        const canonicalStrategySettings =
-          (strategySettingsResult.data ?? null) as StoreStrategySettingsRow | null;
-        const canonicalOperationSettings =
-          (operationSettingsResult.data ?? null) as StoreOperationSettingsRow | null;
-        const canonicalScheduleSettings =
-          (scheduleSettingsResult.data ?? null) as ScheduleSettingsRow | null;
-        const paymentSettingsInput = createStorePaymentSettingsInputFromSources({
-          answers,
-          settings: canonicalPaymentSettings,
-        });
-        setPaymentSettings(canonicalPaymentSettings);
-        const commercialAiSettingsInput =
-          createStoreCommercialAiSettingsInputFromSources({
-            answers,
-            settings: canonicalCommercialAiSettings,
-          });
-        const normalizedCommercialAiSettings =
-          normalizeStoreCommercialAiSettingsInput(commercialAiSettingsInput);
-        const commercialAiLegacyMirrors = normalizedCommercialAiSettings.ok
-          ? deriveStoreCommercialAiLegacyMirrors(normalizedCommercialAiSettings.value)
-          : null;
-        setCommercialAiSettings(canonicalCommercialAiSettings);
-        const strategySettingsInput = createStoreStrategySettingsInputFromSources({
-          answers,
-          settings: canonicalStrategySettings,
-        });
-        const strategyFormSeedInput = canonicalStrategySettings
-          ? strategySettingsInput
-          : createStoreStrategySettingsLegacySeedInputFromAnswers(answers);
-        setStrategySettings(canonicalStrategySettings);
-        const operationSettingsInput = createStoreOperationSettingsInputFromSources({
-          answers,
-          settings: canonicalOperationSettings,
-        });
-        setOperationSettings(canonicalOperationSettings);
-        setScheduleSettings(canonicalScheduleSettings);
-        const remotePoolTypesSelected = parseArrayAnswer(answers.pool_types_selected);
-        const remoteTechnicalVisitRulesSelected = parseArrayAnswer(answers.technical_visit_rules_selected);
-        const remoteImportantLimitationsSelected = parseArrayAnswer(answers.important_limitations_selected);
-        const remoteHumanHelpDiscountSelected = parseArrayAnswer(answers.human_help_discount_cases_selected);
-        const remoteHumanHelpCustomProjectSelected = parseArrayAnswer(
-          answers.human_help_custom_project_cases_selected
-        );
-        const remoteHumanHelpPaymentSelected = parseArrayAnswer(answers.human_help_payment_cases_selected);
-        const remoteResponsibleNotificationCases = parseArrayAnswer(answers.responsible_notification_cases);
-        const remoteActivationPreferences = parseArrayAnswer(answers.activation_preferences);
-        const remoteSalesFlowStartSteps = parseArrayAnswer(answers.sales_flow_start_steps);
-        const remoteSalesFlowMiddleSteps = parseArrayAnswer(answers.sales_flow_middle_steps);
-        const remoteSalesFlowFinalSteps = parseArrayAnswer(answers.sales_flow_final_steps);
-        const legacyInstallationSteps = parseArrayAnswer(answers.installation_process_steps);
-        setStep1Form((prev) => ({
-          store_display_name: prev.store_display_name || String(answers.store_display_name ?? activeStore.name ?? ""),
-          store_description: prev.store_description || strategyFormSeedInput.storeDescription,
-          city: prev.city || strategyFormSeedInput.city,
-          state: prev.state || strategyFormSeedInput.state,
-          service_regions: prev.service_regions || strategyFormSeedInput.serviceRegions,
-          commercial_whatsapp: prev.commercial_whatsapp || String(answers.commercial_whatsapp ?? ""),
-          store_services: prev.store_services.length ? prev.store_services : strategyFormSeedInput.storeServices,
-          store_services_other: prev.store_services_other || strategyFormSeedInput.storeServicesOther,
-          service_region_modes:
-            prev.service_region_modes.length
-              ? prev.service_region_modes
-              : strategyFormSeedInput.serviceRegionModes,
-          service_region_notes: prev.service_region_notes || strategyFormSeedInput.serviceRegionNotes,
-          service_region_primary_mode:
-            prev.service_region_primary_mode || strategyFormSeedInput.serviceRegionPrimaryMode,
-          service_region_outside_consultation:
-            prev.service_region_outside_consultation ||
-            strategyFormSeedInput.serviceRegionOutsideConsultation,
-        }));
-        setStep2Form((prev) => ({
-          pool_types:
-            prev.pool_types ||
-            (Array.isArray(answers.pool_types) ? answers.pool_types.join(", ") : String(answers.pool_types ?? "")),
-          sells_chemicals:
-            prev.sells_chemicals ||
-            (typeof answers.sells_chemicals === "boolean"
-              ? answers.sells_chemicals
-                ? "sim"
-                : "não"
-              : String(answers.sells_chemicals ?? "")),
-          sells_accessories:
-            prev.sells_accessories ||
-            (typeof answers.sells_accessories === "boolean"
-              ? answers.sells_accessories
-                ? "sim"
-                : "não"
-              : String(answers.sells_accessories ?? "")),
-          offers_installation:
-            canonicalOperationSettings
-              ? yesNoFormValue(operationSettingsInput.offersInstallation)
-              : prev.offers_installation ||
-                yesNoFormValue(parseYesNoValue(answers.offers_installation)),
-          offers_technical_visit:
-            canonicalOperationSettings
-              ? yesNoFormValue(operationSettingsInput.offersTechnicalVisit)
-              : prev.offers_technical_visit ||
-                yesNoFormValue(parseYesNoValue(answers.offers_technical_visit)),
-          brands_worked: prev.brands_worked || strategyFormSeedInput.brandsWorked,
-          pool_types_selected: prev.pool_types_selected.length ? prev.pool_types_selected : remotePoolTypesSelected,
-          pool_types_other: prev.pool_types_other || String(answers.pool_types_other ?? ""),
-          main_store_brand:
-            prev.main_store_brand ||
-            strategyFormSeedInput.mainStoreBrand ||
-            strategyFormSeedInput.brandsWorked,
-        }));
-        setStep3Form((prev) => ({
-          average_installation_time_days:
-            canonicalOperationSettings
-              ? String(operationSettingsInput.averageInstallationTimeDays ?? "")
-              : prev.average_installation_time_days || String(answers.average_installation_time_days ?? ""),
-          installation_days_rule:
-            canonicalOperationSettings
-              ? operationSettingsInput.installationDaysRule
-              : prev.installation_days_rule || String(answers.installation_days_rule ?? ""),
-          installation_available_days:
-            canonicalScheduleSettings
-              ? canonicalDaysFromSource(canonicalScheduleSettings.installation_days)
-              : prev.installation_available_days.length
-              ? canonicalDaysFromSource(prev.installation_available_days)
-              : canonicalDaysFromSource(answers.installation_available_days),
-          technical_visit_days_rule:
-            canonicalOperationSettings
-              ? operationSettingsInput.technicalVisitDaysRule
-              : prev.technical_visit_days_rule || String(answers.technical_visit_days_rule ?? ""),
-          technical_visit_available_days:
-            canonicalScheduleSettings
-              ? canonicalDaysFromSource(canonicalScheduleSettings.technical_visit_days)
-              : prev.technical_visit_available_days.length
-              ? canonicalDaysFromSource(prev.technical_visit_available_days)
-              : canonicalDaysFromSource(answers.technical_visit_available_days),
-          average_human_response_time:
-            prev.average_human_response_time || String(answers.average_human_response_time ?? ""),
-          installation_process_steps:
-            prev.installation_process_steps.length
-              ? prev.installation_process_steps
-              : legacyInstallationSteps,
-          installation_process_other:
-            prev.installation_process_other || String(answers.installation_process_other ?? ""),
-          technical_visit_rules_selected:
-            canonicalOperationSettings
-              ? operationSettingsInput.technicalVisitRules
-              : prev.technical_visit_rules_selected.length
-              ? operationRulesFromSource(prev.technical_visit_rules_selected)
-              : operationRulesFromSource(remoteTechnicalVisitRulesSelected),
-          technical_visit_rules_other:
-            canonicalOperationSettings
-              ? operationSettingsInput.technicalVisitRulesOther
-              : prev.technical_visit_rules_other || String(answers.technical_visit_rules_other ?? ""),
-          attends_holidays:
-            canonicalScheduleSettings
-              ? yesNoFormValue(canonicalScheduleSettings.attends_holidays)
-              : prev.attends_holidays ||
-                yesNoFormValue(parseYesNoValue(answers.attends_holidays)),
-          important_limitations_selected:
-            prev.important_limitations_selected.length
-              ? prev.important_limitations_selected
-              : remoteImportantLimitationsSelected,
-          important_limitations_other:
-            prev.important_limitations_other || String(answers.important_limitations_other ?? ""),
-          sales_flow_start_steps:
-            prev.sales_flow_start_steps.length ? prev.sales_flow_start_steps : remoteSalesFlowStartSteps,
-          sales_flow_middle_steps:
-            prev.sales_flow_middle_steps.length ? prev.sales_flow_middle_steps : remoteSalesFlowMiddleSteps,
-          sales_flow_final_steps:
-            prev.sales_flow_final_steps.length ? prev.sales_flow_final_steps : remoteSalesFlowFinalSteps,
-          sales_flow_notes: prev.sales_flow_notes || String(answers.sales_flow_notes ?? ""),
-          sales_flow_start_confirmed:
-            prev.sales_flow_start_confirmed || Boolean(answers.sales_flow_start_confirmed),
-          sales_flow_middle_confirmed:
-            prev.sales_flow_middle_confirmed || Boolean(answers.sales_flow_middle_confirmed),
-          sales_flow_final_confirmed:
-            prev.sales_flow_final_confirmed || Boolean(answers.sales_flow_final_confirmed),
-        }));
-        const remotePriceMustUnderstandBefore = parseArrayAnswer(
-          answers.price_must_understand_before ?? answers.price_direct_conditions
-        );
-        const nextAiCanSendPriceDirectly =
-          commercialAiLegacyMirrors
-            ? commercialAiLegacyMirrors.ai_can_send_price_directly
-              ? "sim"
-              : "não"
-            : typeof answers.ai_can_send_price_directly === "boolean"
-              ? answers.ai_can_send_price_directly
-                ? "sim"
-                : "não"
-              : String(answers.ai_can_send_price_directly ?? "");
-        setStep4Form((prev) => ({
-          ...prev,
-          average_ticket: prev.average_ticket || String(answers.average_ticket ?? ""),
-          can_offer_discount:
-            prev.can_offer_discount ||
-            (typeof answers.can_offer_discount === "boolean"
-              ? answers.can_offer_discount
-                ? "sim"
-                : "não"
-              : String(answers.can_offer_discount ?? "")),
-          max_discount_percent: prev.max_discount_percent || String(answers.max_discount_percent ?? ""),
-          accepted_payment_methods:
-            prev.accepted_payment_methods.length
-              ? prev.accepted_payment_methods
-              : paymentSettingsInput.acceptedPaymentMethods,
-          pix_key_type: prev.pix_key_type || paymentSettingsInput.pixKeyType,
-          pix_key: prev.pix_key || paymentSettingsInput.pixKey,
-          pix_holder_name:
-            prev.pix_holder_name || paymentSettingsInput.pixHolderName,
-          down_payment_mode:
-            prev.down_payment_mode || paymentSettingsInput.downPaymentMode,
-          down_payment_value_type:
-            prev.down_payment_value_type ||
-            paymentSettingsInput.downPaymentValueType,
-          down_payment_percent:
-            prev.down_payment_percent || paymentSettingsInput.downPaymentPercent,
-          down_payment_amount:
-            prev.down_payment_amount || paymentSettingsInput.downPaymentAmount,
-          installments_enabled:
-            prev.installments_enabled ||
-            paymentSettingsInput.installmentsEnabled,
-          max_installments:
-            prev.max_installments || paymentSettingsInput.maxInstallments,
-          installment_interest_policy:
-            prev.installment_interest_policy ||
-            paymentSettingsInput.installmentInterestPolicy,
-          payment_notes: prev.payment_notes || paymentSettingsInput.paymentNotes,
-          ai_can_send_price_directly:
-            prev.ai_can_send_price_directly || nextAiCanSendPriceDirectly,
-          price_direct_rule:
-            prev.price_direct_rule ||
-            String(commercialAiLegacyMirrors?.price_direct_rule ?? answers.price_direct_rule ?? ""),
-          human_help_discount_cases:
-            prev.human_help_discount_cases || String(answers.human_help_discount_cases ?? ""),
-          human_help_custom_project_cases:
-            prev.human_help_custom_project_cases || String(answers.human_help_custom_project_cases ?? ""),
-          human_help_payment_cases:
-            prev.human_help_payment_cases || String(answers.human_help_payment_cases ?? ""),
-          price_direct_conditions: prev.price_direct_conditions.length
-            ? prev.price_direct_conditions
-            : commercialAiLegacyMirrors?.price_direct_conditions ?? [],
-          price_direct_rule_other: prev.price_direct_rule_other || String(answers.price_direct_rule_other ?? ""),
-          human_help_discount_cases_selected:
-            prev.human_help_discount_cases_selected.length
-              ? prev.human_help_discount_cases_selected
-              : remoteHumanHelpDiscountSelected,
-          human_help_discount_cases_other:
-            prev.human_help_discount_cases_other || String(answers.human_help_discount_cases_other ?? ""),
-          human_help_custom_project_cases_selected:
-            prev.human_help_custom_project_cases_selected.length
-              ? prev.human_help_custom_project_cases_selected
-              : remoteHumanHelpCustomProjectSelected,
-          human_help_custom_project_cases_other:
-            prev.human_help_custom_project_cases_other ||
-            String(answers.human_help_custom_project_cases_other ?? ""),
-          human_help_payment_cases_selected:
-            prev.human_help_payment_cases_selected.length
-              ? prev.human_help_payment_cases_selected
-              : remoteHumanHelpPaymentSelected,
-          human_help_payment_cases_other:
-            prev.human_help_payment_cases_other || String(answers.human_help_payment_cases_other ?? ""),
-          price_needs_human_help:
-            prev.price_needs_human_help ||
-            String(commercialAiLegacyMirrors?.price_needs_human_help ?? answers.price_needs_human_help ?? ""),
-          price_talk_mode:
-            prev.price_talk_mode ||
-            String(commercialAiLegacyMirrors?.price_talk_mode ?? answers.price_talk_mode ?? ""),
-          price_must_understand_before:
-            prev.price_must_understand_before.length
-              ? prev.price_must_understand_before
-              : commercialAiLegacyMirrors?.price_must_understand_before ?? remotePriceMustUnderstandBefore,
-        }));
-        setStep5Form((prev) => ({
-          responsible_name: prev.responsible_name || String(answers.responsible_name ?? ""),
-          responsible_whatsapp: prev.responsible_whatsapp || String(answers.responsible_whatsapp ?? ""),
-          ai_should_notify_responsible:
-            prev.ai_should_notify_responsible ||
-            (typeof answers.ai_should_notify_responsible === "boolean"
-              ? answers.ai_should_notify_responsible
-                ? "sim"
-                : "não"
-              : String(answers.ai_should_notify_responsible ?? "")),
-          final_activation_notes: prev.final_activation_notes || String(answers.final_activation_notes ?? ""),
-          confirm_information_is_correct:
-            prev.confirm_information_is_correct || Boolean(answers.confirm_information_is_correct),
-          responsible_notification_cases:
-            prev.responsible_notification_cases.length
-              ? prev.responsible_notification_cases
-              : remoteResponsibleNotificationCases,
-          responsible_notification_cases_other:
-            prev.responsible_notification_cases_other ||
-            String(answers.responsible_notification_cases_other ?? ""),
-          activation_preferences:
-            prev.activation_preferences.length ? prev.activation_preferences : remoteActivationPreferences,
-          activation_preferences_other:
-            prev.activation_preferences_other || String(answers.activation_preferences_other ?? ""),
-        }));
-        await loadOnboardingStatus();
-      } catch (err) {
-        console.error("[OnboardingPage] loadAnswers unexpected error:", err);
-        setFatalError("Falha ao carregar respostas do onboarding.");
-      }
-    };
-    loadAnswers();
-  }, [organizationId, activeStore?.id, activeStore?.name, loadOnboardingStatus]);
-  useEffect(() => {
-    const loadDiscountSettings = async () => {
-      if (!organizationId || !activeStore?.id) return;
-      try {
-        const { data, error } = await supabase
-          .from("store_discount_settings")
-          .select(
-            "store_id,organization_id,default_discount_percent,max_discount_percent,allow_ask_above_max_discount,discount_autonomy_mode,discount_special_rules,created_at,updated_at"
-          )
-          .eq("organization_id", organizationId)
-          .eq("store_id", activeStore.id)
-          .maybeSingle();
-        if (error) {
-          console.error("[OnboardingPage] loadDiscountSettings error:", error);
-          return;
-        }
-        const row = (data ?? null) as DiscountSettingsRow | null;
-        setDiscountSettings(row);
-        if (row) {
-          const canOffer =
-            Number(row.default_discount_percent ?? 0) > 0 ||
-            Number(row.max_discount_percent ?? 0) > 0 ||
-            Boolean(row.allow_ask_above_max_discount);
-          setStep4Form((prev) => ({
-            ...prev,
-            can_offer_discount: canOffer ? "sim" : "não",
-            default_discount_percent: String(row.default_discount_percent ?? 0),
-            max_discount_percent: String(row.max_discount_percent ?? 0),
-            allow_ask_above_max_discount: Boolean(row.allow_ask_above_max_discount),
-            discount_autonomy_mode:
-              typeof row.discount_autonomy_mode === "string" &&
-              row.discount_autonomy_mode.trim()
-                ? row.discount_autonomy_mode
-                : "approval_required",
-            discount_special_rules: String(row.discount_special_rules ?? ""),
-          }));
-        }
-      } catch (err) {
-        console.error("[OnboardingPage] loadDiscountSettings unexpected error:", err);
-      }
-    };
-    loadDiscountSettings();
-  }, [organizationId, activeStore?.id]);
-  useEffect(() => {
-    if (currentStep === 1 && step1DraftRecovered) {
-      setSuccessMessage("Rascunho local da etapa 1 recuperado.");
-    } else if (currentStep === 2 && step2DraftRecovered) {
-      setSuccessMessage("Rascunho local da etapa 2 recuperado.");
-    } else if (currentStep === 3 && step3DraftRecovered) {
-      setSuccessMessage("Rascunho local da etapa 3 recuperado.");
-    } else if (currentStep === 4 && step4DraftRecovered) {
-      setSuccessMessage("Rascunho local da etapa 4 recuperado.");
-    } else if (currentStep === 5 && step5DraftRecovered) {
-      setSuccessMessage("Rascunho local da etapa 5 recuperado.");
-    }
-  }, [
-    currentStep,
-    step1DraftRecovered,
-    step2DraftRecovered,
-    step3DraftRecovered,
-    step4DraftRecovered,
-    step5DraftRecovered,
-  ]);
 
-  async function saveStrategySettingsPartial(
-    patch: Partial<StoreStrategySettingsInput>,
-  ) {
+  useEffect(() => {
+    if (step1DraftStorageKey) {
+      persistToLocalStorageSafe(step1DraftStorageKey, JSON.stringify(step1Form));
+    }
+  }, [step1Form, step1DraftStorageKey]);
+
+  useEffect(() => {
+    if (step2DraftStorageKey) {
+      persistToLocalStorageSafe(step2DraftStorageKey, JSON.stringify(step2Form));
+    }
+  }, [step2Form, step2DraftStorageKey]);
+
+  useEffect(() => {
+    if (step3DraftStorageKey) {
+      persistToLocalStorageSafe(step3DraftStorageKey, JSON.stringify(step3Form));
+    }
+  }, [step3Form, step3DraftStorageKey]);
+
+  async function saveStrategySettingsPartial(patch: Partial<StoreStrategySettingsInput>) {
     if (!organizationId || !activeStore?.id) return null;
 
-    const normalizedStrategySettings = normalizeStoreStrategySettingsInput({
+    const normalized = normalizeStoreStrategySettingsInput({
       ...createStoreStrategySettingsInputFromSources({
         answers,
         settings: strategySettings,
@@ -1870,827 +836,326 @@ function OnboardingContent() {
       ...patch,
     });
 
-    const { data: savedStrategySettings, error: strategySettingsError } =
-      await supabase.rpc(
-        "upsert_store_strategy_settings_with_legacy_mirror_scoped",
-        {
-          p_organization_id: organizationId,
-          p_store_id: activeStore.id,
-          p_city: normalizedStrategySettings.value.city,
-          p_state: normalizedStrategySettings.value.state,
-          p_service_regions: normalizedStrategySettings.value.serviceRegions,
-          p_service_region_modes:
-            normalizedStrategySettings.value.serviceRegionModes,
-          p_service_region_primary_mode:
-            normalizedStrategySettings.value.serviceRegionPrimaryMode,
-          p_service_region_outside_consultation:
-            normalizedStrategySettings.value.serviceRegionOutsideConsultation,
-          p_service_region_notes:
-            normalizedStrategySettings.value.serviceRegionNotes,
-          p_store_services: normalizedStrategySettings.value.storeServices,
-          p_store_services_other:
-            normalizedStrategySettings.value.storeServicesOther,
-          p_store_description:
-            normalizedStrategySettings.value.storeDescription,
-          p_main_store_brand:
-            normalizedStrategySettings.value.mainStoreBrand,
-          p_brands_worked: normalizedStrategySettings.value.brandsWorked,
-          p_strategy_service_exclusions:
-            normalizedStrategySettings.value.strategyServiceExclusions,
-          p_strategy_primary_focus:
-            normalizedStrategySettings.value.strategyPrimaryFocus,
-          p_strategy_sell_more:
-            normalizedStrategySettings.value.strategySellMore,
-          p_strategy_common_customer:
-            normalizedStrategySettings.value.strategyCommonCustomer,
-          p_strategy_ideal_customer:
-            normalizedStrategySettings.value.strategyIdealCustomer,
-          p_strategy_ticket_range:
-            normalizedStrategySettings.value.strategyTicketRange,
-          p_strategy_positioning:
-            normalizedStrategySettings.value.strategyPositioning,
-          p_strategy_priority_brands:
-            normalizedStrategySettings.value.strategyPriorityBrands,
-          p_strategy_non_worked_brands:
-            normalizedStrategySettings.value.strategyNonWorkedBrands,
-          p_strategy_top_lines:
-            normalizedStrategySettings.value.strategyTopLines,
-          p_strategy_top_products:
-            normalizedStrategySettings.value.strategyTopProducts,
-          p_strategy_differentials:
-            normalizedStrategySettings.value.strategyDifferentials,
-          p_strategy_promise_limits:
-            normalizedStrategySettings.value.strategyPromiseLimits,
-          p_strategy_ai_presentation:
-            normalizedStrategySettings.value.strategyAiPresentation,
-          p_strategy_ai_priorities:
-            normalizedStrategySettings.value.strategyAiPriorities,
-          p_strategy_ai_never_forget:
-            normalizedStrategySettings.value.strategyAiNeverForget,
-        },
-      );
-
-    if (strategySettingsError) {
-      throw new Error(
-        "Falha ao sincronizar as configuracoes canonicas de estrategia.",
-      );
-    }
-
-    const nextStrategySettings =
-      (savedStrategySettings ?? null) as StoreStrategySettingsRow | null;
-    setStrategySettings(nextStrategySettings);
-    return nextStrategySettings;
-  }
-
-  async function saveOperationSettingsPartial(
-    patch: Partial<StoreOperationSettingsInput>,
-  ) {
-    if (!organizationId || !activeStore?.id) return null;
-
-    const normalizedOperationSettings = normalizeStoreOperationSettingsInput({
-      ...createStoreOperationSettingsInputFromSources({
-        answers,
-        settings: operationSettings,
-      }),
-      ...patch,
-    });
-
-    if (!normalizedOperationSettings.ok) {
-      throw new Error(normalizedOperationSettings.error);
-    }
-
-    const { data: savedOperationSettings, error: operationSettingsError } =
-      await supabase.rpc(
-        "upsert_store_operation_settings_with_legacy_mirror_scoped",
-        {
-          p_organization_id: organizationId,
-          p_store_id: activeStore.id,
-          p_offers_installation:
-            normalizedOperationSettings.value.offersInstallation,
-          p_average_installation_time_days:
-            normalizedOperationSettings.value.averageInstallationTimeDays,
-          p_installation_days_rule:
-            normalizedOperationSettings.value.installationDaysRule,
-          p_installation_process_notes:
-            normalizedOperationSettings.value.installationProcessNotes,
-          p_offers_technical_visit:
-            normalizedOperationSettings.value.offersTechnicalVisit,
-          p_technical_visit_days_rule:
-            normalizedOperationSettings.value.technicalVisitDaysRule,
-          p_technical_visit_rules:
-            normalizedOperationSettings.value.technicalVisitRules,
-          p_technical_visit_rules_other:
-            normalizedOperationSettings.value.technicalVisitRulesOther,
-        },
-      );
-
-    if (operationSettingsError) {
-      throw new Error(
-        "Falha ao sincronizar as configuracoes canonicas de operacao.",
-      );
-    }
-
-    const nextOperationSettings =
-      (savedOperationSettings ?? null) as StoreOperationSettingsRow | null;
-    setOperationSettings(nextOperationSettings);
-    return nextOperationSettings;
-  }
-
-  async function saveExistingScheduleSettingsPartial(args: {
-    installationDays?: string[];
-    technicalVisitDays?: string[];
-    attendsHolidays?: boolean | null;
-  }) {
-    if (!organizationId || !activeStore?.id || !scheduleSettings) return null;
-    ensureScheduleSettingsPayloadCanPreserve(scheduleSettings);
-
-    const { data: scheduleData, error: scheduleSettingsError } =
-      await supabase.rpc("upsert_store_schedule_settings", {
+    const { data, error } = await supabase.rpc(
+      "upsert_store_strategy_settings_with_legacy_mirror_scoped",
+      {
         p_organization_id: organizationId,
         p_store_id: activeStore.id,
-        p_allow_multiple_appointments_per_day:
-          scheduleSettings.allow_multiple_appointments_per_day,
-        p_allow_same_time_appointments:
-          scheduleSettings.allow_same_time_appointments,
-        p_same_time_capacity: scheduleSettings.same_time_capacity,
-        p_attends_holidays:
-          args.attendsHolidays ?? scheduleSettings.attends_holidays,
-        p_operating_days: scheduleSettings.operating_days,
-        p_operating_hours: scheduleSettings.operating_hours,
-        p_installation_days:
-          args.installationDays ??
-          canonicalDaysFromSource(scheduleSettings.installation_days),
-        p_after_hours_behavior: scheduleSettings.after_hours_behavior,
-        p_notes: scheduleSettings.notes,
-        p_enforce_operating_window: scheduleSettings.enforce_operating_window,
-        p_timezone_name: scheduleSettings.timezone_name,
-      });
+        p_city: normalized.value.city,
+        p_state: normalized.value.state,
+        p_service_regions: normalized.value.serviceRegions,
+        p_service_region_modes: normalized.value.serviceRegionModes,
+        p_service_region_primary_mode: normalized.value.serviceRegionPrimaryMode,
+        p_service_region_outside_consultation:
+          normalized.value.serviceRegionOutsideConsultation,
+        p_service_region_notes: normalized.value.serviceRegionNotes,
+        p_store_services: normalized.value.storeServices,
+        p_store_services_other: normalized.value.storeServicesOther,
+        p_store_description: normalized.value.storeDescription,
+        p_main_store_brand: normalized.value.mainStoreBrand,
+        p_brands_worked: normalized.value.brandsWorked,
+        p_strategy_service_exclusions: normalized.value.strategyServiceExclusions,
+        p_strategy_primary_focus: normalized.value.strategyPrimaryFocus,
+        p_strategy_sell_more: normalized.value.strategySellMore,
+        p_strategy_common_customer: normalized.value.strategyCommonCustomer,
+        p_strategy_ideal_customer: normalized.value.strategyIdealCustomer,
+        p_strategy_ticket_range: normalized.value.strategyTicketRange,
+        p_strategy_positioning: normalized.value.strategyPositioning,
+        p_strategy_priority_brands: normalized.value.strategyPriorityBrands,
+        p_strategy_non_worked_brands: normalized.value.strategyNonWorkedBrands,
+        p_strategy_top_lines: normalized.value.strategyTopLines,
+        p_strategy_top_products: normalized.value.strategyTopProducts,
+        p_strategy_differentials: normalized.value.strategyDifferentials,
+        p_strategy_promise_limits: normalized.value.strategyPromiseLimits,
+        p_strategy_ai_presentation: normalized.value.strategyAiPresentation,
+        p_strategy_ai_priorities: normalized.value.strategyAiPriorities,
+        p_strategy_ai_never_forget: normalized.value.strategyAiNeverForget,
+      },
+    );
 
-    if (scheduleSettingsError) {
-      throw new Error(
-        "Falha ao sincronizar as configuracoes canonicas de agenda.",
-      );
+    if (error) {
+      throw new Error("Falha ao sincronizar as informações essenciais da loja.");
     }
 
-    let nextScheduleSettings =
-      (scheduleData ?? null) as ScheduleSettingsRow | null;
-
-    if (typeof args.technicalVisitDays !== "undefined") {
-      const {
-        data: technicalVisitScheduleData,
-        error: technicalVisitDaysError,
-      } = await supabase.rpc(
-        "upsert_store_schedule_technical_visit_days_with_legacy_mirror_scoped",
-        {
-          p_organization_id: organizationId,
-          p_store_id: activeStore.id,
-          p_technical_visit_days: args.technicalVisitDays,
-        },
-      );
-
-      if (technicalVisitDaysError) {
-        throw new Error(
-          "Falha ao sincronizar os dias canonicos de visita tecnica.",
-        );
-      }
-
-      nextScheduleSettings =
-        (technicalVisitScheduleData ?? nextScheduleSettings) as ScheduleSettingsRow | null;
-    }
-
-    setScheduleSettings(nextScheduleSettings);
-    return nextScheduleSettings;
+    const saved = (data ?? null) as StoreStrategySettingsRow | null;
+    setStrategySettings(saved);
+    return saved;
   }
 
-  async function saveStep1(e: FormEvent) {
-    e.preventDefault();
-    if (isOnboardingReviewMode) {
-      blockReviewModeEditing();
-      return;
+  async function persistAnswers(
+    payloads: Array<[string, unknown]>,
+    nextStatus?: "in_progress",
+  ) {
+    if (!organizationId || !activeStore?.id) return;
+
+    for (const [questionKey, answer] of payloads) {
+      const { error } = await supabase.rpc("onboarding_upsert_answer_scoped", {
+        p_organization_id: organizationId,
+        p_store_id: activeStore.id,
+        p_question_key: questionKey,
+        p_answer: answer,
+      });
+
+      if (error) throw new Error(`Falha ao salvar campo: ${questionKey}`);
     }
+
+    if (payloads.length > 0) {
+      setAnswers((current) => ({
+        ...current,
+        ...Object.fromEntries(payloads),
+      }));
+    }
+
+    const resolvedStatus =
+      nextStatus || (onboardingStatus === "completed" ? "completed" : "in_progress");
+
+    const { error: statusError } = await supabase.rpc(
+      "onboarding_upsert_store_onboarding_scoped",
+      {
+        p_organization_id: organizationId,
+        p_store_id: activeStore.id,
+        p_status: resolvedStatus,
+      },
+    );
+
+    if (statusError) throw new Error("Falha ao atualizar o status do onboarding.");
+    setOnboardingStatus(resolvedStatus);
+  }
+
+  async function saveStep1(event: FormEvent) {
+    event.preventDefault();
+
     if (!step1Form.store_display_name.trim()) {
-      setFormError("Preencha o nome que a loja quer usar no sistema.");
+      setFormError("Preencha o nome da loja.");
       return;
     }
     if (!step1Form.city.trim()) {
-      setFormError("Preencha a cidade da loja.");
+      setFormError("Preencha a cidade onde fica a base principal da loja.");
       return;
     }
     if (!step1Form.state.trim()) {
       setFormError("Preencha o estado da loja.");
       return;
     }
-    if (!step1Form.commercial_whatsapp.trim()) {
-      setFormError("Preencha o WhatsApp comercial da loja.");
-      return;
-    }
-    if (!step1Form.service_region_primary_mode) {
-      setFormError("Escolha o alcance regional principal da loja.");
-      return;
-    }
-    if (step1Form.store_services.length === 0 && !step1Form.store_services_other.trim()) {
-      setFormError("Marque pelo menos um serviço principal da loja.");
-      return;
-    }
     if (!organizationId || !activeStore?.id) return;
+
+    setSaving(true);
+    setFormError(null);
+    setSuccessMessage(null);
+
     try {
-      setFormError(null);
-      setSuccessMessage(null);
       await saveStrategySettingsPartial({
         storeDescription: step1Form.store_description.trim(),
         city: step1Form.city.trim(),
         state: step1Form.state.trim(),
-        serviceRegions: step1Form.service_regions.trim(),
-        storeServices: step1Form.store_services,
-        storeServicesOther: step1Form.store_services_other.trim(),
-        serviceRegionModes: step1Form.service_region_modes,
-        serviceRegionNotes: step1Form.service_region_notes.trim(),
-        serviceRegionPrimaryMode: step1Form.service_region_primary_mode,
-        serviceRegionOutsideConsultation:
-          step1Form.service_region_outside_consultation,
-      });
-    } catch (err) {
-      console.error("[OnboardingPage] saveStep1 strategy sync error:", err);
-      setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
-      return;
-    }
-    await upsertAnswers(
-      [
-        ["store_display_name", step1Form.store_display_name.trim()],
-        ["commercial_whatsapp", step1Form.commercial_whatsapp.trim()],
-      ],
-      "Etapa 1 salva com sucesso.",
-      2
-    );
-    setStep1DraftRecovered(false);
-  }
-  async function saveStep2(e: FormEvent) {
-    e.preventDefault();
-    if (isOnboardingReviewMode) {
-      blockReviewModeEditing();
-      return;
-    }
-    if (step2Form.pool_types_selected.length === 0 && !step2Form.pool_types_other.trim()) {
-      setFormError("Marque pelo menos um tipo de piscina ou preencha o campo complementar.");
-      return;
-    }
-    if (!step2Form.sells_chemicals) {
-      setFormError("Informe se a loja vende produtos químicos.");
-      return;
-    }
-    if (!step2Form.sells_accessories) {
-      setFormError("Informe se a loja vende acessórios.");
-      return;
-    }
-    if (!step2Form.offers_installation) {
-      setFormError("Informe se a loja oferece instalação.");
-      return;
-    }
-    if (!step2Form.offers_technical_visit) {
-      setFormError("Informe se a loja oferece visita técnica.");
-      return;
-    }
-    if (!step2Form.main_store_brand.trim()) {
-      setFormError("Preencha a principal marca trabalhada pela loja.");
-      return;
-    }
-    if (!organizationId || !activeStore?.id) return;
-    try {
-      setFormError(null);
-      setSuccessMessage(null);
-      await saveStrategySettingsPartial({
-        brandsWorked: step2Form.brands_worked.trim(),
-        mainStoreBrand: step2Form.main_store_brand.trim(),
-      });
-      await saveOperationSettingsPartial({
-        offersInstallation: parseYesNoValue(step2Form.offers_installation),
-        offersTechnicalVisit: parseYesNoValue(
-          step2Form.offers_technical_visit,
-        ),
-      });
-    } catch (err) {
-      console.error("[OnboardingPage] saveStep2 canonical sync error:", err);
-      setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
-      return;
-    }
-    await upsertAnswers(
-      [
-        ["pool_types", step2Form.pool_types.trim()],
-        ["sells_chemicals", step2Form.sells_chemicals.trim().toLowerCase() === "sim"],
-        ["sells_accessories", step2Form.sells_accessories.trim().toLowerCase() === "sim"],
-        ["pool_types_selected", step2Form.pool_types_selected],
-        ["pool_types_other", step2Form.pool_types_other.trim()],
-      ],
-      "Etapa 2 salva com sucesso.",
-      3
-    );
-    setStep2DraftRecovered(false);
-  }
-  async function saveStep3(e: FormEvent) {
-    e.preventDefault();
-    if (isOnboardingReviewMode) {
-      blockReviewModeEditing();
-      return;
-    }
-    if (!step3Form.average_human_response_time.trim()) {
-      setFormError("Preencha o tempo médio de resposta humana.");
-      return;
-    }
-    if (storeHasInstallation) {
-      if (!step3Form.average_installation_time_days.trim()) {
-        setFormError("Preencha o tempo médio de instalação.");
-        return;
-      }
-      if (step3Form.installation_available_days.length === 0) {
-        setFormError("Marque os dias disponíveis para instalação.");
-        return;
-      }
-      if (
-        step3Form.installation_process_steps.length === 0 &&
-        !step3Form.installation_process_other.trim()
-      ) {
-        setFormError("Explique como normalmente funciona a instalação.");
-        return;
-      }
-    }
-    if (storeHasTechnicalVisit) {
-      if (step3Form.technical_visit_available_days.length === 0) {
-        setFormError("Marque os dias disponíveis para visita técnica.");
-        return;
-      }
-      if (
-        step3Form.technical_visit_rules_selected.length === 0 &&
-        !step3Form.technical_visit_rules_other.trim()
-      ) {
-        setFormError("Explique as regras principais da visita técnica.");
-        return;
-      }
-    }
-    if (!step3Form.attends_holidays) {
-      setFormError("Informe se a loja atende ou não em feriados.");
-      return;
-    }
-    if (
-      step3Form.important_limitations_selected.length === 0 &&
-      !step3Form.important_limitations_other.trim()
-    ) {
-      setFormError("Marque ou escreva pelo menos uma limitação importante.");
-      return;
-    }
-    if (step3Form.sales_flow_start_steps.length === 0) {
-      setFormError("Marque pelo menos uma etapa do início do fluxo comercial.");
-      return;
-    }
-    if (step3Form.sales_flow_middle_steps.length === 0) {
-      setFormError("Marque pelo menos uma etapa da negociação.");
-      return;
-    }
-    if (step3Form.sales_flow_final_steps.length === 0) {
-      setFormError("Marque pelo menos uma etapa do final do fluxo.");
-      return;
-    }
-    if (!organizationId || !activeStore?.id) return;
-    const parsedAverageInstallationTime =
-      parseOperationAverageInstallationTimeInput(
-        step3Form.average_installation_time_days,
-      );
-
-    if (!parsedAverageInstallationTime.ok) {
-      setFormError(parsedAverageInstallationTime.error);
-      return;
-    }
-
-    const currentOperationInput = createStoreOperationSettingsInputFromSources({
-      answers,
-      settings: operationSettings,
-    });
-    const nextInstallationDays = canonicalDaysFromSource(
-      step3Form.installation_available_days,
-    );
-    const nextTechnicalVisitDays = canonicalDaysFromSource(
-      step3Form.technical_visit_available_days,
-    );
-    const nextAttendsHolidays = parseYesNoValue(step3Form.attends_holidays);
-
-    try {
-      setFormError(null);
-      setSuccessMessage(null);
-      await saveOperationSettingsPartial({
-        offersInstallation:
-          parseYesNoValue(step2Form.offers_installation) ??
-          currentOperationInput.offersInstallation,
-        averageInstallationTimeDays: parsedAverageInstallationTime.value,
-        installationDaysRule: step3Form.installation_days_rule.trim(),
-        installationProcessNotes: currentOperationInput.installationProcessNotes,
-        offersTechnicalVisit:
-          parseYesNoValue(step2Form.offers_technical_visit) ??
-          currentOperationInput.offersTechnicalVisit,
-        technicalVisitDaysRule: step3Form.technical_visit_days_rule.trim(),
-        technicalVisitRules: operationRulesFromSource(
-          step3Form.technical_visit_rules_selected,
-        ),
-        technicalVisitRulesOther:
-          step3Form.technical_visit_rules_other.trim(),
       });
 
-      if (scheduleSettings) {
-        await saveExistingScheduleSettingsPartial({
-          installationDays: nextInstallationDays,
-          technicalVisitDays: nextTechnicalVisitDays,
-          attendsHolidays: nextAttendsHolidays,
-        });
-      }
-    } catch (err) {
-      console.error("[OnboardingPage] saveStep3 canonical sync error:", err);
-      setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
-      return;
-    }
-
-    await upsertAnswers(
-      [
-        ["installation_available_days", nextInstallationDays],
-        ...(scheduleSettings
-          ? []
-          : ([
-              ["technical_visit_available_days", nextTechnicalVisitDays],
-            ] as Array<[string, unknown]>)),
-        ["average_human_response_time", step3Form.average_human_response_time.trim()],
-        ["installation_process_steps", step3Form.installation_process_steps],
-        ["installation_process_other", step3Form.installation_process_other.trim()],
-        ["attends_holidays", nextAttendsHolidays],
-        ["important_limitations_selected", step3Form.important_limitations_selected],
-        ["important_limitations_other", step3Form.important_limitations_other.trim()],
-        ["sales_flow_start_steps", step3Form.sales_flow_start_steps],
-        ["sales_flow_middle_steps", step3Form.sales_flow_middle_steps],
-        ["sales_flow_final_steps", step3Form.sales_flow_final_steps],
-        ["sales_flow_notes", step3Form.sales_flow_notes.trim()],
-        ["sales_flow_start_confirmed", step3Form.sales_flow_start_confirmed],
-        ["sales_flow_middle_confirmed", step3Form.sales_flow_middle_confirmed],
-        ["sales_flow_final_confirmed", step3Form.sales_flow_final_confirmed],
-      ],
-      "Etapa 3 salva com sucesso.",
-      4
-    );
-    setStep3DraftRecovered(false);
-  }
-  async function saveStep4(e: FormEvent) {
-    e.preventDefault();
-    if (isOnboardingReviewMode) {
-      blockReviewModeEditing();
-      return;
-    }
-    if (!step4Form.average_ticket.trim()) {
-      setFormError("Informe o ticket médio da loja.");
-      return;
-    }
-    if (!step4Form.can_offer_discount) {
-      setFormError("Informe se a loja trabalha ou não com descontos.");
-      return;
-    }
-    if (step4Form.accepted_payment_methods.length === 0) {
-      setFormError("Selecione pelo menos uma forma de pagamento ou condição comercial.");
-      return;
-    }
-    if (!step4Form.ai_can_send_price_directly) {
-      setFormError("Informe se a IA pode ou não falar preço sem chamar alguém da loja.");
-      return;
-    }
-    if (step4Form.ai_can_send_price_directly === "sim") {
-      if (!step4Form.price_talk_mode) {
-        setFormError("Escolha como a IA pode falar preço.");
-        return;
-      }
-      if (!step4Form.price_needs_human_help) {
-        setFormError("Informe se a IA precisa ou não de ajuda humana para falar preço.");
-        return;
-      }
-    }
-    if (
-      step4Form.human_help_discount_cases_selected.length === 0 &&
-      !step4Form.human_help_discount_cases_other.trim()
-    ) {
-      setFormError("Informe em quais casos a IA deve chamar alguém por causa de desconto.");
-      return;
-    }
-    if (
-      step4Form.human_help_custom_project_cases_selected.length === 0 &&
-      !step4Form.human_help_custom_project_cases_other.trim()
-    ) {
-      setFormError("Informe em quais casos a IA deve chamar alguém por causa de projeto especial.");
-      return;
-    }
-    if (
-      step4Form.human_help_payment_cases_selected.length === 0 &&
-      !step4Form.human_help_payment_cases_other.trim()
-    ) {
-      setFormError("Informe em quais casos a IA deve chamar alguém por causa de pagamento.");
-      return;
-    }
-    const humanHelpDiscountText = joinSelectedLabels(
-      step4Form.human_help_discount_cases_selected,
-      HUMAN_HELP_DISCOUNT_OPTIONS,
-      step4Form.human_help_discount_cases_other
-    );
-    const humanHelpCustomProjectText = joinSelectedLabels(
-      step4Form.human_help_custom_project_cases_selected,
-      HUMAN_HELP_CUSTOM_PROJECT_OPTIONS,
-      step4Form.human_help_custom_project_cases_other
-    );
-    const humanHelpPaymentText = joinSelectedLabels(
-      step4Form.human_help_payment_cases_selected,
-      HUMAN_HELP_PAYMENT_OPTIONS,
-      step4Form.human_help_payment_cases_other
-    );
-    const usesNormalDiscount = step4Form.can_offer_discount === "sim";
-    const normalizedDiscountSettings = normalizeStoreDiscountSettingsInput({
-      defaultDiscountPercent: usesNormalDiscount
-        ? step4Form.default_discount_percent
-        : "0",
-      maxDiscountPercent: usesNormalDiscount
-        ? step4Form.max_discount_percent
-        : "0",
-      allowAskAboveMaxDiscount: usesNormalDiscount
-        ? step4Form.allow_ask_above_max_discount
-        : false,
-      discountAutonomyMode: usesNormalDiscount
-        ? step4Form.discount_autonomy_mode
-        : "approval_required",
-      discountSpecialRules: step4Form.discount_special_rules,
-      highValueEnabled: false,
-      highValueThresholdAmount: "",
-      highValueDiscountPercent: "",
-    });
-    if (!normalizedDiscountSettings.ok) {
-      setFormError(normalizedDiscountSettings.error);
-      return;
-    }
-    const normalizedPaymentSettings = normalizeStorePaymentSettingsInput({
-      acceptedPaymentMethods: step4Form.accepted_payment_methods,
-      pixKeyType: step4Form.pix_key_type,
-      pixKey: step4Form.pix_key,
-      pixHolderName: step4Form.pix_holder_name,
-      downPaymentMode: step4Form.down_payment_mode,
-      downPaymentValueType: step4Form.down_payment_value_type,
-      downPaymentPercent: step4Form.down_payment_percent,
-      downPaymentAmount: step4Form.down_payment_amount,
-      installmentsEnabled: step4Form.installments_enabled,
-      maxInstallments: step4Form.max_installments,
-      installmentInterestPolicy: step4Form.installment_interest_policy,
-      paymentNotes: step4Form.payment_notes,
-    });
-    if (!normalizedPaymentSettings.ok) {
-      setFormError(normalizedPaymentSettings.error);
-      return;
-    }
-    const priceAnswerPolicy =
-      step4Form.ai_can_send_price_directly !== "sim" ||
-      step4Form.price_needs_human_help === "sim" ||
-      step4Form.price_talk_mode === "nao_falar_sozinha"
-        ? "human_required_for_price"
-        : step4Form.price_talk_mode === "apenas_faixa_inicial"
-          ? "range_only_when_asked"
-          : "direct_when_asked";
-    const normalizedCommercialAiSettings =
-      normalizeStoreCommercialAiSettingsInput({
-        priceAnswerPolicy,
-        priceContextRequirements: step4Form.price_must_understand_before,
+      const response = await fetch("/api/store/update-name", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          storeId: activeStore.id,
+          name: step1Form.store_display_name.trim(),
+        }),
       });
-    if (!normalizedCommercialAiSettings.ok) {
-      setFormError(normalizedCommercialAiSettings.error);
-      return;
-    }
-    if (!organizationId || !activeStore?.id) return;
-    const storeId = activeStore.id;
-    setSaving(true);
-    setFormError(null);
-    setSuccessMessage(null);
-    try {
-      const { data: savedDiscountSettings, error: discountSettingsError } =
-        await supabase.rpc(
-          "upsert_store_discount_settings_with_legacy_mirror_scoped",
-          {
-            p_organization_id: organizationId,
-            p_store_id: storeId,
-            p_default_discount_percent:
-              normalizedDiscountSettings.value.defaultDiscountPercent,
-            p_max_discount_percent:
-              normalizedDiscountSettings.value.maxDiscountPercent,
-            p_allow_ask_above_max_discount:
-              normalizedDiscountSettings.value.allowAskAboveMaxDiscount,
-            p_discount_autonomy_mode:
-              normalizedDiscountSettings.value.discountAutonomyMode,
-            p_discount_special_rules:
-              normalizedDiscountSettings.value.discountSpecialRules,
-          },
-        );
-      if (discountSettingsError) {
-        throw new Error(
-          "Falha ao sincronizar as configuracoes canonicas de desconto.",
-        );
-      }
-      setDiscountSettings(
-        (savedDiscountSettings ?? null) as DiscountSettingsRow | null,
-      );
+      const result = (await response.json().catch(() => null)) as
+        | { ok?: boolean; message?: string }
+        | null;
 
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Falha ao atualizar o nome oficial da loja.");
+      }
 
-      const { data: savedPaymentSettings, error: paymentSettingsError } =
-        await supabase.rpc(
-          "upsert_store_payment_settings_with_legacy_mirror_scoped",
-          {
-            p_organization_id: organizationId,
-            p_store_id: activeStore.id,
-            p_accepted_payment_methods:
-              normalizedPaymentSettings.value.acceptedPaymentMethods,
-            p_pix_key_type: normalizedPaymentSettings.value.pixKeyType,
-            p_pix_key: normalizedPaymentSettings.value.pixKey,
-            p_pix_holder_name: normalizedPaymentSettings.value.pixHolderName,
-            p_down_payment_mode: normalizedPaymentSettings.value.downPaymentMode,
-            p_down_payment_value_type:
-              normalizedPaymentSettings.value.downPaymentValueType,
-            p_down_payment_percent:
-              normalizedPaymentSettings.value.downPaymentPercent,
-            p_down_payment_amount_cents:
-              normalizedPaymentSettings.value.downPaymentAmountCents,
-            p_installments_enabled:
-              normalizedPaymentSettings.value.installmentsEnabled,
-            p_max_installments: normalizedPaymentSettings.value.maxInstallments,
-            p_installment_interest_policy:
-              normalizedPaymentSettings.value.installmentInterestPolicy,
-            p_payment_notes: normalizedPaymentSettings.value.paymentNotes,
-          },
-        );
-      if (paymentSettingsError) {
-        throw new Error(
-          "Falha ao sincronizar as configuracoes canonicas de pagamento.",
-        );
-      }
-      setPaymentSettings(
-        (savedPaymentSettings ?? null) as StorePaymentSettingsRow | null,
-      );
-      const { data: savedCommercialAiSettings, error: commercialAiSettingsError } =
-        await supabase.rpc(
-          "upsert_store_commercial_ai_settings_with_legacy_mirror_scoped",
-          {
-            p_organization_id: organizationId,
-            p_store_id: activeStore.id,
-            p_price_answer_policy:
-              normalizedCommercialAiSettings.value.priceAnswerPolicy,
-            p_price_context_requirements:
-              normalizedCommercialAiSettings.value.priceContextRequirements,
-          },
-        );
-      if (commercialAiSettingsError) {
-        throw new Error(
-          "Falha ao sincronizar as configuracoes canonicas comerciais.",
-        );
-      }
-      setCommercialAiSettings(
-        (savedCommercialAiSettings ?? null) as StoreCommercialAiSettingsRow | null,
-      );
-      const payloads: Array<[string, unknown]> = [
-        ["average_ticket", step4Form.average_ticket.trim()],
-        ["human_help_discount_cases", humanHelpDiscountText],
-        ["human_help_custom_project_cases", humanHelpCustomProjectText],
-        ["human_help_payment_cases", humanHelpPaymentText],
-        ["human_help_discount_cases_selected", step4Form.human_help_discount_cases_selected],
-        ["human_help_discount_cases_other", step4Form.human_help_discount_cases_other.trim()],
-        [
-          "human_help_custom_project_cases_selected",
-          step4Form.human_help_custom_project_cases_selected,
-        ],
-        ["human_help_custom_project_cases_other", step4Form.human_help_custom_project_cases_other.trim()],
-        ["human_help_payment_cases_selected", step4Form.human_help_payment_cases_selected],
-        ["human_help_payment_cases_other", step4Form.human_help_payment_cases_other.trim()],
-      ];
-      for (const [questionKey, answer] of payloads) {
-        const { error: rpcError } = await supabase.rpc("onboarding_upsert_answer_scoped", {
-          p_organization_id: organizationId,
-          p_store_id: activeStore.id,
-          p_question_key: questionKey,
-          p_answer: answer,
-        });
-        if (rpcError) throw new Error(`Falha ao salvar campo: ${questionKey}`);
-      }
-      const { error: statusError } = await supabase.rpc("onboarding_upsert_store_onboarding_scoped", {
-        p_organization_id: organizationId,
-        p_store_id: activeStore.id,
-        p_status: "in_progress",
-      });
-      if (statusError) throw new Error("Falha ao atualizar status do onboarding.");
-      setOnboardingStatus("in_progress");
-      setHasCompletedOnboardingOnce(false);
-      setSuccessMessage("Etapa 4 salva com sucesso.");
-      ignoreNextStepScrollRef.current = false;
-      setCurrentStep(5);
-      setStep4DraftRecovered(false);
-    } catch (err) {
-      console.error("[OnboardingPage] saveStep4 error:", err);
-      setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
+      await persistAnswers([["store_display_name", step1Form.store_display_name.trim()]]);
+      await refreshStores();
+
+      setSuccessMessage("Informações essenciais da loja salvas.");
+      changeStep(2);
+    } catch (error) {
+      console.error("[OnboardingPage] saveStep1 error:", error);
+      setFormError(error instanceof Error ? error.message : "Erro ao salvar a etapa.");
     } finally {
       setSaving(false);
     }
   }
-  async function saveStep5(e: FormEvent) {
-    e.preventDefault();
-    if (isOnboardingReviewMode) {
-      blockReviewModeEditing();
+
+  async function saveStep2(event: FormEvent) {
+    event.preventDefault();
+
+    if (step2Form.store_services.length === 0) {
+      setFormError("Marque pelo menos uma atividade principal da loja.");
       return;
     }
-    if (!step5Form.responsible_name.trim()) {
-      setFormError("Preencha o nome da pessoa principal que a IA deve acionar.");
+    if (step2Form.store_services.includes("outro") && !step2Form.store_services_other.trim()) {
+      setFormError("Informe qual é o outro produto ou serviço da loja.");
       return;
     }
-    if (!step5Form.responsible_whatsapp.trim()) {
-      setFormError("Preencha o WhatsApp dessa pessoa.");
+    const selectedBrands = step2Form.brands_worked.filter(Boolean);
+    if (selectedBrands.includes("outro") && !step2Form.brands_worked_other.trim()) {
+      setFormError("Informe qual é a outra marca trabalhada pela loja.");
       return;
     }
-    if (!step5Form.ai_should_notify_responsible) {
-      setFormError("Informe se a IA deve ou não avisar essa pessoa quando surgir algo importante.");
-      return;
-    }
-    if (
-      step5Form.ai_should_notify_responsible === "sim" &&
-      step5Form.responsible_notification_cases.length === 0 &&
-      !step5Form.responsible_notification_cases_other.trim()
-    ) {
-      setFormError("Informe em quais casos essa pessoa deve ser avisada.");
-      return;
-    }
-    if (
-      step5Form.activation_preferences.length === 0 &&
-      !step5Form.activation_preferences_other.trim()
-    ) {
-      setFormError("Marque pelo menos uma orientação final para ativar a IA.");
-      return;
-    }
-    if (!step5Form.confirm_information_is_correct) {
-      setFormError("Confirme que as informações estão corretas para concluir o onboarding.");
-      return;
-    }
-    const finalActivationNotesText = joinSelectedLabels(
-      step5Form.activation_preferences,
-      [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS],
-      step5Form.activation_preferences_other
-    );
-    if (!organizationId || !activeStore?.id) return;
+
     setSaving(true);
     setFormError(null);
     setSuccessMessage(null);
+
     try {
-      const { error: responsibleSyncError } = await supabase.rpc(
+      const brandsWorked = resolveMultiChoiceText(
+        selectedBrands,
+        step2Form.brands_worked_other,
+        POOL_MARKET_BRAND_OPTIONS,
+      );
+
+      await saveStrategySettingsPartial({
+        storeServices: step2Form.store_services.filter((value) => value !== "outro"),
+        storeServicesOther: step2Form.store_services.includes("outro")
+          ? step2Form.store_services_other.trim()
+          : "",
+        brandsWorked,
+      });
+      await persistAnswers([]);
+
+      setSuccessMessage("Essência comercial da loja salva.");
+      changeStep(3);
+    } catch (error) {
+      console.error("[OnboardingPage] saveStep2 error:", error);
+      setFormError(error instanceof Error ? error.message : "Erro ao salvar a etapa.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveStep3(event: FormEvent) {
+    event.preventDefault();
+
+    if (!step3Form.responsible_name.trim()) {
+      setFormError("Preencha o nome do responsável principal.");
+      return;
+    }
+    if (!step3Form.responsible_whatsapp.trim()) {
+      setFormError("Preencha o WhatsApp autorizado do responsável.");
+      return;
+    }
+    if (!organizationId || !activeStore?.id) return;
+
+    setSaving(true);
+    setFormError(null);
+    setSuccessMessage(null);
+
+    try {
+      const { error: responsibleError } = await supabase.rpc(
         "upsert_store_primary_responsible_with_legacy_mirror_scoped",
         {
           p_organization_id: organizationId,
           p_store_id: activeStore.id,
-          p_name: step5Form.responsible_name.trim(),
-          p_whatsapp_number: step5Form.responsible_whatsapp.trim(),
-        }
+          p_name: step3Form.responsible_name.trim(),
+          p_whatsapp_number: normalizeWhatsappDigits(step3Form.responsible_whatsapp),
+        },
       );
-      if (responsibleSyncError) {
-        throw new Error("Falha ao sincronizar o responsavel operacional principal.");
+
+      if (responsibleError) {
+        throw new Error("Falha ao sincronizar o responsável principal.");
       }
-      const payloads: Array<[string, unknown]> = [
-        [
-          "ai_should_notify_responsible",
-          step5Form.ai_should_notify_responsible.trim().toLowerCase() === "sim",
-        ],
-        ["final_activation_notes", finalActivationNotesText],
-        ["confirm_information_is_correct", step5Form.confirm_information_is_correct],
-        ["responsible_notification_cases", step5Form.responsible_notification_cases],
-        ["responsible_notification_cases_other", step5Form.responsible_notification_cases_other.trim()],
-        ["activation_preferences", step5Form.activation_preferences],
-        ["activation_preferences_other", step5Form.activation_preferences_other.trim()],
-      ];
-      for (const [questionKey, answer] of payloads) {
-        const { error: rpcError } = await supabase.rpc("onboarding_upsert_answer_scoped", {
-          p_organization_id: organizationId,
-          p_store_id: activeStore.id,
-          p_question_key: questionKey,
-          p_answer: answer,
-        });
-        if (rpcError) throw new Error(`Falha ao salvar campo: ${questionKey}`);
-      }
-      const { error: statusError } = await supabase.rpc("onboarding_upsert_store_onboarding_scoped", {
-        p_organization_id: organizationId,
-        p_store_id: activeStore.id,
-        p_status: "completed",
+
+      await persistAnswers([]);
+      setPrimaryResponsible({
+        name: step3Form.responsible_name.trim(),
+        whatsappNumber: normalizeWhatsappDigits(step3Form.responsible_whatsapp),
+        role: cleanText(primaryResponsible?.role) || null,
       });
-      if (statusError) throw new Error("Falha ao concluir o onboarding.");
-      setOnboardingStatus("completed");
-      setHasCompletedOnboardingOnce(true);
-      await loadOnboardingStatus();
-      setSuccessMessage("Onboarding concluído com sucesso. Agora este onboarding entra em modo revisão e as edições oficiais ficam na aba Configurações.");
-      setStep5DraftRecovered(false);
-      setTimeout(() => {
-        router.push("/configuracoes");
-      }, 1000);
-    } catch (err) {
-      console.error("[OnboardingPage] saveStep5 error:", err);
-      setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
+
+      setSuccessMessage("Responsável principal salvo.");
+      changeStep(4);
+    } catch (error) {
+      console.error("[OnboardingPage] saveStep3 error:", error);
+      setFormError(error instanceof Error ? error.message : "Erro ao salvar a etapa.");
     } finally {
       setSaving(false);
     }
   }
+
+  const whatsappConnected = useMemo(() => {
+    const normalizedStatus = cleanText(whatsappStatus?.status).toLowerCase();
+    return Boolean(
+      whatsappStatus?.connected &&
+        whatsappStatus?.isActive &&
+        normalizedStatus === "active" &&
+        cleanText(whatsappStatus?.displayPhoneNumber),
+    );
+  }, [whatsappStatus]);
+
+  const essentialsReady = useMemo(() => {
+    return Boolean(
+      step1Form.store_display_name.trim() &&
+        step1Form.city.trim() &&
+        step1Form.state.trim() &&
+        step2Form.store_services.length > 0 &&
+        step3Form.responsible_name.trim() &&
+        step3Form.responsible_whatsapp.trim(),
+    );
+  }, [step1Form, step2Form, step3Form]);
+
+  // UX-only gate; the canonical completion RPC is the final authority.
+  const canActivate = essentialsReady && whatsappConnected;
+
+  async function activateZion() {
+    if (!organizationId || !activeStore?.id) return;
+
+    if (!essentialsReady) {
+      setFormError("Revise as etapas anteriores antes de ativar o ZION.");
+      return;
+    }
+
+    if (!whatsappConnected) {
+      setFormError("O WhatsApp comercial oficial precisa estar conectado antes da ativação.");
+      return;
+    }
+
+    setSaving(true);
+    setFormError(null);
+    setSuccessMessage(null);
+
+    try {
+      const { data, error } = await supabase.rpc(
+        "onboarding_complete_store_onboarding_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStore.id,
+        },
+      );
+
+      if (error) throw error;
+
+      const completedStatus = extractOnboardingStatus(data);
+      if (completedStatus !== "completed") {
+        throw new Error("P19A_ONBOARDING_COMPLETION_STATUS_UNEXPECTED");
+      }
+
+      setOnboardingStatus(completedStatus);
+
+      for (const key of [
+        currentStepStorageKey,
+        step1DraftStorageKey,
+        step2DraftStorageKey,
+        step3DraftStorageKey,
+      ]) {
+        if (key) removeFromLocalStorageSafe(key);
+      }
+
+      setSuccessMessage("Onboarding concluído. O ZION está pronto para seguir para a configuração detalhada.");
+
+      window.setTimeout(() => {
+        router.replace("/dashboard");
+      }, 900);
+    } catch (error) {
+      console.error("[OnboardingPage] activateZion error:", error);
+      setFormError(mapOnboardingCompletionError(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (storeLoading) {
     return (
       <div className="min-h-screen bg-gray-100 px-4 py-6">
@@ -2702,6 +1167,7 @@ function OnboardingContent() {
       </div>
     );
   }
+
   if (fatalError) {
     return (
       <div className="min-h-screen bg-gray-100 px-4 py-6">
@@ -2713,329 +1179,162 @@ function OnboardingContent() {
       </div>
     );
   }
+
   if (!activeStore || !organizationId) return null;
+
   return (
     <div className="min-h-screen bg-gray-100 px-4 py-6">
       <div className="mx-auto max-w-5xl">
-        <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
+        <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
           <StepBadge step={1} currentStep={currentStep} title="Loja" onClick={() => changeStep(1)} />
-          <StepBadge step={2} currentStep={currentStep} title="Piscinas" onClick={() => changeStep(2)} />
-          <StepBadge step={3} currentStep={currentStep} title="Operação" onClick={() => changeStep(3)} />
-          <StepBadge step={4} currentStep={currentStep} title="Comercial" onClick={() => changeStep(4)} />
-          <StepBadge step={5} currentStep={currentStep} title="Ativação" onClick={() => changeStep(5)} />
+          <StepBadge
+            step={2}
+            currentStep={currentStep}
+            title="O que a loja faz"
+            onClick={() => changeStep(2)}
+          />
+          <StepBadge
+            step={3}
+            currentStep={currentStep}
+            title="Responsável"
+            onClick={() => changeStep(3)}
+          />
+          <StepBadge
+            step={4}
+            currentStep={currentStep}
+            title="WhatsApp e ativação"
+            onClick={() => changeStep(4)}
+          />
         </div>
+
         <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
-            <div className="min-w-0">
-              <p className="mb-1 text-sm font-medium text-gray-500">Onboarding inicial</p>
-              <h1 className="mb-2 text-2xl font-bold text-gray-900">
-                {currentStep === 1 && "Etapa 1 — Loja"}
-                {currentStep === 2 && "Etapa 2 — Piscinas"}
-                {currentStep === 3 && "Etapa 3 — Operação da loja"}
-                {currentStep === 4 && "Etapa 4 — Comercial"}
-                {currentStep === 5 && "Etapa 5 — Ativação"}
-              </h1>
-              <p className="text-sm leading-6 text-gray-600">
-                {currentStep === 1 &&
-                  "Vamos preencher os dados principais da loja de um jeito rápido, claro e sem complicação."}
-                {currentStep === 2 &&
-                  "Agora vamos definir os tipos de piscina e a marca principal da loja, sem repetir o que já foi marcado antes."}
-                {currentStep === 3 &&
-                  "Agora vamos organizar como a loja funciona no dia a dia para a IA responder do jeito certo."}
-                {currentStep === 4 &&
-                  "Agora vamos definir a parte comercial da loja, principalmente preço, desconto, pagamento e quando chamar alguém da equipe."}
-                {currentStep === 5 &&
-                  "Por fim, vamos organizar quem a IA deve avisar, em quais casos e quais orientações finais ela precisa seguir."}
-              </p>
-              {hasCompletedOnboardingOnce ? (
-                <div className="mt-3 space-y-3">
-                  <InfoBlock
-                    title="Onboarding em modo revisão"
-                    description="Este onboarding agora serve como consulta do cadastro inicial da loja. Para alterar dados atuais, regras e políticas vivas, use a aba Configurações."
-                    subtle
-                  />
-                  <InfoBlock
-                    title="Onde editar de verdade"
-                    description="As mudanças oficiais da loja devem ser feitas em Configurações. Aqui você pode navegar pelas etapas para revisar o que foi preenchido inicialmente."
-                    subtle
-                  />
-                </div>
-              ) : null}
-            </div>
-            <div className="flex shrink-0 flex-row items-center justify-start gap-3 md:justify-end">
-              <button
-                type="button"
-                onClick={() => navigateWithFallback("/configuracoes")}
-                className="inline-flex h-11 min-w-[178px] items-center justify-center whitespace-nowrap rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
-              >
-                Ir para Configurações
-              </button>
-              <button
-                type="button"
-                onClick={() => navigateWithFallback("/dashboard")}
-                className="inline-flex h-11 min-w-[118px] items-center justify-center whitespace-nowrap rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
-              >
-                Salvar e sair
-              </button>
-            </div>
+          <div className="mb-6">
+            <h1 className="text-2xl font-bold text-gray-900">
+              {currentStep === 1 && "Etapa 1 — Loja"}
+              {currentStep === 2 && "Etapa 2 — O que a loja faz"}
+              {currentStep === 3 && "Etapa 3 — Responsável"}
+              {currentStep === 4 && "Etapa 4 — WhatsApp e ativação"}
+            </h1>
           </div>
+
           {formError ? (
             <div className="mb-6">
-              <InfoBlock title="Ajuste necessário" description={formError} />
+              <InfoBlock title="Ajuste necessário" description={formError} tone="warning" />
             </div>
           ) : null}
-          {currentStep === 1 && (
+
+          {successMessage ? (
+            <div className="mb-6">
+              <InfoBlock title="Tudo certo" description={successMessage} tone="success" />
+            </div>
+          ) : null}
+
+          {currentStep === 1 ? (
             <form onSubmit={saveStep1} className="space-y-6">
-              <fieldset disabled={isOnboardingReviewMode} className={cx("space-y-6", isOnboardingReviewMode && "pointer-events-none opacity-70")}>
               <div>
                 <SectionTitle
-                  title="Como a loja quer aparecer no sistema?"
-                  hint="Use o nome que faz mais sentido para os atendimentos, mensagens e organização interna."
+                  title="Qual é o nome da loja?"
+                  hint="Use o nome que deve aparecer no ZION e no atendimento ao cliente."
                 />
                 <input
                   type="text"
                   value={step1Form.store_display_name}
-                  onChange={(e) => updateStep1Field("store_display_name", e.target.value)}
+                  onChange={(event) => updateStep1Field("store_display_name", event.target.value)}
                   className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: Loja Matriz"
+                  placeholder="Ex.: Piscinas do Vale"
                   required
                 />
               </div>
+
               <div>
                 <SectionTitle
-                  title="Como você descreve a loja em poucas palavras?"
-                  hint="Isso ajuda a IA a entender o posicionamento principal da empresa."
+                  title="Como você definiria a loja?"
+                  hint="Descreva em poucas palavras o que a empresa é na sua essência."
                 />
                 <textarea
                   value={step1Form.store_description}
-                  onChange={(e) => updateStep1Field("store_description", e.target.value)}
-                  rows={4}
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: Loja especializada em piscinas, produtos químicos e instalação."
+                  onChange={(event) => updateStep1Field("store_description", event.target.value)}
+                  className="min-h-24 w-full resize-y rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                  placeholder="Ex.: Loja especializada em piscinas, equipamentos e serviços."
                 />
               </div>
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <div>
-                  <SectionTitle title="Cidade da loja" />
+
+              <div>
+                <SectionTitle
+                  title="Em qual cidade e estado fica a base principal da loja?"
+                  hint="Informe a cidade e o estado onde fica a base principal. Endereço completo, cobertura e regras detalhadas ficam em Configurações."
+                />
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_180px]">
                   <input
                     type="text"
                     value={step1Form.city}
-                    onChange={(e) => updateStep1Field("city", e.target.value)}
+                    onChange={(event) => updateStep1Field("city", event.target.value)}
                     className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                    placeholder="Ex.: Suzano"
+                    placeholder="Cidade"
                     required
                   />
-                </div>
-                <div>
-                  <SectionTitle title="Estado da loja" />
                   <input
                     type="text"
                     value={step1Form.state}
-                    onChange={(e) => updateStep1Field("state", e.target.value)}
+                    onChange={(event) => updateStep1Field("state", event.target.value)}
                     className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                    placeholder="Ex.: SP"
+                    placeholder="Estado (ex.: São Paulo)"
                     required
                   />
                 </div>
               </div>
-              <div>
-                <SectionTitle
-                  title="Quais regiões a loja atende?"
-                  hint="Pode escrever cidades, bairros ou uma descrição simples."
-                />
-                <input
-                  type="text"
-                  value={step1Form.service_regions}
-                  onChange={(e) => updateStep1Field("service_regions", e.target.value)}
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: Suzano, Mogi, Poá e região"
-                />
+
+              <div className="flex justify-end border-t border-gray-200 pt-4">
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="rounded-xl bg-black px-5 py-2.5 font-medium text-white disabled:opacity-60"
+                >
+                  {saving ? "Salvando..." : "Salvar e continuar"}
+                </button>
               </div>
+            </form>
+          ) : null}
+
+          {currentStep === 2 ? (
+            <form onSubmit={saveStep2} className="space-y-6">
               <div>
                 <SectionTitle
-                  title="Qual é o WhatsApp comercial da loja?"
-                  hint="Esse é o canal principal em que os clientes falam com a loja."
-                />
-                <input
-                  type="text"
-                  value={step1Form.commercial_whatsapp}
-                  onChange={(e) => updateStep1Field("commercial_whatsapp", formatWhatsappInput(e.target.value))}
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: 5511999999999"
-                  required
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="Quais serviços principais a loja oferece?"
-                  hint="Marque tudo o que realmente faz sentido hoje."
+                  title="O que a loja vende e oferece?"
+                  hint="Marque somente o que faz parte da essência atual da empresa. Regras, preços e detalhes operacionais serão configurados depois."
                 />
                 <SelectorGrid
                   options={STORE_SERVICE_OPTIONS}
-                  selectedValues={step1Form.store_services}
-                  onToggle={(value) => toggleStep1ArrayField("store_services", value)}
+                  selectedValues={step2Form.store_services}
+                  onToggle={toggleStoreService}
                 />
-                <input
-                  type="text"
-                  value={step1Form.store_services_other}
-                  onChange={(e) => updateStep1Field("store_services_other", e.target.value)}
-                  className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Se tiver algo fora da lista, escreva aqui (opcional)"
-                />
+                {step2Form.store_services.includes("outro") ? (
+                  <input
+                    type="text"
+                    value={step2Form.store_services_other}
+                    onChange={(event) => updateStep2Field("store_services_other", event.target.value)}
+                    className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                    placeholder="Qual é o outro produto ou serviço?"
+                  />
+                ) : null}
               </div>
-              <div>
-                <SectionTitle
-                  title="Qual é o alcance regional principal da loja?"
-                  hint="Escolha a opção que melhor representa a operação real."
-                />
-                <SingleSelectorGrid
-                  options={SERVICE_REGION_MODE_OPTIONS.filter((option) => option.value !== "sob_consulta")}
-                  value={step1Form.service_region_primary_mode}
-                  onChange={(value) => updateStep1Field("service_region_primary_mode", value)}
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="Como a loja trata atendimento fora da região principal?"
-                  hint="Marque as formas de atendimento que podem acontecer na prática."
-                />
-                <SelectorGrid
-                  options={SERVICE_REGION_MODE_OPTIONS}
-                  selectedValues={step1Form.service_region_modes}
-                  onToggle={(value) => toggleStep1ArrayField("service_region_modes", value)}
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="A loja atende fora da região principal só sob consulta?"
-                  hint="Use isso para deixar claro quando precisa avaliar caso a caso."
-                />
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step1Form.service_region_outside_consultation ? "sim" : "não"}
-                  onChange={(value) => updateStep1Field("service_region_outside_consultation", value === "sim")}
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="Observações sobre a região atendida"
-                  hint="Escreva regras extras se quiser complementar."
-                />
-                <textarea
-                  value={step1Form.service_region_notes}
-                  onChange={(e) => updateStep1Field("service_region_notes", e.target.value)}
-                  rows={4}
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: Fora da região só com taxa, dependendo do projeto."
-                />
-              </div>
-              <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-end">
-                <button
-                  type="submit"
-                  disabled={saving || isOnboardingReviewMode}
-                  className="rounded-xl bg-black px-5 py-2.5 font-medium text-white disabled:opacity-60"
-                >
-                  {isOnboardingReviewMode ? "Edição bloqueada no onboarding" : saving ? "Salvando..." : "Salvar e ir para etapa 2"}
-                </button>
-              </div>
-              </fieldset>
-            </form>
-          )}
-          {currentStep === 2 && (
-            <form onSubmit={saveStep2} className="space-y-6">
-              <fieldset disabled={isOnboardingReviewMode} className={cx("space-y-6", isOnboardingReviewMode && "pointer-events-none opacity-70")}>
-              <div>
-                <SectionTitle
-                  title="Quais tipos de piscina a loja trabalha?"
-                  hint="Marque tudo o que faz sentido hoje. Se precisar, complemente no campo abaixo."
-                />
-                <SelectorGrid
-                  options={POOL_TYPE_OPTIONS}
-                  selectedValues={step2Form.pool_types_selected}
-                  onToggle={(value) => toggleStep2ArrayField("pool_types_selected", value)}
-                />
-                <input
-                  type="text"
-                  value={step2Form.pool_types_other}
-                  onChange={(e) => updateStep2Field("pool_types_other", e.target.value)}
-                  className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Se quiser complementar, escreva aqui (opcional)"
-                />
-              </div>
-              <div>
-                <SectionTitle title="A loja vende produtos químicos?" />
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step2Form.sells_chemicals}
-                  onChange={(value) => updateStep2Field("sells_chemicals", value)}
-                />
-              </div>
-              <div>
-                <SectionTitle title="A loja vende acessórios?" />
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step2Form.sells_accessories}
-                  onChange={(value) => updateStep2Field("sells_accessories", value)}
-                />
-              </div>
-              <div>
-                <SectionTitle title="A loja oferece instalação?" />
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step2Form.offers_installation}
-                  onChange={(value) => updateStep2Field("offers_installation", value)}
-                />
-              </div>
-              <div>
-                <SectionTitle title="A loja oferece visita técnica?" />
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step2Form.offers_technical_visit}
-                  onChange={(value) => updateStep2Field("offers_technical_visit", value)}
-                />
-              </div>
+
               <div>
                 <SectionTitle
                   title="Quais marcas a loja trabalha?"
-                  hint="Pode ser uma lista simples separada por vírgula."
+                  hint="Opcional. Selecione as principais marcas. Isso não significa que um produto esteja disponível: catálogo e estoque continuam sendo a autoridade."
                 />
-                <input
-                  type="text"
-                  value={step2Form.brands_worked}
-                  onChange={(e) => updateStep2Field("brands_worked", e.target.value)}
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: Cris Água, Brustec, Sodramar"
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="Qual é a principal marca trabalhada pela loja?"
-                  hint="Escolha a marca principal para referência da IA."
-                />
-                <input
-                  type="text"
-                  value={step2Form.main_store_brand}
-                  onChange={(e) => updateStep2Field("main_store_brand", e.target.value)}
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: Cris Água"
-                  required
+                <BrandSelectList
+                  values={step2Form.brands_worked}
+                  onChange={(values) =>
+                    setStep2Form((current) => ({ ...current, brands_worked: values }))
+                  }
+                  otherValue={step2Form.brands_worked_other}
+                  onOtherChange={(value) => updateStep2Field("brands_worked_other", value)}
                 />
               </div>
-              <IntelligentCatalogImportPanel
-                organizationId={organizationId}
-                storeId={activeStore?.id ?? null}
-                storageKey={intelligentImportStorageKey}
-                source="onboarding_intelligent_import"
-                disabled={isOnboardingReviewMode}
-                supabaseClient={supabase}
-                onError={setFormError}
-                onSuccess={setSuccessMessage}
-                afterSaveBehavior={() => {
-                  ignoreNextStepScrollRef.current = false;
-                  setCurrentStep(2);
-                }}
-              />
-              <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-between">
+
+              <div className="flex items-center justify-between gap-3 border-t border-gray-200 pt-4">
                 <button
                   type="button"
                   onClick={() => changeStep(1)}
@@ -3045,227 +1344,48 @@ function OnboardingContent() {
                 </button>
                 <button
                   type="submit"
-                  disabled={saving || isOnboardingReviewMode}
+                  disabled={saving}
                   className="rounded-xl bg-black px-5 py-2.5 font-medium text-white disabled:opacity-60"
                 >
-                  {isOnboardingReviewMode ? "Edição bloqueada no onboarding" : saving ? "Salvando..." : "Salvar e ir para etapa 3"}
+                  {saving ? "Salvando..." : "Salvar e continuar"}
                 </button>
               </div>
-              </fieldset>
             </form>
-          )}
-          {currentStep === 3 && (
+          ) : null}
+
+          {currentStep === 3 ? (
             <form onSubmit={saveStep3} className="space-y-6">
-              <fieldset disabled={isOnboardingReviewMode} className={cx("space-y-6", isOnboardingReviewMode && "pointer-events-none opacity-70")}>
               <div>
-                <SectionTitle
-                  title="Qual é o tempo médio de resposta humana da loja?"
-                  hint="Pode ser em minutos ou horas. Ex.: 15 min, 1h, 2h."
-                />
+                <SectionTitle title="Nome do responsável principal" />
                 <input
                   type="text"
-                  value={step3Form.average_human_response_time}
-                  onChange={(e) => updateStep3Field("average_human_response_time", e.target.value)}
+                  value={step3Form.responsible_name}
+                  onChange={(event) => updateStep3Field("responsible_name", event.target.value)}
                   className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: 15 min"
+                  placeholder="Ex.: Junior"
                   required
                 />
               </div>
-              {storeHasInstallation && (
-                <>
-                  <div>
-                    <SectionTitle
-                      title="Qual é o tempo médio de instalação?"
-                      hint="Escreva de forma prática. Ex.: 7 dias, 15 dias."
-                    />
-                    <input
-                      type="text"
-                      value={step3Form.average_installation_time_days}
-                      onChange={(e) => updateStep3Field("average_installation_time_days", e.target.value)}
-                      className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                      placeholder="Ex.: 10 dias"
-                    />
-                  </div>
-                  <div>
-                    <SectionTitle
-                      title="Quais dias a loja costuma instalar?"
-                      hint="Marque os dias reais disponíveis."
-                    />
-                    <SelectorGrid
-                      options={DAYS_OF_WEEK_OPTIONS}
-                      selectedValues={step3Form.installation_available_days}
-                      onToggle={(value) => toggleStep3ArrayField("installation_available_days", value)}
-                    />
-                    <input
-                      type="text"
-                      value={step3Form.installation_days_rule}
-                      onChange={(e) => updateStep3Field("installation_days_rule", e.target.value)}
-                      className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                      placeholder="Regra complementar da instalação (opcional)"
-                    />
-                  </div>
-                  <div>
-                    <SectionTitle
-                      title="Como costuma funcionar a instalação?"
-                      hint="Marque as etapas principais."
-                    />
-                    <SelectorGrid
-                      options={SALES_FLOW_FINAL_OPTIONS}
-                      selectedValues={step3Form.installation_process_steps}
-                      onToggle={(value) => toggleStep3ArrayField("installation_process_steps", value)}
-                    />
-                    <textarea
-                      value={step3Form.installation_process_other}
-                      onChange={(e) => updateStep3Field("installation_process_other", e.target.value)}
-                      rows={4}
-                      className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                      placeholder="Complemento da instalação (opcional)"
-                    />
-                  </div>
-                </>
-              )}
-              {storeHasTechnicalVisit && (
-                <>
-                  <div>
-                    <SectionTitle
-                      title="Quais dias a loja costuma fazer visita técnica?"
-                      hint="Marque os dias reais disponíveis."
-                    />
-                    <SelectorGrid
-                      options={DAYS_OF_WEEK_OPTIONS}
-                      selectedValues={step3Form.technical_visit_available_days}
-                      onToggle={(value) => toggleStep3ArrayField("technical_visit_available_days", value)}
-                    />
-                    <input
-                      type="text"
-                      value={step3Form.technical_visit_days_rule}
-                      onChange={(e) => updateStep3Field("technical_visit_days_rule", e.target.value)}
-                      className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                      placeholder="Regra complementar da visita técnica (opcional)"
-                    />
-                  </div>
-                  <div>
-                    <SectionTitle
-                      title="Quais regras a IA precisa respeitar na visita técnica?"
-                      hint="Marque as regras principais."
-                    />
-                    <SelectorGrid
-                      options={TECHNICAL_VISIT_RULE_OPTIONS}
-                      selectedValues={step3Form.technical_visit_rules_selected}
-                      onToggle={(value) => toggleStep3ArrayField("technical_visit_rules_selected", value)}
-                    />
-                    <textarea
-                      value={step3Form.technical_visit_rules_other}
-                      onChange={(e) => updateStep3Field("technical_visit_rules_other", e.target.value)}
-                      rows={4}
-                      className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                      placeholder="Complemento das regras de visita (opcional)"
-                    />
-                  </div>
-                </>
-              )}
+
+
               <div>
                 <SectionTitle
-                  title="A loja atende em feriados?"
-                  hint="Essa resposta precisa bater com a aba de Operação em Configurações."
+                  title="Qual é o WhatsApp autorizado dessa pessoa?"
+                  hint="Esse não é o número comercial da loja. Depois da ativação, o ZION usará esse número para reconhecer o responsável quando ele falar com a IA Assistente pelo WhatsApp comercial da loja."
                 />
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step3Form.attends_holidays}
-                  onChange={(value) => updateStep3Field("attends_holidays", value)}
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="Quais limitações importantes a IA precisa saber?"
-                  hint="Marque o que for real hoje na operação."
-                />
-                <SelectorGrid
-                  options={IMPORTANT_LIMITATION_OPTIONS}
-                  selectedValues={step3Form.important_limitations_selected}
-                  onToggle={(value) => toggleStep3ArrayField("important_limitations_selected", value)}
-                />
-                <textarea
-                  value={step3Form.important_limitations_other}
-                  onChange={(e) => updateStep3Field("important_limitations_other", e.target.value)}
-                  rows={4}
-                  className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Se quiser complementar, escreva aqui (opcional)"
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="Como começa o fluxo comercial?"
-                  hint="Marque os pontos mais comuns do início do atendimento."
-                />
-                <SelectorGrid
-                  options={SALES_FLOW_START_OPTIONS}
-                  selectedValues={step3Form.sales_flow_start_steps}
-                  onToggle={(value) => toggleStep3ArrayField("sales_flow_start_steps", value)}
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="Como costuma seguir a negociação?"
-                  hint="Marque as etapas da parte do meio."
-                />
-                <SelectorGrid
-                  options={SALES_FLOW_MIDDLE_OPTIONS}
-                  selectedValues={step3Form.sales_flow_middle_steps}
-                  onToggle={(value) => toggleStep3ArrayField("sales_flow_middle_steps", value)}
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="Como costuma terminar o fluxo?"
-                  hint="Marque as etapas finais mais comuns."
-                />
-                <SelectorGrid
-                  options={SALES_FLOW_FINAL_OPTIONS}
-                  selectedValues={step3Form.sales_flow_final_steps}
-                  onToggle={(value) => toggleStep3ArrayField("sales_flow_final_steps", value)}
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="Observações extras sobre o fluxo"
-                  hint="Use esse espaço para complementar o que a IA precisa saber."
-                />
-                <textarea
-                  value={step3Form.sales_flow_notes}
-                  onChange={(e) => updateStep3Field("sales_flow_notes", e.target.value)}
-                  rows={4}
+                <input
+                  type="text"
+                  value={step3Form.responsible_whatsapp}
+                  onChange={(event) =>
+                    updateStep3Field("responsible_whatsapp", formatWhatsappInput(event.target.value))
+                  }
                   className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: Antes de falar preço, normalmente a loja entende o tipo de piscina e se tem instalação."
+                  placeholder="Ex.: +55 11 99999-9999"
+                  required
                 />
               </div>
-              <div className="space-y-3">
-                <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={step3Form.sales_flow_start_confirmed}
-                    onChange={(e) => updateStep3Field("sales_flow_start_confirmed", e.target.checked)}
-                  />
-                  <span className="text-sm text-gray-700">Confirmo que o início do fluxo está correto</span>
-                </label>
-                <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={step3Form.sales_flow_middle_confirmed}
-                    onChange={(e) => updateStep3Field("sales_flow_middle_confirmed", e.target.checked)}
-                  />
-                  <span className="text-sm text-gray-700">Confirmo que a parte do meio do fluxo está correta</span>
-                </label>
-                <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={step3Form.sales_flow_final_confirmed}
-                    onChange={(e) => updateStep3Field("sales_flow_final_confirmed", e.target.checked)}
-                  />
-                  <span className="text-sm text-gray-700">Confirmo que o final do fluxo está correto</span>
-                </label>
-              </div>
-              <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-between">
+
+              <div className="flex items-center justify-between gap-3 border-t border-gray-200 pt-4">
                 <button
                   type="button"
                   onClick={() => changeStep(2)}
@@ -3275,373 +1395,126 @@ function OnboardingContent() {
                 </button>
                 <button
                   type="submit"
-                  disabled={saving || isOnboardingReviewMode}
+                  disabled={saving}
                   className="rounded-xl bg-black px-5 py-2.5 font-medium text-white disabled:opacity-60"
                 >
-                  {isOnboardingReviewMode ? "Edição bloqueada no onboarding" : saving ? "Salvando..." : "Salvar e ir para etapa 4"}
+                  {saving ? "Salvando..." : "Salvar e continuar"}
                 </button>
               </div>
-              </fieldset>
             </form>
-          )}
-          {currentStep === 4 && (
-            <form onSubmit={saveStep4} className="space-y-6">
-              <fieldset disabled={isOnboardingReviewMode} className={cx("space-y-6", isOnboardingReviewMode && "pointer-events-none opacity-70")}>
-              <div>
-                <SectionTitle
-                  title="Qual é o ticket médio da loja?"
-                  hint="Esse é o valor médio das vendas mais comuns da loja."
-                />
-                <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">
-                    R$
-                  </span>
-                  <input
-                    type="text"
-                    value={step4Form.average_ticket}
-                    onChange={(e) =>
-                      updateStep4Field("average_ticket", formatBrazilCurrencyInput(e.target.value))
-                    }
-                    className="w-full rounded-xl border border-gray-300 py-2.5 pl-12 pr-4 outline-none focus:border-black"
-                    placeholder="12.000"
-                    required
-                  />
-                </div>
-              </div>
-              <div className="space-y-4">
-                <SectionTitle
-                  title="Como o cliente pode pagar?"
-                  hint="Marque as formas de pagamento e também as condições comerciais que a loja aceita."
-                />
-                <div>
-                  <p className="mb-2 text-sm font-medium text-gray-700">Formas de pagamento</p>
-                  <SelectorGrid
-                    options={PAYMENT_METHOD_MAIN_OPTIONS}
-                    selectedValues={step4Form.accepted_payment_methods}
-                    onToggle={(value) => toggleStep4ArrayField("accepted_payment_methods", value)}
-                  />
-                </div>
-                <div>
-                  <p className="mb-2 text-sm font-medium text-gray-700">Condições comerciais</p>
-                  <SelectorGrid
-                    options={PAYMENT_METHOD_CONDITION_OPTIONS}
-                    selectedValues={step4Form.accepted_payment_methods}
-                    onToggle={(value) => toggleStep4ArrayField("accepted_payment_methods", value)}
-                  />
-                </div>
-                {step4Form.accepted_payment_methods.includes("pix") ? (
-                  <div className="grid gap-4 md:grid-cols-3">
-                    <div>
-                      <SectionTitle title="Tipo da chave Pix" hint="Se a chave for preenchida, o tipo tambem precisa ser informado." />
-                      <SingleSelectorGrid
-                        options={PIX_KEY_TYPE_OPTIONS}
-                        value={step4Form.pix_key_type}
-                        onChange={(value) => updateStep4Field("pix_key_type", value)}
-                      />
-                    </div>
-                    <label className="space-y-2 md:col-span-2">
-                      <SectionTitle title="Chave Pix" hint="Pode ficar em branco se a loja ainda prefere confirmar a chave manualmente." />
-                      <input
-                        type="text"
-                        value={step4Form.pix_key}
-                        onChange={(e) => updateStep4Field("pix_key", e.target.value)}
-                        className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                        placeholder="financeiro@loja.com.br"
-                      />
-                    </label>
-                    <label className="space-y-2 md:col-span-3">
-                      <SectionTitle title="Titular da chave Pix" hint="Complemento para o time humano informar o dado correto quando precisar." />
-                      <input
-                        type="text"
-                        value={step4Form.pix_holder_name}
-                        onChange={(e) => updateStep4Field("pix_holder_name", e.target.value)}
-                        className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                        placeholder="Piscinas Exemplo LTDA"
-                      />
-                    </label>
+          ) : null}
+
+          {currentStep === 4 ? (
+            <div className="space-y-6">
+              <div
+                className={cx(
+                  "rounded-2xl border p-5",
+                  whatsappConnected
+                    ? "border-emerald-200 bg-emerald-50"
+                    : whatsappStatusError
+                      ? "border-red-200 bg-red-50"
+                      : "border-amber-200 bg-amber-50",
+                )}
+              >
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900">WhatsApp comercial da loja</p>
+                    <p className="mt-1 text-sm leading-6 text-gray-600">
+                      O número comercial deve vir da conexão oficial com a Meta. O onboarding não permite digitar ou trocar esse número manualmente.
+                    </p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={fetchWhatsappStatus}
+                    disabled={whatsappStatusLoading}
+                    className="shrink-0 rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-60"
+                  >
+                    {whatsappStatusLoading ? "Atualizando..." : "Atualizar status"}
+                  </button>
+                </div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <div className="rounded-xl border border-white/80 bg-white/80 p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Status</p>
+                    <p className="mt-1 text-base font-semibold text-gray-900">
+                      {whatsappConnected
+                        ? "Conectado"
+                        : whatsappStatusError
+                          ? "Status indisponível"
+                          : "Ainda não conectado"}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-white/80 bg-white/80 p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Número comercial</p>
+                    <p className="mt-1 text-base font-semibold text-gray-900">
+                      {formatWhatsappInput(cleanText(whatsappStatus?.displayPhoneNumber)) || "Não disponível"}
+                    </p>
+                  </div>
+                </div>
+
+                {whatsappStatusError ? (
+                  <p className="mt-4 text-sm text-red-800">{whatsappStatusError}</p>
                 ) : null}
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-3">
-                    <SectionTitle title="Regra global de entrada / sinal" hint="Defina se a loja nao usa, trata como opcional ou exige entrada." />
-                    <SingleSelectorGrid
-                      options={DOWN_PAYMENT_MODE_OPTIONS}
-                      value={step4Form.down_payment_mode}
-                      onChange={(value) => updateStep4Field("down_payment_mode", value)}
-                    />
-                  </div>
-                  {step4Form.down_payment_mode !== "none" ? (
-                    <div className="space-y-3">
-                      <SectionTitle title="Como a entrada e definida?" hint="Percentual, valor fixo ou caso a caso." />
-                      <SingleSelectorGrid
-                        options={DOWN_PAYMENT_VALUE_TYPE_OPTIONS}
-                        value={step4Form.down_payment_value_type}
-                        onChange={(value) => updateStep4Field("down_payment_value_type", value)}
-                      />
-                    </div>
-                  ) : null}
-                  {step4Form.down_payment_mode !== "none" && step4Form.down_payment_value_type === "percent" ? (
-                    <label className="space-y-2">
-                      <SectionTitle title="Percentual da entrada" hint="Preencha apenas o numero." />
-                      <div className="relative">
-                        <input
-                          type="text"
-                          value={step4Form.down_payment_percent}
-                          onChange={(e) => updateStep4Field("down_payment_percent", formatStorePaymentPercentInput(e.target.value))}
-                          className="w-full rounded-xl border border-gray-300 py-2.5 pl-4 pr-10 outline-none focus:border-black"
-                          placeholder="30"
-                        />
-                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">%</span>
-                      </div>
-                    </label>
-                  ) : null}
-                  {step4Form.down_payment_mode !== "none" && step4Form.down_payment_value_type === "fixed" ? (
-                    <label className="space-y-2">
-                      <SectionTitle title="Valor fixo da entrada" hint="Use reais inteiros sem pontuacao." />
-                      <div className="relative">
-                        <input
-                          type="text"
-                          value={step4Form.down_payment_amount}
-                          onChange={(e) => updateStep4Field("down_payment_amount", formatStorePaymentCurrencyInput(e.target.value))}
-                          className="w-full rounded-xl border border-gray-300 py-2.5 pl-12 pr-4 outline-none focus:border-black"
-                          placeholder="8400"
-                        />
-                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">R$</span>
-                      </div>
-                    </label>
-                  ) : null}
-                </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-3">
-                    <SectionTitle title="A loja trabalha com parcelamento?" hint="Se sim, registre o maximo e a politica de juros." />
-                    <SingleSelectorGrid
-                      options={YES_NO_OPTIONS}
-                      value={step4Form.installments_enabled}
-                      onChange={(value) => updateStep4Field("installments_enabled", value)}
-                    />
-                  </div>
-                  {step4Form.installments_enabled === "sim" ? (
-                    <>
-                      <label className="space-y-2">
-                        <SectionTitle title="Numero maximo de parcelas" hint="Use apenas o numero." />
-                        <input
-                          type="text"
-                          value={step4Form.max_installments}
-                          onChange={(e) => updateStep4Field("max_installments", formatStorePaymentInstallmentsInput(e.target.value))}
-                          className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                          placeholder="10"
-                        />
-                      </label>
-                      <div className="space-y-3">
-                        <SectionTitle title="Politica de juros" hint="Nao calcula juros aqui; so registra a regra global." />
-                        <SingleSelectorGrid
-                          options={INSTALLMENT_INTEREST_POLICY_OPTIONS}
-                          value={step4Form.installment_interest_policy}
-                          onChange={(value) => updateStep4Field("installment_interest_policy", value)}
-                        />
-                      </div>
-                    </>
-                  ) : null}
-                </div>
-                <label className="space-y-2">
-                  <SectionTitle title="Observacao complementar de pagamento" hint="Use como complemento; a regra estruturada continua sendo a autoridade." />
-                  <textarea
-                    value={step4Form.payment_notes}
-                    onChange={(e) => updateStep4Field("payment_notes", e.target.value)}
-                    rows={3}
-                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                    placeholder="Ex.: a condicao final pode variar conforme projeto, logistica e aprovacao interna."
-                  />
-                </label>
-              </div>
-              <div className="space-y-4">
-                <SectionTitle
-                  title="A loja trabalha com descontos?"
-                  hint="Essa resposta define se a politica canonica de desconto normal sera criada com valores zerados ou com uma regra informada."
-                />
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step4Form.can_offer_discount}
-                  onChange={(value) => updateStep4Field("can_offer_discount", value)}
-                />
-                {step4Form.can_offer_discount === "sim" ? (
-                  <div className="space-y-4">
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <label className="space-y-2">
-                        <SectionTitle title="Primeiro degrau normal de desconto" hint="Preencha apenas o percentual." />
-                        <div className="relative">
-                          <input
-                            type="text"
-                            value={step4Form.default_discount_percent}
-                            onChange={(e) => updateStep4Field("default_discount_percent", formatStoreDiscountPercentInput(e.target.value))}
-                            className="w-full rounded-xl border border-gray-300 py-2.5 pl-4 pr-10 outline-none focus:border-black"
-                            placeholder="5"
-                          />
-                          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">%</span>
-                        </div>
-                      </label>
-                      <label className="space-y-2">
-                        <SectionTitle title="Teto normal de desconto" hint="O primeiro degrau nao pode ser maior que este teto." />
-                        <div className="relative">
-                          <input
-                            type="text"
-                            value={step4Form.max_discount_percent}
-                            onChange={(e) => updateStep4Field("max_discount_percent", formatStoreDiscountPercentInput(e.target.value))}
-                            className="w-full rounded-xl border border-gray-300 py-2.5 pl-4 pr-10 outline-none focus:border-black"
-                            placeholder="10"
-                          />
-                          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">%</span>
-                        </div>
-                      </label>
-                    </div>
-                    <div className="space-y-3">
-                      <SectionTitle title="Modo de autonomia de desconto" hint="Use os modos canonicos ja existentes." />
-                      <SingleSelectorGrid
-                        options={DISCOUNT_AUTONOMY_MODE_OPTIONS}
-                        value={step4Form.discount_autonomy_mode}
-                        onChange={(value) => updateStep4Field("discount_autonomy_mode", value)}
-                      />
-                    </div>
-                    <label className="flex items-start gap-3 rounded-xl border border-gray-200 p-4 text-sm text-gray-700">
-                      <input
-                        type="checkbox"
-                        checked={step4Form.allow_ask_above_max_discount}
-                        onChange={(e) =>
-                          updateStep4Field(
-                            "allow_ask_above_max_discount",
-                            e.target.checked,
-                          )
-                        }
-                        className="mt-1"
-                      />
-                      <span>Permitir que a IA consulte uma pessoa quando o cliente pedir desconto acima do teto.</span>
-                    </label>
-                  </div>
-                ) : null}
-                {step4Form.can_offer_discount === "não" ? (
-                  <InfoBlock
-                    title="Desconto normal desativado"
-                    description="Ao salvar, a politica canonica de desconto normal ficara zerada porque essa foi uma decisao explicita da loja."
-                    subtle
-                  />
+
+                {!whatsappConnected ? (
+                  <p className="mt-4 text-sm leading-6 text-amber-900">
+                    A conexão oficial por Meta/Embedded Signup ficará nesta etapa. Nesta versão não existe botão fictício de conexão: a ativação só é liberada quando o status vivo confirmar o WhatsApp oficial.
+                  </p>
                 ) : null}
               </div>
-              <div>
-                <SectionTitle
-                  title="A IA pode falar preço sem chamar alguém da loja?"
-                  hint="A ideia aqui não é preço seco. Na maioria dos casos, a IA deve qualificar rápido antes de falar valor."
-                />
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step4Form.ai_can_send_price_directly}
-                  onChange={(value) => updateStep4Field("ai_can_send_price_directly", value)}
-                />
-              </div>
-              {step4Form.ai_can_send_price_directly === "sim" && (
-                <div className="space-y-6">
-                  <div>
-                    <SectionTitle
-                      title="Antes de falar preço, o que a IA precisa entender?"
-                      hint="Marque tudo o que normalmente precisa ser entendido antes."
-                    />
-                    <SelectorGrid
-                      options={PRICE_DIRECT_BEFORE_OPTIONS}
-                      selectedValues={step4Form.price_must_understand_before}
-                      onToggle={(value) => toggleStep4ArrayField("price_must_understand_before", value)}
-                    />
-                  </div>
-                  <div>
-                    <SectionTitle
-                      title="Como a IA pode falar preço?"
-                      hint="Escolha a forma principal."
-                    />
-                    <SingleSelectorGrid
-                      options={PRICE_TALK_MODE_OPTIONS}
-                      value={step4Form.price_talk_mode}
-                      onChange={(value) => updateStep4Field("price_talk_mode", value)}
-                    />
-                  </div>
-                  <div>
-                    <SectionTitle
-                      title="A IA precisa de ajuda humana para isso?"
-                      hint="Defina se a loja quer ajuda humana no momento de falar preço."
-                    />
-                    <SingleSelectorGrid
-                      options={YES_NO_OPTIONS}
-                      value={step4Form.price_needs_human_help}
-                      onChange={(value) => updateStep4Field("price_needs_human_help", value)}
-                    />
-                  </div>
+
+              <div className="rounded-2xl border border-gray-200 p-5">
+                <div className="mb-4">
+                  <h2 className="text-base font-semibold text-gray-900">Resumo do cadastro inicial</h2>
+                  <p className="mt-1 text-sm text-gray-500">
+                    Apenas os dados essenciais do onboarding. Os detalhes operacionais e comerciais serão configurados depois.
+                  </p>
                 </div>
-              )}
-              {step4Form.ai_can_send_price_directly === "não" && (
-                <InfoBlock
-                  title="Preço com apoio humano"
-                  description="Nesse caso, a IA não deve falar preço sozinha. Ela pode qualificar, entender o caso e chamar alguém da loja para seguir."
-                  subtle
+
+                <SummaryRow label="Loja" value={step1Form.store_display_name} />
+                <SummaryRow
+                  label="Base principal"
+                  value={[step1Form.city, step1Form.state].filter(Boolean).join(" / ")}
                 />
-              )}
-              <div>
-                <SectionTitle
-                  title="Quando a IA deve chamar uma pessoa por causa de desconto?"
-                  hint="Marque os casos em que vale sair da IA e envolver alguém da loja."
+                <SummaryRow
+                  label="Atuação"
+                  value={[
+                    ...step2Form.store_services
+                      .filter((value) => value !== "outro")
+                      .map(
+                        (value) => STORE_SERVICE_OPTIONS.find((option) => option.value === value)?.label || value,
+                      ),
+                    step2Form.store_services.includes("outro")
+                      ? step2Form.store_services_other
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(", ")}
                 />
-                <SelectorGrid
-                  options={HUMAN_HELP_DISCOUNT_OPTIONS}
-                  selectedValues={step4Form.human_help_discount_cases_selected}
-                  onToggle={(value) => toggleStep4ArrayField("human_help_discount_cases_selected", value)}
+                <SummaryRow
+                  label="Marcas trabalhadas"
+                  value={resolveMultiChoiceText(
+                    step2Form.brands_worked.filter(Boolean),
+                    step2Form.brands_worked_other,
+                    POOL_MARKET_BRAND_OPTIONS,
+                  )}
                 />
-                <textarea
-                  value={step4Form.discount_special_rules}
-                  onChange={(e) => updateStep4Field("discount_special_rules", e.target.value)}
-                  rows={2}
-                  className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Regras especiais de desconto que exigem aprovação ou cuidado comercial (opcional)"
+                <SummaryRow
+                  label="Responsável"
+                  value={step3Form.responsible_name || cleanText(primaryResponsible?.name)}
                 />
-                <input
-                  type="text"
-                  value={step4Form.human_help_discount_cases_other}
-                  onChange={(e) => updateStep4Field("human_help_discount_cases_other", e.target.value)}
-                  className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Se quiser complementar, escreva aqui (opcional)"
+                <SummaryRow
+                  label="WhatsApp autorizado"
+                  value={formatWhatsappInput(
+                    step3Form.responsible_whatsapp || cleanText(primaryResponsible?.whatsappNumber),
+                  )}
                 />
-              </div>
-              <div>
-                <SectionTitle
-                  title="Quando a IA deve chamar uma pessoa por causa de projeto especial?"
-                  hint="Marque os casos fora do padrão ou mais sensíveis."
-                />
-                <SelectorGrid
-                  options={HUMAN_HELP_CUSTOM_PROJECT_OPTIONS}
-                  selectedValues={step4Form.human_help_custom_project_cases_selected}
-                  onToggle={(value) => toggleStep4ArrayField("human_help_custom_project_cases_selected", value)}
-                />
-                <input
-                  type="text"
-                  value={step4Form.human_help_custom_project_cases_other}
-                  onChange={(e) => updateStep4Field("human_help_custom_project_cases_other", e.target.value)}
-                  className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Se quiser complementar, escreva aqui (opcional)"
+                <SummaryRow
+                  label="WhatsApp comercial"
+                  value={formatWhatsappInput(cleanText(whatsappStatus?.displayPhoneNumber))}
                 />
               </div>
-              <div>
-                <SectionTitle
-                  title="Quando a IA deve chamar uma pessoa por causa de pagamento?"
-                  hint="Marque os casos financeiros que precisam sair da IA."
-                />
-                <SelectorGrid
-                  options={HUMAN_HELP_PAYMENT_OPTIONS}
-                  selectedValues={step4Form.human_help_payment_cases_selected}
-                  onToggle={(value) => toggleStep4ArrayField("human_help_payment_cases_selected", value)}
-                />
-                <input
-                  type="text"
-                  value={step4Form.human_help_payment_cases_other}
-                  onChange={(e) => updateStep4Field("human_help_payment_cases_other", e.target.value)}
-                  className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Se quiser complementar, escreva aqui (opcional)"
-                />
-              </div>
+
               <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-between">
                 <button
                   type="button"
@@ -3650,133 +1523,31 @@ function OnboardingContent() {
                 >
                   Voltar
                 </button>
-                <button
-                  type="submit"
-                  disabled={saving || isOnboardingReviewMode}
-                  className="rounded-xl bg-black px-5 py-2.5 font-medium text-white disabled:opacity-60"
-                >
-                  {isOnboardingReviewMode ? "Edição bloqueada no onboarding" : saving ? "Salvando..." : "Salvar e ir para etapa 5"}
-                </button>
-              </div>
-              </fieldset>
-            </form>
-          )}
-          {currentStep === 5 && (
-            <form onSubmit={saveStep5} className="space-y-6">
-              <fieldset disabled={isOnboardingReviewMode} className={cx("space-y-6", isOnboardingReviewMode && "pointer-events-none opacity-70")}>
-              <div>
-                <SectionTitle
-                  title="Quem é a principal pessoa da loja que a IA deve acionar?"
-                  hint="Pode ser o dono, gerente ou alguém responsável pelos casos importantes."
-                />
-                <input
-                  type="text"
-                  value={step5Form.responsible_name}
-                  onChange={(e) => updateStep5Field("responsible_name", e.target.value)}
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: Junior"
-                  required
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="Qual é o WhatsApp dessa pessoa?"
-                  hint="Esse número será usado quando a IA precisar chamar alguém da loja."
-                />
-                <input
-                  type="text"
-                  value={step5Form.responsible_whatsapp}
-                  onChange={(e) => updateStep5Field("responsible_whatsapp", formatWhatsappInput(e.target.value))}
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: 5511955552255"
-                  required
-                />
-              </div>
-              <div>
-                <SectionTitle
-                  title="A IA deve avisar essa pessoa quando surgir algo importante?"
-                />
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step5Form.ai_should_notify_responsible}
-                  onChange={(value) => updateStep5Field("ai_should_notify_responsible", value)}
-                />
-              </div>
-              {step5Form.ai_should_notify_responsible === "sim" && (
-                <div>
-                  <SectionTitle
-                    title="Em quais casos essa pessoa deve ser avisada?"
-                    hint="Marque os casos em que a IA precisa envolver alguém da loja."
-                  />
-                  <SelectorGrid
-                    options={RESPONSIBLE_NOTIFICATION_CASE_OPTIONS}
-                    selectedValues={step5Form.responsible_notification_cases}
-                    onToggle={(value) => toggleStep5ArrayField("responsible_notification_cases", value)}
-                  />
-                  <input
-                    type="text"
-                    value={step5Form.responsible_notification_cases_other}
-                    onChange={(e) => updateStep5Field("responsible_notification_cases_other", e.target.value)}
-                    className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                    placeholder="Se quiser complementar, escreva aqui (opcional)"
-                  />
+
+                <div className="flex flex-col items-stretch gap-2 md:items-end">
+                  <button
+                    type="button"
+                    onClick={activateZion}
+                    disabled={saving || !canActivate}
+                    className="rounded-xl bg-black px-6 py-2.5 font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {saving ? "Ativando..." : "Ativar ZION"}
+                  </button>
+                  {!canActivate ? (
+                    <p className="max-w-md text-xs leading-5 text-gray-500 md:text-right">
+                      A ativação será liberada quando os dados essenciais estiverem preenchidos e o WhatsApp comercial oficial estiver conectado.
+                    </p>
+                  ) : null}
                 </div>
-              )}
-              <div>
-                <SectionTitle
-                  title="Quais orientações finais a IA deve seguir na ativação?"
-                  hint="Marque o tom e as travas finais mais importantes."
-                />
-                <SelectorGrid
-                  options={[...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS]}
-                  selectedValues={step5Form.activation_preferences}
-                  onToggle={(value) => toggleStep5ArrayField("activation_preferences", value)}
-                />
-                <textarea
-                  value={step5Form.activation_preferences_other}
-                  onChange={(e) => updateStep5Field("activation_preferences_other", e.target.value)}
-                  rows={4}
-                  className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Se quiser complementar, escreva aqui (opcional)"
-                />
               </div>
-              <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-4">
-                <label className="flex items-start gap-3">
-                  <input
-                    type="checkbox"
-                    checked={step5Form.confirm_information_is_correct}
-                    onChange={(e) => updateStep5Field("confirm_information_is_correct", e.target.checked)}
-                    className="mt-1"
-                  />
-                  <span className="text-sm text-gray-700">
-                    Confirmo que as informações estão corretas para concluir o onboarding.
-                  </span>
-                </label>
-              </div>
-              <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-between">
-                <button
-                  type="button"
-                  onClick={() => changeStep(4)}
-                  className="rounded-xl border border-gray-300 px-5 py-2.5 font-medium text-gray-700 transition hover:bg-gray-50"
-                >
-                  Voltar
-                </button>
-                <button
-                  type="submit"
-                  disabled={saving || isOnboardingReviewMode}
-                  className="rounded-xl bg-black px-5 py-2.5 font-medium text-white disabled:opacity-60"
-                >
-                  {saving ? "Concluindo..." : "Concluir onboarding"}
-                </button>
-              </div>
-              </fieldset>
-            </form>
-          )}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
   );
 }
+
 export default function OnboardingPage() {
   return (
     <OrgGuard>

@@ -62,9 +62,9 @@ function getOperationDraftChangeBlock(source: string) {
 }
 
 function getOperationEditFormBlock(source: string) {
-  const start = source.indexOf('{isOperationEditing ? (');
+  const start = source.indexOf('title="Agenda e capacidade"');
   assert.equal(start > -1, true, "operation edit form not found");
-  const end = source.indexOf('<div className="mt-4 grid gap-4 lg:grid-cols-2">', start);
+  const end = source.indexOf('title="Regi', start);
   assert.equal(end > start, true, "operation edit form end not found");
   return source.slice(start, end);
 }
@@ -109,14 +109,6 @@ function getOperationSectionsBlock(source: string) {
   return source.slice(start, end);
 }
 
-function getOverviewStatusCardsBlock(source: string) {
-  const start = source.indexOf('<StatusCard\n              label="Agenda"');
-  assert.equal(start > -1, true, "overview Agenda StatusCard not found");
-  const end = source.indexOf("            />", start);
-  assert.equal(end > start, true, "overview Agenda StatusCard end not found");
-  return source.slice(start, end + "            />".length);
-}
-
 function getRestoreLocalDraftBlock(source: string) {
   const start = source.indexOf("const raw = readFromLocalStorageSafe(configDraftStorageKey);");
   assert.equal(start > -1, true, "restore local draft effect not found");
@@ -149,27 +141,57 @@ function getPoolsOperationalItemsBlock(source: string) {
   return source.slice(start, end);
 }
 
-function getPoolsQuickCountBlock(source: string) {
-  const start = source.indexOf("Base comercial de piscinas");
-  assert.equal(start > -1, true, "pools tab block not found");
-  const end = source.indexOf("Cadastro manual e importa", start);
-  assert.equal(end > start, true, "pools quick count block end not found");
-  return source.slice(start, end);
-}
-
 function getCommercialEditFormBlock(source: string) {
-  const start = source.indexOf('{isCommercialEditing ? (');
-  assert.equal(start > -1, true, "commercial edit form not found");
-  const end = source.indexOf('<SummaryList items={commercialIdentityItems} />', start);
-  assert.equal(end > start, true, "commercial edit form end not found");
+  const start = source.indexOf(
+    "value={commercialDraft.ai_presentation_mode}",
+  );
+  assert.equal(
+    start > -1,
+    true,
+    "commercial strategy presentation field not found",
+  );
+
+  const end = source.indexOf(
+    "value={commercialDraft.ai_tone_summary}",
+    start,
+  );
+  assert.equal(
+    end > start,
+    true,
+    "commercial strategy presentation field end not found",
+  );
+
   return source.slice(start, end);
 }
-
 function getChannelsSaveBlock(source: string) {
   const start = source.indexOf("  const handleChannelsEditSave = useCallback(async () => {");
   assert.equal(start > -1, true, "handleChannelsEditSave not found");
   const end = source.indexOf("  }, [", start);
   assert.equal(end > start, true, "handleChannelsEditSave end not found");
+  return source.slice(start, end);
+}
+
+function getGeneralAddressCompletionBlock(source: string) {
+  const start = source.indexOf("function isGeneralAddressComplete(");
+  assert.equal(start > -1, true, "isGeneralAddressComplete not found");
+  const end = source.indexOf("function formatMonthlyGoalDraftAmount(", start);
+  assert.equal(end > start, true, "isGeneralAddressComplete end not found");
+  return source.slice(start, end);
+}
+
+function getCepLookupBlock(source: string) {
+  const start = source.indexOf("  const lookupGeneralAddressCep = useCallback(async (cepDigits: string) => {");
+  assert.equal(start > -1, true, "lookupGeneralAddressCep not found");
+  const end = source.indexOf("  const updateOperationExperienceDraft = useCallback(", start);
+  assert.equal(end > start, true, "lookupGeneralAddressCep end not found");
+  return source.slice(start, end);
+}
+
+function getGeneralAddressSectionBlock(source: string) {
+  const start = source.indexOf('title="Endereço da loja"');
+  assert.equal(start > -1, true, "general address section not found");
+  const end = source.indexOf('title="Responsável principal"', start);
+  assert.equal(end > start, true, "general address section end not found");
   return source.slice(start, end);
 }
 
@@ -197,6 +219,46 @@ function getFetchPageDataBlock(source: string) {
   return source.slice(start, end);
 }
 
+function getScheduleAuthorityHelpersBlock(source: string) {
+  const start = source.indexOf("function isConfiguredTimestamp(");
+  assert.equal(start > -1, true, "schedule authority helpers not found");
+  const end = source.indexOf("function optionLabel(", start);
+  assert.equal(end > start, true, "schedule authority helpers end not found");
+  return source.slice(start, end);
+}
+
+function getHumanScheduleSaveBlock(source: string) {
+  const start = source.indexOf("  const saveHumanScheduleCard = useCallback(async () => {");
+  assert.equal(start > -1, true, "saveHumanScheduleCard not found");
+  const end = source.indexOf("  const saveAfterHoursCard = useCallback(async () => {", start);
+  assert.equal(end > start, true, "saveHumanScheduleCard end not found");
+  return source.slice(start, end);
+}
+
+function getAfterHoursSaveBlock(source: string) {
+  const start = source.indexOf("  const saveAfterHoursCard = useCallback(async () => {");
+  assert.equal(start > -1, true, "saveAfterHoursCard not found");
+  const end = source.indexOf("  const saveAgendaCapacityCard = useCallback(async () => {", start);
+  assert.equal(end > start, true, "saveAfterHoursCard end not found");
+  return source.slice(start, end);
+}
+
+function getAgendaCapacitySaveBlock(source: string) {
+  const start = source.indexOf("  const saveAgendaCapacityCard = useCallback(async () => {");
+  assert.equal(start > -1, true, "saveAgendaCapacityCard not found");
+  const end = source.indexOf("  const handleOverviewDraftChange = useCallback(", start);
+  assert.equal(end > start, true, "saveAgendaCapacityCard end not found");
+  return source.slice(start, end);
+}
+
+function getOperationScheduleCardsBlock(source: string) {
+  const start = source.indexOf('title="Horários da equipe"');
+  assert.equal(start > -1, true, "operation schedule cards block not found");
+  const end = source.indexOf('title="Regi', start);
+  assert.equal(end > start, true, "operation schedule cards block end not found");
+  return source.slice(start, end);
+}
+
 function getCreatePrimaryResponsibleDraftFromSourcesBlock(source: string) {
   const start = source.indexOf("function createPrimaryResponsibleDraftFromSources(");
   assert.equal(start > -1, true, "createPrimaryResponsibleDraftFromSources not found");
@@ -214,9 +276,9 @@ function getCanonicalPrimaryResponsibleStateBlock(source: string) {
 }
 
 function getOverviewDraftEffectBlock(source: string) {
-  const start = source.indexOf("  useEffect(() => {\n    const currentOperationInput = createStoreOperationSettingsInputFromSources({");
+  const start = source.indexOf("const currentOperationInput = createStoreOperationSettingsInputFromSources({");
   assert.equal(start > -1, true, "overview draft effect not found");
-  const end = source.indexOf("  useEffect(() => {\n    setSelectedStoreLogoFile(null);", start);
+  const end = source.indexOf("setSelectedStoreLogoFile(null);", start);
   assert.equal(end > start, true, "overview draft effect end not found");
   return source.slice(start, end);
 }
@@ -232,7 +294,7 @@ function getOverviewSummaryBlock(source: string) {
 function getActivationPendenciesBlock(source: string) {
   const start = source.indexOf("  const activationPendencies = useMemo(() => {");
   assert.equal(start > -1, true, "activationPendencies not found");
-  const end = source.indexOf("  const shouldShowQuickAccess =", start);
+  const end = source.indexOf("  useEffect(() => {", start);
   assert.equal(end > start, true, "activationPendencies end not found");
   return source.slice(start, end);
 }
@@ -254,9 +316,9 @@ function getOverviewEditSaveBlock(source: string) {
 }
 
 function getOverviewEditFormBlock(source: string) {
-  const start = source.indexOf("{isOverviewEditing ? (");
+  const start = source.indexOf('overviewEditTarget === "store"');
   assert.equal(start > -1, true, "overview edit form not found");
-  const end = source.indexOf('          <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_1fr]">', start);
+  const end = source.indexOf('title="Endereço da loja"', start);
   assert.equal(end > start, true, "overview edit form end not found");
   return source.slice(start, end);
 }
@@ -270,7 +332,7 @@ function getActivationItemsBlock(source: string) {
 }
 
 function getActivationHydrationBlock(source: string) {
-  const start = source.indexOf("  useEffect(() => {\n    setPrimaryResponsibleDraft(");
+  const start = source.indexOf("setPrimaryResponsibleDraft(canonicalPrimaryResponsibleDraft);");
   assert.equal(start > -1, true, "primary responsible hydration effect not found");
   const end = source.indexOf("  const handleCommercialDraftChange = useCallback", start);
   assert.equal(end > start, true, "primary responsible hydration effect end not found");
@@ -326,14 +388,82 @@ function getDiscountItemsBlock(source: string) {
 }
 
 function getDiscountEditFormBlock(source: string) {
-  const start = source.indexOf('{isDiscountEditing ? (');
-  assert.equal(start > -1, true, "discount edit form not found");
-  const end = source.indexOf('<SummaryList items={discountItems} />', start);
-  assert.equal(end > start, true, "discount edit form end not found");
+  const start = source.indexOf('title="Descontos e aprovação"');
+  assert.equal(start > -1, true, "discount card not found");
+
+  const end = source.indexOf('title="Orçamento"', start);
+  assert.equal(end > start, true, "discount card end not found");
+
   return source.slice(start, end);
 }
-
 const tests: TestCase[] = [
+  {
+    name: "general address completion requires physical address essentials but never CEP",
+    run: () => {
+      const source = readPageSource();
+      const block = getGeneralAddressCompletionBlock(source);
+
+      assert.equal(block.includes('address.has_public_address === "Não"'), true);
+      assert.equal(block.includes('address.has_public_address !== "Sim"'), true);
+      assert.equal(block.includes("cleanText(address.street)"), true);
+      assert.equal(block.includes("cleanText(address.number)"), true);
+      assert.equal(block.includes("cleanText(address.district)"), true);
+      assert.equal(block.includes("cleanText(address.city)"), true);
+      assert.equal(block.includes("cleanText(address.state)"), true);
+      assert.equal(block.includes("isValidCustomerVisitMode(address.customer_visit_mode)"), true);
+      assert.equal(block.includes("address.cep"), false);
+      assert.equal(block.includes("address.complement"), false);
+      assert.equal(block.includes("address.reference_point"), false);
+      assert.equal(block.includes("address.directions_notes"), false);
+    },
+  },
+  {
+    name: "general address card status uses the canonical completion helper",
+    run: () => {
+      const source = readPageSource();
+      const block = getGeneralAddressSectionBlock(source);
+
+      assert.equal(block.includes('tone={isGeneralAddressComplete(savedGeneralAddress) ? "blue" : "yellow"}'), true);
+      assert.equal(block.includes('status={isGeneralAddressComplete(savedGeneralAddress) ? "Completo" : "Precisa de atenção"}'), true);
+      assert.equal(block.includes("savedGeneralAddress.cep"), false);
+    },
+  },
+  {
+    name: "CEP lookup fills only returned address fields and preserves manual fields on failures",
+    run: () => {
+      const source = readPageSource();
+      const block = getCepLookupBlock(source);
+
+      assert.equal(block.includes('fetch(`/api/store/cep?cep=${encodeURIComponent(cepDigits)}`'), true);
+      assert.equal(block.includes("street: cleanText(result.address.street) || current.street"), true);
+      assert.equal(block.includes("district: cleanText(result.address.district) || current.district"), true);
+      assert.equal(block.includes("city: cleanText(result.address.city) || current.city"), true);
+      assert.equal(block.includes("state: cleanText(result.address.state) || current.state"), true);
+      assert.equal(block.includes("number:"), false);
+      assert.equal(block.includes("complement:"), false);
+      assert.equal(block.includes("reference_point:"), false);
+      assert.equal(block.includes("directions_notes:"), false);
+      assert.equal(block.includes("CEP nao encontrado"), true);
+      assert.equal(block.includes("Nao foi possivel consultar o CEP agora"), true);
+    },
+  },
+  {
+    name: "CEP input is optional, masked, and triggers lookup only when complete",
+    run: () => {
+      const source = readPageSource();
+      const lookupBlock = getCepLookupBlock(source);
+      const sectionBlock = getGeneralAddressSectionBlock(source);
+
+      assert.equal(source.includes("function formatBrazilianCepInput("), true);
+      assert.equal(lookupBlock.includes("const digits = onlyCepDigits(formattedCep);"), true);
+      assert.equal(lookupBlock.includes("if (digits.length === 8)"), true);
+      assert.equal(sectionBlock.includes('placeholder="00000-000"'), true);
+      assert.equal(sectionBlock.includes('inputMode="numeric"'), true);
+      assert.equal(sectionBlock.includes("handleGeneralAddressCepChange(e.target.value)"), true);
+      assert.equal(sectionBlock.includes("generalAddressCepLookupLoading"), true);
+      assert.equal(sectionBlock.includes("generalAddressCepLookupMessage"), true);
+    },
+  },
   {
     name: "operation save derives canonical weekend operating days and never invents schedule rows",
     run: () => {
@@ -350,30 +480,268 @@ const tests: TestCase[] = [
       assert.equal(block.includes("p_operating_days: updatedOperatingDays"), true);
       assert.equal(block.includes('if (scheduleSettings) {'), true);
       assert.equal(block.includes('await supabase.rpc("upsert_store_schedule_settings"'), true);
+      const operationRpcIndex = block.indexOf('"upsert_store_operation_settings_with_legacy_mirror_scoped"');
+      const scheduleGateIndex = block.indexOf("if (scheduleSettings) {");
+      const weekendDerivationIndex = block.indexOf("const updatedOperatingDays = applyWeekendSelectionToOperatingDays({");
+      const scheduleRpcIndex = block.indexOf('await supabase.rpc("upsert_store_schedule_settings"');
+      assert.equal(operationRpcIndex > -1, true);
+      assert.equal(scheduleGateIndex > operationRpcIndex, true);
+      assert.equal(weekendDerivationIndex > scheduleGateIndex, true);
+      assert.equal(scheduleRpcIndex > scheduleGateIndex, true);
+      assert.equal(block.includes("scheduleSettings?.operating_days ?? []"), false);
+      assert.equal(block.includes("scheduleSettings?.allow_multiple_appointments_per_day ?? true"), false);
+      assert.equal(block.includes("scheduleSettings?.allow_same_time_appointments ?? false"), false);
+      assert.equal(block.includes("scheduleSettings?.attends_holidays ?? false"), false);
+      assert.equal(block.includes('scheduleSettings?.timezone_name || "America/Sao_Paulo"'), false);
       assert.equal(block.includes("onboarding_upsert_answer_scoped"), false);
     },
   },
   {
-    name: "operation draft change and edit form keep agenda controls read-only until canonical schedule settings exist",
+    name: "schedule reader selects canonical configuration fields",
     run: () => {
       const source = readPageSource();
-      const changeBlock = getOperationDraftChangeBlock(source);
+      const block = getFetchPageDataBlock(source);
+
+      [
+        "human_schedule_configured_at",
+        "ai_after_hours_configured_at",
+        "agenda_capacity_configured_at",
+        "holiday_mode",
+        "holiday_open_time",
+        "holiday_close_time",
+        "holiday_notes",
+        "daily_limit_mode",
+        "daily_limit",
+        "appointment_buffer_enabled",
+        "appointment_buffer_minutes",
+        "ai_after_hours_enabled",
+        "ai_after_hours_mode",
+        "ai_after_hours_start",
+        "ai_after_hours_end",
+        "ai_attends_holidays",
+      ].forEach((field) => assert.equal(block.includes(field), true, field));
+    },
+  },
+  {
+    name: "schedule refresh hydrates migrated operation cards from canonical row",
+    run: () => {
+      const source = readPageSource();
+      const block = getFetchPageDataBlock(source);
+
+      assert.equal(block.includes("const nextScheduleSettings ="), true);
+      assert.equal(block.includes("createScheduleOperationExperienceDraftFromSettings("), true);
+      assert.equal(block.includes("setSavedOperationExperience((current) =>"), true);
+      assert.equal(block.includes("setOperationExperienceDraft((current) =>"), true);
+      assert.equal(block.includes("nextScheduleSettings"), true);
+    },
+  },
+  {
+    name: "schedule localStorage restore preserves canonical operation authority",
+    run: () => {
+      const source = readPageSource();
+      const restoreBlock = getRestoreLocalDraftBlock(source);
+
+      assert.equal(source.includes("function restoreOperationDraftWithoutScheduleAuthority("), true);
+      assert.equal(restoreBlock.includes("restoreOperationDraftWithoutScheduleAuthority(current, parsed.operationDraft ?? {})"), true);
+      assert.equal(source.includes("serves_holiday: current.serves_holiday"), true);
+      assert.equal(source.includes("allow_multiple_appointments_per_day:"), true);
+      assert.equal(source.includes("allow_same_time_appointments: current.allow_same_time_appointments"), true);
+      assert.equal(source.includes("agenda_capacity_rule: current.agenda_capacity_rule"), true);
+    },
+  },
+  {
+    name: "schedule card statuses depend on configured_at timestamps",
+    run: () => {
+      const source = readPageSource();
+      const helpers = getScheduleAuthorityHelpersBlock(source);
+      const cards = getOperationScheduleCardsBlock(source);
+
+      assert.equal(helpers.includes("scheduleSettings?.human_schedule_configured_at"), true);
+      assert.equal(helpers.includes("scheduleSettings?.ai_after_hours_configured_at"), true);
+      assert.equal(helpers.includes("scheduleSettings?.agenda_capacity_configured_at"), true);
+      assert.equal(cards.includes("resolveHumanScheduleCardStatus(scheduleSettings)"), true);
+      assert.equal(cards.includes("resolveAfterHoursCardStatus(scheduleSettings)"), true);
+      assert.equal(cards.includes("resolveAgendaCapacityCardStatus(scheduleSettings)"), true);
+      assert.equal(cards.includes('tone={scheduleSettings ? "blue" : "yellow"}'), false);
+    },
+  },
+  {
+    name: "schedule hours card calls human schedule RPC with canonical days and hours",
+    run: () => {
+      const source = readPageSource();
+      const saveBlock = getHumanScheduleSaveBlock(source);
+      const helpers = getScheduleAuthorityHelpersBlock(source);
+      const cards = getOperationScheduleCardsBlock(source);
+
+      assert.equal(saveBlock.includes('"upsert_store_human_schedule_configuration_scoped"'), true);
+      assert.equal(saveBlock.includes("p_operating_days: payload.operatingDays"), true);
+      assert.equal(saveBlock.includes("p_operating_hours: payload.operatingHours"), true);
+      assert.equal(saveBlock.includes("p_timezone_name: payload.timezoneName"), true);
+      assert.equal(helpers.includes("const selectedDays = CANONICAL_OPERATION_DAYS.filter"), true);
+      assert.equal(helpers.includes("operatingHours[day] = { start: open, end: close };"), true);
+      assert.equal(cards.includes("saveHumanScheduleCard()"), true);
+      assert.equal(cards.includes('saveOperationExperienceCard("hours"'), false);
+    },
+  },
+  {
+    name: "schedule hours maps same hours to every selected day and preserves per-day values",
+    run: () => {
+      const source = readPageSource();
+      const helpers = getScheduleAuthorityHelpersBlock(source);
+      const cards = getOperationScheduleCardsBlock(source);
+
+      assert.equal(helpers.includes('const sameHours = normalizeLoose(draft.team_same_hours) !== "nao";'), true);
+      assert.equal(helpers.includes("? normalizeTimeInput(draft.team_open_time)"), true);
+      assert.equal(helpers.includes("? normalizeTimeInput(draft.team_close_time)"), true);
+      assert.equal(helpers.includes(": normalizeTimeInput(draft.team_day_hours[day]?.open)"), true);
+      assert.equal(helpers.includes(": normalizeTimeInput(draft.team_day_hours[day]?.close)"), true);
+      assert.equal(cards.includes("Horário específico de sábado"), false);
+      assert.equal(cards.includes("Horário específico de domingo"), false);
+    },
+  },
+  {
+    name: "schedule hours maps holiday modes to canonical RPC values",
+    run: () => {
+      const source = readPageSource();
+      const helpers = getScheduleAuthorityHelpersBlock(source);
+      const saveBlock = getHumanScheduleSaveBlock(source);
+
+      assert.equal(helpers.includes('if (normalized === "fechado") return "closed";'), true);
+      assert.equal(helpers.includes('if (normalized === "normal") return "normal";'), true);
+      assert.equal(helpers.includes('if (normalized === "especial") return "special";'), true);
+      assert.equal(helpers.includes('if (normalized === "caso_a_caso") return "case_by_case";'), true);
+      assert.equal(saveBlock.includes("p_holiday_mode: payload.holidayMode"), true);
+      assert.equal(saveBlock.includes("p_holiday_open_time: payload.holidayOpenTime"), true);
+      assert.equal(saveBlock.includes("p_holiday_close_time: payload.holidayCloseTime"), true);
+      assert.equal(saveBlock.includes("p_holiday_notes: payload.holidayNotes"), true);
+    },
+  },
+  {
+    name: "schedule after-hours calls real RPC and maps UI booleans and modes",
+    run: () => {
+      const source = readPageSource();
+      const saveBlock = getAfterHoursSaveBlock(source);
+      const helpers = getScheduleAuthorityHelpersBlock(source);
+      const cards = getOperationScheduleCardsBlock(source);
+
+      assert.equal(saveBlock.includes('"upsert_store_schedule_ai_after_hours_policy_scoped"'), true);
+      assert.equal(saveBlock.includes("const enabled = parseYesNoToNullableBoolean("), true);
+      assert.equal(saveBlock.includes("p_ai_after_hours_enabled: enabled"), true);
+      assert.equal(helpers.includes('if (normalized === "todo_fechado") return "all_closed_hours";'), true);
+      assert.equal(helpers.includes('if (normalized === "janela") return "specific_window";'), true);
+      assert.equal(saveBlock.includes("p_ai_after_hours_mode: mode"), true);
+      assert.equal(saveBlock.includes("p_ai_attends_holidays: enabled"), true);
+      assert.equal(cards.includes("saveAfterHoursCard()"), true);
+      assert.equal(cards.includes("setSavedOperationExperience(operationExperienceDraft);setOperationEditTarget(null);"), false);
+    },
+  },
+  {
+    name: "schedule after-hours configured_at null is not explicit no",
+    run: () => {
+      const source = readPageSource();
+      const helpers = getScheduleAuthorityHelpersBlock(source);
+
+      assert.equal(helpers.includes("const afterHoursConfigured = isConfiguredTimestamp(scheduleSettings.ai_after_hours_configured_at);"), true);
+      assert.equal(helpers.includes("yesNoLabel(scheduleSettings.ai_after_hours_enabled)"), true);
+      assert.equal(helpers.includes("ai_after_hours_enabled: afterHoursConfigured"), true);
+      assert.equal(helpers.includes("scheduleSettings?.ai_after_hours_enabled === false"), true);
+    },
+  },
+  {
+    name: "schedule agenda calls capacity RPC and maps all capacity fields",
+    run: () => {
+      const source = readPageSource();
+      const saveBlock = getAgendaCapacitySaveBlock(source);
+      const helpers = getScheduleAuthorityHelpersBlock(source);
+      const cards = getOperationScheduleCardsBlock(source);
+
+      assert.equal(saveBlock.includes('"upsert_store_agenda_capacity_configuration_scoped"'), true);
+      assert.equal(saveBlock.includes("p_allow_multiple_appointments_per_day: allowMultipleAppointmentsPerDay"), true);
+      assert.equal(saveBlock.includes("p_allow_same_time_appointments: allowSameTimeAppointments ?? false"), true);
+      assert.equal(saveBlock.includes("p_appointment_buffer_enabled: appointmentBufferEnabled ?? false"), true);
+      assert.equal(saveBlock.includes("p_daily_limit_mode: dailyLimitMode"), true);
+      assert.equal(saveBlock.includes("p_daily_limit: dailyLimit"), true);
+      assert.equal(saveBlock.includes("p_same_time_capacity: sameTimeCapacity"), true);
+      assert.equal(saveBlock.includes("p_appointment_buffer_minutes: appointmentBufferMinutes"), true);
+      assert.equal(helpers.includes('if (normalized === "limite") return "fixed_limit";'), true);
+      assert.equal(helpers.includes('if (normalized === "sem_limite") return "no_fixed_limit";'), true);
+      assert.equal(cards.includes("saveAgendaCapacityCard()"), true);
+      assert.equal(cards.includes("handleOperationEditSave()"), false);
+    },
+  },
+  {
+    name: "schedule agenda validates multiple appointment choices before save",
+    run: () => {
+      const source = readPageSource();
+      const saveBlock = getAgendaCapacitySaveBlock(source);
+
+      assert.equal(saveBlock.includes("if (allowMultipleAppointmentsPerDay && allowSameTimeAppointments == null)"), true);
+      assert.equal(saveBlock.includes("if (allowMultipleAppointmentsPerDay && appointmentBufferEnabled == null)"), true);
+      assert.equal(saveBlock.includes("if (allowMultipleAppointmentsPerDay && !dailyLimitMode)"), true);
+      assert.equal(saveBlock.includes("allowMultipleAppointmentsPerDay && dailyLimitMode === \"fixed_limit\""), true);
+      assert.equal(saveBlock.includes("allowMultipleAppointmentsPerDay && allowSameTimeAppointments"), true);
+      assert.equal(saveBlock.includes("allowMultipleAppointmentsPerDay && appointmentBufferEnabled"), true);
+    },
+  },
+  {
+    name: "schedule agenda configured_at null is not complete",
+    run: () => {
+      const source = readPageSource();
+      const helpers = getScheduleAuthorityHelpersBlock(source);
+      const cards = getOperationScheduleCardsBlock(source);
+
+      assert.equal(helpers.includes("scheduleSettings?.agenda_capacity_configured_at"), true);
+      assert.equal(helpers.includes("const agendaConfigured = isConfiguredTimestamp(scheduleSettings.agenda_capacity_configured_at);"), true);
+      assert.equal(cards.includes("isConfiguredTimestamp(scheduleSettings?.agenda_capacity_configured_at) ? yesNoLabel"), true);
+    },
+  },
+  {
+    name: "schedule migrated cards update canonical state only after RPC success",
+    run: () => {
+      const source = readPageSource();
+      const human = getHumanScheduleSaveBlock(source);
+      const afterHours = getAfterHoursSaveBlock(source);
+      const agenda = getAgendaCapacitySaveBlock(source);
+
+      [human, afterHours, agenda].forEach((block) => {
+        assert.equal(block.includes("if (scheduleError) throw scheduleError;"), true);
+        assert.equal(block.includes("setScheduleSettings(nextScheduleSettings);"), true);
+        assert.equal(block.includes("setSavedOperationExperience(nextDraft);"), true);
+        assert.equal(block.includes("setOperationExperienceDraft(nextDraft);"), true);
+        assert.equal(block.includes("setOperationEditTarget(null);"), true);
+        assert.equal(block.includes("await fetchPageData();"), true);
+        assert.equal(block.includes("catch (error: any)"), true);
+      });
+    },
+  },
+  {
+    name: "schedule migrated cards do not use local-only save as conclusion",
+    run: () => {
+      const source = readPageSource();
+      const cards = getOperationScheduleCardsBlock(source);
+
+      assert.equal(cards.includes('saveOperationExperienceCard("hours"'), false);
+      assert.equal(cards.includes("setSavedOperationExperience(operationExperienceDraft)"), false);
+      assert.equal(cards.includes("handleOperationEditSave()"), false);
+      assert.equal(cards.includes("upsert_store_schedule_settings"), false);
+    },
+  },
+  {
+    name: "operation edit form keeps agenda absence canonical instead of inventing schedule settings",
+    run: () => {
+      const source = readPageSource();
       const formBlock = getOperationEditFormBlock(source);
 
-      assert.equal(changeBlock.includes("!scheduleSettings"), true);
-      assert.equal(changeBlock.includes('key === "serves_saturday"'), true);
-      assert.equal(changeBlock.includes('key === "serves_sunday"'), true);
-      assert.equal(changeBlock.includes('key === "serves_holiday"'), true);
-      assert.equal(changeBlock.includes('key === "allow_multiple_appointments_per_day"'), true);
-      assert.equal(changeBlock.includes('key === "allow_same_time_appointments"'), true);
-      assert.equal(changeBlock.includes('key === "agenda_capacity_rule"'), true);
       assert.equal(
-        formBlock.includes("Agenda canonica ainda nao configurada; estes controles ficam somente leitura por enquanto."),
+        source.includes("Agenda canônica ainda não configurada."),
         true,
       );
-      assert.equal(formBlock.includes("operation-schedule-controls-read-only"), true);
-      assert.equal(formBlock.includes("pointer-events: none;"), true);
-      assert.equal(formBlock.includes("cursor: not-allowed;"), true);
+      assert.equal(formBlock.includes("operationEditTarget === \"agenda\""), true);
+      assert.equal(formBlock.includes("operationDraft.allow_multiple_appointments_per_day"), true);
+      assert.equal(formBlock.includes("operationDraft.allow_same_time_appointments"), true);
+      assert.equal(formBlock.includes("operationDraft.agenda_capacity_rule"), true);
+      assert.equal(formBlock.includes("upsert_store_schedule_settings"), false);
+      assert.equal(source.includes("CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL"), true);
     },
   },
   {
@@ -401,8 +769,8 @@ const tests: TestCase[] = [
       assert.equal(canonicalFunctionBlock.includes("answers."), false);
       assert.equal(canonicalFunctionBlock.includes("installation_available_days"), false);
       assert.equal(canonicalFunctionBlock.includes("technical_visit_available_days"), false);
-      assert.equal(formBlock.includes("Atende sábado"), true);
-      assert.equal(formBlock.includes("Atende domingo"), true);
+      assert.equal(source.includes("Atende sábado"), true);
+      assert.equal(source.includes("Atende domingo"), true);
     },
   },
   {
@@ -413,7 +781,6 @@ const tests: TestCase[] = [
       const selectionBlock = getOperationScheduleSelectionBlock(source);
       const readinessBlock = getOperationReadinessMetricsBlock(source);
       const sectionsBlock = getOperationSectionsBlock(source);
-      const overviewAgendaBlock = getOverviewStatusCardsBlock(source);
 
       assert.equal(selectionBlock.includes("answers.installation_available_days"), false);
       assert.equal(selectionBlock.includes("answers.technical_visit_available_days"), false);
@@ -439,9 +806,6 @@ const tests: TestCase[] = [
       assert.equal(sectionsBlock.includes(': "Não"'), false);
       assert.equal(sectionsBlock.includes("CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL"), true);
 
-      assert.equal(overviewAgendaBlock.includes("answers.installation_days_rule"), false);
-      assert.equal(overviewAgendaBlock.includes("answers.technical_visit_days_rule"), false);
-      assert.equal(overviewAgendaBlock.includes('value={scheduleSettings ? "Configurada" : "Pendente"}'), true);
     },
   },
   {
@@ -457,7 +821,8 @@ const tests: TestCase[] = [
       assert.equal(selectionBlock.includes("? (scheduleSettings.installation_days as unknown[])"), true);
       assert.equal(selectionBlock.includes("? (scheduleSettings.technical_visit_days as unknown[])"), true);
 
-      assert.equal(sectionsBlock.includes("scheduleSettings ? yesNoLabel(scheduleSettings.attends_holidays)"), true);
+      assert.equal(sectionsBlock.includes("scheduleSettings ? yesNoLabel(scheduleSettings.attends_holidays)"), false);
+      assert.equal(sectionsBlock.includes("servesHolidayLabel"), true);
       assert.equal(sectionsBlock.includes("scheduleSettings ? yesNoLabel(scheduleSettings.allow_multiple_appointments_per_day)"), true);
       assert.equal(sectionsBlock.includes("scheduleSettings ? yesNoLabel(scheduleSettings.allow_same_time_appointments)"), true);
       assert.equal(
@@ -480,9 +845,10 @@ const tests: TestCase[] = [
         true,
       );
       assert.equal(
-        restoreBlock.includes("normalizePersistedOperationDraft(current, parsed.operationDraft)"),
+        restoreBlock.includes("restoreOperationDraftWithoutScheduleAuthority(current, parsed.operationDraft ?? {})"),
         true,
       );
+      assert.equal(source.includes("normalizePersistedOperationDraft(current, persisted)"), true);
       assert.equal(
         restoreBlock.includes("setOperationDraft(parsed.operationDraft)"),
         false,
@@ -505,7 +871,7 @@ const tests: TestCase[] = [
       const tryIndex = block.indexOf("    try {");
       const parseIndex = block.indexOf("const parsedAverageInstallationTime = parseOptionalPositiveInteger(");
       const normalizeIndex = block.indexOf("const normalizedOperationSettings = normalizeStoreOperationSettingsInput({");
-      const rpcIndex = block.indexOf('await supabase.rpc(\n          "upsert_store_operation_settings_with_legacy_mirror_scoped"');
+      const rpcIndex = block.indexOf('"upsert_store_operation_settings_with_legacy_mirror_scoped"');
       const invalidTimeIndex = block.indexOf("Prazo médio de instalação deve ser vazio ou um inteiro positivo.");
 
       assert.equal(tryIndex > -1, true);
@@ -774,23 +1140,29 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "pool strategy readers use canonical strategy brand fields instead of legacy answers",
+    name: "pool strategy reader uses canonical strategy brand fields instead of legacy answers",
     run: () => {
       const source = readPageSource();
       const poolsOperationalBlock = getPoolsOperationalItemsBlock(source);
-      const poolsQuickCountBlock = getPoolsQuickCountBlock(source);
 
-      assert.equal(poolsOperationalBlock.includes("strategySettingsInput.mainStoreBrand"), true);
-      assert.equal(poolsOperationalBlock.includes("strategySettingsInput.brandsWorked"), true);
-      assert.equal(poolsOperationalBlock.includes("answers.main_store_brand"), false);
-      assert.equal(poolsOperationalBlock.includes("answers.brands_worked"), false);
-      assert.equal(poolsQuickCountBlock.includes("strategySettingsInput.mainStoreBrand"), true);
-      assert.equal(poolsQuickCountBlock.includes("strategySettingsInput.brandsWorked"), true);
-      assert.equal(poolsQuickCountBlock.includes("answers.main_store_brand"), false);
-      assert.equal(poolsQuickCountBlock.includes("answers.brands_worked"), false);
+      assert.equal(
+        poolsOperationalBlock.includes("strategySettingsInput.mainStoreBrand"),
+        true,
+      );
+      assert.equal(
+        poolsOperationalBlock.includes("strategySettingsInput.brandsWorked"),
+        true,
+      );
+      assert.equal(
+        poolsOperationalBlock.includes("answers.main_store_brand"),
+        false,
+      );
+      assert.equal(
+        poolsOperationalBlock.includes("answers.brands_worked"),
+        false,
+      );
     },
-  },
-  {
+  },  {
     name: "commercial edit form shows strategy presentation as read-only and falls back to Nao definido",
     run: () => {
       const source = readPageSource();
@@ -799,7 +1171,11 @@ const tests: TestCase[] = [
 
       assert.equal(draftBlock.includes('"Não definido"'), true);
       assert.equal(draftBlock.includes("answers.strategy_ai_presentation"), false);
-      assert.equal(formBlock.includes("value={commercialDraft.ai_presentation_mode} readOnly"), true);
+      assert.equal(
+        formBlock.includes("value={commercialDraft.ai_presentation_mode}"),
+        true,
+      );
+      assert.equal(formBlock.includes("readOnly"), true);
       assert.equal(
         formBlock.includes('handleCommercialDraftChange("ai_presentation_mode"'),
         false,
@@ -1242,11 +1618,18 @@ const tests: TestCase[] = [
 ];
 
 async function run() {
-  for (const test of tests) {
+  const filter = String(process.env.CONFIGURACOES_PAGE_TEST_FILTER || "").trim().toLowerCase();
+  const selectedTests = filter
+    ? tests.filter((test) => test.name.toLowerCase().includes(filter))
+    : tests;
+
+  assert.equal(selectedTests.length > 0, true, "no tests matched filter");
+
+  for (const test of selectedTests) {
     test.run();
   }
 
-  console.log(`configuracoes-page: ${tests.length} tests passed`);
+  console.log(`configuracoes-page: ${selectedTests.length} tests passed`);
 }
 
 run().catch((error) => {
