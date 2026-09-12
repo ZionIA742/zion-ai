@@ -6,8 +6,10 @@ import {
   findExistingCommercialHandoffTask,
   generateAndSaveAiSalesReply,
   mapGenerateAndSaveAiSalesReplyError,
+  persistCustomerCatalogDocumentActions,
   tryHandleCustomerContractAcceptance,
   type CommercialAssistantHandoffDeps,
+  type CustomerCatalogDocumentAction,
 } from "./generate-and-save-ai-sales-reply";
 import type { CommercialHandoffContext } from "./generate-ai-sales-reply";
 import { ContractAccessError } from "./sales-contracts/contract-auth";
@@ -4907,7 +4909,167 @@ assert.equal(
         "Saver must preserve bounded generator context in its operational result",
       );
     },
-  },];
+  },
+  {
+    name: "customer catalog documents persist as WhatsApp document messages and dedupe by anchor plus import file",
+    run: async () => {
+      const storedMessages: Array<Record<string, unknown>> = [];
+      const rpcCalls: Array<{
+        fn: string;
+        payload: Record<string, unknown>;
+      }> = [];
+
+      const supabase = {
+        from(table: string) {
+          assert.equal(table, "messages");
+
+          const filters: Array<{ column: string; value: unknown }> = [];
+
+          const builder = {
+            select(_selection: string) {
+              return builder;
+            },
+            eq(column: string, value: unknown) {
+              filters.push({ column, value });
+              return builder;
+            },
+            order(_column: string, _options: Record<string, unknown>) {
+              return builder;
+            },
+            async limit(_value: number) {
+              const rows = storedMessages.filter((row) =>
+                filters.every(({ column, value }) => row[column] === value),
+              );
+
+              return {
+                data: rows,
+                error: null,
+              };
+            },
+          };
+
+          return builder;
+        },
+        async rpc(fn: string, payload: Record<string, unknown>) {
+          assert.equal(fn, "insert_message");
+          rpcCalls.push({ fn, payload });
+
+          storedMessages.push({
+            id: `doc-${rpcCalls.length}`,
+            organization_id: "org-1",
+            store_id: "store-1",
+            conversation_id: payload.p_conversation_id,
+            sender: payload.p_sender,
+            direction: payload.p_direction,
+            message_type: payload.p_message_type,
+            metadata: payload.p_metadata,
+          });
+
+          return {
+            data: { id: `doc-${rpcCalls.length}` },
+            error: null,
+          };
+        },
+      };
+
+      const actions: CustomerCatalogDocumentAction[] = [
+        {
+          shouldSend: true,
+          reason: "explicit_customer_catalog_file_request",
+          organizationId: "org-1",
+          storeId: "store-1",
+          importFileId: "file-1",
+          sortOrder: 1,
+          originalFileName: "piscinas.pdf",
+          mimeType: "application/pdf",
+          extension: "pdf",
+          storageBucket: "store-imports",
+          storagePath: "org-1/store-1/piscinas.pdf",
+          caption: "Catálogo: piscinas.pdf",
+        },
+        {
+          shouldSend: true,
+          reason: "explicit_customer_catalog_file_request",
+          organizationId: "org-1",
+          storeId: "store-1",
+          importFileId: "file-2",
+          sortOrder: 2,
+          originalFileName: "acessorios.xlsx",
+          mimeType:
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          extension: "xlsx",
+          storageBucket: "store-imports",
+          storagePath: "org-1/store-1/acessorios.xlsx",
+          caption: "Catálogo: acessorios.xlsx",
+        },
+      ];
+
+      const first = await persistCustomerCatalogDocumentActions({
+        supabase,
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conv-1",
+        anchorMessageId: "msg-anchor",
+        actions,
+        sendExternal: true,
+      });
+
+      assert.deepEqual(first, {
+        inserted: 2,
+        deduped: 0,
+      });
+      assert.equal(rpcCalls.length, 2);
+
+      for (const [index, call] of rpcCalls.entries()) {
+        assert.equal(call.payload.p_message_type, "document");
+        assert.equal(
+          call.payload.p_media_url,
+          actions[index]?.storagePath,
+        );
+
+        const metadata = call.payload.p_metadata as Record<string, unknown>;
+        assert.equal(metadata.external_channel, "whatsapp");
+        assert.equal(metadata.send_external, true);
+        assert.equal(
+          metadata.outbound_origin,
+          "ai_sales_customer_catalog_document",
+        );
+        assert.equal(
+          metadata.original_file_name,
+          actions[index]?.originalFileName,
+        );
+        assert.equal(
+          metadata.customer_catalog_import_file_id,
+          actions[index]?.importFileId,
+        );
+        assert.equal(
+          metadata.customer_catalog_action_key,
+          `ai_sales_customer_catalog:msg-anchor:${actions[index]?.importFileId}`,
+        );
+      }
+
+      const second = await persistCustomerCatalogDocumentActions({
+        supabase,
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conv-1",
+        anchorMessageId: "msg-anchor",
+        actions,
+        sendExternal: true,
+      });
+
+      assert.deepEqual(second, {
+        inserted: 0,
+        deduped: 2,
+      });
+      assert.equal(
+        rpcCalls.length,
+        2,
+        "replay must not create duplicate document messages",
+      );
+    },
+  },
+];
 
 async function main() {
   let passed = 0;

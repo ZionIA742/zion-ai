@@ -553,6 +553,21 @@ type CatalogPhotoAction = {
   caption: string;
 };
 
+export type CustomerCatalogDocumentAction = {
+  shouldSend: true;
+  reason: "explicit_customer_catalog_file_request";
+  organizationId: string;
+  storeId: string;
+  importFileId: string;
+  sortOrder: number;
+  originalFileName: string;
+  mimeType: string | null;
+  extension: string | null;
+  storageBucket: string;
+  storagePath: string;
+  caption: string;
+};
+
 type ConversationRow = {
   id: string;
   organization_id: string;
@@ -759,6 +774,82 @@ function normalizeCatalogPhotoAction(action: unknown): CatalogPhotoAction | null
     publicUrl,
     caption,
   };
+}
+
+function normalizeCustomerCatalogDocumentActions(
+  actions: unknown,
+): CustomerCatalogDocumentAction[] {
+  if (!Array.isArray(actions)) {
+    return [];
+  }
+
+  const normalized: CustomerCatalogDocumentAction[] = [];
+  const seenImportFileIds = new Set<string>();
+
+  for (const action of actions) {
+    if (!action || typeof action !== "object") {
+      continue;
+    }
+
+    const candidate = action as Record<string, unknown>;
+    const organizationId = String(candidate.organizationId || "").trim();
+    const storeId = String(candidate.storeId || "").trim();
+    const importFileId = String(candidate.importFileId || "").trim();
+    const sortOrder = Number(candidate.sortOrder);
+    const originalFileName = String(candidate.originalFileName || "").trim();
+    const mimeType =
+      typeof candidate.mimeType === "string" && candidate.mimeType.trim()
+        ? candidate.mimeType.trim()
+        : null;
+    const extension =
+      typeof candidate.extension === "string" && candidate.extension.trim()
+        ? candidate.extension.trim().replace(/^\./, "").toLowerCase()
+        : null;
+    const storageBucket = String(candidate.storageBucket || "").trim();
+    const storagePath = String(candidate.storagePath || "").trim();
+    const caption = String(candidate.caption || "").trim();
+
+    if (
+      candidate.shouldSend !== true ||
+      candidate.reason !== "explicit_customer_catalog_file_request" ||
+      !organizationId ||
+      !storeId ||
+      !importFileId ||
+      !Number.isInteger(sortOrder) ||
+      sortOrder < 1 ||
+      !originalFileName ||
+      !storageBucket ||
+      !storagePath ||
+      !caption ||
+      seenImportFileIds.has(importFileId)
+    ) {
+      continue;
+    }
+
+    seenImportFileIds.add(importFileId);
+    normalized.push({
+      shouldSend: true,
+      reason: "explicit_customer_catalog_file_request",
+      organizationId,
+      storeId,
+      importFileId,
+      sortOrder,
+      originalFileName,
+      mimeType,
+      extension,
+      storageBucket,
+      storagePath,
+      caption,
+    });
+  }
+
+  normalized.sort(
+    (a, b) =>
+      a.sortOrder - b.sortOrder ||
+      a.importFileId.localeCompare(b.importFileId),
+  );
+
+  return normalized;
 }
 
 type MessageBoundaryRow = {
@@ -3055,6 +3146,133 @@ async function isRealWhatsappConversation(args: {
   return hasRecentIncomingWhatsappMessage && hasWhatsappIntegration;
 }
 
+function buildCustomerCatalogDocumentActionKey(args: {
+  anchorMessageId: string;
+  importFileId: string;
+}) {
+  return `ai_sales_customer_catalog:${args.anchorMessageId}:${args.importFileId}`;
+}
+
+export async function persistCustomerCatalogDocumentActions(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  anchorMessageId: string;
+  actions: CustomerCatalogDocumentAction[];
+  sendExternal: boolean;
+}) {
+  if (args.actions.length === 0) {
+    return {
+      inserted: 0,
+      deduped: 0,
+    };
+  }
+
+  for (const action of args.actions) {
+    if (
+      action.organizationId !== args.organizationId ||
+      action.storeId !== args.storeId
+    ) {
+      throw new Error("CUSTOMER_CATALOG_DOCUMENT_SCOPE_MISMATCH");
+    }
+  }
+
+  const { data: existingRows, error: existingRowsError } = await args.supabase
+    .from("messages")
+    .select("id, metadata")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .eq("sender", "ai")
+    .eq("direction", "outgoing")
+    .eq("message_type", "document")
+    .order("created_at", { ascending: false })
+    .limit(100);
+
+  if (existingRowsError) {
+    throw new Error(
+      `CUSTOMER_CATALOG_DOCUMENT_DEDUPE_LOOKUP_FAILED: ${existingRowsError.message}`,
+    );
+  }
+
+  const existingKeys = new Set(
+    (Array.isArray(existingRows) ? existingRows : [])
+      .map((row: { metadata?: unknown }) => {
+        const metadata = isRecord(row?.metadata) ? row.metadata : null;
+        return String(metadata?.["customer_catalog_action_key"] || "").trim();
+      })
+      .filter(Boolean),
+  );
+
+  let inserted = 0;
+  let deduped = 0;
+
+  for (const action of args.actions) {
+    const actionKey = buildCustomerCatalogDocumentActionKey({
+      anchorMessageId: args.anchorMessageId,
+      importFileId: action.importFileId,
+    });
+
+    if (existingKeys.has(actionKey)) {
+      deduped += 1;
+      continue;
+    }
+
+    const metadata: Record<string, unknown> = {
+      source: "ai_sales_customer_catalog",
+      media_purpose: "customer_catalog_document",
+      customer_catalog_document_action: true,
+      customer_catalog_action_key: actionKey,
+      customer_catalog_import_file_id: action.importFileId,
+      catalog_sort_order: action.sortOrder,
+      storage_bucket: action.storageBucket,
+      storage_path: action.storagePath,
+      original_file_name: action.originalFileName,
+      mime_type: action.mimeType,
+      file_extension: action.extension,
+      generated_by: "ai_sales",
+      auto_sent: true,
+      reason: action.reason,
+      source_message_id: args.anchorMessageId,
+      ...(args.sendExternal
+        ? {
+            channel: "whatsapp",
+            external_channel: "whatsapp",
+            send_external: true,
+            outbound_origin: "ai_sales_customer_catalog_document",
+            whatsapp_detected_from_conversation: true,
+          }
+        : {}),
+    };
+
+    const { error: insertError } = await args.supabase.rpc("insert_message", {
+      p_conversation_id: args.conversationId,
+      p_sender: "ai",
+      p_direction: "outgoing",
+      p_message_type: "document",
+      p_content: action.caption,
+      p_external_message_id: null,
+      p_media_url: action.storagePath,
+      p_metadata: metadata,
+    });
+
+    if (insertError) {
+      throw new Error(
+        `CUSTOMER_CATALOG_DOCUMENT_INSERT_FAILED: ${insertError.message}`,
+      );
+    }
+
+    existingKeys.add(actionKey);
+    inserted += 1;
+  }
+
+  return {
+    inserted,
+    deduped,
+  };
+}
+
 async function insertAiWhatsappMessage(args: {
   supabase: any;
   conversationId: string;
@@ -4661,6 +4879,26 @@ export async function generateAndSaveAiSalesReply(
       String(
         generationResult.context?.resolvedCommercialOpportunityId || "",
       ).trim() || null;
+    const rawCustomerCatalogDocumentActions =
+      generationResult.context?.customerCatalogDocumentActions;
+    const customerCatalogDocumentActions =
+      normalizeCustomerCatalogDocumentActions(
+        rawCustomerCatalogDocumentActions,
+      );
+
+    if (
+      Array.isArray(rawCustomerCatalogDocumentActions) &&
+      rawCustomerCatalogDocumentActions.length !==
+        customerCatalogDocumentActions.length
+    ) {
+      return {
+        ok: false,
+        error: "CUSTOMER_CATALOG_DOCUMENT_ACTION_INVALID",
+        message:
+          "A geração retornou uma ação de catálogo inválida e o envio foi bloqueado com segurança.",
+        aiText,
+      };
+    }
 
     if (
       !generationAnchorMessageId ||
@@ -4932,6 +5170,44 @@ export async function generateAndSaveAiSalesReply(
         }
       : null;
 
+    let customerCatalogDocumentSendExternal = false;
+
+    if (
+      customerCatalogDocumentActions.some(
+        (action) =>
+          action.organizationId !== canonicalOrganizationId ||
+          action.storeId !== canonicalStoreId,
+      )
+    ) {
+      return {
+        ok: false,
+        error: "CUSTOMER_CATALOG_DOCUMENT_SCOPE_MISMATCH",
+        message:
+          "A ação de catálogo não corresponde ao escopo canônico da conversa e foi bloqueada.",
+        aiText,
+      };
+    }
+
+    if (customerCatalogDocumentActions.length > 0) {
+      try {
+        customerCatalogDocumentSendExternal = await isRealWhatsappConversation({
+          supabase,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+        });
+      } catch (catalogChannelDetectionError: any) {
+        return {
+          ok: false,
+          error: "CUSTOMER_CATALOG_CHANNEL_DETECTION_FAILED",
+          message:
+            catalogChannelDetectionError?.message ||
+            "Falha ao validar o canal antes de enviar catálogo ao cliente.",
+          aiText,
+        };
+      }
+    }
+
     let messageId: string | null = null;
 
     try {
@@ -4950,6 +5226,29 @@ export async function generateAndSaveAiSalesReply(
         message: sendError?.message || "Falha ao enviar resposta da IA.",
         aiText,
       };
+    }
+
+    if (customerCatalogDocumentActions.length > 0) {
+      try {
+        await persistCustomerCatalogDocumentActions({
+          supabase,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          anchorMessageId: generationAnchorMessageId,
+          actions: customerCatalogDocumentActions,
+          sendExternal: customerCatalogDocumentSendExternal,
+        });
+      } catch (catalogDocumentInsertError: any) {
+        return {
+          ok: false,
+          error: "CUSTOMER_CATALOG_DOCUMENT_PERSIST_FAILED",
+          message:
+            catalogDocumentInsertError?.message ||
+            "Falha ao persistir catálogo autorizado para o cliente.",
+          aiText,
+        };
+      }
     }
 
     const catalogPhotoAction = normalizeCatalogPhotoAction(

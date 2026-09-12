@@ -154,6 +154,15 @@ type StoreImportFileRow = {
   updated_at: string | null;
 };
 
+type StoreCatalogSettingsRow = {
+  organization_id: string;
+  store_id: string;
+  allow_full_catalog_send: boolean;
+  customer_catalog_import_file_ids: string[];
+  created_at: string;
+  updated_at: string;
+};
+
 type StoreBrandingSettingsRow = {
   id: string;
   organization_id: string;
@@ -3773,6 +3782,11 @@ export default function ConfiguracoesPage() {
   const [savingCatalogItem, setSavingCatalogItem] = useState(false);
   const [poolImportFiles, setPoolImportFiles] = useState<StoreImportFileRow[]>([]);
   const [catalogImportFiles, setCatalogImportFiles] = useState<StoreImportFileRow[]>([]);
+  const [storeCatalogSettings, setStoreCatalogSettings] = useState<StoreCatalogSettingsRow | null>(null);
+  const [isCustomerCatalogEditing, setIsCustomerCatalogEditing] = useState(false);
+  const [customerCatalogAllowDraft, setCustomerCatalogAllowDraft] = useState<"Sim" | "Não">("Não");
+  const [customerCatalogFileIdsDraft, setCustomerCatalogFileIdsDraft] = useState<string[]>([]);
+  const [savingCustomerCatalogSettings, setSavingCustomerCatalogSettings] = useState(false);
   const [downloadingImportFileId, setDownloadingImportFileId] = useState<string | null>(null);
   const [deletingImportFileId, setDeletingImportFileId] = useState<string | null>(null);
   const [rawImportFilesModalTab, setRawImportFilesModalTab] = useState<"pools" | "catalog" | null>(null);
@@ -4372,6 +4386,11 @@ export default function ConfiguracoesPage() {
       setSelectedStoreLogoFile(null);
       setPoolImportFiles([]);
       setCatalogImportFiles([]);
+      setStoreCatalogSettings(null);
+      setIsCustomerCatalogEditing(false);
+      setCustomerCatalogAllowDraft("Não");
+      setCustomerCatalogFileIdsDraft([]);
+      setSavingCustomerCatalogSettings(false);
       setLoading(false);
       return;
     }
@@ -4395,6 +4414,7 @@ export default function ConfiguracoesPage() {
         commercialAiSettingsResult,
         discountSettingsResult,
         highValueDiscountSettingsResult,
+        catalogSettingsResult,
         primaryResponsibleResponse,
         monthlySalesGoalResponse,
       ] = await Promise.all([
@@ -4478,6 +4498,12 @@ export default function ConfiguracoesPage() {
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
           .maybeSingle(),
+        supabase
+          .rpc("read_store_catalog_settings_multi_scoped", {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+          })
+          .maybeSingle(),
         fetch("/api/store/primary-responsible", {
           method: "GET",
           cache: "no-store",
@@ -4502,6 +4528,7 @@ export default function ConfiguracoesPage() {
       if (commercialAiSettingsResult.error) throw commercialAiSettingsResult.error;
       if (discountSettingsResult.error) throw discountSettingsResult.error;
       if (highValueDiscountSettingsResult.error) throw highValueDiscountSettingsResult.error;
+      if (catalogSettingsResult.error) throw catalogSettingsResult.error;
 
       const primaryResponsibleResult =
         (await primaryResponsibleResponse.json().catch(() => null)) as
@@ -4741,6 +4768,27 @@ export default function ConfiguracoesPage() {
       setHighValueDiscountSettings(
         (highValueDiscountSettingsResult.data ?? null) as StoreHighValueDiscountSettingsRow | null,
       );
+      const nextStoreCatalogSettings =
+        (catalogSettingsResult.data ?? null) as StoreCatalogSettingsRow | null;
+      const nextCustomerCatalogFileIds = Array.isArray(
+        nextStoreCatalogSettings?.customer_catalog_import_file_ids,
+      )
+        ? nextStoreCatalogSettings.customer_catalog_import_file_ids
+            .map((value) => cleanText(value))
+            .filter(Boolean)
+        : [];
+      setStoreCatalogSettings(
+        nextStoreCatalogSettings
+          ? {
+              ...nextStoreCatalogSettings,
+              customer_catalog_import_file_ids: nextCustomerCatalogFileIds,
+            }
+          : null,
+      );
+      setCustomerCatalogAllowDraft(
+        nextStoreCatalogSettings?.allow_full_catalog_send ? "Sim" : "Não",
+      );
+      setCustomerCatalogFileIdsDraft(nextCustomerCatalogFileIds);
       setCanonicalPrimaryResponsible(nextCanonicalPrimaryResponsible);
       setHasLoadedCanonicalPrimaryResponsible(true);
       setPoolImportFiles(nextPoolImportFiles);
@@ -9464,6 +9512,149 @@ export default function ConfiguracoesPage() {
     []
   );
 
+  const handleCustomerCatalogEditStart = useCallback(() => {
+    const savedFileIds = Array.isArray(
+      storeCatalogSettings?.customer_catalog_import_file_ids,
+    )
+      ? storeCatalogSettings.customer_catalog_import_file_ids
+          .map((value) => cleanText(value))
+          .filter(Boolean)
+      : [];
+    const allowFullCatalogSend = storeCatalogSettings?.allow_full_catalog_send === true;
+
+    setCustomerCatalogAllowDraft(allowFullCatalogSend ? "Sim" : "Não");
+    setCustomerCatalogFileIdsDraft(
+      allowFullCatalogSend ? (savedFileIds.length > 0 ? savedFileIds : [""]) : [],
+    );
+    setErrorText(null);
+    setSuccessText(null);
+    setIsCustomerCatalogEditing(true);
+  }, [storeCatalogSettings]);
+
+  const handleCustomerCatalogEditCancel = useCallback(() => {
+    const savedFileIds = Array.isArray(
+      storeCatalogSettings?.customer_catalog_import_file_ids,
+    )
+      ? storeCatalogSettings.customer_catalog_import_file_ids
+          .map((value) => cleanText(value))
+          .filter(Boolean)
+      : [];
+    const allowFullCatalogSend = storeCatalogSettings?.allow_full_catalog_send === true;
+
+    setCustomerCatalogAllowDraft(allowFullCatalogSend ? "Sim" : "Não");
+    setCustomerCatalogFileIdsDraft(
+      allowFullCatalogSend ? (savedFileIds.length > 0 ? savedFileIds : [""]) : [],
+    );
+    setIsCustomerCatalogEditing(false);
+    setErrorText(null);
+  }, [storeCatalogSettings]);
+
+  const handleCustomerCatalogSettingsSave = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar esta configuração.");
+      setSuccessText(null);
+      return;
+    }
+
+    const allowFullCatalogSend = customerCatalogAllowDraft === "Sim";
+    const selectedFileIds = allowFullCatalogSend
+      ? customerCatalogFileIdsDraft.map((value) => cleanText(value)).filter(Boolean)
+      : [];
+
+    if (allowFullCatalogSend && selectedFileIds.length === 0) {
+      setErrorText("Selecione pelo menos um catálogo que a IA pode enviar aos clientes.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (new Set(selectedFileIds).size !== selectedFileIds.length) {
+      setErrorText("O mesmo arquivo não pode ser autorizado mais de uma vez.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (allowFullCatalogSend) {
+      const allImportFiles = [...poolImportFiles, ...catalogImportFiles];
+      const invalidSelectedFileId = selectedFileIds.find((selectedFileId) => {
+        const selectedFile = allImportFiles.find((file) => file.id === selectedFileId);
+        return !(
+          selectedFile &&
+          normalizeLoose(selectedFile.status) === "active" &&
+          Boolean(cleanText(selectedFile.storage_bucket)) &&
+          Boolean(cleanText(selectedFile.storage_path))
+        );
+      });
+
+      if (invalidSelectedFileId) {
+        setErrorText(
+          "Um dos catálogos selecionados não está mais disponível como uma importação ativa desta loja. Revise a lista e tente novamente.",
+        );
+        setSuccessText(null);
+        return;
+      }
+    }
+
+    setSavingCustomerCatalogSettings(true);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const { data, error } = await supabase
+        .rpc("upsert_store_catalog_settings_multi_scoped", {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_allow_full_catalog_send: allowFullCatalogSend,
+          p_customer_catalog_import_file_ids: selectedFileIds,
+        })
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!data) {
+        throw new Error(
+          "A configuração foi enviada, mas não foi possível confirmar o estado salvo.",
+        );
+      }
+
+      const savedSettings = data as StoreCatalogSettingsRow;
+      const savedFileIds = Array.isArray(savedSettings.customer_catalog_import_file_ids)
+        ? savedSettings.customer_catalog_import_file_ids
+            .map((value) => cleanText(value))
+            .filter(Boolean)
+        : [];
+      const normalizedSavedSettings: StoreCatalogSettingsRow = {
+        ...savedSettings,
+        customer_catalog_import_file_ids: savedFileIds,
+      };
+
+      setStoreCatalogSettings(normalizedSavedSettings);
+      setCustomerCatalogAllowDraft(
+        normalizedSavedSettings.allow_full_catalog_send ? "Sim" : "Não",
+      );
+      setCustomerCatalogFileIdsDraft(savedFileIds);
+      setIsCustomerCatalogEditing(false);
+      setSuccessText(
+        normalizedSavedSettings.allow_full_catalog_send
+          ? `${savedFileIds.length} catálogo(s) autorizado(s) para clientes com sucesso.`
+          : "Envio de catálogos completos aos clientes desativado com sucesso.",
+      );
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Não foi possível salvar a configuração dos catálogos para clientes.",
+      );
+      setSuccessText(null);
+    } finally {
+      setSavingCustomerCatalogSettings(false);
+    }
+  }, [
+    organizationId,
+    activeStoreId,
+    customerCatalogAllowDraft,
+    customerCatalogFileIdsDraft,
+    poolImportFiles,
+    catalogImportFiles,
+  ]);
+
   const handleDeleteImportFile = useCallback(
     async (file: StoreImportFileRow) => {
       if (!organizationId || !activeStoreId) {
@@ -9473,6 +9664,17 @@ export default function ConfiguracoesPage() {
       }
 
       if (deletingImportFileId) return;
+
+      if (
+        storeCatalogSettings?.allow_full_catalog_send &&
+        storeCatalogSettings.customer_catalog_import_file_ids.includes(file.id)
+      ) {
+        setErrorText(
+          "Este arquivo está autorizado como catálogo para clientes. Primeiro edite “Catálogos para clientes” e remova este arquivo da lista autorizada.",
+        );
+        setSuccessText(null);
+        return;
+      }
 
       const fileName = cleanText(file.original_file_name) || "arquivo bruto";
       const confirmed = window.confirm(
@@ -9517,13 +9719,25 @@ export default function ConfiguracoesPage() {
         setSuccessText("Arquivo bruto excluído com sucesso. Os itens do catálogo foram preservados.");
         await fetchPageData();
       } catch (error: any) {
-        setErrorText(error?.message ?? "Erro ao excluir o arquivo bruto.");
+        if (cleanText(error?.code) === "23503") {
+          setErrorText(
+            "Este arquivo está protegido por uma configuração ativa. Remova primeiro a autorização em “Catálogo para clientes” e tente novamente.",
+          );
+        } else {
+          setErrorText(error?.message ?? "Erro ao excluir o arquivo bruto.");
+        }
         setSuccessText(null);
       } finally {
         setDeletingImportFileId(null);
       }
     },
-    [organizationId, activeStoreId, deletingImportFileId, fetchPageData]
+    [
+      organizationId,
+      activeStoreId,
+      deletingImportFileId,
+      fetchPageData,
+      storeCatalogSettings,
+    ]
   );
 
   const handleStoreLogoFileChange = useCallback((files: FileList | null) => {
@@ -10107,6 +10321,70 @@ export default function ConfiguracoesPage() {
       return rightTime - leftTime;
     });
   }, [poolImportFiles, catalogImportFiles]);
+  const customerCatalogEligibleFiles = useMemo(() => {
+    const uniqueById = new Map<string, StoreImportFileRow>();
+
+    for (const file of catalogImportedFiles) {
+      if (
+        normalizeLoose(file.status) !== "active" ||
+        !cleanText(file.storage_bucket) ||
+        !cleanText(file.storage_path)
+      ) {
+        continue;
+      }
+      if (!uniqueById.has(file.id)) uniqueById.set(file.id, file);
+    }
+
+    return Array.from(uniqueById.values());
+  }, [catalogImportedFiles]);
+  const selectedCustomerCatalogFiles = useMemo(() => {
+    const selectedIds = Array.isArray(
+      storeCatalogSettings?.customer_catalog_import_file_ids,
+    )
+      ? storeCatalogSettings.customer_catalog_import_file_ids
+      : [];
+
+    return selectedIds
+      .map((selectedId) => catalogImportedFiles.find((file) => file.id === selectedId) ?? null)
+      .filter(Boolean) as StoreImportFileRow[];
+  }, [catalogImportedFiles, storeCatalogSettings]);
+  const customerCatalogDraftFiles = useMemo(() => {
+    return customerCatalogFileIdsDraft.map(
+      (selectedId) =>
+        customerCatalogEligibleFiles.find((file) => file.id === selectedId) ?? null,
+    );
+  }, [customerCatalogEligibleFiles, customerCatalogFileIdsDraft]);
+  const customerCatalogCardStatus = useMemo(() => {
+    if (!storeCatalogSettings) {
+      return { tone: "yellow" as const, status: "Precisa de atenção" };
+    }
+    if (!storeCatalogSettings.allow_full_catalog_send) {
+      return { tone: "blue" as const, status: "Completo" };
+    }
+
+    const selectedIds = Array.isArray(
+      storeCatalogSettings.customer_catalog_import_file_ids,
+    )
+      ? storeCatalogSettings.customer_catalog_import_file_ids
+      : [];
+
+    if (selectedIds.length === 0 || selectedCustomerCatalogFiles.length !== selectedIds.length) {
+      return { tone: "red" as const, status: "Configuração crítica" };
+    }
+
+    const hasInvalidSelectedFile = selectedCustomerCatalogFiles.some(
+      (file) =>
+        normalizeLoose(file.status) !== "active" ||
+        !cleanText(file.storage_bucket) ||
+        !cleanText(file.storage_path),
+    );
+
+    if (hasInvalidSelectedFile) {
+      return { tone: "red" as const, status: "Configuração crítica" };
+    }
+
+    return { tone: "blue" as const, status: "Completo" };
+  }, [storeCatalogSettings, selectedCustomerCatalogFiles]);
   const resetManualCatalogItemModalForm = useCallback(() => {
     setPoolForm(createEmptyPoolForm());
     setPoolPhotos([]);
@@ -11765,6 +12043,269 @@ export default function ConfiguracoesPage() {
                 />
               </div>
             </div>
+          </SectionBlock>
+
+          <SectionBlock
+            title="Catálogos para clientes"
+            description="Autorize, de forma explícita, quais arquivos originais usados na Importação Inteligente a IA pode enviar aos clientes. Os preços, o estoque e a disponibilidade continuam sendo definidos pelo catálogo atual do ZION."
+            tone={customerCatalogCardStatus.tone}
+            status={customerCatalogCardStatus.status}
+            actions={
+              isCustomerCatalogEditing ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handleCustomerCatalogSettingsSave()}
+                    disabled={
+                      savingCustomerCatalogSettings ||
+                      (customerCatalogAllowDraft === "Sim" &&
+                        customerCatalogFileIdsDraft.filter((value) => cleanText(value)).length === 0)
+                    }
+                    className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {savingCustomerCatalogSettings ? "Salvando..." : "Salvar"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCustomerCatalogEditCancel}
+                    disabled={savingCustomerCatalogSettings}
+                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Cancelar
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleCustomerCatalogEditStart}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800"
+                >
+                  Editar
+                </button>
+              )
+            }
+          >
+            {isCustomerCatalogEditing ? (
+              <div className="space-y-5">
+                <div>
+                  <div className="mb-2 text-sm font-semibold text-gray-950">
+                    A IA pode enviar catálogos completos aos clientes?
+                  </div>
+                  <ChoiceButtonGroup
+                    value={customerCatalogAllowDraft}
+                    onChange={(value) => {
+                      const nextValue = value === "Sim" ? "Sim" : "Não";
+                      setCustomerCatalogAllowDraft(nextValue);
+                      setCustomerCatalogFileIdsDraft((current) => {
+                        if (nextValue === "Não") return [];
+                        return current.length > 0 ? current : [""];
+                      });
+                    }}
+                    options={[
+                      { value: "Sim", label: "Sim" },
+                      { value: "Não", label: "Não" },
+                    ]}
+                  />
+                </div>
+
+                {customerCatalogAllowDraft === "Sim" ? (
+                  <div className="space-y-3 rounded-2xl border border-gray-200 bg-gray-50/60 p-4">
+                    <div>
+                      <div className="text-sm font-semibold text-gray-950">
+                        Catálogos autorizados para envio
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-gray-600">
+                        Escolha um ou mais arquivos que já foram usados na Importação Inteligente. O ZION enviará os próprios arquivos originais; eles não serão recriados a partir dos itens cadastrados.
+                      </p>
+                    </div>
+
+                    {customerCatalogEligibleFiles.length > 0 ? (
+                      <div className="space-y-2">
+                        {(customerCatalogFileIdsDraft.length > 0
+                          ? customerCatalogFileIdsDraft
+                          : [""]
+                        ).map((selectedFileId, index, rows) => {
+                          const selectedFile = customerCatalogDraftFiles[index] ?? null;
+                          const usedByOtherRows = new Set(
+                            rows.filter(
+                              (value, rowIndex) =>
+                                rowIndex !== index && Boolean(cleanText(value)),
+                            ),
+                          );
+
+                          return (
+                            <div
+                              key={`customer-catalog-row-${index}`}
+                              className="flex flex-col gap-2 sm:flex-row sm:items-center"
+                            >
+                              <div className="relative min-w-0 flex-1">
+                                <select
+                                  value={selectedFileId}
+                                  onChange={(event) => {
+                                    const nextValue = event.target.value;
+                                    setCustomerCatalogFileIdsDraft((current) => {
+                                      const base = current.length > 0 ? [...current] : [""];
+                                      base[index] = nextValue;
+                                      return base;
+                                    });
+                                  }}
+                                  className="w-full appearance-none rounded-xl border border-gray-200 bg-white py-2.5 pl-3 pr-11 text-sm text-gray-900 outline-none focus:border-black"
+                                >
+                                  <option value="">Selecione um catálogo</option>
+                                  {customerCatalogEligibleFiles.map((file) => (
+                                    <option
+                                      key={file.id}
+                                      value={file.id}
+                                      disabled={usedByOtherRows.has(file.id)}
+                                    >
+                                      {cleanText(file.original_file_name) || "Arquivo importado"} —{" "}
+                                      {formatImportDate(file.created_at)}
+                                    </option>
+                                  ))}
+                                </select>
+                                <span
+                                  aria-hidden="true"
+                                  className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-sm font-bold text-gray-500"
+                                >
+                                  ⌄
+                                </span>
+                              </div>
+
+                              {selectedFile ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDownloadImportFile(selectedFile)}
+                                  disabled={downloadingImportFileId === selectedFile.id}
+                                  className="shrink-0 rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm font-semibold text-sky-900 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  {downloadingImportFileId === selectedFile.id
+                                    ? "Abrindo..."
+                                    : "Visualizar"}
+                                </button>
+                              ) : null}
+
+                              {(rows.length > 1 || cleanText(selectedFileId)) ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setCustomerCatalogFileIdsDraft((current) => {
+                                      const base = current.length > 0 ? current : [""];
+                                      const next = base.filter(
+                                        (_, rowIndex) => rowIndex !== index,
+                                      );
+                                      return next.length > 0 ? next : [""];
+                                    })
+                                  }
+                                  className="shrink-0 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+                                >
+                                  Remover
+                                </button>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCustomerCatalogFileIdsDraft((current) => [
+                              ...(current.length > 0 ? current : [""]),
+                              "",
+                            ])
+                          }
+                          disabled={
+                            customerCatalogFileIdsDraft.filter((value) => cleanText(value))
+                              .length >= customerCatalogEligibleFiles.length
+                          }
+                          className="inline-flex items-center gap-2 rounded-xl border border-dashed border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:border-cyan-300 hover:bg-cyan-50/40 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <span className="text-base leading-none">+</span>
+                          Adicionar mais um catálogo
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                        Nenhum arquivo ativo da Importação Inteligente está disponível. Importe um catálogo primeiro e depois volte a esta configuração.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-700">
+                    Nenhum arquivo ficará autorizado para envio completo aos clientes.
+                  </div>
+                )}
+
+                <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">
+                  Esta autorização vale somente para o envio dos arquivos originais. A IA deve consultar o catálogo vivo do ZION para preço, estoque e disponibilidade; o conteúdo dos arquivos não substitui essas autoridades.
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <SummaryList
+                  items={[
+                    ...buildBulletRows([
+                      {
+                        label: "Envio de catálogos completos",
+                        value: storeCatalogSettings
+                          ? storeCatalogSettings.allow_full_catalog_send
+                            ? "Sim"
+                            : "Não"
+                          : "Não definido",
+                      },
+                      {
+                        label: "Catálogos autorizados",
+                        value: storeCatalogSettings?.allow_full_catalog_send
+                          ? `${selectedCustomerCatalogFiles.length} arquivo(s)`
+                          : "Nenhum",
+                      },
+                    ]),
+                    ...(storeCatalogSettings?.allow_full_catalog_send
+                      ? selectedCustomerCatalogFiles.map(
+                          (file, index) =>
+                            `Catálogo ${index + 1}: ${
+                              cleanText(file.original_file_name) || "Arquivo importado"
+                            }`,
+                        )
+                      : []),
+                    ...buildBulletRows([
+                      {
+                        label: "Preço, estoque e disponibilidade",
+                        value: "Catálogo atual do ZION",
+                      },
+                    ]),
+                  ]}
+                />
+
+                {storeCatalogSettings?.allow_full_catalog_send &&
+                selectedCustomerCatalogFiles.length > 0 ? (
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {selectedCustomerCatalogFiles.map((file) => (
+                      <button
+                        key={`customer-catalog-preview-${file.id}`}
+                        type="button"
+                        onClick={() => void handleDownloadImportFile(file)}
+                        disabled={downloadingImportFileId === file.id}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {downloadingImportFileId === file.id
+                          ? "Abrindo..."
+                          : `Visualizar ${
+                              cleanText(file.original_file_name) || "catálogo"
+                            }`}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
+                {storeCatalogSettings?.allow_full_catalog_send &&
+                selectedCustomerCatalogFiles.length !==
+                  storeCatalogSettings.customer_catalog_import_file_ids.length ? (
+                  <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-800">
+                    Um ou mais catálogos autorizados não estão disponíveis entre as importações atuais desta loja. Revise esta configuração antes de permitir novos envios.
+                  </div>
+                ) : null}
+              </div>
+            )}
           </SectionBlock>
 
           <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">

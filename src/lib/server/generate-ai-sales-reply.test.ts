@@ -8,8 +8,11 @@ import {
   buildHistoricalCommercialContextBlock,
   buildModelInput,
   buildCommercialObjectiveBlock,
+  buildCustomerCatalogDocumentActions,
   describeCanonicalKnownFact,
+  detectCustomerCatalogDocumentRequest,
   generateAiSalesReply,
+  loadCustomerCatalogDocumentsForAiBySystem,
   loadAnchoredCanonicalCommercialContext,
   loadCanonicalCommercialOpportunityStage,
   loadCanonicalQualificationSnapshotBySystem,
@@ -23,6 +26,7 @@ import {
   loadScopedRecentMessages,
   resolveGenerationAnchorMessage,
   resolveMessagesWithCommercialContext,
+  selectCustomerCatalogDocumentsForRequest,
   summarizeCanonicalKnownFacts,
   selectMessagesForCurrentCommercialInference,
 } from "./generate-ai-sales-reply.js";
@@ -508,6 +512,7 @@ function createGenerateAiSalesReplySupabase(args?: {
   poolPhotos?: Row[];
   paymentSettingsReaderResponse?: RpcMockEntry;
   channelSettingsReaderResponse?: RpcMockEntry;
+  customerCatalogDocumentsReaderResponse?: RpcMockEntry;
   canonicalReaderResponses?: Array<{ data: unknown; error: { message: string } | null }>;
   writerResponse?: RpcMockEntry;
   materializerResponse?: RpcMockEntry;
@@ -675,6 +680,11 @@ function createGenerateAiSalesReplySupabase(args?: {
       read_store_channel_settings_by_system:
         args?.channelSettingsReaderResponse ?? {
           data: args?.channelSettings ?? [],
+          error: null,
+        },
+      read_store_customer_catalog_files_for_ai_by_system:
+        args?.customerCatalogDocumentsReaderResponse ?? {
+          data: [],
           error: null,
         },
       write_commercial_message_intent_resolution_by_system:
@@ -4715,6 +4725,266 @@ test("sales AI live catalog queries load canonical price_status and stock_status
     );
   }
 });
+test("customer catalog document request is narrower than generic catalog browsing", () => {
+  assert.deepEqual(
+    detectCustomerCatalogDocumentRequest("Quais piscinas vocês têm?"),
+    {
+      mode: "none",
+      kind: "generic",
+      requestedFormat: null,
+    },
+  );
+
+  assert.deepEqual(
+    detectCustomerCatalogDocumentRequest("Me manda o catálogo de piscinas em PDF"),
+    {
+      mode: "send",
+      kind: "pools",
+      requestedFormat: "pdf",
+    },
+  );
+
+  assert.deepEqual(
+    detectCustomerCatalogDocumentRequest("Tem catálogo em PDF?"),
+    {
+      mode: "availability",
+      kind: "generic",
+      requestedFormat: "pdf",
+    },
+  );
+});
+
+test("customer catalog system reader uses exact store scope and normalizes ordered linked files", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      read_store_customer_catalog_files_for_ai_by_system: {
+        data: [
+          {
+            organization_id: "org-1",
+            store_id: "store-1",
+            import_file_id: "file-b",
+            sort_order: 2,
+            original_file_name: "acessorios.xlsx",
+            mime_type:
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            extension: "xlsx",
+            storage_bucket: "store-imports",
+            storage_path: "org-1/store-1/file-b.xlsx",
+            linked_pool_ids: [],
+            linked_catalog_item_ids: ["item-2"],
+          },
+          {
+            organization_id: "org-1",
+            store_id: "store-1",
+            import_file_id: "file-a",
+            sort_order: 1,
+            original_file_name: "piscinas.pdf",
+            mime_type: "application/pdf",
+            extension: "pdf",
+            storage_bucket: "store-imports",
+            storage_path: "org-1/store-1/file-a.pdf",
+            linked_pool_ids: ["pool-1"],
+            linked_catalog_item_ids: [],
+          },
+        ],
+        error: null,
+      },
+    },
+  );
+
+  const result = await loadCustomerCatalogDocumentsForAiBySystem({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.deepEqual(
+    result.documents.map((document) => document.importFileId),
+    ["file-a", "file-b"],
+  );
+  assert.deepEqual(result.documents[0]?.linkedPoolIds, ["pool-1"]);
+  assert.deepEqual(result.documents[1]?.linkedCatalogItemIds, ["item-2"]);
+  assert.deepEqual(supabase.rpcCalls, [
+    {
+      fn: "read_store_customer_catalog_files_for_ai_by_system",
+      payload: {
+        p_organization_id: "org-1",
+        p_store_id: "store-1",
+      },
+    },
+  ]);
+});
+
+test("customer catalog document selection uses canonical import links instead of filenames", () => {
+  const documents = [
+    {
+      organizationId: "org-1",
+      storeId: "store-1",
+      importFileId: "file-pools",
+      sortOrder: 1,
+      originalFileName: "arquivo-final-3.pdf",
+      mimeType: "application/pdf",
+      extension: "pdf",
+      storageBucket: "store-imports",
+      storagePath: "org-1/store-1/file-pools.pdf",
+      linkedPoolIds: ["pool-1"],
+      linkedCatalogItemIds: [],
+    },
+    {
+      organizationId: "org-1",
+      storeId: "store-1",
+      importFileId: "file-accessories",
+      sortOrder: 2,
+      originalFileName: "qualquer-nome.pdf",
+      mimeType: "application/pdf",
+      extension: "pdf",
+      storageBucket: "store-imports",
+      storagePath: "org-1/store-1/file-accessories.pdf",
+      linkedPoolIds: [],
+      linkedCatalogItemIds: ["item-accessory"],
+    },
+  ];
+
+  const request = detectCustomerCatalogDocumentRequest(
+    "Me manda o catálogo de acessórios em PDF",
+  );
+
+  const selected = selectCustomerCatalogDocumentsForRequest({
+    request,
+    documents,
+    requestedPoolReference: null,
+    strongestPoolReferenceMatch: "none",
+    bestNamedPoolMatch: null,
+    catalogIntent: {
+      asksAboutCatalogProduct: true,
+      asksAboutPool: false,
+      asksForPhoto: false,
+      asksForPrice: false,
+      asksForAvailability: false,
+      asksForBrand: false,
+      requestedBrand: null,
+      requestedProductTerm: "acessorio",
+    },
+    scoredCatalogItems: [
+      {
+        item: {
+          id: "item-accessory",
+          organization_id: "org-1",
+          store_id: "store-1",
+          sku: "ACC-1",
+          name: "Acessório para piscina",
+          description: null,
+          price_cents: 1000,
+          price_status: "valid",
+          currency: "BRL",
+          is_active: true,
+          metadata: { category: "acessorios" },
+          created_at: null,
+          updated_at: null,
+          track_stock: false,
+          stock_quantity: null,
+          stock_status: "not_tracked",
+        },
+        photos: [],
+        score: 10,
+      },
+    ],
+  } as never);
+
+  assert.deepEqual(
+    selected.map((document) => document.importFileId),
+    ["file-accessories"],
+  );
+
+  const actions = buildCustomerCatalogDocumentActions({
+    request,
+    selectedDocuments: selected,
+  });
+
+  assert.deepEqual(
+    actions.map((action) => action.originalFileName),
+    ["qualquer-nome.pdf"],
+  );
+});
+
+test("generateAiSalesReply returns document actions only for explicitly requested authorized catalog files", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Me manda o catálogo",
+    customerCatalogDocumentsReaderResponse: {
+      data: [
+        {
+          organization_id: "org-1",
+          store_id: "store-1",
+          import_file_id: "file-1",
+          sort_order: 1,
+          original_file_name: "catalogo-piscinas.pdf",
+          mime_type: "application/pdf",
+          extension: "pdf",
+          storage_bucket: "store-imports",
+          storage_path: "org-1/store-1/catalogo-piscinas.pdf",
+          linked_pool_ids: ["pool-1"],
+          linked_catalog_item_ids: [],
+        },
+        {
+          organization_id: "org-1",
+          store_id: "store-1",
+          import_file_id: "file-2",
+          sort_order: 2,
+          original_file_name: "catalogo-acessorios.xlsx",
+          mime_type:
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          extension: "xlsx",
+          storage_bucket: "store-imports",
+          storage_path: "org-1/store-1/catalogo-acessorios.xlsx",
+          linked_pool_ids: [],
+          linked_catalog_item_ids: ["item-1"],
+        },
+      ],
+      error: null,
+    },
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Texto do modelo que será substituído pelo contrato determinístico.",
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  if (!result.ok) {
+    assert.fail(`generateAiSalesReply should succeed: ${result.error} - ${result.message}`);
+  }
+
+  assert.equal(
+    result.aiText,
+    "Claro. Vou te enviar os 2 catálogos autorizados agora.",
+  );
+  assert.deepEqual(
+    result.context.customerCatalogDocumentActions.map(
+      (action) => action.importFileId,
+    ),
+    ["file-1", "file-2"],
+  );
+});
+
 test("generateAiSalesReply keeps explicit pool photo available when canonical stock is confirmed zero", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent: "Tem foto da Piscina Fibra 300?",

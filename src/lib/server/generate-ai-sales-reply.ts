@@ -623,6 +623,41 @@ export type CatalogPhotoActionContext = {
   caption: string;
 };
 
+export type CustomerCatalogDocumentRequest = {
+  mode: "none" | "availability" | "send";
+  kind: "generic" | "pools" | "catalog_items" | "specific_pool";
+  requestedFormat: "pdf" | "spreadsheet" | "word" | null;
+};
+
+export type CustomerCatalogDocument = {
+  organizationId: string;
+  storeId: string;
+  importFileId: string;
+  sortOrder: number;
+  originalFileName: string;
+  mimeType: string | null;
+  extension: string | null;
+  storageBucket: string;
+  storagePath: string;
+  linkedPoolIds: string[];
+  linkedCatalogItemIds: string[];
+};
+
+export type CustomerCatalogDocumentActionContext = {
+  shouldSend: true;
+  reason: "explicit_customer_catalog_file_request";
+  organizationId: string;
+  storeId: string;
+  importFileId: string;
+  sortOrder: number;
+  originalFileName: string;
+  mimeType: string | null;
+  extension: string | null;
+  storageBucket: string;
+  storagePath: string;
+  caption: string;
+};
+
 type CanonicalPoolModelKey = {
   type: string;
   number: number;
@@ -734,6 +769,7 @@ export type GenerateAiSalesReplyResult =
         humanHandoff: HumanHandoffContext | null;
         commercialHandoff: CommercialHandoffContext | null;
         catalogPhotoAction: CatalogPhotoActionContext | null;
+        customerCatalogDocumentActions: CustomerCatalogDocumentActionContext[];
         resolvedCommercialOpportunityId: string | null;
         commercialMessageIntentResolution: CommercialMessageIntentResolutionContext | null;
         responseAnchorCommercialContext: ResponseAnchorCommercialContext | null;
@@ -1247,6 +1283,134 @@ function normalizeSystemReaderRow(data: unknown): {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeCustomerCatalogLinkedIds(value: unknown): string[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const normalized = value.map((item) => String(item || "").trim());
+
+  if (normalized.some((item) => !item)) {
+    return null;
+  }
+
+  return normalized;
+}
+
+export async function loadCustomerCatalogDocumentsForAiBySystem(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+}): Promise<
+  | { ok: true; documents: CustomerCatalogDocument[] }
+  | { ok: false; reason: string; message: string }
+> {
+  const { data, error } = await args.supabase.rpc(
+    "read_store_customer_catalog_files_for_ai_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+    },
+  );
+
+  if (error) {
+    return {
+      ok: false,
+      reason: "customer_catalog_reader_rpc_failed",
+      message: error.message || "Customer catalog reader failed.",
+    };
+  }
+
+  const rows = data == null ? [] : Array.isArray(data) ? data : null;
+
+  if (!rows) {
+    return {
+      ok: false,
+      reason: "customer_catalog_reader_invalid_payload",
+      message: "Customer catalog reader returned an invalid payload.",
+    };
+  }
+
+  const documents: CustomerCatalogDocument[] = [];
+  const seenImportFileIds = new Set<string>();
+
+  for (const rawRow of rows) {
+    if (!isRecord(rawRow)) {
+      return {
+        ok: false,
+        reason: "customer_catalog_reader_invalid_payload",
+        message: "Customer catalog reader returned an invalid row.",
+      };
+    }
+
+    const organizationId = String(rawRow.organization_id || "").trim();
+    const storeId = String(rawRow.store_id || "").trim();
+    const importFileId = String(rawRow.import_file_id || "").trim();
+    const sortOrder = Number(rawRow.sort_order);
+    const originalFileName = String(rawRow.original_file_name || "").trim();
+    const mimeType =
+      typeof rawRow.mime_type === "string" && rawRow.mime_type.trim()
+        ? rawRow.mime_type.trim()
+        : null;
+    const extension =
+      typeof rawRow.extension === "string" && rawRow.extension.trim()
+        ? rawRow.extension.trim().replace(/^\./, "").toLowerCase()
+        : null;
+    const storageBucket = String(rawRow.storage_bucket || "").trim();
+    const storagePath = String(rawRow.storage_path || "").trim();
+    const linkedPoolIds = normalizeCustomerCatalogLinkedIds(rawRow.linked_pool_ids);
+    const linkedCatalogItemIds = normalizeCustomerCatalogLinkedIds(
+      rawRow.linked_catalog_item_ids,
+    );
+
+    if (
+      organizationId !== args.organizationId ||
+      storeId !== args.storeId ||
+      !importFileId ||
+      !Number.isInteger(sortOrder) ||
+      sortOrder < 1 ||
+      !originalFileName ||
+      !storageBucket ||
+      !storagePath ||
+      linkedPoolIds == null ||
+      linkedCatalogItemIds == null ||
+      seenImportFileIds.has(importFileId)
+    ) {
+      return {
+        ok: false,
+        reason: "customer_catalog_reader_invalid_payload",
+        message: "Customer catalog reader returned an invalid scoped row.",
+      };
+    }
+
+    seenImportFileIds.add(importFileId);
+    documents.push({
+      organizationId,
+      storeId,
+      importFileId,
+      sortOrder,
+      originalFileName,
+      mimeType,
+      extension,
+      storageBucket,
+      storagePath,
+      linkedPoolIds,
+      linkedCatalogItemIds,
+    });
+  }
+
+  documents.sort(
+    (a, b) =>
+      a.sortOrder - b.sortOrder ||
+      a.importFileId.localeCompare(b.importFileId),
+  );
+
+  return {
+    ok: true,
+    documents,
+  };
 }
 
 function asNullableString(value: unknown): string | null {
@@ -3738,6 +3902,69 @@ function isExplicitCatalogRequest(text: string): boolean {
   );
 }
 
+export function detectCustomerCatalogDocumentRequest(
+  text: string,
+): CustomerCatalogDocumentRequest {
+  const normalized = normalizeText(text);
+  const hasCatalogMention = /\bcatalogos?\b/.test(normalized);
+
+  if (!hasCatalogMention) {
+    return {
+      mode: "none",
+      kind: "generic",
+      requestedFormat: null,
+    };
+  }
+
+  const requestedFormat: CustomerCatalogDocumentRequest["requestedFormat"] =
+    /\bpdf\b/.test(normalized)
+      ? "pdf"
+      : /\b(?:xlsx|xlsm|xls|excel|planilha|planilhas)\b/.test(normalized)
+        ? "spreadsheet"
+        : /\b(?:docx|doc|word)\b/.test(normalized)
+          ? "word"
+          : null;
+
+  const hasSendSignal =
+    /\bme\s+(?:manda|mande|envia|envie|passa|passe|mostra|mostre)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:manda|mande|envia|envie|passa|passe)\s+(?:o|os|um|uns)?\s*catalogos?\b/.test(
+      normalized,
+    ) ||
+    /\b(?:pode|consegue|tem como)\s+(?:me\s+)?(?:mandar|enviar|passar|mostrar)\b/.test(
+      normalized,
+    ) ||
+    /\bquero\s+(?:receber|baixar|ver)\b/.test(normalized) ||
+    /\b(?:baixar|download)\s+(?:o|os|um|uns)?\s*catalogos?\b/.test(normalized);
+
+  const hasAvailabilitySignal =
+    /^(?:voces\s+)?(?:tem|temos|possui|possuem|existe|existem)\b/.test(
+      normalized,
+    ) ||
+    (requestedFormat !== null && text.includes("?"));
+
+  const requestedPoolReference = extractRequestedPoolReference(text);
+  const requestedProductTerm = extractRequestedProductTerm(text);
+  const requestedBrand = extractRequestedBrand(text);
+
+  const kind: CustomerCatalogDocumentRequest["kind"] = requestedPoolReference
+    ? "specific_pool"
+    : requestedProductTerm || requestedBrand
+      ? "catalog_items"
+      : /\bpiscinas?\b/.test(normalized)
+        ? "pools"
+        : /\b(?:produtos?|acessorios?|quimicos?|tratamento)\b/.test(normalized)
+          ? "catalog_items"
+          : "generic";
+
+  return {
+    mode: hasSendSignal ? "send" : hasAvailabilitySignal ? "availability" : "none",
+    kind,
+    requestedFormat,
+  };
+}
+
 function isAffirmativeReply(text: string): boolean {
   const t = normalizeText(text);
 
@@ -5568,6 +5795,199 @@ function buildCatalogPhotoAction(args: {
     publicUrl,
     caption: `Foto do ${catalogItemName}`,
   };
+}
+
+function customerCatalogDocumentMatchesRequestedFormat(
+  document: CustomerCatalogDocument,
+  requestedFormat: CustomerCatalogDocumentRequest["requestedFormat"],
+): boolean {
+  if (!requestedFormat) return true;
+
+  const extension = String(document.extension || "")
+    .replace(/^\./, "")
+    .toLowerCase();
+  const mimeType = String(document.mimeType || "").toLowerCase();
+
+  if (requestedFormat === "pdf") {
+    return extension === "pdf" || mimeType === "application/pdf";
+  }
+
+  if (requestedFormat === "spreadsheet") {
+    return (
+      ["xls", "xlsx", "xlsm", "csv"].includes(extension) ||
+      mimeType.includes("spreadsheet") ||
+      mimeType.includes("excel") ||
+      mimeType === "text/csv"
+    );
+  }
+
+  return (
+    ["doc", "docx"].includes(extension) ||
+    mimeType.includes("word") ||
+    mimeType.includes("officedocument.wordprocessingml")
+  );
+}
+
+export function selectCustomerCatalogDocumentsForRequest(args: {
+  request: CustomerCatalogDocumentRequest;
+  documents: CustomerCatalogDocument[];
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+  bestNamedPoolMatch: MatchedPool | null;
+  catalogIntent: CatalogIntentAnalysis;
+  scoredCatalogItems: MatchedCatalogItem[];
+}): CustomerCatalogDocument[] {
+  if (args.request.mode === "none") {
+    return [];
+  }
+
+  const formatCandidates = args.documents.filter((document) =>
+    customerCatalogDocumentMatchesRequestedFormat(
+      document,
+      args.request.requestedFormat,
+    ),
+  );
+
+  if (args.request.kind === "generic") {
+    return formatCandidates;
+  }
+
+  if (args.request.kind === "specific_pool") {
+    if (
+      !args.requestedPoolReference ||
+      !args.bestNamedPoolMatch ||
+      !["exact", "strong"].includes(args.strongestPoolReferenceMatch)
+    ) {
+      return [];
+    }
+
+    const poolId = args.bestNamedPoolMatch.pool.id;
+    return formatCandidates.filter((document) =>
+      document.linkedPoolIds.includes(poolId),
+    );
+  }
+
+  if (args.request.kind === "pools") {
+    return formatCandidates.filter(
+      (document) => document.linkedPoolIds.length > 0,
+    );
+  }
+
+  const requestedProductTerm = normalizeText(
+    args.catalogIntent.requestedProductTerm,
+  );
+  const requestedBrand = normalizeText(args.catalogIntent.requestedBrand);
+
+  if (!requestedProductTerm && !requestedBrand) {
+    return formatCandidates.filter(
+      (document) => document.linkedCatalogItemIds.length > 0,
+    );
+  }
+
+  const targetCatalogItemIds = new Set(
+    args.scoredCatalogItems
+      .filter((match) => {
+        const haystack = buildCatalogSearchText(match.item);
+        return (
+          (requestedProductTerm && haystack.includes(requestedProductTerm)) ||
+          (requestedBrand && haystack.includes(requestedBrand))
+        );
+      })
+      .map((match) => match.item.id),
+  );
+
+  if (targetCatalogItemIds.size === 0) {
+    return [];
+  }
+
+  return formatCandidates.filter((document) =>
+    document.linkedCatalogItemIds.some((itemId) =>
+      targetCatalogItemIds.has(itemId),
+    ),
+  );
+}
+
+export function buildCustomerCatalogDocumentActions(args: {
+  request: CustomerCatalogDocumentRequest;
+  selectedDocuments: CustomerCatalogDocument[];
+}): CustomerCatalogDocumentActionContext[] {
+  if (args.request.mode !== "send") {
+    return [];
+  }
+
+  return args.selectedDocuments.map((document) => ({
+    shouldSend: true,
+    reason: "explicit_customer_catalog_file_request",
+    organizationId: document.organizationId,
+    storeId: document.storeId,
+    importFileId: document.importFileId,
+    sortOrder: document.sortOrder,
+    originalFileName: document.originalFileName,
+    mimeType: document.mimeType,
+    extension: document.extension,
+    storageBucket: document.storageBucket,
+    storagePath: document.storagePath,
+    caption: `Catálogo: ${document.originalFileName}`,
+  }));
+}
+
+function getCustomerCatalogRequestedFormatLabel(
+  requestedFormat: CustomerCatalogDocumentRequest["requestedFormat"],
+): string | null {
+  if (requestedFormat === "pdf") return "PDF";
+  if (requestedFormat === "spreadsheet") return "planilha";
+  if (requestedFormat === "word") return "Word";
+  return null;
+}
+
+function buildCustomerCatalogDocumentReplyOverride(args: {
+  request: CustomerCatalogDocumentRequest;
+  authorizedDocuments: CustomerCatalogDocument[];
+  selectedDocuments: CustomerCatalogDocument[];
+}): string | null {
+  if (args.request.mode === "none") {
+    return null;
+  }
+
+  const requestedFormatLabel = getCustomerCatalogRequestedFormatLabel(
+    args.request.requestedFormat,
+  );
+
+  if (args.request.mode === "availability") {
+    if (args.selectedDocuments.length > 0) {
+      const quantityText =
+        args.selectedDocuments.length === 1
+          ? "um catálogo autorizado"
+          : `${args.selectedDocuments.length} catálogos autorizados`;
+      return `Sim. Tenho ${quantityText}${
+        requestedFormatLabel ? ` em ${requestedFormatLabel}` : ""
+      } para enviar por aqui.`;
+    }
+
+    if (requestedFormatLabel) {
+      return `No momento não há um catálogo completo autorizado em ${requestedFormatLabel} para enviar por aqui.`;
+    }
+
+    return "No momento não há um catálogo completo autorizado para enviar por aqui.";
+  }
+
+  if (args.selectedDocuments.length > 0) {
+    if (args.selectedDocuments.length === 1) {
+      return "Claro. Vou te enviar o catálogo autorizado agora.";
+    }
+
+    return `Claro. Vou te enviar os ${args.selectedDocuments.length} catálogos autorizados agora.`;
+  }
+
+  if (args.authorizedDocuments.length === 0) {
+    return "No momento não há um catálogo completo autorizado para eu enviar por aqui.";
+  }
+
+  if (requestedFormatLabel) {
+    return `No momento não há um catálogo completo autorizado em ${requestedFormatLabel} que corresponda ao que você pediu.`;
+  }
+
+  return "Tenho catálogos autorizados, mas não consegui identificar com segurança qual corresponde ao que você pediu. Me diga qual produto ou linha você quer ver.";
 }
 
 function findSingleRecentProductInFocus(args: {
@@ -10264,6 +10684,29 @@ export async function generateAiSalesReply(
     const lastAiListedPools = detectLastAiListedPools(lastAiMessage);
     const lastAiOfferedPoolOptions = detectLastAiOfferedPoolOptions(lastAiMessage);
     const explicitCatalogRequest = isExplicitCatalogRequest(lastCustomerMessage);
+    const customerCatalogDocumentRequest =
+      detectCustomerCatalogDocumentRequest(lastCustomerMessage);
+    let customerCatalogDocuments: CustomerCatalogDocument[] = [];
+
+    if (customerCatalogDocumentRequest.mode !== "none") {
+      const customerCatalogDocumentsResult =
+        await loadCustomerCatalogDocumentsForAiBySystem({
+          supabase,
+          organizationId,
+          storeId: resolvedStoreId,
+        });
+
+      if (customerCatalogDocumentsResult.ok === false) {
+        return {
+          ok: false,
+          error: "LOAD_CUSTOMER_CATALOG_DOCUMENTS_FAILED",
+          message: customerCatalogDocumentsResult.message,
+        };
+      }
+
+      customerCatalogDocuments = customerCatalogDocumentsResult.documents;
+    }
+
     const catalogIntent = analyzeCatalogIntent(lastCustomerMessage);
     const explicitComplementaryRequest =
       looksLikeExplicitComplementaryRequest(lastCustomerMessage);
@@ -10757,6 +11200,27 @@ export async function generateAiSalesReply(
       storeId: resolvedStoreId,
       supabase,
     });
+    const selectedCustomerCatalogDocuments =
+      selectCustomerCatalogDocumentsForRequest({
+        request: customerCatalogDocumentRequest,
+        documents: customerCatalogDocuments,
+        requestedPoolReference,
+        strongestPoolReferenceMatch,
+        bestNamedPoolMatch,
+        catalogIntent,
+        scoredCatalogItems,
+      });
+    const customerCatalogDocumentActions =
+      buildCustomerCatalogDocumentActions({
+        request: customerCatalogDocumentRequest,
+        selectedDocuments: selectedCustomerCatalogDocuments,
+      });
+    const customerCatalogDocumentReplyOverride =
+      buildCustomerCatalogDocumentReplyOverride({
+        request: customerCatalogDocumentRequest,
+        authorizedDocuments: customerCatalogDocuments,
+        selectedDocuments: selectedCustomerCatalogDocuments,
+      });
     const commercialObjective = buildCommercialObjective({
       facts: conversationFacts,
       canonicalQualificationSnapshot,
@@ -11005,6 +11469,12 @@ export async function generateAiSalesReply(
     const shouldUseHumanReplyOverride = Boolean(
       humanHandoff?.replyOverride
     );
+    const effectiveCustomerCatalogDocumentActions = shouldUseHumanReplyOverride
+      ? []
+      : customerCatalogDocumentActions;
+    const effectiveCustomerCatalogDocumentReplyOverride = shouldUseHumanReplyOverride
+      ? null
+      : customerCatalogDocumentReplyOverride;
     const shouldUseCommercialReplyOverride = Boolean(
       commercialHandoff?.replyOverride &&
         commercialHandoff.shouldCreateTask &&
@@ -11021,7 +11491,9 @@ export async function generateAiSalesReply(
     );
     const finalAiText = shouldUseHumanReplyOverride
       ? String(humanHandoff?.replyOverride || "").trim()
-      : catalogPhotoAction
+      : effectiveCustomerCatalogDocumentReplyOverride
+        ? effectiveCustomerCatalogDocumentReplyOverride
+        : catalogPhotoAction
       ? `Sim, temos foto d${catalogPhotoAction.targetType === "pool" ? "a" : "o"} ${
           catalogPhotoAction.targetType === "pool"
             ? catalogPhotoAction.poolName || "modelo"
@@ -11065,6 +11537,7 @@ export async function generateAiSalesReply(
         humanHandoff,
         commercialHandoff,
         catalogPhotoAction,
+        customerCatalogDocumentActions: effectiveCustomerCatalogDocumentActions,
         resolvedCommercialOpportunityId,
         commercialMessageIntentResolution,
         responseAnchorCommercialContext,
