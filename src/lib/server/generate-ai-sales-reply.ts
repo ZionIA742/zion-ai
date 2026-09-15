@@ -1846,10 +1846,13 @@ function looksLikePaymentQuestion(text: string): boolean {
   return detectIntents(text).includes("payment");
 }
 
-function hasConfiguredTechnicalVisit(
-  operationSettingsInput: StoreOperationSettingsInput,
-): boolean {
-  return operationSettingsInput.offersTechnicalVisit === true;
+type CanonicalTechnicalVisitAvailability = "offered" | "not_offered" | "unconfigured";
+
+function resolveCanonicalTechnicalVisitAvailability(
+  executionPolicies: StoreOperationExecutionPoliciesRow | null,
+): CanonicalTechnicalVisitAvailability {
+  if (!executionPolicies?.technical_visit_configured_at) return "unconfigured";
+  return executionPolicies.technical_visit_policy ? "offered" : "not_offered";
 }
 
 function formatCentsAsCurrency(cents: number | null | undefined): string | null {
@@ -1869,11 +1872,12 @@ function formatCentsAsCurrency(cents: number | null | undefined): string | null 
 
 function buildTechnicalVisitPricingPolicyBlock(
   operationSettingsInput: StoreOperationSettingsInput,
+  availability: CanonicalTechnicalVisitAvailability,
 ): string {
-  if (operationSettingsInput.offersTechnicalVisit !== true) {
+  if (availability !== "offered") {
     return [
       "POLITICA CANONICA DE COBRANCA DA VISITA TECNICA",
-      `- loja oferece visita tecnica: ${operationSettingsInput.offersTechnicalVisit === false ? "nao" : "nao configurado"}`,
+      `- loja oferece visita tecnica: ${availability === "not_offered" ? "nao" : "nao configurado"}`,
       "- ignore qualquer preco, regra de calculo ou abatimento residual de visita tecnica",
       "- nao apresente visita tecnica como servico disponivel",
       "- pode_ter_taxa legado nao autoriza cobranca, valor, modalidade ou abatimento",
@@ -4938,6 +4942,116 @@ export function buildCanonicalTechnicalServicesPolicyPromptBlock(
     "- quando faltar base para uma orientacao tecnica especifica, diga que precisa confirmar com a loja ou responsavel em vez de improvisar",
   );
 
+  return lines.join("\n");
+}
+
+export function buildCanonicalTechnicalVisitExecutionPolicyPromptBlock(
+  executionPolicies: StoreOperationExecutionPoliciesRow | null,
+): string {
+  const configured = Boolean(executionPolicies?.technical_visit_configured_at);
+  const policy = executionPolicies?.technical_visit_policy ?? null;
+
+  if (!configured) {
+    return [
+      "POLITICA CANONICA DE EXECUCAO DA VISITA TECNICA",
+      "- configuracao explicita desta loja: nao realizada",
+      "- disponibilidade de visita tecnica: nao configurada",
+      "- nao afirme que a loja oferece visita tecnica nem invente regras, requisitos, duracao ou forma de execucao",
+      "- se o cliente perguntar sobre visita tecnica, diga que a disponibilidade e as condicoes precisam ser confirmadas pela loja ou responsavel",
+    ].join("\n");
+  }
+
+  if (!policy) {
+    return [
+      "POLITICA CANONICA DE EXECUCAO DA VISITA TECNICA",
+      "- configuracao explicita desta loja: realizada",
+      "- loja oferece visita tecnica: nao",
+      "- nao ofereca visita tecnica, nao a apresente como proximo passo e nao invente possibilidade de agendamento",
+    ].join("\n");
+  }
+
+  const lines = [
+    "POLITICA CANONICA DE EXECUCAO DA VISITA TECNICA",
+    "- configuracao explicita desta loja: realizada",
+    "- loja oferece visita tecnica: sim",
+    `- situacoes em que a visita e obrigatoria: ${policy.required_situations.length ? policy.required_situations.join(", ") : "nenhuma"}`,
+    `- situacoes em que a visita e opcional: ${policy.optional_situations.length ? policy.optional_situations.join(", ") : "nenhuma"}`,
+    `- exige agendamento: ${policy.requires_appointment ? "sim" : "nao"}`,
+    `- itens a confirmar antes da visita: ${policy.preconfirm_items.length ? policy.preconfirm_items.join(", ") : "nenhum"}`,
+  ];
+
+  if (policy.required_other) lines.push(`- outra situacao obrigatoria: ${policy.required_other}`);
+  if (policy.optional_other) lines.push(`- outra situacao opcional: ${policy.optional_other}`);
+  if (policy.duration_mode) lines.push(`- modo de duracao da visita: ${policy.duration_mode}`);
+  if (policy.duration_minutes != null) lines.push(`- duracao cadastrada da visita em minutos: ${policy.duration_minutes}`);
+  if (policy.duration_rule) lines.push(`- regra de duracao da visita: ${policy.duration_rule}`);
+  if (policy.preconfirm_other) lines.push(`- outro item a confirmar antes da visita: ${policy.preconfirm_other}`);
+  if (policy.notes) lines.push(`- observacoes da visita tecnica: ${policy.notes}`);
+
+  lines.push("- a cobranca da visita e governada separadamente pela politica canonica de preco da visita; nao derive preco desta politica de execucao");
+  lines.push("- esta politica canonica prevalece sobre respostas brutas ou espelhos legados conflitantes");
+  lines.push("- use somente estas situacoes, requisitos, duracoes, regras e observacoes; nao invente condicoes de visita");
+  return lines.join("\n");
+}
+
+export function buildCanonicalInstallationExecutionPolicyPromptBlock(
+  executionPolicies: StoreOperationExecutionPoliciesRow | null,
+): string {
+  const configured = Boolean(executionPolicies?.installation_configured_at);
+  const policy = executionPolicies?.installation_policy ?? null;
+
+  if (!configured) {
+    return [
+      "POLITICA CANONICA DE EXECUCAO DA INSTALACAO",
+      "- configuracao explicita desta loja: nao realizada",
+      "- disponibilidade de instalacao: nao configurada",
+      "- nao afirme que a loja oferece instalacao nem invente prazo, inclusoes, exclusoes ou requisitos",
+      "- se o cliente perguntar sobre instalacao, diga que a disponibilidade e as condicoes precisam ser confirmadas pela loja ou responsavel",
+    ].join("\n");
+  }
+
+  if (!policy) {
+    return [
+      "POLITICA CANONICA DE EXECUCAO DA INSTALACAO",
+      "- configuracao explicita desta loja: realizada",
+      "- loja oferece instalacao: nao",
+      "- nao ofereca instalacao e nao apresente prazo, agendamento ou itens incluidos como se esse servico estivesse disponivel",
+    ].join("\n");
+  }
+
+  const lines = [
+    "POLITICA CANONICA DE EXECUCAO DA INSTALACAO",
+    "- configuracao explicita desta loja: realizada",
+    "- loja oferece instalacao: sim",
+    `- cliente pode comprar sem contratar instalacao: ${policy.customer_can_buy_without}`,
+    `- instala piscina comprada de terceiros: ${policy.third_party_pool}`,
+    `- modo de disponibilidade/fornecimento da piscina: ${policy.supply_mode}`,
+    `- modo do prazo para iniciar a instalacao: ${policy.start_lead_time_mode}`,
+    `- modo de duracao da instalacao: ${policy.duration_mode}`,
+    `- requisitos antes de agendar: ${policy.schedule_gates.length ? policy.schedule_gates.join(", ") : "nenhum"}`,
+    `- requisitos antes de iniciar: ${policy.start_gates.length ? policy.start_gates.join(", ") : "nenhum"}`,
+    `- itens incluidos na instalacao: ${policy.includes.length ? policy.includes.join(", ") : "nenhum"}`,
+    `- itens excluidos da instalacao: ${policy.excludes.length ? policy.excludes.join(", ") : "nenhum"}`,
+  ];
+
+  if (policy.customer_can_buy_without_rule) lines.push(`- regra para compra sem instalacao: ${policy.customer_can_buy_without_rule}`);
+  if (policy.third_party_pool_rule) lines.push(`- regra para piscina de terceiros: ${policy.third_party_pool_rule}`);
+  if (policy.supplier_lead_time_mode) lines.push(`- modo do prazo do fornecedor: ${policy.supplier_lead_time_mode}`);
+  if (policy.supplier_lead_time_value) lines.push(`- prazo do fornecedor cadastrado: ${policy.supplier_lead_time_value}`);
+  if (policy.supplier_lead_time_rule) lines.push(`- regra do prazo do fornecedor: ${policy.supplier_lead_time_rule}`);
+  if (policy.start_lead_time_value) lines.push(`- prazo cadastrado para inicio: ${policy.start_lead_time_value}`);
+  if (policy.start_lead_time_rule) lines.push(`- regra do prazo para inicio: ${policy.start_lead_time_rule}`);
+  if (policy.duration_value != null) lines.push(`- duracao cadastrada da instalacao: ${policy.duration_value}`);
+  if (policy.duration_rule) lines.push(`- regra de duracao da instalacao: ${policy.duration_rule}`);
+  if (policy.schedule_gates_other) lines.push(`- outro requisito antes de agendar: ${policy.schedule_gates_other}`);
+  if (policy.start_gates_other) lines.push(`- outro requisito antes de iniciar: ${policy.start_gates_other}`);
+  if (policy.includes_other) lines.push(`- outro item incluido: ${policy.includes_other}`);
+  if (policy.excludes_details) lines.push(`- detalhes dos itens nao incluidos: ${policy.excludes_details}`);
+  if (policy.notes) lines.push(`- observacoes da instalacao: ${policy.notes}`);
+
+  lines.push("- esta politica canonica prevalece sobre respostas brutas ou espelhos legados conflitantes");
+  lines.push("- use os requisitos cadastrados para evitar promessas impossiveis; nao prometa vaga, data ou inicio sem autoridade real de agenda");
+  lines.push("- use somente os prazos, inclusoes, exclusoes e regras presentes nesta autoridade; nao invente condicoes de instalacao");
   return lines.join("\n");
 }
 
@@ -9655,6 +9769,9 @@ function buildInstructions(args: {
   catalogEvidenceBlock: string;
   commercialSuggestionPolicyBlock: string;
   canonicalDiscountPolicyBlock: string;
+  canonicalTechnicalVisitAvailability: CanonicalTechnicalVisitAvailability;
+  canonicalTechnicalVisitExecutionPolicyBlock: string;
+  canonicalInstallationExecutionPolicyBlock: string;
   canonicalTechnicalServicesPolicyBlock: string;
   responsePriorityBlock: string;
   examplesBlock: string;
@@ -9673,9 +9790,10 @@ function buildInstructions(args: {
   const rawOnboardingSummary = buildRawOnboardingSummary(args.onboardingMap);
   const hasPixKey = hasConfiguredPixKey(args.paymentSettingsInput);
   const hasDownPaymentRule = hasConfiguredDownPaymentRule(args.paymentSettingsInput);
-  const hasTechnicalVisit = hasConfiguredTechnicalVisit(args.operationSettingsInput);
+  const hasTechnicalVisit = args.canonicalTechnicalVisitAvailability === "offered";
   const technicalVisitPricingPolicyBlock = buildTechnicalVisitPricingPolicyBlock(
     args.operationSettingsInput,
+    args.canonicalTechnicalVisitAvailability,
   );
   const salesAiOperatingWindowBlock = buildSalesAiOperatingWindowPromptBlock(
     args.salesAiOperatingWindowContext,
@@ -9810,6 +9928,10 @@ ${salesAiAppointmentBlock}
 - se o cliente já enviou foto do local nesta conversa (${args.hasCustomerLocationPhoto ? "sim" : "não"}), não peça outra foto; use a que já existe apenas como apoio comercial e não crie novas perguntas de qualificação fora da decisão contextual desta resposta
 
 ${technicalVisitPricingPolicyBlock}
+
+${args.canonicalTechnicalVisitExecutionPolicyBlock}
+
+${args.canonicalInstallationExecutionPolicyBlock}
 
 ${args.canonicalTechnicalServicesPolicyBlock}
 
@@ -10139,13 +10261,13 @@ function buildCurrentCommercialStateBlock(args: {
   leadState: string | null;
   humanActive: boolean | null;
   paymentSettingsInput: StorePaymentSettingsInput;
-  operationSettingsInput: StoreOperationSettingsInput;
+  technicalVisitAvailability: CanonicalTechnicalVisitAvailability;
 }): string {
   return [
     `- conversation.status atual: ${args.conversationStatus || "desconhecido"}`,
     `- lead.state atual: ${args.leadState || "desconhecido"}`,
     `- humanActive atual: ${args.humanActive === true ? "sim" : "nao"}`,
-    `- visita tecnica configurada atualmente: ${hasConfiguredTechnicalVisit(args.operationSettingsInput) ? "sim" : "nao"}`,
+    `- estado canonico da visita tecnica atualmente: ${args.technicalVisitAvailability}`,
     `- chave Pix configurada atualmente: ${hasConfiguredPixKey(args.paymentSettingsInput) ? "sim" : "nao"}`,
     `- regra de entrada/sinal configurada atualmente: ${hasConfiguredDownPaymentRule(args.paymentSettingsInput) ? "sim" : "nao"}`,
     "- use configuracoes atuais, catalogo atual e disponibilidade atual como fonte soberana para responder agora.",
@@ -10504,6 +10626,20 @@ export async function generateAiSalesReply(
     const operationSettingsInput = createStoreOperationSettingsInputFromSources({
       settings: canonicalOperationSettings,
     });
+    const canonicalTechnicalVisitAvailability =
+      resolveCanonicalTechnicalVisitAvailability(
+        canonicalOperationExecutionPolicies,
+      );
+    const canonicalOffersTechnicalVisit =
+      canonicalTechnicalVisitAvailability === "offered";
+    const canonicalTechnicalVisitExecutionPolicyBlock =
+      buildCanonicalTechnicalVisitExecutionPolicyPromptBlock(
+        canonicalOperationExecutionPolicies,
+      );
+    const canonicalInstallationExecutionPolicyBlock =
+      buildCanonicalInstallationExecutionPolicyPromptBlock(
+        canonicalOperationExecutionPolicies,
+      );
     const canonicalTechnicalServicesPolicyBlock =
       buildCanonicalTechnicalServicesPolicyPromptBlock(
         canonicalOperationExecutionPolicies,
@@ -11383,7 +11519,7 @@ export async function generateAiSalesReply(
       explicitCatalogRequest,
       lastAiListedPools,
       shouldPresentPoolRecommendations,
-      offersTechnicalVisit: hasConfiguredTechnicalVisit(operationSettingsInput),
+      offersTechnicalVisit: canonicalOffersTechnicalVisit,
       recommendationPolicy,
       commercialSuggestionPolicy,
       explicitComplementaryRequest,
@@ -11420,7 +11556,7 @@ export async function generateAiSalesReply(
       requestedPoolReferenceRaw: requestedPoolReference?.raw || null,
       strongestPoolReferenceMatch,
       hasConfiguredPixKey: hasConfiguredPixKey(paymentSettingsInput),
-      offersTechnicalVisit: hasConfiguredTechnicalVisit(operationSettingsInput),
+      offersTechnicalVisit: canonicalOffersTechnicalVisit,
       suggestedNextQuestion: effectiveNextBestQuestion,
       canonicalVisitLocationState: canonicalQualificationSnapshot
         ? hasCanonicalQualificationKnownGroup(
@@ -11477,7 +11613,7 @@ export async function generateAiSalesReply(
       shouldPresentPoolRecommendations,
       hasConfiguredPixKey: hasConfiguredPixKey(paymentSettingsInput),
       hasConfiguredDownPaymentRule: hasConfiguredDownPaymentRule(paymentSettingsInput),
-      offersTechnicalVisit: hasConfiguredTechnicalVisit(operationSettingsInput),
+      offersTechnicalVisit: canonicalOffersTechnicalVisit,
       recommendationPolicy,
       requestedPoolReference,
       strongestPoolReferenceMatch,
@@ -11516,7 +11652,7 @@ export async function generateAiSalesReply(
         leadState: crmStageForReply,
         humanActive: conversation.is_human_active,
         paymentSettingsInput,
-        operationSettingsInput,
+        technicalVisitAvailability: canonicalTechnicalVisitAvailability,
       }),
       historicalCommercialContextBlock,
       customerMediaContextBlock,
@@ -11539,6 +11675,9 @@ export async function generateAiSalesReply(
       catalogEvidenceBlock,
       commercialSuggestionPolicyBlock,
       canonicalDiscountPolicyBlock,
+      canonicalTechnicalVisitAvailability,
+      canonicalTechnicalVisitExecutionPolicyBlock,
+      canonicalInstallationExecutionPolicyBlock,
       canonicalTechnicalServicesPolicyBlock,
       responsePriorityBlock,
       examplesBlock,
@@ -11586,7 +11725,7 @@ export async function generateAiSalesReply(
       intents: commercialObjective.intents,
       pattern: commercialObjective.pattern,
       patienceSignal: commercialObjective.patienceSignal,
-      offersTechnicalVisit: hasConfiguredTechnicalVisit(operationSettingsInput),
+      offersTechnicalVisit: canonicalOffersTechnicalVisit,
       lastAiListedPools,
       recommendedModel: matchedPools[0]?.pool?.name || null,
       commercialOpportunityId: resolvedCommercialOpportunityId,

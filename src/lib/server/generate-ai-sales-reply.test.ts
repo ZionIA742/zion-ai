@@ -6015,6 +6015,7 @@ test("generateAiSalesReply uses canonical payment settings for Pix down payment 
 
 test("generateAiSalesReply treats missing canonical payment and false technical visit settings as authoritative over legacy answers", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
+    operationExecutionPoliciesReaderResponse: { data: [{ organization_id: "org-1", store_id: "store-1", technical_visit_configured_at: "2026-09-15T12:00:00.000Z", technical_visit_policy: null }], error: null },
     onboardingAnswers: [
       {
         question_key: "accepted_payment_methods",
@@ -6076,7 +6077,7 @@ test("generateAiSalesReply treats missing canonical payment and false technical 
   const finalOpenAiCall = openai.calls[1] as Record<string, unknown>;
   const finalPayload = JSON.stringify(finalOpenAiCall);
 
-  assert.equal(finalPayload.includes("visita tecnica configurada atualmente: nao"), true);
+  assert.equal(finalPayload.includes("estado canonico da visita tecnica atualmente: not_offered"), true);
   assert.equal(finalPayload.includes("chave Pix configurada atualmente: nao"), true);
   assert.equal(finalPayload.includes("regra de entrada/sinal configurada atualmente: nao"), true);
   assert.equal(finalPayload.includes("LEGACY_PIX_SHOULD_NOT_WIN"), false);
@@ -6188,6 +6189,7 @@ test("generateAiSalesReply fails closed when the channel settings reader returns
 test("generateAiSalesReply ignores technical visit pricing residual when offers is false", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent: "a visita tecnica custa quanto?",
+    operationExecutionPoliciesReaderResponse: { data: [{ organization_id: "org-1", store_id: "store-1", technical_visit_configured_at: "2026-09-15T12:00:00.000Z", technical_visit_policy: null }], error: null },
     operationSettings: [
       {
         organization_id: "org-1",
@@ -6232,6 +6234,7 @@ test("generateAiSalesReply ignores technical visit pricing residual when offers 
 test("generateAiSalesReply exposes free technical visit pricing authority", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent: "a visita tecnica e gratuita?",
+    operationExecutionPoliciesReaderResponse: { data: [{ organization_id: "org-1", store_id: "store-1", technical_visit_configured_at: "2026-09-15T12:00:00.000Z", technical_visit_policy: { required_situations: [], optional_situations: [], team_mode: "padrao_loja", requires_appointment: true, preconfirm_items: [] } }], error: null },
     operationSettings: [
       {
         organization_id: "org-1",
@@ -6275,6 +6278,7 @@ test("generateAiSalesReply exposes fixed technical visit fee and deductible auth
   for (const deductible of [true, false]) {
     const supabase = createGenerateAiSalesReplySupabase({
       anchorMessageContent: "quanto custa a visita tecnica?",
+    operationExecutionPoliciesReaderResponse: { data: [{ organization_id: "org-1", store_id: "store-1", technical_visit_configured_at: "2026-09-15T12:00:00.000Z", technical_visit_policy: { required_situations: [], optional_situations: [], team_mode: "padrao_loja", requires_appointment: true, preconfirm_items: [] } }], error: null },
       operationSettings: [
         {
           organization_id: "org-1",
@@ -6326,6 +6330,7 @@ test("generateAiSalesReply exposes fixed technical visit fee and deductible auth
 test("generateAiSalesReply exposes case by case rule without inventing exact fee", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent: "como calcula a visita tecnica?",
+    operationExecutionPoliciesReaderResponse: { data: [{ organization_id: "org-1", store_id: "store-1", technical_visit_configured_at: "2026-09-15T12:00:00.000Z", technical_visit_policy: { required_situations: [], optional_situations: [], team_mode: "padrao_loja", requires_appointment: true, preconfirm_items: [] } }], error: null },
     operationSettings: [
       {
         organization_id: "org-1",
@@ -6370,6 +6375,7 @@ test("generateAiSalesReply exposes case by case rule without inventing exact fee
 test("generateAiSalesReply fails closed when technical visit pricing mode or deductible is absent", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent: "a visita tecnica e paga ou gratis?",
+    operationExecutionPoliciesReaderResponse: { data: [{ organization_id: "org-1", store_id: "store-1", technical_visit_configured_at: "2026-09-15T12:00:00.000Z", technical_visit_policy: { required_situations: [], optional_situations: [], team_mode: "padrao_loja", requires_appointment: true, preconfirm_items: [] } }], error: null },
     operationSettings: [
       {
         organization_id: "org-1",
@@ -6412,6 +6418,7 @@ test("generateAiSalesReply fails closed when technical visit pricing mode or ded
 test("generateAiSalesReply does not invent deductible when paid technical visit lacks deductible authority", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent: "se eu comprar a piscina abate a visita?",
+    operationExecutionPoliciesReaderResponse: { data: [{ organization_id: "org-1", store_id: "store-1", technical_visit_configured_at: "2026-09-15T12:00:00.000Z", technical_visit_policy: { required_situations: [], optional_situations: [], team_mode: "padrao_loja", requires_appointment: true, preconfirm_items: [] } }], error: null },
     operationSettings: [
       {
         organization_id: "org-1",
@@ -6454,6 +6461,7 @@ test("generateAiSalesReply does not invent deductible when paid technical visit 
 test("generateAiSalesReply does not promote pode ter taxa into technical visit pricing authority", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent: "a visita tecnica tem taxa?",
+    operationExecutionPoliciesReaderResponse: { data: [{ organization_id: "org-1", store_id: "store-1", technical_visit_configured_at: "2026-09-15T12:00:00.000Z", technical_visit_policy: { required_situations: [], optional_situations: [], team_mode: "padrao_loja", requires_appointment: true, preconfirm_items: [] } }], error: null },
     operationSettings: [
       {
         organization_id: "org-1",
