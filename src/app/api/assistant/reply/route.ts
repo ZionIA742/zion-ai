@@ -3658,38 +3658,43 @@ function findSuggestedTimeApprovalTask(tasks: StoreAssistantOperationalTaskRow[]
   }) || null;
 }
 
-async function checkSuggestedTimeApprovalAvailability(args: { supabase: any; organizationId: string; storeId: string; appointmentId: string; startIso: string; endIso: string; scheduleSettings?: StoreScheduleSettingsRow | null; timezoneName: string; }) {
-  const operatingWindow = checkOperatingWindowForSuggestedTime({ settings: args.scheduleSettings || null, startIso: args.startIso, endIso: args.endIso, timezoneName: args.timezoneName });
-  if (!operatingWindow.available) return { available: false, reason: operatingWindow.reason };
+async function checkSuggestedTimeApprovalAvailability(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  appointmentId: string;
+  appointmentType: string;
+  startIso: string;
+  endIso: string;
+}) {
+  const { data, error } = await args.supabase.rpc("check_store_appointment_availability_by_system", {
+    p_organization_id: args.organizationId,
+    p_store_id: args.storeId,
+    p_appointment_type: args.appointmentType,
+    p_start_at: args.startIso,
+    p_end_at: args.endIso,
+    p_ignore_appointment_id: args.appointmentId,
+  });
 
-  const { data: blocks, error: blocksError } = await args.supabase
-    .from("store_schedule_blocks")
-    .select("id, title, start_at, end_at")
-    .eq("organization_id", args.organizationId)
-    .eq("store_id", args.storeId)
-    .lt("start_at", args.endIso)
-    .gt("end_at", args.startIso)
-    .limit(5);
-  if (blocksError) return { available: false, reason: `Erro ao verificar bloqueios: ${blocksError.message}` };
-  const blockRows = Array.isArray(blocks) ? blocks : [];
-  if (blockRows.length > 0) return { available: false, reason: `Existe bloqueio de agenda nesse horário: ${(blockRows[0] as any)?.title || "bloqueio sem título"}` };
-
-  const { data: appointments, error: appointmentsError } = await args.supabase
-    .from("store_appointments")
-    .select("id, title, customer_name, scheduled_start, scheduled_end, status")
-    .eq("organization_id", args.organizationId)
-    .eq("store_id", args.storeId)
-    .in("status", ["scheduled", "rescheduled"])
-    .neq("id", args.appointmentId)
-    .lt("scheduled_start", args.endIso)
-    .gt("scheduled_end", args.startIso)
-    .limit(5);
-  if (appointmentsError) return { available: false, reason: `Erro ao verificar compromissos: ${appointmentsError.message}` };
-  const appointmentRows = Array.isArray(appointments) ? appointments : [];
-  if (appointmentRows.length > 0) {
-    const first = appointmentRows[0] as any;
-    return { available: false, reason: `Já existe compromisso nesse horário: ${first?.title || first?.customer_name || "compromisso sem título"}` };
+  if (error) {
+    return { available: false, reason: `Erro ao verificar disponibilidade: ${error.message}` };
   }
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || row.available !== true) {
+    const reasonCode = String(row?.reason_code || "availability_check_failed");
+    const reasonByCode: Record<string, string> = {
+      outside_operating_window: "Esse horario esta fora da janela operacional configurada da loja.",
+      schedule_block_conflict: "Existe um bloqueio de agenda nesse horario.",
+      global_capacity_exceeded: "A capacidade da agenda para esse horario ja foi atingida.",
+      installation_team_capacity_exceeded: "A capacidade da equipe de instalacao para esse horario ja foi atingida.",
+      installation_team_capacity_invalid: "A capacidade da equipe de instalacao esta configurada de forma invalida.",
+      invalid_appointment_type: "O tipo de compromisso nao pode ser validado com seguranca.",
+      invalid_request: "O horario informado nao pode ser validado com seguranca.",
+    };
+    return { available: false, reason: reasonByCode[reasonCode] || "Nao consegui confirmar a disponibilidade desse horario com seguranca." };
+  }
+
   return { available: true, reason: null as string | null };
 }
 
@@ -3697,73 +3702,6 @@ function formatSuggestedDateTimeForResponsible(value: string, timezoneName: stri
   return `${formatDateOnlyInTimeZone(value, timezoneName)} às ${formatTimeOnlyInTimeZone(value, timezoneName)}`;
 }
 
-
-function getScheduleLocalPartsFromIso(value: string, timezoneName: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: safeScheduleTimezone(timezoneName),
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(date);
-  const values: Record<string, number> = {};
-  for (const part of parts) {
-    if (part.type !== "literal") values[part.type] = Number(part.value);
-  }
-  const hour = values.hour === 24 ? 0 : values.hour || 0;
-  return {
-    year: values.year || date.getFullYear(),
-    month: values.month || date.getMonth() + 1,
-    day: values.day || date.getDate(),
-    hour,
-    minute: values.minute || 0,
-  };
-}
-
-function parseScheduleHourMinute(value: string | null | undefined) {
-  const match = String(value || "").trim().match(/^(\d{1,2})(?::(\d{2}))?$/);
-  if (!match) return null;
-  const hour = Number(match[1]);
-  const minute = match[2] ? Number(match[2]) : 0;
-  if (!Number.isFinite(hour) || hour < 0 || hour > 23) return null;
-  if (!Number.isFinite(minute) || minute < 0 || minute > 59) return null;
-  return hour * 60 + minute;
-}
-
-function checkOperatingWindowForSuggestedTime(args: { settings?: StoreScheduleSettingsRow | null; startIso: string; endIso: string; timezoneName: string; }) {
-  const startParts = getScheduleLocalPartsFromIso(args.startIso, args.timezoneName);
-  const endParts = getScheduleLocalPartsFromIso(args.endIso, args.timezoneName);
-  if (!startParts || !endParts) return { available: false, reason: "Não consegui interpretar o horário sugerido com segurança." };
-  if (startParts.year !== endParts.year || startParts.month !== endParts.month || startParts.day !== endParts.day) {
-    return { available: false, reason: "O horário sugerido atravessa mais de um dia. Preciso de um horário dentro de uma única janela de atendimento." };
-  }
-
-  const dayKey = getDayKeyFromDate(new Date(startParts.year, startParts.month - 1, startParts.day, 12, 0, 0, 0));
-  const configuredDays = Array.isArray(args.settings?.operating_days) ? args.settings?.operating_days || [] : [];
-  const normalizedDays = configuredDays.map((day) => normalizeText(day));
-  if (normalizedDays.length > 0 && !normalizedDays.includes(normalizeText(dayKey))) {
-    return { available: false, reason: `A loja não atende nesse dia da semana (${dayKey}).` };
-  }
-
-  const hours = args.settings?.operating_hours?.[dayKey];
-  const openingMinutes = parseScheduleHourMinute(hours?.start);
-  const closingMinutes = parseScheduleHourMinute(hours?.end);
-  if (openingMinutes === null || closingMinutes === null) {
-    return { available: false, reason: `Não encontrei uma janela de atendimento configurada para ${dayKey}.` };
-  }
-
-  const startMinutes = startParts.hour * 60 + startParts.minute;
-  const endMinutes = endParts.hour * 60 + endParts.minute;
-  if (startMinutes < openingMinutes || endMinutes > closingMinutes) {
-    return { available: false, reason: `Esse compromisso está fora da janela operacional configurada da loja (${hours?.start} às ${hours?.end}).` };
-  }
-
-  return { available: true, reason: null as string | null };
-}
 
 function buildCustomerConfirmationTextForSuggestedTime(args: { appointment: AppointmentRow; suggestedStartIso: string; timezoneName: string; }) {
   const customerName = args.appointment.customer_name || "tudo bem";
@@ -3798,7 +3736,7 @@ async function resolveSuggestedTimeApprovalReply(args: { supabase: any; organiza
   const appointment = appointmentRow as AppointmentRow | null;
   if (appointmentError || !appointment) return `Entendi a aprovação, mas não consegui encontrar o compromisso ligado a essa remarcação. A agenda não foi alterada.`;
 
-  const availability = await checkSuggestedTimeApprovalAvailability({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, appointmentId: appointment.id, startIso: suggestedStartIso, endIso: suggestedEndIso, scheduleSettings: args.scheduleSettings || null, timezoneName });
+  const availability = await checkSuggestedTimeApprovalAvailability({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, appointmentId: appointment.id, appointmentType: appointment.appointment_type || "other", startIso: suggestedStartIso, endIso: suggestedEndIso });
   if (!availability.available) {
     await args.supabase.from("store_assistant_operational_tasks").update({
       task_payload: { ...payload, needs_responsible_approval: true, suggested_time_available: false, suggested_time_unavailable_reason: availability.reason, suggested_time_checked_at: new Date().toISOString(), last_responsible_reply: args.lastHumanMessage },
