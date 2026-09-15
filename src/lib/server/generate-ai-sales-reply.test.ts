@@ -9,6 +9,7 @@ import {
   buildModelInput,
   buildCommercialObjectiveBlock,
   buildCustomerCatalogDocumentActions,
+  buildCanonicalTechnicalServicesPolicyPromptBlock,
   describeCanonicalKnownFact,
   detectCustomerCatalogDocumentRequest,
   generateAiSalesReply,
@@ -143,6 +144,7 @@ class FakeSupabase {
   async rpc(fn: string, payload: Record<string, unknown>) {
     this.rpcCalls.push({ fn, payload });
     const configured = this.rpcResults[fn];
+
 
     if (Array.isArray(configured)) {
       return (
@@ -477,7 +479,7 @@ function flattenModelText(args: {
 
 function assertSystemSettingsReaderCall(
   supabase: FakeSupabase,
-  fn: "read_store_payment_settings_by_system" | "read_store_channel_settings_by_system",
+  fn: "read_store_payment_settings_by_system" | "read_store_channel_settings_by_system" | "read_store_operation_execution_policies_by_system",
 ) {
   const call = supabase.rpcCalls.find((entry) => entry.fn === fn);
 
@@ -512,6 +514,7 @@ function createGenerateAiSalesReplySupabase(args?: {
   poolPhotos?: Row[];
   paymentSettingsReaderResponse?: RpcMockEntry;
   channelSettingsReaderResponse?: RpcMockEntry;
+  operationExecutionPoliciesReaderResponse?: RpcMockEntry;
   customerCatalogDocumentsReaderResponse?: RpcMockEntry;
   canonicalReaderResponses?: Array<{ data: unknown; error: { message: string } | null }>;
   writerResponse?: RpcMockEntry;
@@ -680,6 +683,11 @@ function createGenerateAiSalesReplySupabase(args?: {
       read_store_channel_settings_by_system:
         args?.channelSettingsReaderResponse ?? {
           data: args?.channelSettings ?? [],
+          error: null,
+        },
+      read_store_operation_execution_policies_by_system:
+        args?.operationExecutionPoliciesReaderResponse ?? {
+          data: null,
           error: null,
         },
       read_store_customer_catalog_files_for_ai_by_system:
@@ -4518,6 +4526,78 @@ test("generateAiSalesReply preserves canonical on-request price and non-tracked 
   );
 });
 
+test("generateAiSalesReply exposes canonical catalog application and technical notes to the final model context", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Como uso o Cloro Granulado e tem algum cuidado tecnico?",
+    commercialAiSettings: [{
+      organization_id: "org-1",
+      store_id: "store-1",
+      price_answer_policy: "direct_when_asked",
+      price_context_requirements: [],
+      complementary_suggestions_enabled: false,
+      superior_option_suggestions_enabled: false,
+    }],
+    catalogItems: [{
+      id: "item-technical-guidance",
+      organization_id: "org-1",
+      store_id: "store-1",
+      sku: "CLORO-TECH",
+      name: "Cloro Granulado",
+      description: "Produto quimico para piscina.",
+      price_cents: 8990,
+      price_status: "valid",
+      currency: "BRL",
+      is_active: true,
+      metadata: {
+        categoria: "quimicos",
+        application: "Aplicar somente com a filtracao ligada.",
+        technical_notes: "Nao misturar diretamente com outros produtos quimicos.",
+      },
+      track_stock: true,
+      stock_quantity: 5,
+      stock_status: "available",
+    }],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Vou orientar conforme as informacoes cadastradas para esse produto.",
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+
+  const finalPayload = JSON.stringify(openai.calls[1])
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  assert.equal(
+    finalPayload.includes("aplicacao_uso_recomendado: aplicar somente com a filtracao ligada."),
+    true,
+    "canonical catalog application must reach the final model context",
+  );
+  assert.equal(
+    finalPayload.includes("observacoes_tecnicas: nao misturar diretamente com outros produtos quimicos."),
+    true,
+    "canonical catalog technical notes must reach the final model context",
+  );
+});
+
 test("generateAiSalesReply preserves canonical unknown stock instead of collapsing it to zero", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent: "tem Capa Termica disponivel?",
@@ -5704,6 +5784,156 @@ test("generateAiSalesReply counts proactive superior only with comparative advan
   assert.equal(result.ok, true);
   const finalPayload = JSON.stringify(openai.calls[1]);
   assert.equal(finalPayload.includes("candidatos superiores proativos carregados: 1"), true);
+});
+
+test("canonical technical services prompt distinguishes never configured", () => {
+  const block = buildCanonicalTechnicalServicesPolicyPromptBlock(null);
+
+  assert.equal(block.includes("configuracao explicita desta loja: nao realizada"), true);
+  assert.equal(block.includes("disponibilidade de servicos tecnicos: nao configurada"), true);
+  assert.equal(block.includes("precisa ser confirmada pela loja ou responsavel"), true);
+  assert.equal(block.includes("loja oferece servicos tecnicos e manutencao: nao"), false);
+});
+
+test("canonical technical services prompt preserves explicit disabled state", () => {
+  const row = {
+    technical_services_configured_at: "2026-09-12T18:00:00.000Z",
+    technical_services_policy: null,
+  } as unknown as Parameters<typeof buildCanonicalTechnicalServicesPolicyPromptBlock>[0];
+
+  const block = buildCanonicalTechnicalServicesPolicyPromptBlock(row);
+
+  assert.equal(block.includes("configuracao explicita desta loja: realizada"), true);
+  assert.equal(block.includes("loja oferece servicos tecnicos e manutencao: nao"), true);
+  assert.equal(block.includes("disponibilidade de servicos tecnicos: nao configurada"), false);
+});
+
+test("generateAiSalesReply exposes enabled canonical technical services policy in final model context", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Vocês fazem diagnostico, reparo ou instalacao de equipamento?",
+    operationExecutionPoliciesReaderResponse: {
+      data: [
+        {
+          organization_id: "org-1",
+          store_id: "store-1",
+          technical_services_configured_at: "2026-09-12T18:00:00.000Z",
+          technical_services_policy: {
+            service_types: ["diagnostico", "reparo", "instalacao_equipamento"],
+            equipment_types: ["bombas", "filtros"],
+            equipment_installation_origin_policy: "tambem_cliente",
+            equipment_installation_origin_rule: "equipamento do cliente somente apos validacao tecnica",
+            equipment_replacement_existing: "caso_a_caso",
+            equipment_replacement_existing_rule: "avaliar compatibilidade antes da troca",
+            notes: "SOMENTE_COM_AGENDAMENTO",
+          },
+        },
+      ],
+      error: null,
+    },
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      output_text: "Vou orientar com base nas regras da loja.",
+      usage: { input_tokens: 40, output_tokens: 20, total_tokens: 60 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assertSystemSettingsReaderCall(supabase, "read_store_operation_execution_policies_by_system");
+  const finalPayload = JSON.stringify(openai.calls);
+  assert.equal(finalPayload.includes("POLITICA CANONICA DE SERVICOS TECNICOS E MANUTENCAO"), true);
+  assert.equal(finalPayload.includes("loja oferece servicos tecnicos e manutencao: sim"), true);
+  assert.equal(finalPayload.includes("tipos de servico autorizados: diagnostico, reparo, instalacao_equipamento"), true);
+  assert.equal(finalPayload.includes("tipos de equipamento atendidos: bombas, filtros"), true);
+  assert.equal(finalPayload.includes("origem permitida para equipamento a instalar: tambem_cliente"), true);
+  assert.equal(finalPayload.includes("equipamento do cliente somente apos validacao tecnica"), true);
+  assert.equal(finalPayload.includes("troca de equipamento existente: caso_a_caso"), true);
+  assert.equal(finalPayload.includes("avaliar compatibilidade antes da troca"), true);
+  assert.equal(finalPayload.includes("observacoes tecnicas da loja: SOMENTE_COM_AGENDAMENTO"), true);
+});
+
+test("generateAiSalesReply calls operation execution policies system reader with exact store scope", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    operationExecutionPoliciesReaderResponse: { data: null, error: null },
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    { output_text: "Vou confirmar com a loja.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assertSystemSettingsReaderCall(supabase, "read_store_operation_execution_policies_by_system");
+});
+
+test("generateAiSalesReply fails closed when operation execution policies system reader errors", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    operationExecutionPoliciesReaderResponse: {
+      data: null,
+      error: { message: "operation execution policies reader exploded" },
+    },
+  });
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([]),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "LOAD_OPERATION_SETTINGS_FAILED");
+  assert.equal(result.message, "operation execution policies reader exploded");
+  assertSystemSettingsReaderCall(supabase, "read_store_operation_execution_policies_by_system");
+});
+
+test("generateAiSalesReply fails closed when operation execution policies system reader returns more than one row", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    operationExecutionPoliciesReaderResponse: {
+      data: [
+        { organization_id: "org-1", store_id: "store-1" },
+        { organization_id: "org-1", store_id: "store-1" },
+      ],
+      error: null,
+    },
+  });
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([]),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "LOAD_OPERATION_SETTINGS_FAILED");
+  assert.equal(result.message, "Invalid system reader cardinality.");
+  assertSystemSettingsReaderCall(supabase, "read_store_operation_execution_policies_by_system");
 });
 
 test("generateAiSalesReply uses canonical payment settings for Pix down payment and payment methods over legacy answers", async () => {

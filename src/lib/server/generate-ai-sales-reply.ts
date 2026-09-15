@@ -25,6 +25,9 @@ import {
   type StoreOperationSettingsRow,
 } from "../store-operation-settings";
 import {
+  type StoreOperationExecutionPoliciesRow,
+} from "../store-operation-execution-policies";
+import {
   createStoreChannelSettingsInputFromSources,
   type StoreChannelSettingsRow,
 } from "../store-channel-settings";
@@ -4854,6 +4857,90 @@ function shouldKeepProactiveComplementaryCandidate(
   );
 }
 
+export function buildCanonicalTechnicalServicesPolicyPromptBlock(
+  executionPolicies: StoreOperationExecutionPoliciesRow | null,
+): string {
+  const configured = Boolean(
+    executionPolicies?.technical_services_configured_at,
+  );
+  const policy = executionPolicies?.technical_services_policy ?? null;
+
+  if (!configured) {
+    return [
+      "POLITICA CANONICA DE SERVICOS TECNICOS E MANUTENCAO",
+      "- configuracao explicita desta loja: nao realizada",
+      "- disponibilidade de servicos tecnicos: nao configurada",
+      "- nao afirme que a loja oferece limpeza, atendimento de agua, diagnostico, reparo, instalacao de equipamento ou troca de equipamento sem outra autoridade canonica especifica",
+      "- se o cliente perguntar por servico tecnico, diga que a disponibilidade precisa ser confirmada pela loja ou responsavel",
+    ].join("\n");
+  }
+
+  if (!policy) {
+    return [
+      "POLITICA CANONICA DE SERVICOS TECNICOS E MANUTENCAO",
+      "- configuracao explicita desta loja: realizada",
+      "- loja oferece servicos tecnicos e manutencao: nao",
+      "- nao apresente servico tecnico, manutencao, diagnostico, reparo, instalacao de equipamento ou troca de equipamento como disponivel",
+    ].join("\n");
+  }
+
+  const lines = [
+    "POLITICA CANONICA DE SERVICOS TECNICOS E MANUTENCAO",
+    "- configuracao explicita desta loja: realizada",
+    "- loja oferece servicos tecnicos e manutencao: sim",
+    `- tipos de servico autorizados: ${policy.service_types.length ? policy.service_types.join(", ") : "nenhum"}`,
+    `- tipos de equipamento atendidos: ${policy.equipment_types.length ? policy.equipment_types.join(", ") : "nenhum"}`,
+  ];
+
+  if (policy.services_other) {
+    lines.push(`- outro servico autorizado: ${policy.services_other}`);
+  }
+
+  if (policy.equipment_other) {
+    lines.push(`- outro equipamento atendido: ${policy.equipment_other}`);
+  }
+
+  if (policy.equipment_installation_origin_policy) {
+    lines.push(
+      `- origem permitida para equipamento a instalar: ${policy.equipment_installation_origin_policy}`,
+    );
+  }
+
+  if (policy.equipment_installation_origin_rule) {
+    lines.push(
+      `- regra da origem do equipamento: ${policy.equipment_installation_origin_rule}`,
+    );
+  }
+
+  if (policy.equipment_replacement_existing) {
+    lines.push(
+      `- troca de equipamento existente: ${policy.equipment_replacement_existing}`,
+    );
+  }
+
+  if (policy.equipment_replacement_existing_rule) {
+    lines.push(
+      `- regra para troca de equipamento existente: ${policy.equipment_replacement_existing_rule}`,
+    );
+  }
+
+  if (policy.notes) {
+    lines.push(`- observacoes tecnicas da loja: ${policy.notes}`);
+  }
+
+  lines.push(
+    "- use somente os servicos, equipamentos, regras e observacoes presentes nesta autoridade canonica",
+  );
+  lines.push(
+    "- nao invente diagnostico, procedimento tecnico, compatibilidade, risco, garantia ou servico que nao esteja sustentado por esta politica ou por outra evidencia canonica presente no contexto",
+  );
+  lines.push(
+    "- quando faltar base para uma orientacao tecnica especifica, diga que precisa confirmar com a loja ou responsavel em vez de improvisar",
+  );
+
+  return lines.join("\n");
+}
+
 function buildCommercialSuggestionPolicyBlock(
   context: CommercialSuggestionRuntimeContext,
 ): string {
@@ -5341,7 +5428,29 @@ function buildCatalogItemContextLine(match: MatchedCatalogItem): string {
       ? `${match.photos.length} foto(s)`
       : "sem foto cadastrada";
 
-  return `- ${name} | preco_status: ${price.resolvedStatus} | preco: ${priceLabel} | estoque_status: ${stock.resolvedStatus} | estoque: ${stockLabel} | ${photos}`;
+  const application = asText(
+    match.item.metadata?.application ??
+      match.item.metadata?.aplicacao ??
+      match.item.metadata?.["aplicação"] ??
+      match.item.metadata?.usage ??
+      match.item.metadata?.uso,
+  );
+  const technicalNotes = asText(
+    match.item.metadata?.technical_notes ??
+      match.item.metadata?.notes ??
+      match.item.metadata?.observacoes ??
+      match.item.metadata?.["observações"] ??
+      match.item.metadata?.indication,
+  );
+
+  const technicalGuidance = [
+    application ? `aplicacao_uso_recomendado: ${application}` : null,
+    technicalNotes ? `observacoes_tecnicas: ${technicalNotes}` : null,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+
+  return `- ${name} | preco_status: ${price.resolvedStatus} | preco: ${priceLabel} | estoque_status: ${stock.resolvedStatus} | estoque: ${stockLabel} | ${photos}${technicalGuidance ? ` | ${technicalGuidance}` : ""}`;
 }
 
 function formatPoolLine(pool: PoolRow, hasPhoto: boolean): string {
@@ -9546,6 +9655,7 @@ function buildInstructions(args: {
   catalogEvidenceBlock: string;
   commercialSuggestionPolicyBlock: string;
   canonicalDiscountPolicyBlock: string;
+  canonicalTechnicalServicesPolicyBlock: string;
   responsePriorityBlock: string;
   examplesBlock: string;
   shouldPresentPoolRecommendations: boolean;
@@ -9700,6 +9810,8 @@ ${salesAiAppointmentBlock}
 - se o cliente já enviou foto do local nesta conversa (${args.hasCustomerLocationPhoto ? "sim" : "não"}), não peça outra foto; use a que já existe apenas como apoio comercial e não crie novas perguntas de qualificação fora da decisão contextual desta resposta
 
 ${technicalVisitPricingPolicyBlock}
+
+${args.canonicalTechnicalServicesPolicyBlock}
 
 ${args.commercialSuggestionPolicyBlock}
 
@@ -10246,6 +10358,39 @@ export async function generateAiSalesReply(
 
     const paymentSettings = paymentSettingsResult.row;
 
+    const {
+      data: operationExecutionPoliciesRows,
+      error: operationExecutionPoliciesError,
+    } = await supabase.rpc(
+      "read_store_operation_execution_policies_by_system",
+      {
+        p_organization_id: organizationId,
+        p_store_id: resolvedStoreId,
+      },
+    );
+
+    if (operationExecutionPoliciesError) {
+      return {
+        ok: false,
+        error: "LOAD_OPERATION_SETTINGS_FAILED",
+        message: operationExecutionPoliciesError.message,
+      };
+    }
+
+    const operationExecutionPoliciesResult = normalizeSystemReaderRow(
+      operationExecutionPoliciesRows,
+    );
+
+    if (operationExecutionPoliciesResult.errorMessage) {
+      return {
+        ok: false,
+        error: "LOAD_OPERATION_SETTINGS_FAILED",
+        message: operationExecutionPoliciesResult.errorMessage,
+      };
+    }
+
+    const operationExecutionPolicies = operationExecutionPoliciesResult.row;
+
     const { data: operationSettings, error: operationSettingsError } =
       await supabase
         .from("store_operation_settings")
@@ -10347,6 +10492,8 @@ export async function generateAiSalesReply(
       (paymentSettings ?? null) as StorePaymentSettingsRow | null;
     const canonicalOperationSettings =
       (operationSettings ?? null) as StoreOperationSettingsRow | null;
+    const canonicalOperationExecutionPolicies =
+      (operationExecutionPolicies ?? null) as StoreOperationExecutionPoliciesRow | null;
     const paymentSettingsInput = createStorePaymentSettingsInputFromSources({
       settings: canonicalPaymentSettings,
     });
@@ -10357,6 +10504,10 @@ export async function generateAiSalesReply(
     const operationSettingsInput = createStoreOperationSettingsInputFromSources({
       settings: canonicalOperationSettings,
     });
+    const canonicalTechnicalServicesPolicyBlock =
+      buildCanonicalTechnicalServicesPolicyPromptBlock(
+        canonicalOperationExecutionPolicies,
+      );
     const channelSettingsInput =
       createStoreChannelSettingsInputFromSources({
         answers: onboardingMap,
@@ -11388,6 +11539,7 @@ export async function generateAiSalesReply(
       catalogEvidenceBlock,
       commercialSuggestionPolicyBlock,
       canonicalDiscountPolicyBlock,
+      canonicalTechnicalServicesPolicyBlock,
       responsePriorityBlock,
       examplesBlock,
       shouldPresentPoolRecommendations,
