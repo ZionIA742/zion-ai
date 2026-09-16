@@ -488,6 +488,7 @@ type OperationExperienceDraftState = {
   agenda_daily_limit: string;
   agenda_buffer_enabled: string;
   agenda_buffer_minutes: string;
+  ai_can_accept_customer_reschedule_without_approval: string;
   visit_required_situations: string[];
   visit_required_other: string;
   visit_optional_situations: string[];
@@ -666,6 +667,7 @@ function createEmptyOperationExperienceDraft(): OperationExperienceDraftState {
     agenda_daily_limit: "",
     agenda_buffer_enabled: "",
     agenda_buffer_minutes: "",
+    ai_can_accept_customer_reschedule_without_approval: "",
     visit_required_situations: [],
     visit_required_other: "",
     visit_optional_situations: [],
@@ -804,6 +806,8 @@ type ScheduleSettingsRow = {
   human_schedule_configured_at?: string | null;
   ai_after_hours_configured_at?: string | null;
   agenda_capacity_configured_at?: string | null;
+  ai_can_accept_customer_reschedule_without_approval?: boolean | null;
+  customer_reschedule_autonomy_configured_at?: string | null;
   daily_limit_mode?: string | null;
   daily_limit?: number | null;
   appointment_buffer_enabled?: boolean | null;
@@ -2977,6 +2981,16 @@ function resolveAgendaCapacityCardStatus(scheduleSettings?: ScheduleSettingsRow 
   return { tone: "blue", status: "Completo" };
 }
 
+function resolveCustomerRescheduleAutonomyCardStatus(scheduleSettings?: ScheduleSettingsRow | null): { tone: ConfigurationCardTone; status: string } {
+  if (!isConfiguredTimestamp(scheduleSettings?.customer_reschedule_autonomy_configured_at)) {
+    return { tone: "yellow", status: "Precisa de atenção" };
+  }
+  if (scheduleSettings?.ai_can_accept_customer_reschedule_without_approval == null) {
+    return { tone: "red", status: "Configuração crítica" };
+  }
+  return { tone: "blue", status: "Completo" };
+}
+
 function buildHumanScheduleConfigurationPayload(
   draft: OperationExperienceDraftState,
   scheduleSettings?: ScheduleSettingsRow | null,
@@ -3066,6 +3080,9 @@ function createScheduleOperationExperienceDraftFromSettings(
     );
   const afterHoursConfigured = isConfiguredTimestamp(scheduleSettings.ai_after_hours_configured_at);
   const agendaConfigured = isConfiguredTimestamp(scheduleSettings.agenda_capacity_configured_at);
+  const rescheduleAutonomyConfigured = isConfiguredTimestamp(
+    scheduleSettings.customer_reschedule_autonomy_configured_at,
+  );
 
   return {
     ...fallback,
@@ -3106,6 +3123,10 @@ function createScheduleOperationExperienceDraftFromSettings(
     agenda_buffer_minutes:
       agendaConfigured && scheduleSettings.appointment_buffer_minutes != null
         ? String(scheduleSettings.appointment_buffer_minutes)
+        : "",
+    ai_can_accept_customer_reschedule_without_approval:
+      rescheduleAutonomyConfigured
+        ? yesNoLabel(scheduleSettings.ai_can_accept_customer_reschedule_without_approval)
         : "",
   };
 }
@@ -3709,6 +3730,7 @@ export default function ConfiguracoesPage() {
     | "hours"
     | "after_hours"
     | "agenda"
+    | "reschedule_autonomy"
     | "region"
     | "technical_visit"
     | "installation"
@@ -4438,7 +4460,7 @@ export default function ConfiguracoesPage() {
         }),
         supabase
           .from("store_schedule_settings")
-          .select("id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, technical_visit_days, after_hours_behavior, notes, enforce_operating_window, timezone_name, holiday_mode, holiday_open_time, holiday_close_time, holiday_notes, human_schedule_configured_at, ai_after_hours_configured_at, agenda_capacity_configured_at, daily_limit_mode, daily_limit, appointment_buffer_enabled, appointment_buffer_minutes, ai_after_hours_enabled, ai_after_hours_mode, ai_after_hours_start, ai_after_hours_end, ai_attends_holidays, created_at, updated_at")
+          .select("id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, technical_visit_days, after_hours_behavior, notes, enforce_operating_window, timezone_name, holiday_mode, holiday_open_time, holiday_close_time, holiday_notes, human_schedule_configured_at, ai_after_hours_configured_at, agenda_capacity_configured_at, ai_can_accept_customer_reschedule_without_approval, customer_reschedule_autonomy_configured_at, daily_limit_mode, daily_limit, appointment_buffer_enabled, appointment_buffer_minutes, ai_after_hours_enabled, ai_after_hours_mode, ai_after_hours_start, ai_after_hours_end, ai_attends_holidays, created_at, updated_at")
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
           .maybeSingle(),
@@ -6873,6 +6895,67 @@ export default function ConfiguracoesPage() {
     activeStoreId,
     fetchPageData,
     operationDraft,
+    operationExperienceDraft,
+    organizationId,
+    scheduleSettings,
+  ]);
+
+  const saveCustomerRescheduleAutonomyCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar a autonomia de remarcações.");
+      setSuccessText(null);
+      return false;
+    }
+    if (!scheduleSettings) {
+      setErrorText("Configure os horários da equipe antes da autonomia de remarcações.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const aiCanAcceptWithoutApproval = parseYesNoToNullableBoolean(
+      operationExperienceDraft.ai_can_accept_customer_reschedule_without_approval,
+    );
+    if (aiCanAcceptWithoutApproval == null) {
+      setErrorText("Informe se a IA pode confirmar sozinha um novo horário sugerido pelo cliente.");
+      setSuccessText(null);
+      return false;
+    }
+
+    try {
+      const { data: savedScheduleSettings, error: scheduleError } = await supabase.rpc(
+        "upsert_store_customer_reschedule_autonomy_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_ai_can_accept_without_approval: aiCanAcceptWithoutApproval,
+        },
+      );
+
+      if (scheduleError) throw scheduleError;
+
+      const nextScheduleSettings =
+        (savedScheduleSettings ?? null) as ScheduleSettingsRow | null;
+      setScheduleSettings(nextScheduleSettings);
+      const nextDraft = createScheduleOperationExperienceDraftFromSettings(
+        nextScheduleSettings,
+        operationExperienceDraft,
+      );
+      setSavedOperationExperience(nextDraft);
+      setOperationExperienceDraft(nextDraft);
+      setErrorText(null);
+      setSuccessText("Autonomia de remarcações salva com sucesso.");
+      setOperationEditTarget(null);
+      setIsOperationEditing(false);
+      await fetchPageData();
+      return true;
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Não foi possível salvar a autonomia de remarcações.");
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    fetchPageData,
     operationExperienceDraft,
     organizationId,
     scheduleSettings,
@@ -11113,6 +11196,25 @@ export default function ConfiguracoesPage() {
                 ) : null}
               </div>
             ) : <SummaryList items={buildBulletRows([{label:"Vários compromissos no dia",value:isConfiguredTimestamp(scheduleSettings?.agenda_capacity_configured_at) ? yesNoLabel(scheduleSettings?.allow_multiple_appointments_per_day ?? null) : "Não definido"},{label:"Mesmo horário",value:isConfiguredTimestamp(scheduleSettings?.agenda_capacity_configured_at) ? yesNoLabel(scheduleSettings?.allow_same_time_appointments ?? null) : "Não definido"},{label:"Capacidade simultânea",value:isConfiguredTimestamp(scheduleSettings?.agenda_capacity_configured_at) && scheduleSettings?.same_time_capacity ? String(scheduleSettings.same_time_capacity) : "Não definida"}])} />}
+          </SectionBlock>
+
+          <SectionBlock
+            title="Autonomia de remarcações"
+            description="Defina se a IA pode aceitar sozinha um novo horário sugerido pelo cliente quando esse horário estiver disponível."
+            tone={resolveCustomerRescheduleAutonomyCardStatus(scheduleSettings).tone}
+            status={resolveCustomerRescheduleAutonomyCardStatus(scheduleSettings).status}
+            className={operationEditTarget === "reschedule_autonomy" ? "xl:col-span-2" : ""}
+            actions={operationEditTarget === "reschedule_autonomy" ? <><button type="button" onClick={() => void saveCustomerRescheduleAutonomyCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setOperationExperienceDraft(savedOperationExperience); setOperationEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setOperationExperienceDraft(savedOperationExperience); setOperationEditTarget("reschedule_autonomy"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {operationEditTarget === "reschedule_autonomy" ? (
+              <div className="space-y-4">
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se o cliente sugerir outro horário e ele estiver disponível, a IA pode confirmar a remarcação sozinha?</div>
+                  <ChoiceButtonGroup value={operationExperienceDraft.ai_can_accept_customer_reschedule_without_approval} onChange={(value) => updateOperationExperienceDraft("ai_can_accept_customer_reschedule_without_approval", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />
+                </div>
+                <p className="text-sm text-gray-500">Mesmo com “Sim”, a IA só confirma automaticamente quando o horário estiver livre e respeitar todas as regras da agenda.</p>
+              </div>
+            ) : <SummaryList items={buildBulletRows([{label:"Novo horário sugerido pelo cliente",value:isConfiguredTimestamp(scheduleSettings?.customer_reschedule_autonomy_configured_at) ? (scheduleSettings?.ai_can_accept_customer_reschedule_without_approval ? "IA pode confirmar sozinha" : "Precisa de aprovação da loja") : "Não definido"}])} />}
           </SectionBlock>
 
           <SectionBlock

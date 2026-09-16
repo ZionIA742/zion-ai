@@ -487,6 +487,35 @@ async function checkSuggestedRescheduleAvailability(args: {
   return { available: true, reason: null as string | null, blocks: [], appointments: [] };
 }
 
+async function readCustomerRescheduleAutonomy(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+}) {
+  const { data, error } = await args.supabase.rpc("read_store_customer_reschedule_autonomy_by_system", {
+    p_organization_id: args.organizationId,
+    p_store_id: args.storeId,
+  });
+
+  if (error) {
+    return {
+      configured: false,
+      aiCanAcceptWithoutApproval: false,
+      error: error.message,
+    };
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+  const configured = row?.configured === true;
+
+  return {
+    configured,
+    aiCanAcceptWithoutApproval:
+      configured && row?.ai_can_accept_without_approval === true,
+    error: null as string | null,
+  };
+}
+
 function appendTaskPayload(existing: Record<string, any> | null | undefined, patch: Record<string, any>) {
   return {
     ...(existing && typeof existing === "object" ? existing : {}),
@@ -1092,6 +1121,253 @@ async function processQueueItem(args: {
           endIso: suggestedWindow.endIso,
         })
       : null;
+
+    const rescheduleAutonomy =
+      decision.type === "suggested_other_time" && suggestedWindow && suggestedAvailability?.available
+        ? await readCustomerRescheduleAutonomy({
+            supabase,
+            organizationId: queue.organization_id,
+            storeId: queue.store_id,
+          })
+        : { configured: false, aiCanAcceptWithoutApproval: false, error: null as string | null };
+
+    const canAutonomouslyAcceptSuggestedTime =
+      decision.type === "suggested_other_time" &&
+      Boolean(suggestedWindow) &&
+      suggestedAvailability?.available === true &&
+      rescheduleAutonomy.aiCanAcceptWithoutApproval === true;
+
+    if (canAutonomouslyAcceptSuggestedTime && suggestedWindow) {
+      const { data: autonomouslyUpdatedAppointment, error: autonomousUpdateError } = await supabase.rpc(
+        "update_store_appointment",
+        {
+          p_appointment_id: appointment.id,
+          p_organization_id: queue.organization_id,
+          p_store_id: queue.store_id,
+          p_title: appointment.title,
+          p_appointment_type: appointment.appointment_type,
+          p_status: "rescheduled",
+          p_scheduled_start: suggestedWindow.startIso,
+          p_scheduled_end: suggestedWindow.endIso,
+          p_customer_name: appointment.customer_name,
+          p_customer_phone: appointment.customer_phone,
+          p_address_text: appointment.address_text,
+          p_notes: appointment.notes,
+        },
+      );
+
+      if (autonomousUpdateError) {
+        const failedPayload = appendTaskPayload(task.task_payload, {
+          last_customer_reply: customerMessage,
+          last_customer_reply_normalized: normalizedCustomerReply,
+          last_customer_reply_message_id: queue.message_id,
+          last_customer_reply_decision: decision,
+          last_customer_reply_decision_type: decision.type,
+          last_processed_queue_id: queue.id,
+          last_processed_conversation_id: currentConversationId,
+          appointment_update_attempted: true,
+          appointment_update_succeeded: false,
+          needs_new_time_negotiation: true,
+          needs_responsible_approval: true,
+          customer_reschedule_autonomy_configured: rescheduleAutonomy.configured,
+          customer_reschedule_autonomy_allowed: true,
+          autonomous_reschedule_error: autonomousUpdateError.message,
+          suggested_start_at: suggestedWindow.startIso,
+          suggested_end_at: suggestedWindow.endIso,
+          suggested_label: suggestedWindow.suggestedLabel,
+        });
+
+        await supabase
+          .from("store_assistant_operational_tasks")
+          .update({
+            status: "failed",
+            error_text: autonomousUpdateError.message,
+            task_payload: failedPayload,
+            last_action_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", task.id)
+          .eq("organization_id", queue.organization_id)
+          .eq("store_id", queue.store_id);
+
+        await pushAssistantInternalNotification({
+          supabase,
+          organizationId: queue.organization_id,
+          storeId: queue.store_id,
+          notificationType: "important_alert",
+          title: "Remarcação automática não concluída",
+          body: `O cliente sugeriu ${suggestedWindow.suggestedLabel}, mas não foi possível atualizar a agenda automaticamente. Revise a remarcação na Assistente.`,
+          priority: "urgent",
+          context: {
+            source: "assistant_operational_task_worker",
+            reason: "autonomous_customer_reschedule_update_failed",
+            task_id: task.id,
+            appointment_id: appointment.id,
+            suggested_start_at: suggestedWindow.startIso,
+            error: autonomousUpdateError.message,
+          },
+          relatedLeadId: task.related_lead_id,
+          relatedConversationId: task.related_conversation_id,
+          relatedAppointmentId: task.related_appointment_id,
+          eventKey: `operational_task:${task.id}:autonomous_reschedule:${suggestedWindow.startIso}:update_failed`,
+        });
+
+        throw new Error(autonomousUpdateError.message);
+      }
+
+      let autonomousCustomerConfirmation: { sent: boolean; messageId: string | null };
+      try {
+        autonomousCustomerConfirmation = await sendCustomerRescheduleConfirmationMessage({
+          supabase,
+          organizationId: queue.organization_id,
+          storeId: queue.store_id,
+          task,
+          appointment,
+          startIso: suggestedWindow.startIso,
+          timezoneName,
+          queueId: queue.id,
+        });
+      } catch (error: any) {
+        const message = error?.message || "Agenda atualizada, mas falhou ao avisar o cliente.";
+        const partialFailurePayload = appendTaskPayload(task.task_payload, {
+          last_customer_reply: customerMessage,
+          last_customer_reply_normalized: normalizedCustomerReply,
+          last_customer_reply_message_id: queue.message_id,
+          last_customer_reply_decision: decision,
+          last_customer_reply_decision_type: decision.type,
+          last_processed_queue_id: queue.id,
+          last_processed_conversation_id: currentConversationId,
+          appointment_update_attempted: true,
+          appointment_update_succeeded: true,
+          updated_appointment: autonomouslyUpdatedAppointment,
+          customer_confirmation_message_sent: false,
+          customer_confirmation_message_id: null,
+          needs_responsible_approval: true,
+          customer_reschedule_autonomy_configured: rescheduleAutonomy.configured,
+          customer_reschedule_autonomy_allowed: true,
+          autonomous_reschedule_error: message,
+          suggested_start_at: suggestedWindow.startIso,
+          suggested_end_at: suggestedWindow.endIso,
+          suggested_label: suggestedWindow.suggestedLabel,
+        });
+
+        await supabase
+          .from("store_assistant_operational_tasks")
+          .update({
+            status: "failed",
+            error_text: message,
+            task_payload: partialFailurePayload,
+            target_start_at: suggestedWindow.startIso,
+            target_end_at: suggestedWindow.endIso,
+            last_action_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", task.id)
+          .eq("organization_id", queue.organization_id)
+          .eq("store_id", queue.store_id);
+
+        await pushAssistantInternalNotification({
+          supabase,
+          organizationId: queue.organization_id,
+          storeId: queue.store_id,
+          notificationType: "important_alert",
+          title: "Confirmação automática ao cliente falhou",
+          body: `A agenda foi remarcada para ${suggestedWindow.suggestedLabel}, mas não foi possível confirmar automaticamente com o cliente. Confira a conversa e avise o cliente manualmente.`,
+          priority: "urgent",
+          context: {
+            source: "assistant_operational_task_worker",
+            reason: "autonomous_customer_reschedule_confirmation_failed",
+            task_id: task.id,
+            appointment_id: appointment.id,
+            suggested_start_at: suggestedWindow.startIso,
+            error: message,
+          },
+          relatedLeadId: task.related_lead_id,
+          relatedConversationId: task.related_conversation_id,
+          relatedAppointmentId: task.related_appointment_id,
+          eventKey: `operational_task:${task.id}:autonomous_reschedule:${suggestedWindow.startIso}:customer_confirmation_failed`,
+        });
+
+        throw new Error(message);
+      }
+
+      const autonomousResolvedPayload = appendTaskPayload(task.task_payload, {
+        last_customer_reply: customerMessage,
+        last_customer_reply_normalized: normalizedCustomerReply,
+        last_customer_reply_message_id: queue.message_id,
+        last_customer_reply_decision: decision,
+        last_customer_reply_decision_type: decision.type,
+        last_processed_queue_id: queue.id,
+        last_processed_conversation_id: currentConversationId,
+        appointment_update_attempted: true,
+        appointment_update_succeeded: true,
+        updated_appointment: autonomouslyUpdatedAppointment,
+        customer_confirmation_message_sent: Boolean(autonomousCustomerConfirmation.messageId),
+        customer_confirmation_message_id: autonomousCustomerConfirmation.messageId || null,
+        needs_new_time_negotiation: false,
+        needs_responsible_approval: false,
+        customer_reschedule_autonomy_configured: rescheduleAutonomy.configured,
+        customer_reschedule_autonomy_allowed: true,
+        autonomous_reschedule_completed: true,
+        suggested_start_at: suggestedWindow.startIso,
+        suggested_end_at: suggestedWindow.endIso,
+        suggested_date: suggestedWindow.suggestedDate,
+        suggested_time: suggestedWindow.suggestedTime,
+        suggested_label: suggestedWindow.suggestedLabel,
+        suggested_duration_minutes: suggestedWindow.durationMinutes,
+        suggested_time_available: true,
+        suggested_time_checked_at: new Date().toISOString(),
+      });
+
+      const { error: autonomousTaskUpdateError } = await supabase
+        .from("store_assistant_operational_tasks")
+        .update({
+          status: "resolved",
+          resolved_at: new Date().toISOString(),
+          target_start_at: suggestedWindow.startIso,
+          target_end_at: suggestedWindow.endIso,
+          task_payload: autonomousResolvedPayload,
+          description: "Cliente sugeriu outro horário disponível e a IA confirmou a remarcação automaticamente.",
+          last_action_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", task.id)
+        .eq("organization_id", queue.organization_id)
+        .eq("store_id", queue.store_id);
+
+      if (autonomousTaskUpdateError) {
+        throw new Error(`Agenda atualizada, mas falhou ao resolver tarefa: ${autonomousTaskUpdateError.message}`);
+      }
+
+      await pushAssistantSystemMessage({
+        supabase,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        content: `${task.customer_name || "O cliente"} sugeriu ${suggestedWindow.suggestedLabel}. A autonomia de remarcações está habilitada, então atualizei a agenda e confirmei o novo horário com o cliente.`,
+        relatedLeadId: task.related_lead_id,
+        relatedConversationId: task.related_conversation_id,
+        relatedAppointmentId: task.related_appointment_id,
+        metadata: {
+          source: "assistant_operational_task_worker",
+          queue_id: queue.id,
+          task_id: task.id,
+          appointment_id: appointment.id,
+          decision,
+          customer_reschedule_autonomy: true,
+          suggested_window: suggestedWindow,
+        },
+      });
+
+      return {
+        ok: true,
+        decision,
+        action: "appointment_rescheduled_autonomously",
+        appointmentId: appointment.id,
+        taskId: task.id,
+        suggestedWindow,
+        suggestedAvailability,
+      };
+    }
 
     const updatedPayload = appendTaskPayload(task.task_payload, {
       last_customer_reply: customerMessage,
