@@ -869,6 +869,11 @@ type CommercialExperienceDraftState = {
   strategy_customer_traits_other: string;
   strategy_attention_cases: string[];
   strategy_attention_other: string;
+  strategy_priority_deal_types: string[];
+  strategy_priority_deal_types_other: string;
+  strategy_avoid_cases: string[];
+  strategy_avoid_cases_other: string;
+  strategy_avoid_action: string;
   strategy_sale_value_range: string;
   strategy_sale_value_custom: string;
   brands_has_main: string;
@@ -969,6 +974,11 @@ function createEmptyCommercialExperienceDraft(): CommercialExperienceDraftState 
     strategy_customer_traits_other: "",
     strategy_attention_cases: [],
     strategy_attention_other: "",
+    strategy_priority_deal_types: [],
+    strategy_priority_deal_types_other: "",
+    strategy_avoid_cases: [],
+    strategy_avoid_cases_other: "",
+    strategy_avoid_action: "",
     strategy_sale_value_range: "",
     strategy_sale_value_custom: "",
     brands_has_main: "Não definido",
@@ -1338,49 +1348,41 @@ const STORE_OFFERED_SERVICE_OPTIONS: Option[] = [
 
 const COMMERCIAL_SELL_MORE_OPTIONS: Option[] = [
   { value: "piscinas", label: "Piscinas" },
-  { value: "piscinas_instalacao", label: "Piscinas com instalação" },
-  { value: "acessorios", label: "Acessórios" },
+  { value: "acessorios", label: "Acessórios e equipamentos" },
   { value: "quimicos", label: "Produtos químicos" },
-  { value: "equipamentos", label: "Equipamentos" },
   { value: "servicos", label: "Serviços técnicos e manutenção" },
-  { value: "troca_equipamentos", label: "Troca de equipamentos" },
-  { value: "solucao_completa", label: "Pacotes / soluções completas" },
+  { value: "troca_equipamentos", label: "Troca / substituição de equipamentos" },
   { value: "sem_prioridade", label: "Não existe uma prioridade específica" },
   { value: "outro", label: "Outro" },
 ];
 
-const COMMERCIAL_SALE_PREFERENCE_OPTIONS: Option[] = [
-  { value: "maior_valor", label: "Vendas de maior valor, mesmo que levem mais tempo" },
-  { value: "rapida_objetiva", label: "Venda rápida e objetiva" },
-  { value: "solucao_completa", label: "Solução completa para o cliente" },
-  { value: "produtos_individuais", label: "Venda de produtos individuais" },
-  { value: "sem_preferencia", label: "Não existe preferência" },
-  { value: "outro", label: "Outro" },
+const COMMERCIAL_PRIORITY_DEAL_TYPE_OPTIONS: Option[] = [
+  { value: "maior_valor", label: "Vendas de maior valor" },
+  { value: "piscina_com_instalacao", label: "Piscina com instalação" },
+  { value: "varios_itens_servicos", label: "Venda com vários itens ou serviços juntos" },
+  { value: "venda_rapida_produto", label: "Venda rápida de produto" },
+  { value: "cliente_recorrente", label: "Venda para cliente recorrente" },
+  { value: "servico_tecnico_manutencao", label: "Serviços técnicos e manutenção" },
+  { value: "sem_prioridade", label: "Não existe uma prioridade específica" },
+  { value: "outro", label: "Outro tipo de negócio" },
 ];
 
-const COMMERCIAL_CUSTOMER_TRAIT_OPTIONS: Option[] = [
-  { value: "solucao_completa", label: "Quer uma solução completa" },
-  { value: "valoriza_qualidade", label: "Valoriza qualidade mais do que o menor preço" },
-  { value: "aceita_orientacao", label: "Está disposto a receber orientação" },
-  { value: "sabe_o_que_procura", label: "Já sabe mais ou menos o que procura" },
-  { value: "quer_instalacao", label: "Quer instalação junto com a compra" },
-  { value: "maior_valor", label: "Procura produtos ou projetos de maior valor" },
-  { value: "urgencia_real", label: "Tem urgência real para comprar" },
-  { value: "aceita_visita", label: "Está aberto a visita técnica quando necessária" },
-  { value: "recorrente", label: "É cliente recorrente" },
-  { value: "sem_preferencia", label: "Não existe preferência" },
-  { value: "outro", label: "Outra característica" },
-];
-
-const COMMERCIAL_ATTENTION_CASE_OPTIONS: Option[] = [
-  { value: "so_menor_preco", label: "Cliente procurando somente o menor preço" },
-  { value: "sem_informacoes", label: "Cliente ainda sem informações mínimas do projeto" },
-  { value: "fora_padrao", label: "Projeto muito fora do padrão" },
-  { value: "fora_regiao", label: "Cliente fora da região atendida" },
-  { value: "servico_nao_executado", label: "Cliente pedindo serviço que a loja não executa" },
-  { value: "condicao_muito_diferente", label: "Cliente querendo condição comercial muito diferente" },
+const COMMERCIAL_AVOID_CASE_OPTIONS: Option[] = [
+  { value: "conflitos_repetidos", label: "Cliente cria conflitos ou problemas repetidamente" },
+  { value: "muitas_idas_voltas", label: "Cliente muda o que quer muitas vezes e gera muitas idas e vindas" },
+  { value: "excecoes_fora_regras", label: "Cliente exige muitas exceções fora das regras da loja" },
+  { value: "insiste_condicoes_nao_oferecidas", label: "Cliente insiste em condições que a loja não oferece" },
+  { value: "servico_nao_executado", label: "Cliente quer um serviço que a loja não executa" },
+  { value: "esforco_desproporcional", label: "Atendimento exige esforço muito desproporcional à oportunidade" },
+  { value: "agressivo_desrespeitoso", label: "Cliente é agressivo ou desrespeitoso com a equipe" },
   { value: "nenhum", label: "Não existe nenhum caso específico" },
-  { value: "outro", label: "Outro caso" },
+  { value: "outro", label: "Outro tipo de atendimento ou negócio" },
+];
+
+const COMMERCIAL_AVOID_ACTION_OPTIONS: Option[] = [
+  { value: "nao_insistir_seguir_educadamente", label: "Não insistir na venda e seguir educadamente" },
+  { value: "chamar_humano_antes_avancar", label: "Chamar uma pessoa da loja antes de avançar" },
+  { value: "sinalizar_internamente_continuar", label: "Sinalizar internamente e continuar normalmente" },
 ];
 
 const COMMERCIAL_SALE_VALUE_OPTIONS: Option[] = [
@@ -2719,6 +2721,7 @@ function buildBrandsWorkedForStrategy(values: string[], other: string) {
 function createCanonicalCommercialExperienceDraft(
   baseDraft: CommercialExperienceDraftState,
   strategyInput: StoreStrategySettingsInput,
+  strategySettings?: StoreStrategySettingsRow | null,
 ): CommercialExperienceDraftState {
   const offeringProducts: string[] = [];
   const offeringServices: string[] = [];
@@ -2735,6 +2738,12 @@ function createCanonicalCommercialExperienceDraft(
   }
 
   const brands = resolveBrandsWorkedFromStrategy(strategyInput.brandsWorked);
+  const hasStructuredCommercialExperience = Boolean(
+    strategySettings?.strategy_commercial_experience_configured_at,
+  );
+  const hasRedesignedCommercialStrategy = Boolean(
+    strategySettings?.strategy_commercial_strategy_configured_at,
+  );
 
   return {
     ...baseDraft,
@@ -2744,6 +2753,61 @@ function createCanonicalCommercialExperienceDraft(
     offering_services_other: cleanText(strategyInput.storeServicesOther),
     brands_worked: brands.brandsWorked,
     brands_worked_other: brands.brandsWorkedOther,
+    ...(hasStructuredCommercialExperience
+      ? {
+          strategy_sell_more: uniqueCleanStrings(
+            (strategySettings?.strategy_sell_more_choices ?? [])
+              .map((value) =>
+                ["equipamentos", "acessorios_equipamentos"].includes(value)
+                  ? "acessorios"
+                  : value,
+              )
+              .filter((value) =>
+                [
+                  "piscinas",
+                  "acessorios",
+                  "quimicos",
+                  "servicos",
+                  "troca_equipamentos",
+                  "sem_prioridade",
+                  "outro",
+                ].includes(value),
+              ),
+          ),
+          strategy_sell_more_other: cleanText(strategySettings?.strategy_sell_more_other),
+          strategy_sale_preference: cleanText(strategySettings?.strategy_sale_preference),
+          strategy_sale_preference_other: cleanText(
+            strategySettings?.strategy_sale_preference_other,
+          ),
+          strategy_customer_traits: uniqueCleanStrings(
+            strategySettings?.strategy_customer_traits ?? [],
+          ),
+          strategy_customer_traits_other: cleanText(
+            strategySettings?.strategy_customer_traits_other,
+          ),
+          strategy_attention_cases: uniqueCleanStrings(
+            strategySettings?.strategy_attention_cases ?? [],
+          ),
+          strategy_attention_other: cleanText(strategySettings?.strategy_attention_other),
+          strategy_sale_value_range: cleanText(strategySettings?.strategy_sale_value_range),
+          strategy_sale_value_custom: cleanText(strategySettings?.strategy_sale_value_custom),
+        }
+      : {}),
+    ...(hasRedesignedCommercialStrategy
+      ? {
+          strategy_priority_deal_types: uniqueCleanStrings(
+            strategySettings?.strategy_priority_deal_types ?? [],
+          ),
+          strategy_priority_deal_types_other: cleanText(
+            strategySettings?.strategy_priority_deal_types_other,
+          ),
+          strategy_avoid_cases: uniqueCleanStrings(
+            strategySettings?.strategy_avoid_cases ?? [],
+          ),
+          strategy_avoid_cases_other: cleanText(strategySettings?.strategy_avoid_cases_other),
+          strategy_avoid_action: cleanText(strategySettings?.strategy_avoid_action),
+        }
+      : {}),
   };
 }
 
@@ -4475,7 +4539,7 @@ export default function ConfiguracoesPage() {
         supabase
           .from("store_strategy_settings")
           .select(
-            "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_configured_at, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, created_at, updated_at",
+            "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_configured_at, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, strategy_sell_more_choices, strategy_sell_more_other, strategy_sale_preference, strategy_sale_preference_other, strategy_customer_traits, strategy_customer_traits_other, strategy_attention_cases, strategy_attention_other, strategy_sale_value_range, strategy_sale_value_custom, strategy_commercial_experience_configured_at, strategy_priority_deal_types, strategy_priority_deal_types_other, strategy_avoid_cases, strategy_avoid_cases_other, strategy_avoid_action, strategy_commercial_strategy_configured_at, created_at, updated_at",
           )
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
@@ -5279,18 +5343,18 @@ export default function ConfiguracoesPage() {
   );
 
   const canonicalCommercialExperience = useMemo(
-    () => createCanonicalCommercialExperienceDraft(savedCommercialExperience, strategySettingsInput),
-    [savedCommercialExperience, strategySettingsInput],
+    () => createCanonicalCommercialExperienceDraft(savedCommercialExperience, strategySettingsInput, strategySettings),
+    [savedCommercialExperience, strategySettingsInput, strategySettings],
   );
 
   useEffect(() => {
     setSavedCommercialExperience((current) =>
-      createCanonicalCommercialExperienceDraft(current, strategySettingsInput),
+      createCanonicalCommercialExperienceDraft(current, strategySettingsInput, strategySettings),
     );
     setCommercialExperienceDraft((current) =>
-      createCanonicalCommercialExperienceDraft(current, strategySettingsInput),
+      createCanonicalCommercialExperienceDraft(current, strategySettingsInput, strategySettings),
     );
-  }, [strategySettingsInput]);
+  }, [strategySettingsInput, strategySettings]);
 
   const derivedStrategyAiStoreSummary = useMemo(
     () => deriveStoreStrategyAiStoreSummary(strategySettingsInput),
@@ -5317,7 +5381,7 @@ export default function ConfiguracoesPage() {
       { label: "Até onde atende", value: regionModes },
       { label: "Observações sobre cobertura", value: cleanText(strategySettingsInput.serviceRegionNotes) },
     ]);
-  }, [strategySettingsInput]);
+  }, [strategySettingsInput, strategySettings]);
 
   const strategyServicesItems = useMemo(() => {
     const services = joinSelectedLabels(
@@ -5331,7 +5395,7 @@ export default function ConfiguracoesPage() {
       { label: "Serviços extras", value: cleanText(strategySettingsInput.storeServicesOther) },
       { label: "Serviços que a loja não faz", value: cleanText(strategySettingsInput.strategyServiceExclusions) },
     ]);
-  }, [strategySettingsInput]);
+  }, [strategySettingsInput, strategySettings]);
 
   const strategyCommercialFocusItems = useMemo(() => {
     return buildBulletRows([
@@ -5343,7 +5407,7 @@ export default function ConfiguracoesPage() {
       { label: "Faixa de ticket mais comum", value: cleanText(strategySettingsInput.strategyTicketRange) },
       { label: "Posicionamento da loja", value: cleanText(strategySettingsInput.strategyPositioning) },
     ]);
-  }, [strategySettingsInput]);
+  }, [strategySettingsInput, strategySettings]);
 
   const strategyBrandsItems = useMemo(() => {
     return buildBulletRows([
@@ -5354,7 +5418,7 @@ export default function ConfiguracoesPage() {
       { label: "Linhas principais", value: cleanText(strategySettingsInput.strategyTopLines) },
       { label: "Produtos com maior giro", value: cleanText(strategySettingsInput.strategyTopProducts) },
     ]);
-  }, [strategySettingsInput]);
+  }, [strategySettingsInput, strategySettings]);
 
   const strategyDifferentialsItems = useMemo(() => {
     return buildBulletRows([
@@ -7025,12 +7089,12 @@ export default function ConfiguracoesPage() {
   const handleStrategyEditOpen = useCallback(() => {
     setStrategyDraft(strategySettingsInput);
     setIsStrategyEditing(true);
-  }, [strategySettingsInput]);
+  }, [strategySettingsInput, strategySettings]);
 
   const handleStrategyEditCancel = useCallback(() => {
     setStrategyDraft(strategySettingsInput);
     setIsStrategyEditing(false);
-  }, [strategySettingsInput]);
+  }, [strategySettingsInput, strategySettings]);
 
   const handleStrategyEditSave = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -8298,13 +8362,57 @@ export default function ConfiguracoesPage() {
     setCommercialExperienceDraft((current) => {
       const currentValue = current[key];
       if (!Array.isArray(currentValue)) return current;
-      const nextValue = currentValue.includes(value)
-        ? currentValue.filter((item) => item !== value)
-        : [...currentValue, value];
-      return { ...current, [key]: nextValue } as CommercialExperienceDraftState;
+
+      const exclusiveValue =
+        key === "strategy_avoid_cases"
+          ? "nenhum"
+          : key === "strategy_sell_more" || key === "strategy_priority_deal_types"
+            ? "sem_prioridade"
+            : null;
+
+      let nextValue: string[];
+
+      if (exclusiveValue) {
+        if (value === exclusiveValue) {
+          nextValue = currentValue.includes(value) ? [] : [value];
+        } else {
+          const withoutExclusive = currentValue.filter((item) => item !== exclusiveValue);
+          nextValue = withoutExclusive.includes(value)
+            ? withoutExclusive.filter((item) => item !== value)
+            : [...withoutExclusive, value];
+        }
+      } else {
+        nextValue = currentValue.includes(value)
+          ? currentValue.filter((item) => item !== value)
+          : [...currentValue, value];
+      }
+
+      const nextState = {
+        ...current,
+        [key]: nextValue,
+      } as CommercialExperienceDraftState;
+
+      if (key === "strategy_sell_more" && !nextValue.includes("outro")) {
+        nextState.strategy_sell_more_other = "";
+      }
+
+      if (key === "strategy_priority_deal_types" && !nextValue.includes("outro")) {
+        nextState.strategy_priority_deal_types_other = "";
+      }
+
+      if (key === "strategy_avoid_cases") {
+        if (!nextValue.includes("outro")) {
+          nextState.strategy_avoid_cases_other = "";
+        }
+
+        if (nextValue.includes("nenhum") || nextValue.length === 0) {
+          nextState.strategy_avoid_action = "";
+        }
+      }
+
+      return nextState;
     });
   }, []);
-
   const saveCommercialExperienceCard = useCallback(async (target: string) => {
     const required = (condition: boolean, value: unknown, message: string) =>
       condition && !cleanText(value) ? message : "";
@@ -8322,13 +8430,27 @@ export default function ConfiguracoesPage() {
 
     if (target === "strategy") {
       validationError =
-        required(commercialExperienceDraft.strategy_sell_more.includes("outro"), commercialExperienceDraft.strategy_sell_more_other, "Explique a outra prioridade comercial da loja.") ||
-        required(commercialExperienceDraft.strategy_sale_preference === "outro", commercialExperienceDraft.strategy_sale_preference_other, "Explique que tipo de venda a loja prefere.") ||
-        required(commercialExperienceDraft.strategy_customer_traits.includes("outro"), commercialExperienceDraft.strategy_customer_traits_other, "Explique a outra característica de cliente.") ||
-        required(commercialExperienceDraft.strategy_attention_cases.includes("outro"), commercialExperienceDraft.strategy_attention_other, "Explique o outro tipo de atendimento que exige mais cuidado.") ||
-        required(["outra", "varia_muito"].includes(commercialExperienceDraft.strategy_sale_value_range), commercialExperienceDraft.strategy_sale_value_custom, commercialExperienceDraft.strategy_sale_value_range === "varia_muito" ? "Explique como o valor das vendas costuma variar." : "Informe a outra faixa de valor das vendas.");
+        commercialExperienceDraft.strategy_sell_more.length === 0
+          ? "Selecione o que a loja quer priorizar nas vendas."
+          : commercialExperienceDraft.strategy_sell_more.includes("sem_prioridade") && commercialExperienceDraft.strategy_sell_more.length > 1
+            ? "Se não existe uma prioridade específica, não selecione outras prioridades junto."
+            : required(commercialExperienceDraft.strategy_sell_more.includes("outro"), commercialExperienceDraft.strategy_sell_more_other, "Explique a outra prioridade comercial da loja.") ||
+              (commercialExperienceDraft.strategy_priority_deal_types.length === 0
+                ? "Selecione quais tipos de negócio a loja quer priorizar."
+                : commercialExperienceDraft.strategy_priority_deal_types.includes("sem_prioridade") && commercialExperienceDraft.strategy_priority_deal_types.length > 1
+                  ? "Se não existe prioridade por tipo de negócio, não selecione outras opções junto."
+                  : required(commercialExperienceDraft.strategy_priority_deal_types.includes("outro"), commercialExperienceDraft.strategy_priority_deal_types_other, "Explique o outro tipo de negócio que a loja quer priorizar.") ||
+                    (commercialExperienceDraft.strategy_avoid_cases.length === 0
+                      ? "Informe se existe algum tipo de atendimento ou negócio que a loja prefere evitar."
+                      : commercialExperienceDraft.strategy_avoid_cases.includes("nenhum") && commercialExperienceDraft.strategy_avoid_cases.length > 1
+                        ? "Se não existe nenhum caso específico, não selecione outros casos junto."
+                        : required(commercialExperienceDraft.strategy_avoid_cases.includes("outro"), commercialExperienceDraft.strategy_avoid_cases_other, "Explique o outro tipo de atendimento ou negócio que a loja prefere evitar.") ||
+                          (!commercialExperienceDraft.strategy_avoid_cases.includes("nenhum") && !cleanText(commercialExperienceDraft.strategy_avoid_action)
+                            ? "Informe o que a IA deve fazer quando identificar um desses casos."
+                            : !cleanText(commercialExperienceDraft.strategy_sale_value_range)
+                              ? "Informe a faixa de valor típica das vendas da loja."
+                              : required(["outra", "varia_muito"].includes(commercialExperienceDraft.strategy_sale_value_range), commercialExperienceDraft.strategy_sale_value_custom, commercialExperienceDraft.strategy_sale_value_range === "varia_muito" ? "Explique como o valor das vendas costuma variar." : "Informe a outra faixa de valor das vendas."))));
     }
-
     if (target === "brands") {
       const workedBrands = commercialExperienceDraft.brands_worked.filter((item) => cleanText(item));
       const priorityBrands = commercialExperienceDraft.brands_priority.filter((item) => cleanText(item));
@@ -8457,6 +8579,49 @@ export default function ConfiguracoesPage() {
             }
           : strategySettingsInput;
 
+    if (target === "strategy") {
+      if (!organizationId || !activeStoreId) {
+        setErrorText("Não foi possível identificar a loja ativa.");
+        setSuccessText(null);
+        return false;
+      }
+
+      try {
+        const { data: savedStructuredStrategy, error: structuredStrategySaveError } = await supabase.rpc(
+          "upsert_store_commercial_strategy_policy_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_strategy_sell_more_choices: normalizedCommercialExperience.strategy_sell_more,
+            p_strategy_sell_more_other: normalizedCommercialExperience.strategy_sell_more.includes("outro")
+              ? cleanText(normalizedCommercialExperience.strategy_sell_more_other)
+              : null,
+            p_strategy_priority_deal_types: normalizedCommercialExperience.strategy_priority_deal_types,
+            p_strategy_priority_deal_types_other: normalizedCommercialExperience.strategy_priority_deal_types.includes("outro")
+              ? cleanText(normalizedCommercialExperience.strategy_priority_deal_types_other)
+              : null,
+            p_strategy_avoid_cases: normalizedCommercialExperience.strategy_avoid_cases,
+            p_strategy_avoid_cases_other: normalizedCommercialExperience.strategy_avoid_cases.includes("outro")
+              ? cleanText(normalizedCommercialExperience.strategy_avoid_cases_other)
+              : null,
+            p_strategy_avoid_action: normalizedCommercialExperience.strategy_avoid_cases.includes("nenhum")
+              ? null
+              : cleanText(normalizedCommercialExperience.strategy_avoid_action) || null,
+            p_strategy_sale_value_range: cleanText(normalizedCommercialExperience.strategy_sale_value_range) || null,
+            p_strategy_sale_value_custom: ["outra", "varia_muito"].includes(normalizedCommercialExperience.strategy_sale_value_range)
+              ? cleanText(normalizedCommercialExperience.strategy_sale_value_custom)
+              : null,
+          },
+        );
+
+        if (structuredStrategySaveError) throw structuredStrategySaveError;
+        setStrategySettings((savedStructuredStrategy ?? null) as StoreStrategySettingsRow | null);
+      } catch (error) {
+        setErrorText(error instanceof Error ? error.message : "Não foi possível salvar a estratégia comercial.");
+        setSuccessText(null);
+        return false;
+      }
+    }
     if (target === "offerings" || target === "brands") {
       if (!organizationId || !activeStoreId) {
         setErrorText("Nenhuma loja ativa foi encontrada para salvar a estrategia.");
@@ -11579,57 +11744,58 @@ export default function ConfiguracoesPage() {
 
           <SectionBlock
             title="Estratégia comercial"
-            description="Defina o que a loja quer priorizar nas vendas, quais vendas combinam melhor com a operação e quais atendimentos normalmente exigem mais cuidado. As prioridades não limitam os outros produtos e serviços oferecidos pela loja."
-            tone={savedCommercialExperience.strategy_sell_more.length > 0 && cleanText(savedCommercialExperience.strategy_sale_preference) ? "blue" : "yellow"}
-            status={savedCommercialExperience.strategy_sell_more.length > 0 && cleanText(savedCommercialExperience.strategy_sale_preference) ? "Completo" : "Precisa de atenção"}
+            description="Defina o que a loja quer priorizar, quais tipos de negócio merecem mais esforço comercial e quais atendimentos a loja prefere não perseguir. Essas preferências orientam a atuação da IA sem limitar produtos, serviços ou oportunidades válidas."
+            tone={savedCommercialExperience.strategy_sell_more.length > 0 && savedCommercialExperience.strategy_priority_deal_types.length > 0 && savedCommercialExperience.strategy_avoid_cases.length > 0 && (savedCommercialExperience.strategy_avoid_cases.includes("nenhum") || cleanText(savedCommercialExperience.strategy_avoid_action)) && cleanText(savedCommercialExperience.strategy_sale_value_range) ? "blue" : "yellow"}
+            status={savedCommercialExperience.strategy_sell_more.length > 0 && savedCommercialExperience.strategy_priority_deal_types.length > 0 && savedCommercialExperience.strategy_avoid_cases.length > 0 && (savedCommercialExperience.strategy_avoid_cases.includes("nenhum") || cleanText(savedCommercialExperience.strategy_avoid_action)) && cleanText(savedCommercialExperience.strategy_sale_value_range) ? "Completo" : "Precisa de atenção"}
             className={strategyEditTarget === "strategy" ? "xl:col-span-2" : ""}
             actions={strategyEditTarget === "strategy" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("strategy")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setStrategyEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setStrategyEditTarget("strategy"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
             {strategyEditTarget === "strategy" ? (
-              <div className="space-y-5">
+              <div className="space-y-6">
                 <div>
                   <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que sua loja quer priorizar nas vendas?</div>
-                  <p className="mb-2 text-xs leading-5 text-gray-500">Essa preferência ajuda a IA a dar mais atenção a essas oportunidades quando fizer sentido. Ela não impede a venda de nenhum outro produto ou serviço que a loja realmente ofereça.</p>
+                  <p className="mb-2 text-xs leading-5 text-gray-500">Marque as categorias gerais de produtos e serviços que a loja quer vender mais. Isso não impede a venda de outros itens que a loja realmente ofereça.</p>
                   <MultiSelectBoxGroup values={commercialExperienceDraft.strategy_sell_more} onToggle={(value) => toggleCommercialExperienceArrayValue("strategy_sell_more", value)} options={COMMERCIAL_SELL_MORE_OPTIONS} columns="md:grid-cols-3" />
-                  {commercialExperienceDraft.strategy_sell_more.includes("outro") ? <RequiredOperationDetailField label="Qual é a outra prioridade comercial?" value={commercialExperienceDraft.strategy_sell_more_other} onChange={(value) => updateCommercialExperienceDraft("strategy_sell_more_other", value)} placeholder="Especifique o produto, serviço ou tipo de venda que a loja quer priorizar." /> : null}
+                  {commercialExperienceDraft.strategy_sell_more.includes("outro") ? <RequiredOperationDetailField label="Qual é a outra prioridade comercial?" value={commercialExperienceDraft.strategy_sell_more_other} onChange={(value) => updateCommercialExperienceDraft("strategy_sell_more_other", value)} placeholder="Especifique o produto, serviço ou frente comercial que a loja quer priorizar." /> : null}
                 </div>
 
                 <div>
-                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Que tipo de venda sua loja prefere?</div>
-                  <ChoiceButtonGroup value={commercialExperienceDraft.strategy_sale_preference} onChange={(value) => updateCommercialExperienceDraft("strategy_sale_preference", value)} options={COMMERCIAL_SALE_PREFERENCE_OPTIONS} />
-                  {commercialExperienceDraft.strategy_sale_preference === "outro" ? <RequiredOperationDetailField label="Que outro tipo de venda a loja prefere?" value={commercialExperienceDraft.strategy_sale_preference_other} onChange={(value) => updateCommercialExperienceDraft("strategy_sale_preference_other", value)} placeholder="Explique de forma simples qual tipo de venda a loja prefere." /> : null}
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Em quais tipos de negócio a loja quer colocar mais esforço comercial?</div>
+                  <p className="mb-2 text-xs leading-5 text-gray-500">Marque as oportunidades que normalmente merecem mais atenção durante a venda. Isso orienta prioridade, não cria uma regra de exclusão.</p>
+                  <MultiSelectBoxGroup values={commercialExperienceDraft.strategy_priority_deal_types} onToggle={(value) => toggleCommercialExperienceArrayValue("strategy_priority_deal_types", value)} options={COMMERCIAL_PRIORITY_DEAL_TYPE_OPTIONS} columns="md:grid-cols-2" />
+                  {commercialExperienceDraft.strategy_priority_deal_types.includes("outro") ? <RequiredOperationDetailField label="Qual outro tipo de negócio a loja quer priorizar?" value={commercialExperienceDraft.strategy_priority_deal_types_other} onChange={(value) => updateCommercialExperienceDraft("strategy_priority_deal_types_other", value)} placeholder="Explique de forma objetiva qual outro tipo de oportunidade merece mais esforço comercial." /> : null}
                 </div>
 
                 <div>
-                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Que características têm os clientes que costumam combinar melhor com a operação da loja?</div>
-                  <p className="mb-2 text-xs leading-5 text-gray-500">Isso ajuda a IA a entender quais oportunidades costumam encaixar melhor na operação, sem tratar outros clientes de forma pior.</p>
-                  <MultiSelectBoxGroup values={commercialExperienceDraft.strategy_customer_traits} onToggle={(value) => toggleCommercialExperienceArrayValue("strategy_customer_traits", value)} options={COMMERCIAL_CUSTOMER_TRAIT_OPTIONS} />
-                  {commercialExperienceDraft.strategy_customer_traits.includes("outro") ? <RequiredOperationDetailField label="Qual é a outra característica?" value={commercialExperienceDraft.strategy_customer_traits_other} onChange={(value) => updateCommercialExperienceDraft("strategy_customer_traits_other", value)} placeholder="Descreva a característica de forma objetiva." /> : null}
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quais tipos de atendimento ou negócio a loja prefere evitar ou não quer que a IA fique insistindo em fechar?</div>
+                  <p className="mb-2 text-xs leading-5 text-gray-500">Marque situações concretas que costumam gerar desgaste, conflito ou esforço desproporcional. Essas opções devem ser usadas pelo comportamento observado no atendimento, não por características pessoais do cliente.</p>
+                  <MultiSelectBoxGroup values={commercialExperienceDraft.strategy_avoid_cases} onToggle={(value) => toggleCommercialExperienceArrayValue("strategy_avoid_cases", value)} options={COMMERCIAL_AVOID_CASE_OPTIONS} columns="md:grid-cols-2" />
+                  {commercialExperienceDraft.strategy_avoid_cases.includes("outro") ? <RequiredOperationDetailField label="Qual outro tipo de atendimento ou negócio a loja prefere evitar?" value={commercialExperienceDraft.strategy_avoid_cases_other} onChange={(value) => updateCommercialExperienceDraft("strategy_avoid_cases_other", value)} placeholder="Descreva a situação de forma objetiva e observável." /> : null}
                 </div>
 
-                <div>
-                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quais tipos de atendimento normalmente exigem mais cuidado?</div>
-                  <p className="mb-2 text-xs leading-5 text-gray-500">Marque situações em que a IA deve ser mais cuidadosa, coletar mais contexto ou envolver uma pessoa da loja quando necessário.</p>
-                  <MultiSelectBoxGroup values={commercialExperienceDraft.strategy_attention_cases} onToggle={(value) => toggleCommercialExperienceArrayValue("strategy_attention_cases", value)} options={COMMERCIAL_ATTENTION_CASE_OPTIONS} />
-                  {commercialExperienceDraft.strategy_attention_cases.includes("outro") ? <RequiredOperationDetailField label="Qual é o outro tipo de atendimento?" value={commercialExperienceDraft.strategy_attention_other} onChange={(value) => updateCommercialExperienceDraft("strategy_attention_other", value)} placeholder="Explique qual situação exige mais cuidado." /> : null}
-                </div>
+                {!commercialExperienceDraft.strategy_avoid_cases.includes("nenhum") && commercialExperienceDraft.strategy_avoid_cases.length > 0 ? (
+                  <div>
+                    <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando um atendimento se encaixar em um desses casos, o que a IA deve fazer?</div>
+                    <p className="mb-2 text-xs leading-5 text-gray-500">Essa regra define a postura comercial padrão da IA nesses casos. Ela não autoriza tratamento inadequado nem substitui regras de segurança, autoridade ou atendimento humano.</p>
+                    <ChoiceButtonGroup value={commercialExperienceDraft.strategy_avoid_action} onChange={(value) => updateCommercialExperienceDraft("strategy_avoid_action", value)} options={COMMERCIAL_AVOID_ACTION_OPTIONS} />
+                  </div>
+                ) : null}
 
                 <div>
                   <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual costuma ser o valor total das vendas da loja?</div>
                   <p className="mb-2 text-xs leading-5 text-gray-500">Considere o valor total normalmente pago pelo cliente em uma venda, incluindo os itens e serviços que costumam fazer parte do negócio.</p>
                   <ChoiceButtonGroup value={commercialExperienceDraft.strategy_sale_value_range} onChange={(value) => updateCommercialExperienceDraft("strategy_sale_value_range", value)} options={COMMERCIAL_SALE_VALUE_OPTIONS} />
-                  {["outra", "varia_muito"].includes(commercialExperienceDraft.strategy_sale_value_range) ? <RequiredOperationDetailField label={commercialExperienceDraft.strategy_sale_value_range === "varia_muito" ? "Como o valor das vendas costuma variar?" : "Qual é a outra faixa de valor?"} value={commercialExperienceDraft.strategy_sale_value_custom} onChange={(value) => updateCommercialExperienceDraft("strategy_sale_value_custom", value)} placeholder={commercialExperienceDraft.strategy_sale_value_range === "varia_muito" ? "Ex.: produtos avulsos costumam ficar entre R$ 200 e R$ 2.000; projetos com piscina e instalação normalmente ficam entre R$ 15.000 e R$ 40.000." : "Ex.: de R$ 15.000 a R$ 35.000."} rows={3} /> : null}
+                  {["outra", "varia_muito"].includes(commercialExperienceDraft.strategy_sale_value_range) ? <RequiredOperationDetailField label={commercialExperienceDraft.strategy_sale_value_range === "varia_muito" ? "Como o valor das vendas costuma variar?" : "Qual é a outra faixa de valor?"} value={commercialExperienceDraft.strategy_sale_value_custom} onChange={(value) => updateCommercialExperienceDraft("strategy_sale_value_custom", value)} placeholder={commercialExperienceDraft.strategy_sale_value_range === "varia_muito" ? "Explique de forma simples de que fatores o valor normalmente depende." : "Informe a faixa de valor normalmente praticada."} /> : null}
                 </div>
               </div>
             ) : <SummaryList items={buildBulletRows([
-              { label: "Quer vender mais", value: joinSelectedLabels(savedCommercialExperience.strategy_sell_more, COMMERCIAL_SELL_MORE_OPTIONS, savedCommercialExperience.strategy_sell_more_other) || "Não definido" },
-              { label: "Tipo de venda preferido", value: savedCommercialExperience.strategy_sale_preference ? optionLabel(savedCommercialExperience.strategy_sale_preference, COMMERCIAL_SALE_PREFERENCE_OPTIONS) : "Não definido" },
-              { label: "Clientes que combinam melhor", value: savedCommercialExperience.strategy_customer_traits.length ? `${savedCommercialExperience.strategy_customer_traits.length} característica(s) selecionada(s)` : "Não definido" },
-              { label: "Atendimentos que exigem mais cuidado", value: savedCommercialExperience.strategy_attention_cases.length ? `${savedCommercialExperience.strategy_attention_cases.length} situação(ões) selecionada(s)` : "Não definido" },
+              { label: "Prioridades de venda", value: joinSelectedLabels(savedCommercialExperience.strategy_sell_more, COMMERCIAL_SELL_MORE_OPTIONS, savedCommercialExperience.strategy_sell_more_other) || "Não definido" },
+              { label: "Tipos de negócio prioritários", value: joinSelectedLabels(savedCommercialExperience.strategy_priority_deal_types, COMMERCIAL_PRIORITY_DEAL_TYPE_OPTIONS, savedCommercialExperience.strategy_priority_deal_types_other) || "Não definido" },
+              { label: "Atendimentos que a loja prefere evitar", value: savedCommercialExperience.strategy_avoid_cases.includes("nenhum") ? "Nenhum caso específico" : joinSelectedLabels(savedCommercialExperience.strategy_avoid_cases, COMMERCIAL_AVOID_CASE_OPTIONS, savedCommercialExperience.strategy_avoid_cases_other) || "Não definido" },
+              { label: "Ação da IA nesses casos", value: savedCommercialExperience.strategy_avoid_cases.includes("nenhum") ? "Não se aplica" : savedCommercialExperience.strategy_avoid_action ? optionLabel(savedCommercialExperience.strategy_avoid_action, COMMERCIAL_AVOID_ACTION_OPTIONS) : "Não definido" },
               { label: "Valor típico das vendas", value: savedCommercialExperience.strategy_sale_value_range ? (["outra", "varia_muito"].includes(savedCommercialExperience.strategy_sale_value_range) ? (savedCommercialExperience.strategy_sale_value_range === "varia_muito" ? `Varia conforme a venda${cleanText(savedCommercialExperience.strategy_sale_value_custom) ? ` • ${savedCommercialExperience.strategy_sale_value_custom}` : ""}` : savedCommercialExperience.strategy_sale_value_custom) : optionLabel(savedCommercialExperience.strategy_sale_value_range, COMMERCIAL_SALE_VALUE_OPTIONS)) : "Não definido" },
             ])} />}
           </SectionBlock>
-
           <SectionBlock
             title="Marcas trabalhadas e preferência"
             description="Defina a marca principal, as demais marcas que fazem parte da operação e, quando houver mais de uma opção adequada e disponível, quais marcas podem receber preferência. A lista de marcas não cria estoque nem disponibilidade."
