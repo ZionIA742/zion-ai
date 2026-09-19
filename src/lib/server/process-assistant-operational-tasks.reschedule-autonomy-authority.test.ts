@@ -68,5 +68,5 @@ test("human approval fallback remains for disabled, unconfigured or fail-closed 
     true,
   );
   assert.equal(source.includes("customer_suggested_available_time_requires_approval"), true);
-  assert.equal(source.includes("AprovaÃ§Ã£o necessÃ¡ria para novo horÃ¡rio"), true);
+  assert.equal(source.includes(":approval_required`"), true);
 });

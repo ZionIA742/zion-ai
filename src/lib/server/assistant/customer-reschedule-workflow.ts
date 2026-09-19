@@ -38,11 +38,21 @@ type TargetAppointmentResolution =
   | { type: "ambiguous"; candidateIndexes: number[] }
   | { type: "none" };
 
+type CommercialTargetForSideEffect = {
+  source: string;
+  leadId?: string | null;
+  conversationId?: string | null;
+  appointmentId?: string | null;
+  taskId?: string | null;
+  customerName?: string | null;
+};
+
 export type CustomerRescheduleWorkflowDeps = {
   sendAiMessageToCustomerConversation: (args: {
     supabase: any;
     conversationId: string;
     text: string;
+    target: CommercialTargetForSideEffect | null;
   }) => Promise<{ ok: true; messageId: string | null } | { ok: false; error: string }>;
   createAssistantOperationalTask: (args: {
     supabase: any;
@@ -60,6 +70,15 @@ export type CustomerRescheduleWorkflowDeps = {
     timezoneName: string;
     taskPayload?: Record<string, unknown>;
   }) => Promise<{ ok: true; taskId: string | null } | { ok: false; error: string }>;
+  updateAssistantOperationalTaskAfterCustomerContact?: (args: {
+    supabase: any;
+    organizationId: string;
+    storeId: string;
+    taskId: string | null;
+    status: string;
+    description?: string | null;
+    taskPayload?: Record<string, unknown>;
+  }) => Promise<{ ok: true } | { ok: false; error: string }>;
   upsertAssistantContextState: (args: {
     supabase: any;
     organizationId: string;
@@ -119,11 +138,19 @@ export async function resolveCustomerRescheduleWorkflow(args: {
     return { type: "not_applicable" };
   }
 
+  const contextCanContinueReschedule = [
+    "active",
+    "waiting_user_choice",
+    "waiting_customer_response",
+  ].includes(contextStatus);
+
   const hasRescheduleSignal =
     action === "reschedule" ||
-    contextTopic === "appointment_reschedule" ||
-    contextIntent === "reschedule" ||
-    Boolean((contextPayload.requested_date || contextState?.target_date) && currentTimeRange?.startTime);
+    (contextCanContinueReschedule && (
+      contextTopic === "appointment_reschedule" ||
+      contextIntent === "reschedule" ||
+      Boolean((contextPayload.requested_date || contextState?.target_date) && currentTimeRange?.startTime)
+    ));
 
   if (!hasRescheduleSignal) return { type: "not_applicable" };
 
@@ -219,6 +246,55 @@ export async function resolveCustomerRescheduleWorkflow(args: {
     };
   }
 
+  if (!args.threadId) {
+    return {
+      type: "send_failed",
+      error: "THREAD_ID_MISSING_FOR_OPERATIONAL_TASK",
+      reply: `Encontrei a ${appointmentTypeLabel} de ${customerName}, mas nÃ£o consegui registrar a tratativa operacional. A agenda nÃ£o foi alterada.`,
+    };
+  }
+
+  const operationKey = [
+    "assistant_customer_contact",
+    "appointment_reschedule_with_customer",
+    args.threadId,
+    selectedAppointment.id,
+    targetStartIso,
+    targetEndIso,
+    normalizeWorkflowText(args.lastHumanMessage).replace(/\s+/g, " ").trim(),
+  ].join(":");
+
+  const preTaskResult = await deps.createAssistantOperationalTask({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    taskType: "appointment_reschedule_with_customer",
+    status: "open",
+    priority: "normal",
+    title: `RemarcaÃ§Ã£o de ${deps.buildScheduleAppointmentReferenceLabel(selectedAppointment)}${selectedAppointment.customer_name ? ` - ${selectedAppointment.customer_name}` : ""}`,
+    description: "A assistente registrou a tratativa antes de tentar contato com o cliente. A agenda ainda nÃ£o foi alterada.",
+    appointment: selectedAppointment,
+    targetStartIso,
+    targetEndIso,
+    timezoneName: scheduleTimezone,
+    taskPayload: {
+      operation_key: operationKey,
+      customer_message_sent: false,
+      agenda_updated: false,
+      source: "assistant.reply.route",
+      original_user_message: args.lastHumanMessage,
+    },
+  });
+
+  if (!preTaskResult.ok || !preTaskResult.taskId) {
+    return {
+      type: "send_failed",
+      error: preTaskResult.ok ? "TASK_INSERT_NOT_CONFIRMED" : preTaskResult.error,
+      reply: `Encontrei a ${appointmentTypeLabel} de ${customerName}, mas nÃ£o consegui registrar a tratativa operacional. A agenda nÃ£o foi alterada.`,
+    };
+  }
+
   const customerMessage = deps.buildCustomerRescheduleMessage({
     appointment: selectedAppointment,
     proposedStartIso: targetStartIso,
@@ -228,9 +304,27 @@ export async function resolveCustomerRescheduleWorkflow(args: {
     supabase: args.supabase,
     conversationId: selectedAppointment.conversation_id,
     text: customerMessage,
+    target: {
+      source: "customer_reschedule_workflow",
+      appointmentId: selectedAppointment.id,
+      leadId: selectedAppointment.lead_id || null,
+      conversationId: selectedAppointment.conversation_id || null,
+      customerName: selectedAppointment.customer_name || null,
+    },
   });
 
   if (!sendResult.ok) {
+    if (deps.updateAssistantOperationalTaskAfterCustomerContact) {
+      await deps.updateAssistantOperationalTaskAfterCustomerContact({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        taskId: preTaskResult.taskId,
+        status: "open",
+        description: "A assistente nÃ£o conseguiu iniciar contato com o cliente. A agenda ainda nÃ£o foi alterada.",
+        taskPayload: { operation_key: operationKey, customer_message_sent: false, customer_message_error: sendResult.error, agenda_updated: false },
+      });
+    }
     return {
       type: "send_failed",
       error: sendResult.error,
@@ -238,33 +332,28 @@ export async function resolveCustomerRescheduleWorkflow(args: {
     };
   }
 
-  const taskResult = await deps.createAssistantOperationalTask({
-    supabase: args.supabase,
-    organizationId: args.organizationId,
-    storeId: args.storeId,
-    threadId: args.threadId || null,
-    taskType: "appointment_reschedule_with_customer",
-    status: "waiting_customer_response",
-    priority: "normal",
-    title: `Remarcação de ${deps.buildScheduleAppointmentReferenceLabel(selectedAppointment)}${selectedAppointment.customer_name ? ` - ${selectedAppointment.customer_name}` : ""}`,
-    description: "A assistente já iniciou contato com o cliente. A agenda ainda não foi alterada.",
-    appointment: selectedAppointment,
-    targetStartIso,
-    targetEndIso,
-    timezoneName: scheduleTimezone,
-    taskPayload: { customer_message_sent: true, customer_message_id: sendResult.messageId, source: "assistant.reply.route", original_user_message: args.lastHumanMessage },
-  });
+  const taskUpdateResult = deps.updateAssistantOperationalTaskAfterCustomerContact
+    ? await deps.updateAssistantOperationalTaskAfterCustomerContact({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        taskId: preTaskResult.taskId,
+        status: "waiting_customer_response",
+        description: "A assistente jÃ¡ iniciou contato com o cliente. A agenda ainda nÃ£o foi alterada.",
+        taskPayload: { operation_key: operationKey, customer_message_sent: true, customer_message_id: sendResult.messageId, agenda_updated: false },
+      })
+    : { ok: true as const };
 
-  if (!taskResult.ok) {
+  if (!taskUpdateResult.ok) {
     return {
       type: "send_failed",
-      error: taskResult.error || undefined,
-      reply: `Enviei a mensagem para ${customerName}, mas não consegui registrar a tratativa interna corretamente: ${taskResult.error}. A agenda não foi alterada.`,
+      error: taskUpdateResult.error,
+      reply: `Enviei a mensagem para ${customerName}, mas nÃ£o consegui confirmar a tratativa interna: ${taskUpdateResult.error}. A agenda nÃ£o foi alterada.`,
     };
   }
 
   if (args.threadId) {
-    await deps.upsertAssistantContextState({
+    const contextResult = await deps.upsertAssistantContextState({
       supabase: args.supabase,
       organizationId: args.organizationId,
       storeId: args.storeId,
@@ -285,16 +374,23 @@ export async function resolveCustomerRescheduleWorkflow(args: {
         target_end_at: targetEndIso,
         timezone_name: scheduleTimezone,
         candidate_options: [],
-        context_payload: { customer_message_sent: true, customer_message_id: sendResult.messageId, task_id: taskResult.taskId, agenda_updated: false, reason: "waiting_customer_confirmation_before_reschedule" },
+        context_payload: { customer_message_sent: true, customer_message_id: sendResult.messageId, task_id: preTaskResult.taskId, agenda_updated: false, reason: "waiting_customer_confirmation_before_reschedule" },
         last_user_message: args.lastHumanMessage,
       },
     });
+    if (contextResult && typeof contextResult === "object" && "ok" in contextResult && contextResult.ok === false) {
+      return {
+        type: "send_failed",
+        error: (contextResult as { error?: string }).error || "CONTEXT_UPDATE_FAILED_AFTER_OUTBOUND",
+        reply: `Enviei a mensagem para ${customerName} e finalizei a task, mas não consegui atualizar o contexto da Assistente. Reconciliação necessária; a agenda não foi alterada.`,
+      };
+    }
   }
 
   return {
     type: "message_sent",
     messageId: sendResult.messageId,
-    taskId: taskResult.taskId,
+    taskId: preTaskResult.taskId,
     reply: `Certo. Enviei uma mensagem para ${customerName} propondo remarcar a ${appointmentTypeLabel} para ${targetDateLabel} às ${targetTimeLabel}. A agenda ainda não foi alterada; assim que ela responder, eu te aviso por aqui.`,
   };
 }

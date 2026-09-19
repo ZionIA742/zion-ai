@@ -145,7 +145,7 @@ const tests: TestCase[] = [
 
       assert.deepEqual(harness.calls, [
         {
-          fn: "advance_commercial_opportunity_to_technical_visit_stage_by_system",
+          fn: "advance_commercial_opportunity_to_visit_stage_by_system",
           payload: {
             p_organization_id: "org-1",
             p_store_id: "store-1",

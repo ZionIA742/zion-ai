@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { projectTechnicalVisitStageBySystem } from "../commercial-opportunity-visit-stage-projection";
 
 type QueueRow = {
   id: string;
@@ -9,8 +10,13 @@ type QueueRow = {
   message_id: string;
   status: string;
   attempts: number | null;
+  locked_at?: string | null;
   payload: Record<string, any> | null;
 };
+
+const MAX_SAFE_QUEUE_ATTEMPTS = 3;
+const QUEUE_RETRY_DELAY_MS = 60_000;
+const QUEUE_STALE_LOCK_MS = 15 * 60_000;
 
 type OrganizationSubscriptionRow = {
   id: string;
@@ -30,6 +36,7 @@ type OperationalTaskRow = {
   related_lead_id: string | null;
   related_conversation_id: string | null;
   related_appointment_id: string | null;
+  commercial_opportunity_id: string | null;
   customer_name: string | null;
   customer_phone: string | null;
   target_date: string | null;
@@ -46,6 +53,7 @@ type AppointmentRow = {
   store_id: string;
   lead_id: string | null;
   conversation_id: string | null;
+  commercial_opportunity_id: string | null;
   title: string;
   appointment_type: string;
   status: string;
@@ -583,9 +591,13 @@ async function pushAssistantInternalNotification(args: {
 
     if (error) {
       console.warn("[assistant_operational_task_worker] assistant_enqueue_internal_notification error:", error);
+      return { ok: false as const, error: error.message || "assistant_enqueue_internal_notification failed" };
     }
+
+    return { ok: true as const };
   } catch (error) {
     console.warn("[assistant_operational_task_worker] assistant_enqueue_internal_notification exception:", error);
+    return { ok: false as const, error: error instanceof Error ? error.message : "assistant_enqueue_internal_notification exception" };
   }
 }
 
@@ -643,6 +655,44 @@ function buildCustomerRescheduleConfirmationMessage(args: {
   return `Oi, ${customerName}. Confirmado então: sua ${appointmentTypeLabel} ficou para ${dateLabel} às ${timeLabel}. Qualquer coisa, é só me avisar.`;
 }
 
+async function revalidateOperationalExecution(args: {
+  supabase: any;
+  queueId: string;
+  taskId: string;
+  organizationId: string;
+  storeId: string;
+  appointmentId: string;
+}) {
+  const { data: currentTask, error: taskError } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("id,status,task_type,related_appointment_id")
+    .eq("id", args.taskId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (taskError) throw new Error(`Nao consegui revalidar a task antes do efeito externo: ${taskError.message}`);
+  if (!currentTask || currentTask.status !== "waiting_customer_response") {
+    throw new Error("A task deixou de estar aguardando resposta do cliente; efeito externo abortado.");
+  }
+  if (currentTask.related_appointment_id !== args.appointmentId) {
+    throw new Error("O compromisso da task mudou antes do efeito externo; efeito abortado.");
+  }
+
+  const { data: currentQueue, error: queueError } = await args.supabase
+    .from("store_assistant_operational_task_queue")
+    .select("id,status,task_id")
+    .eq("id", args.queueId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (queueError) throw new Error(`Nao consegui revalidar a fila antes do efeito externo: ${queueError.message}`);
+  if (!currentQueue || currentQueue.task_id !== args.taskId || currentQueue.status !== "processing") {
+    throw new Error("A fila deixou de estar em processamento; efeito externo abortado.");
+  }
+}
+
 async function sendCustomerRescheduleConfirmationMessage(args: {
   supabase: any;
   organizationId: string;
@@ -659,6 +709,15 @@ async function sendCustomerRescheduleConfirmationMessage(args: {
   if (alreadySent && existingMessageId) {
     return { sent: false, messageId: existingMessageId };
   }
+
+  await revalidateOperationalExecution({
+    supabase: args.supabase,
+    queueId: args.queueId,
+    taskId: args.task.id,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    appointmentId: args.appointment.id,
+  });
 
   const conversationId = args.task.related_conversation_id || args.appointment.conversation_id;
 
@@ -701,6 +760,777 @@ async function sendCustomerRescheduleConfirmationMessage(args: {
   return { sent: true, messageId: insertedMessage?.id || null };
 }
 
+async function loadLiveCreateTask(args: {
+  supabase: any;
+  taskId: string;
+  organizationId: string;
+  storeId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("*")
+    .eq("id", args.taskId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (error) throw new Error(`Falha ao revalidar task de criacao: ${error.message}`);
+  return (data || null) as OperationalTaskRow | null;
+}
+
+async function patchCreateTaskPayloadLive(args: {
+  supabase: any;
+  taskId: string;
+  organizationId: string;
+  storeId: string;
+  patch: Record<string, any>;
+  update?: Record<string, any>;
+}) {
+  const { data: liveTask, error: liveError } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("id,task_payload")
+    .eq("id", args.taskId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (liveError) throw new Error(`Falha ao recarregar payload vivo da task: ${liveError.message}`);
+  if (!liveTask) throw new Error("Task de criacao nao encontrada para patch cumulativo.");
+
+  const taskPayload = appendTaskPayload(liveTask.task_payload || {}, args.patch);
+  const { error: updateError } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .update({
+      ...(args.update || {}),
+      task_payload: taskPayload,
+      last_action_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", args.taskId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId);
+
+  if (updateError) throw new Error(updateError.message);
+  return taskPayload;
+}
+
+async function validateCreateServiceSettings(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  appointmentType: string;
+}) {
+  const { data: serviceSettings, error: serviceSettingsError } = await args.supabase
+    .from("store_operation_settings")
+    .select("offers_installation,offers_technical_visit")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  const serviceEnabled = args.appointmentType === "technical_visit"
+    ? serviceSettings?.offers_technical_visit === true
+    : args.appointmentType === "installation" && serviceSettings?.offers_installation === true;
+
+  if (serviceSettingsError || !serviceEnabled) {
+    throw new Error("O servico deixou de estar habilitado nas Settings; efeito externo abortado.");
+  }
+}
+
+async function validateCreateOpportunity(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  task: OperationalTaskRow;
+}) {
+  if (!args.task.commercial_opportunity_id) {
+    throw new Error("Visita tecnica sem oportunidade canonica; efeito externo abortado.");
+  }
+
+  const { data: opportunity, error: opportunityError } = await args.supabase
+    .from("commercial_opportunities")
+    .select("id,organization_id,store_id,origin_lead_id,primary_conversation_id")
+    .eq("id", args.task.commercial_opportunity_id)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (
+    opportunityError ||
+    !opportunity ||
+    opportunity.origin_lead_id !== args.task.related_lead_id ||
+    opportunity.primary_conversation_id !== args.task.related_conversation_id
+  ) {
+    throw new Error("A oportunidade canonica deixou de ser coerente com lead/conversa; efeito externo abortado.");
+  }
+}
+
+async function checkCreateAppointmentAvailability(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  appointmentType: string;
+  startAt: string;
+  endAt: string;
+}) {
+  const { data, error } = await args.supabase.rpc("check_store_appointment_availability_by_system", {
+    p_organization_id: args.organizationId,
+    p_store_id: args.storeId,
+    p_appointment_type: args.appointmentType,
+    p_start_at: args.startAt,
+    p_end_at: args.endAt,
+    p_ignore_appointment_id: null,
+  });
+
+  const availability = Array.isArray(data) ? data[0] : data;
+  return {
+    available: !error && availability?.available === true,
+    error: error?.message || null,
+    reason: availability?.reason_code || null,
+  };
+}
+
+function sameInstant(a: string | null | undefined, b: string | null | undefined) {
+  const leftRaw = String(a || "").trim();
+  const rightRaw = String(b || "").trim();
+  if (!leftRaw || !rightRaw) return false;
+
+  const left = new Date(leftRaw).getTime();
+  const right = new Date(rightRaw).getTime();
+  return Number.isFinite(left) && Number.isFinite(right) && left === right;
+}
+
+function validatePersistedCreateAppointment(args: {
+  appointment: AppointmentRow;
+  task: OperationalTaskRow;
+  appointmentType: string;
+  targetStartAt: string;
+  targetEndAt: string;
+}) {
+  if (
+    args.appointment.lead_id !== args.task.related_lead_id ||
+    args.appointment.conversation_id !== args.task.related_conversation_id ||
+    (args.appointment.commercial_opportunity_id || null) !== (args.task.commercial_opportunity_id || null) ||
+    args.appointment.appointment_type !== args.appointmentType ||
+    !sameInstant(args.appointment.scheduled_start, args.targetStartAt) ||
+    !sameInstant(args.appointment.scheduled_end, args.targetEndAt)
+  ) {
+    throw new Error("Appointment marcado na task diverge da identidade ou janela canonica; reconciliacao manual necessaria.");
+  }
+}
+
+function validateAtomicCreateCheckpoint(args: {
+  task: OperationalTaskRow | null;
+  appointment: AppointmentRow;
+}) {
+  const payload = args.task?.task_payload || {};
+  if (
+    !args.task ||
+    args.task.related_appointment_id !== args.appointment.id ||
+    payload.appointment_id !== args.appointment.id ||
+    payload.appointment_write_succeeded !== true ||
+    payload.agenda_updated !== true ||
+    payload.atomic_appointment_write_completed !== true
+  ) {
+    throw new Error("Checkpoint atomico de criacao diverge do appointment retornado; reconciliacao manual necessaria.");
+  }
+}
+
+function validateDurableCreateWriteEvidence(args: {
+  task: OperationalTaskRow;
+  queue: QueueRow;
+  decision: CustomerReplyDecision;
+}) {
+  const payload = args.task.task_payload || {};
+  const decisionType = String(payload.last_customer_reply_decision_type || "").trim();
+  const replyMessageId = String(payload.last_customer_reply_message_id || "").trim();
+  const processedQueueId = String(payload.last_processed_queue_id || "").trim();
+  const processedConversationId = String(payload.last_processed_conversation_id || "").trim();
+
+  if (
+    replyMessageId !== args.queue.message_id ||
+    processedQueueId !== args.queue.id ||
+    processedConversationId !== args.queue.conversation_id ||
+    processedConversationId !== args.task.related_conversation_id
+  ) {
+    throw new Error("Prova duravel da resposta do cliente diverge da fila/conversa canonica; writer atomico abortado.");
+  }
+
+  if (args.decision.type === "confirmed") {
+    if (decisionType !== "confirmed") {
+      throw new Error("Confirmacao do cliente nao ficou persistida de forma duravel; writer atomico abortado.");
+    }
+    return;
+  }
+
+  if (args.decision.type === "suggested_other_time") {
+    if (
+      decisionType !== "suggested_other_time" ||
+      payload.suggested_time_available !== true ||
+      String(payload.suggested_start_at || "") !== String(args.task.target_start_at || "") ||
+      String(payload.suggested_end_at || "") !== String(args.task.target_end_at || "")
+    ) {
+      throw new Error("Contraproposta do cliente nao ficou persistida/autorizada para a janela canonica; writer atomico abortado.");
+    }
+    return;
+  }
+
+  throw new Error("Decisao do cliente nao autoriza criacao de appointment; writer atomico abortado.");
+}
+
+async function processCreateAppointmentTask(args: {
+  supabase: any;
+  queue: QueueRow;
+  task: OperationalTaskRow;
+  decision: CustomerReplyDecision;
+  customerMessage: string;
+}): Promise<any> {
+  const { supabase, queue, task, decision, customerMessage } = args;
+  const initialPayload = task.task_payload || {};
+  const normalizedCustomerReply = normalizeText(customerMessage).replace(/\s+/g, " ").trim();
+  const commonPatch = {
+    last_customer_reply: customerMessage,
+    last_customer_reply_normalized: normalizedCustomerReply,
+    last_customer_reply_message_id: queue.message_id,
+    last_customer_reply_decision: decision,
+    last_customer_reply_decision_type: decision.type,
+    last_processed_queue_id: queue.id,
+    last_processed_conversation_id: queue.conversation_id,
+  };
+
+  let currentTask = await loadLiveCreateTask({
+    supabase,
+    taskId: task.id,
+    organizationId: queue.organization_id,
+    storeId: queue.store_id,
+  });
+
+  if (!currentTask || currentTask.status !== "waiting_customer_response" || currentTask.task_type !== "appointment_create_with_customer") {
+    throw new Error("Task de criacao deixou de estar aguardando confirmacao; efeito externo abortado.");
+  }
+
+  if (!currentTask.related_lead_id || !currentTask.related_conversation_id) {
+    throw new Error("Task de criacao sem identidade canonica ou janela de horario.");
+  }
+
+  const livePayload = currentTask.task_payload || {};
+  let appointmentType = String(livePayload.appointment_type || initialPayload.appointment_type || "").trim();
+  let targetStartAt = currentTask.target_start_at;
+  let targetEndAt = currentTask.target_end_at;
+
+  const { data: currentQueue, error: queueError } = await supabase.from("store_assistant_operational_task_queue")
+    .select("id,status,task_id").eq("id", queue.id).eq("organization_id", queue.organization_id).eq("store_id", queue.store_id).maybeSingle();
+  if (queueError) throw new Error(`Falha ao revalidar fila de criacao: ${queueError.message}`);
+  if (!currentQueue || currentQueue.status !== "processing" || currentQueue.task_id !== task.id) {
+    throw new Error("Fila de criacao deixou de estar em processamento; efeito externo abortado.");
+  }
+
+  let createdAppointment: any = null;
+  const hasPostWriteMarker =
+    Boolean(currentTask.related_appointment_id) &&
+    livePayload.appointment_write_succeeded === true;
+
+  if (!hasPostWriteMarker) {
+    if (!targetStartAt || !targetEndAt) {
+      throw new Error("Task de criacao sem identidade canonica ou janela de horario.");
+    }
+
+    if (decision.type === "ambiguous") {
+      await patchCreateTaskPayloadLive({
+        supabase,
+        taskId: task.id,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        patch: {
+          ...commonPatch,
+          agenda_updated: false,
+          appointment_write_succeeded: false,
+          needs_new_time_negotiation: true,
+          decision_requires_clarification: true,
+        },
+        update: {
+          status: "waiting_customer_response",
+          description: "Resposta recebida sem confirmacao segura. A agenda permanece inalterada.",
+        },
+      });
+      return { ok: true, action: "appointment_creation_ambiguous", taskId: task.id, queueId: queue.id };
+    }
+
+    if (decision.type === "rejected") {
+      await patchCreateTaskPayloadLive({
+        supabase,
+        taskId: task.id,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        patch: {
+          ...commonPatch,
+          agenda_updated: false,
+          appointment_write_succeeded: false,
+          needs_new_time_negotiation: true,
+          safe_alternative_finder_available: false,
+          reconciliation_reason: "customer_rejected_target_time_without_canonical_alternative_finder",
+        },
+        update: {
+          status: "waiting_customer_response",
+          description: "Cliente recusou o horario sugerido. A agenda permanece inalterada e precisa de novo horario seguro.",
+        },
+      });
+      return { ok: true, action: "appointment_creation_rejected", taskId: task.id, queueId: queue.id };
+    }
+
+    if (decision.type === "suggested_other_time") {
+      const suggestedWindow = buildSuggestedRescheduleWindow({
+        content: customerMessage,
+        targetStartAt,
+        targetEndAt,
+        timezoneName: currentTask.timezone_name,
+      });
+
+      if (!suggestedWindow) {
+        await patchCreateTaskPayloadLive({
+          supabase,
+          taskId: task.id,
+          organizationId: queue.organization_id,
+          storeId: queue.store_id,
+          patch: {
+            ...commonPatch,
+            agenda_updated: false,
+            appointment_write_succeeded: false,
+            needs_new_time_negotiation: true,
+            decision_requires_clarification: true,
+            suggested_time_parse_failed: true,
+          },
+          update: {
+            status: "waiting_customer_response",
+            description: "Cliente sugeriu outro horario, mas a sugestao esta incompleta ou ambigua. A agenda permanece inalterada.",
+          },
+        });
+        return { ok: true, action: "appointment_creation_suggestion_ambiguous", taskId: task.id, queueId: queue.id };
+      }
+
+      await validateCreateServiceSettings({
+        supabase,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        appointmentType,
+      });
+      if (appointmentType === "technical_visit") {
+        await validateCreateOpportunity({
+          supabase,
+          organizationId: queue.organization_id,
+          storeId: queue.store_id,
+          task: currentTask,
+        });
+      }
+
+      const suggestedAvailability = await checkCreateAppointmentAvailability({
+        supabase,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        appointmentType,
+        startAt: suggestedWindow.startIso,
+        endAt: suggestedWindow.endIso,
+      });
+
+      if (!suggestedAvailability.available) {
+        await patchCreateTaskPayloadLive({
+          supabase,
+          taskId: task.id,
+          organizationId: queue.organization_id,
+          storeId: queue.store_id,
+          patch: {
+            ...commonPatch,
+            agenda_updated: false,
+            appointment_write_succeeded: false,
+            needs_new_time_negotiation: true,
+            suggested_start_at: suggestedWindow.startIso,
+            suggested_end_at: suggestedWindow.endIso,
+            suggested_date: suggestedWindow.suggestedDate,
+            suggested_time: suggestedWindow.suggestedTime,
+            suggested_label: suggestedWindow.suggestedLabel,
+            suggested_duration_minutes: suggestedWindow.durationMinutes,
+            suggested_time_available: false,
+            suggested_time_unavailable_reason: suggestedAvailability.error || suggestedAvailability.reason || "unavailable",
+            suggested_time_checked_at: new Date().toISOString(),
+          },
+          update: {
+            status: "waiting_customer_response",
+            description: "Cliente sugeriu outro horario, mas ele nao esta disponivel. A agenda permanece inalterada.",
+          },
+        });
+        return { ok: true, action: "appointment_creation_suggestion_unavailable", taskId: task.id, queueId: queue.id };
+      }
+
+      await patchCreateTaskPayloadLive({
+        supabase,
+        taskId: task.id,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        patch: {
+          ...commonPatch,
+          suggested_start_at: suggestedWindow.startIso,
+          suggested_end_at: suggestedWindow.endIso,
+          suggested_date: suggestedWindow.suggestedDate,
+          suggested_time: suggestedWindow.suggestedTime,
+          suggested_label: suggestedWindow.suggestedLabel,
+          suggested_duration_minutes: suggestedWindow.durationMinutes,
+          suggested_time_available: true,
+          suggested_time_checked_at: new Date().toISOString(),
+          appointment_write_authorized_at: new Date().toISOString(),
+          appointment_write_authorization_type: "customer_suggested_available_time",
+        },
+        update: {
+          status: "waiting_customer_response",
+          target_start_at: suggestedWindow.startIso,
+          target_end_at: suggestedWindow.endIso,
+          description: "Cliente sugeriu outro horario disponivel. A task foi atualizada para criar o compromisso nesse horario validado.",
+        },
+      });
+
+      targetStartAt = suggestedWindow.startIso;
+      targetEndAt = suggestedWindow.endIso;
+    }
+  }
+
+  if (!targetStartAt || !targetEndAt || !currentTask.related_lead_id || !currentTask.related_conversation_id) {
+    throw new Error("Task de criacao sem identidade canonica ou janela de horario.");
+  }
+
+  if (!hasPostWriteMarker) {
+    if (decision.type === "confirmed") {
+      await patchCreateTaskPayloadLive({
+        supabase,
+        taskId: task.id,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        patch: {
+          ...commonPatch,
+          agenda_updated: false,
+          appointment_write_succeeded: false,
+          appointment_write_authorized_at: new Date().toISOString(),
+          appointment_write_authorization_type: "customer_confirmed_target_time",
+        },
+        update: {
+          status: "waiting_customer_response",
+          description: "Cliente confirmou o horario. A prova foi persistida; a agenda ainda nao foi alterada.",
+        },
+      });
+    }
+
+    const authorizationTask = await loadLiveCreateTask({
+      supabase,
+      taskId: task.id,
+      organizationId: queue.organization_id,
+      storeId: queue.store_id,
+    });
+
+    if (
+      !authorizationTask ||
+      authorizationTask.status !== "waiting_customer_response" ||
+      authorizationTask.task_type !== "appointment_create_with_customer"
+    ) {
+      throw new Error("Task de criacao mudou antes da autorizacao atomica; efeito externo abortado.");
+    }
+
+    currentTask = authorizationTask;
+    appointmentType = String((currentTask.task_payload || {}).appointment_type || "").trim();
+    targetStartAt = currentTask.target_start_at;
+    targetEndAt = currentTask.target_end_at;
+
+    if (!appointmentType || !targetStartAt || !targetEndAt || !currentTask.related_lead_id || !currentTask.related_conversation_id) {
+      throw new Error("Task de criacao ficou incompleta apos persistir a autorizacao; writer atomico abortado.");
+    }
+
+    validateDurableCreateWriteEvidence({
+      task: currentTask,
+      queue,
+      decision,
+    });
+  }
+
+  if (hasPostWriteMarker) {
+    const { data: existingAppointment, error: existingAppointmentError } = await supabase.from("store_appointments")
+      .select("*").eq("id", currentTask.related_appointment_id).eq("organization_id", queue.organization_id).eq("store_id", queue.store_id).maybeSingle();
+    if (existingAppointmentError || !existingAppointment) throw new Error(existingAppointmentError?.message || "Appointment marcado na task nao foi encontrado.");
+    validatePersistedCreateAppointment({
+      appointment: existingAppointment,
+      task: currentTask,
+      appointmentType,
+      targetStartAt,
+      targetEndAt,
+    });
+    createdAppointment = existingAppointment;
+  } else {
+    await validateCreateServiceSettings({
+      supabase,
+      organizationId: queue.organization_id,
+      storeId: queue.store_id,
+      appointmentType,
+    });
+    if (appointmentType === "technical_visit") {
+      await validateCreateOpportunity({
+        supabase,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        task: currentTask,
+      });
+    }
+    const availability = await checkCreateAppointmentAvailability({
+      supabase,
+      organizationId: queue.organization_id,
+      storeId: queue.store_id,
+      appointmentType,
+      startAt: targetStartAt,
+      endAt: targetEndAt,
+    });
+    if (!availability.available) {
+      await patchCreateTaskPayloadLive({
+        supabase,
+        taskId: task.id,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        patch: {
+          ...commonPatch,
+          agenda_updated: false,
+          appointment_write_succeeded: false,
+          availability_error: availability.error || availability.reason || "unavailable",
+        },
+        update: {
+          status: "waiting_customer_response",
+          description: "O horario confirmado nao esta disponivel. A agenda permanece inalterada.",
+        },
+      });
+      return { ok: true, action: "appointment_creation_unavailable", taskId: task.id, queueId: queue.id };
+    }
+
+    const operationKey = String((currentTask.task_payload || {}).operation_key || "").trim();
+    if (!operationKey) {
+      throw new Error("Task de criacao sem operation_key canonico; writer atomico abortado.");
+    }
+
+    const { data: writtenAppointment, error: createError } = await supabase.rpc("create_assistant_appointment_by_task_atomic", {
+      p_task_id: currentTask.id,
+      p_organization_id: queue.organization_id,
+      p_store_id: queue.store_id,
+      p_expected_operation_key: operationKey,
+      p_expected_lead_id: currentTask.related_lead_id,
+      p_expected_conversation_id: currentTask.related_conversation_id,
+      p_expected_commercial_opportunity_id: currentTask.commercial_opportunity_id,
+      p_expected_appointment_type: appointmentType,
+      p_expected_start_at: targetStartAt,
+      p_expected_end_at: targetEndAt,
+    });
+    if (createError || !writtenAppointment?.id) throw new Error(createError?.message || "Nao consegui criar o compromisso.");
+    createdAppointment = writtenAppointment;
+    const postAtomicTask = await loadLiveCreateTask({
+      supabase,
+      taskId: task.id,
+      organizationId: queue.organization_id,
+      storeId: queue.store_id,
+    });
+    if (!postAtomicTask) {
+      throw new Error("Task de criacao nao encontrada apos writer atomico; reconciliacao manual necessaria.");
+    }
+    validateAtomicCreateCheckpoint({ task: postAtomicTask, appointment: createdAppointment });
+    validatePersistedCreateAppointment({
+      appointment: createdAppointment,
+      task: postAtomicTask,
+      appointmentType,
+      targetStartAt,
+      targetEndAt,
+    });
+    currentTask = postAtomicTask;
+  }
+
+  let latestPayload = (await loadLiveCreateTask({
+    supabase,
+    taskId: task.id,
+    organizationId: queue.organization_id,
+    storeId: queue.store_id,
+  }))?.task_payload || {};
+
+  if (appointmentType === "technical_visit" && currentTask.commercial_opportunity_id) {
+    if (latestPayload.commercial_projection_completed !== true) {
+      await projectTechnicalVisitStageBySystem({
+        supabase,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        commercialOpportunityId: currentTask.commercial_opportunity_id,
+        appointmentId: createdAppointment.id,
+        source: "assistant_operational_task_worker",
+      });
+      latestPayload = await patchCreateTaskPayloadLive({
+        supabase,
+        taskId: task.id,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        patch: { commercial_projection_completed: true },
+      });
+    }
+  } else if (!latestPayload.commercial_projection_completed) {
+    latestPayload = await patchCreateTaskPayloadLive({
+      supabase,
+      taskId: task.id,
+      organizationId: queue.organization_id,
+      storeId: queue.store_id,
+      patch: { commercial_projection_completed: "not_applicable" },
+    });
+  }
+
+  const timezone = currentTask.timezone_name || "America/Sao_Paulo";
+  let messageId = String(latestPayload.customer_confirmation_message_id || "").trim() || null;
+  if (latestPayload.customer_confirmation_message_sent !== true) {
+    const content = `Oi, ${currentTask.customer_name || "tudo bem"}. Confirmado: sua ${appointmentType === "installation" ? "instalacao" : "visita tecnica"} ficou para ${formatDateOnlyInTimeZone(targetStartAt, timezone)} as ${formatTimeOnlyInTimeZone(targetStartAt, timezone)}.`;
+    const { data: messageData, error: messageError } = await supabase.rpc("insert_message", {
+      p_conversation_id: currentTask.related_conversation_id, p_sender: "ai", p_direction: "outgoing", p_message_type: "text", p_content: content,
+      p_media_url: null, p_external_message_id: null, p_metadata: { source: "assistant_operational_task_worker", task_id: task.id, appointment_id: createdAppointment.id, confirmation_type: "create_confirmed" },
+    });
+    if (messageError) throw new Error(`Compromisso criado, mas falhou a confirmacao ao cliente: ${messageError.message}`);
+    messageId = (Array.isArray(messageData) ? messageData[0] : messageData)?.id || null;
+    latestPayload = await patchCreateTaskPayloadLive({
+      supabase,
+      taskId: task.id,
+      organizationId: queue.organization_id,
+      storeId: queue.store_id,
+      patch: {
+        customer_confirmation_message_sent: true,
+        customer_confirmation_message_id: messageId,
+      },
+    });
+  }
+
+  if (latestPayload.responsible_notification_sent !== true) {
+    const notification = await pushAssistantInternalNotification({
+      supabase, organizationId: queue.organization_id, storeId: queue.store_id,
+      notificationType: "important_alert", title: "Novo compromisso confirmado",
+      body: `${currentTask.customer_name || "Cliente"}: ${formatAppointmentTypeForCustomer(appointmentType)} em ${formatDateOnlyInTimeZone(targetStartAt, timezone)} as ${formatTimeOnlyInTimeZone(targetStartAt, timezone)}.`,
+      priority: "high", context: { source: "assistant_operational_task_worker", task_id: task.id, appointment_id: createdAppointment.id },
+      relatedLeadId: currentTask.related_lead_id, relatedConversationId: currentTask.related_conversation_id, relatedAppointmentId: createdAppointment.id,
+      eventKey: `assistant-operational-task:${task.id}:appointment-confirmed:${createdAppointment.id}`,
+    });
+    if (!notification.ok) throw new Error(`Compromisso criado, mas falhou a notificacao ao responsavel: ${notification.error}`);
+    latestPayload = await patchCreateTaskPayloadLive({
+      supabase,
+      taskId: task.id,
+      organizationId: queue.organization_id,
+      storeId: queue.store_id,
+      patch: { responsible_notification_sent: true },
+    });
+  }
+
+  if (latestPayload.commercial_visit_request_resolved !== true) {
+    if (appointmentType === "technical_visit" && currentTask.commercial_opportunity_id) {
+      const { data: handoffRows, error: handoffError } = await supabase.from("store_assistant_operational_tasks")
+        .select("id,status,task_payload")
+        .eq("organization_id", queue.organization_id).eq("store_id", queue.store_id)
+        .eq("task_type", "commercial_visit_request")
+        .eq("related_lead_id", currentTask.related_lead_id)
+        .eq("related_conversation_id", currentTask.related_conversation_id)
+        .eq("commercial_opportunity_id", currentTask.commercial_opportunity_id)
+        .in("status", ["open", "waiting_customer_response", "ready_to_execute", "in_progress"])
+        .limit(3);
+      if (handoffError) throw new Error(`Appointment criado, mas falhou ao localizar commercial_visit_request: ${handoffError.message}`);
+      if ((handoffRows || []).length === 1) {
+        const handoff = handoffRows[0];
+        const handoffPayload = appendTaskPayload(handoff.task_payload || {}, {
+          appointment_id: createdAppointment.id,
+          resolved_reason: "appointment_created_after_customer_confirmation",
+        });
+        const { error: handoffUpdateError } = await supabase.from("store_assistant_operational_tasks").update({
+          status: "resolved", resolved_at: new Date().toISOString(), related_appointment_id: createdAppointment.id,
+          task_payload: handoffPayload,
+          updated_at: new Date().toISOString(),
+        }).eq("id", handoff.id).eq("organization_id", queue.organization_id).eq("store_id", queue.store_id);
+        if (handoffUpdateError) throw new Error(`Appointment criado, mas commercial_visit_request nao foi resolvido: ${handoffUpdateError.message}`);
+        latestPayload = await patchCreateTaskPayloadLive({
+          supabase,
+          taskId: task.id,
+          organizationId: queue.organization_id,
+          storeId: queue.store_id,
+          patch: { commercial_visit_request_resolved: true },
+        });
+      } else if ((handoffRows || []).length > 1) {
+        const reconciliationAlert = await pushAssistantInternalNotification({
+          supabase, organizationId: queue.organization_id, storeId: queue.store_id,
+          notificationType: "important_alert", title: "Reconciliação necessária: solicitações duplicadas",
+          body: "O compromisso foi criado, mas existem multiplas commercial_visit_request para o mesmo contexto canonico.", priority: "urgent",
+          context: { source: "assistant_operational_task_worker", task_id: task.id, appointment_id: createdAppointment.id, reason: "multiple_commercial_visit_requests" },
+          relatedLeadId: currentTask.related_lead_id, relatedConversationId: currentTask.related_conversation_id, relatedAppointmentId: createdAppointment.id,
+          eventKey: `assistant-operational-task:${task.id}:multiple-commercial-visit-requests:${createdAppointment.id}`,
+        });
+        if (!reconciliationAlert.ok) throw new Error(`Appointment criado, mas falhou o alerta de reconciliacao: ${reconciliationAlert.error}`);
+        latestPayload = await patchCreateTaskPayloadLive({
+          supabase,
+          taskId: task.id,
+          organizationId: queue.organization_id,
+          storeId: queue.store_id,
+          patch: {
+            commercial_visit_request_resolved: false,
+            commercial_visit_request_reconciliation_required: true,
+          },
+        });
+      } else {
+        latestPayload = await patchCreateTaskPayloadLive({
+          supabase,
+          taskId: task.id,
+          organizationId: queue.organization_id,
+          storeId: queue.store_id,
+          patch: { commercial_visit_request_resolved: false },
+        });
+      }
+    } else {
+      latestPayload = await patchCreateTaskPayloadLive({
+        supabase,
+        taskId: task.id,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        patch: { commercial_visit_request_resolved: "not_applicable" },
+      });
+    }
+  }
+
+  if (latestPayload.context_resolved !== true) {
+    if (currentTask.thread_id) {
+      const { error: contextError } = await supabase.from("store_assistant_context_state").update({
+        active_status: "resolved", active_topic: "appointment_create_with_customer", active_appointment_id: createdAppointment.id,
+        updated_at: new Date().toISOString(), context_payload: { resolved_reason: "appointment_created_after_customer_confirmation", task_id: task.id, appointment_id: createdAppointment.id },
+      }).eq("thread_id", currentTask.thread_id).eq("organization_id", queue.organization_id).eq("store_id", queue.store_id);
+      if (contextError) throw new Error(`Compromisso criado, mas falhou ao resolver contexto: ${contextError.message}`);
+    }
+    latestPayload = await patchCreateTaskPayloadLive({
+      supabase,
+      taskId: task.id,
+      organizationId: queue.organization_id,
+      storeId: queue.store_id,
+      patch: { context_resolved: true },
+    });
+  }
+
+  await patchCreateTaskPayloadLive({
+    supabase,
+    taskId: task.id,
+    organizationId: queue.organization_id,
+    storeId: queue.store_id,
+    patch: {
+      ...commonPatch,
+      agenda_updated: true,
+      appointment_write_succeeded: true,
+      appointment_id: createdAppointment.id,
+      customer_confirmation_message_sent: true,
+      customer_confirmation_message_id: messageId,
+      responsible_notification_sent: true,
+      finalization_completed: true,
+    },
+    update: {
+      status: "resolved",
+      related_appointment_id: createdAppointment.id,
+      resolved_at: new Date().toISOString(),
+      description: "Cliente confirmou e o compromisso foi criado.",
+    },
+  });
+
+  return { ok: true, action: "appointment_created", appointmentId: createdAppointment.id, taskId: task.id, queueId: queue.id };
+}
+
 async function processQueueItem(args: {
   supabase: any;
   queue: QueueRow;
@@ -725,8 +1555,12 @@ async function processQueueItem(args: {
     throw new Error(taskError?.message || "Tarefa operacional não encontrada.");
   }
 
-  if (task.task_type !== "appointment_reschedule_with_customer") {
-    await supabase
+  if (task.organization_id !== queue.organization_id || task.store_id !== queue.store_id || task.id !== queue.task_id) {
+    throw new Error("A fila nao corresponde exatamente ao tenant ou task carregado; efeito abortado.");
+  }
+
+  if (task.task_type !== "appointment_reschedule_with_customer" && task.task_type !== "appointment_create_with_customer") {
+    const { error: queueLifecycleError } = await supabase
       .from("store_assistant_operational_task_queue")
       .update({
         status: "cancelled",
@@ -738,6 +1572,7 @@ async function processQueueItem(args: {
         updated_at: new Date().toISOString(),
       })
       .eq("id", queue.id);
+    if (queueLifecycleError) throw new Error(`Falha ao finalizar fila de task nao suportada: ${queueLifecycleError.message}`);
 
     return {
       ok: true,
@@ -748,8 +1583,8 @@ async function processQueueItem(args: {
     };
   }
 
-  if (task.related_conversation_id && queue.conversation_id && task.related_conversation_id !== queue.conversation_id) {
-    await supabase
+  if (task.related_conversation_id !== queue.conversation_id) {
+    const { error: queueLifecycleError } = await supabase
       .from("store_assistant_operational_task_queue")
       .update({
         status: "cancelled",
@@ -762,6 +1597,7 @@ async function processQueueItem(args: {
         updated_at: new Date().toISOString(),
       })
       .eq("id", queue.id);
+    if (queueLifecycleError) throw new Error(`Falha ao finalizar fila com conversa divergente: ${queueLifecycleError.message}`);
 
     return {
       ok: true,
@@ -773,7 +1609,7 @@ async function processQueueItem(args: {
   }
 
   if (task.status !== "waiting_customer_response") {
-    await supabase
+    const { error: queueLifecycleError } = await supabase
       .from("store_assistant_operational_task_queue")
       .update({
         status: "cancelled",
@@ -785,12 +1621,18 @@ async function processQueueItem(args: {
         updated_at: new Date().toISOString(),
       })
       .eq("id", queue.id);
+    if (queueLifecycleError) throw new Error(`Falha ao cancelar fila de task nao aguardando cliente: ${queueLifecycleError.message}`);
 
     return {
       ok: true,
       skipped: true,
       reason: "task_no_longer_waiting_customer_response",
     };
+  }
+
+  if (task.task_type === "appointment_create_with_customer") {
+    const decision = classifyCustomerReply(customerMessage);
+    return processCreateAppointmentTask({ supabase, queue, task, decision, customerMessage });
   }
 
   if (!task.related_appointment_id) {
@@ -809,6 +1651,12 @@ async function processQueueItem(args: {
 
   if (appointmentError || !appointment) {
     throw new Error(appointmentError?.message || "Compromisso vinculado não encontrado.");
+  }
+
+  const taskOpportunityId = String(task.commercial_opportunity_id || "").trim();
+  const appointmentOpportunityId = String(appointment.commercial_opportunity_id || "").trim();
+  if (taskOpportunityId && appointmentOpportunityId && taskOpportunityId !== appointmentOpportunityId) {
+    throw new Error("Divergencia de oportunidade comercial entre task e compromisso.");
   }
 
   const timezoneName = task.timezone_name || "America/Sao_Paulo";
@@ -856,6 +1704,15 @@ async function processQueueItem(args: {
       throw new Error("Cliente confirmou, mas a tarefa não tem target_start_at/target_end_at.");
     }
 
+    await revalidateOperationalExecution({
+      supabase,
+      queueId: queue.id,
+      taskId: task.id,
+      organizationId: queue.organization_id,
+      storeId: queue.store_id,
+      appointmentId: appointment.id,
+    });
+
     const { data: updatedAppointment, error: updateError } = await supabase.rpc(
       "update_store_appointment",
       {
@@ -888,7 +1745,7 @@ async function processQueueItem(args: {
         appointment_update_succeeded: false,
       });
 
-      await supabase
+      const { error: taskLifecycleError } = await supabase
         .from("store_assistant_operational_tasks")
         .update({
           status: "failed",
@@ -898,6 +1755,7 @@ async function processQueueItem(args: {
           updated_at: new Date().toISOString(),
         })
         .eq("id", task.id);
+      if (taskLifecycleError) throw new Error(`Falha ao registrar falha da atualizacao da agenda: ${taskLifecycleError.message}`);
 
       await pushAssistantSystemMessage({
         supabase,
@@ -949,7 +1807,7 @@ async function processQueueItem(args: {
         failed_after_appointment_update_at: new Date().toISOString(),
       });
 
-      await supabase
+      const { error: taskLifecycleError } = await supabase
         .from("store_assistant_operational_tasks")
         .update({
           status: "failed",
@@ -961,6 +1819,7 @@ async function processQueueItem(args: {
         .eq("id", task.id)
         .eq("organization_id", queue.organization_id)
         .eq("store_id", queue.store_id);
+      if (taskLifecycleError) throw new Error(`Falha ao registrar falha parcial apos atualizar agenda: ${taskLifecycleError.message}`);
 
       await pushAssistantSystemMessage({
         supabase,
@@ -1138,6 +1997,15 @@ async function processQueueItem(args: {
       rescheduleAutonomy.aiCanAcceptWithoutApproval === true;
 
     if (canAutonomouslyAcceptSuggestedTime && suggestedWindow) {
+      await revalidateOperationalExecution({
+        supabase,
+        queueId: queue.id,
+        taskId: task.id,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        appointmentId: appointment.id,
+      });
+
       const { data: autonomouslyUpdatedAppointment, error: autonomousUpdateError } = await supabase.rpc(
         "update_store_appointment",
         {
@@ -1177,7 +2045,7 @@ async function processQueueItem(args: {
           suggested_label: suggestedWindow.suggestedLabel,
         });
 
-        await supabase
+        const { error: taskLifecycleError } = await supabase
           .from("store_assistant_operational_tasks")
           .update({
             status: "failed",
@@ -1189,6 +2057,7 @@ async function processQueueItem(args: {
           .eq("id", task.id)
           .eq("organization_id", queue.organization_id)
           .eq("store_id", queue.store_id);
+        if (taskLifecycleError) throw new Error(`Falha ao registrar falha da remarcacao autonoma: ${taskLifecycleError.message}`);
 
         await pushAssistantInternalNotification({
           supabase,
@@ -1251,7 +2120,7 @@ async function processQueueItem(args: {
           suggested_label: suggestedWindow.suggestedLabel,
         });
 
-        await supabase
+        const { error: taskLifecycleError } = await supabase
           .from("store_assistant_operational_tasks")
           .update({
             status: "failed",
@@ -1265,6 +2134,7 @@ async function processQueueItem(args: {
           .eq("id", task.id)
           .eq("organization_id", queue.organization_id)
           .eq("store_id", queue.store_id);
+        if (taskLifecycleError) throw new Error(`Falha ao registrar falha parcial da confirmacao autonoma: ${taskLifecycleError.message}`);
 
         await pushAssistantInternalNotification({
           supabase,
@@ -1499,7 +2369,7 @@ async function processQueueItem(args: {
     appointment_update_succeeded: false,
   });
 
-  await supabase
+  const { error: taskLifecycleError } = await supabase
     .from("store_assistant_operational_tasks")
     .update({
       status: "waiting_customer_response",
@@ -1511,6 +2381,7 @@ async function processQueueItem(args: {
     .eq("id", task.id)
     .eq("organization_id", queue.organization_id)
     .eq("store_id", queue.store_id);
+  if (taskLifecycleError) throw new Error(`Falha ao registrar resposta ambigua da remarcacao: ${taskLifecycleError.message}`);
 
   await pushAssistantSystemMessage({
     supabase,
@@ -1566,6 +2437,108 @@ async function lockPendingQueueRow(args: {
   return ((lockedRows || [])[0] as QueueRow | undefined) || null;
 }
 
+export async function recoverStaleProcessingQueueRows(args: {
+  supabase: any;
+  organizationId?: string | null;
+  storeId?: string | null;
+  now?: Date;
+}) {
+  const now = args.now || new Date();
+  const staleBefore = new Date(now.getTime() - QUEUE_STALE_LOCK_MS).toISOString();
+  let query = args.supabase
+    .from("store_assistant_operational_task_queue")
+    .select("id,organization_id,store_id,task_id,locked_at")
+    .eq("status", "processing")
+    .lt("locked_at", staleBefore)
+    .limit(50);
+
+  if (args.organizationId) query = query.eq("organization_id", args.organizationId);
+  if (args.storeId) query = query.eq("store_id", args.storeId);
+
+  const { data: staleRows, error: loadError } = await query;
+  if (loadError) throw new Error(`Falha ao localizar filas processing stale: ${loadError.message}`);
+
+  const results: Array<{ queueId: string; ok: boolean; reason: string; error?: string }> = [];
+  for (const row of (staleRows || []) as QueueRow[]) {
+    const { error } = await args.supabase
+      .from("store_assistant_operational_task_queue")
+      .update({
+        status: "failed",
+        error_text: "Lock processing expirado; side effect incerto. Reconciliação manual obrigatória.",
+        result_payload: {
+          ok: false,
+          reason: "stale_processing_manual_reconciliation",
+          locked_at: row.locked_at || null,
+          stale_before: staleBefore,
+        },
+        locked_at: null,
+        locked_by: null,
+        updated_at: now.toISOString(),
+      })
+      .eq("id", row.id)
+      .eq("status", "processing");
+
+    results.push(error
+      ? { queueId: row.id, ok: false, reason: "stale_processing_write_failed", error: error.message }
+      : { queueId: row.id, ok: true, reason: "stale_processing_manual_reconciliation" });
+  }
+
+  return results;
+}
+
+async function scheduleSafeQueueRetry(args: {
+  supabase: any;
+  queue: QueueRow;
+  errorMessage: string;
+}) {
+  const attempts = Number(args.queue.attempts || 0);
+  if (attempts >= MAX_SAFE_QUEUE_ATTEMPTS) return null;
+
+  const { data: task, error: taskError } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("status,task_payload")
+    .eq("id", args.queue.task_id)
+    .eq("organization_id", args.queue.organization_id)
+    .eq("store_id", args.queue.store_id)
+    .maybeSingle();
+
+  if (taskError || !task) return null;
+  const payload = task.task_payload && typeof task.task_payload === "object" ? task.task_payload : {};
+  const appointmentCreatePostWrite = payload.appointment_write_succeeded === true && Boolean(payload.appointment_id);
+  const sideEffectAttempted = Boolean(
+    payload.appointment_update_attempted ||
+    payload.appointment_update_succeeded ||
+    payload.customer_confirmation_message_sent ||
+    payload.customer_confirmation_message_id,
+  );
+
+  if ((sideEffectAttempted && !appointmentCreatePostWrite) || task.status === "failed") return null;
+
+  const availableAt = new Date(Date.now() + QUEUE_RETRY_DELAY_MS).toISOString();
+  const { error } = await args.supabase
+    .from("store_assistant_operational_task_queue")
+    .update({
+      status: "pending",
+      available_at: availableAt,
+      locked_at: null,
+      locked_by: null,
+      error_text: args.errorMessage,
+      result_payload: {
+        ok: false,
+        reason: "safe_retry_scheduled",
+        attempts,
+        max_attempts: MAX_SAFE_QUEUE_ATTEMPTS,
+        error: args.errorMessage,
+      },
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", args.queue.id)
+    .eq("status", "processing");
+
+  if (error) return { ok: false as const, reason: "queue_retry_write_failed", error: error.message };
+  return { ok: true as const, reason: "safe_retry_scheduled", attempts, maxAttempts: MAX_SAFE_QUEUE_ATTEMPTS };
+}
+
 async function processLockedQueueRowWithSubscriptionGuard(args: {
   supabase: any;
   queue: QueueRow;
@@ -1581,7 +2554,7 @@ async function processLockedQueueRowWithSubscriptionGuard(args: {
     const message =
       "Organizacao suspensa. Tarefa operacional nao processada.";
 
-    await args.supabase
+    const { error: terminalQueueError } = await args.supabase
       .from("store_assistant_operational_task_queue")
       .update({
         status: "failed",
@@ -1598,6 +2571,15 @@ async function processLockedQueueRowWithSubscriptionGuard(args: {
       })
       .eq("id", args.queue.id);
 
+    if (terminalQueueError) {
+      return {
+        ok: false,
+        skipped: true,
+        reason: "queue_terminal_write_failed",
+        error: terminalQueueError.message,
+      };
+    }
+
     return {
       ok: false,
       skipped: true,
@@ -1613,7 +2595,7 @@ async function processLockedQueueRowWithSubscriptionGuard(args: {
       workerId: args.workerId,
     });
 
-    await args.supabase
+    const { error: processedQueueError } = await args.supabase
       .from("store_assistant_operational_task_queue")
       .update({
         status: "processed",
@@ -1623,6 +2605,15 @@ async function processLockedQueueRowWithSubscriptionGuard(args: {
         updated_at: new Date().toISOString(),
       })
       .eq("id", args.queue.id);
+
+    if (processedQueueError) {
+      return {
+        ok: false,
+        reason: "queue_processed_write_failed",
+        error: processedQueueError.message,
+        result,
+      };
+    }
 
     return {
       ok: true,
@@ -1634,7 +2625,22 @@ async function processLockedQueueRowWithSubscriptionGuard(args: {
     const message =
       error?.message || "Erro desconhecido ao processar fila operacional.";
 
-    await args.supabase
+    const retryResult = await scheduleSafeQueueRetry({
+      supabase: args.supabase,
+      queue: args.queue,
+      errorMessage: message,
+    });
+
+    if (retryResult?.ok) {
+      return {
+        ok: false,
+        skipped: true,
+        reason: retryResult.reason,
+        error: message,
+      };
+    }
+
+    const { error: failedQueueError } = await args.supabase
       .from("store_assistant_operational_task_queue")
       .update({
         status: "failed",
@@ -1647,6 +2653,14 @@ async function processLockedQueueRowWithSubscriptionGuard(args: {
         updated_at: new Date().toISOString(),
       })
       .eq("id", args.queue.id);
+
+    if (failedQueueError) {
+      return {
+        ok: false,
+        error: `${message}; queue terminal write failed: ${failedQueueError.message}`,
+        reason: "queue_failed_write_failed",
+      };
+    }
 
     return {
       ok: false,
@@ -1683,18 +2697,28 @@ export async function routeIncomingCustomerReplyToOperationalTask(args: {
     .eq("organization_id", organizationId)
     .eq("store_id", storeId)
     .eq("related_conversation_id", conversationId)
-    .eq("task_type", "appointment_reschedule_with_customer")
+    .in("task_type", ["appointment_reschedule_with_customer", "appointment_create_with_customer"])
     .eq("status", "waiting_customer_response")
-    .order("updated_at", { ascending: false })
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(20);
 
   if (taskError) {
     throw new Error(taskError.message);
   }
 
-  const taskId = String((taskRow as { id?: string | null } | null)?.id || "").trim();
+  const matchingTaskRows = Array.isArray(taskRow) ? taskRow : taskRow ? [taskRow] : [];
+  if (matchingTaskRows.length > 1) {
+    return {
+      handled: true,
+      taskId: "",
+      queueId: "",
+      ok: false,
+      skipped: true,
+      reason: "multiple_waiting_operational_tasks",
+      error: "Mais de uma task de remarcação aguarda a mesma resposta do cliente.",
+    };
+  }
+
+  const taskId = String((matchingTaskRows[0] as { id?: string | null } | undefined)?.id || "").trim();
   if (!taskId) {
     return {
       handled: false,
@@ -1710,15 +2734,26 @@ export async function routeIncomingCustomerReplyToOperationalTask(args: {
     .eq("task_id", taskId)
     .eq("conversation_id", conversationId)
     .eq("message_id", messageId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(20);
 
   if (existingQueueError) {
     throw new Error(existingQueueError.message);
   }
 
-  const existingQueue = (existingQueueRow || null) as QueueRow | null;
+  const existingQueueRows = Array.isArray(existingQueueRow) ? existingQueueRow : existingQueueRow ? [existingQueueRow] : [];
+  if (existingQueueRows.length > 1) {
+    return {
+      handled: true,
+      taskId,
+      queueId: "",
+      ok: false,
+      skipped: true,
+      reason: "duplicate_queue_rows_for_message",
+      error: "Mais de uma fila existe para a mesma mensagem do cliente.",
+    };
+  }
+
+  const existingQueue = (existingQueueRows[0] || null) as QueueRow | null;
   if (existingQueue?.id) {
     if (existingQueue.status === "processed") {
       return {
@@ -1740,6 +2775,18 @@ export async function routeIncomingCustomerReplyToOperationalTask(args: {
         ok: true,
         skipped: true,
         reason: "duplicate_customer_reply_already_enqueued",
+      };
+    }
+
+    if (existingQueue.status === "failed") {
+      return {
+        handled: true,
+        taskId,
+        queueId: existingQueue.id,
+        ok: false,
+        skipped: true,
+        reason: "failed_customer_reply_requires_reconciliation",
+        error: "A fila anterior falhou; não criei uma segunda fila para a mesma mensagem.",
       };
     }
   }
@@ -1827,6 +2874,12 @@ export async function processAssistantOperationalTasks(
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
   const workerId = `${params.workerName || "assistant-operational-worker"}-${Date.now()}`;
+
+  await recoverStaleProcessingQueueRows({
+    supabase,
+    organizationId: organizationId || null,
+    storeId: storeId || null,
+  });
 
   let query = supabase
     .from("store_assistant_operational_task_queue")

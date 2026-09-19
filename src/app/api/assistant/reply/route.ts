@@ -132,6 +132,25 @@ function asText(value: unknown): string | null {
   return null;
 }
 
+function normalizeSystemReaderRow(data: unknown): {
+  row: any | null;
+  errorMessage: string | null;
+} {
+  const rows = data == null ? [] : Array.isArray(data) ? data : [data];
+
+  if (rows.length > 1) {
+    return {
+      row: null,
+      errorMessage: "Invalid system reader cardinality.",
+    };
+  }
+
+  return {
+    row: rows[0] ?? null,
+    errorMessage: null,
+  };
+}
+
 function normalizeText(value: string | null | undefined): string {
   return String(value || "")
     .normalize("NFD")
@@ -302,6 +321,16 @@ type SendAiMessageToCustomerConversationResult =
   | { ok: true; messageId: string | null }
   | { ok: false; error: string };
 
+type CommercialTargetForSideEffect = {
+  source: string;
+  leadId?: string | null;
+  conversationId?: string | null;
+  commercialOpportunityId?: string | null;
+  appointmentId?: string | null;
+  taskId?: string | null;
+  customerName?: string | null;
+};
+
 function buildCustomerRescheduleMessage(args: {
   appointment: AppointmentRow;
   proposedStartIso?: string | null;
@@ -327,12 +356,22 @@ async function sendAiMessageToCustomerConversation(args: {
   supabase: any;
   conversationId: string;
   text: string;
+  target: CommercialTargetForSideEffect | null;
 }): Promise<SendAiMessageToCustomerConversationResult> {
   const conversationId = String(args.conversationId || '').trim();
   const text = String(args.text || '').trim();
+  const targetConversationId = String(args.target?.conversationId || "").trim();
 
   if (!conversationId) {
     return { ok: false, error: 'CONVERSATION_ID_MISSING' };
+  }
+
+  if (!args.target || !targetConversationId) {
+    return { ok: false, error: 'COMMERCIAL_TARGET_NOT_CANONICAL' };
+  }
+
+  if (targetConversationId !== conversationId) {
+    return { ok: false, error: 'COMMERCIAL_TARGET_CONVERSATION_MISMATCH' };
   }
 
   if (!text) {
@@ -1686,6 +1725,16 @@ async function resolvePostAppointmentActionReply(args: {
     return `Eu até identifiquei o item ${itemNumber}, mas não achei os dados completos para aplicar essa atualização com segurança.`;
   }
 
+  if (selectedAppointment && (action === "complete" || action === "cancel" || action === "needs_followup")) {
+    const targetAssertion = assertCommercialTargetForSideEffect({
+      target: buildCommercialTargetFromAppointment(selectedAppointment, "post_appointment_followup"),
+      sideEffect: `post_appointment_${action}`,
+    });
+    if (!targetAssertion.ok) {
+      return `Eu até identifiquei o item ${itemNumber}, mas o alvo comercial não está canonicamente resolvido. Não alterei nada.`;
+    }
+  }
+
   if (action === "reschedule") {
     return buildPostAppointmentActionSuccessReply({
       action,
@@ -1784,6 +1833,7 @@ async function resolvePostAppointmentActionReply(args: {
           scheduleSettings: args.scheduleSettings || null,
           reasonText: null,
         }),
+        target: buildCommercialTargetFromAppointment(cancelledAppointment, "post_appointment_cancel_followup"),
       });
 
       if (sendResult.ok) {
@@ -2175,7 +2225,7 @@ async function loadAppointmentByIdForAssistantAction(args: {
 
   const { data, error } = await args.supabase
     .from("store_appointments")
-    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("id", appointmentId)
@@ -2195,6 +2245,118 @@ function appointmentHasCustomerInvolved(appointment?: AppointmentRow | null) {
     String(appointment.customer_name || "").trim() || String(appointment.customer_phone || "").trim() ||
     String(appointment.lead_id || "").trim() || String(appointment.conversation_id || "").trim()
   ));
+}
+
+function buildCommercialTargetFromAppointment(
+  appointment: AppointmentRow | null | undefined,
+  source: string
+): CommercialTargetForSideEffect | null {
+  if (!appointment?.id) return null;
+  return {
+    source,
+    appointmentId: appointment.id,
+    leadId: appointment.lead_id || null,
+    conversationId: appointment.conversation_id || null,
+    commercialOpportunityId: appointment.commercial_opportunity_id || null,
+    customerName: appointment.customer_name || null,
+  };
+}
+
+function buildCommercialTargetFromTask(
+  task: StoreAssistantOperationalTaskRow | null | undefined,
+  source: string
+): CommercialTargetForSideEffect | null {
+  if (!task?.id) return null;
+  return {
+    source,
+    taskId: task.id,
+    appointmentId: task.related_appointment_id || null,
+    leadId: task.related_lead_id || null,
+    conversationId: task.related_conversation_id || null,
+    commercialOpportunityId: task.commercial_opportunity_id || null,
+    customerName: task.customer_name || null,
+  };
+}
+
+function buildCommercialTargetFromIdentityCandidate(
+  candidate: AssistantCustomerIdentityCandidate | null | undefined,
+  source: string
+): CommercialTargetForSideEffect | null {
+  if (!candidate?.lead_id && !candidate?.conversation_id && !candidate?.commercial_opportunity_id) return null;
+  return {
+    source,
+    leadId: candidate.lead_id || null,
+    conversationId: candidate.conversation_id || null,
+    commercialOpportunityId: candidate.commercial_opportunity_id || null,
+    customerName: candidate.customer_name || null,
+  };
+}
+
+function assertCommercialTargetForSideEffect(args: {
+  target: CommercialTargetForSideEffect | null;
+  sideEffect: string;
+  expectedConversationId?: string | null;
+  expectedCommercialOpportunityId?: string | null;
+}) {
+  const target = args.target;
+  if (!target) {
+    return { ok: false as const, reason: "missing_canonical_target" };
+  }
+
+  const hasCanonicalReference = Boolean(
+    target.appointmentId ||
+    target.taskId ||
+    target.leadId ||
+    target.conversationId
+  );
+
+  if (!hasCanonicalReference) {
+    return { ok: false as const, reason: "missing_canonical_reference" };
+  }
+
+  const expectedConversationId = String(args.expectedConversationId || "").trim();
+  const targetConversationId = String(target.conversationId || "").trim();
+  if (expectedConversationId && targetConversationId !== expectedConversationId) {
+    return { ok: false as const, reason: "conversation_mismatch" };
+  }
+
+  const expectedOpportunityId = String(args.expectedCommercialOpportunityId || "").trim();
+  const targetOpportunityId = String(target.commercialOpportunityId || "").trim();
+  if (expectedOpportunityId && targetOpportunityId !== expectedOpportunityId) {
+    return { ok: false as const, reason: "commercial_opportunity_mismatch" };
+  }
+
+  return { ok: true as const, target };
+}
+
+const CUSTOMER_IDENTITY_DISAMBIGUATION_TTL_MS = 30 * 60 * 1000;
+
+function isActiveCustomerIdentityDisambiguationContext(contextState?: StoreAssistantContextStateRow | null) {
+  return Boolean(
+    contextState &&
+    normalizeText(contextState.active_topic || "") === "customer_identity_disambiguation" &&
+    normalizeText(contextState.active_status || "") === "waiting_user_choice"
+  );
+}
+
+export function buildCustomerIdentityDisambiguationExpiresAt(now = new Date()) {
+  return new Date(now.getTime() + CUSTOMER_IDENTITY_DISAMBIGUATION_TTL_MS).toISOString();
+}
+
+export function isAssistantContextExpired(contextState?: StoreAssistantContextStateRow | null, now = new Date()) {
+  const expiresAt = String(contextState?.expires_at || "").trim();
+  if (!expiresAt) return isActiveCustomerIdentityDisambiguationContext(contextState);
+  const expiresMs = new Date(expiresAt).getTime();
+  if (!Number.isFinite(expiresMs)) return isActiveCustomerIdentityDisambiguationContext(contextState);
+  return expiresMs <= now.getTime();
+}
+
+function isCompatibleIdentityDisambiguationContext(contextState?: StoreAssistantContextStateRow | null) {
+  if (!contextState) return true;
+  const status = normalizeText(contextState.active_status || "");
+  const topic = normalizeText(contextState.active_topic || "");
+  if (!status || status === "resolved") return true;
+  return topic === "customer_identity_disambiguation";
 }
 
 function buildCustomerCancellationMessage(args: { appointment: AppointmentRow; scheduleSettings?: StoreScheduleSettingsRow | null; reasonText?: string | null; }) {
@@ -2605,7 +2767,7 @@ function isCorrectionAboutWrongAppointment(text: string) {
 async function loadOpenAppointmentsForAssistantTargetLookup(args: { supabase: any; organizationId: string; storeId: string; }) {
   const { data, error } = await args.supabase
     .from("store_appointments")
-    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .in("status", ["scheduled", "rescheduled"])
@@ -2629,6 +2791,8 @@ async function resolvePendingCancellationTargetClarificationReply(args: {
   if (!isAwaitingCancellationTargetClarification(contextState)) return null;
 
   const text = String(args.lastHumanMessage || "").trim();
+  const explicitAction = resolveScheduleAction(text);
+  if (explicitAction && explicitAction !== "cancel") return null;
   if (!text) return buildUnsafeCancellationWithoutTargetReply();
 
   if (isCorrectionAboutWrongAppointment(text)) {
@@ -2771,12 +2935,25 @@ async function startCustomerAppointmentCancelDecision(args: { supabase: any; org
 
 async function executeConfirmedCustomerAppointmentCancellation(args: { supabase: any; organizationId: string; storeId: string; threadId?: string | null; assistantContextState?: StoreAssistantContextStateRow | null; lastHumanMessage: string; appointment: AppointmentRow; scheduleSettings?: StoreScheduleSettingsRow | null; reasonText?: string | null; }) {
   const appointment = args.appointment;
+  const targetAssertion = assertCommercialTargetForSideEffect({
+    target: buildCommercialTargetFromAppointment(appointment, "confirmed_customer_appointment_cancellation"),
+    sideEffect: "cancel_store_appointment",
+  });
+  if (!targetAssertion.ok) {
+    return "Identifiquei o compromisso, mas o alvo comercial não está canonicamente resolvido. Não cancelei nada.";
+  }
+
   const { error: cancelError } = await args.supabase.rpc("cancel_store_appointment", { p_appointment_id: appointment.id, p_organization_id: args.organizationId, p_store_id: args.storeId, p_cancel_reason: "Cancelado pelo responsável na assistente operacional." });
   if (cancelError) return `Tentei cancelar esse compromisso, mas encontrei um erro: ${cancelError.message}`;
 
   let customerMessageSent = false, customerMessageError: string | null = null;
   if (appointment.conversation_id) {
-    const sendResult = await sendAiMessageToCustomerConversation({ supabase: args.supabase, conversationId: appointment.conversation_id, text: buildCustomerCancellationMessage({ appointment, scheduleSettings: args.scheduleSettings || null, reasonText: args.reasonText || null }) });
+    const sendResult = await sendAiMessageToCustomerConversation({
+      supabase: args.supabase,
+      conversationId: appointment.conversation_id,
+      text: buildCustomerCancellationMessage({ appointment, scheduleSettings: args.scheduleSettings || null, reasonText: args.reasonText || null }),
+      target: buildCommercialTargetFromAppointment(appointment, "confirmed_customer_appointment_cancellation"),
+    });
     customerMessageSent = sendResult.ok;
     customerMessageError = sendResult.ok ? null : sendResult.error;
   }
@@ -2788,13 +2965,21 @@ async function executeConfirmedCustomerAppointmentCancellation(args: { supabase:
     ? (customerMessageSent ? `Pronto. Cancelei ${referenceLabel} de ${customerName}, agendada para ${timeLabel}, e avisei o cliente.` : `Cancelei ${referenceLabel} de ${customerName}, agendada para ${timeLabel}, mas não consegui avisar o cliente automaticamente. Erro: ${customerMessageError || "canal indisponível"}.`)
     : `Pronto. Cancelei ${referenceLabel} de ${customerName}, agendada para ${timeLabel}. Não encontrei conversa vinculada para avisar o cliente automaticamente.`;
 
-  if (args.threadId) await resolveAssistantContextState({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, threadId: args.threadId, currentContextState: args.assistantContextState || null, lastUserMessage: args.lastHumanMessage, lastAssistantMessage: responsibleReply });
+  if (args.threadId) {
+    const contextResult = await resolveAssistantContextState({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, threadId: args.threadId, currentContextState: args.assistantContextState || null, lastUserMessage: args.lastHumanMessage, lastAssistantMessage: responsibleReply });
+    if (!contextResult.ok) {
+      return `${responsibleReply} A operação foi concluída, mas não consegui fechar o contexto da Assistente: ${contextResult.error || "erro desconhecido"}. Reconciliação necessária.`;
+    }
+  }
   return responsibleReply;
 }
 
 async function handlePendingCustomerCancelDecision(args: { supabase: any; organizationId: string; storeId: string; threadId?: string | null; assistantContextState?: StoreAssistantContextStateRow | null; lastHumanMessage: string; scheduleSettings?: StoreScheduleSettingsRow | null; }) {
   const contextState = args.assistantContextState || null;
   if (!isWaitingForCustomerCancelDecision(contextState)) return null;
+
+  const explicitAction = resolveScheduleAction(args.lastHumanMessage);
+  if (explicitAction && explicitAction !== "cancel") return null;
 
   const appointmentId = String(contextState?.active_appointment_id || readAssistantContextPayload(contextState).appointment_id || "").trim();
   if (!appointmentId) return "Eu estava aguardando sua decisão sobre cancelamento, mas perdi a referência do compromisso. Me diga o nome, cliente, data ou horário para eu procurar de novo.";
@@ -2848,47 +3033,101 @@ async function handlePendingCustomerCancelDecision(args: { supabase: any; organi
     if (reschedulePayload.ok) {
       let customerMessageSent = false;
 
+      if (!args.threadId) {
+        return "Encontrei o compromisso, mas nÃ£o consegui registrar a tratativa porque a conversa da assistente nÃ£o foi identificada. A agenda ainda nÃ£o foi alterada.";
+      }
+
+      const operationKey = [
+        "assistant_customer_contact",
+        "appointment_reschedule_with_customer",
+        args.threadId,
+        appointment.id,
+        reschedulePayload.payload.scheduled_start,
+        reschedulePayload.payload.scheduled_end,
+        String(args.lastHumanMessage || "").trim().replace(/\s+/g, " "),
+      ].join(":");
+
+      const preTaskResult = await createAssistantOperationalTask({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        taskType: "appointment_reschedule_with_customer",
+        status: "open",
+        priority: "normal",
+        title: `RemarcaÃ§Ã£o de ${buildScheduleAppointmentReferenceLabel(appointment)}${appointment.customer_name ? ` - ${appointment.customer_name}` : ""}`,
+        description: "A assistente registrou a remarcaÃ§Ã£o antes de tentar contato com o cliente. A agenda ainda nÃ£o foi alterada.",
+        appointment,
+        targetStartIso: reschedulePayload.payload.scheduled_start,
+        targetEndIso: reschedulePayload.payload.scheduled_end,
+        timezoneName: scheduleTimezone,
+        taskPayload: {
+          operation_key: operationKey,
+          customer_message_sent: false,
+          source: "assistant.reply.route",
+          original_user_message: args.lastHumanMessage,
+          source_context_reason: "cancel_prompt_reschedule_choice_with_target",
+          agenda_updated: false,
+        },
+      });
+
+      if (!preTaskResult.ok) {
+        return `Encontrei o compromisso, mas nÃ£o consegui registrar a tratativa operacional: ${preTaskResult.error}. A agenda ainda nÃ£o foi alterada.`;
+      }
+
+      const preTaskLoadResult = await loadAssistantOperationalTaskById({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        taskId: preTaskResult.taskId,
+      });
+      if (!preTaskLoadResult.ok) {
+        return `Registrei a tratativa operacional, mas nÃ£o consegui confirmar a task antes do contato: ${preTaskLoadResult.error}. A agenda ainda nÃ£o foi alterada.`;
+      }
+      const previousCustomerMessageSent = getOperationalTaskPayload(preTaskLoadResult.task).customer_message_sent === true;
+
       if (appointment.conversation_id) {
         const customerMessage = buildCustomerRescheduleMessage({
           appointment,
           proposedStartIso: reschedulePayload.payload.scheduled_start,
           scheduleSettings: args.scheduleSettings || null,
         });
-        const sendResult = await sendAiMessageToCustomerConversation({
-          supabase: args.supabase,
-          conversationId: appointment.conversation_id,
-          text: customerMessage,
-        });
-        customerMessageSent = sendResult.ok;
+        if (previousCustomerMessageSent) {
+          customerMessageSent = true;
+        } else {
+          const sendResult = await sendAiMessageToCustomerConversation({
+            supabase: args.supabase,
+            conversationId: appointment.conversation_id,
+            text: customerMessage,
+            target: buildCommercialTargetFromAppointment(appointment, "pending_customer_cancel_decision_reschedule"),
+          });
+          customerMessageSent = sendResult.ok;
+        }
       }
 
-      let taskResult = { ok: true, error: null as string | null, taskId: null as string | null };
-      if (args.threadId) {
-        taskResult = await createAssistantOperationalTask({
+      const taskStatusResult = await updateAssistantOperationalTaskAfterCustomerContact({
           supabase: args.supabase,
           organizationId: args.organizationId,
           storeId: args.storeId,
-          threadId: args.threadId,
-          taskType: "appointment_reschedule_with_customer",
+          taskId: preTaskResult.taskId,
           status: customerMessageSent ? "waiting_customer_response" : "open",
-          priority: "normal",
-          title: `Remarcação de ${buildScheduleAppointmentReferenceLabel(appointment)}${appointment.customer_name ? ` - ${appointment.customer_name}` : ""}`,
           description: customerMessageSent
-            ? "A assistente já iniciou contato com o cliente. A agenda ainda não foi alterada."
-            : "A assistente identificou a remarcação, mas não conseguiu iniciar contato automático com o cliente.",
-          appointment,
-          targetStartIso: reschedulePayload.payload.scheduled_start,
-          targetEndIso: reschedulePayload.payload.scheduled_end,
-          timezoneName: scheduleTimezone,
+            ? "A assistente jÃ¡ iniciou contato com o cliente. A agenda ainda nÃ£o foi alterada."
+            : "A assistente identificou a remarcaÃ§Ã£o, mas nÃ£o conseguiu iniciar contato automÃ¡tico com o cliente.",
           taskPayload: {
+            ...getOperationalTaskPayload(preTaskLoadResult.task),
             customer_message_sent: customerMessageSent,
             source: "assistant.reply.route",
             original_user_message: args.lastHumanMessage,
             source_context_reason: "cancel_prompt_reschedule_choice_with_target",
+            agenda_updated: false,
           },
         });
+        if (!taskStatusResult.ok) {
+          return `Registrei a tratativa operacional, mas nÃ£o consegui confirmar o estado atualizado da task: ${taskStatusResult.error}. A agenda ainda nÃ£o foi alterada.`;
+        }
 
-        await upsertAssistantContextState({
+        const contextResult = await upsertAssistantContextState({
           supabase: args.supabase,
           organizationId: args.organizationId,
           storeId: args.storeId,
@@ -2911,8 +3150,8 @@ async function handlePendingCustomerCancelDecision(args: { supabase: any; organi
             candidate_options: [],
             context_payload: {
               reason: "waiting_customer_confirmation_before_reschedule",
-              task_id: taskResult.taskId || null,
-              task_created: taskResult.ok,
+              task_id: preTaskResult.taskId || null,
+              task_created: preTaskResult.ok,
               agenda_updated: false,
               customer_message_sent: customerMessageSent,
               source_context_reason: "cancel_prompt_reschedule_choice_with_target",
@@ -2920,10 +3159,9 @@ async function handlePendingCustomerCancelDecision(args: { supabase: any; organi
             last_user_message: args.lastHumanMessage,
           },
         });
-      }
 
-      if (!taskResult.ok) {
-        return `Encontrei o compromisso, mas não consegui registrar a tratativa operacional: ${taskResult.error}. A agenda ainda não foi alterada.`;
+        if (!contextResult.ok) {
+          return `Enviei a mensagem e finalizei a task, mas nÃ£o consegui atualizar o contexto da Assistente: ${contextResult.error || "erro desconhecido"}. ReconciliaÃ§Ã£o necessÃ¡ria; a agenda ainda nÃ£o foi alterada.`;
       }
 
       return buildResponsibleRescheduleContactReply({
@@ -2974,6 +3212,18 @@ async function executeSelectedAppointmentOptionAction(args: {
 
   if (["cancelled", "completed"].includes(normalizeText(selectedAppointment.status || ""))) {
     return `Esse compromisso já está como ${formatScheduleAppointmentCurrentSituation(selectedAppointment)}. Não alterei nada na agenda.`;
+  }
+
+  const selectedTarget = buildCommercialTargetFromAppointment(
+    selectedAppointment,
+    "selected_appointment_option",
+  );
+  const selectedTargetAssertion = assertCommercialTargetForSideEffect({
+    target: selectedTarget,
+    sideEffect: `selected_appointment_${args.action}`,
+  });
+  if (!selectedTargetAssertion.ok) {
+    return "Identifiquei o compromisso escolhido, mas o alvo comercial não está canonicamente resolvido. Não alterei nada.";
   }
 
   if (args.action === "cancel") {
@@ -3262,7 +3512,7 @@ async function loadExplicitAppointmentTitleOnlyMatchesFromCommand(args: {
 
   const { data, error } = await args.supabase
     .from("store_appointments")
-    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .in("status", ["scheduled", "rescheduled"])
@@ -3317,7 +3567,7 @@ async function loadExplicitAppointmentMatchesFromCommand(args: {
 
   const query = args.supabase
     .from("store_appointments")
-    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .in("status", ["scheduled", "rescheduled"]);
@@ -3377,7 +3627,7 @@ async function loadExplicitAppointmentMatchesFromCommand(args: {
 
       const fallbackResponse = await args.supabase
         .from("store_appointments")
-        .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+        .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id")
         .eq("organization_id", args.organizationId)
         .eq("store_id", args.storeId)
         .in("status", ["scheduled", "rescheduled"])
@@ -3556,10 +3806,13 @@ async function loadAssistantContextState(args: { supabase: any; organizationId: 
     .eq("thread_id", args.threadId)
     .in("active_status", ["active", "waiting_user_choice", "waiting_customer_response"])
     .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(10);
   if (error) return { ok: false as const, error: error.message, contextState: null as StoreAssistantContextStateRow | null };
-  return { ok: true as const, contextState: (data || null) as StoreAssistantContextStateRow | null };
+  const rows = ((data || []) as StoreAssistantContextStateRow[]);
+  if (rows.length > 1) {
+    return { ok: false as const, error: "MULTIPLE_ACTIVE_ASSISTANT_CONTEXT_STATES", contextState: null as StoreAssistantContextStateRow | null };
+  }
+  return { ok: true as const, contextState: (rows[0] || null) as StoreAssistantContextStateRow | null };
 }
 
 async function upsertAssistantContextState(args: { supabase: any; organizationId: string; storeId: string; threadId: string; currentContextState?: StoreAssistantContextStateRow | null; patch: Record<string, unknown>; }) {
@@ -3583,19 +3836,146 @@ async function upsertAssistantContextState(args: { supabase: any; organizationId
   return { ok: !error, error: error?.message || null, contextState: (data || null) as StoreAssistantContextStateRow | null };
 }
 
-async function resolveAssistantContextState(args: { supabase: any; organizationId: string; storeId: string; threadId: string; currentContextState?: StoreAssistantContextStateRow | null; lastUserMessage: string; lastAssistantMessage?: string | null; }) {
+async function resolveAssistantContextState(args: { supabase: any; organizationId: string; storeId: string; threadId: string; currentContextState?: StoreAssistantContextStateRow | null; lastUserMessage: string; lastAssistantMessage?: string | null; resolvedReason?: string; }) {
   return upsertAssistantContextState({
     supabase: args.supabase,
     organizationId: args.organizationId,
     storeId: args.storeId,
     threadId: args.threadId,
     currentContextState: args.currentContextState,
-    patch: { active_status: "resolved", last_user_message: args.lastUserMessage, last_assistant_message: args.lastAssistantMessage || args.currentContextState?.last_assistant_message || null, candidate_options: [], context_payload: { resolved_reason: "action_completed_or_context_closed" } },
+    patch: { active_status: "resolved", last_user_message: args.lastUserMessage, last_assistant_message: args.lastAssistantMessage || args.currentContextState?.last_assistant_message || null, candidate_options: [], context_payload: { resolved_reason: args.resolvedReason || "action_completed_or_context_closed" } },
   });
 }
 
-async function createAssistantOperationalTask(args: { supabase: any; organizationId: string; storeId: string; threadId: string | null; taskType: string; status: string; priority?: string; title: string; description?: string | null; appointment?: AppointmentRow | null; targetStartIso?: string | null; targetEndIso?: string | null; timezoneName: string; taskPayload?: Record<string, unknown>; }) {
+async function resolveExpiredCustomerIdentityDisambiguationContext(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId?: string | null;
+  contextState: StoreAssistantContextStateRow;
+  lastHumanMessage: string;
+  expirationReply: string;
+}) {
+  if (!args.threadId) {
+    return {
+      ok: false as const,
+      error: "THREAD_ID_MISSING_FOR_EXPIRED_IDENTITY_CONTEXT_RESOLUTION",
+    };
+  }
+
+  const result = await resolveAssistantContextState({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    currentContextState: args.contextState,
+    lastUserMessage: args.lastHumanMessage,
+    lastAssistantMessage: args.expirationReply,
+  });
+
+  if (!result.ok) {
+    return {
+      ok: false as const,
+      error: result.error || "EXPIRED_IDENTITY_CONTEXT_RESOLUTION_FAILED",
+    };
+  }
+
+  return { ok: true as const };
+}
+
+async function createAssistantOperationalTask(args: { supabase: any; organizationId: string; storeId: string; threadId: string | null; taskType: string; status: string; priority?: string; title: string; description?: string | null; appointment?: AppointmentRow | null; canonicalTarget?: { leadId: string | null; conversationId: string | null; commercialOpportunityId: string | null; customerName?: string | null; customerPhone?: string | null } | null; targetStartIso?: string | null; targetEndIso?: string | null; timezoneName: string; taskPayload?: Record<string, unknown>; }) {
   const appointment = args.appointment || null;
+  const normalizedTaskType = normalizeText(args.taskType);
+  const taskPayload = args.taskPayload || {};
+  const operationKey = String(
+    taskPayload.operation_key ||
+    (
+      args.threadId &&
+      appointment?.id &&
+      ["appointment_reschedule_with_customer", "appointment_reschedule_find_customer_availability"].includes(args.taskType)
+        ? buildAssistantCustomerContactOperationKey({
+            taskType: args.taskType,
+            threadId: args.threadId,
+            appointmentId: appointment.id,
+            targetStartIso: args.targetStartIso || null,
+            targetEndIso: args.targetEndIso || null,
+            originalUserMessage: String(taskPayload.original_user_message || ""),
+          })
+        : ""
+    )
+  ).trim();
+
+  if (operationKey && args.threadId) {
+    const existingTaskStatuses = args.taskType === "appointment_create_with_customer"
+      ? [...ASSISTANT_OPERATIONAL_TASK_OPEN_STATUSES, "failed"]
+      : ASSISTANT_OPERATIONAL_TASK_OPEN_STATUSES;
+    const existingTaskResult = appointment?.id
+      ? await findAssistantOperationalTaskByOperationKey({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId,
+      taskType: args.taskType,
+      appointmentId: appointment.id,
+      operationKey,
+        })
+      : await (async () => {
+          const { data, error } = await args.supabase
+            .from("store_assistant_operational_tasks")
+            .select("*")
+            .eq("organization_id", args.organizationId)
+            .eq("store_id", args.storeId)
+            .eq("thread_id", args.threadId)
+            .eq("task_type", args.taskType)
+            .in("status", existingTaskStatuses)
+            .limit(20);
+          if (error) return { ok: false as const, error: error.message, task: null as StoreAssistantOperationalTaskRow | null };
+          const matches = ((data || []) as StoreAssistantOperationalTaskRow[]).filter((task) => String(getOperationalTaskPayload(task).operation_key || "") === operationKey);
+          if (matches.length > 1) return { ok: false as const, error: "DUPLICATE_OPERATIONAL_TASK_OPERATION_KEY", task: null as StoreAssistantOperationalTaskRow | null };
+          return { ok: true as const, error: null, task: matches[0] || null };
+        })();
+
+    if (!existingTaskResult.ok) {
+      return {
+        ok: false,
+        error: existingTaskResult.error,
+        taskId: null as string | null,
+        created: false,
+      };
+    }
+
+    if (existingTaskResult.task?.id) {
+      return {
+        ok: true,
+        error: null as string | null,
+        taskId: existingTaskResult.task.id,
+        created: false,
+      };
+    }
+  }
+
+  const canonicalTarget = args.canonicalTarget || null;
+  const requiresCommercialTarget =
+    normalizedTaskType.startsWith("appointment_") ||
+    normalizedTaskType.includes("commercial");
+  if (requiresCommercialTarget) {
+    const targetAssertion = assertCommercialTargetForSideEffect({
+      target: appointment
+        ? buildCommercialTargetFromAppointment(appointment, `operational_task:${args.taskType}`)
+        : canonicalTarget
+          ? { source: `operational_task:${args.taskType}`, leadId: canonicalTarget.leadId, conversationId: canonicalTarget.conversationId, commercialOpportunityId: canonicalTarget.commercialOpportunityId, customerName: canonicalTarget.customerName || null }
+          : null,
+      sideEffect: "store_assistant_operational_tasks.insert",
+    });
+    if (!targetAssertion.ok) {
+      return {
+        ok: false,
+        error: "COMMERCIAL_TARGET_NOT_CANONICAL_FOR_TASK",
+        taskId: null as string | null,
+      };
+    }
+  }
+
   const { data, error } = await args.supabase
     .from("store_assistant_operational_tasks")
     .insert({
@@ -3607,28 +3987,327 @@ async function createAssistantOperationalTask(args: { supabase: any; organizatio
       priority: args.priority || "normal",
       title: args.title,
       description: args.description || null,
-      related_lead_id: appointment?.lead_id || null,
-      related_conversation_id: appointment?.conversation_id || null,
+      related_lead_id: appointment?.lead_id || canonicalTarget?.leadId || null,
+      related_conversation_id: appointment?.conversation_id || canonicalTarget?.conversationId || null,
       related_appointment_id: appointment?.id || null,
-      customer_name: appointment?.customer_name || null,
-      customer_phone: appointment?.customer_phone || null,
+      commercial_opportunity_id: appointment?.commercial_opportunity_id || canonicalTarget?.commercialOpportunityId || null,
+      customer_name: appointment?.customer_name || canonicalTarget?.customerName || null,
+      customer_phone: appointment?.customer_phone || canonicalTarget?.customerPhone || null,
       target_date: isoDateToLocalDateForDb(args.targetStartIso, args.timezoneName),
       target_time: args.targetStartIso ? formatTimeOnlyInTimeZone(args.targetStartIso, args.timezoneName) : null,
       target_start_at: args.targetStartIso || null,
       target_end_at: args.targetEndIso || null,
       timezone_name: args.timezoneName,
-      task_payload: args.taskPayload || {},
+      task_payload: operationKey ? { ...taskPayload, operation_key: operationKey } : taskPayload,
       last_action_at: new Date().toISOString(),
     })
     .select("id")
     .maybeSingle();
+
+  if (error && normalizedTaskType === "appointment_create_with_customer" && operationKey && isUniqueViolation(error)) {
+    const refetchResult = await refetchAppointmentCreateTaskByOperationKey({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      operationKey,
+    });
+
+    if (!refetchResult.ok || !refetchResult.task) {
+      return {
+        ok: false,
+        error: refetchResult.error || "APPOINTMENT_CREATE_OPERATION_KEY_REFETCH_FAILED",
+        taskId: null as string | null,
+        created: false,
+      };
+    }
+
+    const matchesExpected = appointmentCreateTaskMatchesExpected({
+      task: refetchResult.task,
+      operationKey,
+      leadId: appointment?.lead_id || canonicalTarget?.leadId || null,
+      conversationId: appointment?.conversation_id || canonicalTarget?.conversationId || null,
+      commercialOpportunityId: appointment?.commercial_opportunity_id || canonicalTarget?.commercialOpportunityId || null,
+      appointmentType: String(taskPayload.appointment_type || ""),
+      targetStartIso: args.targetStartIso || null,
+      targetEndIso: args.targetEndIso || null,
+    });
+
+    if (!matchesExpected) {
+      return {
+        ok: false,
+        error: "APPOINTMENT_CREATE_OPERATION_KEY_IDENTITY_MISMATCH",
+        taskId: null as string | null,
+        created: false,
+      };
+    }
+
+    return {
+      ok: true,
+      error: null as string | null,
+      taskId: refetchResult.task.id,
+      created: false,
+    };
+  }
 
   const taskId = typeof data?.id === "string" ? data.id : null;
   return {
     ok: !error && Boolean(taskId),
     error: error?.message || (!taskId ? "TASK_INSERT_NOT_CONFIRMED" : null),
     taskId,
+    created: !error && Boolean(taskId),
   };
+}
+
+function isUniqueViolation(error: { code?: string | null; message?: string | null } | null | undefined) {
+  return error?.code === "23505" || String(error?.message || "").includes("23505");
+}
+
+function sameInstant(a: string | null | undefined, b: string | null | undefined) {
+  const leftRaw = String(a || "").trim();
+  const rightRaw = String(b || "").trim();
+  if (!leftRaw || !rightRaw) return false;
+
+  const left = new Date(leftRaw).getTime();
+  const right = new Date(rightRaw).getTime();
+  return Number.isFinite(left) && Number.isFinite(right) && left === right;
+}
+
+function appointmentCreateTaskMatchesExpected(args: {
+  task: StoreAssistantOperationalTaskRow;
+  operationKey: string;
+  leadId: string | null;
+  conversationId: string | null;
+  commercialOpportunityId: string | null;
+  appointmentType: string;
+  targetStartIso: string | null;
+  targetEndIso: string | null;
+}) {
+  const payload = getOperationalTaskPayload(args.task);
+  return (
+    String(payload.operation_key || "") === args.operationKey &&
+    args.task.related_lead_id === args.leadId &&
+    args.task.related_conversation_id === args.conversationId &&
+    (args.task.commercial_opportunity_id || null) === (args.commercialOpportunityId || null) &&
+    sameInstant(args.task.target_start_at, args.targetStartIso) &&
+    sameInstant(args.task.target_end_at, args.targetEndIso) &&
+    String(payload.appointment_type || "") === args.appointmentType
+  );
+}
+
+async function refetchAppointmentCreateTaskByOperationKey(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  operationKey: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("*")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("task_type", "appointment_create_with_customer")
+    .limit(20);
+
+  if (error) return { ok: false as const, error: error.message, task: null as StoreAssistantOperationalTaskRow | null };
+  const matches = ((data || []) as StoreAssistantOperationalTaskRow[]).filter(
+    (task) => String(getOperationalTaskPayload(task).operation_key || "") === args.operationKey,
+  );
+  if (matches.length !== 1) {
+    return { ok: false as const, error: "APPOINTMENT_CREATE_OPERATION_KEY_REFETCH_NOT_UNIQUE", task: null as StoreAssistantOperationalTaskRow | null };
+  }
+  return { ok: true as const, error: null as string | null, task: matches[0] };
+}
+
+async function updateAssistantOperationalTaskAfterCustomerContact(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  taskId: string | null;
+  status: string;
+  description?: string | null;
+  taskPayload?: Record<string, unknown>;
+}) {
+  if (!args.taskId) return { ok: false as const, error: "TASK_ID_MISSING" };
+
+  const { error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .update({
+      status: args.status,
+      description: args.description || null,
+      task_payload: args.taskPayload || {},
+      last_action_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", args.taskId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId);
+
+  if (error) return { ok: false as const, error: error.message };
+  return { ok: true as const };
+}
+
+const ASSISTANT_OPERATIONAL_TASK_OPEN_STATUSES = ["open", "waiting_user_choice", "waiting_customer_response", "ready_to_execute", "in_progress"];
+
+function buildAssistantCustomerContactOperationKey(args: {
+  taskType: string;
+  threadId: string;
+  appointmentId: string;
+  targetStartIso?: string | null;
+  targetEndIso?: string | null;
+  originalUserMessage: string;
+}) {
+  return [
+    "assistant_customer_contact",
+    args.taskType,
+    args.threadId,
+    args.appointmentId,
+    args.targetStartIso || "",
+    args.targetEndIso || "",
+    normalizeText(args.originalUserMessage).replace(/\s+/g, " ").trim(),
+  ].join(":");
+}
+
+async function findAssistantOperationalTaskByOperationKey(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId: string;
+  taskType: string;
+  appointmentId: string;
+  operationKey: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("*")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("thread_id", args.threadId)
+    .eq("task_type", args.taskType)
+    .eq("related_appointment_id", args.appointmentId)
+    .in("status", ASSISTANT_OPERATIONAL_TASK_OPEN_STATUSES)
+    .limit(20);
+
+  if (error) return { ok: false as const, error: error.message, task: null as StoreAssistantOperationalTaskRow | null };
+
+  const matchingTasks = ((data || []) as StoreAssistantOperationalTaskRow[]).filter((task) => {
+    const payload = getOperationalTaskPayload(task);
+    return String(payload.operation_key || "") === args.operationKey;
+  });
+
+  if (matchingTasks.length > 1) {
+    return { ok: false as const, error: "DUPLICATE_OPERATIONAL_TASK_OPERATION_KEY", task: null as StoreAssistantOperationalTaskRow | null };
+  }
+
+  return { ok: true as const, error: null as string | null, task: matchingTasks[0] || null };
+}
+
+async function loadAssistantOperationalTaskById(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  taskId: string | null;
+}) {
+  if (!args.taskId) return { ok: false as const, error: "TASK_ID_MISSING", task: null as StoreAssistantOperationalTaskRow | null };
+  const { data, error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("*")
+    .eq("id", args.taskId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (error) return { ok: false as const, error: error.message, task: null as StoreAssistantOperationalTaskRow | null };
+  return { ok: true as const, error: null as string | null, task: (data || null) as StoreAssistantOperationalTaskRow | null };
+}
+
+async function getOrCreateAssistantCustomerContactTask(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId: string;
+  taskType: string;
+  priority?: string;
+  title: string;
+  description: string;
+  appointment: AppointmentRow;
+  targetStartIso?: string | null;
+  targetEndIso?: string | null;
+  timezoneName: string;
+  operationKey: string;
+  taskPayload: Record<string, unknown>;
+}) {
+  const existingResult = await findAssistantOperationalTaskByOperationKey({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    taskType: args.taskType,
+    appointmentId: args.appointment.id,
+    operationKey: args.operationKey,
+  });
+
+  if (!existingResult.ok) {
+    return { ok: false as const, error: existingResult.error, taskId: null as string | null, task: null as StoreAssistantOperationalTaskRow | null, reused: false as const };
+  }
+
+  if (existingResult.task?.id) {
+    return { ok: true as const, error: null as string | null, taskId: existingResult.task.id, task: existingResult.task, reused: true as const };
+  }
+
+  const taskResult = await createAssistantOperationalTask({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    taskType: args.taskType,
+    status: "open",
+    priority: args.priority || "normal",
+    title: args.title,
+    description: args.description,
+    appointment: args.appointment,
+    targetStartIso: args.targetStartIso || null,
+    targetEndIso: args.targetEndIso || null,
+    timezoneName: args.timezoneName,
+    taskPayload: {
+      ...args.taskPayload,
+      operation_key: args.operationKey,
+      customer_message_sent: false,
+      agenda_updated: false,
+    },
+  });
+
+  return { ...taskResult, task: null as StoreAssistantOperationalTaskRow | null, reused: false as const };
+}
+
+async function finalizeAssistantCustomerContactTask(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  taskId: string | null;
+  existingTask?: StoreAssistantOperationalTaskRow | null;
+  customerMessageSent: boolean;
+  customerMessageError?: string | null;
+  waitingDescription: string;
+  openDescription: string;
+  taskPayload: Record<string, unknown>;
+}) {
+  const existingPayload = getOperationalTaskPayload(args.existingTask || null);
+  return updateAssistantOperationalTaskAfterCustomerContact({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    taskId: args.taskId,
+    status: args.customerMessageSent ? "waiting_customer_response" : "open",
+    description: args.customerMessageSent ? args.waitingDescription : args.openDescription,
+    taskPayload: {
+      ...existingPayload,
+      ...args.taskPayload,
+      customer_message_sent: args.customerMessageSent,
+      customer_message_error: args.customerMessageError || null,
+      agenda_updated: false,
+      customer_contact_finalized_at: new Date().toISOString(),
+    },
+  });
 }
 
 function getOperationalTaskPayload(task: StoreAssistantOperationalTaskRow | null | undefined) {
@@ -3646,8 +4325,10 @@ function isResponsibleRejectingSuggestedTime(text: string) {
   return /\b(nao|não|nao pode|não pode|nao confirma|não confirma|melhor nao|melhor não|nao atualiza|não atualiza)\b/.test(normalizeText(text));
 }
 
-function findSuggestedTimeApprovalTask(tasks: StoreAssistantOperationalTaskRow[]) {
-  return (tasks || []).find((task) => {
+function findSuggestedTimeApprovalTask(args: { tasks: StoreAssistantOperationalTaskRow[]; assistantContextState?: StoreAssistantContextStateRow | null }) {
+  const contextPayload = readAssistantContextPayload(args.assistantContextState || null);
+  const contextTaskId = String(contextPayload.task_id || "").trim();
+  const candidates = (args.tasks || []).filter((task) => {
     const payload = getOperationalTaskPayload(task);
     return task.task_type === "appointment_reschedule_with_customer" &&
       task.status === "waiting_customer_response" &&
@@ -3655,7 +4336,15 @@ function findSuggestedTimeApprovalTask(tasks: StoreAssistantOperationalTaskRow[]
       typeof payload.suggested_start_at === "string" &&
       typeof payload.suggested_end_at === "string" &&
       Boolean(task.related_appointment_id);
-  }) || null;
+  });
+
+  if (contextTaskId) {
+    return { task: candidates.find((candidate) => candidate.id === contextTaskId) || null, ambiguous: false };
+  }
+
+  if (candidates.length === 1) return { task: candidates[0], ambiguous: false };
+  if (candidates.length > 1) return { task: null, ambiguous: true };
+  return { task: null, ambiguous: false };
 }
 
 async function checkSuggestedTimeApprovalAvailability(args: {
@@ -3711,8 +4400,15 @@ function buildCustomerConfirmationTextForSuggestedTime(args: { appointment: Appo
   return `Oi, ${customerName}. Confirmado então: sua ${appointmentTypeLabel} ficou para ${suggestedDate} às ${suggestedTime}. Qualquer coisa, é só me avisar.`;
 }
 
-async function resolveSuggestedTimeApprovalReply(args: { supabase: any; organizationId: string; storeId: string; threadId: string; assistantContextState?: StoreAssistantContextStateRow | null; openOperationalTasks: StoreAssistantOperationalTaskRow[]; lastHumanMessage: string; scheduleSettings?: StoreScheduleSettingsRow | null; }) {
-  const task = findSuggestedTimeApprovalTask(args.openOperationalTasks || []);
+export async function resolveSuggestedTimeApprovalReply(args: { supabase: any; organizationId: string; storeId: string; threadId: string; assistantContextState?: StoreAssistantContextStateRow | null; openOperationalTasks: StoreAssistantOperationalTaskRow[]; lastHumanMessage: string; scheduleSettings?: StoreScheduleSettingsRow | null; }) {
+  const taskResolution = findSuggestedTimeApprovalTask({
+    tasks: args.openOperationalTasks || [],
+    assistantContextState: args.assistantContextState || null,
+  });
+  if (taskResolution.ambiguous) {
+    return "Encontrei mais de uma remarcação aguardando sua aprovação. Para evitar atualizar o compromisso errado, identifique o cliente ou a tarefa antes de responder apenas sim ou não.";
+  }
+  const task = taskResolution.task;
   if (!task) return null;
   const payload = getOperationalTaskPayload(task);
   const suggestedStartIso = String(payload.suggested_start_at || "").trim();
@@ -3735,6 +4431,18 @@ async function resolveSuggestedTimeApprovalReply(args: { supabase: any; organiza
     .from("store_appointments").select("*").eq("id", task.related_appointment_id).eq("organization_id", args.organizationId).eq("store_id", args.storeId).maybeSingle();
   const appointment = appointmentRow as AppointmentRow | null;
   if (appointmentError || !appointment) return `Entendi a aprovação, mas não consegui encontrar o compromisso ligado a essa remarcação. A agenda não foi alterada.`;
+
+  const taskTarget = buildCommercialTargetFromTask(task, "suggested_time_approval_task");
+  const appointmentTarget = buildCommercialTargetFromAppointment(appointment, "suggested_time_approval_appointment");
+  const updateTargetAssertion = assertCommercialTargetForSideEffect({
+    target: appointmentTarget || taskTarget,
+    sideEffect: "update_store_appointment",
+    expectedConversationId: appointment.conversation_id || null,
+    expectedCommercialOpportunityId: task.commercial_opportunity_id || null,
+  });
+  if (!updateTargetAssertion.ok) {
+    return "Entendi a aprovacao, mas o alvo comercial dessa remarcacao nao esta canonicamente consistente. A agenda nao foi alterada.";
+  }
 
   const availability = await checkSuggestedTimeApprovalAvailability({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, appointmentId: appointment.id, appointmentType: appointment.appointment_type || "other", startIso: suggestedStartIso, endIso: suggestedEndIso });
   if (!availability.available) {
@@ -3802,7 +4510,12 @@ async function resolveSuggestedTimeApprovalReply(args: { supabase: any; organiza
       : null;
 
   const customerMessageResult = appointment.conversation_id
-    ? await sendAiMessageToCustomerConversation({ supabase: args.supabase, conversationId: appointment.conversation_id, text: buildCustomerConfirmationTextForSuggestedTime({ appointment, suggestedStartIso, timezoneName }) })
+    ? await sendAiMessageToCustomerConversation({
+        supabase: args.supabase,
+        conversationId: appointment.conversation_id,
+        text: buildCustomerConfirmationTextForSuggestedTime({ appointment, suggestedStartIso, timezoneName }),
+        target: appointmentTarget || taskTarget,
+      })
     : null;
   if (!customerMessageResult?.ok) {
     await args.supabase.from("store_assistant_operational_tasks").update({
@@ -3823,7 +4536,10 @@ async function resolveSuggestedTimeApprovalReply(args: { supabase: any; organiza
   }).eq("id", task.id).eq("organization_id", args.organizationId).eq("store_id", args.storeId);
   if (taskUpdateError) return `Atualizei a agenda e avisei ${customerName}, mas não consegui finalizar a tarefa operacional: ${taskUpdateError.message}${projectionWarning ? ` Aviso: ${projectionWarning}` : ""}`;
 
-  await resolveAssistantContextState({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, threadId: args.threadId, currentContextState: args.assistantContextState || null, lastUserMessage: args.lastHumanMessage, lastAssistantMessage: `${customerName} confirmado em ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}.` });
+  const contextResult = await resolveAssistantContextState({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, threadId: args.threadId, currentContextState: args.assistantContextState || null, lastUserMessage: args.lastHumanMessage, lastAssistantMessage: `${customerName} confirmado em ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}.` });
+  if (!contextResult.ok) {
+    return `Atualizei a agenda e avisei ${customerName}, mas não consegui fechar o contexto da Assistente: ${contextResult.error || "erro desconhecido"}. Reconciliação necessária.`;
+  }
   return `Pronto. Confirmei com ${customerName} e atualizei ${appointment.title} para ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}.${projectionWarning ? `\n\nAviso: ${projectionWarning}` : ""}`;
 }
 
@@ -4192,18 +4908,48 @@ function resolveTargetAppointmentIndex(args: {
 
 type ScheduleAction = "create" | PostAppointmentAction;
 
+type AssistantCustomerIdentityCandidate = {
+  option_number: number;
+  customer_id: string | null;
+  lead_id: string;
+  conversation_id: string | null;
+  commercial_opportunity_id: string | null;
+  customer_name: string;
+  customer_phone: string | null;
+  opportunity_stage: string | null;
+};
+
+type SafeCustomerIdentityGateResult =
+  | { type: "allow"; candidate: AssistantCustomerIdentityCandidate | null }
+  | { type: "blocked"; reply: string };
+
 function resolveScheduleAction(text: string): ScheduleAction | null {
   const t = normalizeText(text);
 
+  // Strong reschedule verbs win before CREATE terms such as "marque".
+  if (hasAnyTerm(t, [
+    "remarque", "remarca", "remarcar", "reagende", "reagenda", "reagendar",
+    "mude a visita", "muda a visita", "mudar a visita",
+    "mude o compromisso", "muda o compromisso", "mudar o compromisso",
+  ])) return "reschedule";
+
   if (
     hasAnyTerm(t, [
+      "agende",
       "agendar",
+      "crie compromisso",
+      "crie um compromisso",
+      "criar compromisso",
+      "criar um compromisso",
       "criar compromisso",
       "novo compromisso",
       "adicionar compromisso",
       "adiciona um compromisso",
       "adicione um compromisso",
+      "marque visita",
       "marcar visita para",
+      "marque instalacao",
+      "marque instalação",
       "marcar instalacao para",
       "marcar instalação para",
       "marcar manutencao para",
@@ -4302,8 +5048,9 @@ function safeCapitalize(value: string) {
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }
 
-function extractCustomerNameFromText(text: string): string | null {
+export function extractCustomerNameFromText(text: string): string | null {
   const patterns = [
+    /para\s+([a-z\u00c0-\u00ff0-9][a-z\u00c0-\u00ff0-9\s_-]{1,60}?)(?=\s+(?:dia|no dia|na data|as|a\s+partir|no endereco|no endere\u00e7o|endereco|endere\u00e7o|telefone|contato)\b|$)/i,
     /cliente\s+([a-zà-ÿ0-9][a-zà-ÿ0-9\s_-]{1,60}?)(?=\s+(?:dia|no dia|na data|as|às|para|com|endereco|endereço|telefone|contato)\b|$)/i,
     /com\s+([a-zà-ÿ0-9][a-zà-ÿ0-9\s_-]{1,60}?)(?=\s+(?:dia|no dia|na data|as|às|para|endereco|endereço|telefone|contato)\b|$)/i,
   ];
@@ -4316,6 +5063,103 @@ function extractCustomerNameFromText(text: string): string | null {
   }
 
   return null;
+}
+
+function maskPhoneForAssistantIdentity(phone: string | null | undefined) {
+  const digits = normalizeDigits(phone);
+  if (digits.length < 4) return null;
+  return `telefone final ${digits.slice(-4)}`;
+}
+
+function formatOpportunityStageForAssistantIdentity(stage: string | null | undefined) {
+  const normalized = normalizeText(stage);
+  if (!normalized) return null;
+  if (normalized === "novo_lead") return "oportunidade em Novo lead";
+  if (normalized === "qualificacao") return "oportunidade em Qualificacao";
+  if (normalized === "proposta") return "oportunidade em Proposta";
+  if (normalized === "negociacao") return "oportunidade em Negociacao";
+  if (normalized === "ganho") return "oportunidade ganha";
+  if (normalized === "perdido") return "oportunidade perdida";
+  return `oportunidade em ${stage}`;
+}
+
+function buildCustomerIdentityCandidateLine(candidate: AssistantCustomerIdentityCandidate) {
+  const parts = [
+    `${candidate.option_number}. ${candidate.customer_name || "Cliente sem nome"}`,
+    maskPhoneForAssistantIdentity(candidate.customer_phone),
+    formatOpportunityStageForAssistantIdentity(candidate.opportunity_stage),
+  ].filter(Boolean);
+
+  return parts.join(" - ");
+}
+
+export function buildCustomerIdentityDisambiguationReply(args: {
+  candidates: AssistantCustomerIdentityCandidate[];
+  requestedName: string;
+  operatorName?: string | null;
+}) {
+  const operatorPrefix = args.operatorName ? `${args.operatorName}, ` : "";
+  const lines = [
+    `${operatorPrefix}encontrei ${args.candidates.length} clientes chamados ${args.requestedName}. Qual deles voce quer?`,
+    "",
+    ...args.candidates.slice(0, 8).map(buildCustomerIdentityCandidateLine),
+    "",
+    "Pode me dizer o numero ou uma caracteristica que diferencie o cliente?",
+  ];
+
+  return lines.join("\n").trim();
+}
+
+function buildCustomerIdentityNeedsMoreInfoReply(args: { requestedName?: string | null; operatorName?: string | null }) {
+  const operatorPrefix = args.operatorName ? `${args.operatorName}, ` : "";
+  const suffix = args.requestedName ? ` para ${args.requestedName}` : "";
+  return `${operatorPrefix}preciso identificar o cliente com seguranca antes de agir${suffix}. Me envie telefone, sobrenome ou outra informacao do cliente.`;
+}
+
+function readAssistantCustomerIdentityCandidates(contextState?: StoreAssistantContextStateRow | null) {
+  const raw = contextState?.candidate_options;
+  if (!Array.isArray(raw)) return [] as AssistantCustomerIdentityCandidate[];
+
+  return raw
+    .map((item) => item as Partial<AssistantCustomerIdentityCandidate>)
+    .filter((item) => {
+      const optionNumber = Number(item.option_number);
+      const leadId = String(item.lead_id || "").trim();
+      const name = String(item.customer_name || "").trim();
+      return Number.isInteger(optionNumber) && optionNumber >= 1 && Boolean(leadId) && Boolean(name);
+    })
+    .map((item) => ({
+      option_number: Number(item.option_number),
+      customer_id: String(item.customer_id || "").trim() || null,
+      lead_id: String(item.lead_id || "").trim(),
+      conversation_id: String(item.conversation_id || "").trim() || null,
+      commercial_opportunity_id: String(item.commercial_opportunity_id || "").trim() || null,
+      customer_name: String(item.customer_name || "").trim(),
+      customer_phone: String(item.customer_phone || "").trim() || null,
+      opportunity_stage: String(item.opportunity_stage || "").trim() || null,
+    }));
+}
+
+export function resolveCustomerIdentityCandidateFromText(args: {
+  text: string;
+  candidates: AssistantCustomerIdentityCandidate[];
+}) {
+  const explicitIndex = resolveExplicitAppointmentItemIndex(args.text, args.candidates.length);
+  if (explicitIndex !== null) {
+    return args.candidates[explicitIndex] || null;
+  }
+
+  const normalizedText = normalizeText(args.text);
+  const digitText = normalizeDigits(args.text);
+  const matches = args.candidates.filter((candidate) => {
+    const phoneDigits = normalizeDigits(candidate.customer_phone);
+    if (phoneDigits.length >= 4 && digitText.includes(phoneDigits.slice(-4))) return true;
+    const stage = normalizeText(formatOpportunityStageForAssistantIdentity(candidate.opportunity_stage));
+    if (stage && normalizedText.includes(stage.replace(/^oportunidade em\s+/, ""))) return true;
+    return false;
+  });
+
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function extractPhoneFromText(text: string): string | null {
@@ -4469,17 +5313,63 @@ async function resolveCustomerAvailabilityRequestFromContext(args: {
   }
 
   let customerMessageSent = false;
+  if (!args.threadId) {
+    return "Encontrei o compromisso, mas nÃ£o consegui registrar a tratativa porque a conversa da assistente nÃ£o foi identificada. A agenda ainda nÃ£o foi alterada.";
+  }
+
+  const preTaskResult = await createAssistantOperationalTask({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    taskType: "appointment_reschedule_find_customer_availability",
+    status: "open",
+    priority: "normal",
+    title: `Verificar novo horÃ¡rio com ${appointment.customer_name || "cliente"}`,
+    description: "A assistente registrou a tratativa para verificar disponibilidade com o cliente. A agenda ainda nÃ£o foi alterada.",
+    appointment,
+    targetStartIso: args.assistantContextState?.target_start_at || null,
+    targetEndIso: args.assistantContextState?.target_end_at || null,
+    timezoneName: scheduleTimezone,
+    taskPayload: {
+      source: "assistant.reply.route",
+      original_user_message: args.lastHumanMessage,
+      customer_message_sent: false,
+      agenda_updated: false,
+      active_context_id: args.assistantContextState?.id || null,
+      requested_action: "find_customer_availability",
+    },
+  });
+  if (!preTaskResult.ok) {
+    return `Encontrei o compromisso, mas nÃ£o consegui registrar a tratativa operacional: ${preTaskResult.error}. A agenda ainda nÃ£o foi alterada.`;
+  }
+  const preTaskLoadResult = await loadAssistantOperationalTaskById({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    taskId: preTaskResult.taskId,
+  });
+  if (!preTaskLoadResult.ok) {
+    return `Registrei a tratativa operacional, mas nÃ£o consegui confirmar a task antes do contato: ${preTaskLoadResult.error}. A agenda ainda nÃ£o foi alterada.`;
+  }
+  const previousCustomerMessageSent = getOperationalTaskPayload(preTaskLoadResult.task).customer_message_sent === true;
+
   if (appointment.conversation_id) {
     const customerMessage = buildCustomerAvailabilityQuestion({
       appointment,
       scheduleSettings: args.scheduleSettings || null,
     });
-    const sendResult = await sendAiMessageToCustomerConversation({
-      supabase: args.supabase,
-      conversationId: appointment.conversation_id,
-      text: customerMessage,
-    });
-    customerMessageSent = sendResult.ok;
+    if (previousCustomerMessageSent) {
+      customerMessageSent = true;
+    } else {
+      const sendResult = await sendAiMessageToCustomerConversation({
+        supabase: args.supabase,
+        conversationId: appointment.conversation_id,
+        text: customerMessage,
+        target: buildCommercialTargetFromAppointment(appointment, "customer_availability_request"),
+      });
+      customerMessageSent = sendResult.ok;
+    }
   }
 
   if (!args.threadId) {
@@ -4597,6 +5487,661 @@ function extractCreateAppointmentPayload(text: string, now: Date, settings?: Sto
       scheduled_end: scheduledEnd,
     },
   };
+}
+
+export async function loadAssistantCustomerIdentityCandidates(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  requestedName: string;
+}) {
+  const requestedName = String(args.requestedName || "").trim();
+  if (!requestedName) return { ok: true as const, candidates: [] as AssistantCustomerIdentityCandidate[] };
+
+  const { data: leadsData, error: leadsError } = await args.supabase
+    .from("leads")
+    .select("id, name, phone, created_at")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .ilike("name", `%${requestedName.replace(/[%_]/g, "")}%`)
+    .limit(20);
+
+  if (leadsError) {
+    return {
+      ok: false as const,
+      error: leadsError.message,
+      diagnosticCode: "ASSISTANT_CUSTOMER_IDENTITY_LEAD_LOOKUP_FAILED",
+      candidates: [] as AssistantCustomerIdentityCandidate[],
+    };
+  }
+
+  const exactLeads = ((leadsData || []) as Array<Record<string, unknown>>)
+    .filter((lead) => normalizeText(String(lead.name || "")) === normalizeText(requestedName));
+  const leadIds = exactLeads.map((lead) => String(lead.id || "").trim()).filter(Boolean);
+  if (!leadIds.length) return { ok: true as const, candidates: [] as AssistantCustomerIdentityCandidate[] };
+
+  const conversationsResult = await args.supabase
+    .from("conversations")
+    .select("id, lead_id, created_at")
+    .eq("organization_id", args.organizationId)
+    .in("lead_id", leadIds)
+    .limit(50);
+
+  if (conversationsResult.error) {
+    return {
+      ok: false as const,
+      error: conversationsResult.error.message,
+      diagnosticCode: "ASSISTANT_CUSTOMER_IDENTITY_CONVERSATION_LOOKUP_FAILED",
+      candidates: [] as AssistantCustomerIdentityCandidate[],
+    };
+  }
+
+  const opportunitiesResult = await args.supabase
+    .from("commercial_opportunities")
+    .select("id, customer_id, origin_lead_id, primary_conversation_id, stage, updated_at")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .in("origin_lead_id", leadIds)
+    .limit(50);
+
+  if (opportunitiesResult.error) {
+    return {
+      ok: false as const,
+      error: opportunitiesResult.error.message,
+      diagnosticCode: "ASSISTANT_CUSTOMER_IDENTITY_OPPORTUNITY_LOOKUP_FAILED",
+      candidates: [] as AssistantCustomerIdentityCandidate[],
+    };
+  }
+
+  const conversationsByLead = new Map<string, Set<string>>();
+  for (const conversation of (conversationsResult.data || []) as Array<Record<string, unknown>>) {
+    const leadId = String(conversation.lead_id || "").trim();
+    const conversationId = String(conversation.id || "").trim();
+    if (leadId && conversationId) {
+      const existing = conversationsByLead.get(leadId) || new Set<string>();
+      existing.add(conversationId);
+      conversationsByLead.set(leadId, existing);
+    }
+  }
+
+  const opportunitiesByLead = new Map<string, Array<Record<string, unknown>>>();
+  for (const opportunity of (opportunitiesResult.data || []) as Array<Record<string, unknown>>) {
+    const leadId = String(opportunity.origin_lead_id || "").trim();
+    const opportunityId = String(opportunity.id || "").trim();
+    if (leadId && opportunityId) {
+      const existing = opportunitiesByLead.get(leadId) || [];
+      existing.push(opportunity);
+      opportunitiesByLead.set(leadId, existing);
+    }
+  }
+
+  const candidates = exactLeads.map((lead, index) => {
+    const leadId = String(lead.id || "").trim();
+    const leadOpportunities = opportunitiesByLead.get(leadId) || [];
+    const candidateOpportunity = leadOpportunities.length === 1 ? leadOpportunities[0] : null;
+    const leadConversationIds = conversationsByLead.get(leadId) || new Set<string>();
+    const primaryConversationId = String(candidateOpportunity?.primary_conversation_id || "").trim();
+    const opportunity =
+      candidateOpportunity &&
+      primaryConversationId &&
+      leadConversationIds.has(primaryConversationId)
+        ? candidateOpportunity
+        : null;
+    const uniqueConversationId = leadConversationIds.size === 1
+      ? Array.from(leadConversationIds)[0] || null
+      : null;
+    const conversationId =
+      primaryConversationId && (!leadConversationIds.size || leadConversationIds.has(primaryConversationId))
+        ? primaryConversationId
+        : uniqueConversationId;
+    return {
+      option_number: index + 1,
+      customer_id: String(opportunity?.customer_id || "").trim() || null,
+      lead_id: leadId,
+      conversation_id: conversationId || null,
+      commercial_opportunity_id: String(opportunity?.id || "").trim() || null,
+      customer_name: String(lead.name || requestedName).trim(),
+      customer_phone: String(lead.phone || "").trim() || null,
+      opportunity_stage: String(opportunity?.stage || "").trim() || null,
+    } satisfies AssistantCustomerIdentityCandidate;
+  });
+
+  return { ok: true as const, candidates };
+}
+
+export async function resolveSafeCustomerIdentityGate(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId?: string | null;
+  assistantContextState?: StoreAssistantContextStateRow | null;
+  requestedName: string | null;
+  originalAction: ScheduleAction;
+  originalPayload: Record<string, unknown>;
+  lastHumanMessage: string;
+  operatorName?: string | null;
+  scheduleTimezone: string;
+}): Promise<SafeCustomerIdentityGateResult> {
+  if (isAssistantContextExpired(args.assistantContextState || null)) {
+    const reply = "O contexto pendente anterior expirou. Para seguranca, repita a acao informando o cliente novamente.";
+    if (args.assistantContextState && isActiveCustomerIdentityDisambiguationContext(args.assistantContextState)) {
+      const closeResult = await resolveExpiredCustomerIdentityDisambiguationContext({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId || null,
+        contextState: args.assistantContextState,
+        lastHumanMessage: args.lastHumanMessage,
+        expirationReply: reply,
+      });
+      if (!closeResult.ok) {
+        return {
+          type: "blocked",
+          reply: "O contexto pendente anterior expirou, mas nao consegui encerra-lo com seguranca. Nenhuma acao foi executada. Tente novamente.",
+        };
+      }
+    }
+    return { type: "blocked", reply };
+  }
+
+  if (!isCompatibleIdentityDisambiguationContext(args.assistantContextState || null)) {
+    return { type: "blocked", reply: "Existe outro fluxo ativo na Assistente. Para evitar sobrescrever uma acao pendente, conclua ou cancele esse fluxo antes de iniciar uma nova acao para cliente." };
+  }
+
+  if (!args.requestedName) {
+    return { type: "blocked", reply: buildCustomerIdentityNeedsMoreInfoReply({ operatorName: args.operatorName }) };
+  }
+
+  const loaded = await loadAssistantCustomerIdentityCandidates({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    requestedName: args.requestedName,
+  });
+
+  if (!loaded.ok) {
+    console.warn("[assistant-customer-identity] lookup failed", {
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      requestedName: args.requestedName,
+      diagnosticCode: loaded.diagnosticCode,
+    });
+    return {
+      type: "blocked",
+      reply: "Nao consegui consultar os clientes agora. Nenhuma acao foi executada. Tente novamente.",
+    };
+  }
+
+  if (loaded.candidates.length === 1) {
+    return { type: "allow", candidate: loaded.candidates[0] };
+  }
+
+  if (!loaded.candidates.length) {
+    return { type: "blocked", reply: buildCustomerIdentityNeedsMoreInfoReply({ requestedName: args.requestedName, operatorName: args.operatorName }) };
+  }
+
+  if (args.threadId) {
+    await upsertAssistantContextState({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId,
+      currentContextState: args.assistantContextState || null,
+      patch: {
+        active_topic: "customer_identity_disambiguation",
+        active_intent: args.originalAction,
+        active_status: "waiting_user_choice",
+        active_customer_name: args.requestedName,
+        active_customer_phone: null,
+        active_lead_id: null,
+        active_conversation_id: null,
+        active_appointment_id: null,
+        target_date: typeof args.originalPayload.scheduled_start === "string"
+          ? isoDateToLocalDateForDb(args.originalPayload.scheduled_start, args.scheduleTimezone)
+          : null,
+        target_time: typeof args.originalPayload.scheduled_start === "string"
+          ? formatTimeOnlyInTimeZone(args.originalPayload.scheduled_start, args.scheduleTimezone)
+          : null,
+        target_start_at: typeof args.originalPayload.scheduled_start === "string" ? args.originalPayload.scheduled_start : null,
+        target_end_at: typeof args.originalPayload.scheduled_end === "string" ? args.originalPayload.scheduled_end : null,
+        timezone_name: args.scheduleTimezone,
+        expires_at: buildCustomerIdentityDisambiguationExpiresAt(),
+        candidate_options: loaded.candidates,
+        context_payload: {
+          reason: "customer_identity_ambiguity",
+          original_action: args.originalAction,
+          original_payload: args.originalPayload,
+          original_user_message: args.lastHumanMessage,
+        },
+        last_user_message: args.lastHumanMessage,
+      },
+    });
+  }
+
+  return {
+    type: "blocked",
+    reply: buildCustomerIdentityDisambiguationReply({
+      candidates: loaded.candidates,
+      requestedName: args.requestedName,
+      operatorName: args.operatorName || null,
+    }),
+  };
+}
+
+export async function executeCreateAppointmentWithSafeIdentity(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId?: string | null;
+  assistantContextState?: StoreAssistantContextStateRow | null;
+  openOperationalTasks?: StoreAssistantOperationalTaskRow[];
+  createPayload: {
+    title: string;
+    appointment_type: string;
+    customer_name: string | null;
+    customer_phone: string | null;
+    address_text: string | null;
+    scheduled_start: string;
+    scheduled_end: string;
+  };
+  identityCandidate: AssistantCustomerIdentityCandidate | null;
+  lastHumanMessage: string;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const createPayload = args.createPayload;
+  const identityCandidate = args.identityCandidate;
+  let opportunityResolution:
+    | { ok: boolean; commercialOpportunityId: string | null; leadId: string | null; conversationId: string | null; reason?: string }
+    | null =
+    createPayload.appointment_type === "technical_visit"
+      ? await resolveAuthorizedCommercialOpportunityIdForAssistantTechnicalVisit({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          openOperationalTasks: args.openOperationalTasks || [],
+          explicitCommercialOpportunityId: identityCandidate?.commercial_opportunity_id,
+          expectedLeadId: identityCandidate?.lead_id,
+          expectedConversationId: identityCandidate?.conversation_id,
+        })
+      : null;
+
+  if (createPayload.appointment_type === "technical_visit") {
+    if (!opportunityResolution?.ok || !opportunityResolution.commercialOpportunityId) {
+      return "Para criar uma visita tecnica comercial, preciso identificar a oportunidade correta antes. Abra ou selecione o atendimento comercial especifico e tente novamente.";
+    }
+
+    const candidateOpportunityId = String(identityCandidate?.commercial_opportunity_id || "").trim();
+    const candidateLeadId = String(identityCandidate?.lead_id || "").trim();
+    const candidateConversationId = String(identityCandidate?.conversation_id || "").trim();
+    const resolvedOpportunityId = String(opportunityResolution.commercialOpportunityId || "").trim();
+    const resolvedLeadId = String(opportunityResolution.leadId || "").trim();
+    const resolvedConversationId = String(opportunityResolution.conversationId || "").trim();
+
+    if (
+      (candidateOpportunityId && candidateOpportunityId !== resolvedOpportunityId) ||
+      (candidateLeadId && candidateLeadId !== resolvedLeadId) ||
+      (candidateConversationId && candidateConversationId !== resolvedConversationId)
+    ) {
+      return "A identificacao do cliente nao corresponde ao atendimento comercial autorizado para esta visita tecnica. Para seguranca, selecione o atendimento correto e tente novamente.";
+    }
+  }
+
+  const commercialOpportunityId =
+    createPayload.appointment_type === "technical_visit"
+      ? opportunityResolution?.commercialOpportunityId || null
+      : identityCandidate?.commercial_opportunity_id || null;
+  const commercialLeadId =
+    createPayload.appointment_type === "technical_visit"
+      ? opportunityResolution?.leadId || null
+      : identityCandidate?.lead_id || null;
+  const commercialConversationId =
+    createPayload.appointment_type === "technical_visit"
+      ? opportunityResolution?.conversationId || null
+      : identityCandidate?.conversation_id || null;
+
+  // CREATE de visita/instalacao e uma negociacao com o cliente. A agenda so
+  // pode ser escrita pelo worker depois da confirmacao recebida.
+  if (createPayload.appointment_type === "technical_visit" || createPayload.appointment_type === "installation") {
+    if (!args.threadId || !commercialConversationId || !commercialLeadId) {
+      return "Identifiquei o pedido, mas nao consegui registrar uma task canonica para confirmar o horario com o cliente. Nenhuma agenda foi alterada.";
+    }
+    const { data: serviceSettings, error: serviceSettingsError } = await args.supabase
+      .from("store_operation_settings")
+      .select("offers_installation,offers_technical_visit")
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .maybeSingle();
+    const serviceEnabled = createPayload.appointment_type === "technical_visit"
+      ? serviceSettings?.offers_technical_visit === true
+      : serviceSettings?.offers_installation === true;
+    if (serviceSettingsError || !serviceEnabled) {
+      return "Esse servico nao esta configurado como disponivel para esta loja. Nenhuma mensagem foi enviada e nenhuma agenda foi alterada.";
+    }
+
+    const operationKey = [
+      "assistant_customer_contact",
+      "appointment_create_with_customer",
+      args.threadId,
+      createPayload.appointment_type,
+      commercialLeadId,
+      commercialConversationId,
+      commercialOpportunityId || "",
+      createPayload.scheduled_start,
+      createPayload.scheduled_end,
+      normalizeText(args.lastHumanMessage).replace(/\s+/g, " ").trim(),
+    ].join(":");
+    const canonicalTarget = {
+      source: "appointment_create_with_customer",
+      leadId: commercialLeadId,
+      conversationId: commercialConversationId,
+      commercialOpportunityId,
+      customerName: identityCandidate?.customer_name || createPayload.customer_name,
+      customerPhone: identityCandidate?.customer_phone || createPayload.customer_phone,
+    };
+    const taskResult = await createAssistantOperationalTask({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId,
+      taskType: "appointment_create_with_customer",
+      status: "open",
+      priority: "high",
+      title: `Confirmar ${formatAppointmentType(createPayload.appointment_type)} com ${canonicalTarget.customerName || "cliente"}`,
+      description: "A assistente registrou o pedido. A agenda permanece inalterada ate a confirmacao do cliente.",
+      canonicalTarget,
+      targetStartIso: createPayload.scheduled_start,
+      targetEndIso: createPayload.scheduled_end,
+      timezoneName: getScheduleTimezone(args.scheduleSettings || null),
+      taskPayload: {
+        source: "assistant.reply.route",
+        operation_key: operationKey,
+        appointment_type: createPayload.appointment_type,
+        title: createPayload.title,
+        address_text: createPayload.address_text,
+        original_user_message: args.lastHumanMessage,
+        customer_message_sent: false,
+        agenda_updated: false,
+        commercial_opportunity_id: commercialOpportunityId,
+      },
+    });
+    if (!taskResult.ok || !taskResult.taskId) {
+      return "Registrei o pedido, mas nao consegui confirmar a task operacional com seguranca. Nenhuma agenda foi alterada.";
+    }
+
+    const taskSnapshot = await loadAssistantOperationalTaskById({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      taskId: taskResult.taskId,
+    });
+    if (!taskSnapshot.ok || !taskSnapshot.task) {
+      return "Registrei o pedido, mas nao consegui reler a task operacional com seguranca. Nenhuma agenda foi alterada.";
+    }
+    const existingPayload = getOperationalTaskPayload(taskSnapshot.task);
+    const sameCanonicalTarget =
+      taskSnapshot.task.related_lead_id === commercialLeadId &&
+      taskSnapshot.task.related_conversation_id === commercialConversationId &&
+      (taskSnapshot.task.commercial_opportunity_id || null) === (commercialOpportunityId || null) &&
+      sameInstant(taskSnapshot.task.target_start_at, createPayload.scheduled_start) &&
+      sameInstant(taskSnapshot.task.target_end_at, createPayload.scheduled_end) &&
+      String(existingPayload.appointment_type || "") === createPayload.appointment_type;
+    if (!sameCanonicalTarget) {
+      return "A task operacional encontrada nao corresponde exatamente ao cliente, oportunidade ou horario solicitado. Nenhuma agenda foi alterada.";
+    }
+    if (existingPayload.customer_message_sent === true && existingPayload.customer_message_id) {
+      return `A confirmacao de ${formatAppointmentType(createPayload.appointment_type)} para ${canonicalTarget.customerName || "o cliente"} ja foi enviada e continua aguardando resposta. A agenda ainda nao foi alterada.`;
+    }
+    if (taskSnapshot.task.status === "waiting_customer_response") {
+      return `A confirmacao de ${formatAppointmentType(createPayload.appointment_type)} para ${canonicalTarget.customerName || "o cliente"} continua aguardando resposta. A agenda ainda nao foi alterada.`;
+    }
+
+    const customerMessage = `Oi, ${canonicalTarget.customerName || "tudo bem"}. Posso confirmar ${formatAppointmentType(createPayload.appointment_type)} para ${formatDateOnlyInTimeZone(createPayload.scheduled_start, getScheduleTimezone(args.scheduleSettings || null))} as ${formatTimeOnlyInTimeZone(createPayload.scheduled_start, getScheduleTimezone(args.scheduleSettings || null))}? Responda sim para confirmar ou me diga outro horario.`;
+    const sendResult = await sendAiMessageToCustomerConversation({
+      supabase: args.supabase,
+      conversationId: commercialConversationId,
+      text: customerMessage,
+      target: canonicalTarget,
+    });
+    const taskUpdate = await updateAssistantOperationalTaskAfterCustomerContact({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      taskId: taskResult.taskId,
+      status: sendResult.ok ? "waiting_customer_response" : "open",
+      description: sendResult.ok
+        ? "Mensagem enviada ao cliente. A agenda permanece inalterada ate a confirmacao."
+        : `Nao foi possivel enviar a confirmacao ao cliente: ${sendResult.error}`,
+      taskPayload: {
+        operation_key: operationKey,
+        source: "assistant.reply.route",
+        appointment_type: createPayload.appointment_type,
+        title: createPayload.title,
+        address_text: createPayload.address_text,
+        original_user_message: args.lastHumanMessage,
+        customer_message_sent: sendResult.ok,
+        customer_message_id: sendResult.ok ? sendResult.messageId : null,
+        customer_message_error: sendResult.ok ? null : sendResult.error,
+        agenda_updated: false,
+        commercial_opportunity_id: commercialOpportunityId,
+      },
+    });
+    if (!taskUpdate.ok) {
+      return `A task foi criada, mas nao consegui registrar o resultado do contato: ${taskUpdate.error}. Nenhuma agenda foi alterada.`;
+    }
+
+    if (args.threadId && sendResult.ok) {
+      const contextResult = await upsertAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: args.assistantContextState || null,
+        patch: {
+          active_topic: "appointment_create_with_customer",
+          active_intent: "create",
+          active_status: "waiting_customer_response",
+          active_customer_name: canonicalTarget.customerName,
+          active_customer_phone: canonicalTarget.customerPhone,
+          active_lead_id: commercialLeadId,
+          active_conversation_id: commercialConversationId,
+          active_appointment_id: null,
+          target_start_at: createPayload.scheduled_start,
+          target_end_at: createPayload.scheduled_end,
+          timezone_name: getScheduleTimezone(args.scheduleSettings || null),
+          context_payload: { task_id: taskResult.taskId, operation_key: operationKey, commercial_opportunity_id: commercialOpportunityId },
+          last_user_message: args.lastHumanMessage,
+        },
+      });
+      if (!contextResult.ok) {
+        return `Enviei a confirmacao ao cliente, mas nao consegui registrar o contexto operacional: ${contextResult.error}. A agenda permanece inalterada e a task aguarda reconciliacao.`;
+      }
+    }
+
+    return sendResult.ok
+      ? `Certo. Enviei a confirmacao de ${formatAppointmentType(createPayload.appointment_type)} para ${canonicalTarget.customerName || "o cliente"}. A agenda ainda nao foi alterada; aguardo a resposta para criar o compromisso.`
+      : `Registrei a task de confirmacao, mas nao consegui enviar a mensagem ao cliente: ${sendResult.error}. A agenda ainda nao foi alterada.`;
+  }
+
+  const targetAssertion = assertCommercialTargetForSideEffect({
+    target:
+      createPayload.appointment_type === "technical_visit"
+        ? {
+            source: "technical_visit_opportunity_resolution",
+            leadId: commercialLeadId,
+            conversationId: commercialConversationId,
+            customerName: identityCandidate?.customer_name || createPayload.customer_name,
+          }
+        : buildCommercialTargetFromIdentityCandidate(identityCandidate, "identity_disambiguation"),
+    sideEffect: "create_store_appointment_with_commercial_context",
+  });
+
+  if (!targetAssertion.ok) {
+    return "Preciso identificar o cliente de forma inequivoca antes de criar esse compromisso.";
+  }
+
+  const { data: createdAppointment, error } = await args.supabase.rpc(
+    "create_store_appointment_with_commercial_context",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_lead_id: commercialLeadId,
+      p_conversation_id: commercialConversationId,
+      p_title: createPayload.title,
+      p_appointment_type: createPayload.appointment_type,
+      p_status: "scheduled",
+      p_scheduled_start: createPayload.scheduled_start,
+      p_scheduled_end: createPayload.scheduled_end,
+      p_customer_name: identityCandidate?.customer_name || createPayload.customer_name,
+      p_customer_phone: identityCandidate?.customer_phone || createPayload.customer_phone,
+      p_address_text: createPayload.address_text,
+      p_notes: "Criado pela assistente operacional.",
+      p_source: "ai_operator",
+      p_created_by_user_id: null,
+      p_commercial_opportunity_id: commercialOpportunityId,
+    },
+  );
+
+  if (error) {
+    return `Tentei criar o compromisso, mas encontrei um erro: ${error.message}`;
+  }
+
+  const projectionWarning =
+    typeof createdAppointment?.id === "string"
+      ? await maybeProjectAppointmentToTechnicalVisitStageBySystem({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          appointmentId: createdAppointment.id,
+          appointmentType: createPayload.appointment_type,
+          appointmentStatus: "scheduled",
+          commercialOpportunityId,
+          source: "assistant_reply_route",
+        })
+      : null;
+
+  if (args.threadId) {
+    await resolveAssistantContextState({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId,
+      currentContextState: args.assistantContextState || null,
+      lastUserMessage: args.lastHumanMessage,
+      lastAssistantMessage: `Compromisso criado para ${identityCandidate?.customer_name || createPayload.customer_name || "cliente"}.`,
+    });
+  }
+
+  const successReply = buildAppointmentActionSuccessReply({
+    action: "create",
+    scheduleSettings: args.scheduleSettings || null,
+    createdPayload: {
+      title: createPayload.title,
+      appointment_type: createPayload.appointment_type,
+      customer_name: identityCandidate?.customer_name || createPayload.customer_name,
+      scheduled_start: createPayload.scheduled_start,
+    },
+  });
+
+  return projectionWarning
+    ? `${successReply}\n\nAviso: ${projectionWarning}`
+    : successReply;
+}
+
+export async function resolvePendingCustomerIdentityDisambiguationReply(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId?: string | null;
+  assistantContextState?: StoreAssistantContextStateRow | null;
+  openOperationalTasks?: StoreAssistantOperationalTaskRow[];
+  lastHumanMessage: string;
+  operatorName?: string | null;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const contextState = args.assistantContextState || null;
+  if (!contextState) return null;
+
+  if (
+    normalizeText(contextState.active_topic || "") !== "customer_identity_disambiguation" ||
+    normalizeText(contextState.active_status || "") !== "waiting_user_choice"
+  ) {
+    return null;
+  }
+
+  if (isAssistantContextExpired(contextState)) {
+    const reply = "O contexto pendente de identificacao do cliente expirou. Para seguranca, repita a acao informando o cliente novamente.";
+    const closeResult = await resolveExpiredCustomerIdentityDisambiguationContext({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId || null,
+      contextState,
+      lastHumanMessage: args.lastHumanMessage,
+      expirationReply: reply,
+    });
+    if (!closeResult.ok) {
+      return "O contexto pendente de identificacao do cliente expirou, mas nao consegui encerra-lo com seguranca. Nenhuma acao foi executada. Tente novamente.";
+    }
+    return reply;
+  }
+
+  const candidates = readAssistantCustomerIdentityCandidates(contextState);
+  if (!candidates.length) {
+    return buildCustomerIdentityNeedsMoreInfoReply({
+      requestedName: contextState?.active_customer_name,
+      operatorName: args.operatorName || null,
+    });
+  }
+
+  const selectedCandidate = resolveCustomerIdentityCandidateFromText({
+    text: args.lastHumanMessage,
+    candidates,
+  });
+
+  if (!selectedCandidate) {
+    return buildCustomerIdentityDisambiguationReply({
+      candidates,
+      requestedName: contextState?.active_customer_name || "esse nome",
+      operatorName: args.operatorName || null,
+    });
+  }
+
+  const contextPayload = readAssistantContextPayload(contextState);
+  const originalAction = String(contextPayload.original_action || contextState.active_intent || "");
+  const originalPayload = contextPayload.original_payload && typeof contextPayload.original_payload === "object" && !Array.isArray(contextPayload.original_payload)
+    ? contextPayload.original_payload as Record<string, unknown>
+    : null;
+
+  if (originalAction !== "create" || !originalPayload) {
+    return "Identifiquei o cliente, mas o contexto da acao pendente esta incompleto. Para seguranca, repita o pedido completo.";
+  }
+
+  const createPayload = {
+    title: String(originalPayload.title || "").trim(),
+    appointment_type: String(originalPayload.appointment_type || "").trim(),
+    customer_name: String(originalPayload.customer_name || "").trim() || null,
+    customer_phone: String(originalPayload.customer_phone || "").trim() || null,
+    address_text: String(originalPayload.address_text || "").trim() || null,
+    scheduled_start: String(originalPayload.scheduled_start || "").trim(),
+    scheduled_end: String(originalPayload.scheduled_end || "").trim(),
+  };
+
+  if (!createPayload.title || !createPayload.appointment_type || !createPayload.scheduled_start || !createPayload.scheduled_end) {
+    return "Identifiquei o cliente, mas o contexto da acao pendente esta incompleto. Para seguranca, repita o pedido completo.";
+  }
+
+  return executeCreateAppointmentWithSafeIdentity({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId || null,
+    assistantContextState: contextState,
+    openOperationalTasks: args.openOperationalTasks || [],
+    createPayload,
+    identityCandidate: selectedCandidate,
+    lastHumanMessage: String(contextPayload.original_user_message || args.lastHumanMessage),
+    scheduleSettings: args.scheduleSettings || null,
+  });
 }
 
 function extractReschedulePayload(text: string, now: Date, settings?: StoreScheduleSettingsRow | null) {
@@ -4731,7 +6276,7 @@ function buildAppointmentActionSuccessReply(args: {
   return `Certo. Remarquei ${referenceLabel} de ${customerName} para ${formatAppointmentStartInTimeZone({ value: args.appointment?.scheduled_start || args.appointment?.scheduled_end || null, scheduleSettings: args.scheduleSettings || null })}.`;
 }
 
-async function resolveAppointmentActionReply(args: {
+export async function resolveAppointmentActionReply(args: {
   supabase: any;
   organizationId: string;
   storeId: string;
@@ -4742,7 +6287,51 @@ async function resolveAppointmentActionReply(args: {
   recentMessages: AssistantMessageRow[];
   openAppointments: AppointmentRow[];
   scheduleSettings?: StoreScheduleSettingsRow | null;
+  operatorName?: string | null;
 }) {
+  const pendingContext = args.assistantContextState || null;
+  const pendingTopic = normalizeText(pendingContext?.active_topic || "");
+  const pendingStatus = normalizeText(pendingContext?.active_status || "");
+  const explicitAction = resolveScheduleAction(args.lastHumanMessage);
+  const pendingIdentity = pendingTopic === "customer_identity_disambiguation" && pendingStatus === "waiting_user_choice";
+  const pendingCancellation = pendingTopic === "appointment_management" && ["waiting_user_choice", "waiting_cancel_decision"].includes(pendingStatus);
+
+  if ((pendingIdentity || pendingCancellation) && explicitAction) {
+    if (!args.threadId) {
+      return "Existe uma ação pendente, mas não consegui encerrá-la antes do novo comando. Nenhuma ação foi executada.";
+    }
+
+    const supersedeResult = await resolveAssistantContextState({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId,
+      currentContextState: pendingContext,
+      lastUserMessage: args.lastHumanMessage,
+      lastAssistantMessage: "O contexto pendente foi encerrado porque um novo comando explícito foi recebido.",
+      resolvedReason: "superseded_by_new_explicit_command",
+    });
+
+    if (!supersedeResult.ok) {
+      return `Não consegui encerrar o contexto pendente com segurança. Nenhuma ação foi executada. Erro: ${supersedeResult.error || "falha ao persistir o encerramento"}.`;
+    }
+
+    args.assistantContextState = null;
+  }
+
+  const pendingCustomerIdentityReply = await resolvePendingCustomerIdentityDisambiguationReply({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId || null,
+    assistantContextState: args.assistantContextState || null,
+    openOperationalTasks: args.openOperationalTasks || [],
+    lastHumanMessage: args.lastHumanMessage,
+    operatorName: args.operatorName || null,
+    scheduleSettings: args.scheduleSettings || null,
+  });
+  if (pendingCustomerIdentityReply) return pendingCustomerIdentityReply;
+
   const pendingCancelDecisionReply = await handlePendingCustomerCancelDecision({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, threadId: args.threadId || null, assistantContextState: args.assistantContextState || null, lastHumanMessage: args.lastHumanMessage, scheduleSettings: args.scheduleSettings || null });
   if (pendingCancelDecisionReply) return pendingCancelDecisionReply;
 
@@ -4963,67 +6552,37 @@ async function resolveAppointmentActionReply(args: {
     if (!createPayload.ok) {
       return createPayload.message;
     }
-    const commercialOpportunityId =
-      createPayload.payload.appointment_type === "technical_visit"
-        ? resolveExplicitCommercialOpportunityIdForAssistantTechnicalVisit({
-            openOperationalTasks: args.openOperationalTasks || [],
-          })
-        : null;
 
-    const { data: createdAppointment, error } = await args.supabase.rpc(
-      "create_store_appointment_with_commercial_context",
-      {
-        p_organization_id: args.organizationId,
-        p_store_id: args.storeId,
-        p_lead_id: null,
-        p_conversation_id: null,
-        p_title: createPayload.payload.title,
-        p_appointment_type: createPayload.payload.appointment_type,
-        p_status: "scheduled",
-        p_scheduled_start: createPayload.payload.scheduled_start,
-        p_scheduled_end: createPayload.payload.scheduled_end,
-        p_customer_name: createPayload.payload.customer_name,
-        p_customer_phone: createPayload.payload.customer_phone,
-        p_address_text: createPayload.payload.address_text,
-        p_notes: "Criado pela assistente operacional.",
-        p_source: "assistant_operational",
-        p_created_by_user_id: null,
-        p_commercial_opportunity_id: commercialOpportunityId,
-      },
-    );
-
-    if (error) {
-      return `Tentei criar o compromisso, mas encontrei um erro: ${error.message}`;
-    }
-
-    const projectionWarning =
-      typeof createdAppointment?.id === "string"
-        ? await maybeProjectAppointmentToTechnicalVisitStageBySystem({
-            supabase: args.supabase,
-            organizationId: args.organizationId,
-            storeId: args.storeId,
-            appointmentId: createdAppointment.id,
-            appointmentType: createPayload.payload.appointment_type,
-            appointmentStatus: "scheduled",
-            commercialOpportunityId,
-            source: "assistant_reply_route",
-          })
-        : null;
-
-    const successReply = buildAppointmentActionSuccessReply({
-      action,
-      scheduleSettings: args.scheduleSettings || null,
-      createdPayload: {
-        title: createPayload.payload.title,
-        appointment_type: createPayload.payload.appointment_type,
-        customer_name: createPayload.payload.customer_name,
-        scheduled_start: createPayload.payload.scheduled_start,
-      },
+    const identityGate = await resolveSafeCustomerIdentityGate({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId || null,
+      assistantContextState: args.assistantContextState || null,
+      requestedName: createPayload.payload.customer_name,
+      originalAction: "create",
+      originalPayload: createPayload.payload,
+      lastHumanMessage: args.lastHumanMessage,
+      operatorName: args.operatorName || null,
+      scheduleTimezone,
     });
 
-    return projectionWarning
-      ? `${successReply}\n\nAviso: ${projectionWarning}`
-      : successReply;
+    if (identityGate.type === "blocked") {
+      return identityGate.reply;
+    }
+
+    return executeCreateAppointmentWithSafeIdentity({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId || null,
+      assistantContextState: args.assistantContextState || null,
+      openOperationalTasks: args.openOperationalTasks || [],
+      createPayload: createPayload.payload,
+      identityCandidate: identityGate.candidate,
+      lastHumanMessage: args.lastHumanMessage,
+      scheduleSettings: args.scheduleSettings || null,
+    });
   }
 
   if (commandHasExplicitTitleAndOriginalSchedule) {
@@ -5255,6 +6814,18 @@ async function resolveAppointmentActionReply(args: {
     }
   }
 
+  const selectedAppointmentTarget = buildCommercialTargetFromAppointment(
+    selectedAppointment,
+    "resolved_appointment_action",
+  );
+  const selectedAppointmentTargetAssertion = assertCommercialTargetForSideEffect({
+    target: selectedAppointmentTarget,
+    sideEffect: `appointment_${action}`,
+  });
+  if (!selectedAppointmentTargetAssertion.ok) {
+    return "Identifiquei o compromisso, mas o alvo comercial não está canonicamente resolvido. Não alterei nada.";
+  }
+
   if (action === "reschedule") {
     const contextPayload = readAssistantContextPayload(args.assistantContextState || null);
     const contextRequestedDateKey = String(contextPayload.requested_date || args.assistantContextState?.target_date || "").trim();
@@ -5343,20 +6914,57 @@ async function resolveAppointmentActionReply(args: {
       if (asksAssistantToFindCustomerAvailability(args.lastHumanMessage)) {
         let customerMessageSent = false;
 
+        if (!args.threadId) {
+          return "Encontrei o compromisso, mas nÃ£o consegui registrar a tratativa porque a conversa da assistente nÃ£o foi identificada. A agenda ainda nÃ£o foi alterada.";
+        }
+
+        const preTaskResult = await createAssistantOperationalTask({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          threadId: args.threadId,
+          taskType: "appointment_reschedule_find_customer_availability",
+          status: "open",
+          priority: "normal",
+          title: `Verificar novo horÃ¡rio com ${selectedAppointment.customer_name || "cliente"}`,
+          description: "A assistente registrou a tratativa para verificar disponibilidade com o cliente. A agenda ainda nÃ£o foi alterada.",
+          appointment: selectedAppointment,
+          timezoneName: scheduleTimezone,
+          taskPayload: { customer_message_sent: false, source: "assistant.reply.route", original_user_message: args.lastHumanMessage, agenda_updated: false },
+        });
+        if (!preTaskResult.ok) {
+          return `Encontrei o compromisso, mas nÃ£o consegui registrar a tratativa operacional: ${preTaskResult.error}. A agenda ainda nÃ£o foi alterada.`;
+        }
+        const preTaskLoadResult = await loadAssistantOperationalTaskById({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          taskId: preTaskResult.taskId,
+        });
+        if (!preTaskLoadResult.ok) {
+          return `Registrei a tratativa operacional, mas nÃ£o consegui confirmar a task antes do contato: ${preTaskLoadResult.error}. A agenda ainda nÃ£o foi alterada.`;
+        }
+        const previousCustomerMessageSent = getOperationalTaskPayload(preTaskLoadResult.task).customer_message_sent === true;
+
         if (selectedAppointment.conversation_id) {
           const customerMessage = buildCustomerAvailabilityQuestion({
             appointment: selectedAppointment,
             scheduleSettings: args.scheduleSettings || null,
           });
-          const sendResult = await sendAiMessageToCustomerConversation({
-            supabase: args.supabase,
-            conversationId: selectedAppointment.conversation_id,
-            text: customerMessage,
-          });
-          customerMessageSent = sendResult.ok;
+          if (previousCustomerMessageSent) {
+            customerMessageSent = true;
+          } else {
+            const sendResult = await sendAiMessageToCustomerConversation({
+              supabase: args.supabase,
+              conversationId: selectedAppointment.conversation_id,
+              text: customerMessage,
+              target: selectedAppointmentTarget,
+            });
+            customerMessageSent = sendResult.ok;
+          }
         }
 
-        let taskResult = { ok: true, error: null as string | null };
+        let taskResult = { ok: true, error: null as string | null, taskId: null as string | null };
         if (args.threadId) {
           taskResult = await createAssistantOperationalTask({
             supabase: args.supabase,
@@ -5375,7 +6983,34 @@ async function resolveAppointmentActionReply(args: {
             taskPayload: { customer_message_sent: customerMessageSent, source: "assistant.reply.route", original_user_message: args.lastHumanMessage, agenda_updated: false },
           });
 
-          await upsertAssistantContextState({
+  if (!taskResult.ok) {
+    return `Encontrei o compromisso, mas nÃ£o consegui registrar a tratativa operacional: ${taskResult.error}. A agenda ainda nÃ£o foi alterada.`;
+  }
+
+  const taskStatusResult = await updateAssistantOperationalTaskAfterCustomerContact({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    taskId: taskResult.taskId,
+    status: customerMessageSent ? "waiting_customer_response" : "open",
+    description: customerMessageSent
+      ? "A assistente enviou mensagem ao cliente para verificar disponibilidade. A agenda ainda nÃ£o foi alterada."
+      : "A assistente registrou a tratativa para verificar disponibilidade com o cliente. A agenda ainda nÃ£o foi alterada.",
+    taskPayload: {
+      ...getOperationalTaskPayload(preTaskLoadResult.task),
+      source: "assistant.reply.route",
+      original_user_message: args.lastHumanMessage,
+      customer_message_sent: customerMessageSent,
+      agenda_updated: false,
+      active_context_id: args.assistantContextState?.id || null,
+      requested_action: "find_customer_availability",
+    },
+  });
+  if (!taskStatusResult.ok) {
+    return `Registrei a tratativa operacional, mas nÃ£o consegui confirmar o estado atualizado da task: ${taskStatusResult.error}. A agenda ainda nÃ£o foi alterada.`;
+  }
+
+  await upsertAssistantContextState({
             supabase: args.supabase,
             organizationId: args.organizationId,
             storeId: args.storeId,
@@ -5417,26 +7052,63 @@ async function resolveAppointmentActionReply(args: {
 Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}${selectedAppointment.customer_name ? ` de ${selectedAppointment.customer_name}` : ""}.`;
     }
 
-    if (shouldCoordinateRescheduleWithCustomer(args.lastHumanMessage, selectedAppointment)) {
-      const targetDateLabel = formatDateOnlyInTimeZone(reschedulePayload.payload.scheduled_start, scheduleTimezone);
-      const targetTimeLabel = formatTimeOnlyInTimeZone(reschedulePayload.payload.scheduled_start, scheduleTimezone);
+      if (shouldCoordinateRescheduleWithCustomer(args.lastHumanMessage, selectedAppointment)) {
+        const targetDateLabel = formatDateOnlyInTimeZone(reschedulePayload.payload.scheduled_start, scheduleTimezone);
+        const targetTimeLabel = formatTimeOnlyInTimeZone(reschedulePayload.payload.scheduled_start, scheduleTimezone);
 
-      if (!selectedAppointment.conversation_id) {
+        if (!args.threadId) {
+          return "Encontrei o compromisso, mas nÃ£o consegui registrar a tratativa porque a conversa da assistente nÃ£o foi identificada. A agenda nÃ£o foi alterada.";
+        }
+
+        if (!selectedAppointment.conversation_id) {
         const appointmentTypeLabel = formatAppointmentType(selectedAppointment.appointment_type);
         const customerName = selectedAppointment.customer_name || "cliente";
         return `Encontrei a ${appointmentTypeLabel} de ${customerName} e o horário ${targetDateLabel} às ${targetTimeLabel}, mas não achei uma conversa vinculada para enviar mensagem automaticamente. A agenda não foi alterada.`;
       }
+
+      const preTaskResult = await createAssistantOperationalTask({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        taskType: "appointment_reschedule_with_customer",
+        status: "open",
+        priority: "normal",
+        title: `RemarcaÃ§Ã£o de ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}${selectedAppointment.customer_name ? ` - ${selectedAppointment.customer_name}` : ""}`,
+        description: "A assistente registrou a remarcaÃ§Ã£o antes de tentar contato com o cliente. A agenda ainda nÃ£o foi alterada.",
+        appointment: selectedAppointment,
+        targetStartIso: reschedulePayload.payload.scheduled_start,
+        targetEndIso: reschedulePayload.payload.scheduled_end,
+        timezoneName: scheduleTimezone,
+        taskPayload: { customer_message_sent: false, source: "assistant.reply.route", original_user_message: args.lastHumanMessage, agenda_updated: false },
+      });
+      if (!preTaskResult.ok) {
+        return `Encontrei o compromisso, mas nÃ£o consegui registrar a tratativa operacional: ${preTaskResult.error}. A agenda ainda nÃ£o foi alterada.`;
+      }
+      const preTaskLoadResult = await loadAssistantOperationalTaskById({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        taskId: preTaskResult.taskId,
+      });
+      if (!preTaskLoadResult.ok) {
+        return `Registrei a tratativa operacional, mas nÃ£o consegui confirmar a task antes do contato: ${preTaskLoadResult.error}. A agenda ainda nÃ£o foi alterada.`;
+      }
+      const previousCustomerMessageSent = getOperationalTaskPayload(preTaskLoadResult.task).customer_message_sent === true;
 
       const customerMessage = buildCustomerRescheduleMessage({
         appointment: selectedAppointment,
         proposedStartIso: reschedulePayload.payload.scheduled_start,
         scheduleSettings: args.scheduleSettings || null,
       });
-      const sendResult = await sendAiMessageToCustomerConversation({
-        supabase: args.supabase,
-        conversationId: selectedAppointment.conversation_id,
-        text: customerMessage,
-      });
+      const sendResult = previousCustomerMessageSent
+        ? { ok: true as const, error: null }
+        : await sendAiMessageToCustomerConversation({
+            supabase: args.supabase,
+            conversationId: selectedAppointment.conversation_id,
+            text: customerMessage,
+            target: selectedAppointmentTarget,
+          });
 
       if (!sendResult.ok) {
         const appointmentTypeLabel = formatAppointmentType(selectedAppointment.appointment_type);
@@ -5465,6 +7137,10 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
           timezoneName: scheduleTimezone,
           taskPayload: { customer_message_sent: customerMessageSent, source: "assistant.reply.route", original_user_message: args.lastHumanMessage },
         });
+
+        if (!taskResult.ok) {
+          return `Encontrei o compromisso, mas nÃ£o consegui registrar a tratativa operacional: ${taskResult.error}. A agenda ainda nÃ£o foi alterada.`;
+        }
 
         await upsertAssistantContextState({
           supabase: args.supabase,
@@ -5517,7 +7193,7 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
       .eq("id", selectedAppointment.id)
       .eq("organization_id", args.organizationId)
       .eq("store_id", args.storeId)
-      .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+      .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id")
       .maybeSingle();
 
     if (error) {
@@ -6031,7 +7707,138 @@ function buildAssistantOperationalTasksBlock(tasks: StoreAssistantOperationalTas
     .join("\n");
 }
 
-function resolveExplicitCommercialOpportunityIdForAssistantTechnicalVisit(args: {
+function isOperationalTreatmentAbandonmentIntent(text: string) {
+  const normalized = normalizeText(text);
+  const mentionsTreatment = /\b(tratativa|remarcacao|remarcação|reagendamento|fluxo|negociacao|negociação)\b/.test(normalized);
+  const asksAbort = /\b(cancele|cancelar|cancela|abandone|abandonar|encerre|encerrar|pare|parar|desista|desistir)\b/.test(normalized);
+  const mentionsAppointment = /\b(compromisso|agenda|visita tecnica|visita técnica|atendimento)\b/.test(normalized);
+  return asksAbort && mentionsTreatment && !mentionsAppointment;
+}
+
+function findPendingCustomerContactOperationalTask(args: {
+  openOperationalTasks: StoreAssistantOperationalTaskRow[];
+  assistantContextState?: StoreAssistantContextStateRow | null;
+}) {
+  const contextTaskId = String(readAssistantContextPayload(args.assistantContextState || null).task_id || "").trim();
+  const activeAppointmentId = String(args.assistantContextState?.active_appointment_id || "").trim();
+  const candidates = (args.openOperationalTasks || []).filter((task) => {
+    const taskType = String(task.task_type || "");
+    const status = String(task.status || "");
+    return ["appointment_reschedule_with_customer", "appointment_reschedule_find_customer_availability"].includes(taskType) &&
+      ["open", "waiting_customer_response", "waiting_user_choice", "ready_to_execute", "in_progress"].includes(status) &&
+      (!activeAppointmentId || task.related_appointment_id === activeAppointmentId);
+  });
+
+  if (contextTaskId) {
+    const exactTask = candidates.find((task) => task.id === contextTaskId);
+    if (exactTask) return { ok: true as const, task: exactTask, ambiguous: false };
+  }
+
+  if (candidates.length === 1) return { ok: true as const, task: candidates[0], ambiguous: false };
+  if (candidates.length > 1) return { ok: false as const, task: null, ambiguous: true };
+  return { ok: false as const, task: null, ambiguous: false };
+}
+
+export async function resolveOperationalTreatmentAbandonmentReply(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId: string | null;
+  assistantContextState?: StoreAssistantContextStateRow | null;
+  openOperationalTasks: StoreAssistantOperationalTaskRow[];
+  lastHumanMessage: string;
+}) {
+  if (!isOperationalTreatmentAbandonmentIntent(args.lastHumanMessage)) return null;
+  if (!args.threadId) {
+    return "Entendi que vocÃª quer encerrar a tratativa operacional, mas nÃ£o consegui identificar a thread da assistente. NÃ£o alterei agenda nem enviei mensagem ao cliente.";
+  }
+
+  const taskResult = findPendingCustomerContactOperationalTask({
+    openOperationalTasks: args.openOperationalTasks,
+    assistantContextState: args.assistantContextState || null,
+  });
+
+  if (taskResult.ambiguous) {
+    return "Encontrei mais de uma tratativa operacional aberta. Para evitar encerrar a errada, nÃ£o alterei nada. Escolha a tratativa exata ou atualize a tela.";
+  }
+
+  if (!taskResult.task?.id) {
+    if (args.assistantContextState) {
+      const reply = "NÃ£o encontrei uma tratativa operacional pendente para encerrar. NÃ£o alterei agenda nem enviei mensagem ao cliente.";
+      await resolveAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: args.assistantContextState,
+        lastUserMessage: args.lastHumanMessage,
+        lastAssistantMessage: reply,
+      });
+      return reply;
+    }
+    return "NÃ£o encontrei uma tratativa operacional pendente para encerrar. NÃ£o alterei agenda nem enviei mensagem ao cliente.";
+  }
+
+  const task = taskResult.task;
+  const payload = getOperationalTaskPayload(task);
+  const nowIso = new Date().toISOString();
+  const { error: taskUpdateError } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .update({
+      status: "cancelled",
+      cancelled_at: nowIso,
+      task_payload: {
+        ...payload,
+        abandoned_by_operator: true,
+        abandoned_at: nowIso,
+        abandon_reason: "operator_abandoned_operational_treatment",
+        original_user_message: args.lastHumanMessage,
+      },
+      last_action_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq("id", task.id)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId);
+
+  if (taskUpdateError) {
+    return `NÃ£o consegui encerrar a tratativa operacional com seguranÃ§a: ${taskUpdateError.message}. NÃ£o alterei agenda nem enviei mensagem ao cliente.`;
+  }
+
+  const { error: queueUpdateError } = await args.supabase
+    .from("store_assistant_operational_task_queue")
+    .update({
+      status: "cancelled",
+      processed_at: nowIso,
+      result_payload: { reason: "operational_treatment_abandoned_by_operator", taskId: task.id },
+      updated_at: nowIso,
+    })
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("task_id", task.id)
+    .in("status", ["pending", "ready", "processing"]);
+
+  if (queueUpdateError) {
+    return `A tratativa foi marcada como encerrada, mas não consegui interromper a fila antiga: ${queueUpdateError.message}. Não alterei a agenda nem enviei nova mensagem.`;
+  }
+
+  const reply = "Certo. Encerrei apenas a tratativa operacional de remarcaÃ§Ã£o. NÃ£o cancelei o compromisso na agenda e nÃ£o enviei nova mensagem ao cliente.";
+  const contextResult = await resolveAssistantContextState({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    currentContextState: args.assistantContextState || null,
+    lastUserMessage: args.lastHumanMessage,
+    lastAssistantMessage: reply,
+  });
+  if (!contextResult.ok) {
+    return `Encerrei a tratativa operacional, mas não consegui fechar o contexto da Assistente: ${contextResult.error || "erro desconhecido"}. Não alterei a agenda nem enviei nova mensagem.`;
+  }
+  return reply;
+}
+
+export function resolveExplicitCommercialOpportunityIdForAssistantTechnicalVisit(args: {
   openOperationalTasks: StoreAssistantOperationalTaskRow[];
 }) {
   const uniqueOpportunityIds = Array.from(
@@ -6044,6 +7851,122 @@ function resolveExplicitCommercialOpportunityIdForAssistantTechnicalVisit(args: 
   );
 
   return uniqueOpportunityIds.length === 1 ? uniqueOpportunityIds[0]! : null;
+}
+
+export async function resolveAuthorizedCommercialOpportunityIdForAssistantTechnicalVisit(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  openOperationalTasks: StoreAssistantOperationalTaskRow[];
+  explicitCommercialOpportunityId?: string | null;
+  expectedLeadId?: string | null;
+  expectedConversationId?: string | null;
+}) {
+  const candidateOpportunityId =
+    String(args.explicitCommercialOpportunityId || "").trim() ||
+    resolveExplicitCommercialOpportunityIdForAssistantTechnicalVisit({
+      openOperationalTasks: args.openOperationalTasks,
+    });
+
+  if (!candidateOpportunityId) {
+    return {
+      ok: false as const,
+      reason: "opportunity_required",
+      commercialOpportunityId: null as string | null,
+      leadId: null as string | null,
+      conversationId: null as string | null,
+    };
+  }
+
+  const matchingTasks = (args.openOperationalTasks || []).filter((task) => {
+    return (
+      normalizeText(task.task_type) === "commercial_visit_request" &&
+      String((task as StoreAssistantOperationalTaskRow & { commercial_opportunity_id?: string | null }).commercial_opportunity_id || "").trim() === candidateOpportunityId
+    );
+  });
+
+  const expectedLeadId = String(args.expectedLeadId || "").trim();
+  const expectedConversationId = String(args.expectedConversationId || "").trim();
+
+  const { data, error } = await args.supabase
+    .from("commercial_opportunities")
+    .select("id, organization_id, store_id, origin_lead_id, primary_conversation_id")
+    .eq("id", candidateOpportunityId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (error) {
+    return {
+      ok: false as const,
+      reason: "opportunity_lookup_failed",
+      commercialOpportunityId: null as string | null,
+      leadId: null as string | null,
+      conversationId: null as string | null,
+    };
+  }
+
+  const opportunity =
+    data && typeof data === "object"
+      ? (data as {
+          id?: string | null;
+          origin_lead_id?: string | null;
+          primary_conversation_id?: string | null;
+        })
+      : null;
+
+  if (!opportunity || String(opportunity.id || "").trim() !== candidateOpportunityId) {
+    return {
+      ok: false as const,
+      reason: "opportunity_not_found",
+      commercialOpportunityId: null as string | null,
+      leadId: null as string | null,
+      conversationId: null as string | null,
+    };
+  }
+
+  const opportunityLeadId = String(opportunity.origin_lead_id || "").trim();
+  const opportunityConversationId = String(opportunity.primary_conversation_id || "").trim();
+  if (
+    (expectedLeadId && opportunityLeadId !== expectedLeadId) ||
+    (expectedConversationId && opportunityConversationId !== expectedConversationId)
+  ) {
+    return {
+      ok: false as const,
+      reason: "opportunity_identity_mismatch",
+      commercialOpportunityId: null as string | null,
+      leadId: null as string | null,
+      conversationId: null as string | null,
+    };
+  }
+  const hasMismatchedTask = matchingTasks.some((task) => {
+    const taskLeadId = String(task.related_lead_id || "").trim();
+    const taskConversationId = String(task.related_conversation_id || "").trim();
+    return (
+      (taskLeadId && opportunityLeadId && taskLeadId !== opportunityLeadId) ||
+      (taskConversationId &&
+        opportunityConversationId &&
+        taskConversationId !== opportunityConversationId)
+    );
+  });
+
+  if (hasMismatchedTask) {
+    return {
+      ok: false as const,
+      reason: "opportunity_context_mismatch",
+      commercialOpportunityId: null as string | null,
+      leadId: null as string | null,
+      conversationId: null as string | null,
+    };
+  }
+
+  return {
+    ok: true as const,
+    reason: "valid",
+    commercialOpportunityId: candidateOpportunityId,
+    leadId: opportunityLeadId || null,
+    conversationId: opportunityConversationId || null,
+  };
 }
 
 async function maybeProjectAppointmentToTechnicalVisitStageBySystem(args: {
@@ -7450,21 +9373,29 @@ async function generateAssistantReply(params: {
       if (text) onboardingMap[row.question_key] = text;
     }
 
-    const { data: strategySettingsData, error: strategySettingsError } =
-      await supabase
-        .from("store_strategy_settings")
-        .select(
-          "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, created_at, updated_at",
-        )
-        .eq("organization_id", organizationId)
-        .eq("store_id", storeId)
-        .maybeSingle();
+    const {
+      data: strategySettingsRows,
+      error: strategySettingsError,
+    } = await supabase.rpc("read_store_strategy_settings_by_system", {
+      p_organization_id: organizationId,
+      p_store_id: storeId,
+    });
 
     if (strategySettingsError) {
       return {
         ok: false,
         error: "LOAD_STRATEGY_SETTINGS_FAILED",
         message: strategySettingsError.message,
+      };
+    }
+
+    const strategySettingsResult = normalizeSystemReaderRow(strategySettingsRows);
+
+    if (strategySettingsResult.errorMessage) {
+      return {
+        ok: false,
+        error: "LOAD_STRATEGY_SETTINGS_FAILED",
+        message: strategySettingsResult.errorMessage,
       };
     }
 
@@ -7486,21 +9417,29 @@ async function generateAssistantReply(params: {
       };
     }
 
-    const { data: paymentSettingsData, error: paymentSettingsError } =
-      await supabase
-        .from("store_payment_settings")
-        .select(
-          "organization_id, store_id, accepted_payment_methods, pix_key_type, pix_key, pix_holder_name, down_payment_mode, down_payment_value_type, down_payment_percent, down_payment_amount_cents, installments_enabled, max_installments, installment_interest_policy, payment_notes, created_at, updated_at",
-        )
-        .eq("organization_id", organizationId)
-        .eq("store_id", storeId)
-        .maybeSingle();
+    const {
+      data: paymentSettingsRows,
+      error: paymentSettingsError,
+    } = await supabase.rpc("read_store_payment_settings_by_system", {
+      p_organization_id: organizationId,
+      p_store_id: storeId,
+    });
 
     if (paymentSettingsError) {
       return {
         ok: false,
         error: "LOAD_PAYMENT_SETTINGS_FAILED",
         message: paymentSettingsError.message,
+      };
+    }
+
+    const paymentSettingsResult = normalizeSystemReaderRow(paymentSettingsRows);
+
+    if (paymentSettingsResult.errorMessage) {
+      return {
+        ok: false,
+        error: "LOAD_PAYMENT_SETTINGS_FAILED",
+        message: paymentSettingsResult.errorMessage,
       };
     }
 
@@ -7519,11 +9458,11 @@ async function generateAssistantReply(params: {
       onboardingMap,
       store,
       strategySettings:
-        (strategySettingsData ?? null) as StoreStrategySettingsRow | null,
+        (strategySettingsResult.row ?? null) as StoreStrategySettingsRow | null,
       operationSettings:
         (operationSettingsData ?? null) as StoreOperationSettingsRow | null,
       paymentSettings:
-        (paymentSettingsData ?? null) as StorePaymentSettingsRow | null,
+        (paymentSettingsResult.row ?? null) as StorePaymentSettingsRow | null,
       primaryResponsibleName,
     });
 
@@ -7695,7 +9634,7 @@ async function generateAssistantReply(params: {
     const { data: todayAppointmentsData, error: todayAppointmentsError } = await supabase
       .from("store_appointments")
       .select(
-        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id"
       )
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
@@ -7726,7 +9665,7 @@ async function generateAssistantReply(params: {
       const { data: specificDayAppointmentsRaw, error: specificDayAppointmentsError } = await supabase
         .from("store_appointments")
         .select(
-          "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+          "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id"
         )
         .eq("organization_id", organizationId)
         .eq("store_id", storeId)
@@ -7777,7 +9716,7 @@ async function generateAssistantReply(params: {
     const { data: nextAppointmentsData, error: nextAppointmentsError } = await supabase
       .from("store_appointments")
       .select(
-        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id"
       )
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
@@ -7797,7 +9736,7 @@ async function generateAssistantReply(params: {
     const { data: overdueAppointmentsData, error: overdueAppointmentsError } = await supabase
       .from("store_appointments")
       .select(
-        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id"
       )
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
@@ -7888,7 +9827,7 @@ async function generateAssistantReply(params: {
       const { data: followupAppointmentsData, error: followupAppointmentsError } = await supabase
         .from("store_appointments")
         .select(
-          "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+          "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id"
         )
         .in("id", appointmentIds);
 
@@ -7932,6 +9871,7 @@ async function generateAssistantReply(params: {
     const nextVisitMode = detectedIntent === "next_visit";
     const postAppointmentMode = detectedIntent === "post_appointment";
     const scheduleManagementMode = detectedIntent === "schedule_management";
+    const currentScheduleAction = resolveScheduleAction(lastHumanMessage);
     const generalTodayOverviewMode = isGeneralTodayOverviewRequest(lastHumanMessage);
     const specificDayScheduleMode = Boolean(specificScheduleQueryDateParts);
     const baseOpenAppointments = [
@@ -7958,7 +9898,19 @@ async function generateAssistantReply(params: {
       ...baseOpenAppointments,
     ];
 
-    const suggestedTimeApprovalReply = await resolveSuggestedTimeApprovalReply({
+    const operationalTreatmentAbandonmentReply = await resolveOperationalTreatmentAbandonmentReply({
+      supabase,
+      organizationId,
+      storeId,
+      threadId: assistantThreadId,
+      assistantContextState,
+      openOperationalTasks,
+      lastHumanMessage,
+    });
+    const operationalTreatmentAbandonmentActive = Boolean(operationalTreatmentAbandonmentReply);
+
+    const suggestedTimeApprovalReply = !operationalTreatmentAbandonmentActive
+      ? await resolveSuggestedTimeApprovalReply({
       supabase,
       organizationId,
       storeId,
@@ -7967,9 +9919,10 @@ async function generateAssistantReply(params: {
       openOperationalTasks,
       lastHumanMessage,
       scheduleSettings,
-    });
+    })
+      : null;
 
-    const pendingCancellationTargetReply = !suggestedTimeApprovalReply
+    const pendingCancellationTargetReply = !operationalTreatmentAbandonmentActive && !suggestedTimeApprovalReply
       ? await resolvePendingCancellationTargetClarificationReply({
           supabase,
           organizationId,
@@ -7981,7 +9934,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const blockAdjustmentReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !appointmentManagementRequest
+    const blockAdjustmentReply = !operationalTreatmentAbandonmentActive && !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !appointmentManagementRequest
       ? await resolveScheduleBlockAdjustmentReply({
           supabase,
           organizationId,
@@ -7992,7 +9945,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const blockDayReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !appointmentManagementRequest && !blockAdjustmentReply
+    const blockDayReply = !operationalTreatmentAbandonmentActive && !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !appointmentManagementRequest && !blockAdjustmentReply
       ? await resolveBlockDayReply({
           supabase,
           organizationId,
@@ -8004,7 +9957,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const postAppointmentActionReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && postAppointmentMode && !appointmentManagementRequest
+    const postAppointmentActionReply = !operationalTreatmentAbandonmentActive && !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && postAppointmentMode && !appointmentManagementRequest
       ? await resolvePostAppointmentActionReply({
           supabase,
           organizationId,
@@ -8023,6 +9976,7 @@ async function generateAssistantReply(params: {
     const customerRescheduleWorkflowDeps: CustomerRescheduleWorkflowDeps = {
       sendAiMessageToCustomerConversation,
       createAssistantOperationalTask,
+      updateAssistantOperationalTaskAfterCustomerContact,
       upsertAssistantContextState,
       resolveScheduleAction,
       sortOpenScheduleAppointments,
@@ -8033,7 +9987,8 @@ async function generateAssistantReply(params: {
       buildCustomerRescheduleMessage,
     };
 
-    const customerRescheduleWorkflowResult = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply
+    const canDispatchCustomerReschedule = currentScheduleAction === "reschedule" || currentScheduleAction === null;
+    const customerRescheduleWorkflowResult = !operationalTreatmentAbandonmentActive && canDispatchCustomerReschedule && !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply
       ? await resolveCustomerRescheduleWorkflow({
           supabase,
           organizationId,
@@ -8053,7 +10008,7 @@ async function generateAssistantReply(params: {
       ? customerRescheduleWorkflowResult.reply
       : null;
 
-    const customerAvailabilityContextReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply && !customerRescheduleWorkflowReply
+    const customerAvailabilityContextReply = !operationalTreatmentAbandonmentActive && !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply && !customerRescheduleWorkflowReply
       ? await resolveCustomerAvailabilityRequestFromContext({
           supabase,
           organizationId,
@@ -8066,7 +10021,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const scheduleActionReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !customerRescheduleWorkflowReply && !customerAvailabilityContextReply && (!postAppointmentMode || appointmentManagementRequest)
+    const scheduleActionReply = !operationalTreatmentAbandonmentActive && !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !customerRescheduleWorkflowReply && !customerAvailabilityContextReply && (!postAppointmentMode || appointmentManagementRequest)
       ? await resolveAppointmentActionReply({
           supabase,
           organizationId,
@@ -8077,6 +10032,7 @@ async function generateAssistantReply(params: {
           recentMessages,
           openAppointments: allOpenAppointments,
           scheduleSettings,
+          operatorName: primaryResponsibleName,
         })
       : null;
 
@@ -8107,7 +10063,9 @@ async function generateAssistantReply(params: {
     let aiText = "";
     let aiTextFromModel = false;
 
-    if (suggestedTimeApprovalReply) {
+    if (operationalTreatmentAbandonmentReply) {
+      aiText = operationalTreatmentAbandonmentReply;
+    } else if (suggestedTimeApprovalReply) {
       aiText = suggestedTimeApprovalReply;
     } else if (pendingCancellationTargetReply) {
       aiText = pendingCancellationTargetReply;
@@ -8241,6 +10199,7 @@ async function generateAssistantReply(params: {
       asksAboutToday(lastHumanMessage) ||
       postAppointmentMode ||
       scheduleManagementMode ||
+      Boolean(operationalTreatmentAbandonmentReply) ||
       Boolean(suggestedTimeApprovalReply) ||
       nextVisitMode ||
       morningReportMode ||
@@ -8272,6 +10231,7 @@ async function generateAssistantReply(params: {
         nextVisitMode,
         scheduleManagementMode,
         generalTodayOverviewMode,
+        operationalTreatmentAbandonmentMode: operationalTreatmentAbandonmentActive,
         pendingCancellationTargetMode: Boolean(pendingCancellationTargetReply),
         blockAdjustmentMode: Boolean(blockAdjustmentReply),
         blockDayMode: Boolean(blockDayReply),
@@ -8896,6 +10856,7 @@ async function resolveBlockDayReply(args: {
       supabase: args.supabase,
       conversationId,
       text: customerMessage,
+      target: buildCommercialTargetFromAppointment(appointment, "block_day_customer_reschedule_notice"),
     });
 
     if (sendResult.ok) {

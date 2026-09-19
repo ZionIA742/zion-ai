@@ -93,7 +93,7 @@ export async function projectTechnicalVisitStageBySystem(args: {
   source: string;
 }) {
   const { data, error } = await args.supabase.rpc(
-    "advance_commercial_opportunity_to_technical_visit_stage_by_system",
+    "advance_commercial_opportunity_to_visit_stage_by_system",
     {
       p_organization_id: args.organizationId,
       p_store_id: args.storeId,
