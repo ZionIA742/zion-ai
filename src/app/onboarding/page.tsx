@@ -673,7 +673,7 @@ function OnboardingContent() {
 
       setStep1Form((current) => ({
         store_display_name:
-          current.store_display_name || cleanText(nextAnswers.store_display_name) || cleanText(activeStore.name),
+          current.store_display_name || cleanText(activeStore.name),
         store_description:
           current.store_description || cleanText(strategyInput.storeDescription),
         city: current.city || strategyInput.city,
@@ -700,11 +700,11 @@ function OnboardingContent() {
 
       setStep3Form((current) => ({
         responsible_name:
-          current.responsible_name || cleanText(nextResponsible?.name) || cleanText(nextAnswers.responsible_name),
+          current.responsible_name || cleanText(nextResponsible?.name),
         responsible_whatsapp:
           current.responsible_whatsapp ||
           formatWhatsappInput(
-            cleanText(nextResponsible?.whatsappNumber) || cleanText(nextAnswers.responsible_whatsapp),
+            cleanText(nextResponsible?.whatsappNumber),
           ),
       }));
     } catch (error) {
@@ -1075,8 +1075,9 @@ function OnboardingContent() {
     }
   }
 
-  const whatsappConnected = useMemo(() => {
+  const whatsappStatusConnected = useMemo(() => {
     const normalizedStatus = cleanText(whatsappStatus?.status).toLowerCase();
+
     return Boolean(
       whatsappStatus?.connected &&
         whatsappStatus?.isActive &&
@@ -1085,30 +1086,89 @@ function OnboardingContent() {
     );
   }, [whatsappStatus]);
 
-  const essentialsReady = useMemo(() => {
-    return Boolean(
-      step1Form.store_display_name.trim() &&
-        step1Form.city.trim() &&
-        step1Form.state.trim() &&
-        step2Form.store_services.length > 0 &&
-        step3Form.responsible_name.trim() &&
-        step3Form.responsible_whatsapp.trim(),
-    );
-  }, [step1Form, step2Form, step3Form]);
+  const [onboardingActivationState, setOnboardingActivationState] = useState<string | null>(
+    null,
+  );
+  const [onboardingActivationLoading, setOnboardingActivationLoading] = useState(false);
 
-  // UX-only gate; the canonical completion RPC is the final authority.
-  const canActivate = essentialsReady && whatsappConnected;
+  useEffect(() => {
+    if (!organizationId || !activeStore?.id || currentStep !== 4) return;
+
+    let cancelled = false;
+
+    setOnboardingActivationLoading(true);
+    setOnboardingActivationState(null);
+
+    void (async () => {
+      try {
+        const response = await fetch("/api/store/readiness", {
+          method: "GET",
+          cache: "no-store",
+        });
+
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              ok?: boolean;
+              capabilities_by_key?: {
+                onboarding_activation?: {
+                  state?: string;
+                };
+              };
+            }
+          | null;
+
+        if (!response.ok || payload?.ok !== true) {
+          throw new Error("P19A_ONBOARDING_ACTIVATION_READINESS_REQUEST_FAILED");
+        }
+
+        const activationState = cleanText(
+          payload.capabilities_by_key?.onboarding_activation?.state,
+        );
+
+        if (!activationState) {
+          throw new Error("P19A_ONBOARDING_ACTIVATION_READINESS_MISSING");
+        }
+
+        if (!cancelled) {
+          setOnboardingActivationState(activationState);
+        }
+      } catch (error) {
+        console.error("[OnboardingPage] activation readiness error:", error);
+
+        if (!cancelled) {
+          setOnboardingActivationState(null);
+          setFormError(
+            "Não foi possível verificar se o onboarding está pronto para ativação.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setOnboardingActivationLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    organizationId,
+    activeStore?.id,
+    currentStep,
+    whatsappStatus?.connected,
+    whatsappStatus?.isActive,
+    whatsappStatus?.status,
+    whatsappStatus?.displayPhoneNumber,
+  ]);
+
+  const canActivate =
+    !onboardingActivationLoading && onboardingActivationState === "ready";
 
   async function activateZion() {
     if (!organizationId || !activeStore?.id) return;
 
-    if (!essentialsReady) {
-      setFormError("Revise as etapas anteriores antes de ativar o ZION.");
-      return;
-    }
-
-    if (!whatsappConnected) {
-      setFormError("O WhatsApp comercial oficial precisa estar conectado antes da ativação.");
+    if (!canActivate) {
+      setFormError("Revise os dados obrigatórios do onboarding antes de ativar o ZION.");
       return;
     }
 
@@ -1409,7 +1469,7 @@ function OnboardingContent() {
               <div
                 className={cx(
                   "rounded-2xl border p-5",
-                  whatsappConnected
+                  whatsappStatusConnected
                     ? "border-emerald-200 bg-emerald-50"
                     : whatsappStatusError
                       ? "border-red-200 bg-red-50"
@@ -1437,7 +1497,7 @@ function OnboardingContent() {
                   <div className="rounded-xl border border-white/80 bg-white/80 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Status</p>
                     <p className="mt-1 text-base font-semibold text-gray-900">
-                      {whatsappConnected
+                      {whatsappStatusConnected
                         ? "Conectado"
                         : whatsappStatusError
                           ? "Status indisponível"
@@ -1456,7 +1516,7 @@ function OnboardingContent() {
                   <p className="mt-4 text-sm text-red-800">{whatsappStatusError}</p>
                 ) : null}
 
-                {!whatsappConnected ? (
+                {!whatsappStatusConnected ? (
                   <p className="mt-4 text-sm leading-6 text-amber-900">
                     A conexão oficial por Meta/Embedded Signup ficará nesta etapa. Nesta versão não existe botão fictício de conexão: a ativação só é liberada quando o status vivo confirmar o WhatsApp oficial.
                   </p>
@@ -1535,7 +1595,7 @@ function OnboardingContent() {
                   </button>
                   {!canActivate ? (
                     <p className="max-w-md text-xs leading-5 text-gray-500 md:text-right">
-                      A ativação será liberada quando os dados essenciais estiverem preenchidos e o WhatsApp comercial oficial estiver conectado.
+                      A ativação será liberada quando todos os requisitos obrigatórios do onboarding estiverem concluídos.
                     </p>
                   ) : null}
                 </div>

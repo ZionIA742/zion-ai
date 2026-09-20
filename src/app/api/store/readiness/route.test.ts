@@ -111,6 +111,15 @@ function createReadinessResult(): StoreReadinessResult {
       blocksPilotGo: true,
     },
     {
+      capabilityKey: "onboarding_activation",
+      state: "ready",
+      reasonCodes: [],
+      missingFields: [],
+      blocksAccess: false,
+      blocksCapability: false,
+      blocksPilotGo: false,
+    },
+    {
       capabilityKey: "responsible_operational",
       state: "ready",
       reasonCodes: [],
@@ -125,7 +134,8 @@ function createReadinessResult(): StoreReadinessResult {
     capabilities,
     capabilitiesByKey: {
       onboarding_minimum: capabilities[0],
-      responsible_operational: capabilities[1],
+      onboarding_activation: capabilities[1],
+      responsible_operational: capabilities[2],
       agenda: {
         capabilityKey: "agenda",
         state: "ready",

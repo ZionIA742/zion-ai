@@ -6,6 +6,7 @@ import { loadStoreQuoteSettings } from "./sales-quotes/quote-settings";
 
 export const STORE_READINESS_CAPABILITY_KEYS = [
   "onboarding_minimum",
+  "onboarding_activation",
   "responsible_operational",
   "agenda",
   "catalog",
@@ -51,7 +52,8 @@ export const STORE_READINESS_REASON_CODES = {
 } as const;
 
 export type StoreReadinessReasonCode =
-  (typeof STORE_READINESS_REASON_CODES)[keyof typeof STORE_READINESS_REASON_CODES];
+  | (typeof STORE_READINESS_REASON_CODES)[keyof typeof STORE_READINESS_REASON_CODES]
+  | `P19A_ONBOARDING_NOT_READY:${string}`;
 
 export type StoreReadinessCapability = {
   capabilityKey: StoreReadinessCapabilityKey;
@@ -73,6 +75,11 @@ export type StoreReadinessResult = {
 
 type StoreOnboardingRow = {
   status: string | null;
+};
+
+type OnboardingActivationReadinessRow = {
+  is_ready: boolean;
+  reason_code: string | null;
 };
 
 type StoreScheduleSettingsReadinessRow = {
@@ -107,6 +114,10 @@ type StoreReadinessSupabaseLike = {
       ): Promise<unknown>;
     };
   };
+  rpc(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ data: unknown; error: { message: string } | null }>;
 };
 
 type ResolvedCapabilityInput = Omit<
@@ -287,6 +298,43 @@ async function loadOnboardingRow(args: {
   return (data || null) as StoreOnboardingRow | null;
 }
 
+async function loadOnboardingActivationReadiness(args: {
+  supabase: StoreReadinessSupabaseLike;
+  organizationId: string;
+  storeId: string;
+}): Promise<OnboardingActivationReadinessRow> {
+  const { data, error } = await args.supabase.rpc(
+    "read_store_onboarding_completion_readiness_scoped",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+    },
+  );
+
+  if (error) {
+    throw new Error(
+      `Falha ao carregar onboarding activation readiness: ${error.message}`,
+    );
+  }
+
+  const rawRow = Array.isArray(data) ? data[0] : data;
+
+  if (!rawRow || typeof rawRow !== "object") {
+    throw new Error("Onboarding activation readiness retornou payload invalido.");
+  }
+
+  const row = rawRow as Partial<OnboardingActivationReadinessRow>;
+
+  if (typeof row.is_ready !== "boolean") {
+    throw new Error("Onboarding activation readiness retornou is_ready invalido.");
+  }
+
+  return {
+    is_ready: row.is_ready,
+    reason_code: row.reason_code == null ? null : cleanText(row.reason_code),
+  };
+}
+
 async function loadScheduleSettingsRow(args: {
   supabase: StoreReadinessSupabaseLike;
   organizationId: string;
@@ -396,6 +444,40 @@ export function resolveOnboardingMinimumCapability(
     reasonCodes: [STORE_READINESS_REASON_CODES.ONBOARDING_MINIMUM_INCOMPLETE],
     missingFields: ["store_onboarding.status"],
     blocksAccess: true,
+    blocksCapability: true,
+    blocksPilotGo: true,
+  });
+}
+
+export function resolveOnboardingActivationCapability(
+  row: OnboardingActivationReadinessRow,
+): StoreReadinessCapability {
+  const reasonCode = cleanText(row.reason_code);
+
+  if (row.is_ready) {
+    if (reasonCode) {
+      throw new Error("Onboarding activation readiness ready retornou reason_code.");
+    }
+
+    return normalizeStoreReadinessCapability({
+      capabilityKey: "onboarding_activation",
+      state: "ready",
+      reasonCodes: [],
+      missingFields: [],
+      blocksAccess: false,
+    });
+  }
+
+  if (!reasonCode.startsWith("P19A_ONBOARDING_NOT_READY:")) {
+    throw new Error("Onboarding activation readiness bloqueado sem motivo canonico.");
+  }
+
+  return normalizeStoreReadinessCapability({
+    capabilityKey: "onboarding_activation",
+    state: "not_configured",
+    reasonCodes: [reasonCode as StoreReadinessReasonCode],
+    missingFields: [],
+    blocksAccess: false,
     blocksCapability: true,
     blocksPilotGo: true,
   });
@@ -677,21 +759,29 @@ export async function resolveStoreReadiness(args: {
   organizationId: string;
   storeId: string;
 }): Promise<StoreReadinessResult> {
-  const [onboardingRow, responsibleResult, scheduleRow, catalogCounts, quoteResult] =
-    await Promise.all([
-      loadOnboardingRow(args),
-      loadCanonicalActivePrimaryStoreResponsible({
-        supabase: args.supabase as never,
-        organizationId: args.organizationId,
-        storeId: args.storeId,
-      }),
-      loadScheduleSettingsRow(args),
-      loadCatalogCounts(args),
-      loadStoreQuoteSettings(args),
-    ]);
+  const [
+    onboardingRow,
+    onboardingActivationResult,
+    responsibleResult,
+    scheduleRow,
+    catalogCounts,
+    quoteResult,
+  ] = await Promise.all([
+    loadOnboardingRow(args),
+    loadOnboardingActivationReadiness(args),
+    loadCanonicalActivePrimaryStoreResponsible({
+      supabase: args.supabase as never,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+    }),
+    loadScheduleSettingsRow(args),
+    loadCatalogCounts(args),
+    loadStoreQuoteSettings(args),
+  ]);
 
   const capabilities = [
     resolveOnboardingMinimumCapability(onboardingRow),
+    resolveOnboardingActivationCapability(onboardingActivationResult),
     resolveResponsibleOperationalCapability(responsibleResult),
     resolveAgendaCapability(scheduleRow),
     resolveCatalogCapability(catalogCounts),
@@ -702,10 +792,11 @@ export async function resolveStoreReadiness(args: {
     capabilities,
     capabilitiesByKey: {
       onboarding_minimum: capabilities[0],
-      responsible_operational: capabilities[1],
-      agenda: capabilities[2],
-      catalog: capabilities[3],
-      quote: capabilities[4],
+      onboarding_activation: capabilities[1],
+      responsible_operational: capabilities[2],
+      agenda: capabilities[3],
+      catalog: capabilities[4],
+      quote: capabilities[5],
     },
   };
 }

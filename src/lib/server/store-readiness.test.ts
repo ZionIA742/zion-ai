@@ -20,7 +20,16 @@ type TestCase = {
   run: () => Promise<void> | void;
 };
 
-function createReadOnlySupabase(tables: Record<string, TableResponse>) {
+function createReadOnlySupabase(
+  tables: Record<string, TableResponse>,
+  onboardingActivationResponse: {
+    data: unknown;
+    error: { message: string } | null;
+  } = {
+    data: [{ is_ready: true, reason_code: null }],
+    error: null,
+  },
+) {
   const operations: Array<{
     kind: string;
     table?: string;
@@ -29,6 +38,8 @@ function createReadOnlySupabase(tables: Record<string, TableResponse>) {
     column?: string;
     value?: unknown;
     count?: number;
+    name?: string;
+    args?: Record<string, unknown>;
   }> = [];
 
   function createListResult(table: string) {
@@ -104,7 +115,13 @@ function createReadOnlySupabase(tables: Record<string, TableResponse>) {
           },
         };
       },
-      rpc(name: string) {
+      rpc(name: string, args: Record<string, unknown>) {
+        operations.push({ kind: "rpc", name, args });
+
+        if (name === "read_store_onboarding_completion_readiness_scoped") {
+          return Promise.resolve(onboardingActivationResponse);
+        }
+
         throw new Error(`unexpected rpc ${name}`);
       },
     },
@@ -168,8 +185,17 @@ function createBaseTables(overrides?: Partial<Record<string, TableResponse>>) {
   };
 }
 
-async function resolveWithTables(overrides?: Partial<Record<string, TableResponse>>) {
-  const supabase = createReadOnlySupabase(createBaseTables(overrides));
+async function resolveWithTables(
+  overrides?: Partial<Record<string, TableResponse>>,
+  onboardingActivationResponse?: {
+    data: unknown;
+    error: { message: string } | null;
+  },
+) {
+  const supabase = createReadOnlySupabase(
+    createBaseTables(overrides),
+    onboardingActivationResponse,
+  );
   const result = await resolveStoreReadiness({
     supabase: supabase.client as never,
     organizationId: "org-1",
@@ -241,6 +267,63 @@ const tests: TestCase[] = [
       assert.deepEqual(result.capabilitiesByKey.onboarding_minimum.reasonCodes, [
         STORE_READINESS_REASON_CODES.ONBOARDING_STATUS_MISSING,
       ]);
+    },
+  },
+  {
+    name: "onboarding activation canonical reader resolves ready",
+    run: async () => {
+      const { result, operations } = await resolveWithTables();
+
+      assert.equal(result.capabilitiesByKey.onboarding_activation.state, "ready");
+      assert.deepEqual(result.capabilitiesByKey.onboarding_activation.reasonCodes, []);
+      assert.equal(result.capabilitiesByKey.onboarding_activation.blocksAccess, false);
+
+      const activationRpc = operations.filter(
+        (entry) =>
+          entry.kind === "rpc" &&
+          entry.name === "read_store_onboarding_completion_readiness_scoped",
+      );
+
+      assert.equal(activationRpc.length, 1);
+      assert.deepEqual(activationRpc[0]?.args, {
+        p_organization_id: "org-1",
+        p_store_id: "store-1",
+      });
+    },
+  },
+  {
+    name: "onboarding activation preserves canonical not-ready reason",
+    run: async () => {
+      const { result } = await resolveWithTables(undefined, {
+        data: [
+          {
+            is_ready: false,
+            reason_code: "P19A_ONBOARDING_NOT_READY:CITY",
+          },
+        ],
+        error: null,
+      });
+
+      assert.equal(
+        result.capabilitiesByKey.onboarding_activation.state,
+        "not_configured",
+      );
+      assert.deepEqual(
+        result.capabilitiesByKey.onboarding_activation.reasonCodes,
+        ["P19A_ONBOARDING_NOT_READY:CITY"],
+      );
+      assert.equal(
+        result.capabilitiesByKey.onboarding_activation.blocksAccess,
+        false,
+      );
+      assert.equal(
+        result.capabilitiesByKey.onboarding_activation.blocksCapability,
+        true,
+      );
+      assert.equal(
+        result.capabilitiesByKey.onboarding_activation.blocksPilotGo,
+        true,
+      );
     },
   },
   {
@@ -615,10 +698,18 @@ const tests: TestCase[] = [
     run: async () => {
       const { operations } = await resolveWithTables();
       const persistedOperations = operations.filter((entry) =>
-        ["insert", "update", "upsert", "delete", "rpc"].includes(entry.kind),
+        ["insert", "update", "upsert", "delete"].includes(entry.kind),
       );
 
       assert.deepEqual(persistedOperations, []);
+      assert.equal(
+        operations.some(
+          (entry) =>
+            entry.kind === "rpc" &&
+            entry.name === "read_store_onboarding_completion_readiness_scoped",
+        ),
+        true,
+      );
       assert.equal(
         operations.some(
           (entry) => entry.kind === "from" && entry.table === "store_readiness",
