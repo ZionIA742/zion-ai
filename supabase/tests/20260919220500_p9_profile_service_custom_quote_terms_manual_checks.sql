@@ -596,6 +596,76 @@ as $function$
 
 $function$;
 
+create or replace function pg_temp._p9_quote_terms_create_quote(
+
+  p_organization_id uuid,
+
+  p_store_id uuid,
+
+  p_customer_id uuid,
+
+  p_quote_number text,
+
+  p_title text
+
+)
+
+returns table (
+
+  opportunity_id uuid,
+
+  quote_id uuid
+
+)
+
+language plpgsql
+
+as $function$
+
+begin
+
+  opportunity_id := gen_random_uuid();
+
+  quote_id := gen_random_uuid();
+
+  insert into public.commercial_opportunities (
+
+    id, organization_id, store_id, customer_id, stage
+
+  ) values (
+
+    opportunity_id, p_organization_id, p_store_id, p_customer_id, 'orcamento'
+
+  );
+
+  insert into public.sales_quotes (
+
+    id, organization_id, store_id, commercial_opportunity_id,
+
+    conversation_id, lead_id, quote_number, title, status,
+
+    customer_name, customer_phone, customer_notes, internal_notes,
+
+    subtotal_cents, discount_cents, total_cents, current_version_id, metadata
+
+  ) values (
+
+    quote_id, p_organization_id, p_store_id, opportunity_id,
+
+    null, null, p_quote_number, p_title, 'draft',
+
+    p_title, null, null, null,
+
+    0, 0, 0, null, '{}'::jsonb
+
+  );
+
+  return next;
+
+end;
+
+$function$;
+
 do $fixtures$
 
 declare
@@ -757,6 +827,24 @@ declare
   v_function_def text;
 
   v_constraint_def text;
+
+  v_opp_id uuid;
+
+  v_quote_id uuid;
+
+  v_pool_id uuid;
+
+  v_item_quantity integer;
+
+  v_unit_price_cents integer;
+
+  v_discount_cents integer;
+
+  v_subtotal_cents integer;
+
+  v_total_cents integer;
+
+  v_materializer_version integer;
 
 begin
 
@@ -1345,6 +1433,249 @@ begin
     )
   );
 
+  select created.opportunity_id, created.quote_id
+  into v_opp_id, v_quote_id
+  from pg_temp._p9_quote_terms_create_quote(ctx.org_a, ctx.store_a, ctx.customer_a, 'QT-MONEY-POOL-NORMAL', 'Money Pool Normal') as created;
+
+  q := pg_catalog.format($sql$select * from public.write_commercial_opportunity_profile_by_user(%L::uuid,%L::uuid,%L::uuid,'money-pool-normal',%L,'resolved',%L::jsonb,%L::jsonb,'manual_check','{}'::jsonb)$sql$,
+    ctx.org_a, ctx.store_a, v_opp_id, repeat('20',32),
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('component_key','pool_money_normal','component_kind','pool','component_state','resolved','pool_id',ctx.pool_a))::text,
+    pg_temp._p9_quote_terms_empty_intents()::text
+  );
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('authenticated', ctx.user_a, q);
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('service_role', null, pg_catalog.format(
+    'select * from public.materialize_sales_quote_items_from_current_profile_by_system(%L::uuid,%L::uuid,%L::uuid)',
+    ctx.org_a, ctx.store_a, v_quote_id
+  ));
+
+  v_item_quantity := null; v_unit_price_cents := null; v_discount_cents := null; v_subtotal_cents := null; v_total_cents := null; v_materializer_version := null;
+  select quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents, nullif(metadata ->> 'materializer_version', '')::integer
+  into v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents, v_materializer_version
+  from public.sales_quote_items where quote_id = v_quote_id and item_type = 'pool';
+
+  perform pg_temp._p9_quote_terms_record(32, 'materializer keeps normal pool money coherent', case when r.operation_succeeded and v_item_quantity = 1 and v_unit_price_cents = 123456 and v_discount_cents = 0 and v_subtotal_cents = 123456 and v_total_cents = 123456 and v_materializer_version = 3 then 'PASS' else 'SUT_FAIL' end, pg_catalog.format('result=%s q=%s unit=%s discount=%s subtotal=%s total=%s version=%s', coalesce(r.message_text, r.value_json::text), v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents, v_materializer_version));
+
+  v_pool_id := gen_random_uuid();
+  insert into public.pools (
+    id, organization_id, store_id, name, width_m, length_m, depth_m,
+    shape, material, max_capacity_l, weight_kg, price, price_status,
+    description, is_active, track_stock, stock_quantity, stock_status
+  ) values (
+    v_pool_id, ctx.org_a, ctx.store_a, 'Quote Terms Pool Zero',
+    2, 3, 1, 'retangular', 'fibra', 1000, 120, 0, 'valid',
+    'Pool zero quote terms', true, false, null, 'not_tracked'
+  );
+
+  select created.opportunity_id, created.quote_id
+  into v_opp_id, v_quote_id
+  from pg_temp._p9_quote_terms_create_quote(ctx.org_a, ctx.store_a, ctx.customer_a, 'QT-MONEY-POOL-ZERO', 'Money Pool Zero') as created;
+
+  q := pg_catalog.format($sql$select * from public.write_commercial_opportunity_profile_by_user(%L::uuid,%L::uuid,%L::uuid,'money-pool-zero',%L,'resolved',%L::jsonb,%L::jsonb,'manual_check','{}'::jsonb)$sql$,
+    ctx.org_a, ctx.store_a, v_opp_id, repeat('21',32),
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('component_key','pool_money_zero','component_kind','pool','component_state','resolved','pool_id',v_pool_id))::text,
+    pg_temp._p9_quote_terms_empty_intents()::text
+  );
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('authenticated', ctx.user_a, q);
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('service_role', null, pg_catalog.format(
+    'select * from public.materialize_sales_quote_items_from_current_profile_by_system(%L::uuid,%L::uuid,%L::uuid)',
+    ctx.org_a, ctx.store_a, v_quote_id
+  ));
+
+  v_item_quantity := null; v_unit_price_cents := null; v_discount_cents := null; v_subtotal_cents := null; v_total_cents := null;
+  select quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents
+  into v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents
+  from public.sales_quote_items where quote_id = v_quote_id and item_type = 'pool';
+
+  perform pg_temp._p9_quote_terms_record(33, 'materializer permits zero pool money without clamp', case when r.operation_succeeded and v_item_quantity = 1 and v_unit_price_cents = 0 and v_discount_cents = 0 and v_subtotal_cents = 0 and v_total_cents = 0 then 'PASS' else 'SUT_FAIL' end, pg_catalog.format('result=%s q=%s unit=%s discount=%s subtotal=%s total=%s', coalesce(r.message_text, r.value_json::text), v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents));
+
+  v_pool_id := gen_random_uuid();
+  insert into public.pools (
+    id, organization_id, store_id, name, width_m, length_m, depth_m,
+    shape, material, max_capacity_l, weight_kg, price, price_status,
+    description, is_active, track_stock, stock_quantity, stock_status
+  ) values (
+    v_pool_id, ctx.org_a, ctx.store_a, 'Quote Terms Pool Int4 Limit',
+    2, 3, 1, 'retangular', 'fibra', 1000, 120, 21474836.47, 'valid',
+    'Pool int4 limit quote terms', true, false, null, 'not_tracked'
+  );
+
+  select created.opportunity_id, created.quote_id
+  into v_opp_id, v_quote_id
+  from pg_temp._p9_quote_terms_create_quote(ctx.org_a, ctx.store_a, ctx.customer_a, 'QT-MONEY-POOL-LIMIT', 'Money Pool Limit') as created;
+
+  q := pg_catalog.format($sql$select * from public.write_commercial_opportunity_profile_by_user(%L::uuid,%L::uuid,%L::uuid,'money-pool-limit',%L,'resolved',%L::jsonb,%L::jsonb,'manual_check','{}'::jsonb)$sql$,
+    ctx.org_a, ctx.store_a, v_opp_id, repeat('22',32),
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('component_key','pool_money_limit','component_kind','pool','component_state','resolved','pool_id',v_pool_id))::text,
+    pg_temp._p9_quote_terms_empty_intents()::text
+  );
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('authenticated', ctx.user_a, q);
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('service_role', null, pg_catalog.format(
+    'select * from public.materialize_sales_quote_items_from_current_profile_by_system(%L::uuid,%L::uuid,%L::uuid)',
+    ctx.org_a, ctx.store_a, v_quote_id
+  ));
+
+  v_item_quantity := null; v_unit_price_cents := null; v_discount_cents := null; v_subtotal_cents := null; v_total_cents := null;
+  select quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents
+  into v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents
+  from public.sales_quote_items where quote_id = v_quote_id and item_type = 'pool';
+
+  perform pg_temp._p9_quote_terms_record(34, 'materializer permits largest pool cents value fitting int4', case when r.operation_succeeded and v_item_quantity = 1 and v_unit_price_cents = 2147483647 and v_discount_cents = 0 and v_subtotal_cents = 2147483647 and v_total_cents = 2147483647 then 'PASS' else 'SUT_FAIL' end, pg_catalog.format('result=%s q=%s unit=%s discount=%s subtotal=%s total=%s', coalesce(r.message_text, r.value_json::text), v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents));
+
+  v_pool_id := gen_random_uuid();
+  insert into public.pools (
+    id, organization_id, store_id, name, width_m, length_m, depth_m,
+    shape, material, max_capacity_l, weight_kg, price, price_status,
+    description, is_active, track_stock, stock_quantity, stock_status
+  ) values (
+    v_pool_id, ctx.org_a, ctx.store_a, 'Quote Terms Pool Overflow',
+    2, 3, 1, 'retangular', 'fibra', 1000, 120, 21474836.48, 'valid',
+    'Pool overflow quote terms', true, false, null, 'not_tracked'
+  );
+
+  select created.opportunity_id, created.quote_id
+  into v_opp_id, v_quote_id
+  from pg_temp._p9_quote_terms_create_quote(ctx.org_a, ctx.store_a, ctx.customer_a, 'QT-MONEY-POOL-OVERFLOW', 'Money Pool Overflow') as created;
+
+  q := pg_catalog.format($sql$select * from public.write_commercial_opportunity_profile_by_user(%L::uuid,%L::uuid,%L::uuid,'money-pool-overflow',%L,'resolved',%L::jsonb,%L::jsonb,'manual_check','{}'::jsonb)$sql$,
+    ctx.org_a, ctx.store_a, v_opp_id, repeat('23',32),
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('component_key','pool_money_overflow','component_kind','pool','component_state','resolved','pool_id',v_pool_id))::text,
+    pg_temp._p9_quote_terms_empty_intents()::text
+  );
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('authenticated', ctx.user_a, q);
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('service_role', null, pg_catalog.format(
+    'select * from public.materialize_sales_quote_items_from_current_profile_by_system(%L::uuid,%L::uuid,%L::uuid)',
+    ctx.org_a, ctx.store_a, v_quote_id
+  ));
+
+  select count(*)::integer into v_zero_items from public.sales_quote_items where quote_id = v_quote_id;
+
+  perform pg_temp._p9_quote_terms_record(35, 'materializer rejects pool cents overflow deterministically', case when not r.operation_succeeded and coalesce(r.message_text,'') ilike '%MONEY_OUT_OF_RANGE%' and v_zero_items = 0 then 'PASS' else 'SUT_FAIL' end, coalesce(r.message_text, '<null>') || ' rows=' || coalesce(v_zero_items::text,'<null>'));
+
+  select created.opportunity_id, created.quote_id
+  into v_opp_id, v_quote_id
+  from pg_temp._p9_quote_terms_create_quote(ctx.org_a, ctx.store_a, ctx.customer_a, 'QT-MONEY-CATALOG', 'Money Catalog') as created;
+
+  q := pg_catalog.format($sql$select * from public.write_commercial_opportunity_profile_by_user(%L::uuid,%L::uuid,%L::uuid,'money-catalog-valid',%L,'resolved',%L::jsonb,%L::jsonb,'manual_check','{}'::jsonb)$sql$,
+    ctx.org_a, ctx.store_a, v_opp_id, repeat('24',32),
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('component_key','catalog_money_valid','component_kind','catalog_item','component_state','resolved','catalog_item_id',ctx.catalog_a))::text,
+    pg_temp._p9_quote_terms_empty_intents()::text
+  );
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('authenticated', ctx.user_a, q);
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('service_role', null, pg_catalog.format(
+    'select * from public.materialize_sales_quote_items_from_current_profile_by_system(%L::uuid,%L::uuid,%L::uuid)',
+    ctx.org_a, ctx.store_a, v_quote_id
+  ));
+
+  v_item_quantity := null; v_unit_price_cents := null; v_discount_cents := null; v_subtotal_cents := null; v_total_cents := null;
+  select quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents
+  into v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents
+  from public.sales_quote_items where quote_id = v_quote_id and item_type = 'catalog_item';
+
+  perform pg_temp._p9_quote_terms_record(36, 'materializer preserves valid nonnegative catalog price_cents', case when r.operation_succeeded and v_item_quantity = 1 and v_unit_price_cents = 2500 and v_discount_cents = 0 and v_subtotal_cents = 2500 and v_total_cents = 2500 then 'PASS' else 'SUT_FAIL' end, pg_catalog.format('result=%s q=%s unit=%s discount=%s subtotal=%s total=%s', coalesce(r.message_text, r.value_json::text), v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents));
+
+  select created.opportunity_id, created.quote_id
+  into v_opp_id, v_quote_id
+  from pg_temp._p9_quote_terms_create_quote(ctx.org_a, ctx.store_a, ctx.customer_a, 'QT-MONEY-SERVICE-NORMAL', 'Money Service Normal') as created;
+
+  q := pg_catalog.format($sql$select * from public.write_commercial_opportunity_profile_by_user(%L::uuid,%L::uuid,%L::uuid,'money-service-normal',%L,'resolved',%L::jsonb,%L::jsonb,'manual_check','{}'::jsonb)$sql$,
+    ctx.org_a, ctx.store_a, v_opp_id, repeat('25',32),
+    pg_temp._p9_quote_terms_components_service(ctx.user_a, 'Svc money normal', 'desc', 3, 10000)::text,
+    pg_temp._p9_quote_terms_empty_intents()::text
+  );
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('authenticated', ctx.user_a, q);
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('service_role', null, pg_catalog.format(
+    'select * from public.materialize_sales_quote_items_from_current_profile_by_system(%L::uuid,%L::uuid,%L::uuid)',
+    ctx.org_a, ctx.store_a, v_quote_id
+  ));
+
+  v_item_quantity := null; v_unit_price_cents := null; v_discount_cents := null; v_subtotal_cents := null; v_total_cents := null;
+  select quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents
+  into v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents
+  from public.sales_quote_items where quote_id = v_quote_id and item_type = 'service';
+
+  perform pg_temp._p9_quote_terms_record(37, 'materializer computes service subtotal from quantity times unit price', case when r.operation_succeeded and v_item_quantity = 3 and v_unit_price_cents = 10000 and v_discount_cents = 0 and v_subtotal_cents = 30000 and v_total_cents = 30000 then 'PASS' else 'SUT_FAIL' end, pg_catalog.format('result=%s q=%s unit=%s discount=%s subtotal=%s total=%s', coalesce(r.message_text, r.value_json::text), v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents));
+
+  select created.opportunity_id, created.quote_id
+  into v_opp_id, v_quote_id
+  from pg_temp._p9_quote_terms_create_quote(ctx.org_a, ctx.store_a, ctx.customer_a, 'QT-MONEY-SERVICE-LIMIT', 'Money Service Limit') as created;
+
+  q := pg_catalog.format($sql$select * from public.write_commercial_opportunity_profile_by_user(%L::uuid,%L::uuid,%L::uuid,'money-service-limit',%L,'resolved',%L::jsonb,%L::jsonb,'manual_check','{}'::jsonb)$sql$,
+    ctx.org_a, ctx.store_a, v_opp_id, repeat('26',32),
+    pg_temp._p9_quote_terms_components_service(ctx.user_a, 'Svc money limit', 'desc', 1, 2147483647)::text,
+    pg_temp._p9_quote_terms_empty_intents()::text
+  );
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('authenticated', ctx.user_a, q);
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('service_role', null, pg_catalog.format(
+    'select * from public.materialize_sales_quote_items_from_current_profile_by_system(%L::uuid,%L::uuid,%L::uuid)',
+    ctx.org_a, ctx.store_a, v_quote_id
+  ));
+
+  v_item_quantity := null; v_unit_price_cents := null; v_discount_cents := null; v_subtotal_cents := null; v_total_cents := null;
+  select quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents
+  into v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents
+  from public.sales_quote_items where quote_id = v_quote_id and item_type = 'service';
+
+  perform pg_temp._p9_quote_terms_record(38, 'materializer permits service subtotal at int4 limit', case when r.operation_succeeded and v_item_quantity = 1 and v_unit_price_cents = 2147483647 and v_discount_cents = 0 and v_subtotal_cents = 2147483647 and v_total_cents = 2147483647 then 'PASS' else 'SUT_FAIL' end, pg_catalog.format('result=%s q=%s unit=%s discount=%s subtotal=%s total=%s', coalesce(r.message_text, r.value_json::text), v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents));
+
+  select created.opportunity_id, created.quote_id
+  into v_opp_id, v_quote_id
+  from pg_temp._p9_quote_terms_create_quote(ctx.org_a, ctx.store_a, ctx.customer_a, 'QT-MONEY-SERVICE-OVERFLOW', 'Money Service Overflow') as created;
+
+  q := pg_catalog.format($sql$select * from public.write_commercial_opportunity_profile_by_user(%L::uuid,%L::uuid,%L::uuid,'money-service-overflow',%L,'resolved',%L::jsonb,%L::jsonb,'manual_check','{}'::jsonb)$sql$,
+    ctx.org_a, ctx.store_a, v_opp_id, repeat('27',32),
+    pg_temp._p9_quote_terms_components_service(ctx.user_a, 'Svc money overflow', 'desc', 2, 1073741824)::text,
+    pg_temp._p9_quote_terms_empty_intents()::text
+  );
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('authenticated', ctx.user_a, q);
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('service_role', null, pg_catalog.format(
+    'select * from public.materialize_sales_quote_items_from_current_profile_by_system(%L::uuid,%L::uuid,%L::uuid)',
+    ctx.org_a, ctx.store_a, v_quote_id
+  ));
+
+  select count(*)::integer into v_zero_items from public.sales_quote_items where quote_id = v_quote_id;
+
+  perform pg_temp._p9_quote_terms_record(39, 'materializer rejects service subtotal overflow deterministically', case when not r.operation_succeeded and coalesce(r.message_text,'') ilike '%MONEY_OUT_OF_RANGE%' and v_zero_items = 0 then 'PASS' else 'SUT_FAIL' end, coalesce(r.message_text, '<null>') || ' rows=' || coalesce(v_zero_items::text,'<null>'));
+
+  select created.opportunity_id, created.quote_id
+  into v_opp_id, v_quote_id
+  from pg_temp._p9_quote_terms_create_quote(ctx.org_a, ctx.store_a, ctx.customer_a, 'QT-MONEY-CUSTOM-NORMAL', 'Money Custom Normal') as created;
+
+  q := pg_catalog.format($sql$select * from public.write_commercial_opportunity_profile_by_user(%L::uuid,%L::uuid,%L::uuid,'money-custom-normal',%L,'resolved',%L::jsonb,%L::jsonb,'manual_check','{}'::jsonb)$sql$,
+    ctx.org_a, ctx.store_a, v_opp_id, repeat('28',32),
+    pg_temp._p9_quote_terms_components_custom(ctx.user_a, 'Custom money normal', 'desc', 2, 222)::text,
+    pg_temp._p9_quote_terms_empty_intents()::text
+  );
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('authenticated', ctx.user_a, q);
+
+  select * into r from pg_temp._p9_quote_terms_exec_json('service_role', null, pg_catalog.format(
+    'select * from public.materialize_sales_quote_items_from_current_profile_by_system(%L::uuid,%L::uuid,%L::uuid)',
+    ctx.org_a, ctx.store_a, v_quote_id
+  ));
+
+  v_item_quantity := null; v_unit_price_cents := null; v_discount_cents := null; v_subtotal_cents := null; v_total_cents := null;
+  select quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents
+  into v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents
+  from public.sales_quote_items where quote_id = v_quote_id and item_type = 'custom';
+
+  perform pg_temp._p9_quote_terms_record(40, 'materializer computes custom subtotal from quantity times unit price', case when r.operation_succeeded and v_item_quantity = 2 and v_unit_price_cents = 222 and v_discount_cents = 0 and v_subtotal_cents = 444 and v_total_cents = 444 then 'PASS' else 'SUT_FAIL' end, pg_catalog.format('result=%s q=%s unit=%s discount=%s subtotal=%s total=%s', coalesce(r.message_text, r.value_json::text), v_item_quantity, v_unit_price_cents, v_discount_cents, v_subtotal_cents, v_total_cents));
+
 exception when others then
 
   perform pg_temp._p9_quote_terms_record(999, 'runner uncaught error', 'HARNESS_ERROR', sqlstate || ' ' || sqlerrm);
@@ -1375,13 +1706,13 @@ begin
 
   from pg_temp._p9_quote_terms_results
 
-  where scenario_number between 1 and 31;
+  where scenario_number between 1 and 40;
 
   select count(*)
 
   into v_missing
 
-  from generate_series(1, 31) as scenario_row(scenario_number)
+  from generate_series(1, 40) as scenario_row(scenario_number)
 
   where not exists (
 
@@ -1423,13 +1754,13 @@ begin
 
     where result_row.status <> 'PASS'
 
-       or result_row.scenario_number not between 1 and 31;
+       or result_row.scenario_number not between 1 and 40;
 
     raise exception using
 
       errcode = 'P0001',
 
-      message = 'P9 6.1-B profile service/custom quote terms manual checks failed',
+      message = 'P9 6.1-B/6.2-C profile service/custom quote terms manual checks failed',
 
       detail = pg_catalog.format(
 
@@ -1449,7 +1780,7 @@ begin
 
   end if;
 
-  raise notice 'P9 6.1-B profile service/custom quote terms manual checks passed: % scenarios', v_passed;
+  raise notice 'P9 6.1-B/6.2-C profile service/custom quote terms manual checks passed: % scenarios', v_passed;
 
 end;
 
