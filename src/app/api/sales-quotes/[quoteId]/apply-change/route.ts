@@ -27,7 +27,6 @@ import {
 } from "@/lib/sales-quotes/validity";
 import {
   normalizeQuoteItemMoney,
-  parseQuoteMoneyInteger,
   resolveQuoteDiscountFromItems,
   sumQuoteItemMoneyTotals,
 } from "@/lib/server/sales-quotes/money";
@@ -144,14 +143,6 @@ function resolveNextValidUntil(args: {
 
 function hasOwn(obj: object, key: keyof ApplyChangeBody) {
   return Object.prototype.hasOwnProperty.call(obj, key);
-}
-
-function parseDiscountCents(value: unknown) {
-  return parseQuoteMoneyInteger(
-    value,
-    "INVALID_DISCOUNT_CENTS",
-    "discount_cents",
-  );
 }
 
 function normalizeApplyChangeItemType(value: unknown, index: number): AllowedApplyChangeItemType {
@@ -375,23 +366,15 @@ export function buildUpdatedQuote(args: {
   const hasBodyItems = hasOwn(args.body, "items");
 
   if (hasOwn(args.body, "discount_cents") && !hasBodyItems) {
-    const parsedDiscountCents = parseDiscountCents(args.body.discount_cents);
+    const itemTotals = sumQuoteItemMoneyTotals(nextItems);
+    const parsedDiscountCents = resolveQuoteDiscountFromItems({
+      quoteDiscountCents: args.body.discount_cents,
+      hasQuoteDiscountCents: true,
+      itemsDiscountCents: itemTotals.discountCents,
+      errorCode: "INVALID_DISCOUNT_CENTS",
+    });
 
-    if (parsedDiscountCents < 0) {
-      throw new QuoteAccessError(
-        400,
-        "INVALID_DISCOUNT_CENTS",
-        "discount_cents nao pode ser negativo."
-      );
-    }
-
-    if (parsedDiscountCents > subtotalCents) {
-      throw new QuoteAccessError(
-        400,
-        "INVALID_DISCOUNT_CENTS",
-        "discount_cents nao pode ser maior que subtotal_cents."
-      );
-    }
+    nextSubtotalCents = itemTotals.subtotalCents;
 
     if (parsedDiscountCents !== nextDiscountCents) {
       appliedChanges.discount_cents = {
@@ -575,25 +558,9 @@ async function loadQuoteItems(args: { supabase: any; quoteId: string }) {
   return items;
 }
 
-async function replaceQuoteItems(args: {
-  supabase: any;
-  quote: SalesQuoteRow;
-  items: NormalizedApplyChangeItem[];
-}) {
-  const { error: deleteError } = await args.supabase
-    .from("sales_quote_items")
-    .delete()
-    .eq("quote_id", args.quote.id);
-
-  if (deleteError) {
-    throw new Error(`Falha ao remover itens antigos do orcamento: ${deleteError.message}`);
-  }
-
-  const rows = args.items.map((item) => ({
-    ...(item.id ? { id: item.id } : {}),
-    quote_id: args.quote.id,
-    organization_id: args.quote.organization_id,
-    store_id: args.quote.store_id,
+function serializeQuoteItemsForAtomicWriter(items: NormalizedApplyChangeItem[]) {
+  return items.map((item) => ({
+    id: item.id,
     item_type: item.itemType,
     name: item.name,
     description: item.description,
@@ -606,11 +573,73 @@ async function replaceQuoteItems(args: {
     sku: item.sku,
     metadata: item.metadata,
   }));
+}
 
-  const { error: insertError } = await args.supabase.from("sales_quote_items").insert(rows);
+function normalizePersistedQuoteItemsForAtomicWriter(items: EditableSalesQuoteItemRow[]) {
+  return items.map((item, index) => ({
+    id: item.id,
+    itemType: normalizeApplyChangeItemType(item.item_type || "custom", index),
+    name: String(item.name || "").trim(),
+    description: normalizeOptionalText(item.description),
+    quantity: Number(item.quantity || 0),
+    unitPriceCents: Number(item.unit_price_cents || 0),
+    discountCents: Number(item.discount_cents || 0),
+    subtotalCents: Number(item.subtotal_cents || 0),
+    totalCents: Number(item.total_cents || 0),
+    sortOrder: Number(item.sort_order || index + 1),
+    sku: item.sku || null,
+    metadata:
+      item.metadata && typeof item.metadata === "object"
+        ? { ...item.metadata }
+        : { source: null, frozen_at: new Date().toISOString() },
+  }));
+}
 
-  if (insertError) {
-    throw new Error(`Falha ao salvar novos itens do orcamento: ${insertError.message}`);
+export async function persistQuoteChangeAtomically(args: {
+  supabase: any;
+  quote: SalesQuoteRow;
+  updatedQuote: SalesQuoteRow;
+  items: NormalizedApplyChangeItem[];
+}) {
+  const { data, error } = await args.supabase.rpc(
+    "apply_sales_quote_change_money_and_items_by_system",
+    {
+      p_organization_id: args.quote.organization_id,
+      p_store_id: args.quote.store_id,
+      p_quote_id: args.quote.id,
+      p_title: args.updatedQuote.title,
+      p_status: args.updatedQuote.status,
+      p_subtotal_cents: Number(args.updatedQuote.subtotal_cents || 0),
+      p_discount_cents: Number(args.updatedQuote.discount_cents || 0),
+      p_total_cents: Number(args.updatedQuote.total_cents || 0),
+      p_customer_notes: args.updatedQuote.customer_notes,
+      p_internal_notes: args.updatedQuote.internal_notes,
+      p_payment_terms: args.updatedQuote.payment_terms ?? null,
+      p_delivery_terms: args.updatedQuote.delivery_terms ?? null,
+      p_warranty_terms: args.updatedQuote.warranty_terms ?? null,
+      p_valid_until: args.updatedQuote.valid_until ?? null,
+      p_metadata: args.updatedQuote.metadata ?? {},
+      p_items: serializeQuoteItemsForAtomicWriter(args.items),
+    }
+  );
+
+  if (error) {
+    throw new Error(`Falha ao aplicar alteracao atomica do orcamento: ${error.message}`);
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+
+  if (!row || row.quote_id !== args.quote.id) {
+    throw new Error("Falha ao aplicar alteracao atomica do orcamento: retorno invalido.");
+  }
+
+  if (
+    Number(row.item_count || 0) !== args.items.length ||
+    Number(row.subtotal_cents || 0) !== Number(args.updatedQuote.subtotal_cents || 0) ||
+    Number(row.discount_cents || 0) !== Number(args.updatedQuote.discount_cents || 0) ||
+    Number(row.total_cents || 0) !== Number(args.updatedQuote.total_cents || 0)
+  ) {
+    throw new Error("Falha ao aplicar alteracao atomica do orcamento: retorno divergente.");
   }
 }
 
@@ -860,23 +889,25 @@ export async function POST(
       quoteUpdatePayload.metadata = nextMetadata;
     }
 
-    const { error: quoteUpdateError } = await scope.supabase
-      .from("sales_quotes")
-      .update(quoteUpdatePayload)
-      .eq("id", scope.quote.id);
-
-    if (quoteUpdateError) {
-      throw new Error(`Falha ao atualizar sales_quotes: ${quoteUpdateError.message}`);
-    }
-    quoteUpdated = true;
-
     if (itemsChanged) {
-      await replaceQuoteItems({
+      await persistQuoteChangeAtomically({
         supabase: scope.supabase,
         quote: scope.quote,
+        updatedQuote,
         items: nextItems,
       });
+      quoteUpdated = true;
       itemsReplaced = true;
+    } else {
+      const { error: quoteUpdateError } = await scope.supabase
+        .from("sales_quotes")
+        .update(quoteUpdatePayload)
+        .eq("id", scope.quote.id);
+
+      if (quoteUpdateError) {
+        throw new Error(`Falha ao atualizar sales_quotes: ${quoteUpdateError.message}`);
+      }
+      quoteUpdated = true;
     }
 
     const versionRow = await createQuoteVersion({
@@ -941,54 +972,32 @@ export async function POST(
   } catch (error) {
     if (revertContext && quoteUpdated && !versionCreated) {
       try {
-        await revertContext.supabase
-          .from("sales_quotes")
-          .update({
-            title: revertContext.originalQuote.title,
-            status: revertContext.originalQuote.status,
-            subtotal_cents: revertContext.originalQuote.subtotal_cents,
-            discount_cents: revertContext.originalQuote.discount_cents,
-            total_cents: revertContext.originalQuote.total_cents,
-            customer_notes: revertContext.originalQuote.customer_notes,
-            internal_notes: revertContext.originalQuote.internal_notes,
-            payment_terms: revertContext.originalQuote.payment_terms ?? null,
-            delivery_terms: revertContext.originalQuote.delivery_terms ?? null,
-            warranty_terms: revertContext.originalQuote.warranty_terms ?? null,
-            valid_until: revertContext.originalQuote.valid_until ?? null,
-            metadata: revertContext.originalQuote.metadata,
-          })
-          .eq("id", revertContext.originalQuote.id);
-      } catch {
-        // best effort
-      }
-    }
-
-    if (revertContext && itemsReplaced && !versionCreated) {
-      try {
-        await revertContext.supabase
-          .from("sales_quote_items")
-          .delete()
-          .eq("quote_id", revertContext.originalQuote.id);
-
-        await revertContext.supabase.from("sales_quote_items").insert(
-          revertContext.originalItems.map((item) => ({
-            id: item.id,
-            quote_id: item.quote_id,
-            organization_id: item.organization_id,
-            store_id: item.store_id,
-            item_type: item.item_type || null,
-            name: item.name,
-            description: item.description,
-            quantity: item.quantity,
-            unit_price_cents: item.unit_price_cents,
-            discount_cents: item.discount_cents,
-            subtotal_cents: item.subtotal_cents,
-            total_cents: item.total_cents,
-            sort_order: item.sort_order,
-            sku: item.sku,
-            metadata: item.metadata,
-          }))
-        );
+        if (itemsReplaced) {
+          await persistQuoteChangeAtomically({
+            supabase: revertContext.supabase,
+            quote: revertContext.originalQuote,
+            updatedQuote: revertContext.originalQuote,
+            items: normalizePersistedQuoteItemsForAtomicWriter(revertContext.originalItems),
+          });
+        } else {
+          await revertContext.supabase
+            .from("sales_quotes")
+            .update({
+              title: revertContext.originalQuote.title,
+              status: revertContext.originalQuote.status,
+              subtotal_cents: revertContext.originalQuote.subtotal_cents,
+              discount_cents: revertContext.originalQuote.discount_cents,
+              total_cents: revertContext.originalQuote.total_cents,
+              customer_notes: revertContext.originalQuote.customer_notes,
+              internal_notes: revertContext.originalQuote.internal_notes,
+              payment_terms: revertContext.originalQuote.payment_terms ?? null,
+              delivery_terms: revertContext.originalQuote.delivery_terms ?? null,
+              warranty_terms: revertContext.originalQuote.warranty_terms ?? null,
+              valid_until: revertContext.originalQuote.valid_until ?? null,
+              metadata: revertContext.originalQuote.metadata,
+            })
+            .eq("id", revertContext.originalQuote.id);
+        }
       } catch {
         // best effort
       }

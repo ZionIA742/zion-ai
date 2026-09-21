@@ -107,15 +107,17 @@ async function buildUpdatedQuoteForTest(body: Record<string, unknown>) {
 async function assertApplyChangeMoneyError(args: {
   body: Record<string, unknown>;
   expectedError: string;
+  quote?: ReturnType<typeof createQuote>;
+  currentItems?: ReturnType<typeof createCurrentItem>[];
 }) {
   const { buildUpdatedQuote } = await loadRouteModule();
 
   assert.throws(
     () =>
       buildUpdatedQuote({
-        quote: createQuote(),
+        quote: args.quote ?? createQuote(),
         body: args.body as any,
-        currentItems: [createCurrentItem()],
+        currentItems: args.currentItems ?? [createCurrentItem()],
       }),
     (error: unknown) =>
       Boolean(
@@ -564,20 +566,195 @@ const tests: TestCase[] = [
       }),
   },
   {
-    name: "apply-change preserva remocao de desconto via Assistant sem items",
+    name: "apply-change rejeita discount_cents sem items quando soma dos itens e zero",
+    run: () =>
+      assertApplyChangeMoneyError({
+        body: {
+          discount_cents: 100,
+        },
+        quote: createQuote({
+          subtotal_cents: 30000,
+          discount_cents: 0,
+          total_cents: 30000,
+        }),
+        currentItems: [
+          createCurrentItem({
+            discount_cents: 0,
+            total_cents: 30000,
+          }),
+        ],
+        expectedError: "INVALID_DISCOUNT_CENTS",
+      }),
+  },
+  {
+    name: "apply-change rejeita remocao de discount_cents sem items quando itens somam desconto",
+    run: () =>
+      assertApplyChangeMoneyError({
+        body: {
+          discount_cents: 0,
+        },
+        expectedError: "INVALID_DISCOUNT_CENTS",
+      }),
+  },
+  {
+    name: "apply-change preserva discount_cents sem items quando igual a soma dos itens",
     run: async () => {
-      const result = await buildUpdatedQuoteForTest({
-        discount_cents: 0,
+      const { buildUpdatedQuote } = await loadRouteModule();
+      const result = buildUpdatedQuote({
+        quote: createQuote({
+          discount_cents: 500,
+          total_cents: 29500,
+        }),
+        body: {
+          discount_cents: 1000,
+        } as any,
+        currentItems: [createCurrentItem()],
       });
 
       assert.equal(result.updatedQuote.subtotal_cents, 30000);
-      assert.equal(result.updatedQuote.discount_cents, 0);
-      assert.equal(result.updatedQuote.total_cents, 30000);
+      assert.equal(result.updatedQuote.discount_cents, 1000);
+      assert.equal(result.updatedQuote.total_cents, 29000);
       assert.deepEqual(result.appliedChanges.discount_cents, {
-        from: 1000,
-        to: 0,
+        from: 500,
+        to: 1000,
       });
       assert.equal(result.itemsChanged, false);
+    },
+  },
+  {
+    name: "apply-change rejeita discount_cents positivo em quote sem items no builder",
+    run: () =>
+      assertApplyChangeMoneyError({
+        body: {
+          discount_cents: 1,
+        },
+        quote: createQuote({
+          subtotal_cents: 0,
+          discount_cents: 0,
+          total_cents: 0,
+        }),
+        currentItems: [],
+        expectedError: "INVALID_DISCOUNT_CENTS",
+      }),
+  },
+  {
+    name: "apply-change persiste troca de items via writer atomico",
+    run: async () => {
+      const { persistQuoteChangeAtomically } = await loadRouteModule();
+      const rpcCalls: Array<{ name: string; payload: Record<string, unknown> }> = [];
+      const supabase = {
+        rpc: async (name: string, payload: Record<string, unknown>) => {
+          rpcCalls.push({ name, payload });
+          return {
+            data: [
+              {
+                quote_id: "quote-1",
+                item_count: 2,
+                subtotal_cents: 25000,
+                discount_cents: 2000,
+                total_cents: 23000,
+              },
+            ],
+            error: null,
+          };
+        },
+        from: () => {
+          throw new Error("direct table write should not be used");
+        },
+      };
+
+      await persistQuoteChangeAtomically({
+        supabase,
+        quote: createQuote(),
+        updatedQuote: createQuote({
+          status: "pending_review",
+          subtotal_cents: 25000,
+          discount_cents: 2000,
+          total_cents: 23000,
+        }),
+        items: [
+          {
+            id: "item-1",
+            itemType: "custom",
+            name: "Piscina",
+            description: null,
+            quantity: 2,
+            unitPriceCents: 10000,
+            discountCents: 1500,
+            subtotalCents: 20000,
+            totalCents: 18500,
+            sortOrder: 1,
+            sku: null,
+            metadata: {},
+          },
+          {
+            id: "item-2",
+            itemType: "service",
+            name: "Instalacao",
+            description: null,
+            quantity: 1,
+            unitPriceCents: 5000,
+            discountCents: 500,
+            subtotalCents: 5000,
+            totalCents: 4500,
+            sortOrder: 2,
+            sku: null,
+            metadata: {},
+          },
+        ] as any,
+      });
+
+      assert.equal(rpcCalls.length, 1);
+      assert.equal(rpcCalls[0].name, "apply_sales_quote_change_money_and_items_by_system");
+      assert.equal(rpcCalls[0].payload.p_subtotal_cents, 25000);
+      assert.equal(rpcCalls[0].payload.p_discount_cents, 2000);
+      assert.equal(rpcCalls[0].payload.p_total_cents, 23000);
+      assert.equal((rpcCalls[0].payload.p_items as unknown[]).length, 2);
+    },
+  },
+  {
+    name: "apply-change falha atomica nao executa delete ou insert direto de items",
+    run: async () => {
+      const { persistQuoteChangeAtomically } = await loadRouteModule();
+      let directTableWrites = 0;
+      const supabase = {
+        rpc: async () => ({
+          data: null,
+          error: { message: "simulated delete ok insert fail equivalent" },
+        }),
+        from: () => {
+          directTableWrites += 1;
+          return {};
+        },
+      };
+
+      await assert.rejects(
+        () =>
+          persistQuoteChangeAtomically({
+            supabase,
+            quote: createQuote(),
+            updatedQuote: createQuote(),
+            items: [
+              {
+                id: "item-1",
+                itemType: "custom",
+                name: "Piscina",
+                description: null,
+                quantity: 3,
+                unitPriceCents: 10000,
+                discountCents: 1000,
+                subtotalCents: 30000,
+                totalCents: 29000,
+                sortOrder: 1,
+                sku: null,
+                metadata: {},
+              },
+            ] as any,
+          }),
+        /Falha ao aplicar alteracao atomica do orcamento/,
+      );
+
+      assert.equal(directTableWrites, 0);
     },
   },
 ];
