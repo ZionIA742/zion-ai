@@ -12,6 +12,11 @@ import {
 } from "@/lib/server/crm/resolve-authorized-opportunity-detail.internal";
 import { resolveValidUntilFromValidityDays, parseValidityDays } from "@/lib/sales-quotes/validity";
 import { reserveNextQuoteNumber } from "@/lib/server/sales-quotes/quote-settings";
+import {
+  normalizeQuoteItemMoney,
+  resolveQuoteDiscountFromItems,
+  sumQuoteItemMoneyTotals,
+} from "@/lib/server/sales-quotes/money";
 import type { NormalizedQuoteItemInput, QuoteItemInput } from "@/lib/server/sales-quotes/types";
 
 export const runtime = "nodejs";
@@ -151,12 +156,6 @@ function buildErrorResponse(error: unknown) {
   );
 }
 
-function parseInteger(value: unknown, fallback = 0) {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue)) return fallback;
-  return Math.trunc(numericValue);
-}
-
 function normalizeOptionalText(value: unknown) {
   const normalized = String(value ?? "").trim();
   return normalized || null;
@@ -285,25 +284,27 @@ function normalizeQuoteItems(items: unknown): NormalizedCreateQuoteItem[] {
     }
 
     const itemType = normalizeQuoteItemType(record, index);
-    const quantity = Math.max(1, parseInteger(record?.quantity, 1));
-    const unitPriceCents = Math.max(0, parseInteger(record?.unit_price_cents, 0));
-    const rawDiscountCents = Math.max(
-      0,
-      parseInteger(record?.discount_cents, 0)
-    );
-    const subtotalCents = quantity * unitPriceCents;
-    const discountCents = Math.min(subtotalCents, rawDiscountCents);
-    const totalCents = Math.max(0, subtotalCents - discountCents);
+    const money = normalizeQuoteItemMoney({
+      quantity: record?.quantity,
+      unitPriceCents: record?.unit_price_cents,
+      discountCents: record?.discount_cents ?? 0,
+      itemIndex: index,
+      errorCodes: {
+        quantity: "INVALID_ITEM_QUANTITY",
+        unitPriceCents: "INVALID_ITEM_UNIT_PRICE",
+        discountCents: "INVALID_ITEM_DISCOUNT",
+      },
+    });
 
     return {
       itemType,
       name,
       description: String(record?.description || "").trim() || null,
-      quantity,
-      unitPriceCents,
-      discountCents,
-      subtotalCents,
-      totalCents,
+      quantity: money.quantity,
+      unitPriceCents: money.unitPriceCents,
+      discountCents: money.discountCents,
+      subtotalCents: money.subtotalCents,
+      totalCents: money.totalCents,
       sku: String(record?.sku || "").trim() || null,
       sortOrder: index + 1,
       metadata: {
@@ -717,7 +718,8 @@ export function createCreateQuotePostHandler(deps?: {
       validityDays,
       baseDate: getNow(),
     });
-    const quoteDiscountCents = Math.max(0, parseInteger(body?.discount_cents, 0));
+    const hasQuoteDiscountCents =
+      body != null && Object.prototype.hasOwnProperty.call(body, "discount_cents");
     const items = normalizeQuoteItems(body?.items || []);
 
     const scope = await resolveQuoteScope({
@@ -733,17 +735,15 @@ export function createCreateQuotePostHandler(deps?: {
         resolveOpportunityDetail,
       });
 
-    const itemsSubtotalCents = items.reduce(
-      (sum, item) => sum + item.subtotalCents,
-      0
-    );
-    const itemsDiscountCents = items.reduce(
-      (sum, item) => sum + item.discountCents,
-      0
-    );
-    const subtotalCents = itemsSubtotalCents;
-    const discountCents = itemsDiscountCents + quoteDiscountCents;
-    const totalCents = Math.max(0, subtotalCents - discountCents);
+    const itemTotals = sumQuoteItemMoneyTotals(items);
+    const discountCents = resolveQuoteDiscountFromItems({
+      quoteDiscountCents: body?.discount_cents,
+      hasQuoteDiscountCents,
+      itemsDiscountCents: itemTotals.discountCents,
+      errorCode: "INVALID_DISCOUNT_CENTS",
+    });
+    const subtotalCents = itemTotals.subtotalCents;
+    const totalCents = subtotalCents - discountCents;
     const customerName =
       normalizeOptionalText(body?.customerName ?? body?.customer_name) ??
       normalizeOptionalText(scope.lead?.name);
@@ -763,7 +763,7 @@ export function createCreateQuotePostHandler(deps?: {
       internalNotes,
       warrantyTerms,
       validityDays,
-      discountCents: quoteDiscountCents,
+      discountCents,
       items,
     });
 

@@ -25,6 +25,12 @@ import {
   resolveDisplayValidityDays,
   resolveValidUntilFromValidityDays,
 } from "@/lib/sales-quotes/validity";
+import {
+  normalizeQuoteItemMoney,
+  parseQuoteMoneyInteger,
+  resolveQuoteDiscountFromItems,
+  sumQuoteItemMoneyTotals,
+} from "@/lib/server/sales-quotes/money";
 import type {
   QuoteSnapshot,
   SalesQuoteChangeRequestRow,
@@ -141,31 +147,11 @@ function hasOwn(obj: object, key: keyof ApplyChangeBody) {
 }
 
 function parseDiscountCents(value: unknown) {
-  const numericValue = Number(value);
-
-  if (!Number.isFinite(numericValue)) {
-    throw new QuoteAccessError(
-      400,
-      "INVALID_DISCOUNT_CENTS",
-      "discount_cents deve ser um numero valido."
-    );
-  }
-
-  return Math.trunc(numericValue);
-}
-
-function parseIntegerField(value: unknown, errorCode: string, fieldName: string) {
-  const numericValue = Number(value);
-
-  if (!Number.isFinite(numericValue)) {
-    throw new QuoteAccessError(
-      400,
-      errorCode,
-      `${fieldName} deve ser um numero valido.`
-    );
-  }
-
-  return Math.trunc(numericValue);
+  return parseQuoteMoneyInteger(
+    value,
+    "INVALID_DISCOUNT_CENTS",
+    "discount_cents",
+  );
 }
 
 function normalizeApplyChangeItemType(value: unknown, index: number): AllowedApplyChangeItemType {
@@ -258,43 +244,17 @@ function normalizeApplyChangeItems(
     }
 
     const itemType = normalizeApplyChangeItemType(record?.item_type, index);
-    const quantity = parseIntegerField(record?.quantity, "INVALID_ITEM_QUANTITY", "quantity");
-    const unitPriceCents = parseIntegerField(
-      record?.unit_price_cents,
-      "INVALID_ITEM_UNIT_PRICE",
-      "unit_price_cents"
-    );
-    const rawDiscountCents = parseIntegerField(
-      record?.discount_cents ?? 0,
-      "INVALID_ITEM_DISCOUNT",
-      "discount_cents"
-    );
-
-    if (quantity <= 0) {
-      throw new QuoteAccessError(
-        400,
-        "INVALID_ITEM_QUANTITY",
-        `Item ${index + 1} precisa ter quantidade maior que zero.`
-      );
-    }
-
-    if (unitPriceCents < 0) {
-      throw new QuoteAccessError(
-        400,
-        "INVALID_ITEM_UNIT_PRICE",
-        `Item ${index + 1} nao pode ter preco unitario negativo.`
-      );
-    }
-
-    const subtotalCents = quantity * unitPriceCents;
-
-    if (rawDiscountCents < 0 || rawDiscountCents > subtotalCents) {
-      throw new QuoteAccessError(
-        400,
-        "INVALID_ITEM_DISCOUNT",
-        `Item ${index + 1} possui desconto invalido.`
-      );
-    }
+    const money = normalizeQuoteItemMoney({
+      quantity: record?.quantity,
+      unitPriceCents: record?.unit_price_cents,
+      discountCents: record?.discount_cents ?? 0,
+      itemIndex: index,
+      errorCodes: {
+        quantity: "INVALID_ITEM_QUANTITY",
+        unitPriceCents: "INVALID_ITEM_UNIT_PRICE",
+        discountCents: "INVALID_ITEM_DISCOUNT",
+      },
+    });
 
     const inputItemId = String(record?.id || "").trim();
     const previousItem = inputItemId ? currentItemsById.get(inputItemId) || null : null;
@@ -308,11 +268,11 @@ function normalizeApplyChangeItems(
       itemType,
       name,
       description: normalizeOptionalText(record?.description),
-      quantity,
-      unitPriceCents,
-      discountCents: rawDiscountCents,
-      subtotalCents,
-      totalCents: Math.max(subtotalCents - rawDiscountCents, 0),
+      quantity: money.quantity,
+      unitPriceCents: money.unitPriceCents,
+      discountCents: money.discountCents,
+      subtotalCents: money.subtotalCents,
+      totalCents: money.totalCents,
       sortOrder: index + 1,
       sku: previousItem?.sku || null,
       metadata: previousMetadata,
@@ -345,7 +305,7 @@ function areApplyChangeItemsEqual(
   });
 }
 
-function buildUpdatedQuote(args: {
+export function buildUpdatedQuote(args: {
   quote: SalesQuoteRow;
   body: ApplyChangeBody;
   currentItems: EditableSalesQuoteItemRow[];
@@ -412,7 +372,9 @@ function buildUpdatedQuote(args: {
     }
   }
 
-  if (hasOwn(args.body, "discount_cents")) {
+  const hasBodyItems = hasOwn(args.body, "items");
+
+  if (hasOwn(args.body, "discount_cents") && !hasBodyItems) {
     const parsedDiscountCents = parseDiscountCents(args.body.discount_cents);
 
     if (parsedDiscountCents < 0) {
@@ -460,19 +422,14 @@ function buildUpdatedQuote(args: {
       itemsChanged = true;
     }
 
-    const itemsSubtotalCents = normalizedItems.reduce((sum, item) => sum + item.subtotalCents, 0);
-    const itemsDiscountCents = normalizedItems.reduce((sum, item) => sum + item.discountCents, 0);
-
-    if (hasOwn(args.body, "discount_cents") && nextDiscountCents !== itemsDiscountCents) {
-      throw new QuoteAccessError(
-        400,
-        "INVALID_DISCOUNT_CENTS",
-        "Quando items sao enviados, discount_cents deve corresponder ao desconto total dos itens."
-      );
-    }
-
-    nextSubtotalCents = itemsSubtotalCents;
-    nextDiscountCents = itemsDiscountCents;
+    const itemTotals = sumQuoteItemMoneyTotals(normalizedItems);
+    nextSubtotalCents = itemTotals.subtotalCents;
+    nextDiscountCents = resolveQuoteDiscountFromItems({
+      quoteDiscountCents: args.body.discount_cents,
+      hasQuoteDiscountCents: hasOwn(args.body, "discount_cents"),
+      itemsDiscountCents: itemTotals.discountCents,
+      errorCode: "INVALID_DISCOUNT_CENTS",
+    });
   }
 
   if (hasOwn(args.body, "customer_notes")) {
@@ -561,7 +518,7 @@ function buildUpdatedQuote(args: {
     );
   }
 
-  const nextTotalCents = Math.max(nextSubtotalCents - nextDiscountCents, 0);
+  const nextTotalCents = nextSubtotalCents - nextDiscountCents;
 
   const updatedQuote: SalesQuoteRow = {
     ...args.quote,

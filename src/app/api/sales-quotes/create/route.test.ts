@@ -418,7 +418,336 @@ async function parseBody(response: Response) {
   return (await response.json()) as Record<string, unknown>;
 }
 
+function createAuthorizedOpportunityDetail() {
+  return {
+    ok: true,
+    data: {
+      opportunity: {
+        id: "opportunity-a",
+        organizationId: "access-org",
+        storeId: "access-store",
+        customerId: "customer-1",
+        stage: "qualificacao",
+        stageStatus: "valid",
+        stageChangedAt: null,
+        createdAt: null,
+        updatedAt: null,
+      },
+      customer: { id: "customer-1", displayName: "Cliente 1" },
+      originLead: {
+        id: "lead-a",
+        name: "Lead A",
+        phone: "+5511999999999",
+      },
+      primaryConversation: {
+        id: "conversation-a",
+        leadId: "lead-a",
+        isHumanActive: false,
+      },
+      hasOriginLead: true,
+      hasPrimaryConversation: true,
+      isHumanActive: false,
+      displayName: "Cliente 1",
+      phone: "+5511999999999",
+      warnings: [],
+      problems: [],
+      requiresAttention: false,
+    },
+  };
+}
+
+function createValidQuoteRequestBody(overrides?: Record<string, unknown>) {
+  return {
+    storeId: "body-store",
+    creationIdempotencyKey: "quote_create:money-key",
+    leadId: "lead-a",
+    conversationId: "conversation-a",
+    commercialOpportunityId: "opportunity-a",
+    title: "Orcamento A",
+    items: [
+      {
+        item_type: "custom",
+        name: "Piscina",
+        quantity: 1,
+        unit_price_cents: 1000,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+async function postCreateQuoteForMoney(
+  requestBody: Record<string, unknown>,
+  supabase = createSupabaseRecorder(),
+) {
+  const { createCreateQuotePostHandler } = await loadRouteModule();
+  const scope = createScope({
+    leadId: "lead-a",
+    conversationId: "conversation-a",
+    supabase,
+  });
+  const response = await createCreateQuotePostHandler({
+    resolveQuoteScope: async () => scope as never,
+    reserveQuoteNumber: async () => createNumberReservation(),
+    resolveOpportunityDetail: async () => createAuthorizedOpportunityDetail() as never,
+  })(createRequest(requestBody));
+
+  return {
+    response,
+    body: await parseBody(response),
+    supabase,
+  };
+}
+
+async function assertCreateQuoteMoneyError(args: {
+  items?: unknown;
+  discountCents?: unknown;
+  expectedError: string;
+}) {
+  const requestBody = createValidQuoteRequestBody({
+    items: args.items,
+    ...(Object.prototype.hasOwnProperty.call(args, "discountCents")
+      ? { discount_cents: args.discountCents }
+      : {}),
+  });
+  const { response, body, supabase } = await postCreateQuoteForMoney(requestBody);
+
+  assert.equal(response.status, 400);
+  assert.equal(body.ok, false);
+  assert.equal(body.error, args.expectedError);
+  assert.equal(supabase.insertCalls.length, 0);
+}
+
 const tests: TestCase[] = [
+  {
+    name: "create calcula desconto do item como total da linha",
+    run: async () => {
+      const { response, body, supabase } = await postCreateQuoteForMoney(
+        createValidQuoteRequestBody({
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 3,
+              unit_price_cents: 10000,
+              discount_cents: 1000,
+            },
+          ],
+        })
+      );
+
+      assert.equal(response.status, 200, JSON.stringify(body));
+      assert.equal(body.ok, true);
+      const quoteInsert = supabase.insertCalls.find((call) => call.table === "sales_quotes");
+      const itemInsert = supabase.insertCalls.find((call) => call.table === "sales_quote_items");
+      assert.equal(quoteInsert?.payload.subtotal_cents, 30000);
+      assert.equal(quoteInsert?.payload.discount_cents, 1000);
+      assert.equal(quoteInsert?.payload.total_cents, 29000);
+      assert.equal(itemInsert?.payload.subtotal_cents, 30000);
+      assert.equal(itemInsert?.payload.discount_cents, 1000);
+      assert.equal(itemInsert?.payload.total_cents, 29000);
+    },
+  },
+  {
+    name: "create calcula totais da quote como soma dos itens",
+    run: async () => {
+      const { response, supabase } = await postCreateQuoteForMoney(
+        createValidQuoteRequestBody({
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 2,
+              unit_price_cents: 10000,
+              discount_cents: 1500,
+            },
+            {
+              item_type: "service",
+              name: "Instalacao",
+              quantity: 1,
+              unit_price_cents: 5000,
+              discount_cents: 500,
+            },
+          ],
+        })
+      );
+
+      assert.equal(response.status, 200);
+      const quoteInsert = supabase.insertCalls.find((call) => call.table === "sales_quotes");
+      assert.equal(quoteInsert?.payload.subtotal_cents, 25000);
+      assert.equal(quoteInsert?.payload.discount_cents, 2000);
+      assert.equal(quoteInsert?.payload.total_cents, 23000);
+    },
+  },
+  {
+    name: "create rejeita quantity menor ou igual a zero",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 0,
+            unit_price_cents: 10000,
+          },
+        ],
+        expectedError: "INVALID_ITEM_QUANTITY",
+      }),
+  },
+  {
+    name: "create rejeita quantity nao inteira",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1.5,
+            unit_price_cents: 10000,
+          },
+        ],
+        expectedError: "INVALID_ITEM_QUANTITY",
+      }),
+  },
+  {
+    name: "create rejeita unit_price_cents negativo",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: -1,
+          },
+        ],
+        expectedError: "INVALID_ITEM_UNIT_PRICE",
+      }),
+  },
+  {
+    name: "create rejeita discount_cents negativo no item",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: 10000,
+            discount_cents: -1,
+          },
+        ],
+        expectedError: "INVALID_ITEM_DISCOUNT",
+      }),
+  },
+  {
+    name: "create rejeita discount_cents maior que subtotal do item",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: 10000,
+            discount_cents: 10001,
+          },
+        ],
+        expectedError: "INVALID_ITEM_DISCOUNT",
+      }),
+  },
+  {
+    name: "create permite discount_cents igual ao subtotal do item",
+    run: async () => {
+      const { response, supabase } = await postCreateQuoteForMoney(
+        createValidQuoteRequestBody({
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 1,
+              unit_price_cents: 10000,
+              discount_cents: 10000,
+            },
+          ],
+        })
+      );
+
+      assert.equal(response.status, 200);
+      const quoteInsert = supabase.insertCalls.find((call) => call.table === "sales_quotes");
+      const itemInsert = supabase.insertCalls.find((call) => call.table === "sales_quote_items");
+      assert.equal(quoteInsert?.payload.subtotal_cents, 10000);
+      assert.equal(quoteInsert?.payload.discount_cents, 10000);
+      assert.equal(quoteInsert?.payload.total_cents, 0);
+      assert.equal(itemInsert?.payload.total_cents, 0);
+    },
+  },
+  {
+    name: "create rejeita discount_cents da quote divergente da soma dos itens",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: 10000,
+            discount_cents: 1000,
+          },
+        ],
+        discountCents: 1500,
+        expectedError: "INVALID_DISCOUNT_CENTS",
+      }),
+  },
+  {
+    name: "create aceita discount_cents da quote igual a soma dos itens",
+    run: async () => {
+      const { response, supabase } = await postCreateQuoteForMoney(
+        createValidQuoteRequestBody({
+          discount_cents: 1000,
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 3,
+              unit_price_cents: 10000,
+              discount_cents: 1000,
+            },
+          ],
+        })
+      );
+
+      assert.equal(response.status, 200);
+      const quoteInsert = supabase.insertCalls.find((call) => call.table === "sales_quotes");
+      assert.equal(quoteInsert?.payload.subtotal_cents, 30000);
+      assert.equal(quoteInsert?.payload.discount_cents, 1000);
+      assert.equal(quoteInsert?.payload.total_cents, 29000);
+    },
+  },
+  {
+    name: "create deriva discount_cents da quote quando campo esta ausente",
+    run: async () => {
+      const { response, supabase } = await postCreateQuoteForMoney(
+        createValidQuoteRequestBody({
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 2,
+              unit_price_cents: 10000,
+              discount_cents: 750,
+            },
+          ],
+        })
+      );
+
+      assert.equal(response.status, 200);
+      const quoteInsert = supabase.insertCalls.find((call) => call.table === "sales_quotes");
+      assert.equal(quoteInsert?.payload.subtotal_cents, 20000);
+      assert.equal(quoteInsert?.payload.discount_cents, 750);
+      assert.equal(quoteInsert?.payload.total_cents, 19250);
+    },
+  },
   {
     name: "commercialOpportunityId ausente rejeita e nao cria sales_quotes",
     run: async () => {
