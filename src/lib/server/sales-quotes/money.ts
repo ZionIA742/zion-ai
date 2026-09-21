@@ -1,5 +1,11 @@
 import { QuoteAccessError } from "@/lib/server/sales-quotes/quote-auth";
 
+export const POSTGRES_INT4_MAX = 2147483647;
+
+const INVALID_QUOTE_MONEY_TOTALS = "INVALID_QUOTE_MONEY_TOTALS";
+const INVALID_ITEM_SUBTOTAL = "INVALID_ITEM_SUBTOTAL";
+const INVALID_ITEM_TOTAL = "INVALID_ITEM_TOTAL";
+
 type ItemMoneyErrorCodes = {
   quantity: string;
   unitPriceCents: string;
@@ -43,7 +49,11 @@ export function parseQuoteMoneyInteger(
 
   const numericValue = Number(value);
 
-  if (!Number.isFinite(numericValue) || !Number.isInteger(numericValue)) {
+  if (
+    !Number.isFinite(numericValue) ||
+    !Number.isInteger(numericValue) ||
+    !Number.isSafeInteger(numericValue)
+  ) {
     throw new QuoteAccessError(
       400,
       errorCode,
@@ -52,6 +62,39 @@ export function parseQuoteMoneyInteger(
   }
 
   return numericValue;
+}
+
+function assertQuoteMoneyCents(
+  value: number,
+  errorCode: string,
+  fieldName: string,
+) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > POSTGRES_INT4_MAX
+  ) {
+    throw new QuoteAccessError(
+      400,
+      errorCode,
+      `${fieldName} deve estar entre 0 e ${POSTGRES_INT4_MAX}.`,
+    );
+  }
+}
+
+function addQuoteMoneyCents(args: {
+  current: number;
+  next: number;
+  errorCode: string;
+  fieldName: string;
+}) {
+  assertQuoteMoneyCents(args.current, args.errorCode, args.fieldName);
+  assertQuoteMoneyCents(args.next, args.errorCode, args.fieldName);
+
+  const sum = args.current + args.next;
+  assertQuoteMoneyCents(sum, args.errorCode, args.fieldName);
+
+  return sum;
 }
 
 export function normalizeQuoteItemMoney(
@@ -88,8 +131,23 @@ export function normalizeQuoteItemMoney(
       `Item ${args.itemIndex + 1} nao pode ter preco unitario negativo.`,
     );
   }
+  assertQuoteMoneyCents(
+    unitPriceCents,
+    args.errorCodes.unitPriceCents,
+    "unit_price_cents",
+  );
+  assertQuoteMoneyCents(
+    discountCents,
+    args.errorCodes.discountCents,
+    "discount_cents",
+  );
 
   const subtotalCents = quantity * unitPriceCents;
+  assertQuoteMoneyCents(
+    subtotalCents,
+    INVALID_ITEM_SUBTOTAL,
+    "subtotal_cents",
+  );
 
   if (discountCents < 0 || discountCents > subtotalCents) {
     throw new QuoteAccessError(
@@ -98,13 +156,15 @@ export function normalizeQuoteItemMoney(
       `Item ${args.itemIndex + 1} possui desconto invalido.`,
     );
   }
+  const totalCents = subtotalCents - discountCents;
+  assertQuoteMoneyCents(totalCents, INVALID_ITEM_TOTAL, "total_cents");
 
   return {
     quantity,
     unitPriceCents,
     discountCents,
     subtotalCents,
-    totalCents: subtotalCents - discountCents,
+    totalCents,
   };
 }
 
@@ -114,13 +174,34 @@ export function sumQuoteItemMoneyTotals(
     discountCents: number;
   }>,
 ): QuoteMoneyTotals {
-  const subtotalCents = items.reduce((sum, item) => sum + item.subtotalCents, 0);
-  const discountCents = items.reduce((sum, item) => sum + item.discountCents, 0);
+  let subtotalCents = 0;
+  let discountCents = 0;
+
+  for (const item of items) {
+    subtotalCents = addQuoteMoneyCents({
+      current: subtotalCents,
+      next: item.subtotalCents,
+      errorCode: INVALID_QUOTE_MONEY_TOTALS,
+      fieldName: "subtotal_cents",
+    });
+    discountCents = addQuoteMoneyCents({
+      current: discountCents,
+      next: item.discountCents,
+      errorCode: INVALID_QUOTE_MONEY_TOTALS,
+      fieldName: "discount_cents",
+    });
+  }
+  const totalCents = subtotalCents - discountCents;
+  assertQuoteMoneyCents(
+    totalCents,
+    INVALID_QUOTE_MONEY_TOTALS,
+    "total_cents",
+  );
 
   return {
     subtotalCents,
     discountCents,
-    totalCents: subtotalCents - discountCents,
+    totalCents,
   };
 }
 
@@ -136,6 +217,11 @@ export function resolveQuoteDiscountFromItems(args: {
 
   const quoteDiscountCents = parseQuoteMoneyInteger(
     args.quoteDiscountCents,
+    args.errorCode,
+    "discount_cents",
+  );
+  assertQuoteMoneyCents(
+    quoteDiscountCents,
     args.errorCode,
     "discount_cents",
   );

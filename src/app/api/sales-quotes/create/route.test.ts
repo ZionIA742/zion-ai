@@ -749,6 +749,221 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "create aceita limite exato int4 monetario",
+    run: async () => {
+      const { response, body, supabase } = await postCreateQuoteForMoney(
+        createValidQuoteRequestBody({
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 1,
+              unit_price_cents: 2147483647,
+              discount_cents: 0,
+            },
+          ],
+        })
+      );
+
+      assert.equal(response.status, 200, JSON.stringify(body));
+      const quoteInsert = supabase.insertCalls.find((call) => call.table === "sales_quotes");
+      const itemInsert = supabase.insertCalls.find((call) => call.table === "sales_quote_items");
+      assert.equal(quoteInsert?.payload.subtotal_cents, 2147483647);
+      assert.equal(quoteInsert?.payload.discount_cents, 0);
+      assert.equal(quoteInsert?.payload.total_cents, 2147483647);
+      assert.equal(itemInsert?.payload.subtotal_cents, 2147483647);
+      assert.equal(itemInsert?.payload.total_cents, 2147483647);
+    },
+  },
+  {
+    name: "create rejeita unit_price_cents acima de int4",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: 2147483648,
+          },
+        ],
+        expectedError: "INVALID_ITEM_UNIT_PRICE",
+      }),
+  },
+  {
+    name: "create rejeita discount_cents acima de int4",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: 2147483647,
+            discount_cents: 2147483648,
+          },
+        ],
+        expectedError: "INVALID_ITEM_DISCOUNT",
+      }),
+  },
+  {
+    name: "create rejeita overflow de subtotal por multiplicacao",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 2,
+            unit_price_cents: 1073741824,
+          },
+        ],
+        expectedError: "INVALID_ITEM_SUBTOTAL",
+      }),
+  },
+  {
+    name: "create aceita maior multiplicacao valida dentro de int4",
+    run: async () => {
+      const { response, supabase } = await postCreateQuoteForMoney(
+        createValidQuoteRequestBody({
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 2,
+              unit_price_cents: 1073741823,
+            },
+          ],
+        })
+      );
+
+      assert.equal(response.status, 200);
+      const quoteInsert = supabase.insertCalls.find((call) => call.table === "sales_quotes");
+      assert.equal(quoteInsert?.payload.subtotal_cents, 2147483646);
+      assert.equal(quoteInsert?.payload.discount_cents, 0);
+      assert.equal(quoteInsert?.payload.total_cents, 2147483646);
+    },
+  },
+  {
+    name: "create rejeita overflow agregado de subtotal",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: 1073741824,
+          },
+          {
+            item_type: "service",
+            name: "Instalacao",
+            quantity: 1,
+            unit_price_cents: 1073741824,
+          },
+        ],
+        expectedError: "INVALID_QUOTE_MONEY_TOTALS",
+      }),
+  },
+  {
+    name: "create aceita limite agregado exato de subtotal",
+    run: async () => {
+      const { response, supabase } = await postCreateQuoteForMoney(
+        createValidQuoteRequestBody({
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 1,
+              unit_price_cents: 1073741824,
+            },
+            {
+              item_type: "service",
+              name: "Instalacao",
+              quantity: 1,
+              unit_price_cents: 1073741823,
+            },
+          ],
+        })
+      );
+
+      assert.equal(response.status, 200);
+      const quoteInsert = supabase.insertCalls.find((call) => call.table === "sales_quotes");
+      assert.equal(quoteInsert?.payload.subtotal_cents, 2147483647);
+      assert.equal(quoteInsert?.payload.discount_cents, 0);
+      assert.equal(quoteInsert?.payload.total_cents, 2147483647);
+    },
+  },
+  {
+    name: "create rejeita overflow agregado de descontos",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: 1073741824,
+            discount_cents: 1073741824,
+          },
+          {
+            item_type: "service",
+            name: "Instalacao",
+            quantity: 1,
+            unit_price_cents: 1073741824,
+            discount_cents: 1073741824,
+          },
+        ],
+        expectedError: "INVALID_QUOTE_MONEY_TOTALS",
+      }),
+  },
+  {
+    name: "create rejeita quantity nao safe integer",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: Number.MAX_SAFE_INTEGER + 1,
+            unit_price_cents: 0,
+          },
+        ],
+        expectedError: "INVALID_ITEM_QUANTITY",
+      }),
+  },
+  {
+    name: "create rejeita unit_price_cents nao safe integer",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: Number.MAX_SAFE_INTEGER + 1,
+          },
+        ],
+        expectedError: "INVALID_ITEM_UNIT_PRICE",
+      }),
+  },
+  {
+    name: "create rejeita discount_cents nao safe integer",
+    run: () =>
+      assertCreateQuoteMoneyError({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: 2147483647,
+            discount_cents: Number.MAX_SAFE_INTEGER + 1,
+          },
+        ],
+        expectedError: "INVALID_ITEM_DISCOUNT",
+      }),
+  },
+  {
     name: "commercialOpportunityId ausente rejeita e nao cria sales_quotes",
     run: async () => {
       const { createCreateQuotePostHandler } = await loadRouteModule();

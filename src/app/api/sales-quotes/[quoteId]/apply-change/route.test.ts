@@ -346,6 +346,224 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "apply-change aceita limite exato int4 monetario",
+    run: async () => {
+      const result = await buildUpdatedQuoteForTest({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: 2147483647,
+            discount_cents: 0,
+          },
+        ],
+      });
+
+      assert.equal(result.updatedQuote.subtotal_cents, 2147483647);
+      assert.equal(result.updatedQuote.discount_cents, 0);
+      assert.equal(result.updatedQuote.total_cents, 2147483647);
+      assert.equal(result.nextItems[0].subtotalCents, 2147483647);
+      assert.equal(result.nextItems[0].totalCents, 2147483647);
+    },
+  },
+  {
+    name: "apply-change rejeita unit_price_cents acima de int4",
+    run: () =>
+      assertApplyChangeMoneyError({
+        body: {
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 1,
+              unit_price_cents: 2147483648,
+            },
+          ],
+        },
+        expectedError: "INVALID_ITEM_UNIT_PRICE",
+      }),
+  },
+  {
+    name: "apply-change rejeita discount_cents acima de int4",
+    run: () =>
+      assertApplyChangeMoneyError({
+        body: {
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 1,
+              unit_price_cents: 2147483647,
+              discount_cents: 2147483648,
+            },
+          ],
+        },
+        expectedError: "INVALID_ITEM_DISCOUNT",
+      }),
+  },
+  {
+    name: "apply-change rejeita overflow de subtotal por multiplicacao",
+    run: () =>
+      assertApplyChangeMoneyError({
+        body: {
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 2,
+              unit_price_cents: 1073741824,
+            },
+          ],
+        },
+        expectedError: "INVALID_ITEM_SUBTOTAL",
+      }),
+  },
+  {
+    name: "apply-change aceita maior multiplicacao valida dentro de int4",
+    run: async () => {
+      const result = await buildUpdatedQuoteForTest({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 2,
+            unit_price_cents: 1073741823,
+          },
+        ],
+      });
+
+      assert.equal(result.updatedQuote.subtotal_cents, 2147483646);
+      assert.equal(result.updatedQuote.discount_cents, 0);
+      assert.equal(result.updatedQuote.total_cents, 2147483646);
+    },
+  },
+  {
+    name: "apply-change rejeita overflow agregado de subtotal",
+    run: () =>
+      assertApplyChangeMoneyError({
+        body: {
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 1,
+              unit_price_cents: 1073741824,
+            },
+            {
+              item_type: "service",
+              name: "Instalacao",
+              quantity: 1,
+              unit_price_cents: 1073741824,
+            },
+          ],
+        },
+        expectedError: "INVALID_QUOTE_MONEY_TOTALS",
+      }),
+  },
+  {
+    name: "apply-change aceita limite agregado exato de subtotal",
+    run: async () => {
+      const result = await buildUpdatedQuoteForTest({
+        items: [
+          {
+            item_type: "custom",
+            name: "Piscina",
+            quantity: 1,
+            unit_price_cents: 1073741824,
+          },
+          {
+            item_type: "service",
+            name: "Instalacao",
+            quantity: 1,
+            unit_price_cents: 1073741823,
+          },
+        ],
+      });
+
+      assert.equal(result.updatedQuote.subtotal_cents, 2147483647);
+      assert.equal(result.updatedQuote.discount_cents, 0);
+      assert.equal(result.updatedQuote.total_cents, 2147483647);
+    },
+  },
+  {
+    name: "apply-change rejeita overflow agregado de descontos",
+    run: () =>
+      assertApplyChangeMoneyError({
+        body: {
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 1,
+              unit_price_cents: 1073741824,
+              discount_cents: 1073741824,
+            },
+            {
+              item_type: "service",
+              name: "Instalacao",
+              quantity: 1,
+              unit_price_cents: 1073741824,
+              discount_cents: 1073741824,
+            },
+          ],
+        },
+        expectedError: "INVALID_QUOTE_MONEY_TOTALS",
+      }),
+  },
+  {
+    name: "apply-change rejeita quantity nao safe integer",
+    run: () =>
+      assertApplyChangeMoneyError({
+        body: {
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: Number.MAX_SAFE_INTEGER + 1,
+              unit_price_cents: 0,
+            },
+          ],
+        },
+        expectedError: "INVALID_ITEM_QUANTITY",
+      }),
+  },
+  {
+    name: "apply-change rejeita unit_price_cents nao safe integer",
+    run: () =>
+      assertApplyChangeMoneyError({
+        body: {
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 1,
+              unit_price_cents: Number.MAX_SAFE_INTEGER + 1,
+            },
+          ],
+        },
+        expectedError: "INVALID_ITEM_UNIT_PRICE",
+      }),
+  },
+  {
+    name: "apply-change rejeita discount_cents nao safe integer",
+    run: () =>
+      assertApplyChangeMoneyError({
+        body: {
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 1,
+              unit_price_cents: 2147483647,
+              discount_cents: Number.MAX_SAFE_INTEGER + 1,
+            },
+          ],
+        },
+        expectedError: "INVALID_ITEM_DISCOUNT",
+      }),
+  },
+  {
     name: "apply-change preserva remocao de desconto via Assistant sem items",
     run: async () => {
       const result = await buildUpdatedQuoteForTest({
