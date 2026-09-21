@@ -45,6 +45,15 @@ export type StoreStrategySettingsRow = {
   store_description: string | null;
   main_store_brand: string | null;
   brands_worked: string | null;
+  brands_has_main?: boolean | null;
+  brands_main_choice?: string | null;
+  brands_main_other?: string | null;
+  brands_worked_choices?: string[] | null;
+  brands_worked_other?: string | null;
+  brands_priority_enabled?: boolean | null;
+  brands_priority_choices?: string[] | null;
+  brands_priority_other?: string | null;
+  brands_configuration_configured_at?: string | null;
   strategy_service_exclusions: string | null;
   strategy_primary_focus: string | null;
   strategy_sell_more: string | null;

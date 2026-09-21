@@ -14,7 +14,6 @@ import {
 import {
   createStorePaymentPresentationFromSources,
   createStorePaymentSettingsInputFromSources,
-  deriveStorePaymentSettingsSummary,
   formatStorePaymentCurrencyInput,
   formatStorePaymentInstallmentsInput,
   formatStorePaymentPercentInput,
@@ -942,21 +941,13 @@ type CommercialExperienceDraftState = {
   warranty_conditions: string;
   cancellation_policy_exists: string;
   cancellation_rule_situations: string[];
-  cancellation_after_contract_enabled: string;
   cancellation_after_contract_rule: string;
-  cancellation_ordered_product_enabled: string;
   cancellation_ordered_product_rule: string;
-  cancellation_custom_order_enabled: string;
   cancellation_custom_order_rule: string;
-  cancellation_after_delivery_enabled: string;
   cancellation_after_delivery_rule: string;
-  cancellation_service_started_enabled: string;
   cancellation_service_started_rule: string;
-  cancellation_charge_or_retention_enabled: string;
   cancellation_charge_or_retention_rule: string;
-  cancellation_refund_rule_enabled: string;
   cancellation_refund_rule: string;
-  cancellation_policy_other_enabled: string;
   cancellation_policy_other: string;
 };
 
@@ -1047,21 +1038,13 @@ function createEmptyCommercialExperienceDraft(): CommercialExperienceDraftState 
     warranty_conditions: "",
     cancellation_policy_exists: "",
     cancellation_rule_situations: [],
-    cancellation_after_contract_enabled: "",
     cancellation_after_contract_rule: "",
-    cancellation_ordered_product_enabled: "",
     cancellation_ordered_product_rule: "",
-    cancellation_custom_order_enabled: "",
     cancellation_custom_order_rule: "",
-    cancellation_after_delivery_enabled: "",
     cancellation_after_delivery_rule: "",
-    cancellation_service_started_enabled: "",
     cancellation_service_started_rule: "",
-    cancellation_charge_or_retention_enabled: "",
     cancellation_charge_or_retention_rule: "",
-    cancellation_refund_rule_enabled: "",
     cancellation_refund_rule: "",
-    cancellation_policy_other_enabled: "",
     cancellation_policy_other: "",
   };
 }
@@ -1086,6 +1069,28 @@ type ContractExperienceDraftState = {
   notes: string;
 };
 
+type SettingsExperiencePolicyColumn =
+  | "commercial_ai_guidance"
+  | "commercial_suggestions"
+  | "price_extra_context"
+  | "payment_extensions"
+  | "payment_execution_rules"
+  | "discount_extensions"
+  | "quote_policy"
+  | "post_sale_policy"
+  | "warranty_policy"
+  | "cancellation_policy"
+  | "brand_visual_policy"
+  | "contract_usage_policy";
+
+type StoreSettingsExperiencePoliciesRow = {
+  organization_id?: string | null;
+  store_id?: string | null;
+  configured_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+} & Partial<Record<SettingsExperiencePolicyColumn, Record<string, unknown> | null>>;
+
 function createEmptyBrandExperienceDraft(): BrandExperienceDraftState {
   return {
     use_logo_on_quotes: "Sim",
@@ -1108,6 +1113,339 @@ function createEmptyContractExperienceDraft(): ContractExperienceDraftState {
     signed_before_other: "",
     notes: "",
   };
+}
+
+const COMMERCIAL_EXPERIENCE_POLICY_FIELDS: Array<{
+  column: SettingsExperiencePolicyColumn;
+  keys: Array<keyof CommercialExperienceDraftState>;
+}> = [
+  { column: "commercial_ai_guidance", keys: ["ai_guidance_enabled", "ai_guidance_other"] },
+  { column: "commercial_suggestions", keys: ["suggestions_enabled", "suggestion_types", "suggestion_catalog_item_keys", "suggestion_services_detail", "suggestion_other", "better_option_policy"] },
+  { column: "price_extra_context", keys: ["price_context_other_enabled", "price_context_other"] },
+  { column: "payment_extensions", keys: ["payment_other_enabled", "payment_other_method", "down_payment_case_rule", "installments_interest_free_enabled", "installments_interest_free_max", "installment_interest_above_mode", "installment_interest_above_rule", "installment_minimum_enabled", "installment_minimum_amount", "financing_mode", "financing_partner_name", "financing_credit_analysis", "financing_simulation_by", "financing_ai_policy", "financing_other"] },
+  { column: "payment_execution_rules", keys: ["entry_due_trigger", "entry_due_other", "balance_due_trigger", "balance_due_other", "payment_blocking_actions", "payment_blocking_other"] },
+  { column: "discount_extensions", keys: ["high_value_requires_human"] },
+  { column: "quote_policy", keys: ["quote_validity", "quote_validity_other_days", "quote_customer_note_enabled", "quote_customer_note", "quote_internal_note_enabled", "quote_internal_note", "quote_preliminary_before_visit", "quote_definitive_requires_visit_result"] },
+  { column: "post_sale_policy", keys: ["post_sale_duration", "post_sale_duration_other_days", "post_sale_start", "post_sale_start_other", "post_sale_checks", "post_sale_checks_other"] },
+  { column: "warranty_policy", keys: ["warranty_extra_mode", "warranty_extra_rule", "warranty_items", "warranty_items_other", "warranty_start", "warranty_start_other", "warranty_duration_value", "warranty_duration_unit", "warranty_conditions_enabled", "warranty_conditions"] },
+  {
+    column: "cancellation_policy",
+    keys: [
+      "cancellation_policy_exists",
+      "cancellation_rule_situations",
+      "cancellation_after_contract_rule",
+      "cancellation_ordered_product_rule",
+      "cancellation_custom_order_rule",
+      "cancellation_after_delivery_rule",
+      "cancellation_service_started_rule",
+      "cancellation_charge_or_retention_rule",
+      "cancellation_refund_rule",
+      "cancellation_policy_other",
+    ],
+  },
+];
+
+const COMMERCIAL_EXPERIENCE_TARGET_TO_POLICY_COLUMN: Partial<Record<string, SettingsExperiencePolicyColumn>> = {
+  ai: "commercial_ai_guidance",
+
+  quote: "quote_policy",
+  post_sale: "post_sale_policy",
+  warranty: "warranty_policy",
+  cancellation: "cancellation_policy",
+};
+
+const BRAND_EXPERIENCE_KEYS: Array<keyof BrandExperienceDraftState> = [
+  "use_logo_on_quotes",
+  "use_logo_on_contracts",
+  "primary_color",
+  "secondary_color",
+  "document_footer",
+];
+
+const CONTRACT_EXPERIENCE_KEYS: Array<keyof ContractExperienceDraftState> = [
+  "enabled",
+  "applicability_mode",
+  "applicability_cases",
+  "applicability_other",
+  "high_value_amount",
+  "formats",
+  "signed_before",
+  "signed_before_other",
+  "notes",
+];
+
+function readRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function pickDraftFields<T extends Record<string, unknown>>(
+  draft: T,
+  keys: Array<keyof T>,
+) {
+  const payload: Record<string, unknown> = {};
+  for (const key of keys) payload[String(key)] = draft[key];
+  return payload;
+}
+
+function mergePolicyFields<T extends Record<string, unknown>>(
+  baseDraft: T,
+  payload: Record<string, unknown>,
+  keys: Array<keyof T>,
+): T {
+  const nextDraft = { ...baseDraft };
+  for (const key of keys) {
+    const value = payload[String(key)];
+    const currentValue = baseDraft[key];
+    if (Array.isArray(currentValue)) {
+      if (Array.isArray(value)) {
+        nextDraft[key] = uniqueCleanStrings(value) as T[keyof T];
+      }
+      continue;
+    }
+    if (typeof currentValue === "boolean") {
+      if (typeof value === "boolean") nextDraft[key] = value as T[keyof T];
+      continue;
+    }
+    if (typeof value === "string") nextDraft[key] = value as T[keyof T];
+  }
+  return nextDraft;
+}
+
+function applySettingsExperiencePoliciesToCommercialDraft(
+  baseDraft: CommercialExperienceDraftState,
+  policies: StoreSettingsExperiencePoliciesRow | null,
+) {
+  let nextDraft = { ...baseDraft };
+
+  for (const config of COMMERCIAL_EXPERIENCE_POLICY_FIELDS) {
+    nextDraft = mergePolicyFields(
+      nextDraft,
+      readRecord(policies?.[config.column]),
+      config.keys,
+    );
+  }
+
+  const discountExtensions =
+    readRecord(policies?.discount_extensions);
+
+  const highValueRequiresHuman =
+    discountExtensions.high_value_requires_human;
+
+  if (typeof highValueRequiresHuman === "boolean") {
+    nextDraft.high_value_requires_human =
+      highValueRequiresHuman ? "Sim" : "Não";
+  }
+
+  return nextDraft;
+}
+function applySettingsExperiencePoliciesToBrandDraft(
+  baseDraft: BrandExperienceDraftState,
+  policies: StoreSettingsExperiencePoliciesRow | null,
+) {
+  return mergePolicyFields(
+    baseDraft,
+    readRecord(policies?.brand_visual_policy),
+    BRAND_EXPERIENCE_KEYS,
+  );
+}
+
+function applySettingsExperiencePoliciesToContractDraft(
+  baseDraft: ContractExperienceDraftState,
+  policies: StoreSettingsExperiencePoliciesRow | null,
+) {
+  return mergePolicyFields(
+    baseDraft,
+    readRecord(policies?.contract_usage_policy),
+    CONTRACT_EXPERIENCE_KEYS,
+  );
+}
+
+function normalizeContractUsageDraft(
+  draft: ContractExperienceDraftState,
+): ContractExperienceDraftState {
+  const validApplicabilityCases = new Set([
+    "piscina",
+    "instalacao",
+    "servico",
+    "sob_encomenda",
+    "financiamento",
+    "alto_valor",
+    "outro",
+  ]);
+  const validFormats = new Set(["digital", "fisico"]);
+  const validSignedBefore = new Set([
+    "encomendar",
+    "agendar_instalacao",
+    "iniciar_instalacao",
+    "entrega",
+    "retirada",
+    "outro",
+  ]);
+
+  if (draft.enabled === "Não") {
+    return {
+      enabled: "Não",
+      applicability_mode: "",
+      applicability_cases: [],
+      applicability_other: "",
+      high_value_amount: "",
+      formats: [],
+      signed_before: [],
+      signed_before_other: "",
+      notes: "",
+    };
+  }
+
+  const applicabilityMode = cleanText(draft.applicability_mode);
+  const applicabilityCases =
+    applicabilityMode === "depende"
+      ? uniqueCleanStrings(draft.applicability_cases).filter((value) =>
+          validApplicabilityCases.has(value),
+        )
+      : [];
+
+  const formats = uniqueCleanStrings(draft.formats).filter((value) =>
+    validFormats.has(value),
+  );
+
+  const signedBefore = uniqueCleanStrings(draft.signed_before).filter((value) =>
+    validSignedBefore.has(value),
+  );
+
+  return {
+    enabled: draft.enabled,
+    applicability_mode: applicabilityMode,
+    applicability_cases: applicabilityCases,
+    applicability_other:
+      applicabilityCases.includes("outro")
+        ? cleanText(draft.applicability_other)
+        : "",
+    high_value_amount:
+      applicabilityCases.includes("alto_valor")
+        ? cleanText(draft.high_value_amount)
+        : "",
+    formats,
+    signed_before: signedBefore,
+    signed_before_other:
+      signedBefore.includes("outro")
+        ? cleanText(draft.signed_before_other)
+        : "",
+    notes: cleanText(draft.notes),
+  };
+}
+
+function isContractUsagePolicyComplete(
+  policy: Record<string, unknown>,
+): boolean {
+  const draft = mergePolicyFields(
+    createEmptyContractExperienceDraft(),
+    policy,
+    CONTRACT_EXPERIENCE_KEYS,
+  );
+
+  const validApplicabilityCases = new Set([
+    "piscina",
+    "instalacao",
+    "servico",
+    "sob_encomenda",
+    "financiamento",
+    "alto_valor",
+    "outro",
+  ]);
+  const validFormats = new Set(["digital", "fisico"]);
+  const validSignedBefore = new Set([
+    "encomendar",
+    "agendar_instalacao",
+    "iniciar_instalacao",
+    "entrega",
+    "retirada",
+    "outro",
+  ]);
+
+  if (draft.enabled === "Não") {
+    return (
+      !cleanText(draft.applicability_mode) &&
+      draft.applicability_cases.length === 0 &&
+      !cleanText(draft.applicability_other) &&
+      !cleanText(draft.high_value_amount) &&
+      draft.formats.length === 0 &&
+      draft.signed_before.length === 0 &&
+      !cleanText(draft.signed_before_other) &&
+      !cleanText(draft.notes)
+    );
+  }
+
+  if (draft.enabled !== "Sim") return false;
+
+  if (!["sempre", "depende", "opcional"].includes(draft.applicability_mode)) {
+    return false;
+  }
+
+  if (
+    draft.applicability_cases.some(
+      (value) => !validApplicabilityCases.has(value),
+    )
+  ) {
+    return false;
+  }
+
+  if (draft.applicability_mode === "depende") {
+    if (draft.applicability_cases.length === 0) return false;
+
+    if (
+      draft.applicability_cases.includes("outro") !==
+      Boolean(cleanText(draft.applicability_other))
+    ) {
+      return false;
+    }
+
+    if (
+      draft.applicability_cases.includes("alto_valor") !==
+      Boolean(cleanText(draft.high_value_amount))
+    ) {
+      return false;
+    }
+  } else if (
+    draft.applicability_cases.length > 0 ||
+    cleanText(draft.applicability_other) ||
+    cleanText(draft.high_value_amount)
+  ) {
+    return false;
+  }
+
+  if (
+    draft.formats.length === 0 ||
+    draft.formats.some((value) => !validFormats.has(value))
+  ) {
+    return false;
+  }
+
+  if (
+    draft.signed_before.length === 0 ||
+    draft.signed_before.some((value) => !validSignedBefore.has(value))
+  ) {
+    return false;
+  }
+
+  if (
+    draft.signed_before.includes("outro") !==
+    Boolean(cleanText(draft.signed_before_other))
+  ) {
+    return false;
+  }
+
+  return true;
+}
+function buildCommercialExperiencePolicyPatch(
+  target: string,
+  draft: CommercialExperienceDraftState,
+) {
+  const column = COMMERCIAL_EXPERIENCE_TARGET_TO_POLICY_COLUMN[target];
+  const config = COMMERCIAL_EXPERIENCE_POLICY_FIELDS.find((item) => item.column === column);
+  if (!column || !config) return null;
+  return { [column]: pickDraftFields(draft, config.keys) };
 }
 
 type DiscountDraftState = {
@@ -1194,11 +1532,8 @@ type PersistedConfiguracoesState = {
   operationDraft: OperationDraftState;
   commercialDraft: CommercialDraftState;
   commercialExperienceDraft: CommercialExperienceDraftState;
-  savedCommercialExperience: CommercialExperienceDraftState;
   brandExperienceDraft: BrandExperienceDraftState;
-  savedBrandExperience: BrandExperienceDraftState;
   contractExperienceDraft: ContractExperienceDraftState;
-  savedContractExperience: ContractExperienceDraftState;
   isCatalogImportedFilesOpen: boolean;
   discountDraft: DiscountDraftState;
   channelDraft: ChannelDraftState;
@@ -1498,6 +1833,66 @@ const CANCELLATION_RULE_SITUATION_OPTIONS: Option[] = [
   { value: "other", label: "Outra situação" },
 ];
 
+function normalizeCancellationSituations(values: string[]) {
+  return uniqueCleanStrings(values).filter((value) =>
+    CANCELLATION_RULE_SITUATION_OPTIONS.some(
+      (option) => option.value === value,
+    ),
+  );
+}
+
+function cancellationRuleTextForSituation(
+  draft: CommercialExperienceDraftState,
+  situation: string,
+) {
+  switch (situation) {
+    case "after_contract":
+      return cleanText(draft.cancellation_after_contract_rule);
+    case "ordered_product":
+      return cleanText(draft.cancellation_ordered_product_rule);
+    case "custom_order":
+      return cleanText(draft.cancellation_custom_order_rule);
+    case "after_delivery":
+      return cleanText(draft.cancellation_after_delivery_rule);
+    case "service_started":
+      return cleanText(draft.cancellation_service_started_rule);
+    case "charge_or_retention":
+      return cleanText(draft.cancellation_charge_or_retention_rule);
+    case "refund":
+      return cleanText(draft.cancellation_refund_rule);
+    case "other":
+      return cleanText(draft.cancellation_policy_other);
+    default:
+      return "";
+  }
+}
+
+function isCancellationPolicyComplete(
+  draft: CommercialExperienceDraftState,
+) {
+  const policyMode = cleanText(draft.cancellation_policy_exists);
+
+  if (policyMode === "Não") return true;
+  if (policyMode !== "Sim") return false;
+
+  const rawSituations = uniqueCleanStrings(
+    draft.cancellation_rule_situations,
+  );
+  const situations = normalizeCancellationSituations(
+    draft.cancellation_rule_situations,
+  );
+
+  if (
+    situations.length === 0 ||
+    rawSituations.length !== situations.length
+  ) {
+    return false;
+  }
+
+  return situations.every((situation) =>
+    Boolean(cancellationRuleTextForSituation(draft, situation)),
+  );
+}
 const CONTRACT_APPLICABILITY_CASE_OPTIONS: Option[] = [
   { value: "piscina", label: "Venda de piscina" },
   { value: "instalacao", label: "Venda com instalação" },
@@ -2139,8 +2534,8 @@ function createPrimaryResponsibleDraftFromSources(
     role:
       cleanText(responsible?.role) ||
       cleanText(answers.responsible_role) ||
-      "ResponsÃ¡vel principal",
-    receives_ai_alerts: yesNoLabel(answers.ai_should_notify_responsible) !== "NÃ£o",
+      "Responsável principal",
+    receives_ai_alerts: yesNoLabel(answers.ai_should_notify_responsible) !== "Não",
     can_approve_discount: true,
     can_approve_exceptions: true,
     can_assume_human: true,
@@ -2203,7 +2598,7 @@ function normalizeLoose(value: unknown) {
   return String(value ?? "")
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .trim();
 }
 
@@ -2257,7 +2652,7 @@ function createOperationDraftFromAnswers(
     serves_holiday:
       humanScheduleConfigured && cleanText(scheduleSettings?.holiday_mode)
         ? optionLabel(toUiHolidayMode(scheduleSettings?.holiday_mode), [
-            { value: "fechado", label: "NÃ£o" },
+            { value: "fechado", label: "Não" },
             { value: "normal", label: "Sim" },
             { value: "especial", label: "Sim" },
             { value: "caso_a_caso", label: "Caso a caso" },
@@ -2738,6 +3133,17 @@ function createCanonicalCommercialExperienceDraft(
   }
 
   const brands = resolveBrandsWorkedFromStrategy(strategyInput.brandsWorked);
+  const priorityBrands = resolveBrandsWorkedFromStrategy(strategyInput.strategyPriorityBrands);
+  const mainBrandRaw = cleanText(strategyInput.mainStoreBrand);
+  const mainBrandMatch = POOL_MARKET_BRAND_OPTIONS.find(
+    (option) =>
+      option.value !== "outro" &&
+      (normalizeOptionToken(option.value) === normalizeOptionToken(mainBrandRaw) ||
+        normalizeOptionToken(option.label) === normalizeOptionToken(mainBrandRaw)),
+  );
+  const hasStructuredBrands = Boolean(
+    strategySettings?.brands_configuration_configured_at,
+  );
   const hasStructuredCommercialExperience = Boolean(
     strategySettings?.strategy_commercial_experience_configured_at,
   );
@@ -2751,8 +3157,46 @@ function createCanonicalCommercialExperienceDraft(
     offering_products_other: "",
     offering_services: uniqueCleanStrings(offeringServices),
     offering_services_other: cleanText(strategyInput.storeServicesOther),
-    brands_worked: brands.brandsWorked,
-    brands_worked_other: brands.brandsWorkedOther,
+    brands_has_main: hasStructuredBrands
+      ? strategySettings?.brands_has_main === true
+        ? "Sim"
+        : strategySettings?.brands_has_main === false
+          ? "N\u00e3o"
+          : "N\u00e3o definido"
+      : mainBrandRaw
+        ? "Sim"
+        : "N\u00e3o definido",
+    brands_main_choice: hasStructuredBrands
+      ? cleanText(strategySettings?.brands_main_choice)
+      : mainBrandRaw
+        ? mainBrandMatch?.value ?? "outro"
+        : "",
+    brands_main_other: hasStructuredBrands
+      ? cleanText(strategySettings?.brands_main_other)
+      : mainBrandRaw && !mainBrandMatch
+        ? mainBrandRaw
+        : "",
+    brands_worked: hasStructuredBrands
+      ? uniqueCleanStrings(strategySettings?.brands_worked_choices ?? [])
+      : brands.brandsWorked,
+    brands_worked_other: hasStructuredBrands
+      ? cleanText(strategySettings?.brands_worked_other)
+      : brands.brandsWorkedOther,
+    brands_priority_enabled: hasStructuredBrands
+      ? strategySettings?.brands_priority_enabled === true
+        ? "Sim"
+        : strategySettings?.brands_priority_enabled === false
+          ? "N\u00e3o"
+          : "N\u00e3o definido"
+      : cleanText(strategyInput.strategyPriorityBrands)
+        ? "Sim"
+        : "N\u00e3o definido",
+    brands_priority: hasStructuredBrands
+      ? uniqueCleanStrings(strategySettings?.brands_priority_choices ?? [])
+      : priorityBrands.brandsWorked,
+    brands_priority_other: hasStructuredBrands
+      ? cleanText(strategySettings?.brands_priority_other)
+      : priorityBrands.brandsWorkedOther,
     ...(hasStructuredCommercialExperience
       ? {
           strategy_sell_more: uniqueCleanStrings(
@@ -3151,7 +3595,7 @@ function createScheduleOperationExperienceDraftFromSettings(
   return {
     ...fallback,
     team_days: selectedDays,
-    team_same_hours: sameHours ? "Sim" : "NÃ£o",
+    team_same_hours: sameHours ? "Sim" : "Não",
     team_open_time: firstWindow?.open || fallback.team_open_time,
     team_close_time: firstWindow?.close || fallback.team_close_time,
     team_day_hours: teamDayHours,
@@ -3161,7 +3605,7 @@ function createScheduleOperationExperienceDraftFromSettings(
     holiday_notes: cleanText(scheduleSettings.holiday_notes),
     ai_after_hours_enabled: afterHoursConfigured
       ? yesNoLabel(scheduleSettings.ai_after_hours_enabled)
-      : "NÃ£o definido",
+      : "Não definido",
     ai_after_hours_mode: afterHoursConfigured
       ? toUiAfterHoursMode(scheduleSettings.ai_after_hours_mode)
       : "",
@@ -3826,6 +4270,8 @@ export default function ConfiguracoesPage() {
     useState<CommercialExperienceDraftState>(createEmptyCommercialExperienceDraft());
   const [savedCommercialExperience, setSavedCommercialExperience] =
     useState<CommercialExperienceDraftState>(createEmptyCommercialExperienceDraft());
+  const [settingsExperiencePolicies, setSettingsExperiencePolicies] =
+    useState<StoreSettingsExperiencePoliciesRow | null>(null);
   const [commercialExperienceEditTarget, setCommercialExperienceEditTarget] = useState<
     | "suggestions"
     | "payment_blocks"
@@ -3963,6 +4409,7 @@ export default function ConfiguracoesPage() {
   }, [organizationId, activeStoreId]);
   const hasRestoredLocalDraftRef = useRef(false);
   const hasInitializedLocalDraftRef = useRef(false);
+  const lastConfigDraftStorageKeyRef = useRef<string | null>(null);
 
   const tabs = useMemo(
     () => [
@@ -4473,6 +4920,7 @@ export default function ConfiguracoesPage() {
       setPoolImportFiles([]);
       setCatalogImportFiles([]);
       setStoreCatalogSettings(null);
+      setSettingsExperiencePolicies(null);
       setIsCustomerCatalogEditing(false);
       setCustomerCatalogAllowDraft("Não");
       setCustomerCatalogFileIdsDraft([]);
@@ -4501,6 +4949,7 @@ export default function ConfiguracoesPage() {
         discountSettingsResult,
         highValueDiscountSettingsResult,
         catalogSettingsResult,
+        settingsExperiencePoliciesResult,
         primaryResponsibleResponse,
         monthlySalesGoalResponse,
       ] = await Promise.all([
@@ -4539,7 +4988,7 @@ export default function ConfiguracoesPage() {
         supabase
           .from("store_strategy_settings")
           .select(
-            "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_configured_at, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, strategy_sell_more_choices, strategy_sell_more_other, strategy_sale_preference, strategy_sale_preference_other, strategy_customer_traits, strategy_customer_traits_other, strategy_attention_cases, strategy_attention_other, strategy_sale_value_range, strategy_sale_value_custom, strategy_commercial_experience_configured_at, strategy_priority_deal_types, strategy_priority_deal_types_other, strategy_avoid_cases, strategy_avoid_cases_other, strategy_avoid_action, strategy_commercial_strategy_configured_at, created_at, updated_at",
+            "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_configured_at, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, brands_has_main, brands_main_choice, brands_main_other, brands_worked_choices, brands_worked_other, brands_priority_enabled, brands_priority_choices, brands_priority_other, brands_configuration_configured_at, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, strategy_sell_more_choices, strategy_sell_more_other, strategy_sale_preference, strategy_sale_preference_other, strategy_customer_traits, strategy_customer_traits_other, strategy_attention_cases, strategy_attention_other, strategy_sale_value_range, strategy_sale_value_custom, strategy_commercial_experience_configured_at, strategy_priority_deal_types, strategy_priority_deal_types_other, strategy_avoid_cases, strategy_avoid_cases_other, strategy_avoid_action, strategy_commercial_strategy_configured_at, created_at, updated_at",
           )
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
@@ -4563,7 +5012,7 @@ export default function ConfiguracoesPage() {
         supabase
           .from("store_commercial_ai_settings")
           .select(
-            "organization_id, store_id, price_answer_policy, price_context_requirements, created_at, updated_at",
+            "organization_id, store_id, price_answer_policy, price_context_requirements, price_policy_configured_at, complementary_suggestions_configured_at, created_at, updated_at",
           )
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
@@ -4586,6 +5035,12 @@ export default function ConfiguracoesPage() {
           .maybeSingle(),
         supabase
           .rpc("read_store_catalog_settings_multi_scoped", {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+          })
+          .maybeSingle(),
+        supabase
+          .rpc("read_store_settings_experience_policies_scoped", {
             p_organization_id: organizationId,
             p_store_id: activeStoreId,
           })
@@ -4615,6 +5070,7 @@ export default function ConfiguracoesPage() {
       if (discountSettingsResult.error) throw discountSettingsResult.error;
       if (highValueDiscountSettingsResult.error) throw highValueDiscountSettingsResult.error;
       if (catalogSettingsResult.error) throw catalogSettingsResult.error;
+      if (settingsExperiencePoliciesResult.error) throw settingsExperiencePoliciesResult.error;
 
       const primaryResponsibleResult =
         (await primaryResponsibleResponse.json().catch(() => null)) as
@@ -4854,6 +5310,9 @@ export default function ConfiguracoesPage() {
       setHighValueDiscountSettings(
         (highValueDiscountSettingsResult.data ?? null) as StoreHighValueDiscountSettingsRow | null,
       );
+      setSettingsExperiencePolicies(
+        (settingsExperiencePoliciesResult.data ?? null) as StoreSettingsExperiencePoliciesRow | null,
+      );
       const nextStoreCatalogSettings =
         (catalogSettingsResult.data ?? null) as StoreCatalogSettingsRow | null;
       const nextCustomerCatalogFileIds = Array.isArray(
@@ -5022,6 +5481,13 @@ export default function ConfiguracoesPage() {
   }, [fetchStoreContractTemplates]);
 
   useEffect(() => {
+    if (lastConfigDraftStorageKeyRef.current === configDraftStorageKey) return;
+    lastConfigDraftStorageKeyRef.current = configDraftStorageKey;
+    hasRestoredLocalDraftRef.current = false;
+    hasInitializedLocalDraftRef.current = false;
+  }, [configDraftStorageKey]);
+
+  useEffect(() => {
     if (!configDraftStorageKey || typeof window === "undefined") return;
     if (hasRestoredLocalDraftRef.current) return;
     if (loading) return;
@@ -5060,34 +5526,16 @@ export default function ConfiguracoesPage() {
           ...parsed.commercialExperienceDraft,
         });
       }
-      if (parsed.savedCommercialExperience) {
-        setSavedCommercialExperience({
-          ...createEmptyCommercialExperienceDraft(),
-          ...parsed.savedCommercialExperience,
-        });
-      }
       if (parsed.brandExperienceDraft) {
         setBrandExperienceDraft({
           ...createEmptyBrandExperienceDraft(),
           ...parsed.brandExperienceDraft,
         });
       }
-      if (parsed.savedBrandExperience) {
-        setSavedBrandExperience({
-          ...createEmptyBrandExperienceDraft(),
-          ...parsed.savedBrandExperience,
-        });
-      }
       if (parsed.contractExperienceDraft) {
         setContractExperienceDraft({
           ...createEmptyContractExperienceDraft(),
           ...parsed.contractExperienceDraft,
-        });
-      }
-      if (parsed.savedContractExperience) {
-        setSavedContractExperience({
-          ...createEmptyContractExperienceDraft(),
-          ...parsed.savedContractExperience,
         });
       }
       if (typeof parsed.isCatalogImportedFilesOpen === "boolean") {
@@ -5144,11 +5592,8 @@ export default function ConfiguracoesPage() {
       operationDraft,
       commercialDraft,
       commercialExperienceDraft,
-      savedCommercialExperience,
       brandExperienceDraft,
-      savedBrandExperience,
       contractExperienceDraft,
-      savedContractExperience,
       isCatalogImportedFilesOpen,
       discountDraft,
       channelDraft,
@@ -5178,11 +5623,8 @@ export default function ConfiguracoesPage() {
     operationDraft,
     commercialDraft,
     commercialExperienceDraft,
-    savedCommercialExperience,
     brandExperienceDraft,
-    savedBrandExperience,
     contractExperienceDraft,
-    savedContractExperience,
     isCatalogImportedFilesOpen,
     discountDraft,
     channelDraft,
@@ -5230,7 +5672,7 @@ export default function ConfiguracoesPage() {
     });
 
     setOverviewDraft({
-      store_display_name: cleanText(answers.store_display_name) || storeName,
+      store_display_name: storeName,
       responsible_name: cleanText(canonicalPrimaryResponsibleDraft.name),
       responsible_whatsapp: cleanText(canonicalPrimaryResponsibleDraft.whatsapp),
       commercial_whatsapp: cleanText(answers.commercial_whatsapp),
@@ -5312,11 +5754,19 @@ export default function ConfiguracoesPage() {
 
 
   const suggestionsCommercialConfigured = useMemo(() => {
+    if (!commercialAiSettings?.complementary_suggestions_configured_at) return false;
     if (savedCommercialExperience.suggestions_enabled === "Não") return true;
     if (savedCommercialExperience.suggestions_enabled !== "Sim") return false;
     if (savedCommercialExperience.suggestion_types.length === 0) return false;
-    if (!cleanText(savedCommercialExperience.better_option_policy)) return false;
-    if (savedCommercialExperience.suggestion_types.includes("outro") && !cleanText(savedCommercialExperience.suggestion_other)) return false;
+    if (!["beneficio", "se_pedir", "nao"].includes(savedCommercialExperience.better_option_policy)) return false;
+    if (
+      savedCommercialExperience.suggestion_types.includes("servicos") &&
+      !cleanText(savedCommercialExperience.suggestion_services_detail)
+    ) return false;
+    if (
+      savedCommercialExperience.suggestion_types.includes("outro") &&
+      !cleanText(savedCommercialExperience.suggestion_other)
+    ) return false;
 
     return CATALOG_BACKED_SUGGESTION_TYPES.filter((type) =>
       savedCommercialExperience.suggestion_types.includes(type),
@@ -5326,7 +5776,11 @@ export default function ConfiguracoesPage() {
         savedCommercialExperience.suggestion_catalog_item_keys.includes(item.key),
       );
     });
-  }, [catalogSuggestionItems, savedCommercialExperience]);
+  }, [
+    catalogSuggestionItems,
+    commercialAiSettings?.complementary_suggestions_configured_at,
+    savedCommercialExperience,
+  ]);
 
   const onboardingStatus = useMemo(
     () => resolveOnboardingLabel(onboarding?.status),
@@ -5343,18 +5797,56 @@ export default function ConfiguracoesPage() {
   );
 
   const canonicalCommercialExperience = useMemo(
-    () => createCanonicalCommercialExperienceDraft(savedCommercialExperience, strategySettingsInput, strategySettings),
-    [savedCommercialExperience, strategySettingsInput, strategySettings],
+    () =>
+      applySettingsExperiencePoliciesToCommercialDraft(
+        createCanonicalCommercialExperienceDraft(
+          savedCommercialExperience,
+          strategySettingsInput,
+          strategySettings,
+        ),
+        settingsExperiencePolicies,
+      ),
+    [savedCommercialExperience, settingsExperiencePolicies, strategySettingsInput, strategySettings],
   );
 
   useEffect(() => {
     setSavedCommercialExperience((current) =>
-      createCanonicalCommercialExperienceDraft(current, strategySettingsInput, strategySettings),
+      applySettingsExperiencePoliciesToCommercialDraft(
+        createCanonicalCommercialExperienceDraft(current, strategySettingsInput, strategySettings),
+        settingsExperiencePolicies,
+      ),
     );
     setCommercialExperienceDraft((current) =>
-      createCanonicalCommercialExperienceDraft(current, strategySettingsInput, strategySettings),
+      applySettingsExperiencePoliciesToCommercialDraft(
+        createCanonicalCommercialExperienceDraft(current, strategySettingsInput, strategySettings),
+        settingsExperiencePolicies,
+      ),
     );
-  }, [strategySettingsInput, strategySettings]);
+    setSavedBrandExperience(
+      applySettingsExperiencePoliciesToBrandDraft(
+        createEmptyBrandExperienceDraft(),
+        settingsExperiencePolicies,
+      ),
+    );
+    setBrandExperienceDraft(
+      applySettingsExperiencePoliciesToBrandDraft(
+        createEmptyBrandExperienceDraft(),
+        settingsExperiencePolicies,
+      ),
+    );
+    setSavedContractExperience(
+      applySettingsExperiencePoliciesToContractDraft(
+        createEmptyContractExperienceDraft(),
+        settingsExperiencePolicies,
+      ),
+    );
+    setContractExperienceDraft(
+      applySettingsExperiencePoliciesToContractDraft(
+        createEmptyContractExperienceDraft(),
+        settingsExperiencePolicies,
+      ),
+    );
+  }, [settingsExperiencePolicies, strategySettingsInput, strategySettings]);
 
   const derivedStrategyAiStoreSummary = useMemo(
     () => deriveStoreStrategyAiStoreSummary(strategySettingsInput),
@@ -5669,9 +6161,9 @@ export default function ConfiguracoesPage() {
     isConfiguredTimestamp(scheduleSettings?.human_schedule_configured_at) &&
     cleanText(scheduleSettings?.holiday_mode)
       ? optionLabel(toUiHolidayMode(scheduleSettings?.holiday_mode), [
-          { value: "fechado", label: "NÃ£o atende" },
-          { value: "normal", label: "HorÃ¡rio normal" },
-          { value: "especial", label: "HorÃ¡rio especial" },
+          { value: "fechado", label: "Não atende" },
+          { value: "normal", label: "Horário normal" },
+          { value: "especial", label: "Horário especial" },
           { value: "caso_a_caso", label: "Caso a caso" },
         ])
       : CANONICAL_SCHEDULE_NOT_CONFIGURED_LABEL;
@@ -5899,6 +6391,111 @@ export default function ConfiguracoesPage() {
     [commercialDraft, commercialExperienceDraft, paymentSettings],
   );
 
+  const entryAndReleaseConfigured = useMemo(() => {
+    if (!paymentSettings) return false;
+
+    const entryMode = cleanText(paymentSettings.down_payment_mode);
+    const entryValueType = cleanText(
+      paymentSettings.down_payment_value_type,
+    );
+    const hasEntry = ["optional", "required"].includes(entryMode);
+
+    const entryValueConfigured =
+      entryMode === "none"
+        ? paymentSettings.down_payment_value_type == null &&
+          paymentSettings.down_payment_percent == null &&
+          paymentSettings.down_payment_amount_cents == null &&
+          !cleanText(savedCommercialExperience.down_payment_case_rule) &&
+          !cleanText(savedCommercialExperience.entry_due_trigger) &&
+          !cleanText(savedCommercialExperience.entry_due_other)
+        : entryValueType === "percent"
+          ? Number(paymentSettings.down_payment_percent ?? 0) > 0 &&
+            Number(paymentSettings.down_payment_percent ?? 0) <= 100
+          : entryValueType === "fixed"
+            ? Number(paymentSettings.down_payment_amount_cents ?? 0) > 0
+            : entryValueType === "case_by_case"
+              ? Boolean(
+                  cleanText(
+                    savedCommercialExperience.down_payment_case_rule,
+                  ),
+                )
+              : false;
+
+    const entryDueConfigured =
+      !hasEntry ||
+      (
+        [
+          "fechamento",
+          "antes_pedido",
+          "antes_agendar",
+          "antes_iniciar",
+          "outro",
+        ].includes(
+          cleanText(savedCommercialExperience.entry_due_trigger),
+        ) &&
+        (
+          savedCommercialExperience.entry_due_trigger !== "outro" ||
+          Boolean(
+            cleanText(savedCommercialExperience.entry_due_other),
+          )
+        )
+      );
+
+    const balanceDueConfigured =
+      [
+        "fechamento",
+        "antes_entrega",
+        "antes_retirada",
+        "antes_instalacao",
+        "apos_instalacao",
+        "parcelas",
+        "outro",
+      ].includes(
+        cleanText(savedCommercialExperience.balance_due_trigger),
+      ) &&
+      (
+        savedCommercialExperience.balance_due_trigger !== "outro" ||
+        Boolean(
+          cleanText(savedCommercialExperience.balance_due_other),
+        )
+      );
+
+    const blockingActions =
+      savedCommercialExperience.payment_blocking_actions;
+
+    const allowedBlockingActions = new Set(
+      PAYMENT_BLOCKING_ACTION_OPTIONS.map(
+        (option) => option.value,
+      ),
+    );
+
+    const blockingConfigured =
+      blockingActions.length > 0 &&
+      new Set(blockingActions).size === blockingActions.length &&
+      blockingActions.every((action) =>
+        allowedBlockingActions.has(action),
+      ) &&
+      (
+        !blockingActions.includes("nenhuma") ||
+        blockingActions.length === 1
+      ) &&
+      (
+        !blockingActions.includes("outro") ||
+        Boolean(
+          cleanText(
+            savedCommercialExperience.payment_blocking_other,
+          ),
+        )
+      );
+
+    return (
+      ["none", "optional", "required"].includes(entryMode) &&
+      entryValueConfigured &&
+      entryDueConfigured &&
+      balanceDueConfigured &&
+      blockingConfigured
+    );
+  }, [paymentSettings, savedCommercialExperience]);
   const commercialPaymentItems = useMemo(() => {
     const paymentPresentation = createStorePaymentPresentationFromSources({
       answers,
@@ -6032,11 +6629,259 @@ export default function ConfiguracoesPage() {
     ]);
   }, [answers, onboarding?.status, primaryResponsibleName, primaryResponsibleWhatsapp]);
 
+  const warrantyCardConfigured = useMemo(() => {
+    const warrantyMode =
+      cleanText(savedCommercialExperience.warranty_extra_mode);
+
+    if (warrantyMode === "Não") {
+      return true;
+    }
+
+    const hasOwnWarranty =
+      warrantyMode === "Sim" || warrantyMode === "depende";
+
+    if (!hasOwnWarranty) {
+      return false;
+    }
+
+    const warrantyItems =
+      uniqueCleanStrings(savedCommercialExperience.warranty_items);
+
+    const allowedWarrantyItems = new Set(
+      WARRANTY_ITEM_OPTIONS.map((option) => option.value),
+    );
+
+    const warrantyStart =
+      cleanText(savedCommercialExperience.warranty_start);
+
+    const warrantyDurationValue =
+      cleanText(savedCommercialExperience.warranty_duration_value);
+
+    const warrantyDurationUnit =
+      cleanText(savedCommercialExperience.warranty_duration_unit);
+
+    const warrantyConditionsEnabled =
+      cleanText(savedCommercialExperience.warranty_conditions_enabled);
+
+    const extraRuleConfigured =
+      warrantyMode !== "depende" ||
+      Boolean(cleanText(savedCommercialExperience.warranty_extra_rule));
+
+    const itemsConfigured =
+      warrantyItems.length > 0 &&
+      warrantyItems.every((value) => allowedWarrantyItems.has(value)) &&
+      (
+        !warrantyItems.includes("outro") ||
+        Boolean(cleanText(savedCommercialExperience.warranty_items_other))
+      );
+
+    const startConfigured =
+      ["compra", "entrega", "instalacao", "servico", "outro"].includes(
+        warrantyStart,
+      ) &&
+      (
+        warrantyStart !== "outro" ||
+        Boolean(cleanText(savedCommercialExperience.warranty_start_other))
+      );
+
+    const durationConfigured =
+      /^\d+$/.test(warrantyDurationValue) &&
+      Number(warrantyDurationValue) > 0 &&
+      ["dias", "meses", "anos"].includes(warrantyDurationUnit);
+
+    const conditionsConfigured =
+      ["Sim", "Não"].includes(warrantyConditionsEnabled) &&
+      (
+        warrantyConditionsEnabled !== "Sim" ||
+        Boolean(cleanText(savedCommercialExperience.warranty_conditions))
+      );
+
+    return Boolean(
+      extraRuleConfigured &&
+      itemsConfigured &&
+      startConfigured &&
+      durationConfigured &&
+      conditionsConfigured
+    );
+  }, [savedCommercialExperience]);
+  const postSaleCardConfigured = useMemo(() => {
+    const duration =
+      cleanText(savedCommercialExperience.post_sale_duration);
+
+    const durationOtherDays =
+      cleanText(savedCommercialExperience.post_sale_duration_other_days);
+
+    const start =
+      cleanText(savedCommercialExperience.post_sale_start);
+
+    const checks =
+      uniqueCleanStrings(savedCommercialExperience.post_sale_checks);
+
+    const allowedChecks = new Set(
+      POST_SALE_CHECK_OPTIONS.map((option) => option.value),
+    );
+
+    const durationConfigured =
+      ["7", "15", "30", "60", "90"].includes(duration) ||
+      (
+        duration === "outro" &&
+        /^\d+$/.test(durationOtherDays) &&
+        Number(durationOtherDays) > 0
+      );
+
+    const startConfigured =
+      ["entrega", "instalacao", "retirada", "venda"].includes(start) ||
+      (
+        start === "depende" &&
+        Boolean(cleanText(savedCommercialExperience.post_sale_start_other))
+      );
+
+    const checksConfigured =
+      checks.length > 0 &&
+      checks.every((value) => allowedChecks.has(value)) &&
+      (
+        !checks.includes("outro") ||
+        Boolean(cleanText(savedCommercialExperience.post_sale_checks_other))
+      );
+
+    return Boolean(
+      durationConfigured &&
+      startConfigured &&
+      checksConfigured
+    );
+  }, [savedCommercialExperience]);
+  const quoteCardConfigured = useMemo(() => {
+    const validity =
+      cleanText(savedCommercialExperience.quote_validity);
+
+    const customerNoteEnabled =
+      cleanText(savedCommercialExperience.quote_customer_note_enabled);
+
+    const internalNoteEnabled =
+      cleanText(savedCommercialExperience.quote_internal_note_enabled);
+
+    const preliminaryBeforeVisit =
+      cleanText(savedCommercialExperience.quote_preliminary_before_visit);
+
+    const definitiveRequiresVisitResult =
+      cleanText(
+        savedCommercialExperience.quote_definitive_requires_visit_result,
+      );
+
+    const validityConfigured =
+      ["3", "5", "7", "10", "15", "30"].includes(validity) ||
+      (
+        validity === "outro" &&
+        /^\d+$/.test(
+          cleanText(
+            savedCommercialExperience.quote_validity_other_days,
+          ),
+        ) &&
+        Number(
+          cleanText(
+            savedCommercialExperience.quote_validity_other_days,
+          ),
+        ) > 0
+      );
+
+    const customerNoteConfigured =
+      ["Sim", "Não"].includes(customerNoteEnabled) &&
+      (
+        customerNoteEnabled !== "Sim" ||
+        Boolean(
+          cleanText(savedCommercialExperience.quote_customer_note),
+        )
+      );
+
+    const internalNoteConfigured =
+      ["Sim", "Não"].includes(internalNoteEnabled) &&
+      (
+        internalNoteEnabled !== "Sim" ||
+        Boolean(
+          cleanText(savedCommercialExperience.quote_internal_note),
+        )
+      );
+
+    return Boolean(
+      validityConfigured &&
+      customerNoteConfigured &&
+      internalNoteConfigured &&
+      ["Sim", "Não"].includes(preliminaryBeforeVisit) &&
+      ["Sim", "Não"].includes(definitiveRequiresVisitResult)
+    );
+  }, [savedCommercialExperience]);
+  const discountCardConfigured = useMemo(() => {
+    if (!discountSettings || !highValueDiscountSettings) {
+      return false;
+    }
+
+    if (
+      discountSettings.default_discount_percent == null ||
+      discountSettings.max_discount_percent == null
+    ) {
+      return false;
+    }
+
+    const defaultDiscountPercent =
+      Number(discountSettings.default_discount_percent);
+
+    const maxDiscountPercent =
+      Number(discountSettings.max_discount_percent);
+
+    const autonomyMode =
+      cleanText(discountSettings.discount_autonomy_mode);
+
+    const basePolicyConfigured =
+      Number.isFinite(defaultDiscountPercent) &&
+      defaultDiscountPercent >= 0 &&
+      defaultDiscountPercent <= 100 &&
+      Number.isFinite(maxDiscountPercent) &&
+      maxDiscountPercent >= 0 &&
+      maxDiscountPercent <= 100 &&
+      defaultDiscountPercent <= maxDiscountPercent &&
+      [
+        "approval_required",
+        "default_step_autonomous",
+        "within_policy_autonomous",
+      ].includes(autonomyMode);
+
+    if (!basePolicyConfigured) {
+      return false;
+    }
+
+    if (!highValueDiscountSettings.enabled) {
+      return true;
+    }
+
+    const highValueThresholdAmountCents =
+      Number(highValueDiscountSettings.threshold_amount_cents);
+
+    const highValueDiscountPercent =
+      Number(highValueDiscountSettings.discount_percent);
+
+    const highValueRequiresHuman =
+      cleanText(
+        savedCommercialExperience.high_value_requires_human,
+      );
+
+    return (
+      Number.isInteger(highValueThresholdAmountCents) &&
+      highValueThresholdAmountCents > 0 &&
+      Number.isFinite(highValueDiscountPercent) &&
+      highValueDiscountPercent > 0 &&
+      highValueDiscountPercent <= 100 &&
+      ["Sim", "Não"].includes(highValueRequiresHuman)
+    );
+  }, [
+    discountSettings,
+    highValueDiscountSettings,
+    savedCommercialExperience.high_value_requires_human,
+  ]);
   const discountItems = useMemo(() => {
     const autonomyLabel =
-      discountPresentation.autonomyMode === "within_limit"
+      discountPresentation.autonomyMode === "within_policy_autonomous"
         ? "Pode confirmar descontos dentro do limite"
-        : discountPresentation.autonomyMode === "guided"
+        : discountPresentation.autonomyMode === "default_step_autonomous"
           ? "Pode negociar aos poucos dentro do limite"
           : "Sempre precisa de aprovação humana";
     return buildBulletRows([
@@ -6235,6 +7080,32 @@ export default function ConfiguracoesPage() {
   const hasStoredLogo = Boolean(
     cleanText(storeBranding?.logo_storage_bucket) && cleanText(storeBranding?.logo_storage_path)
   );
+  const savedBrandVisualPolicy = readRecord(
+    settingsExperiencePolicies?.brand_visual_policy,
+  );
+  const savedBrandUseLogoOnQuotes = cleanText(
+    savedBrandVisualPolicy.use_logo_on_quotes,
+  );
+  const savedBrandUseLogoOnContracts = cleanText(
+    savedBrandVisualPolicy.use_logo_on_contracts,
+  );
+  const savedBrandPrimaryColor = cleanText(
+    savedBrandVisualPolicy.primary_color,
+  );
+  const savedBrandSecondaryColor = cleanText(
+    savedBrandVisualPolicy.secondary_color,
+  );
+  const brandVisualColorPattern = /^#[0-9A-Fa-f]{6}$/;
+  const savedBrandUsesLogo =
+    savedBrandUseLogoOnQuotes === "Sim" ||
+    savedBrandUseLogoOnContracts === "Sim";
+  const isBrandIdentityComplete =
+    ["Sim", "Não"].includes(savedBrandUseLogoOnQuotes) &&
+    ["Sim", "Não"].includes(savedBrandUseLogoOnContracts) &&
+    brandVisualColorPattern.test(savedBrandPrimaryColor) &&
+    (!savedBrandSecondaryColor ||
+      brandVisualColorPattern.test(savedBrandSecondaryColor)) &&
+    (!savedBrandUsesLogo || hasStoredLogo);
   const displayedLogoFileName =
     cleanText(selectedStoreLogoFile?.name) ||
     cleanText(storeBranding?.logo_original_filename) ||
@@ -6243,7 +7114,7 @@ export default function ConfiguracoesPage() {
 
   const identityItems = useMemo(() => {
     return buildBulletRows([
-      { label: "Nome da loja", value: cleanText(answers.store_display_name) || storeName },
+      { label: "Nome da loja", value: storeName },
       {
         label: "Logo",
         value: hasStoredLogo ? "Logo cadastrada para os PDFs da loja" : "Nenhuma logo enviada ainda",
@@ -6251,7 +7122,7 @@ export default function ConfiguracoesPage() {
       { label: "Cores", value: "Ainda não configuradas nesta tela" },
       { label: "Nome que a IA usa", value: cleanText(answers.store_display_name) || storeName },
       { label: "Assinatura padrão da IA", value: cleanText(answers.store_description) },
-      { label: "Dados usados em orçamento e contrato", value: cleanText(answers.store_display_name) || storeName },
+      { label: "Dados usados em orçamento e contrato", value: storeName },
     ]);
   }, [answers, storeName, hasStoredLogo]);
 
@@ -7034,7 +7905,7 @@ export default function ConfiguracoesPage() {
 
   const handleOverviewEditCancel = useCallback(() => {
     setOverviewDraft({
-      store_display_name: cleanText(answers.store_display_name) || storeName,
+      store_display_name: storeName,
       responsible_name: cleanText(canonicalPrimaryResponsibleDraft.name),
       responsible_whatsapp: cleanText(canonicalPrimaryResponsibleDraft.whatsapp),
       commercial_whatsapp: cleanText(answers.commercial_whatsapp),
@@ -8316,10 +9187,50 @@ export default function ConfiguracoesPage() {
   }, [answers, canonicalPrimaryResponsibleDraft]);
 
   const handleCommercialDraftChange = useCallback((key: keyof CommercialDraftState, value: string) => {
-    setCommercialDraft((current) => ({
-      ...current,
-      [key]: value,
-    }));
+    setCommercialDraft((current) => {
+      const next: CommercialDraftState = {
+        ...current,
+        [key]: value,
+      };
+
+      if (key === "down_payment_mode" && value === "none") {
+        next.down_payment_value_type = "";
+        next.down_payment_percent = "";
+        next.down_payment_amount = "";
+      }
+
+      if (key === "down_payment_value_type") {
+        if (value === "percent") {
+          next.down_payment_amount = "";
+        } else if (value === "fixed") {
+          next.down_payment_percent = "";
+        } else if (value === "case_by_case") {
+          next.down_payment_percent = "";
+          next.down_payment_amount = "";
+        }
+      }
+
+      return next;
+    });
+
+    if (key === "down_payment_mode" && value === "none") {
+      setCommercialExperienceDraft((current) => ({
+        ...current,
+        down_payment_case_rule: "",
+        entry_due_trigger: "",
+        entry_due_other: "",
+      }));
+    }
+
+    if (
+      key === "down_payment_value_type" &&
+      value !== "case_by_case"
+    ) {
+      setCommercialExperienceDraft((current) => ({
+        ...current,
+        down_payment_case_rule: "",
+      }));
+    }
   }, []);
 
   const handleCommercialPaymentMethodToggle = useCallback((value: string) => {
@@ -8352,7 +9263,48 @@ export default function ConfiguracoesPage() {
     key: K,
     value: CommercialExperienceDraftState[K],
   ) => {
-    setCommercialExperienceDraft((current) => ({ ...current, [key]: value }));
+    setCommercialExperienceDraft((current) => {
+      const next = {
+        ...current,
+        [key]: value,
+      } as CommercialExperienceDraftState;
+
+      if (
+        key === "entry_due_trigger" &&
+        cleanText(value) !== "outro"
+      ) {
+        next.entry_due_other = "";
+      }
+
+      if (
+        key === "balance_due_trigger" &&
+        cleanText(value) !== "outro"
+      ) {
+        next.balance_due_other = "";
+      }
+
+      if (
+        key === "quote_validity" &&
+        cleanText(value) !== "outro"
+      ) {
+        next.quote_validity_other_days = "";
+      }
+
+      if (
+        key === "quote_customer_note_enabled" &&
+        cleanText(value) !== "Sim"
+      ) {
+        next.quote_customer_note = "";
+      }
+
+      if (
+        key === "quote_internal_note_enabled" &&
+        cleanText(value) !== "Sim"
+      ) {
+        next.quote_internal_note = "";
+      }
+      return next;
+    });
   }, []);
 
   const toggleCommercialExperienceArrayValue = useCallback((
@@ -8366,9 +9318,11 @@ export default function ConfiguracoesPage() {
       const exclusiveValue =
         key === "strategy_avoid_cases"
           ? "nenhum"
-          : key === "strategy_sell_more" || key === "strategy_priority_deal_types"
-            ? "sem_prioridade"
-            : null;
+          : key === "payment_blocking_actions"
+            ? "nenhuma"
+            : key === "strategy_sell_more" || key === "strategy_priority_deal_types"
+              ? "sem_prioridade"
+              : null;
 
       let nextValue: string[];
 
@@ -8410,9 +9364,66 @@ export default function ConfiguracoesPage() {
         }
       }
 
+      if (
+        key === "payment_blocking_actions" &&
+        !nextValue.includes("outro")
+      ) {
+        nextState.payment_blocking_other = "";
+      }
+
       return nextState;
     });
   }, []);
+  const upsertSettingsExperiencePolicies = useCallback(async (
+    patch: Partial<Record<SettingsExperiencePolicyColumn, Record<string, unknown>>>,
+  ) => {
+    if (!organizationId || !activeStoreId) {
+      throw new Error("Nao foi possivel identificar a loja ativa.");
+    }
+
+    const { data, error } = await supabase.rpc(
+      "upsert_store_settings_experience_policies_scoped",
+      {
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_commercial_ai_guidance: patch.commercial_ai_guidance ?? null,
+        p_commercial_suggestions: patch.commercial_suggestions ?? null,
+        p_price_extra_context: patch.price_extra_context ?? null,
+        p_payment_extensions: patch.payment_extensions ?? null,
+        p_payment_execution_rules: patch.payment_execution_rules ?? null,
+        p_discount_extensions: patch.discount_extensions ?? null,
+        p_quote_policy: patch.quote_policy ?? null,
+        p_post_sale_policy: patch.post_sale_policy ?? null,
+        p_warranty_policy: patch.warranty_policy ?? null,
+        p_cancellation_policy: patch.cancellation_policy ?? null,
+        p_brand_visual_policy: patch.brand_visual_policy ?? null,
+        p_contract_usage_policy: patch.contract_usage_policy ?? null,
+      },
+    );
+
+    if (error) throw error;
+    const returnedPolicies = Array.isArray(data)
+      ? data
+      : data
+        ? [data]
+        : [];
+
+    if (returnedPolicies.length !== 1) {
+      throw new Error(
+        "O writer canonico deve retornar exatamente uma linha de configuracoes.",
+      );
+    }
+
+    const nextPolicies =
+      returnedPolicies[0] as StoreSettingsExperiencePoliciesRow;
+    if (!nextPolicies) {
+      throw new Error("O Supabase nao retornou as configuracoes canonicas salvas.");
+    }
+
+    setSettingsExperiencePolicies(nextPolicies);
+    return nextPolicies;
+  }, [activeStoreId, organizationId]);
+
   const saveCommercialExperienceCard = useCallback(async (target: string) => {
     const required = (condition: boolean, value: unknown, message: string) =>
       condition && !cleanText(value) ? message : "";
@@ -8455,7 +9466,7 @@ export default function ConfiguracoesPage() {
       const workedBrands = commercialExperienceDraft.brands_worked.filter((item) => cleanText(item));
       const priorityBrands = commercialExperienceDraft.brands_priority.filter((item) => cleanText(item));
       validationError =
-        required(true, commercialExperienceDraft.brands_has_main, "Informe se a loja trabalha com uma marca principal.") ||
+        (!["Sim", "Não"].includes(commercialExperienceDraft.brands_has_main) ? "Informe se a loja trabalha com uma marca principal." : "") ||
         required(commercialExperienceDraft.brands_has_main === "Sim", commercialExperienceDraft.brands_main_choice, "Escolha a marca principal da loja.") ||
         required(commercialExperienceDraft.brands_main_choice === "outro", commercialExperienceDraft.brands_main_other, "Informe qual é a outra marca principal.") ||
         required(workedBrands.includes("outro"), commercialExperienceDraft.brands_worked_other, "Informe qual é a outra marca que a loja trabalha.") ||
@@ -8466,30 +9477,65 @@ export default function ConfiguracoesPage() {
 
     if (target === "ai") {
       validationError =
-        required(commercialExperienceDraft.ai_guidance_enabled === "Sim", commercialExperienceDraft.ai_guidance_other, "Explique a orientação comercial adicional da loja.");
+        (!["Sim", "Não"].includes(commercialExperienceDraft.ai_guidance_enabled)
+          ? "Informe se existe alguma orientação comercial adicional para a IA."
+          : "") ||
+        required(
+          commercialExperienceDraft.ai_guidance_enabled === "Sim",
+          commercialExperienceDraft.ai_guidance_other,
+          "Explique a orientação comercial adicional da loja.",
+        );
     }
 
     if (target === "suggestions") {
-      const selectedCatalogSuggestionTypes = CATALOG_BACKED_SUGGESTION_TYPES.filter((type) =>
-        commercialExperienceDraft.suggestion_types.includes(type),
-      );
+      const suggestionsEnabled =
+        commercialExperienceDraft.suggestions_enabled === "Sim";
+
+      const selectedCatalogSuggestionTypes = suggestionsEnabled
+        ? CATALOG_BACKED_SUGGESTION_TYPES.filter((type) =>
+            commercialExperienceDraft.suggestion_types.includes(type),
+          )
+        : [];
+
       const missingCatalogType = selectedCatalogSuggestionTypes.find((type) => {
-        const availableItems = catalogSuggestionItems.filter((item) => item.category === type);
+        const availableItems = catalogSuggestionItems.filter(
+          (item) => item.category === type,
+        );
         if (availableItems.length === 0) return true;
         return !availableItems.some((item) =>
           commercialExperienceDraft.suggestion_catalog_item_keys.includes(item.key),
         );
       });
+
       const missingCatalogTypeLabel = missingCatalogType
         ? optionLabel(missingCatalogType, COMMERCIAL_SUGGESTION_TYPE_OPTIONS)
         : "";
 
       validationError =
-        (commercialExperienceDraft.suggestions_enabled === "Sim" && commercialExperienceDraft.suggestion_types.length === 0 ? "Selecione o que a IA pode sugerir." : "") ||
-        (missingCatalogType ? `Selecione pelo menos um item real do catálogo para: ${missingCatalogTypeLabel}. Se ainda não houver item cadastrado, configure o Catálogo primeiro.` : "") ||
-        required(commercialExperienceDraft.suggestion_types.includes("servicos"), commercialExperienceDraft.suggestion_services_detail, "Explique quais serviços relacionados a IA pode sugerir.") ||
-        required(commercialExperienceDraft.suggestion_types.includes("outro"), commercialExperienceDraft.suggestion_other, "Explique o outro tipo de sugestão.") ||
-        required(commercialExperienceDraft.suggestions_enabled === "Sim", commercialExperienceDraft.better_option_policy, "Defina quando a IA pode apresentar uma opção melhor ou mais completa.");
+        (!["Sim", "Não"].includes(commercialExperienceDraft.suggestions_enabled)
+          ? "Informe se a IA pode fazer sugestões comerciais complementares."
+          : "") ||
+        (suggestionsEnabled && commercialExperienceDraft.suggestion_types.length === 0
+          ? "Selecione o que a IA pode sugerir."
+          : "") ||
+        (suggestionsEnabled && missingCatalogType
+          ? `Selecione pelo menos um item real do catálogo para: ${missingCatalogTypeLabel}. Se ainda não houver item cadastrado, configure o Catálogo primeiro.`
+          : "") ||
+        required(
+          suggestionsEnabled && commercialExperienceDraft.suggestion_types.includes("servicos"),
+          commercialExperienceDraft.suggestion_services_detail,
+          "Explique quais serviços relacionados a IA pode sugerir.",
+        ) ||
+        required(
+          suggestionsEnabled && commercialExperienceDraft.suggestion_types.includes("outro"),
+          commercialExperienceDraft.suggestion_other,
+          "Explique o outro tipo de sugestão.",
+        ) ||
+        required(
+          suggestionsEnabled,
+          commercialExperienceDraft.better_option_policy,
+          "Defina quando a IA pode apresentar uma opção melhor ou mais completa.",
+        );
     }
 
     if (target === "payment_blocks") {
@@ -8515,34 +9561,218 @@ export default function ConfiguracoesPage() {
     }
 
     if (target === "post_sale") {
-      validationError =
-        required(commercialExperienceDraft.post_sale_duration === "outro", commercialExperienceDraft.post_sale_duration_other_days, "Informe por quantos dias a loja acompanha o cliente.") ||
-        required(commercialExperienceDraft.post_sale_start === "depende", commercialExperienceDraft.post_sale_start_other, "Explique quando o pós-venda começa em cada tipo de venda.") ||
-        required(commercialExperienceDraft.post_sale_checks.includes("outro"), commercialExperienceDraft.post_sale_checks_other, "Explique o outro ponto que a loja verifica no pós-venda.");
-    }
+      const postSaleDuration =
+        cleanText(commercialExperienceDraft.post_sale_duration);
 
+      const postSaleDurationOtherDays =
+        cleanText(commercialExperienceDraft.post_sale_duration_other_days);
+
+      const postSaleStart =
+        cleanText(commercialExperienceDraft.post_sale_start);
+
+      const postSaleChecks =
+        uniqueCleanStrings(commercialExperienceDraft.post_sale_checks);
+
+      const allowedPostSaleChecks = new Set(
+        POST_SALE_CHECK_OPTIONS.map((option) => option.value),
+      );
+
+      const durationConfigured =
+        ["7", "15", "30", "60", "90"].includes(postSaleDuration) ||
+        (
+          postSaleDuration === "outro" &&
+          /^\d+$/.test(postSaleDurationOtherDays) &&
+          Number(postSaleDurationOtherDays) > 0
+        );
+
+      const startConfigured =
+        ["entrega", "instalacao", "retirada", "venda"].includes(
+          postSaleStart,
+        ) ||
+        (
+          postSaleStart === "depende" &&
+          Boolean(cleanText(commercialExperienceDraft.post_sale_start_other))
+        );
+
+      const checksConfigured =
+        postSaleChecks.length > 0 &&
+        postSaleChecks.every((value) => allowedPostSaleChecks.has(value)) &&
+        (
+          !postSaleChecks.includes("outro") ||
+          Boolean(cleanText(commercialExperienceDraft.post_sale_checks_other))
+        );
+
+      validationError =
+        (!durationConfigured
+          ? "Defina por quanto tempo a loja acompanha o cliente no pós-venda."
+          : "") ||
+        (!startConfigured
+          ? "Defina quando o acompanhamento de pós-venda começa."
+          : "") ||
+        (!checksConfigured
+          ? "Selecione pelo menos um ponto válido que a loja verifica no pós-venda."
+          : "");
+    }
     if (target === "warranty") {
-      validationError =
-        required(commercialExperienceDraft.warranty_extra_mode === "depende", commercialExperienceDraft.warranty_extra_rule, "Explique quando existe garantia própria da loja.") ||
-        required(commercialExperienceDraft.warranty_items.includes("outro"), commercialExperienceDraft.warranty_items_other, "Informe o outro item ou serviço com garantia.") ||
-        required(commercialExperienceDraft.warranty_start === "outro", commercialExperienceDraft.warranty_start_other, "Explique quando começa a contar a garantia.") ||
-        required(commercialExperienceDraft.warranty_extra_mode === "Sim", commercialExperienceDraft.warranty_duration_value, "Informe quanto tempo dura a garantia própria da loja.") ||
-        required(commercialExperienceDraft.warranty_conditions_enabled === "Sim", commercialExperienceDraft.warranty_conditions, "Explique as condições importantes da garantia.");
-    }
+      const warrantyMode =
+        cleanText(commercialExperienceDraft.warranty_extra_mode);
 
-    if (target === "cancellation") {
-      const hasPolicy = commercialExperienceDraft.cancellation_policy_exists === "Sim";
-      const situations = commercialExperienceDraft.cancellation_rule_situations;
+      const hasOwnWarranty =
+        warrantyMode === "Sim" || warrantyMode === "depende";
+
+      const warrantyItems =
+        uniqueCleanStrings(commercialExperienceDraft.warranty_items);
+
+      const allowedWarrantyItems = new Set(
+        WARRANTY_ITEM_OPTIONS.map((option) => option.value),
+      );
+
+      const warrantyStart =
+        cleanText(commercialExperienceDraft.warranty_start);
+
+      const warrantyDurationValue =
+        cleanText(commercialExperienceDraft.warranty_duration_value);
+
+      const warrantyDurationUnit =
+        cleanText(commercialExperienceDraft.warranty_duration_unit);
+
+      const warrantyConditionsEnabled =
+        cleanText(commercialExperienceDraft.warranty_conditions_enabled);
+
+      const modeConfigured =
+        ["Sim", "Não", "depende"].includes(warrantyMode);
+
+      const extraRuleConfigured =
+        warrantyMode !== "depende" ||
+        Boolean(cleanText(commercialExperienceDraft.warranty_extra_rule));
+
+      const itemsConfigured =
+        !hasOwnWarranty ||
+        (
+          warrantyItems.length > 0 &&
+          warrantyItems.every((value) => allowedWarrantyItems.has(value)) &&
+          (
+            !warrantyItems.includes("outro") ||
+            Boolean(cleanText(commercialExperienceDraft.warranty_items_other))
+          )
+        );
+
+      const startConfigured =
+        !hasOwnWarranty ||
+        (
+          ["compra", "entrega", "instalacao", "servico", "outro"].includes(
+            warrantyStart,
+          ) &&
+          (
+            warrantyStart !== "outro" ||
+            Boolean(cleanText(commercialExperienceDraft.warranty_start_other))
+          )
+        );
+
+      const durationConfigured =
+        !hasOwnWarranty ||
+        (
+          /^\d+$/.test(warrantyDurationValue) &&
+          Number(warrantyDurationValue) > 0 &&
+          ["dias", "meses", "anos"].includes(warrantyDurationUnit)
+        );
+
+      const conditionsConfigured =
+        !hasOwnWarranty ||
+        (
+          ["Sim", "Não"].includes(warrantyConditionsEnabled) &&
+          (
+            warrantyConditionsEnabled !== "Sim" ||
+            Boolean(cleanText(commercialExperienceDraft.warranty_conditions))
+          )
+        );
+
       validationError =
-        (hasPolicy && situations.length === 0 ? "Selecione pelo menos uma situação em que a política da loja possui uma regra específica." : "") ||
-        required(hasPolicy && situations.includes("after_contract"), commercialExperienceDraft.cancellation_after_contract_rule, "Explique a regra aplicável após a assinatura do contrato.") ||
-        required(hasPolicy && situations.includes("ordered_product"), commercialExperienceDraft.cancellation_ordered_product_rule, "Explique a regra para produto já encomendado ao fornecedor.") ||
-        required(hasPolicy && situations.includes("custom_order"), commercialExperienceDraft.cancellation_custom_order_rule, "Explique a regra para produtos sob encomenda ou personalizados.") ||
-        required(hasPolicy && situations.includes("after_delivery"), commercialExperienceDraft.cancellation_after_delivery_rule, "Explique a regra aplicável depois da entrega ou retirada.") ||
-        required(hasPolicy && situations.includes("service_started"), commercialExperienceDraft.cancellation_service_started_rule, "Explique a regra quando instalação ou serviço já começou.") ||
-        required(hasPolicy && situations.includes("charge_or_retention"), commercialExperienceDraft.cancellation_charge_or_retention_rule, "Explique a regra validada de multa, cobrança ou retenção.") ||
-        required(hasPolicy && situations.includes("refund"), commercialExperienceDraft.cancellation_refund_rule, "Explique a regra de reembolso da loja.") ||
-        required(hasPolicy && situations.includes("other"), commercialExperienceDraft.cancellation_policy_other, "Explique a outra regra da política.");
+        (!modeConfigured
+          ? "Defina se a loja oferece garantia própria além da garantia do fabricante."
+          : "") ||
+        (!extraRuleConfigured
+          ? "Explique quando existe garantia própria da loja."
+          : "") ||
+        (!itemsConfigured
+          ? "Selecione pelo menos um item válido coberto pela garantia própria."
+          : "") ||
+        (!startConfigured
+          ? "Defina quando começa a contar o prazo da garantia própria."
+          : "") ||
+        (!durationConfigured
+          ? "Informe uma duração válida para a garantia própria."
+          : "") ||
+        (!conditionsConfigured
+          ? "Defina se existem condições importantes para a garantia própria."
+          : "");
+    }
+    if (target === "cancellation") {
+      const policyMode = cleanText(
+        commercialExperienceDraft.cancellation_policy_exists,
+      );
+      const modeConfigured =
+        policyMode === "Sim" || policyMode === "Não";
+      const hasPolicy = policyMode === "Sim";
+
+      const rawSituations = uniqueCleanStrings(
+        commercialExperienceDraft.cancellation_rule_situations,
+      );
+      const situations = normalizeCancellationSituations(
+        commercialExperienceDraft.cancellation_rule_situations,
+      );
+
+      const situationsConfigured =
+        situations.length > 0 &&
+        rawSituations.length === situations.length;
+
+      validationError =
+        (!modeConfigured
+          ? "Defina se a loja possui uma política própria e validada de cancelamento, rescisão ou reembolso."
+          : "") ||
+        (hasPolicy && !situationsConfigured
+          ? "Selecione pelo menos uma situação válida em que a política da loja possui uma regra específica."
+          : "") ||
+        required(
+          hasPolicy && situations.includes("after_contract"),
+          commercialExperienceDraft.cancellation_after_contract_rule,
+          "Explique a regra aplicável após a assinatura do contrato.",
+        ) ||
+        required(
+          hasPolicy && situations.includes("ordered_product"),
+          commercialExperienceDraft.cancellation_ordered_product_rule,
+          "Explique a regra para produto já encomendado ao fornecedor.",
+        ) ||
+        required(
+          hasPolicy && situations.includes("custom_order"),
+          commercialExperienceDraft.cancellation_custom_order_rule,
+          "Explique a regra para produtos sob encomenda ou personalizados.",
+        ) ||
+        required(
+          hasPolicy && situations.includes("after_delivery"),
+          commercialExperienceDraft.cancellation_after_delivery_rule,
+          "Explique a regra aplicável depois da entrega ou retirada.",
+        ) ||
+        required(
+          hasPolicy && situations.includes("service_started"),
+          commercialExperienceDraft.cancellation_service_started_rule,
+          "Explique a regra quando instalação ou serviço já começou.",
+        ) ||
+        required(
+          hasPolicy && situations.includes("charge_or_retention"),
+          commercialExperienceDraft.cancellation_charge_or_retention_rule,
+          "Explique a regra validada de multa, cobrança ou retenção.",
+        ) ||
+        required(
+          hasPolicy && situations.includes("refund"),
+          commercialExperienceDraft.cancellation_refund_rule,
+          "Explique a regra de reembolso da loja.",
+        ) ||
+        required(
+          hasPolicy && situations.includes("other"),
+          commercialExperienceDraft.cancellation_policy_other,
+          "Explique a outra regra da política.",
+        );
     }
 
     if (validationError) {
@@ -8558,8 +9788,220 @@ export default function ConfiguracoesPage() {
             brands_worked: commercialExperienceDraft.brands_worked.filter((item) => cleanText(item)),
             brands_priority: commercialExperienceDraft.brands_priority.filter((item) => cleanText(item)),
           }
-        : commercialExperienceDraft;
+        : target === "quote"
+          ? {
+              ...commercialExperienceDraft,
+              quote_validity_other_days:
+                commercialExperienceDraft.quote_validity === "outro"
+                  ? cleanText(commercialExperienceDraft.quote_validity_other_days)
+                  : "",
+              quote_customer_note:
+                commercialExperienceDraft.quote_customer_note_enabled === "Sim"
+                  ? cleanText(commercialExperienceDraft.quote_customer_note)
+                  : "",
+              quote_internal_note:
+                commercialExperienceDraft.quote_internal_note_enabled === "Sim"
+                  ? cleanText(commercialExperienceDraft.quote_internal_note)
+                  : "",
+            }
+          : target === "post_sale"
+            ? {
+                ...commercialExperienceDraft,
+                post_sale_duration_other_days:
+                  commercialExperienceDraft.post_sale_duration === "outro"
+                    ? cleanText(
+                        commercialExperienceDraft.post_sale_duration_other_days,
+                      )
+                    : "",
+                post_sale_start_other:
+                  commercialExperienceDraft.post_sale_start === "depende"
+                    ? cleanText(
+                        commercialExperienceDraft.post_sale_start_other,
+                      )
+                    : "",
+                post_sale_checks: uniqueCleanStrings(
+                  commercialExperienceDraft.post_sale_checks,
+                ).filter((value) =>
+                  POST_SALE_CHECK_OPTIONS.some(
+                    (option) => option.value === value,
+                  ),
+                ),
+                post_sale_checks_other:
+                  commercialExperienceDraft.post_sale_checks.includes("outro")
+                    ? cleanText(
+                        commercialExperienceDraft.post_sale_checks_other,
+                      )
+                    : "",
+              }
+            : target === "warranty"
+              ? (() => {
+                  const warrantyMode =
+                    cleanText(commercialExperienceDraft.warranty_extra_mode);
 
+                  const hasOwnWarranty =
+                    warrantyMode === "Sim" || warrantyMode === "depende";
+
+                  const warrantyItems =
+                    uniqueCleanStrings(
+                      commercialExperienceDraft.warranty_items,
+                    ).filter((value) =>
+                      WARRANTY_ITEM_OPTIONS.some(
+                        (option) => option.value === value,
+                      ),
+                    );
+
+                  const warrantyStart =
+                    cleanText(commercialExperienceDraft.warranty_start);
+
+                  const warrantyConditionsEnabled =
+                    cleanText(
+                      commercialExperienceDraft.warranty_conditions_enabled,
+                    );
+
+                  return {
+                    ...commercialExperienceDraft,
+
+                    warranty_extra_mode: warrantyMode,
+
+                    warranty_extra_rule:
+                      warrantyMode === "depende"
+                        ? cleanText(
+                            commercialExperienceDraft.warranty_extra_rule,
+                          )
+                        : "",
+
+                    warranty_items:
+                      hasOwnWarranty
+                        ? warrantyItems
+                        : [],
+
+                    warranty_items_other:
+                      hasOwnWarranty && warrantyItems.includes("outro")
+                        ? cleanText(
+                            commercialExperienceDraft.warranty_items_other,
+                          )
+                        : "",
+
+                    warranty_start:
+                      hasOwnWarranty
+                        ? warrantyStart
+                        : "",
+
+                    warranty_start_other:
+                      hasOwnWarranty && warrantyStart === "outro"
+                        ? cleanText(
+                            commercialExperienceDraft.warranty_start_other,
+                          )
+                        : "",
+
+                    warranty_duration_value:
+                      hasOwnWarranty
+                        ? cleanText(
+                            commercialExperienceDraft.warranty_duration_value,
+                          )
+                        : "",
+
+                    warranty_duration_unit:
+                      hasOwnWarranty
+                        ? cleanText(
+                            commercialExperienceDraft.warranty_duration_unit,
+                          )
+                        : "meses",
+
+                    warranty_conditions_enabled:
+                      hasOwnWarranty
+                        ? warrantyConditionsEnabled
+                        : "",
+
+                    warranty_conditions:
+                      hasOwnWarranty &&
+                      warrantyConditionsEnabled === "Sim"
+                        ? cleanText(
+                            commercialExperienceDraft.warranty_conditions,
+                          )
+                        : "",
+                  };
+                })()
+              : target === "cancellation"
+                ? (() => {
+                    const policyMode = cleanText(
+                      commercialExperienceDraft.cancellation_policy_exists,
+                    );
+
+                    const hasPolicy = policyMode === "Sim";
+
+                    const situations = hasPolicy
+                      ? normalizeCancellationSituations(
+                          commercialExperienceDraft.cancellation_rule_situations,
+                        )
+                      : [];
+
+                    return {
+                      ...commercialExperienceDraft,
+
+                      cancellation_policy_exists: policyMode,
+
+                      cancellation_rule_situations: situations,
+
+                      cancellation_after_contract_rule:
+                        hasPolicy && situations.includes("after_contract")
+                          ? cleanText(
+                              commercialExperienceDraft.cancellation_after_contract_rule,
+                            )
+                          : "",
+
+                      cancellation_ordered_product_rule:
+                        hasPolicy && situations.includes("ordered_product")
+                          ? cleanText(
+                              commercialExperienceDraft.cancellation_ordered_product_rule,
+                            )
+                          : "",
+
+                      cancellation_custom_order_rule:
+                        hasPolicy && situations.includes("custom_order")
+                          ? cleanText(
+                              commercialExperienceDraft.cancellation_custom_order_rule,
+                            )
+                          : "",
+
+                      cancellation_after_delivery_rule:
+                        hasPolicy && situations.includes("after_delivery")
+                          ? cleanText(
+                              commercialExperienceDraft.cancellation_after_delivery_rule,
+                            )
+                          : "",
+
+                      cancellation_service_started_rule:
+                        hasPolicy && situations.includes("service_started")
+                          ? cleanText(
+                              commercialExperienceDraft.cancellation_service_started_rule,
+                            )
+                          : "",
+
+                      cancellation_charge_or_retention_rule:
+                        hasPolicy &&
+                        situations.includes("charge_or_retention")
+                          ? cleanText(
+                              commercialExperienceDraft.cancellation_charge_or_retention_rule,
+                            )
+                          : "",
+
+                      cancellation_refund_rule:
+                        hasPolicy && situations.includes("refund")
+                          ? cleanText(
+                              commercialExperienceDraft.cancellation_refund_rule,
+                            )
+                          : "",
+
+                      cancellation_policy_other:
+                        hasPolicy && situations.includes("other")
+                          ? cleanText(
+                              commercialExperienceDraft.cancellation_policy_other,
+                            )
+                          : "",
+                    };
+                  })()
+                : commercialExperienceDraft;
     const nextStrategyInput =
       target === "offerings"
         ? {
@@ -8578,6 +10020,60 @@ export default function ConfiguracoesPage() {
               ),
             }
           : strategySettingsInput;
+    let savedBrandSettings: StoreStrategySettingsRow | null = null;
+
+    if (target === "brands") {
+      if (!organizationId || !activeStoreId) {
+        setErrorText("Nao foi possivel identificar a loja ativa.");
+        setSuccessText(null);
+        return false;
+      }
+
+      try {
+        const { data: savedStructuredBrands, error: structuredBrandsSaveError } = await supabase.rpc(
+          "upsert_store_brand_preferences_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_brands_has_main: normalizedCommercialExperience.brands_has_main === "Sim",
+            p_brands_main_choice: normalizedCommercialExperience.brands_has_main === "Sim"
+              ? cleanText(normalizedCommercialExperience.brands_main_choice) || null
+              : null,
+            p_brands_main_other:
+              normalizedCommercialExperience.brands_has_main === "Sim" &&
+              normalizedCommercialExperience.brands_main_choice === "outro"
+                ? cleanText(normalizedCommercialExperience.brands_main_other) || null
+                : null,
+            p_brands_worked_choices: normalizedCommercialExperience.brands_worked,
+            p_brands_worked_other: normalizedCommercialExperience.brands_worked.includes("outro")
+              ? cleanText(normalizedCommercialExperience.brands_worked_other) || null
+              : null,
+            p_brands_priority_enabled: normalizedCommercialExperience.brands_priority_enabled === "Sim",
+            p_brands_priority_choices: normalizedCommercialExperience.brands_priority_enabled === "Sim"
+              ? normalizedCommercialExperience.brands_priority
+              : [],
+            p_brands_priority_other:
+              normalizedCommercialExperience.brands_priority_enabled === "Sim" &&
+              normalizedCommercialExperience.brands_priority.includes("outro")
+                ? cleanText(normalizedCommercialExperience.brands_priority_other) || null
+                : null,
+          },
+        );
+
+        if (structuredBrandsSaveError) throw structuredBrandsSaveError;
+        savedBrandSettings =
+          (savedStructuredBrands ?? null) as StoreStrategySettingsRow | null;
+        if (!savedBrandSettings) {
+          throw new Error("O Supabase nao retornou a configuracao de marcas salva.");
+        }
+        setStrategySettings(savedBrandSettings);
+      } catch (error: any) {
+        setErrorText(error?.message ?? "Nao foi possivel salvar as preferencias de marcas.");
+        setSuccessText(null);
+        return false;
+      }
+    }
+
 
     if (target === "strategy") {
       if (!organizationId || !activeStoreId) {
@@ -8622,7 +10118,7 @@ export default function ConfiguracoesPage() {
         return false;
       }
     }
-    if (target === "offerings" || target === "brands") {
+    if (target === "offerings") {
       if (!organizationId || !activeStoreId) {
         setErrorText("Nenhuma loja ativa foi encontrada para salvar a estrategia.");
         setSuccessText(null);
@@ -8697,13 +10193,247 @@ export default function ConfiguracoesPage() {
       }
     }
 
+    let savedExperiencePolicies = settingsExperiencePolicies;
+
+    if (target === "payment_blocks") {
+      if (!paymentSettings) {
+        setErrorText(
+          "Configure primeiro as formas e condições de pagamento da loja.",
+        );
+        setSuccessText(null);
+        return false;
+      }
+
+      const canonicalPaymentInput =
+        createStorePaymentSettingsInputFromSources({
+          settings: paymentSettings,
+        });
+
+      const normalizedEntryPayment =
+        normalizeStorePaymentSettingsInput({
+          ...canonicalPaymentInput,
+          downPaymentMode: commercialDraft.down_payment_mode,
+          downPaymentValueType: commercialDraft.down_payment_value_type,
+          downPaymentPercent: commercialDraft.down_payment_percent,
+          downPaymentAmount: commercialDraft.down_payment_amount,
+        });
+
+      if (!normalizedEntryPayment.ok) {
+        setErrorText(normalizedEntryPayment.error);
+        setSuccessText(null);
+        return false;
+      }
+
+      try {
+        const {
+          data: savedEntryPaymentSettingsData,
+          error: savedEntryPaymentSettingsError,
+        } = await supabase.rpc(
+          "upsert_store_entry_and_release_rules_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_down_payment_mode:
+              normalizedEntryPayment.value.downPaymentMode,
+            p_down_payment_value_type:
+              normalizedEntryPayment.value.downPaymentValueType,
+            p_down_payment_percent:
+              normalizedEntryPayment.value.downPaymentPercent,
+            p_down_payment_amount_cents:
+              normalizedEntryPayment.value.downPaymentAmountCents,
+            p_down_payment_case_rule:
+              cleanText(
+                commercialExperienceDraft.down_payment_case_rule,
+              ) || null,
+            p_entry_due_trigger:
+              cleanText(
+                commercialExperienceDraft.entry_due_trigger,
+              ) || null,
+            p_entry_due_other:
+              cleanText(
+                commercialExperienceDraft.entry_due_other,
+              ) || null,
+            p_balance_due_trigger:
+              cleanText(
+                commercialExperienceDraft.balance_due_trigger,
+              ) || null,
+            p_balance_due_other:
+              cleanText(
+                commercialExperienceDraft.balance_due_other,
+              ) || null,
+            p_payment_blocking_actions:
+              commercialExperienceDraft.payment_blocking_actions,
+            p_payment_blocking_other:
+              cleanText(
+                commercialExperienceDraft.payment_blocking_other,
+              ) || null,
+          },
+        );
+
+        if (savedEntryPaymentSettingsError) {
+          throw savedEntryPaymentSettingsError;
+        }
+
+        const savedEntryPaymentSettings =
+          (Array.isArray(savedEntryPaymentSettingsData)
+            ? savedEntryPaymentSettingsData[0]
+            : savedEntryPaymentSettingsData) as
+              | StorePaymentSettingsRow
+              | null;
+
+        if (!savedEntryPaymentSettings) {
+          throw new Error(
+            "O writer canônico não retornou as configurações de pagamento salvas.",
+          );
+        }
+
+        const {
+          data: refreshedEntryPoliciesData,
+          error: refreshedEntryPoliciesError,
+        } = await supabase
+          .rpc("read_store_settings_experience_policies_scoped", {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+          })
+          .maybeSingle();
+
+        if (refreshedEntryPoliciesError) {
+          throw refreshedEntryPoliciesError;
+        }
+
+        const refreshedEntryPolicies =
+          (refreshedEntryPoliciesData ?? null) as
+            | StoreSettingsExperiencePoliciesRow
+            | null;
+
+        if (!refreshedEntryPolicies) {
+          throw new Error(
+            "O reader canônico não retornou as regras de entrada e liberação salvas.",
+          );
+        }
+
+        setPaymentSettings(savedEntryPaymentSettings);
+        setSettingsExperiencePolicies(refreshedEntryPolicies);
+        savedExperiencePolicies = refreshedEntryPolicies;
+      } catch (error: any) {
+        setErrorText(
+          error?.message ??
+            "Não foi possível salvar as regras de entrada e liberação do pedido.",
+        );
+        setSuccessText(null);
+        return false;
+      }
+    } else if (target === "suggestions") {
+      try {
+        const {
+          data: savedSuggestionSettingsData,
+          error: savedSuggestionSettingsError,
+        } = await supabase.rpc(
+          "upsert_store_commercial_ai_suggestion_policy_configured_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_suggestions_enabled:
+              normalizedCommercialExperience.suggestions_enabled === "Sim",
+            p_suggestion_types:
+              normalizedCommercialExperience.suggestion_types,
+            p_suggestion_catalog_item_keys:
+              normalizedCommercialExperience.suggestion_catalog_item_keys,
+            p_suggestion_services_detail:
+              normalizedCommercialExperience.suggestion_services_detail,
+            p_suggestion_other:
+              normalizedCommercialExperience.suggestion_other,
+            p_better_option_policy:
+              normalizedCommercialExperience.better_option_policy,
+          },
+        );
+
+        if (savedSuggestionSettingsError) {
+          throw savedSuggestionSettingsError;
+        }
+
+        const savedSuggestionSettings =
+          (Array.isArray(savedSuggestionSettingsData)
+            ? savedSuggestionSettingsData[0]
+            : savedSuggestionSettingsData) as StoreCommercialAiSettingsRow | null;
+
+        if (!savedSuggestionSettings) {
+          throw new Error(
+            "O Supabase nao retornou a politica canonica de sugestoes salva.",
+          );
+        }
+
+        const {
+          data: refreshedPoliciesData,
+          error: refreshedPoliciesError,
+        } = await supabase
+          .rpc("read_store_settings_experience_policies_scoped", {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+          })
+          .maybeSingle();
+
+        if (refreshedPoliciesError) {
+          throw refreshedPoliciesError;
+        }
+
+        const refreshedPolicies =
+          (refreshedPoliciesData ?? null) as StoreSettingsExperiencePoliciesRow | null;
+
+        if (!refreshedPolicies) {
+          throw new Error(
+            "O reader canonico nao retornou a politica de sugestoes salva.",
+          );
+        }
+
+        setCommercialAiSettings(savedSuggestionSettings);
+        setSettingsExperiencePolicies(refreshedPolicies);
+        savedExperiencePolicies = refreshedPolicies;
+      } catch (error: any) {
+        setErrorText(
+          error?.message ??
+            "Nao foi possivel salvar a politica canonica de sugestoes comerciais.",
+        );
+        setSuccessText(null);
+        return false;
+      }
+    } else {
+      const settingsExperiencePolicyPatch =
+        buildCommercialExperiencePolicyPatch(
+          target,
+          normalizedCommercialExperience,
+        );
+
+      if (settingsExperiencePolicyPatch) {
+        try {
+          savedExperiencePolicies = await upsertSettingsExperiencePolicies(
+            settingsExperiencePolicyPatch,
+          );
+        } catch (error: any) {
+          setErrorText(
+            error?.message ??
+              "Nao foi possivel salvar a configuracao canonica deste bloco.",
+          );
+          setSuccessText(null);
+          return false;
+        }
+      }
+    }
+
     const nextCommercialExperience = createCanonicalCommercialExperienceDraft(
       normalizedCommercialExperience,
       nextStrategyInput,
+      target === "brands" ? savedBrandSettings : undefined,
     );
 
-    setCommercialExperienceDraft(nextCommercialExperience);
-    setSavedCommercialExperience(nextCommercialExperience);
+    const nextSavedCommercialExperience =
+      applySettingsExperiencePoliciesToCommercialDraft(
+        nextCommercialExperience,
+        savedExperiencePolicies,
+      );
+
+    setCommercialExperienceDraft(nextSavedCommercialExperience);
+    setSavedCommercialExperience(nextSavedCommercialExperience);
     setErrorText(null);
     setSuccessText("Configuração comercial atualizada.");
 
@@ -8715,12 +10445,16 @@ export default function ConfiguracoesPage() {
     }
 
     return true;
-  }, [
+    }, [
     activeStoreId,
     catalogSuggestionItems,
+    commercialDraft,
     commercialExperienceDraft,
     organizationId,
+    paymentSettings,
+    settingsExperiencePolicies,
     strategySettingsInput,
+    upsertSettingsExperiencePolicies,
   ]);
 
   const handleCommercialEditCancel = useCallback(() => {
@@ -8749,7 +10483,7 @@ export default function ConfiguracoesPage() {
 
   const handleCommercialEditSave = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
-      setErrorText("Nenhuma loja ativa foi encontrada para salvar essas alteraÃ§Ãµes.");
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar essas alterações.");
       setSuccessText(null);
       return;
     }
@@ -8763,12 +10497,6 @@ export default function ConfiguracoesPage() {
     if (commercialEditTarget === "payments") {
       if (commercialExperienceDraft.payment_other_enabled && !cleanText(commercialExperienceDraft.payment_other_method)) {
         setErrorText("Informe qual é a outra forma de pagamento aceita pela loja.");
-        setSuccessText(null);
-        return;
-      }
-
-      if (["optional", "required"].includes(commercialDraft.down_payment_mode) && commercialDraft.down_payment_value_type === "case_by_case" && !cleanText(commercialExperienceDraft.down_payment_case_rule)) {
-        setErrorText("Explique como a entrada é definida quando varia conforme a venda.");
         setSuccessText(null);
         return;
       }
@@ -8833,113 +10561,175 @@ export default function ConfiguracoesPage() {
       }
     }
 
-    const normalizedPaymentSettings = normalizeStorePaymentSettingsInput({
-      acceptedPaymentMethods: commercialDraft.accepted_payment_methods,
-      pixKeyType: commercialDraft.pix_key_type,
-      pixKey: commercialDraft.pix_key,
-      pixHolderName: commercialDraft.pix_holder_name,
-      downPaymentMode: commercialDraft.down_payment_mode,
-      downPaymentValueType: commercialDraft.down_payment_value_type,
-      downPaymentPercent: commercialDraft.down_payment_percent,
-      downPaymentAmount: commercialDraft.down_payment_amount,
-      installmentsEnabled: commercialDraft.installments_enabled,
-      maxInstallments: commercialDraft.max_installments,
-      installmentInterestPolicy: commercialDraft.installment_interest_policy,
-      paymentNotes: commercialDraft.payment_notes,
-    });
-
-    if (!normalizedPaymentSettings.ok) {
-      setErrorText(normalizedPaymentSettings.error);
-      setSuccessText(null);
-      return;
-    }
-    const normalizedCommercialAiSettings =
-      normalizeStoreCommercialAiSettingsInput({
-        priceAnswerPolicy: commercialDraft.price_answer_policy,
-        priceContextRequirements: commercialDraft.price_context_requirements,
+    if (commercialEditTarget === "payments") {
+      const normalizedPaymentSettings = normalizeStorePaymentSettingsInput({
+        acceptedPaymentMethods: commercialDraft.accepted_payment_methods,
+        pixKeyType: commercialDraft.pix_key_type,
+        pixKey: commercialDraft.pix_key,
+        pixHolderName: commercialDraft.pix_holder_name,
+        // Pagamentos nao possui authority sobre Entrada.
+        downPaymentMode: "none",
+        downPaymentValueType: "",
+        downPaymentPercent: "",
+        downPaymentAmount: "",
+        installmentsEnabled: commercialDraft.installments_enabled,
+        maxInstallments: commercialDraft.max_installments,
+        installmentInterestPolicy: commercialDraft.installment_interest_policy,
+        paymentNotes: commercialDraft.payment_notes,
       });
 
-    if (!normalizedCommercialAiSettings.ok) {
-      setErrorText(normalizedCommercialAiSettings.error);
+      if (!normalizedPaymentSettings.ok) {
+        setErrorText(normalizedPaymentSettings.error);
+        setSuccessText(null);
+        return;
+      }
+
+      const { data: savedPaymentSettings, error: paymentSettingsError } =
+        await supabase.rpc("upsert_store_payment_methods_and_terms_with_legacy_mirror_scope", {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_accepted_payment_methods:
+            normalizedPaymentSettings.value.acceptedPaymentMethods,
+          p_pix_key_type: normalizedPaymentSettings.value.pixKeyType,
+          p_pix_key: normalizedPaymentSettings.value.pixKey,
+          p_pix_holder_name: normalizedPaymentSettings.value.pixHolderName,
+          p_installments_enabled:
+            normalizedPaymentSettings.value.installmentsEnabled,
+          p_max_installments: normalizedPaymentSettings.value.maxInstallments,
+          p_installment_interest_policy:
+            normalizedPaymentSettings.value.installmentInterestPolicy,
+          p_payment_notes: normalizedPaymentSettings.value.paymentNotes,
+        });
+
+      if (paymentSettingsError) {
+        setErrorText("Falha ao sincronizar as configuracoes canonicas de pagamento.");
+        setSuccessText(null);
+        return;
+      }
+
+      setPaymentSettings(
+        (savedPaymentSettings ?? null) as StorePaymentSettingsRow | null,
+      );
+    }
+
+    if (commercialEditTarget === "ai_price") {
+      const normalizedCommercialAiSettings =
+        normalizeStoreCommercialAiSettingsInput({
+          priceAnswerPolicy: commercialDraft.price_answer_policy,
+          priceContextRequirements: commercialDraft.price_context_requirements,
+        });
+
+      if (!normalizedCommercialAiSettings.ok) {
+        setErrorText(normalizedCommercialAiSettings.error);
+        setSuccessText(null);
+        return;
+      }
+
+      const {
+        data: savedCommercialAiSettings,
+        error: commercialAiSettingsError,
+      } = await supabase.rpc(
+        "upsert_store_commercial_ai_settings_with_legacy_mirror_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_price_answer_policy:
+            normalizedCommercialAiSettings.value.priceAnswerPolicy,
+          p_price_context_requirements:
+            normalizedCommercialAiSettings.value.priceContextRequirements,
+        },
+      );
+
+      if (commercialAiSettingsError) {
+        setErrorText("Falha ao sincronizar as configuracoes canonicas comerciais.");
+        setSuccessText(null);
+        return;
+      }
+
+      setCommercialAiSettings(
+        (savedCommercialAiSettings ?? null) as StoreCommercialAiSettingsRow | null,
+      );
+    }
+
+    let savedExperiencePolicies = settingsExperiencePolicies;
+    try {
+      const settingsExperiencePolicyPatch =
+        commercialEditTarget === "ai_price"
+          ? {
+              price_extra_context: pickDraftFields(commercialExperienceDraft, [
+                "price_context_other_enabled",
+                "price_context_other",
+              ]),
+            }
+          : commercialEditTarget === "payments"
+            ? {
+                payment_extensions: pickDraftFields(commercialExperienceDraft, [
+                  "payment_other_enabled",
+                  "payment_other_method",
+                  "installments_interest_free_enabled",
+                  "installments_interest_free_max",
+                  "installment_interest_above_mode",
+                  "installment_interest_above_rule",
+                  "installment_minimum_enabled",
+                  "installment_minimum_amount",
+                  "financing_mode",
+                  "financing_partner_name",
+                  "financing_credit_analysis",
+                  "financing_simulation_by",
+                  "financing_ai_policy",
+                  "financing_other",
+                ]),
+              }
+            : null;
+
+      if (settingsExperiencePolicyPatch) {
+        savedExperiencePolicies = await upsertSettingsExperiencePolicies(
+          settingsExperiencePolicyPatch,
+        );
+      }
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Nao foi possivel salvar a configuracao canonica complementar.",
+      );
       setSuccessText(null);
       return;
     }
 
-    const derivedPaymentSummary = deriveStorePaymentSettingsSummary(
-      normalizedPaymentSettings.value,
-    );
+    if (commercialEditTarget !== "payments") {
+      const saved = await upsertConfigAnswers(
+        {
+          store_display_name: commercialDraft.ai_display_name,
+          activation_preferences_other: commercialDraft.ai_tone_summary,
+          ai_identity_mode: commercialDraft.ai_speaks_as,
+          human_help_general_summary: commercialDraft.human_help_summary,
+          negotiation_rules_summary: commercialDraft.negotiation_rules_summary,
+          final_activation_notes: commercialDraft.promise_limits_summary,
+          sales_flow_notes: commercialDraft.post_sale_summary,
+          after_hours_behavior: commercialDraft.after_hours_summary,
+          commercial_ai_summary: commercialDraft.commercial_ai_summary,
+        },
+        "Alterações de Comercial e IA salvas com sucesso."
+      );
 
-    const { data: savedPaymentSettings, error: paymentSettingsError } =
-      await supabase.rpc("upsert_store_payment_settings_with_legacy_mirror_scoped", {
-        p_organization_id: organizationId,
-        p_store_id: activeStoreId,
-        p_accepted_payment_methods:
-          normalizedPaymentSettings.value.acceptedPaymentMethods,
-        p_pix_key_type: normalizedPaymentSettings.value.pixKeyType,
-        p_pix_key: normalizedPaymentSettings.value.pixKey,
-        p_pix_holder_name: normalizedPaymentSettings.value.pixHolderName,
-        p_down_payment_mode: normalizedPaymentSettings.value.downPaymentMode,
-        p_down_payment_value_type:
-          normalizedPaymentSettings.value.downPaymentValueType,
-        p_down_payment_percent:
-          normalizedPaymentSettings.value.downPaymentPercent,
-        p_down_payment_amount_cents:
-          normalizedPaymentSettings.value.downPaymentAmountCents,
-        p_installments_enabled:
-          normalizedPaymentSettings.value.installmentsEnabled,
-        p_max_installments: normalizedPaymentSettings.value.maxInstallments,
-        p_installment_interest_policy:
-          normalizedPaymentSettings.value.installmentInterestPolicy,
-        p_payment_notes: normalizedPaymentSettings.value.paymentNotes,
-      });
-
-    if (paymentSettingsError) {
-      setErrorText("Falha ao sincronizar as configuracoes canonicas de pagamento.");
-      setSuccessText(null);
-      return;
+      if (!saved) return;
+    } else {
+      setErrorText(null);
+      setSuccessText("Pagamentos salvos com sucesso.");
     }
 
-    setPaymentSettings((savedPaymentSettings ?? null) as StorePaymentSettingsRow | null);
-    const { data: savedCommercialAiSettings, error: commercialAiSettingsError } =
-      await supabase.rpc("upsert_store_commercial_ai_settings_with_legacy_mirror_scoped", {
-        p_organization_id: organizationId,
-        p_store_id: activeStoreId,
-        p_price_answer_policy:
-          normalizedCommercialAiSettings.value.priceAnswerPolicy,
-        p_price_context_requirements:
-          normalizedCommercialAiSettings.value.priceContextRequirements,
-      });
+    const nextSavedCommercialExperience =
+      applySettingsExperiencePoliciesToCommercialDraft(
+        createCanonicalCommercialExperienceDraft(
+          commercialExperienceDraft,
+          strategySettingsInput,
+          strategySettings,
+        ),
+        savedExperiencePolicies,
+      );
 
-    if (commercialAiSettingsError) {
-      setErrorText("Falha ao sincronizar as configuracoes canonicas comerciais.");
-      setSuccessText(null);
-      return;
-    }
-
-    setCommercialAiSettings(
-      (savedCommercialAiSettings ?? null) as StoreCommercialAiSettingsRow | null,
-    );
-
-    const saved = await upsertConfigAnswers(
-      {
-        store_display_name: commercialDraft.ai_display_name,
-        activation_preferences_other: commercialDraft.ai_tone_summary,
-        ai_identity_mode: commercialDraft.ai_speaks_as,
-        human_help_general_summary: commercialDraft.human_help_summary,
-        accepted_payment_methods_summary: derivedPaymentSummary,
-
-        negotiation_rules_summary: commercialDraft.negotiation_rules_summary,
-        final_activation_notes: commercialDraft.promise_limits_summary,
-        sales_flow_notes: commercialDraft.post_sale_summary,
-        after_hours_behavior: commercialDraft.after_hours_summary,
-        commercial_ai_summary: commercialDraft.commercial_ai_summary,
-      },
-      "Alterações de Comercial e IA salvas com sucesso."
-    );
-
-    if (!saved) return;
-
-    setSavedCommercialExperience(commercialExperienceDraft);
+    setCommercialExperienceDraft(nextSavedCommercialExperience);
+    setSavedCommercialExperience(nextSavedCommercialExperience);
     setIsCommercialEditing(false);
     setCommercialEditTarget(null);
   }, [
@@ -8948,6 +10738,10 @@ export default function ConfiguracoesPage() {
     commercialEditTarget,
     commercialExperienceDraft,
     organizationId,
+    settingsExperiencePolicies,
+    strategySettings,
+    strategySettingsInput,
+    upsertSettingsExperiencePolicies,
     upsertConfigAnswers,
   ]);
 
@@ -9031,7 +10825,7 @@ export default function ConfiguracoesPage() {
       discount_autonomy_mode:
         current.discount_autonomy_mode && current.discount_autonomy_mode !== "approval_required"
           ? current.discount_autonomy_mode
-          : "within_limit",
+          : "within_policy_autonomous",
     }));
   }, []);
 
@@ -9049,22 +10843,39 @@ export default function ConfiguracoesPage() {
   const handleDiscountEditSave = useCallback(async () => {
     if (!organizationId || !activeStoreId) return;
 
-    if (discountDraft.high_value_enabled && !cleanText(commercialExperienceDraft.high_value_requires_human)) {
-      setErrorText("Informe se vendas de valor alto precisam de aprovação humana.");
+    const highValueRequiresHuman =
+      cleanText(commercialExperienceDraft.high_value_requires_human);
+
+    if (
+      discountDraft.high_value_enabled &&
+      !["Sim", "Não"].includes(highValueRequiresHuman)
+    ) {
+      setErrorText(
+        "Informe se vendas de valor alto precisam de aprovação humana.",
+      );
       setSuccessText(null);
       return;
     }
 
-    const normalizedDiscountSettings = normalizeStoreDiscountSettingsInput({
-      defaultDiscountPercent: discountDraft.default_discount_percent,
-      maxDiscountPercent: discountDraft.max_discount_percent,
-      allowAskAboveMaxDiscount: discountDraft.allow_ask_above_max_discount,
-      discountAutonomyMode: discountDraft.discount_autonomy_mode,
-      discountSpecialRules: discountDraft.special_discount_rules,
-      highValueEnabled: discountDraft.high_value_enabled,
-      highValueThresholdAmount: discountDraft.high_value_threshold_amount,
-      highValueDiscountPercent: discountDraft.high_value_discount_percent,
-    });
+    const normalizedDiscountSettings =
+      normalizeStoreDiscountSettingsInput({
+        defaultDiscountPercent:
+          discountDraft.default_discount_percent,
+        maxDiscountPercent:
+          discountDraft.max_discount_percent,
+        allowAskAboveMaxDiscount:
+          discountDraft.allow_ask_above_max_discount,
+        discountAutonomyMode:
+          discountDraft.discount_autonomy_mode,
+        discountSpecialRules:
+          discountDraft.special_discount_rules,
+        highValueEnabled:
+          discountDraft.high_value_enabled,
+        highValueThresholdAmount:
+          discountDraft.high_value_threshold_amount,
+        highValueDiscountPercent:
+          discountDraft.high_value_discount_percent,
+      });
 
     if (!normalizedDiscountSettings.ok) {
       setErrorText(normalizedDiscountSettings.error);
@@ -9072,70 +10883,223 @@ export default function ConfiguracoesPage() {
       return;
     }
 
-    const { data: savedDiscountSettings, error: discountSettingsError } =
-      await supabase.rpc("upsert_store_discount_settings_with_legacy_mirror_scoped", {
-        p_organization_id: organizationId,
-        p_store_id: activeStoreId,
-        p_default_discount_percent:
-          normalizedDiscountSettings.value.defaultDiscountPercent,
-        p_max_discount_percent: normalizedDiscountSettings.value.maxDiscountPercent,
-        p_allow_ask_above_max_discount:
-          normalizedDiscountSettings.value.allowAskAboveMaxDiscount,
-        p_discount_autonomy_mode:
-          normalizedDiscountSettings.value.discountAutonomyMode,
-        p_discount_special_rules:
-          normalizedDiscountSettings.value.discountSpecialRules,
-      });
+    const normalized = normalizedDiscountSettings.value;
 
-    if (discountSettingsError) {
-      setErrorText("Falha ao sincronizar as configuracoes canonicas de desconto.");
+    const canonicalHighValueRequiresHuman =
+      normalized.highValueEnabled
+        ? highValueRequiresHuman === "Sim"
+        : null;
+
+    try {
+      const {
+        data: savedDiscountCardData,
+        error: savedDiscountCardError,
+      } = await supabase.rpc(
+        "upsert_store_discount_card_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_default_discount_percent:
+            normalized.defaultDiscountPercent,
+          p_max_discount_percent:
+            normalized.maxDiscountPercent,
+          p_allow_ask_above_max_discount:
+            normalized.allowAskAboveMaxDiscount,
+          p_discount_autonomy_mode:
+            normalized.discountAutonomyMode,
+          p_discount_special_rules:
+            normalized.discountSpecialRules,
+          p_high_value_enabled:
+            normalized.highValueEnabled,
+          p_high_value_threshold_amount_cents:
+            normalized.highValueThresholdAmountCents,
+          p_high_value_discount_percent:
+            normalized.highValueDiscountPercent,
+          p_high_value_requires_human:
+            canonicalHighValueRequiresHuman,
+          p_discount_explanation:
+            cleanText(discountDraft.discount_explanation),
+        },
+      );
+
+      if (savedDiscountCardError) {
+        throw savedDiscountCardError;
+      }
+
+      const savedDiscountCard =
+        (Array.isArray(savedDiscountCardData)
+          ? savedDiscountCardData[0]
+          : savedDiscountCardData) as
+            | {
+                discount_settings?:
+                  | StoreDiscountSettingsRow
+                  | null;
+                high_value_settings?:
+                  | (
+                      StoreHighValueDiscountSettingsRow & {
+                        requires_human_approval?:
+                          | boolean
+                          | null;
+                        requires_human_approval_configured_at?:
+                          | string
+                          | null;
+                      }
+                    )
+                  | null;
+                discount_explanation?:
+                  | string
+                  | null;
+              }
+            | null;
+
+      const savedDiscountSettings =
+        savedDiscountCard?.discount_settings ?? null;
+
+      const savedHighValueDiscountSettings =
+        savedDiscountCard?.high_value_settings ?? null;
+
+      if (
+        !savedDiscountSettings ||
+        !savedHighValueDiscountSettings
+      ) {
+        throw new Error(
+          "O writer canônico não retornou as configurações de desconto salvas.",
+        );
+      }
+
+      let refreshedExperiencePolicies =
+        settingsExperiencePolicies;
+
+      const {
+        data: refreshedExperiencePoliciesData,
+        error: refreshedExperiencePoliciesError,
+      } = await supabase
+        .rpc(
+          "read_store_settings_experience_policies_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+          },
+        )
+        .maybeSingle();
+
+      if (
+        !refreshedExperiencePoliciesError &&
+        refreshedExperiencePoliciesData
+      ) {
+        refreshedExperiencePolicies =
+          refreshedExperiencePoliciesData as
+            StoreSettingsExperiencePoliciesRow;
+
+        setSettingsExperiencePolicies(
+          refreshedExperiencePolicies,
+        );
+      }
+
+      const canOfferDiscount =
+        [
+          "default_step_autonomous",
+          "within_policy_autonomous",
+        ].includes(
+          cleanText(
+            savedDiscountSettings.discount_autonomy_mode,
+          ),
+        ) &&
+        (
+          Number(
+            savedDiscountSettings.default_discount_percent ?? 0,
+          ) > 0 ||
+          Number(
+            savedDiscountSettings.max_discount_percent ?? 0,
+          ) > 0
+        );
+
+      const nextAnswers: AnswersMap = {
+        ...answers,
+        can_offer_discount: canOfferDiscount,
+        max_discount_percent:
+          savedDiscountSettings.max_discount_percent,
+        discount_special_rules:
+          savedDiscountSettings.discount_special_rules ?? "",
+        discount_explanation:
+          cleanText(
+            savedDiscountCard?.discount_explanation,
+          ),
+      };
+
+      setAnswers(nextAnswers);
+
+      setDiscountSettings(
+        savedDiscountSettings,
+      );
+
+      setHighValueDiscountSettings(
+        savedHighValueDiscountSettings,
+      );
+
+      setDiscountDraft(
+        createDiscountDraftFromAnswers(
+          nextAnswers,
+          savedDiscountSettings,
+          savedHighValueDiscountSettings,
+        ),
+      );
+
+      const canonicalDiscountExperience = {
+        ...commercialExperienceDraft,
+        high_value_requires_human:
+          savedHighValueDiscountSettings.enabled
+            ? savedHighValueDiscountSettings
+                .requires_human_approval === true
+              ? "Sim"
+              : "Não"
+            : "",
+      };
+
+      const nextSavedCommercialExperience = {
+        ...applySettingsExperiencePoliciesToCommercialDraft(
+          createCanonicalCommercialExperienceDraft(
+            canonicalDiscountExperience,
+            strategySettingsInput,
+            strategySettings,
+          ),
+          refreshedExperiencePolicies,
+        ),
+        high_value_requires_human:
+          canonicalDiscountExperience
+            .high_value_requires_human,
+      };
+
+      setCommercialExperienceDraft(
+        nextSavedCommercialExperience,
+      );
+
+      setSavedCommercialExperience(
+        nextSavedCommercialExperience,
+      );
+
+      setErrorText(null);
+      setSuccessText(
+        "Alterações de descontos salvas com sucesso.",
+      );
+      setIsDiscountEditing(false);
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Não foi possível salvar as configurações canônicas de desconto.",
+      );
       setSuccessText(null);
-      return;
     }
-
-    const { data: savedHighValueDiscountSettings, error: highValueDiscountSettingsError } =
-      await supabase.rpc("upsert_store_high_value_discount_settings_scoped", {
-        p_organization_id: organizationId,
-        p_store_id: activeStoreId,
-        p_enabled: normalizedDiscountSettings.value.highValueEnabled,
-        p_threshold_amount_cents:
-          normalizedDiscountSettings.value.highValueThresholdAmountCents,
-        p_discount_percent:
-          normalizedDiscountSettings.value.highValueDiscountPercent,
-      });
-
-    if (highValueDiscountSettingsError) {
-      setErrorText("Falha ao sincronizar a politica canonica de alto valor.");
-      setSuccessText(null);
-      return;
-    }
-
-    setDiscountSettings(
-      (savedDiscountSettings ?? null) as StoreDiscountSettingsRow | null,
-    );
-    setHighValueDiscountSettings(
-      (savedHighValueDiscountSettings ?? null) as StoreHighValueDiscountSettingsRow | null,
-    );
-
-    const saved = await upsertConfigAnswers(
-      {
-        discount_explanation: discountDraft.discount_explanation,
-      },
-      "Alterações de descontos salvas com sucesso."
-    );
-
-    if (!saved) return;
-
-    setSavedCommercialExperience(commercialExperienceDraft);
-    setIsDiscountEditing(false);
   }, [
     activeStoreId,
+    answers,
     commercialExperienceDraft,
     discountDraft,
     organizationId,
-    upsertConfigAnswers,
+    settingsExperiencePolicies,
+    strategySettings,
+    strategySettingsInput,
   ]);
-
   useEffect(() => {
     setChannelDraft(createChannelDraftFromSources(answers, channelSettings, loadedCanonicalPrimaryResponsible));
   }, [answers, channelSettings, loadedCanonicalPrimaryResponsible]);
@@ -9177,7 +11141,7 @@ export default function ConfiguracoesPage() {
     }
 
     if (!organizationId || !activeStoreId) {
-      setErrorText("Nenhuma loja ativa foi encontrada para salvar essas alteraÃ§Ãµes.");
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar essas alterações.");
       setSuccessText(null);
       return;
     }
@@ -9215,7 +11179,7 @@ export default function ConfiguracoesPage() {
     if (channelSettingsError) {
       setErrorText(
         channelSettingsError.message ||
-          "Erro ao salvar a configuraÃ§Ã£o canÃ´nica de canais."
+          "Erro ao salvar a configuração canônica de canais."
       );
       setSuccessText(null);
       return;
@@ -10165,16 +12129,53 @@ export default function ConfiguracoesPage() {
       return;
     }
 
+    const wantsLogoInGeneratedDocuments =
+      brandExperienceDraft.use_logo_on_quotes === "Sim" ||
+      brandExperienceDraft.use_logo_on_contracts === "Sim";
+
+    if (
+      wantsLogoInGeneratedDocuments &&
+      !hasStoredLogo &&
+      !selectedStoreLogoFile
+    ) {
+      setErrorText(
+        "Envie uma logo ou selecione Não para o uso da logo nos orçamentos e contratos.",
+      );
+      setSuccessText(null);
+      return;
+    }
+
     if (selectedStoreLogoFile) {
       const logoSaved = await handleSaveStoreLogo();
       if (!logoSaved) return;
     }
 
-    setSavedBrandExperience(brandExperienceDraft);
+    try {
+      const savedExperiencePolicies = await upsertSettingsExperiencePolicies({
+        brand_visual_policy: pickDraftFields(
+          brandExperienceDraft,
+          BRAND_EXPERIENCE_KEYS,
+        ),
+      });
+      const nextSavedBrandExperience =
+        applySettingsExperiencePoliciesToBrandDraft(
+          createEmptyBrandExperienceDraft(),
+          savedExperiencePolicies,
+        );
+      setBrandExperienceDraft(nextSavedBrandExperience);
+      setSavedBrandExperience(nextSavedBrandExperience);
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Nao foi possivel salvar as configuracoes canonicas de marca.",
+      );
+      setSuccessText(null);
+      return;
+    }
     setErrorText(null);
     setSuccessText("Configurações de marca atualizadas.");
     setIsBrandEditing(false);
-  }, [brandExperienceDraft, handleSaveStoreLogo, selectedStoreLogoFile]);
+  }, [brandExperienceDraft, handleSaveStoreLogo, hasStoredLogo, selectedStoreLogoFile, upsertSettingsExperiencePolicies]);
 
   const updateContractExperienceDraft = useCallback(<K extends keyof ContractExperienceDraftState>(
     key: K,
@@ -10204,8 +12205,8 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
   }, [savedContractExperience]);
 
-  const handleContractPolicySave = useCallback(() => {
-    const draft = contractExperienceDraft;
+  const handleContractPolicySave = useCallback(async () => {
+    const draft = normalizeContractUsageDraft(contractExperienceDraft);
     if (!["Sim", "Não"].includes(draft.enabled)) {
       setErrorText("Informe se a loja utiliza contrato nas vendas.");
       setSuccessText(null);
@@ -10213,7 +12214,7 @@ export default function ConfiguracoesPage() {
     }
 
     if (draft.enabled === "Sim") {
-      if (!cleanText(draft.applicability_mode)) {
+      if (!["sempre", "depende", "opcional"].includes(draft.applicability_mode)) {
         setErrorText("Defina quando o contrato é usado pela loja.");
         setSuccessText(null);
         return;
@@ -10250,11 +12251,29 @@ export default function ConfiguracoesPage() {
       }
     }
 
-    setSavedContractExperience(draft);
+    try {
+      const savedExperiencePolicies = await upsertSettingsExperiencePolicies({
+        contract_usage_policy: pickDraftFields(draft, CONTRACT_EXPERIENCE_KEYS),
+      });
+      const nextSavedContractExperience =
+        applySettingsExperiencePoliciesToContractDraft(
+          createEmptyContractExperienceDraft(),
+          savedExperiencePolicies,
+        );
+      setContractExperienceDraft(nextSavedContractExperience);
+      setSavedContractExperience(nextSavedContractExperience);
+    } catch (error: any) {
+      setErrorText(
+        error?.message ??
+          "Nao foi possivel salvar as regras canonicas de contrato.",
+      );
+      setSuccessText(null);
+      return;
+    }
     setErrorText(null);
     setSuccessText("Regras de uso do contrato atualizadas.");
     setIsContractPolicyEditing(false);
-  }, [contractExperienceDraft]);
+  }, [contractExperienceDraft, upsertSettingsExperiencePolicies]);
 
   useEffect(() => {
     setCommercialWhatsappDraft(cleanText(answers.commercial_whatsapp));
@@ -11923,8 +13942,8 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Preços"
             description="Defina o que a IA pode informar quando um cliente pergunta preço e quais informações ela precisa entender quando o valor depende do projeto."
-            tone={commercialAiSettings ? "blue" : "yellow"}
-            status={commercialAiSettings ? "Completo" : "Precisa de atenção"}
+            tone={commercialAiSettings?.price_policy_configured_at ? "blue" : "yellow"}
+            status={commercialAiSettings?.price_policy_configured_at ? "Completo" : "Precisa de atenção"}
             className={commercialEditTarget === "ai_price" ? "xl:col-span-2" : ""}
             actions={commercialEditTarget === "ai_price" ? <><button type="button" onClick={() => void handleCommercialEditSave()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={handleCommercialEditCancel} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialEditTarget("ai_price"); setIsCommercialEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
@@ -12038,30 +14057,30 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Entradas e liberação do pedido"
             description="Defina quando a entrada e o restante do valor precisam estar pagos e quais etapas do pedido só podem ser liberadas depois da confirmação do pagamento."
-            tone={cleanText(savedCommercialExperience.balance_due_trigger) || savedCommercialExperience.payment_blocking_actions.length ? "blue" : "yellow"}
-            status={cleanText(savedCommercialExperience.balance_due_trigger) || savedCommercialExperience.payment_blocking_actions.length ? "Completo" : "Precisa de atenção"}
+            tone={entryAndReleaseConfigured ? "blue" : "yellow"}
+            status={entryAndReleaseConfigured ? "Completo" : "Precisa de atenção"}
             className={commercialExperienceEditTarget === "payment_blocks" ? "xl:col-span-2" : ""}
             actions={commercialExperienceEditTarget === "payment_blocks" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("payment_blocks")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget("payment_blocks"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
-            {commercialExperienceEditTarget === "payment_blocks" ? <div className="space-y-5"><div className="rounded-2xl border border-gray-200 bg-gray-50/50 p-4"><div className="mb-3 text-sm font-semibold text-gray-950">Entrada</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja exige entrada em algum tipo de venda?</div><ChoiceButtonGroup value={commercialDraft.down_payment_mode} onChange={(value) => handleCommercialDraftChange("down_payment_mode", value)} options={DOWN_PAYMENT_MODE_OPTIONS} /></div>{["optional", "required"].includes(commercialDraft.down_payment_mode) ? <div className="mt-4 space-y-3"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a entrada é calculada?</div><ChoiceButtonGroup value={commercialDraft.down_payment_value_type} onChange={(value) => handleCommercialDraftChange("down_payment_value_type", value)} options={DOWN_PAYMENT_VALUE_TYPE_OPTIONS} /></div>{commercialDraft.down_payment_value_type === "percent" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual percentual da venda?</span><input value={commercialDraft.down_payment_percent} onChange={(e) => handleCommercialDraftChange("down_payment_percent", formatStorePaymentPercentInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}{commercialDraft.down_payment_value_type === "fixed" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual valor fixo? (R$)</span><input value={commercialDraft.down_payment_amount} onChange={(e) => handleCommercialDraftChange("down_payment_amount", formatStorePaymentCurrencyInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}{commercialDraft.down_payment_value_type === "case_by_case" ? <RequiredOperationDetailField label="Como a entrada é definida quando varia conforme a venda?" value={commercialExperienceDraft.down_payment_case_rule} onChange={(value) => updateCommercialExperienceDraft("down_payment_case_rule", value)} placeholder="Explique de quais fatores depende a entrada." /> : null}<div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se a loja exigir entrada, quando ela precisa estar paga?</div><ChoiceButtonGroup value={commercialExperienceDraft.entry_due_trigger} onChange={(value) => updateCommercialExperienceDraft("entry_due_trigger", value)} options={[{ value: "fechamento", label: "No fechamento da venda" }, { value: "antes_pedido", label: "Antes de encomendar o produto" }, { value: "antes_agendar", label: "Antes de agendar instalação" }, { value: "antes_iniciar", label: "Antes de iniciar instalação" }, { value: "outro", label: "Outro momento" }]} />{commercialExperienceDraft.entry_due_trigger === "outro" ? <RequiredOperationDetailField label="Quando a entrada precisa estar paga?" value={commercialExperienceDraft.entry_due_other} onChange={(value) => updateCommercialExperienceDraft("entry_due_other", value)} placeholder="Explique o momento em que a entrada precisa estar confirmada." /> : null}</div></div> : <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">Como a loja não exige entrada, as próximas regras deste bloco tratam apenas do restante do pagamento e da liberação do pedido.</div>}</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando o restante do valor precisa estar pago?</div><ChoiceButtonGroup value={commercialExperienceDraft.balance_due_trigger} onChange={(value) => updateCommercialExperienceDraft("balance_due_trigger", value)} options={[{ value: "fechamento", label: "No fechamento da venda" }, { value: "antes_entrega", label: "Antes da entrega" }, { value: "antes_retirada", label: "Antes da retirada" }, { value: "antes_instalacao", label: "Antes de iniciar instalação" }, { value: "apos_instalacao", label: "Após a instalação" }, { value: "parcelas", label: "Conforme as parcelas acordadas" }, { value: "outro", label: "Outro momento" }]} />{commercialExperienceDraft.balance_due_trigger === "outro" ? <RequiredOperationDetailField label="Quando o restante precisa estar pago?" value={commercialExperienceDraft.balance_due_other} onChange={(value) => updateCommercialExperienceDraft("balance_due_other", value)} placeholder="Explique o momento ou regra de vencimento do saldo." /> : null}</div><div><div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Enquanto houver um pagamento obrigatório pendente, quais etapas do pedido devem ficar bloqueadas?</div><p className="mb-2 text-xs leading-5 text-gray-500">Marque as etapas que só podem ser liberadas depois da confirmação do pagamento. Se nenhuma delas depender disso, selecione a opção correspondente.</p><MultiSelectBoxGroup values={commercialExperienceDraft.payment_blocking_actions} onToggle={(value) => toggleCommercialExperienceArrayValue("payment_blocking_actions", value)} options={PAYMENT_BLOCKING_ACTION_OPTIONS} />{commercialExperienceDraft.payment_blocking_actions.includes("outro") ? <RequiredOperationDetailField label="Qual outra ação deve ficar bloqueada?" value={commercialExperienceDraft.payment_blocking_other} onChange={(value) => updateCommercialExperienceDraft("payment_blocking_other", value)} placeholder="Especifique a ação que não pode avançar." /> : null}</div></div> : <SummaryList items={buildBulletRows([{ label: "A loja exige entrada", value: optionLabel(commercialDraft.down_payment_mode, DOWN_PAYMENT_MODE_OPTIONS) || "Não definido" }, { label: "Quando a entrada precisa estar paga", value: commercialDraft.down_payment_mode === "disabled" ? "Não se aplica" : savedCommercialExperience.entry_due_trigger ? optionLabel(savedCommercialExperience.entry_due_trigger, [{ value: "fechamento", label: "No fechamento" }, { value: "antes_pedido", label: "Antes de encomendar" }, { value: "antes_agendar", label: "Antes de agendar instalação" }, { value: "antes_iniciar", label: "Antes de iniciar instalação" }, { value: "outro", label: savedCommercialExperience.entry_due_other || "Outro momento" }]) : "Não definido" }, { label: "Saldo precisa estar pago", value: savedCommercialExperience.balance_due_trigger ? optionLabel(savedCommercialExperience.balance_due_trigger, [{ value: "fechamento", label: "No fechamento" }, { value: "antes_entrega", label: "Antes da entrega" }, { value: "antes_retirada", label: "Antes da retirada" }, { value: "antes_instalacao", label: "Antes da instalação" }, { value: "apos_instalacao", label: "Após a instalação" }, { value: "parcelas", label: "Conforme parcelas" }, { value: "outro", label: savedCommercialExperience.balance_due_other || "Outro momento" }]) : "Não definido" }, { label: "Ações bloqueadas", value: savedCommercialExperience.payment_blocking_actions.length ? `${savedCommercialExperience.payment_blocking_actions.length} ação(ões)` : "Nenhuma definida" }])} />}
+            {commercialExperienceEditTarget === "payment_blocks" ? <div className="space-y-5"><div className="rounded-2xl border border-gray-200 bg-gray-50/50 p-4"><div className="mb-3 text-sm font-semibold text-gray-950">Entrada</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A loja exige entrada em algum tipo de venda?</div><ChoiceButtonGroup value={commercialDraft.down_payment_mode} onChange={(value) => handleCommercialDraftChange("down_payment_mode", value)} options={DOWN_PAYMENT_MODE_OPTIONS} /></div>{["optional", "required"].includes(commercialDraft.down_payment_mode) ? <div className="mt-4 space-y-3"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a entrada é calculada?</div><ChoiceButtonGroup value={commercialDraft.down_payment_value_type} onChange={(value) => handleCommercialDraftChange("down_payment_value_type", value)} options={DOWN_PAYMENT_VALUE_TYPE_OPTIONS} /></div>{commercialDraft.down_payment_value_type === "percent" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual percentual da venda?</span><input value={commercialDraft.down_payment_percent} onChange={(e) => handleCommercialDraftChange("down_payment_percent", formatStorePaymentPercentInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}{commercialDraft.down_payment_value_type === "fixed" ? <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual valor fixo? (R$)</span><input value={commercialDraft.down_payment_amount} onChange={(e) => handleCommercialDraftChange("down_payment_amount", formatStorePaymentCurrencyInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}{commercialDraft.down_payment_value_type === "case_by_case" ? <RequiredOperationDetailField label="Como a entrada é definida quando varia conforme a venda?" value={commercialExperienceDraft.down_payment_case_rule} onChange={(value) => updateCommercialExperienceDraft("down_payment_case_rule", value)} placeholder="Explique de quais fatores depende a entrada." /> : null}<div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se a loja exigir entrada, quando ela precisa estar paga?</div><ChoiceButtonGroup value={commercialExperienceDraft.entry_due_trigger} onChange={(value) => updateCommercialExperienceDraft("entry_due_trigger", value)} options={[{ value: "fechamento", label: "No fechamento da venda" }, { value: "antes_pedido", label: "Antes de encomendar o produto" }, { value: "antes_agendar", label: "Antes de agendar instalação" }, { value: "antes_iniciar", label: "Antes de iniciar instalação" }, { value: "outro", label: "Outro momento" }]} />{commercialExperienceDraft.entry_due_trigger === "outro" ? <RequiredOperationDetailField label="Quando a entrada precisa estar paga?" value={commercialExperienceDraft.entry_due_other} onChange={(value) => updateCommercialExperienceDraft("entry_due_other", value)} placeholder="Explique o momento em que a entrada precisa estar confirmada." /> : null}</div></div> : <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">Como a loja não exige entrada, as próximas regras deste bloco tratam apenas do restante do pagamento e da liberação do pedido.</div>}</div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando o restante do valor precisa estar pago?</div><ChoiceButtonGroup value={commercialExperienceDraft.balance_due_trigger} onChange={(value) => updateCommercialExperienceDraft("balance_due_trigger", value)} options={[{ value: "fechamento", label: "No fechamento da venda" }, { value: "antes_entrega", label: "Antes da entrega" }, { value: "antes_retirada", label: "Antes da retirada" }, { value: "antes_instalacao", label: "Antes de iniciar instalação" }, { value: "apos_instalacao", label: "Após a instalação" }, { value: "parcelas", label: "Conforme as parcelas acordadas" }, { value: "outro", label: "Outro momento" }]} />{commercialExperienceDraft.balance_due_trigger === "outro" ? <RequiredOperationDetailField label="Quando o restante precisa estar pago?" value={commercialExperienceDraft.balance_due_other} onChange={(value) => updateCommercialExperienceDraft("balance_due_other", value)} placeholder="Explique o momento ou regra de vencimento do saldo." /> : null}</div><div><div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Enquanto houver um pagamento obrigatório pendente, quais etapas do pedido devem ficar bloqueadas?</div><p className="mb-2 text-xs leading-5 text-gray-500">Marque as etapas que só podem ser liberadas depois da confirmação do pagamento. Se nenhuma delas depender disso, selecione a opção correspondente.</p><MultiSelectBoxGroup values={commercialExperienceDraft.payment_blocking_actions} onToggle={(value) => toggleCommercialExperienceArrayValue("payment_blocking_actions", value)} options={PAYMENT_BLOCKING_ACTION_OPTIONS} />{commercialExperienceDraft.payment_blocking_actions.includes("outro") ? <RequiredOperationDetailField label="Qual outra ação deve ficar bloqueada?" value={commercialExperienceDraft.payment_blocking_other} onChange={(value) => updateCommercialExperienceDraft("payment_blocking_other", value)} placeholder="Especifique a ação que não pode avançar." /> : null}</div></div> : <SummaryList items={buildBulletRows([{ label: "A loja exige entrada", value: optionLabel(commercialDraft.down_payment_mode, DOWN_PAYMENT_MODE_OPTIONS) || "Não definido" }, { label: "Quando a entrada precisa estar paga", value: cleanText(paymentSettings?.down_payment_mode) === "none" ? "Não se aplica" : savedCommercialExperience.entry_due_trigger ? optionLabel(savedCommercialExperience.entry_due_trigger, [{ value: "fechamento", label: "No fechamento" }, { value: "antes_pedido", label: "Antes de encomendar" }, { value: "antes_agendar", label: "Antes de agendar instalação" }, { value: "antes_iniciar", label: "Antes de iniciar instalação" }, { value: "outro", label: savedCommercialExperience.entry_due_other || "Outro momento" }]) : "Não definido" }, { label: "Saldo precisa estar pago", value: savedCommercialExperience.balance_due_trigger ? optionLabel(savedCommercialExperience.balance_due_trigger, [{ value: "fechamento", label: "No fechamento" }, { value: "antes_entrega", label: "Antes da entrega" }, { value: "antes_retirada", label: "Antes da retirada" }, { value: "antes_instalacao", label: "Antes da instalação" }, { value: "apos_instalacao", label: "Após a instalação" }, { value: "parcelas", label: "Conforme parcelas" }, { value: "outro", label: savedCommercialExperience.balance_due_other || "Outro momento" }]) : "Não definido" }, { label: "Ações bloqueadas", value: savedCommercialExperience.payment_blocking_actions.length ? `${savedCommercialExperience.payment_blocking_actions.length} ação(ões)` : "Nenhuma definida" }])} />}
           </SectionBlock>
 
           <SectionBlock
             title="Descontos e aprovação"
             description="Defina quanto desconto pode ser usado numa negociação e quando uma pessoa da loja precisa aprovar."
-            tone={discountSettings ? "blue" : "yellow"}
-            status={discountSettings ? "Completo" : "Precisa de atenção"}
+            tone={discountCardConfigured ? "blue" : "yellow"}
+            status={discountCardConfigured ? "Completo" : "Precisa de atenção"}
             className={isDiscountEditing ? "xl:col-span-2" : ""}
             actions={isDiscountEditing ? <><button type="button" onClick={() => void handleDiscountEditSave()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { handleDiscountEditCancel(); setCommercialExperienceDraft(savedCommercialExperience); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setIsDiscountEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
-            {isDiscountEditing ? <div className="space-y-5"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA está autorizada a negociar dando algum tipo de desconto?</div><ChoiceButtonGroup value={(Number.parseFloat(String(discountDraft.max_discount_percent || "0").replace(",", ".")) > 0 || Number.parseFloat(String(discountDraft.default_discount_percent || "0").replace(",", ".")) > 0) ? "Sim" : "Não"} onChange={handleDiscountNegotiationEnabledChange} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{(Number.parseFloat(String(discountDraft.max_discount_percent || "0").replace(",", ".")) > 0 || Number.parseFloat(String(discountDraft.default_discount_percent || "0").replace(",", ".")) > 0) ? <div className="space-y-5"><div className="grid items-start gap-4 md:grid-cols-2"><label className="flex h-full flex-col"><span className="min-h-8 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual desconto inicial a IA pode oferecer? (%)</span><input value={discountDraft.default_discount_percent} onChange={(e) => handleDiscountDraftChange("default_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /><span className="mt-1.5 block text-xs leading-5 text-gray-500">A IA só usa esse percentual quando houver motivo real para negociar; ele não é oferecido automaticamente.</span></label><label className="flex h-full flex-col"><span className="min-h-8 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual é o limite máximo de desconto? (%)</span><input value={discountDraft.max_discount_percent} onChange={(e) => handleDiscountDraftChange("max_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /><span className="mt-1.5 block text-xs leading-5 text-gray-500">Acima deste limite, a IA não confirma um desconto usando a regra normal da loja.</span></label></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dentro desse limite, a IA pode confirmar descontos sozinha?</div><ChoiceButtonGroup value={discountDraft.discount_autonomy_mode} onChange={(value) => handleDiscountDraftChange("discount_autonomy_mode", value)} options={[{ value: "within_limit", label: "Sim, dentro do limite permitido" }, { value: "guided", label: "Sim, mas deve negociar aos poucos" }, { value: "approval_required", label: "Não. Sempre precisa de aprovação" }]} /></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se o cliente pedir mais desconto do que o limite, a IA pode consultar uma pessoa da loja?</div><ChoiceButtonGroup value={discountDraft.allow_ask_above_max_discount ? "Sim" : "Não"} onChange={(value) => handleDiscountDraftChange("allow_ask_above_max_discount", value === "Sim")} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /><p className="mt-2 text-xs leading-5 text-gray-500">Se marcar “Não”, a IA informa que não pode confirmar um desconto acima do limite e continua a venda normalmente dentro das condições permitidas. Isso não encerra a negociação.</p></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Vendas de valor alto têm uma regra de desconto diferente?</div><ChoiceButtonGroup value={discountDraft.high_value_enabled ? "Sim" : "Não"} onChange={(value) => handleDiscountDraftChange("high_value_enabled", value === "Sim")} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{discountDraft.high_value_enabled ? <div className="rounded-2xl border border-gray-200 p-4"><div className="grid gap-3 md:grid-cols-2"><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A partir de qual valor uma venda é considerada de valor alto? (R$)</span><input value={discountDraft.high_value_threshold_amount} onChange={(e) => handleDiscountDraftChange("high_value_threshold_amount", formatStoreDiscountMoneyInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual desconto pode ser usado nessas vendas? (%)</span><input value={discountDraft.high_value_discount_percent} onChange={(e) => handleDiscountDraftChange("high_value_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label></div><div className="mt-4"><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Esse desconto precisa de aprovação humana?</div><ChoiceButtonGroup value={commercialExperienceDraft.high_value_requires_human} onChange={(value) => updateCommercialExperienceDraft("high_value_requires_human", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não, pode seguir a regra acima" }]} /></div></div> : null}</div> : <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">Com esta opção desligada, a IA não negocia usando desconto. Se um cliente insistir, o caso segue para análise humana.</div>}</div> : <SummaryList items={discountItems} />}
+            {isDiscountEditing ? <div className="space-y-5"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA está autorizada a negociar dando algum tipo de desconto?</div><ChoiceButtonGroup value={(Number.parseFloat(String(discountDraft.max_discount_percent || "0").replace(",", ".")) > 0 || Number.parseFloat(String(discountDraft.default_discount_percent || "0").replace(",", ".")) > 0) ? "Sim" : "Não"} onChange={handleDiscountNegotiationEnabledChange} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{(Number.parseFloat(String(discountDraft.max_discount_percent || "0").replace(",", ".")) > 0 || Number.parseFloat(String(discountDraft.default_discount_percent || "0").replace(",", ".")) > 0) ? <div className="space-y-5"><div className="grid items-start gap-4 md:grid-cols-2"><label className="flex h-full flex-col"><span className="min-h-8 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual desconto inicial a IA pode oferecer? (%)</span><input value={discountDraft.default_discount_percent} onChange={(e) => handleDiscountDraftChange("default_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /><span className="mt-1.5 block text-xs leading-5 text-gray-500">A IA só usa esse percentual quando houver motivo real para negociar; ele não é oferecido automaticamente.</span></label><label className="flex h-full flex-col"><span className="min-h-8 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual é o limite máximo de desconto? (%)</span><input value={discountDraft.max_discount_percent} onChange={(e) => handleDiscountDraftChange("max_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /><span className="mt-1.5 block text-xs leading-5 text-gray-500">Acima deste limite, a IA não confirma um desconto usando a regra normal da loja.</span></label></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dentro desse limite, a IA pode confirmar descontos sozinha?</div><ChoiceButtonGroup value={discountDraft.discount_autonomy_mode} onChange={(value) => handleDiscountDraftChange("discount_autonomy_mode", value)} options={[{ value: "within_policy_autonomous", label: "Sim, dentro do limite permitido" }, { value: "default_step_autonomous", label: "Sim, mas deve negociar aos poucos" }, { value: "approval_required", label: "Não. Sempre precisa de aprovação" }]} /></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se o cliente pedir mais desconto do que o limite, a IA pode consultar uma pessoa da loja?</div><ChoiceButtonGroup value={discountDraft.allow_ask_above_max_discount ? "Sim" : "Não"} onChange={(value) => handleDiscountDraftChange("allow_ask_above_max_discount", value === "Sim")} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /><p className="mt-2 text-xs leading-5 text-gray-500">Se marcar “Não”, a IA informa que não pode confirmar um desconto acima do limite e continua a venda normalmente dentro das condições permitidas. Isso não encerra a negociação.</p></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Vendas de valor alto têm uma regra de desconto diferente?</div><ChoiceButtonGroup value={discountDraft.high_value_enabled ? "Sim" : "Não"} onChange={(value) => handleDiscountDraftChange("high_value_enabled", value === "Sim")} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{discountDraft.high_value_enabled ? <div className="rounded-2xl border border-gray-200 p-4"><div className="grid gap-3 md:grid-cols-2"><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A partir de qual valor uma venda é considerada de valor alto? (R$)</span><input value={discountDraft.high_value_threshold_amount} onChange={(e) => handleDiscountDraftChange("high_value_threshold_amount", formatStoreDiscountMoneyInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual desconto pode ser usado nessas vendas? (%)</span><input value={discountDraft.high_value_discount_percent} onChange={(e) => handleDiscountDraftChange("high_value_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label></div><div className="mt-4"><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Esse desconto precisa de aprovação humana?</div><ChoiceButtonGroup value={commercialExperienceDraft.high_value_requires_human} onChange={(value) => updateCommercialExperienceDraft("high_value_requires_human", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não, pode seguir a regra acima" }]} /></div></div> : null}</div> : <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">Com esta opção desligada, a IA não negocia usando desconto. Se um cliente insistir, o caso segue para análise humana.</div>}</div> : <SummaryList items={discountItems} />}
           </SectionBlock>
 
           <SectionBlock
             title="Orçamento"
             description="Defina as regras padrão dos novos orçamentos e como uma visita técnica obrigatória interfere no orçamento inicial e no orçamento final."
-            tone={cleanText(savedCommercialExperience.quote_validity) && cleanText(savedCommercialExperience.quote_customer_note_enabled) && cleanText(savedCommercialExperience.quote_internal_note_enabled) && cleanText(savedCommercialExperience.quote_preliminary_before_visit) && cleanText(savedCommercialExperience.quote_definitive_requires_visit_result) ? "blue" : "yellow"}
-            status={cleanText(savedCommercialExperience.quote_validity) && cleanText(savedCommercialExperience.quote_customer_note_enabled) && cleanText(savedCommercialExperience.quote_internal_note_enabled) && cleanText(savedCommercialExperience.quote_preliminary_before_visit) && cleanText(savedCommercialExperience.quote_definitive_requires_visit_result) ? "Completo" : "Precisa de atenção"}
+            tone={quoteCardConfigured ? "blue" : "yellow"}
+            status={quoteCardConfigured ? "Completo" : "Precisa de atenção"}
             className={commercialExperienceEditTarget === "quote" ? "xl:col-span-2" : ""}
             actions={commercialExperienceEditTarget === "quote" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("quote")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget("quote"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
@@ -12098,8 +14117,8 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Pós-venda"
             description="Defina por quanto tempo a loja acompanha o cliente depois da venda e o que costuma verificar nesse contato."
-            tone={cleanText(savedCommercialExperience.post_sale_duration) && cleanText(savedCommercialExperience.post_sale_start) ? "blue" : "yellow"}
-            status={cleanText(savedCommercialExperience.post_sale_duration) && cleanText(savedCommercialExperience.post_sale_start) ? "Completo" : "Precisa de atenção"}
+            tone={postSaleCardConfigured ? "blue" : "yellow"}
+            status={postSaleCardConfigured ? "Completo" : "Precisa de atenção"}
             className={commercialExperienceEditTarget === "post_sale" ? "xl:col-span-2" : ""}
             actions={commercialExperienceEditTarget === "post_sale" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("post_sale")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget("post_sale"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
@@ -12109,8 +14128,8 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Garantia"
             description="Defina se a loja oferece alguma garantia própria além da garantia do fabricante e em quais situações ela se aplica."
-            tone={cleanText(savedCommercialExperience.warranty_extra_mode) ? "blue" : "yellow"}
-            status={cleanText(savedCommercialExperience.warranty_extra_mode) ? "Completo" : "Precisa de atenção"}
+            tone={warrantyCardConfigured ? "blue" : "yellow"}
+            status={warrantyCardConfigured ? "Completo" : "Precisa de atenção"}
             className={commercialExperienceEditTarget === "warranty" ? "xl:col-span-2" : ""}
             actions={commercialExperienceEditTarget === "warranty" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("warranty")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget("warranty"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
@@ -12120,8 +14139,8 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Cancelamento, rescisão e reembolso"
             description="Registre somente regras próprias e já validadas da loja. A IA pode explicar a política cadastrada, mas pedidos concretos, cálculos e decisões finais continuam no fluxo humano correto."
-            tone={savedCommercialExperience.cancellation_policy_exists === "Não" || (savedCommercialExperience.cancellation_policy_exists === "Sim" && savedCommercialExperience.cancellation_rule_situations.length > 0) ? "blue" : "yellow"}
-            status={savedCommercialExperience.cancellation_policy_exists === "Não" || (savedCommercialExperience.cancellation_policy_exists === "Sim" && savedCommercialExperience.cancellation_rule_situations.length > 0) ? "Completo" : "Precisa de atenção"}
+            tone={isCancellationPolicyComplete(savedCommercialExperience) ? "blue" : "yellow"}
+            status={isCancellationPolicyComplete(savedCommercialExperience) ? "Completo" : "Precisa de atenção"}
             className={commercialExperienceEditTarget === "cancellation" ? "xl:col-span-2" : ""}
             actions={commercialExperienceEditTarget === "cancellation" ? <><button type="button" onClick={() => void saveCommercialExperienceCard("cancellation")} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setCommercialExperienceEditTarget("cancellation"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
@@ -12624,8 +14643,8 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Marca e identidade"
             description="Defina a identidade visual usada nos documentos gerados pelo ZION sem duplicar os dados básicos da loja que já ficam em Geral."
-            tone={hasStoredLogo ? "blue" : "yellow"}
-            status={hasStoredLogo ? "Logo cadastrada" : "Precisa de atenção"}
+            tone={isBrandIdentityComplete ? "blue" : "yellow"}
+            status={isBrandIdentityComplete ? "Completo" : "Precisa de atenção"}
             className={isBrandEditing ? "xl:col-span-2" : ""}
             actions={isBrandEditing ? <><button type="button" onClick={() => void handleBrandSettingsSave()} disabled={savingStoreLogo} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:opacity-40">Salvar</button><button type="button" onClick={handleBrandSettingsCancel} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setBrandExperienceDraft(savedBrandExperience); setIsBrandEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
@@ -12691,10 +14710,10 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Uso do contrato"
             description="Defina se a loja usa contrato, em quais vendas ele é necessário, quais formatos aceita e antes de qual etapa precisa estar assinado."
-            tone={savedContractExperience.enabled === "Não" || (savedContractExperience.enabled === "Sim" && cleanText(savedContractExperience.applicability_mode) && savedContractExperience.formats.length > 0 && savedContractExperience.signed_before.length > 0) ? "blue" : "yellow"}
-            status={savedContractExperience.enabled === "Não" || (savedContractExperience.enabled === "Sim" && cleanText(savedContractExperience.applicability_mode) && savedContractExperience.formats.length > 0 && savedContractExperience.signed_before.length > 0) ? "Completo" : "Precisa de atenção"}
+            tone={isContractUsagePolicyComplete(readRecord(settingsExperiencePolicies?.contract_usage_policy)) ? "blue" : "yellow"}
+            status={isContractUsagePolicyComplete(readRecord(settingsExperiencePolicies?.contract_usage_policy)) ? "Completo" : "Precisa de atenção"}
             className={isContractPolicyEditing ? "xl:col-span-2" : ""}
-            actions={isContractPolicyEditing ? <><button type="button" onClick={handleContractPolicySave} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={handleContractPolicyCancel} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setContractExperienceDraft(savedContractExperience); setIsContractPolicyEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+            actions={isContractPolicyEditing ? <><button type="button" onClick={() => void handleContractPolicySave()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={handleContractPolicyCancel} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setContractExperienceDraft(savedContractExperience); setIsContractPolicyEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
             {isContractPolicyEditing ? (
               <div className="space-y-5">
@@ -12759,8 +14778,8 @@ export default function ConfiguracoesPage() {
             ) : <SummaryList items={buildBulletRows([
               { label: "Usa contrato", value: savedContractExperience.enabled || "Não definido" },
               { label: "Quando usa", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.applicability_mode ? optionLabel(savedContractExperience.applicability_mode, [{ value: "sempre", label: "Obrigatório em todas as vendas" }, { value: "depende", label: "É obrigatório apenas em algumas vendas" }, { value: "opcional", label: "Opcional" }]) : "Não definido") : savedContractExperience.enabled === "Não" ? "Não se aplica" : "Não definido" },
-              { label: "Formatos", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.formats.length ? joinSelectedLabels(savedContractExperience.formats, CONTRACT_FORMAT_OPTIONS) : "Não definidos") : "Não se aplica" },
-              { label: "Precisa estar assinado antes de", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.signed_before.length ? joinSelectedLabels(savedContractExperience.signed_before, CONTRACT_SIGNED_BEFORE_OPTIONS, savedContractExperience.signed_before_other) : "Não definido") : "Não se aplica" },
+              { label: "Formatos", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.formats.length ? joinSelectedLabels(savedContractExperience.formats, CONTRACT_FORMAT_OPTIONS) : "Não definidos") : savedContractExperience.enabled === "Não" ? "Não se aplica" : "Não definido" },
+              { label: "Precisa estar assinado antes de", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.signed_before.length ? joinSelectedLabels(savedContractExperience.signed_before, CONTRACT_SIGNED_BEFORE_OPTIONS, savedContractExperience.signed_before_other) : "Não definido") : savedContractExperience.enabled === "Não" ? "Não se aplica" : "Não definido" },
             ])} />}
           </SectionBlock>
 

@@ -69,7 +69,8 @@ export async function authenticateContractRequest() {
   const { data: memberships, error: membershipError } = await supabase
     .from("memberships")
     .select("organization_id")
-    .eq("user_id", user.id);
+    .eq("user_id", user.id)
+    .eq("is_active", true);
 
   if (membershipError) {
     throw new ContractAccessError(
@@ -92,6 +93,7 @@ export async function authenticateContractRequest() {
   return {
     user,
     supabase,
+    sessionSupabase,
     organizationIds,
   };
 }

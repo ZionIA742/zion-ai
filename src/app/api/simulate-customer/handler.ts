@@ -41,6 +41,8 @@ type PublicErrorPayload = {
   message: string;
   customerMessageSaved?: boolean;
   aiReplySaved?: boolean;
+  aiErrorCode?: string;
+  diagnosticCode?: string;
 };
 
 type PrivilegedClient = SupabaseClient;
@@ -103,7 +105,10 @@ function createPublicError(
   status: number,
   error: string,
   message: string,
-  details?: Pick<PublicErrorPayload, "customerMessageSaved" | "aiReplySaved">,
+  details?: Pick<
+    PublicErrorPayload,
+    "customerMessageSaved" | "aiReplySaved" | "aiErrorCode" | "diagnosticCode"
+  >,
 ) {
   return jsonNoStore(
     {
@@ -114,6 +119,14 @@ function createPublicError(
     },
     status,
   );
+}
+
+function sanitizeDiagnosticCode(value: unknown, fallback: string) {
+  const code = String(value || "")
+    .trim()
+    .toUpperCase();
+
+  return /^[A-Z][A-Z0-9_]{0,79}$/.test(code) ? code : fallback;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -364,6 +377,16 @@ export function createSimulateCustomerPostHandler(
 
         if (operationalRoute.handled) {
           if (!operationalRoute.ok) {
+            const diagnosticCode = sanitizeDiagnosticCode(
+              operationalRoute.reason || operationalRoute.error,
+              "OPERATIONAL_REPLY_ROUTING_FAILED",
+            );
+            console.warn("[simulate-customer] operational reply routing unavailable", {
+              organizationId: access.organizationId,
+              storeId: access.storeId,
+              conversationId: conversation.id,
+              diagnosticCode,
+            });
             return createPublicError(
               409,
               "SIMULATE_CUSTOMER_AI_REPLY_UNAVAILABLE",
@@ -371,6 +394,7 @@ export function createSimulateCustomerPostHandler(
               {
                 customerMessageSaved: true,
                 aiReplySaved: false,
+                diagnosticCode,
               },
             );
           }
@@ -386,6 +410,12 @@ export function createSimulateCustomerPostHandler(
           );
         }
       } catch {
+        console.warn("[simulate-customer] operational reply routing exception", {
+          organizationId: access.organizationId,
+          storeId: access.storeId,
+          conversationId: conversation.id,
+          diagnosticCode: "OPERATIONAL_REPLY_ROUTING_EXCEPTION",
+        });
         return createPublicError(
           409,
           "SIMULATE_CUSTOMER_AI_REPLY_UNAVAILABLE",
@@ -393,6 +423,7 @@ export function createSimulateCustomerPostHandler(
           {
             customerMessageSaved: true,
             aiReplySaved: false,
+            diagnosticCode: "OPERATIONAL_REPLY_ROUTING_EXCEPTION",
           },
         );
       }
@@ -415,6 +446,12 @@ export function createSimulateCustomerPostHandler(
         conversationId: conversation.id,
       });
     } catch {
+      console.warn("[simulate-customer] sales ai flow unavailable", {
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        conversationId: conversation.id,
+        aiErrorCode: "AI_FLOW_EXECUTION_FAILED",
+      });
       return createPublicError(
         409,
         "SIMULATE_CUSTOMER_AI_REPLY_UNAVAILABLE",
@@ -422,11 +459,19 @@ export function createSimulateCustomerPostHandler(
         {
           customerMessageSaved: true,
           aiReplySaved: false,
+          aiErrorCode: "AI_FLOW_EXECUTION_FAILED",
         },
       );
     }
 
     if (!aiResult.ok) {
+      const aiErrorCode = sanitizeDiagnosticCode(aiResult.error, "AI_FLOW_FAILED");
+      console.warn("[simulate-customer] sales ai flow unavailable", {
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        conversationId: conversation.id,
+        aiErrorCode,
+      });
       return createPublicError(
         409,
         "SIMULATE_CUSTOMER_AI_REPLY_UNAVAILABLE",
@@ -434,6 +479,7 @@ export function createSimulateCustomerPostHandler(
         {
           customerMessageSaved: true,
           aiReplySaved: false,
+          aiErrorCode,
         },
       );
     }

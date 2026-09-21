@@ -77,6 +77,7 @@ type CommercialTaskRow = {
   id: string;
   organization_id: string;
   store_id: string | null;
+  commercial_opportunity_id: string | null;
   task_type: string;
   status: string | null;
   priority: string | null;
@@ -95,6 +96,7 @@ type AppointmentRow = {
   id: string;
   organization_id: string;
   store_id: string | null;
+  commercial_opportunity_id: string | null;
   lead_id: string | null;
   conversation_id: string | null;
   appointment_type: string | null;
@@ -105,6 +107,20 @@ type AppointmentRow = {
   notes: string | null;
   created_at: string | null;
   updated_at: string | null;
+};
+
+type QualificationFactsRow = {
+  organization_id: string;
+  store_id: string;
+  commercial_opportunity_id: string;
+  known_facts: unknown;
+  missing_fact_groups: unknown;
+  conflicts: unknown;
+  provenance_summary: unknown;
+  can_ask_next_question: boolean | null;
+  known_fact_count: number | null;
+  missing_group_count: number | null;
+  conflict_count: number | null;
 };
 
 type OpportunityRow = {
@@ -118,6 +134,25 @@ type OpportunityRow = {
   created_at: string | null;
   updated_at: string | null;
 };
+
+type StoreGeneralAddressRow = {
+  has_public_address: boolean | null;
+  cep: string | null;
+  street: string | null;
+  number: string | null;
+  complement: string | null;
+  district: string | null;
+  city: string | null;
+  state: string | null;
+};
+
+const OPEN_COMMERCIAL_HANDOFF_STATUSES = [
+  "open",
+  "waiting_user_choice",
+  "waiting_customer_response",
+  "ready_to_execute",
+  "in_progress",
+];
 
 export async function GET(request: Request) {
   try {
@@ -397,6 +432,26 @@ export async function GET(request: Request) {
       );
     }
 
+    let storeGeneralAddress: StoreGeneralAddressRow | null = null;
+    if (leadData.store_id) {
+      const { data: addressData, error: addressError } = await sessionSupabase.rpc(
+        "read_store_general_address_settings_scoped",
+        {
+          p_organization_id: leadData.organization_id,
+          p_store_id: leadData.store_id,
+        }
+      );
+
+      if (addressError) {
+        console.warn("[lead-details] read_store_general_address_settings_scoped error:", {
+          message: addressError.message,
+        });
+      } else {
+        const addressRows = Array.isArray(addressData) ? (addressData as StoreGeneralAddressRow[]) : [];
+        storeGeneralAddress = addressRows[0] || null;
+      }
+    }
+
     const conversationId = contextResult.conversation?.id || null;
     const conversation =
       conversationId !== null
@@ -407,6 +462,7 @@ export async function GET(request: Request) {
     let messages: MessageRow[] = [];
     let commercialTasks: CommercialTaskRow[] = [];
     let appointments: AppointmentRow[] = [];
+    let qualificationFacts: QualificationFactsRow | null = null;
 
     if (conversation) {
       const { data: messagesData, error: messagesError } = await supabase
@@ -431,94 +487,108 @@ export async function GET(request: Request) {
       messages = (messagesData || []) as MessageRow[];
     }
 
-    const tasksQuery = supabase
-      .from("store_assistant_operational_tasks")
-      .select(
-        "id, organization_id, store_id, task_type, status, priority, title, description, related_lead_id, related_conversation_id, customer_name, customer_phone, task_payload, created_at, updated_at"
-      )
-      .eq("organization_id", leadData.organization_id)
-      .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
-      .order("updated_at", { ascending: false })
-      .limit(10);
+    if (contextResult.selectedOpportunity?.id) {
+      const selectedOpportunityId = contextResult.selectedOpportunity.id;
 
-    if (leadData.store_id) {
-      tasksQuery.eq("store_id", leadData.store_id);
-    }
+      const tasksQuery = supabase
+        .from("store_assistant_operational_tasks")
+        .select(
+          "id, organization_id, store_id, commercial_opportunity_id, task_type, status, priority, title, description, related_lead_id, related_conversation_id, customer_name, customer_phone, task_payload, created_at, updated_at"
+        )
+        .eq("organization_id", leadData.organization_id)
+        .eq("commercial_opportunity_id", selectedOpportunityId)
+        .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
+        .in("status", OPEN_COMMERCIAL_HANDOFF_STATUSES)
+        .order("updated_at", { ascending: false })
+        .limit(10);
 
-    if (conversation) {
-      tasksQuery.or(
-        `related_lead_id.eq.${leadId},related_conversation_id.eq.${conversation.id}`
+      if (leadData.store_id) {
+        tasksQuery.eq("store_id", leadData.store_id);
+      }
+
+      const { data: commercialTasksData, error: commercialTasksError } =
+        await tasksQuery;
+
+      if (commercialTasksError) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "LOAD_COMMERCIAL_TASKS_FAILED",
+            message: commercialTasksError.message,
+          },
+          { status: 500 }
+        );
+      }
+
+      commercialTasks = Array.from(
+        new Map(
+          ((commercialTasksData || []) as CommercialTaskRow[]).map((task) => [
+            task.id,
+            task,
+          ])
+        ).values()
       );
-    } else {
-      tasksQuery.eq("related_lead_id", leadId);
-    }
 
-    const { data: commercialTasksData, error: commercialTasksError } =
-      await tasksQuery;
+      const appointmentsQuery = supabase
+        .from("store_appointments")
+        .select(
+          "id, organization_id, store_id, commercial_opportunity_id, lead_id, conversation_id, appointment_type, status, scheduled_start, scheduled_end, address_text, notes, created_at, updated_at"
+        )
+        .eq("organization_id", leadData.organization_id)
+        .eq("commercial_opportunity_id", selectedOpportunityId)
+        .order("updated_at", { ascending: false })
+        .limit(10);
 
-    if (commercialTasksError) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "LOAD_COMMERCIAL_TASKS_FAILED",
-          message: commercialTasksError.message,
-        },
-        { status: 500 }
+      if (leadData.store_id) {
+        appointmentsQuery.eq("store_id", leadData.store_id);
+      }
+
+      const { data: appointmentsData, error: appointmentsError } =
+        await appointmentsQuery;
+
+      if (appointmentsError) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "LOAD_APPOINTMENTS_FAILED",
+            message: appointmentsError.message,
+          },
+          { status: 500 }
+        );
+      }
+
+      appointments = Array.from(
+        new Map(
+          ((appointmentsData || []) as AppointmentRow[]).map((appointment) => [
+            appointment.id,
+            appointment,
+          ])
+        ).values()
       );
+
+      const { data: qualificationFactsData, error: qualificationFactsError } =
+        await supabase.rpc("read_commercial_opportunity_qualification_facts_by_system", {
+          p_organization_id: leadData.organization_id,
+          p_store_id: leadData.store_id,
+          p_commercial_opportunity_id: selectedOpportunityId,
+        });
+
+      if (qualificationFactsError) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "LOAD_QUALIFICATION_FACTS_FAILED",
+            message: qualificationFactsError.message,
+          },
+          { status: 500 }
+        );
+      }
+
+      const qualificationFactsRows = Array.isArray(qualificationFactsData)
+        ? (qualificationFactsData as QualificationFactsRow[])
+        : [];
+      qualificationFacts = qualificationFactsRows[0] || null;
     }
-
-    commercialTasks = Array.from(
-      new Map(
-        ((commercialTasksData || []) as CommercialTaskRow[]).map((task) => [
-          task.id,
-          task,
-        ])
-      ).values()
-    );
-
-    const appointmentsQuery = supabase
-      .from("store_appointments")
-      .select(
-        "id, organization_id, store_id, lead_id, conversation_id, appointment_type, status, scheduled_start, scheduled_end, address_text, notes, created_at, updated_at"
-      )
-      .eq("organization_id", leadData.organization_id)
-      .order("updated_at", { ascending: false })
-      .limit(10);
-
-    if (leadData.store_id) {
-      appointmentsQuery.eq("store_id", leadData.store_id);
-    }
-
-    if (conversation) {
-      appointmentsQuery.or(
-        `lead_id.eq.${leadId},conversation_id.eq.${conversation.id}`
-      );
-    } else {
-      appointmentsQuery.eq("lead_id", leadId);
-    }
-
-    const { data: appointmentsData, error: appointmentsError } =
-      await appointmentsQuery;
-
-    if (appointmentsError) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "LOAD_APPOINTMENTS_FAILED",
-          message: appointmentsError.message,
-        },
-        { status: 500 }
-      );
-    }
-
-    appointments = Array.from(
-      new Map(
-        ((appointmentsData || []) as AppointmentRow[]).map((appointment) => [
-          appointment.id,
-          appointment,
-        ])
-      ).values()
-    );
 
     return NextResponse.json({
       ok: true,
@@ -527,6 +597,8 @@ export async function GET(request: Request) {
       messages,
       commercialTasks,
       appointments,
+      qualificationFacts,
+      storeGeneralAddress,
       opportunities: contextResult.opportunities,
       selectedOpportunityId: contextResult.selectedOpportunity?.id || null,
       requiresOpportunitySelection: contextResult.requiresOpportunitySelection,

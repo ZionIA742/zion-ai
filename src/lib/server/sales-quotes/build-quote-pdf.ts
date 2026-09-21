@@ -7,6 +7,7 @@ import {
   type PDFPage,
 } from "pdf-lib";
 import type { QuoteSettings } from "./types";
+import { resolveStoreBrandPdfTheme } from "@/lib/server/store-brand-pdf-theme";
 
 type QuotePdfItem = {
   name: string | null;
@@ -22,6 +23,11 @@ export type BuildQuotePdfInput = {
   storeLogo?: {
     bytes: Uint8Array;
     mimeType: string;
+  } | null;
+  brandVisual?: {
+    primaryColor?: string | null;
+    secondaryColor?: string | null;
+    documentFooter?: string | null;
   } | null;
   quoteNumber: string;
   title: string | null;
@@ -268,6 +274,8 @@ function drawSectionCard(args: {
   font: PDFFont;
   boldFont: PDFFont;
   pdfDoc: PDFDocument;
+  panelColor?: ReturnType<typeof rgb>;
+  accentTextColor?: ReturnType<typeof rgb>;
 }) {
   const safeBody = String(args.body || "").trim();
   if (!safeBody) {
@@ -283,7 +291,7 @@ function drawSectionCard(args: {
     y: cursor.y - cardHeight,
     width: CONTENT_WIDTH,
     height: cardHeight,
-    color: COLOR_PANEL,
+    color: args.panelColor ?? COLOR_PANEL,
     borderWidth: 0.7,
     borderColor: COLOR_BORDER,
   });
@@ -293,7 +301,7 @@ function drawSectionCard(args: {
     y: cursor.y - 15,
     size: SMALL_FONT_SIZE,
     font: args.boldFont,
-    color: COLOR_ACCENT,
+    color: args.accentTextColor ?? COLOR_ACCENT,
   });
 
   let lineY = cursor.y - 30;
@@ -312,13 +320,18 @@ function drawSectionCard(args: {
   return cursor;
 }
 
-function drawItemsTableHeader(args: { cursor: Cursor; boldFont: PDFFont }) {
+function drawItemsTableHeader(args: {
+  cursor: Cursor;
+  boldFont: PDFFont;
+  panelColor?: ReturnType<typeof rgb>;
+  accentTextColor?: ReturnType<typeof rgb>;
+}) {
   args.cursor.page.drawRectangle({
     x: PAGE_MARGIN,
     y: args.cursor.y - 24,
     width: CONTENT_WIDTH,
     height: 24,
-    color: COLOR_PANEL_STRONG,
+    color: args.panelColor ?? COLOR_PANEL_STRONG,
     borderWidth: 0.7,
     borderColor: COLOR_BORDER,
   });
@@ -329,7 +342,7 @@ function drawItemsTableHeader(args: { cursor: Cursor; boldFont: PDFFont }) {
     y: headerY,
     size: SMALL_FONT_SIZE,
     font: args.boldFont,
-    color: COLOR_ACCENT,
+    color: args.accentTextColor ?? COLOR_ACCENT,
   });
 
   drawCenteredText({
@@ -340,7 +353,7 @@ function drawItemsTableHeader(args: { cursor: Cursor; boldFont: PDFFont }) {
     y: headerY,
     size: SMALL_FONT_SIZE,
     font: args.boldFont,
-    color: COLOR_ACCENT,
+    color: args.accentTextColor ?? COLOR_ACCENT,
   });
 
   drawRightAlignedText({
@@ -350,7 +363,7 @@ function drawItemsTableHeader(args: { cursor: Cursor; boldFont: PDFFont }) {
     y: headerY,
     size: SMALL_FONT_SIZE,
     font: args.boldFont,
-    color: COLOR_ACCENT,
+    color: args.accentTextColor ?? COLOR_ACCENT,
   });
 
   drawRightAlignedText({
@@ -360,7 +373,7 @@ function drawItemsTableHeader(args: { cursor: Cursor; boldFont: PDFFont }) {
     y: headerY,
     size: SMALL_FONT_SIZE,
     font: args.boldFont,
-    color: COLOR_ACCENT,
+    color: args.accentTextColor ?? COLOR_ACCENT,
   });
 }
 
@@ -371,6 +384,8 @@ function drawTextBlock(args: {
   font: PDFFont;
   boldFont: PDFFont;
   pdfDoc: PDFDocument;
+  panelColor?: ReturnType<typeof rgb>;
+  accentTextColor?: ReturnType<typeof rgb>;
 }) {
   const title = String(args.title || "").trim() || "Informações";
   return drawSectionCard({
@@ -380,6 +395,8 @@ function drawTextBlock(args: {
     font: args.font,
     boldFont: args.boldFont,
     pdfDoc: args.pdfDoc,
+    panelColor: args.panelColor,
+    accentTextColor: args.accentTextColor,
   });
 }
 
@@ -437,6 +454,13 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const embeddedLogo = await embedStoreLogo(pdfDoc, input.storeLogo || null);
+  const brandPdfTheme = resolveStoreBrandPdfTheme(input.brandVisual || {});
+  const accentColor = brandPdfTheme.accentColor ?? COLOR_ACCENT;
+  const accentTextColor = brandPdfTheme.accentTextColor ?? COLOR_ACCENT;
+  const panelColor = brandPdfTheme.secondaryPanelColor ?? COLOR_PANEL;
+  const panelStrongColor = brandPdfTheme.secondaryPanelColor ?? COLOR_PANEL_STRONG;
+  const totalBackgroundColor = brandPdfTheme.totalBackgroundColor ?? COLOR_TOTAL_BG;
+  const totalTextColor = brandPdfTheme.totalTextColor ?? rgb(1, 1, 1);
 
   let cursor = addPage(pdfDoc);
   const safeStoreName = String(input.storeName || "").trim() || "Loja";
@@ -450,7 +474,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: cursor.y + 18,
     width: CONTENT_WIDTH,
     height: 4,
-    color: COLOR_ACCENT,
+    color: accentColor,
   });
 
   let headerBottomY = cursor.y;
@@ -518,7 +542,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: summaryCardTopY - summaryCardHeight,
     width: summaryCardWidth,
     height: summaryCardHeight,
-    color: COLOR_PANEL,
+    color: panelColor,
     borderWidth: 0.8,
     borderColor: COLOR_BORDER,
   });
@@ -528,7 +552,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: summaryCardTopY - 18,
     size: 16,
     font: boldFont,
-    color: COLOR_ACCENT,
+    color: accentTextColor,
   });
 
   drawLabeledValue({
@@ -586,7 +610,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: cursor.y - infoCardHeight,
     width: leftCardWidth,
     height: infoCardHeight,
-    color: COLOR_PANEL,
+    color: panelColor,
     borderWidth: 0.7,
     borderColor: COLOR_BORDER,
   });
@@ -596,7 +620,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: cursor.y - infoCardHeight,
     width: rightCardWidth,
     height: infoCardHeight,
-    color: COLOR_PANEL,
+    color: panelColor,
     borderWidth: 0.7,
     borderColor: COLOR_BORDER,
   });
@@ -606,7 +630,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: cursor.y - 16,
     size: SMALL_FONT_SIZE,
     font: boldFont,
-    color: COLOR_ACCENT,
+    color: accentTextColor,
   });
 
   cursor.page.drawText(safeCustomerName, {
@@ -630,7 +654,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: cursor.y - 16,
     size: SMALL_FONT_SIZE,
     font: boldFont,
-    color: COLOR_ACCENT,
+    color: accentTextColor,
   });
 
   drawLabeledValue({
@@ -660,6 +684,8 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
   drawItemsTableHeader({
     cursor,
     boldFont,
+    panelColor: panelStrongColor,
+    accentTextColor,
   });
   cursor.y -= 34;
 
@@ -676,6 +702,8 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
       drawItemsTableHeader({
         cursor,
         boldFont,
+        panelColor: panelStrongColor,
+        accentTextColor,
       });
       cursor.y -= 34;
     }
@@ -759,7 +787,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: cursor.y - totalsCardHeight,
     width: totalsCardWidth,
     height: totalsCardHeight,
-    color: COLOR_PANEL,
+    color: panelColor,
     borderWidth: 0.8,
     borderColor: COLOR_BORDER,
   });
@@ -769,7 +797,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: cursor.y - 16,
     size: SMALL_FONT_SIZE,
     font: boldFont,
-    color: COLOR_ACCENT,
+    color: accentTextColor,
   });
 
   const subtotalY = cursor.y - 36;
@@ -818,7 +846,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: totalBarY,
     width: totalsCardWidth - 20,
     height: 26,
-    color: COLOR_TOTAL_BG,
+    color: totalBackgroundColor,
   });
 
   cursor.page.drawText("TOTAL", {
@@ -826,7 +854,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: totalTextY,
     size: 11,
     font: boldFont,
-    color: rgb(1, 1, 1),
+    color: totalTextColor,
   });
 
   drawRightAlignedText({
@@ -836,7 +864,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     y: totalTextY,
     size: 11,
     font: boldFont,
-    color: rgb(1, 1, 1),
+    color: totalTextColor,
   });
 
   cursor.y -= totalsCardHeight + 12;
@@ -848,6 +876,8 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     font,
     boldFont,
     pdfDoc,
+    panelColor,
+    accentTextColor,
   });
 
   cursor = drawTextBlock({
@@ -857,6 +887,8 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     font,
     boldFont,
     pdfDoc,
+    panelColor,
+    accentTextColor,
   });
 
   cursor = drawTextBlock({
@@ -866,6 +898,8 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     font,
     boldFont,
     pdfDoc,
+    panelColor,
+    accentTextColor,
   });
 
   cursor = drawTextBlock({
@@ -875,6 +909,8 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     font,
     boldFont,
     pdfDoc,
+    panelColor,
+    accentTextColor,
   });
 
   cursor = drawTextBlock({
@@ -884,29 +920,60 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     font,
     boldFont,
     pdfDoc,
+    panelColor,
+    accentTextColor,
   });
 
-  const footerText =
+  const systemFooterText =
     "Orçamento gerado pela loja. Valores sujeitos à confirmação enquanto a proposta não estiver aprovada.";
-  const footerLines = wrapText(footerText, 95);
-  const footerBaseY = Math.max(PAGE_MARGIN + 6, cursor.y - 8);
+  const customFooterLines = brandPdfTheme.documentFooter
+    ? wrapText(brandPdfTheme.documentFooter, 95)
+    : [];
+  const footerLines = [
+    ...customFooterLines,
+    ...(customFooterLines.length > 0 ? [""] : []),
+    ...wrapText(systemFooterText, 95),
+  ];
 
-  cursor.page.drawLine({
-    start: { x: PAGE_MARGIN, y: footerBaseY + 12 },
-    end: { x: PAGE_MARGIN + CONTENT_WIDTH, y: footerBaseY + 12 },
-    thickness: 0.8,
-    color: COLOR_BORDER,
-  });
+  const maximumFooterHeight = PAGE_HEIGHT - PAGE_MARGIN * 2;
+  const requestedFooterHeight = Math.min(
+    maximumFooterHeight,
+    footerLines.length * 10 + 24
+  );
 
-  footerLines.forEach((line, index) => {
-    cursor.page.drawText(line, {
-      x: PAGE_MARGIN,
-      y: footerBaseY - index * 10,
-      size: SMALL_FONT_SIZE,
-      font,
-      color: COLOR_MUTED,
+  cursor = ensureSpace(cursor, pdfDoc, requestedFooterHeight);
+  let footerY = cursor.y - 8;
+
+  const drawFooterSeparator = () => {
+    cursor.page.drawLine({
+      start: { x: PAGE_MARGIN, y: footerY + 12 },
+      end: { x: PAGE_MARGIN + CONTENT_WIDTH, y: footerY + 12 },
+      thickness: 0.8,
+      color: COLOR_BORDER,
     });
-  });
+  };
+
+  drawFooterSeparator();
+
+  for (const line of footerLines) {
+    if (footerY < PAGE_MARGIN + 4) {
+      cursor = addPage(pdfDoc);
+      footerY = cursor.y - 8;
+      drawFooterSeparator();
+    }
+
+    if (line) {
+      cursor.page.drawText(line, {
+        x: PAGE_MARGIN,
+        y: footerY,
+        size: SMALL_FONT_SIZE,
+        font,
+        color: COLOR_MUTED,
+      });
+    }
+
+    footerY -= 10;
+  }
 
   return pdfDoc.save();
 }

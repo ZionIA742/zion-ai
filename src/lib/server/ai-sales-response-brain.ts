@@ -126,6 +126,7 @@ export type SalesResponseBrainInput = {
   offersTechnicalVisit?: boolean;
   suggestedNextQuestion?: string | null;
   canonicalVisitLocationState?: "known" | "not_known" | "unproven";
+  canonicalPreferredVisitPeriod?: string | null;
   contextualQualification?: {
     hasCanonicalSnapshot: boolean;
     askNow: boolean;
@@ -593,7 +594,9 @@ function buildSalesConversationSnapshot(
     conversationText,
     input.requestedPoolReferenceRaw
   );
-  const preferredVisitPeriod = extractPreferredPeriod(conversationText);
+  const preferredVisitPeriod =
+    String(input.canonicalPreferredVisitPeriod || "").trim() ||
+    extractPreferredPeriod(conversationText);
   const presentedCustomerName = extractCustomerPresentedName(conversationText);
   const rawCustomerName = presentedCustomerName || input.customerName || null;
   const hasReliableCustomerName = isReliableCustomerName(rawCustomerName);
@@ -996,6 +999,9 @@ function buildSalesReplyPlan(args: {
           : [],
         requiredPhrasesOrIdeas: [
           "a localizacao canonica ja esta conhecida; daqui em diante dia ou periodo e um dado operacional de agenda",
+          args.input.canonicalPreferredVisitPeriod
+            ? "preservar a janela temporal canonica ja informada pelo cliente; nao estreitar, adiantar, substituir ou reinterpretar esse periodo sem nova evidencia explicita do cliente"
+            : "se ainda nao houver periodo canonico conhecido, pode pedir um unico dia ou periodo preferido para consultar a agenda",
           "dizer que vai verificar na agenda os dias ou horarios disponiveis",
           "nao prometer agenda pronta",
           "nao confirmar visita como garantida ou gratuita",

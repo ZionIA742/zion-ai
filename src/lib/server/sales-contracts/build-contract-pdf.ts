@@ -7,12 +7,18 @@ import {
   type PDFPage,
 } from "pdf-lib";
 import type { ContractPdfItem } from "./types";
+import { resolveStoreBrandPdfTheme } from "@/lib/server/store-brand-pdf-theme";
 
 export type BuildContractPdfInput = {
   storeName: string | null;
   storeLogo?: {
     bytes: Uint8Array;
     mimeType: string;
+  } | null;
+  brandVisual?: {
+    primaryColor?: string | null;
+    secondaryColor?: string | null;
+    documentFooter?: string | null;
   } | null;
   contractNumber: string | null;
   quoteNumber?: string | null;
@@ -184,6 +190,7 @@ function drawParagraph(args: {
   boldFont?: PDFFont;
   preserveLineBreaks?: boolean;
   spacingBefore?: number;
+  accentTextColor?: ReturnType<typeof rgb>;
 }) {
   const lines = args.preserveLineBreaks
     ? wrapTextPreservingLineBreaks(args.text, 96)
@@ -207,7 +214,7 @@ function drawParagraph(args: {
       y: cursor.y,
       size: 10,
       font: args.boldFont,
-      color: COLOR_ACCENT,
+      color: args.accentTextColor ?? COLOR_ACCENT,
     });
     cursor.y -= SECTION_TITLE_HEIGHT;
   }
@@ -259,6 +266,8 @@ function drawSectionBox(args: {
   font: PDFFont;
   boldFont: PDFFont;
   spacingBefore?: number;
+  panelColor?: ReturnType<typeof rgb>;
+  accentTextColor?: ReturnType<typeof rgb>;
 }) {
   const height = 28 + args.lines.length * 12;
   let cursor = applySectionSpacing(
@@ -273,7 +282,7 @@ function drawSectionBox(args: {
     y: cursor.y - height,
     width: CONTENT_WIDTH,
     height,
-    color: COLOR_PANEL,
+    color: args.panelColor ?? COLOR_PANEL,
     borderColor: COLOR_BORDER,
     borderWidth: 0.7,
   });
@@ -283,7 +292,7 @@ function drawSectionBox(args: {
     y: cursor.y - 16,
     size: 9,
     font: args.boldFont,
-    color: COLOR_ACCENT,
+    color: args.accentTextColor ?? COLOR_ACCENT,
   });
 
   let lineY = cursor.y - 31;
@@ -310,6 +319,8 @@ function drawFooterBox(args: {
   font: PDFFont;
   boldFont: PDFFont;
   spacingBefore?: number;
+  panelColor?: ReturnType<typeof rgb>;
+  accentTextColor?: ReturnType<typeof rgb>;
 }) {
   let cursor = applySectionSpacing(
     args.cursor,
@@ -323,7 +334,7 @@ function drawFooterBox(args: {
     y: cursor.y - FOOTER_BOX_HEIGHT,
     width: CONTENT_WIDTH,
     height: FOOTER_BOX_HEIGHT,
-    color: COLOR_PANEL,
+    color: args.panelColor ?? COLOR_PANEL,
     borderColor: COLOR_BORDER,
     borderWidth: 0.7,
   });
@@ -332,7 +343,7 @@ function drawFooterBox(args: {
     y: cursor.y - 16,
     size: 9,
     font: args.boldFont,
-    color: COLOR_ACCENT,
+    color: args.accentTextColor ?? COLOR_ACCENT,
   });
   cursor.page.drawText(args.text, {
     x: PAGE_MARGIN + 12,
@@ -439,6 +450,10 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const embeddedLogo = await embedStoreLogo(pdfDoc, input.storeLogo || null);
+  const brandPdfTheme = resolveStoreBrandPdfTheme(input.brandVisual || {});
+  const accentColor = brandPdfTheme.accentColor ?? COLOR_ACCENT;
+  const accentTextColor = brandPdfTheme.accentTextColor ?? COLOR_ACCENT;
+  const panelColor = brandPdfTheme.secondaryPanelColor ?? COLOR_PANEL;
 
   let cursor = addPage(pdfDoc);
   const storeName = toDisplayText(input.storeName, "Loja");
@@ -456,7 +471,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     y: cursor.y + 14,
     width: CONTENT_WIDTH,
     height: 4,
-    color: COLOR_ACCENT,
+    color: accentColor,
   });
 
   let headerBottomY = cursor.y - 10;
@@ -526,7 +541,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     y: cursor.y - 62,
     width: CONTENT_WIDTH,
     height: 62,
-    color: COLOR_PANEL,
+    color: panelColor,
     borderColor: COLOR_BORDER,
     borderWidth: 0.7,
   });
@@ -584,6 +599,8 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     ],
     font,
     boldFont,
+    panelColor,
+    accentTextColor,
   });
 
   const itemLines =
@@ -610,6 +627,8 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     lines: itemLines,
     font,
     boldFont,
+    panelColor,
+    accentTextColor,
   });
 
   cursor = drawSectionBox({
@@ -623,6 +642,8 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     ],
     font,
     boldFont,
+    panelColor,
+    accentTextColor,
   });
 
   cursor = drawParagraph({
@@ -632,6 +653,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     text: toDisplayText(input.paymentTerms, "A definir pela loja"),
     font,
     boldFont,
+    accentTextColor,
     spacingBefore: 14,
   });
 
@@ -642,6 +664,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     text: toDisplayText(input.deliveryTerms, "A definir pela loja"),
     font,
     boldFont,
+    accentTextColor,
     spacingBefore: 14,
   });
 
@@ -652,6 +675,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     text: toDisplayText(input.warrantyTerms, "A definir pela loja"),
     font,
     boldFont,
+    accentTextColor,
     spacingBefore: 14,
   });
 
@@ -666,6 +690,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     font,
     boldFont,
     preserveLineBreaks: true,
+    accentTextColor,
     spacingBefore: 14,
   });
 
@@ -678,6 +703,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
       : "Prazo de validade nao informado.",
     font,
     boldFont,
+    accentTextColor,
     spacingBefore: 16,
   });
 
@@ -689,6 +715,8 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     font,
     boldFont,
     spacingBefore: 16,
+    panelColor,
+    accentTextColor,
   });
 
   cursor = drawFooterBox({
@@ -699,29 +727,60 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     font,
     boldFont,
     spacingBefore: 16,
+    panelColor,
+    accentTextColor,
   });
 
-  const footerLines = wrapText(
-    "Documento contratual da loja. O uso final deste contrato depende da validacao das regras comerciais, juridicas e operacionais aplicaveis.",
-    95
+  const systemFooterText =
+    "Documento contratual da loja. O uso final deste contrato depende da validacao das regras comerciais, juridicas e operacionais aplicaveis.";
+  const customFooterLines = brandPdfTheme.documentFooter
+    ? wrapText(brandPdfTheme.documentFooter, 95)
+    : [];
+  const footerLines = [
+    ...customFooterLines,
+    ...(customFooterLines.length > 0 ? [""] : []),
+    ...wrapText(systemFooterText, 95),
+  ];
+
+  const maximumFooterHeight = PAGE_HEIGHT - PAGE_MARGIN * 2;
+  const requestedFooterHeight = Math.min(
+    maximumFooterHeight,
+    footerLines.length * 10 + 24
   );
-  cursor = ensureSpace(cursor, pdfDoc, 60);
-  cursor.page.drawLine({
-    start: { x: PAGE_MARGIN, y: cursor.y + 8 },
-    end: { x: PAGE_MARGIN + CONTENT_WIDTH, y: cursor.y + 8 },
-    thickness: 0.8,
-    color: COLOR_BORDER,
-  });
 
-  footerLines.forEach((line, index) => {
-    cursor.page.drawText(line, {
-      x: PAGE_MARGIN,
-      y: cursor.y - index * 10,
-      size: 8.5,
-      font,
-      color: COLOR_MUTED,
+  cursor = ensureSpace(cursor, pdfDoc, requestedFooterHeight);
+  let footerY = cursor.y;
+
+  const drawFooterSeparator = () => {
+    cursor.page.drawLine({
+      start: { x: PAGE_MARGIN, y: footerY + 8 },
+      end: { x: PAGE_MARGIN + CONTENT_WIDTH, y: footerY + 8 },
+      thickness: 0.8,
+      color: COLOR_BORDER,
     });
-  });
+  };
+
+  drawFooterSeparator();
+
+  for (const line of footerLines) {
+    if (footerY < PAGE_MARGIN + 4) {
+      cursor = addPage(pdfDoc);
+      footerY = cursor.y;
+      drawFooterSeparator();
+    }
+
+    if (line) {
+      cursor.page.drawText(line, {
+        x: PAGE_MARGIN,
+        y: footerY,
+        size: 8.5,
+        font,
+        color: COLOR_MUTED,
+      });
+    }
+
+    footerY -= 10;
+  }
 
   return pdfDoc.save();
 }

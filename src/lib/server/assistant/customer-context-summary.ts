@@ -30,6 +30,7 @@ type BuildCustomerContextSummaryInput = {
   leadId?: string | null;
   conversationId?: string | null;
   relatedMessageId?: string | null;
+  commercialOpportunityId?: string | null;
   quoteId?: string | null;
   quoteNumber?: string | null;
   customerName?: string | null;
@@ -46,6 +47,7 @@ type QuoteSummaryRow = {
   id: string;
   organization_id: string;
   store_id: string;
+  commercial_opportunity_id: string | null;
   lead_id: string | null;
   conversation_id: string | null;
   quote_number: string | null;
@@ -121,6 +123,7 @@ export type RelatedMessageCommercialContext = {
 
 type AppointmentSummaryRow = {
   id: string;
+  commercial_opportunity_id?: string | null;
   appointment_type: string | null;
   status: string | null;
   scheduled_start: string | null;
@@ -128,7 +131,28 @@ type AppointmentSummaryRow = {
   created_at: string | null;
 };
 
+type OpportunityContextRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  origin_lead_id: string | null;
+  primary_conversation_id: string | null;
+};
+
+type OpportunityContextResolution =
+  | {
+      status: "valid";
+      commercialOpportunityId: string;
+      opportunity: OpportunityContextRow;
+    }
+  | {
+      status: "none" | "ambiguous" | "mismatch";
+      commercialOpportunityId: null;
+      opportunity: null;
+    };
+
 export type CustomerContextSummary = {
+  commercialOpportunityId?: string;
   customerName?: string;
   customerPhone?: string;
   quoteNumber?: string;
@@ -246,7 +270,7 @@ async function loadQuote(args: BuildCustomerContextSummaryInput) {
   const { data, error } = await args.supabase
     .from("sales_quotes")
     .select(
-      "id, organization_id, store_id, lead_id, conversation_id, quote_number, status, total_cents, approved_at, sent_at"
+      "id, organization_id, store_id, commercial_opportunity_id, lead_id, conversation_id, quote_number, status, total_cents, approved_at, sent_at"
     )
     .eq("id", quoteId)
     .eq("organization_id", args.organizationId)
@@ -258,6 +282,64 @@ async function loadQuote(args: BuildCustomerContextSummaryInput) {
   }
 
   return (data || null) as QuoteSummaryRow | null;
+}
+
+async function resolveExplicitOpportunityContext(args: {
+  supabase: SupabaseLike;
+  organizationId: string;
+  storeId: string;
+  leadId?: string | null;
+  conversationId?: string | null;
+  inputCommercialOpportunityId?: string | null;
+  quoteCommercialOpportunityId?: string | null;
+}): Promise<OpportunityContextResolution> {
+  const inputOpportunityId = cleanText(args.inputCommercialOpportunityId);
+  const quoteOpportunityId = cleanText(args.quoteCommercialOpportunityId);
+
+  if (inputOpportunityId && quoteOpportunityId && inputOpportunityId !== quoteOpportunityId) {
+    return { status: "mismatch", commercialOpportunityId: null, opportunity: null };
+  }
+
+  const commercialOpportunityId = inputOpportunityId || quoteOpportunityId;
+  if (!commercialOpportunityId) {
+    return { status: "none", commercialOpportunityId: null, opportunity: null };
+  }
+
+  const { data, error } = await args.supabase
+    .from("commercial_opportunities")
+    .select("id, organization_id, store_id, origin_lead_id, primary_conversation_id")
+    .eq("id", commercialOpportunityId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao validar opportunity do resumo: ${error.message}`);
+  }
+
+  const opportunity = (data || null) as OpportunityContextRow | null;
+  if (!opportunity) {
+    return { status: "mismatch", commercialOpportunityId: null, opportunity: null };
+  }
+
+  const leadId = cleanText(args.leadId);
+  const conversationId = cleanText(args.conversationId);
+  const opportunityLeadId = cleanText(opportunity.origin_lead_id);
+  const opportunityConversationId = cleanText(opportunity.primary_conversation_id);
+
+  if (leadId && opportunityLeadId && leadId !== opportunityLeadId) {
+    return { status: "mismatch", commercialOpportunityId: null, opportunity: null };
+  }
+
+  if (conversationId && opportunityConversationId && conversationId !== opportunityConversationId) {
+    return { status: "mismatch", commercialOpportunityId: null, opportunity: null };
+  }
+
+  return {
+    status: "valid",
+    commercialOpportunityId,
+    opportunity,
+  };
 }
 
 async function loadLead(args: {
@@ -549,31 +631,21 @@ async function loadLatestTechnicalVisit(args: {
   supabase: SupabaseLike;
   organizationId: string;
   storeId: string;
-  leadId?: string | null;
-  conversationId?: string | null;
+  commercialOpportunityId?: string | null;
 }) {
+  const commercialOpportunityId = cleanText(args.commercialOpportunityId);
+  if (!commercialOpportunityId) return null;
+
   let query = args.supabase
     .from("store_appointments")
-    .select("id, appointment_type, status, scheduled_start, scheduled_end, created_at")
+    .select("id, commercial_opportunity_id, appointment_type, status, scheduled_start, scheduled_end, created_at")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
+    .eq("commercial_opportunity_id", commercialOpportunityId)
     .eq("appointment_type", "technical_visit")
     .order("scheduled_end", { ascending: false })
     .order("created_at", { ascending: false })
     .limit(5);
-
-  const conversationId = cleanText(args.conversationId);
-  const leadId = cleanText(args.leadId);
-
-  if (conversationId && leadId) {
-    query = query.or(`conversation_id.eq.${conversationId},lead_id.eq.${leadId}`);
-  } else if (conversationId) {
-    query = query.eq("conversation_id", conversationId);
-  } else if (leadId) {
-    query = query.eq("lead_id", leadId);
-  } else {
-    return null;
-  }
 
   const { data, error } = await query;
 
@@ -589,17 +661,17 @@ async function loadMainContract(args: {
   supabase: SupabaseLike;
   organizationId: string;
   storeId: string;
+  commercialOpportunityId?: string | null;
   quoteId?: string | null;
-  leadId?: string | null;
-  conversationId?: string | null;
 }) {
   const quoteId = cleanText(args.quoteId);
+  const commercialOpportunityId = cleanText(args.commercialOpportunityId);
 
   if (quoteId) {
     const { data, error } = await args.supabase
       .from("sales_contracts")
       .select(
-        "id, organization_id, store_id, lead_id, conversation_id, quote_id, contract_number, status, sent_at, customer_signed_at, completed_at, created_at"
+        "id, organization_id, store_id, commercial_opportunity_id, lead_id, conversation_id, quote_id, contract_number, status, sent_at, customer_signed_at, completed_at, created_at"
       )
       .eq("organization_id", args.organizationId)
       .eq("store_id", args.storeId)
@@ -617,28 +689,18 @@ async function loadMainContract(args: {
     }
   }
 
+  if (!commercialOpportunityId) return null;
+
   let query = args.supabase
     .from("sales_contracts")
     .select(
-      "id, organization_id, store_id, lead_id, conversation_id, quote_id, contract_number, status, sent_at, customer_signed_at, completed_at, created_at"
+      "id, organization_id, store_id, commercial_opportunity_id, lead_id, conversation_id, quote_id, contract_number, status, sent_at, customer_signed_at, completed_at, created_at"
     )
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
+    .eq("commercial_opportunity_id", commercialOpportunityId)
     .order("created_at", { ascending: false })
     .limit(5);
-
-  const conversationId = cleanText(args.conversationId);
-  const leadId = cleanText(args.leadId);
-
-  if (conversationId && leadId) {
-    query = query.or(`conversation_id.eq.${conversationId},lead_id.eq.${leadId}`);
-  } else if (conversationId) {
-    query = query.eq("conversation_id", conversationId);
-  } else if (leadId) {
-    query = query.eq("lead_id", leadId);
-  } else {
-    return null;
-  }
 
   const { data, error } = await query;
 
@@ -747,6 +809,19 @@ export async function buildCustomerContextSummary(
   const leadId = cleanText(quote?.lead_id) || cleanText(input.leadId);
   const conversationId =
     cleanText(quote?.conversation_id) || cleanText(input.conversationId);
+  const opportunityContext = await resolveExplicitOpportunityContext({
+    supabase: input.supabase,
+    organizationId: input.organizationId,
+    storeId: input.storeId,
+    leadId,
+    conversationId,
+    inputCommercialOpportunityId: input.commercialOpportunityId,
+    quoteCommercialOpportunityId: quote?.commercial_opportunity_id,
+  });
+  const commercialOpportunityId =
+    opportunityContext.status === "valid"
+      ? opportunityContext.commercialOpportunityId
+      : null;
 
   const [
     lead,
@@ -771,16 +846,14 @@ export async function buildCustomerContextSummary(
         supabase: input.supabase,
         organizationId: input.organizationId,
         storeId: input.storeId,
-        leadId,
-        conversationId,
+        commercialOpportunityId,
       }),
       loadMainContract({
         supabase: input.supabase,
         organizationId: input.organizationId,
         storeId: input.storeId,
-        quoteId: quote?.id || input.quoteId,
-        leadId,
-        conversationId,
+        commercialOpportunityId,
+        quoteId: commercialOpportunityId ? quote?.id || input.quoteId : null,
       }),
       resolveRelatedMessageCommercialContext({
         supabase: input.supabase,
@@ -828,6 +901,7 @@ export async function buildCustomerContextSummary(
     suggestedNextAction,
   };
 
+  if (commercialOpportunityId) summary.commercialOpportunityId = commercialOpportunityId;
   if (customerName) summary.customerName = customerName;
   if (customerPhone) summary.customerPhone = customerPhone;
   if (quoteNumber) summary.quoteNumber = quoteNumber;

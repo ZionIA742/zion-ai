@@ -1,7 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
+import { createHash } from "node:crypto";
 import {
   detectPaymentOrClosingSubtype,
   generateAiSalesReply,
+  type CrossSellSuggestionIncluded,
   type HumanHandoffContext,
   type CommercialHandoffContext,
   type OperationalFollowUpDecision,
@@ -94,6 +96,48 @@ const AI_REPLY_GENERATION_ANCHOR_MISMATCH =
 const AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE =
   "AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE";
 
+type CrossSellSuggestionLedgerResult = {
+  attempted: number;
+  registered: number;
+  failed: number;
+};
+
+export function buildCrossSellSuggestionLedgerOperationKey(args: {
+  messageId: string;
+  suggestion: CrossSellSuggestionIncluded;
+}): string {
+  const canonicalId =
+    args.suggestion.candidateKind === "pool"
+      ? args.suggestion.poolId
+      : args.suggestion.catalogItemId;
+
+  return `cross-sell-suggestion:${args.messageId}:${args.suggestion.candidateKind}:${canonicalId}`;
+}
+
+export function buildCrossSellSuggestionLedgerFingerprint(payload: {
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+  conversationId: string;
+  messageId: string;
+  suggestion: CrossSellSuggestionIncluded;
+}): string {
+  const canonicalPayload = {
+    catalogItemId: payload.suggestion.catalogItemId,
+    candidateKind: payload.suggestion.candidateKind,
+    commercialOpportunityId: payload.commercialOpportunityId,
+    conversationId: payload.conversationId,
+    messageId: payload.messageId,
+    organizationId: payload.organizationId,
+    poolId: payload.suggestion.poolId,
+    storeId: payload.storeId,
+  };
+
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalPayload))
+    .digest("hex");
+}
+
 const SCHEDULED_SALES_RESUME_REASONS = new Set<ScheduledSalesResumeReason>([
   "sales_ai_after_hours_policy",
   "customer_requested_tomorrow",
@@ -143,6 +187,147 @@ function resolveScheduledSalesResumeExecutionContext(
     anchorMessageId,
     styleHint,
   };
+}
+
+function normalizeCrossSellSuggestionsActuallyIncluded(
+  value: unknown,
+): CrossSellSuggestionIncluded[] {
+  if (!Array.isArray(value)) return [];
+
+  const suggestions: CrossSellSuggestionIncluded[] = [];
+
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+      const suggestion = entry as Partial<CrossSellSuggestionIncluded>;
+      const candidateKind = String(suggestion.candidateKind || "").trim();
+      const candidateKey = String(suggestion.candidateKey || "").trim();
+      const poolId =
+        suggestion.poolId == null
+          ? null
+          : String(suggestion.poolId || "").trim() || null;
+      const catalogItemId =
+        suggestion.catalogItemId == null
+          ? null
+          : String(suggestion.catalogItemId || "").trim() || null;
+
+      if (!candidateKey) continue;
+      if (candidateKind === "pool" && poolId && !catalogItemId) {
+        suggestions.push({
+          candidateKey,
+          candidateKind: "pool",
+          poolId,
+          catalogItemId: null,
+        });
+        continue;
+      }
+
+      if (candidateKind === "catalog_item" && catalogItemId && !poolId) {
+        suggestions.push({
+          candidateKey,
+          candidateKind: "catalog_item",
+          poolId: null,
+          catalogItemId,
+        });
+      }
+  }
+
+  return suggestions;
+}
+
+async function recordIncludedCrossSellSuggestionsBySystem(args: {
+  systemSupabase: any;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string | null;
+  conversationId: string;
+  suggestionMessageId: string | null;
+  sourceMessageId: string;
+  suggestions: CrossSellSuggestionIncluded[];
+}): Promise<CrossSellSuggestionLedgerResult> {
+  if (
+    !args.commercialOpportunityId ||
+    !args.suggestionMessageId ||
+    args.suggestions.length === 0
+  ) {
+    return {
+      attempted: 0,
+      registered: 0,
+      failed: 0,
+    };
+  }
+
+  const result: CrossSellSuggestionLedgerResult = {
+    attempted: args.suggestions.length,
+    registered: 0,
+    failed: 0,
+  };
+
+  for (const suggestion of args.suggestions) {
+    const operationKey = buildCrossSellSuggestionLedgerOperationKey({
+      messageId: args.suggestionMessageId,
+      suggestion,
+    });
+    const requestFingerprint = buildCrossSellSuggestionLedgerFingerprint({
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      commercialOpportunityId: args.commercialOpportunityId,
+      conversationId: args.conversationId,
+      messageId: args.suggestionMessageId,
+      suggestion,
+    });
+
+    try {
+      const { error } = await args.systemSupabase.rpc(
+        "record_commercial_cross_sell_suggestion_by_system",
+        {
+          p_organization_id: args.organizationId,
+          p_store_id: args.storeId,
+          p_commercial_opportunity_id: args.commercialOpportunityId,
+          p_conversation_id: args.conversationId,
+          p_suggestion_message_id: args.suggestionMessageId,
+          p_candidate_kind: suggestion.candidateKind,
+          p_pool_id: suggestion.poolId,
+          p_catalog_item_id: suggestion.catalogItemId,
+          p_operation_key: operationKey,
+          p_request_fingerprint: requestFingerprint,
+          p_metadata: {
+            source: "sales_ai_outbound_structured_cross_sell_v1",
+            candidate_key: suggestion.candidateKey,
+            source_message_id: args.sourceMessageId,
+          },
+        },
+      );
+
+      if (error) {
+        result.failed += 1;
+        console.warn("[zion-ai-cross-sell] Failed to record outbound suggestion", {
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          conversationId: args.conversationId,
+          commercialOpportunityId: args.commercialOpportunityId,
+          suggestionMessageId: args.suggestionMessageId,
+          candidateKey: suggestion.candidateKey,
+          error: error.message,
+        });
+        continue;
+      }
+
+      result.registered += 1;
+    } catch (error: any) {
+      result.failed += 1;
+      console.warn("[zion-ai-cross-sell] Unexpected failure recording outbound suggestion", {
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        commercialOpportunityId: args.commercialOpportunityId,
+        suggestionMessageId: args.suggestionMessageId,
+        candidateKey: suggestion.candidateKey,
+        error: error?.message || String(error || ""),
+      });
+    }
+  }
+
+  return result;
 }
 const CONVERSATION_SCOPE_MISMATCH_ERRORS = new Set([
   "CONVERSATION_SCOPE_ORGANIZATION_MISSING",
@@ -4064,6 +4249,176 @@ function getRequiredCommercialOpportunityIdFromHandoff(
   return commercialOpportunityId;
 }
 
+type CommercialHandoffOpportunityResolution =
+  | {
+      ok: true;
+      commercialOpportunityId: string;
+      handoff: CommercialHandoffContext;
+    }
+  | {
+      ok: false;
+      error: string;
+      message: string;
+    };
+
+function commercialHandoffFailClosedMessage(reason: string) {
+  if (reason === "ambiguous_commercial_opportunity_context") {
+    return "A IA identificou uma tratativa comercial, mas ha mais de uma oportunidade compativel com esta conversa. Para evitar registrar a acao no atendimento errado, a resposta automatica foi bloqueada.";
+  }
+
+  return "A IA identificou uma tratativa comercial, mas nao encontrou uma oportunidade comercial canonica inequivoca para esta conversa. Para evitar registrar a acao no atendimento errado, a resposta automatica foi bloqueada.";
+}
+
+function isCommercialOpportunityCompatibleWithConversation(args: {
+  row: Record<string, any>;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  requireExactRelationship?: boolean;
+}) {
+  if (String(args.row.organization_id || "") !== args.organizationId) return false;
+  if (String(args.row.store_id || "") !== args.storeId) return false;
+
+  const rowConversationId = cleanText(args.row.primary_conversation_id);
+  if (rowConversationId && rowConversationId !== args.conversationId) return false;
+
+  const rowLeadId = cleanText(args.row.origin_lead_id);
+  if (args.leadId && rowLeadId && rowLeadId !== args.leadId) return false;
+  if (
+    args.requireExactRelationship &&
+    ((!rowConversationId || rowConversationId !== args.conversationId) ||
+      (args.leadId && (!rowLeadId || rowLeadId !== args.leadId)))
+  ) {
+    return false;
+  }
+  if (!args.leadId && !rowConversationId) return false;
+
+  return true;
+}
+
+async function resolveCommercialOpportunityForCommercialHandoff(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  handoff: CommercialHandoffContext;
+  resolvedCommercialOpportunityId?: string | null;
+}): Promise<CommercialHandoffOpportunityResolution> {
+  const requestedCommercialOpportunityId =
+    cleanText(args.resolvedCommercialOpportunityId) ||
+    readCommercialOpportunityIdFromHandoff(args.handoff);
+
+  if (requestedCommercialOpportunityId) {
+    const { data, error } = await args.supabase
+      .from("commercial_opportunities")
+      .select(
+        "id, organization_id, store_id, origin_lead_id, primary_conversation_id",
+      )
+      .eq("id", requestedCommercialOpportunityId)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .maybeSingle();
+
+    if (error) {
+      return {
+        ok: false,
+        error: "COMMERCIAL_HANDOFF_OPPORTUNITY_LOOKUP_FAILED",
+        message: error.message,
+      };
+    }
+
+    if (
+      !data ||
+      !isCommercialOpportunityCompatibleWithConversation({
+        row: data,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        leadId: args.leadId,
+        requireExactRelationship: true,
+      })
+    ) {
+      return {
+        ok: false,
+        error: "COMMERCIAL_HANDOFF_OPPORTUNITY_SCOPE_MISMATCH",
+        message: commercialHandoffFailClosedMessage("opportunity_scope_mismatch"),
+      };
+    }
+
+    return {
+      ok: true,
+      commercialOpportunityId: requestedCommercialOpportunityId,
+      handoff: {
+        ...args.handoff,
+        commercialOpportunityId: requestedCommercialOpportunityId,
+      },
+    };
+  }
+
+  const opportunityQuery = args.supabase
+    .from("commercial_opportunities")
+    .select(
+      "id, organization_id, store_id, origin_lead_id, primary_conversation_id",
+    )
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId);
+
+  const scopedOpportunityQuery = args.leadId
+    ? opportunityQuery.eq("origin_lead_id", args.leadId)
+    : opportunityQuery.eq("primary_conversation_id", args.conversationId);
+
+  const { data, error } = await scopedOpportunityQuery.limit(3);
+
+  if (error) {
+    return {
+      ok: false,
+      error: "COMMERCIAL_HANDOFF_OPPORTUNITY_LOOKUP_FAILED",
+      message: error.message,
+    };
+  }
+
+  const compatibleRows = ((data || []) as Array<Record<string, any>>).filter((row) =>
+    isCommercialOpportunityCompatibleWithConversation({
+      row,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      leadId: args.leadId,
+    })
+  );
+
+  if (compatibleRows.length !== 1) {
+    const reason = compatibleRows.length > 1
+      ? "ambiguous_commercial_opportunity_context"
+      : "missing_commercial_opportunity_context";
+    return {
+      ok: false,
+      error: reason.toUpperCase(),
+      message: commercialHandoffFailClosedMessage(reason),
+    };
+  }
+
+  const commercialOpportunityId = cleanText(compatibleRows[0]?.id);
+  if (!commercialOpportunityId) {
+    return {
+      ok: false,
+      error: "COMMERCIAL_HANDOFF_OPPORTUNITY_ID_MISSING",
+      message: commercialHandoffFailClosedMessage("missing_commercial_opportunity_context"),
+    };
+  }
+
+  return {
+    ok: true,
+    commercialOpportunityId,
+    handoff: {
+      ...args.handoff,
+      commercialOpportunityId,
+    },
+  };
+}
+
 export type HumanAssistantHandoffDeps = {
   findExistingTask: (args: {
     supabase: any;
@@ -4885,6 +5240,10 @@ export async function generateAndSaveAiSalesReply(
       normalizeCustomerCatalogDocumentActions(
         rawCustomerCatalogDocumentActions,
       );
+    const crossSellSuggestionsActuallyIncluded =
+      normalizeCrossSellSuggestionsActuallyIncluded(
+        generationResult.context?.crossSellSuggestionsActuallyIncluded,
+      );
 
     if (
       Array.isArray(rawCustomerCatalogDocumentActions) &&
@@ -4980,20 +5339,37 @@ export async function generateAndSaveAiSalesReply(
     let requestedCommercialOpportunityId: string | null = null;
 
     if (requestedCommercialHandoff?.shouldCreateTask) {
-      try {
-        requestedCommercialOpportunityId =
-          getRequiredCommercialOpportunityIdFromHandoff(
-            requestedCommercialHandoff
-          );
-      } catch {
-        validatedCommercialHandoff = null;
-        console.info("[zion-ai-sales-handoff] commercial handoff skipped", {
-          reason: "missing_commercial_opportunity_context",
+      const opportunityResolution =
+        await resolveCommercialOpportunityForCommercialHandoff({
+          supabase,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          leadId: normalizedConversation.lead_id || null,
+          handoff: requestedCommercialHandoff,
+          resolvedCommercialOpportunityId: generationResolvedCommercialOpportunityId,
+        });
+
+      if (!opportunityResolution.ok) {
+        console.info("[zion-ai-sales-handoff] commercial handoff blocked", {
+          reason: opportunityResolution.error,
           organizationId: canonicalOrganizationId,
           storeId: canonicalStoreId,
           conversationId: canonicalConversationId,
         });
+
+        return {
+          ok: false,
+          error: opportunityResolution.error,
+          message: opportunityResolution.message,
+          aiText: opportunityResolution.message,
+          context: generationResult.context,
+        };
       }
+
+      validatedCommercialHandoff = opportunityResolution.handoff;
+      requestedCommercialOpportunityId =
+        opportunityResolution.commercialOpportunityId;
 
       if (validatedCommercialHandoff && requestedCommercialOpportunityId) {
         try {
@@ -5227,6 +5603,18 @@ export async function generateAndSaveAiSalesReply(
         aiText,
       };
     }
+
+    const crossSellSuggestionLedger =
+      await recordIncludedCrossSellSuggestionsBySystem({
+        systemSupabase,
+        organizationId: canonicalOrganizationId,
+        storeId: canonicalStoreId,
+        commercialOpportunityId: generationResolvedCommercialOpportunityId,
+        conversationId: canonicalConversationId,
+        suggestionMessageId: messageId,
+        sourceMessageId: generationAnchorMessageId,
+        suggestions: crossSellSuggestionsActuallyIncluded,
+      });
 
     if (customerCatalogDocumentActions.length > 0) {
       try {
@@ -5462,6 +5850,7 @@ export async function generateAndSaveAiSalesReply(
         humanHandoffResult,
         commercialHandoffResult,
         preContractCardResult,
+        crossSellSuggestionLedger,
       },
       usage: generationResult.usage,
       persisted: true,

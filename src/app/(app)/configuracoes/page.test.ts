@@ -182,7 +182,7 @@ function getGeneralAddressCompletionBlock(source: string) {
 function getCepLookupBlock(source: string) {
   const start = source.indexOf("  const lookupGeneralAddressCep = useCallback(async (cepDigits: string) => {");
   assert.equal(start > -1, true, "lookupGeneralAddressCep not found");
-  const end = source.indexOf("  const updateOperationExperienceDraft = useCallback(", start);
+  const end = source.indexOf("  const handleGeneralAddressSave = useCallback(", start);
   assert.equal(end > start, true, "lookupGeneralAddressCep end not found");
   return source.slice(start, end);
 }
@@ -1074,8 +1074,8 @@ const tests: TestCase[] = [
       const source = readPageSource();
       const activationItemsBlock = getActivationItemsBlock(source);
       const channelsBlock = getCreateChannelDraftFromSourcesBlock(source);
-      const overviewTabStart = source.indexOf('{activeTab === "visao-geral" ? (');
-      const overviewTabEnd = source.indexOf('{activeTab === "estrategia" ? (', overviewTabStart);
+      const overviewTabStart = source.indexOf('{activeTab === "geral" ? (');
+      const overviewTabEnd = source.indexOf('{activeTab === "operacao" ? (', overviewTabStart);
       assert.equal(overviewTabStart > -1, true, "overview tab not found");
       assert.equal(overviewTabEnd > overviewTabStart, true, "overview tab end not found");
       const overviewTabBlock = source.slice(overviewTabStart, overviewTabEnd);
@@ -1090,8 +1090,6 @@ const tests: TestCase[] = [
       assert.equal(channelsBlock.includes("const responsibleWhatsapp = cleanText(responsible?.whatsappNumber);"), true);
       assert.equal(channelsBlock.includes("const responsibleName = cleanText(responsible?.name);"), true);
       assert.equal(channelsBlock.includes("answers.responsible_whatsapp"), false);
-      assert.equal(overviewTabBlock.includes("primaryResponsibleName"), true);
-      assert.equal(overviewTabBlock.includes("primaryResponsibleWhatsapp"), true);
       assert.equal(overviewTabBlock.includes("answers.responsible_name"), false);
       assert.equal(overviewTabBlock.includes("answers.responsible_whatsapp"), false);
     },
@@ -1543,24 +1541,54 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "discount save writes special rules through canonical writer and does not write competing authorities",
+    name: "discount save uses one atomic canonical writer and does not write competing authorities",
     run: () => {
       const source = readPageSource();
       const block = getDiscountSaveBlock(source);
 
       assert.equal(
-        block.includes('"upsert_store_discount_settings_with_legacy_mirror_scoped"'),
+        block.includes('"upsert_store_discount_card_scoped"'),
         true,
       );
-      assert.equal(block.includes("p_default_discount_percent:"), true);
-      assert.equal(block.includes("p_max_discount_percent:"), true);
-      assert.equal(block.includes("p_allow_ask_above_max_discount:"), true);
-      assert.equal(block.includes("p_discount_autonomy_mode:"), true);
-      assert.equal(block.includes("p_discount_special_rules:"), true);
-      assert.equal(block.includes('"upsert_store_high_value_discount_settings_scoped"'), true);
-      assert.equal(block.includes("p_enabled:"), true);
-      assert.equal(block.includes("p_threshold_amount_cents:"), true);
-      assert.equal(block.includes("p_discount_percent:"), true);
+
+      for (const argument of [
+        "p_organization_id:",
+        "p_store_id:",
+        "p_default_discount_percent:",
+        "p_max_discount_percent:",
+        "p_allow_ask_above_max_discount:",
+        "p_discount_autonomy_mode:",
+        "p_discount_special_rules:",
+        "p_high_value_enabled:",
+        "p_high_value_threshold_amount_cents:",
+        "p_high_value_discount_percent:",
+        "p_high_value_requires_human:",
+        "p_discount_explanation:",
+      ]) {
+        assert.equal(
+          block.includes(argument),
+          true,
+          "missing atomic discount argument " + argument,
+        );
+      }
+
+      assert.equal(
+        block.includes('"upsert_store_discount_settings_with_legacy_mirror_scoped"'),
+        false,
+      );
+      assert.equal(
+        block.includes('"upsert_store_high_value_discount_settings_scoped"'),
+        false,
+      );
+      assert.equal(
+        block.includes("upsertSettingsExperiencePolicies("),
+        false,
+      );
+      assert.equal(
+        block.includes("upsertConfigAnswers("),
+        false,
+      );
+
       assert.equal(block.includes("human_help_discount_cases:"), false);
       assert.equal(block.includes("human_help_discount_cases_selected"), false);
       assert.equal(block.includes("human_help_discount_cases_other"), false);
@@ -1568,31 +1596,51 @@ const tests: TestCase[] = [
       assert.equal(block.includes("discount_special_rules: discountDraft"), false);
     },
   },
-  {
-    name: "discount read-only summary uses canonical special rules and derived approval text",
+  {    name: "discount read-only summary uses canonical presentation and high-value approval authority",
     run: () => {
       const source = readPageSource();
       const block = getDiscountItemsBlock(source);
 
+      for (const label of [
+        'label: "Desconto inicial para negociar"',
+        'label: "Maior desconto da negociação normal"',
+        'label: "A IA pode confirmar sozinha"',
+        'label: "Pode consultar acima do limite"',
+        'label: "Regra para vendas de valor alto"',
+        'label: "Aprovação em venda de valor alto"',
+      ]) {
+        assert.equal(
+          block.includes(label),
+          true,
+          "missing canonical discount summary label " + label,
+        );
+      }
+
       assert.equal(
-        block.includes('label: "Regras especiais", value: discountPresentation.discountSpecialRules || "Nao definido"'),
+        block.includes(
+          'discountPresentation.autonomyMode === "within_policy_autonomous"',
+        ),
         true,
       );
       assert.equal(
-        block.includes('label: "Quando precisa aprovação humana"'),
+        block.includes(
+          'discountPresentation.autonomyMode === "default_step_autonomous"',
+        ),
         true,
       );
       assert.equal(
-        block.includes("value: discountDraft.human_help_discount_summary || \"Não definido\""),
+        block.includes(
+          "savedCommercialExperience.high_value_requires_human",
+        ),
         true,
       );
+
       assert.equal(block.includes("price_direct_rule"), false);
       assert.equal(block.includes("price_must_understand_before"), false);
       assert.equal(block.includes("negotiation_rules_summary"), false);
     },
   },
-  {
-    name: "discount edit draft replaces only the known legacy explanation with the safe autonomy-aware copy",
+  {    name: "discount edit draft replaces only the known legacy explanation with the safe autonomy-aware copy",
     run: () => {
       const source = readPageSource();
       const block = getCreateDiscountDraftFromAnswersBlock(source);

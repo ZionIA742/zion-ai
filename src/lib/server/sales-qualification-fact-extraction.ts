@@ -86,6 +86,9 @@ const DETERMINISTIC_BOOLEAN_RULES: DeterministicBooleanRule[] = [
       /\bquero pagar parcelado\b/i,
       /\bpreciso de parcelamento\b/i,
       /\bquero pagar no pix\b/i,
+      /\b(?:gostaria|queria) de saber se da para parcelar\b/i,
+      /\b(?:gostaria|queria) de saber se tem como parcelar\b/i,
+      /\b(?:gostaria|queria) de saber se e possivel parcelar\b/i,
     ],
   },
   {
@@ -94,6 +97,7 @@ const DETERMINISTIC_BOOLEAN_RULES: DeterministicBooleanRule[] = [
     patterns: [
       /\bnao quero visita tecnica\b/i,
       /\bnao quero uma visita tecnica\b/i,
+      /\bnao tenho interesse em (?:fazer |agendar )?(?:uma )?visita tecnica\b/i,
     ],
   },
   {
@@ -103,6 +107,7 @@ const DETERMINISTIC_BOOLEAN_RULES: DeterministicBooleanRule[] = [
       /\bquero (uma )?visita tecnica\b/i,
       /\bpodem agendar (uma )?visita tecnica\b/i,
       /\bpreciso de (uma )?visita tecnica\b/i,
+      /\btenho interesse em (?:fazer |agendar )?(?:uma )?visita tecnica\b/i,
     ],
   },
 ];
@@ -161,6 +166,51 @@ function normalizeComparableText(value: string): string {
   return collapseWhitespace(normalizeText(value));
 }
 
+function canonicalizePreferredPeriodComparableText(value: string): string {
+  const normalized = normalizeComparableText(value);
+
+  const currentPeriodMatch =
+    /\b(?:de preferencia\s+)?(?:ainda\s+)?(?:este|esse|neste|nesse)\s+(mes|semana)\b/.exec(
+      normalized,
+    );
+  if (currentPeriodMatch?.[1]) {
+    return `current:${currentPeriodMatch[1]}`;
+  }
+
+  const nextPeriodPrefixMatch =
+    /\b(?:no\s+)?proximo\s+(mes|semana)\b/.exec(normalized);
+  if (nextPeriodPrefixMatch?.[1]) {
+    return `next:${nextPeriodPrefixMatch[1]}`;
+  }
+
+  const nextPeriodSuffixMatch =
+    /\b(mes|semana)\s+que\s+vem\b/.exec(normalized);
+  if (nextPeriodSuffixMatch?.[1]) {
+    return `next:${nextPeriodSuffixMatch[1]}`;
+  }
+
+  return normalized;
+}
+
+function stripPreferredPeriodFromDecisionContext(value: string): string {
+  const periodPatterns = [
+    /(?:,\s*)?(?:de\s+prefer[eê]ncia\s+)?(?:ainda\s+)?(?:este|esse|neste|nesse)\s+(?:m[eê]s|semana)\b/gi,
+    /(?:,\s*)?(?:no\s+)?pr[oó]ximo\s+(?:m[eê]s|semana)\b/gi,
+    /(?:,\s*)?(?:m[eê]s|semana)\s+que\s+vem\b/gi,
+  ];
+
+  let sanitized = value;
+  for (const pattern of periodPatterns) {
+    sanitized = sanitized.replace(pattern, "");
+  }
+
+  return collapseWhitespace(
+    sanitized
+      .replace(/^,\s*/, "")
+      .replace(/\s+,/g, ",")
+      .replace(/,\s*$/g, ""),
+  );
+}
 function normalizeForPatternChar(char: string): string {
   return char
     .normalize("NFD")
@@ -260,7 +310,7 @@ function deriveConfirmedAreaFromText(text: string): number | null {
   }
 
   const dimensionMatch = normalizedSource.match(
-    /\b(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:x|×)\s*(\d{1,3}(?:[.,]\d{1,2})?)\b/i,
+    /\b(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:x|×|por(?=\s*\d{1,3}(?:[.,]\d{1,2})?\s*(?:m|metros?)\b))\s*(\d{1,3}(?:[.,]\d{1,2})?)(?:\s*(?:m|metros?))?\b/i,
   );
   if (!dimensionMatch?.[1] || !dimensionMatch?.[2]) return null;
 
@@ -283,7 +333,7 @@ function deriveConfirmedAreaFromMatchableText(text: string): number | null {
   }
 
   const dimensionMatch = normalizedSource.match(
-    /\b(\d{1,3}(?:[.,]\d{1,2})?)\s*x\s*(\d{1,3}(?:[.,]\d{1,2})?)\b/i,
+    /\b(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:x|por(?=\s*\d{1,3}(?:[.,]\d{1,2})?\s*(?:m|metros?)\b))\s*(\d{1,3}(?:[.,]\d{1,2})?)(?:\s*(?:m|metros?))?\b/i,
   );
   if (!dimensionMatch?.[1] || !dimensionMatch?.[2]) return null;
 
@@ -332,7 +382,7 @@ function parseDeterministicBooleanCandidate(args: {
 function extractDimensionCandidates(anchorMessage: string): QualificationFactCandidate[] {
   const out: QualificationFactCandidate[] = [];
   const matches = Array.from(
-    anchorMessage.matchAll(/\b(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:x|×)\s*(\d{1,3}(?:[.,]\d{1,2})?)\b/gi),
+    anchorMessage.matchAll(/\b(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:x|×|por(?=\s*\d{1,3}(?:[.,]\d{1,2})?\s*(?:m|metros?)\b))\s*(\d{1,3}(?:[.,]\d{1,2})?)(?:\s*(?:m|metros?))?\b/gi),
   );
   const first = matches[0];
 
@@ -410,6 +460,32 @@ function extractExplicitAreaCandidates(anchorMessage: string): QualificationFact
   return out;
 }
 
+function extractPreferredPeriodCandidates(anchorMessage: string): QualificationFactCandidate[] {
+  const normalized = buildNormalizedTextWithIndexMap(anchorMessage);
+  const match =
+    /\b(?:de\s+preferencia\s+)?ainda\s+(?:este|esse)\s+(?:mes|semana)\b|\bde\s+preferencia\s+(?:este|esse)\s+(?:mes|semana)\b/i.exec(
+      normalized.normalizedText,
+    );
+
+  if (!match?.[0] || match.index == null) return [];
+
+  const evidenceText = extractRawMatchSlice({
+    sourceText: anchorMessage,
+    indexMap: normalized.indexMap,
+    matchIndex: match.index,
+    matchText: match[0],
+  });
+
+  return [
+    buildCandidate({
+      factKey: "preferred_period_text",
+      valueJson: normalizeTextValue(evidenceText),
+      assertionLevel: "confirmed",
+      sourceType: "incoming_customer_message",
+      evidenceText,
+    }),
+  ];
+}
 function extractBooleanCandidates(anchorMessage: string): QualificationFactCandidate[] {
   const out: QualificationFactCandidate[] = [];
   const factKeys: SupportedBooleanFactKey[] = [
@@ -441,9 +517,14 @@ function extractBooleanCandidates(anchorMessage: string): QualificationFactCandi
 
 function canonicalizeCandidateValue(candidate: QualificationFactCandidate): string | null {
   if (candidate.valueKind === "text") {
-    return typeof candidate.valueJson === "string"
-      ? `text:${normalizeComparableText(candidate.valueJson)}`
-      : null;
+    if (typeof candidate.valueJson !== "string") return null;
+
+    const comparableValue =
+      candidate.factKey === "preferred_period_text"
+        ? canonicalizePreferredPeriodComparableText(candidate.valueJson)
+        : normalizeComparableText(candidate.valueJson);
+
+    return comparableValue ? `text:${comparableValue}` : null;
   }
 
   if (candidate.valueKind === "number") {
@@ -479,6 +560,7 @@ export function extractDeterministicQualificationCandidates(
   return [
     ...extractDimensionCandidates(anchorMessage),
     ...extractExplicitAreaCandidates(anchorMessage),
+    ...extractPreferredPeriodCandidates(anchorMessage),
     ...extractBooleanCandidates(anchorMessage),
   ];
 }
@@ -584,9 +666,17 @@ function parseStructuredCandidate(
       return null;
     }
 
+    const rawTextValue = String(rawCandidate.text_value);
+    const textValue =
+      factKey === "decision_context"
+        ? stripPreferredPeriodFromDecisionContext(rawTextValue)
+        : rawTextValue;
+
+    if (!textValue.trim()) return null;
+
     return buildCandidate({
       factKey,
-      valueJson: String(rawCandidate.text_value),
+      valueJson: textValue,
       assertionLevel,
       sourceType: assertionLevel === "confirmed" ? "incoming_customer_message" : "system_inference",
       evidenceText,
@@ -686,6 +776,8 @@ export async function extractStructuredQualificationCandidates(args: {
         "Use confirmed somente quando a evidencia literal estiver explicitamente na mensagem.",
         "Use inferred somente para inferencias conservadoras sustentadas por trecho literal, sem inventar contexto.",
         "Nunca extraia fato a partir de respostas vagas como sim, nao, ok, beleza.",
+        "decision_context descreve somente quem decide, como decide, pessoas envolvidas ou contexto da decisao; nunca inclua prazo ou periodo temporal.",
+        "Prazo, janela temporal ou preferencia de quando deve ir exclusivamente em preferred_period_text.",
         "evidence_text deve ser um substring literal curto da mensagem do cliente.",
         "Retorne array vazio quando houver duvida, pergunta sem confirmacao, ou evidencia insuficiente.",
       ].join(" "),

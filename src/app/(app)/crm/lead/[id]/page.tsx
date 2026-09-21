@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { KeyboardEvent, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { getCanonicalCrmStage } from "@/config/crm";
@@ -17,6 +16,11 @@ import {
   getOrCreatePendingManualQuoteCreationOperation,
 } from "./quote-create-operation";
 import { supabase } from "@/lib/supabaseBrowser";
+import {
+  buildGoogleMapsDirectionsUrl,
+  buildStoreAddressText,
+  type StoreGeneralAddressLike,
+} from "@/lib/google-maps-route";
 
 type Lead = {
   id: string;
@@ -74,6 +78,7 @@ type CommercialTaskPayload = {
 
 type CommercialTask = {
   id: string;
+  commercial_opportunity_id?: string | null;
   task_type: string;
   status: string | null;
   priority: string | null;
@@ -90,6 +95,7 @@ type CommercialTask = {
 
 type Appointment = {
   id: string;
+  commercial_opportunity_id?: string | null;
   lead_id: string | null;
   conversation_id: string | null;
   appointment_type: string | null;
@@ -109,11 +115,43 @@ type LeadDetailsResponse = {
   messages?: MessageRow[];
   commercialTasks?: CommercialTask[];
   appointments?: Appointment[];
+  qualificationFacts?: QualificationFactsSnapshot | null;
+  storeGeneralAddress?: StoreGeneralAddressLike | null;
   opportunities?: OpportunitySummary[];
   selectedOpportunityId?: string | null;
   requiresOpportunitySelection?: boolean;
   error?: string;
   message?: string;
+};
+
+type QualificationKnownFact = {
+  factKey?: string | null;
+  state?: string | null;
+  valueKind?: string | null;
+  value?: unknown;
+  normalizedValueText?: string | null;
+  updatedAt?: string | null;
+};
+
+type QualificationConflictFact = {
+  factKey?: string | null;
+  valueKind?: string | null;
+  candidates?: unknown;
+  updatedAt?: string | null;
+};
+
+type QualificationFactsSnapshot = {
+  organization_id?: string | null;
+  store_id?: string | null;
+  commercial_opportunity_id?: string | null;
+  known_facts?: QualificationKnownFact[] | null;
+  missing_fact_groups?: unknown;
+  conflicts?: QualificationConflictFact[] | null;
+  provenance_summary?: unknown;
+  can_ask_next_question?: boolean | null;
+  known_fact_count?: number | null;
+  missing_group_count?: number | null;
+  conflict_count?: number | null;
 };
 
 type OpportunitySummary = {
@@ -439,13 +477,11 @@ type QuoteDraftPayload = {
 
 type DetailTab =
   | "summary"
-  | "opportunity"
   | "appointments"
-  | "context"
-  | "tasks"
   | "pdfs";
+type InformationSection = "summary" | "opportunity" | "context" | "tasks";
 type GeneratedPdfTab = "quotes" | "contracts";
-const VALID_DETAIL_TABS: DetailTab[] = ["summary", "appointments", "context", "tasks", "pdfs"];
+const VALID_DETAIL_TABS: DetailTab[] = ["summary", "appointments", "pdfs"];
 
 function formatSender(message: MessageRow) {
   const sender = String(message.sender || "").toLowerCase();
@@ -675,20 +711,11 @@ function convertQuoteValidUntilToDays(value: string | null | undefined) {
   return "";
 }
 
-function buildGoogleMapsRouteUrl(addressText: string | null | undefined) {
-  const safeAddress = String(addressText || "").trim();
-
-  if (!safeAddress) {
-    return null;
-  }
-
-  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
-    safeAddress
-  )}`;
-}
-
-function openGoogleMapsRoute(addressText: string | null | undefined) {
-  const routeUrl = buildGoogleMapsRouteUrl(addressText);
+function openGoogleMapsRoute(originAddress: string | null | undefined, destinationAddress: string | null | undefined) {
+  const routeUrl = buildGoogleMapsDirectionsUrl({
+    origin: originAddress,
+    destination: destinationAddress,
+  });
 
   if (!routeUrl) {
     return;
@@ -918,7 +945,7 @@ function formatLeadStage(value: string | null | undefined) {
   const labels: Record<string, string> = {
     novo_lead: "Novo lead",
     qualificacao: "Qualificacao",
-    orcamento: "Orcamento",
+    orcamento: "Orçamento",
     negociacao: "Negociacao",
     fechamento_pagamento: "Fechamento / pagamento",
     pagamento_pendente_confirmacao: "Pagamento pendente",
@@ -1040,8 +1067,93 @@ function formatDirectionLabel(value: string | null | undefined) {
   return formatFriendlyLabel(value);
 }
 
-function getLatestCommercialTask(tasks: CommercialTask[]) {
-  return tasks.length > 0 ? tasks[0] : null;
+function formatQualificationFactValue(fact: QualificationKnownFact | null) {
+  if (!fact) return null;
+
+  if (typeof fact.value === "string") {
+    const originalValue = fact.value.trim();
+    if (originalValue) return originalValue;
+  }
+
+  const normalizedValueText = String(fact.normalizedValueText || "").trim();
+  if (normalizedValueText) return normalizedValueText;
+
+  if (typeof fact.value === "number" && Number.isFinite(fact.value)) {
+    return `${fact.value}`;
+  }
+
+  if (typeof fact.value === "boolean") {
+    return fact.value ? "Sim" : "Não";
+  }
+
+  return null;
+}
+
+function findQualificationFact(
+  snapshot: QualificationFactsSnapshot | null,
+  factKey: string
+) {
+  const knownFacts = Array.isArray(snapshot?.known_facts)
+    ? snapshot?.known_facts || []
+    : [];
+  const conflicts = Array.isArray(snapshot?.conflicts)
+    ? snapshot?.conflicts || []
+    : [];
+  const conflict = conflicts.find((fact) => fact.factKey === factKey) || null;
+  const knownFact =
+    knownFacts.find(
+      (fact) =>
+        fact.factKey === factKey &&
+        (fact.state === "confirmed" || fact.state === "inferred")
+    ) || null;
+
+  return { knownFact, conflict };
+}
+
+function getQualificationFactDisplay(
+  snapshot: QualificationFactsSnapshot | null,
+  factKey: string
+) {
+  const { knownFact, conflict } = findQualificationFact(snapshot, factKey);
+
+  if (conflict) {
+    return {
+      value: "Precisa de confirmação",
+      help: "Em conflito nos dados de qualificação.",
+    };
+  }
+
+  const value = formatQualificationFactValue(knownFact);
+  if (!value) {
+    return {
+      value: "Não informado",
+      help: null,
+    };
+  }
+
+  if (knownFact?.state === "inferred") {
+    return {
+      value,
+      help: "Inferido a partir da conversa; ainda não confirmado.",
+    };
+  }
+
+  return {
+    value,
+    help: null,
+  };
+}
+
+function formatAreaFactValue(snapshot: QualificationFactsSnapshot | null) {
+  const display = getQualificationFactDisplay(snapshot, "requested_area_m2");
+  if (display.value === "Não informado" || display.value === "Precisa de confirmação") {
+    return display;
+  }
+
+  return {
+    ...display,
+    value: `${display.value} m²`,
+  };
 }
 
 function InfoCard({
@@ -1083,6 +1195,7 @@ export default function LeadPage() {
   const customerAttachmentInputRef = useRef<HTMLInputElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const commercialActionsRef = useRef<HTMLDivElement | null>(null);
   const hasScrolledMessagesInitiallyRef = useRef(false);
   const hasRestoredQuoteDraftRef = useRef(false);
   const latestQuoteDraftRef = useRef<QuoteDraftPayload | null>(null);
@@ -1098,6 +1211,10 @@ export default function LeadPage() {
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [commercialTasks, setCommercialTasks] = useState<CommercialTask[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [qualificationFacts, setQualificationFacts] =
+    useState<QualificationFactsSnapshot | null>(null);
+  const [storeGeneralAddress, setStoreGeneralAddress] =
+    useState<StoreGeneralAddressLike | null>(null);
   const [opportunities, setOpportunities] = useState<OpportunitySummary[]>([]);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(null);
   const [requiresOpportunitySelection, setRequiresOpportunitySelection] = useState(false);
@@ -1121,6 +1238,9 @@ export default function LeadPage() {
   const [manualPendingAttachment, setManualPendingAttachment] =
     useState<PendingCustomerAttachment | null>(null);
   const [activeDetailsTab, setActiveDetailsTab] = useState<DetailTab | null>(null);
+  const [activeInformationSection, setActiveInformationSection] =
+    useState<InformationSection>("summary");
+  const [commercialActionsOpen, setCommercialActionsOpen] = useState(false);
   const [activeGeneratedPdfTab, setActiveGeneratedPdfTab] =
     useState<GeneratedPdfTab>("quotes");
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
@@ -1168,6 +1288,15 @@ export default function LeadPage() {
   const [contractActionError, setContractActionError] = useState<string | null>(null);
   const [contractActionSuccess, setContractActionSuccess] = useState<string | null>(null);
   const [hasLoadedGeneratedContracts, setHasLoadedGeneratedContracts] = useState(false);
+  const leadDetailsScopeRef = useRef<string | null>(null);
+  const documentScopeRef = useRef<string | null>(null);
+  const paymentScopeRef = useRef<string | null>(null);
+  const quoteEditScopeRef = useRef<string | null>(null);
+  const manualSendInFlightRef = useRef(false);
+  const simulatedCustomerSubmitInFlightRef = useRef(false);
+  const simulatedCustomerMutationInFlightRef = useRef(false);
+  const takeoverMutationInFlightRef = useRef(false);
+  const paymentSubmitInFlightRef = useRef(false);
   const [imagePreviewErrors, setImagePreviewErrors] = useState<Record<string, boolean>>(
     {}
   );
@@ -1185,9 +1314,30 @@ export default function LeadPage() {
 
   const hasConversation = Boolean(conversation);
   const isHumanActive = conversation?.is_human_active === true;
-  const latestCommercialTask = getLatestCommercialTask(commercialTasks);
+  const storeRouteOriginAddress = buildStoreAddressText(storeGeneralAddress);
+  const routeDestinationFromAppointment =
+    appointments.find((appointment) => String(appointment.address_text || "").trim())?.address_text ||
+    null;
+  const selectedRouteDestinationAddress = routeDestinationFromAppointment;
+  const selectedRouteUrl = buildGoogleMapsDirectionsUrl({
+    origin: storeRouteOriginAddress,
+    destination: selectedRouteDestinationAddress,
+  });
+  const selectedRouteDisabledReason = !storeRouteOriginAddress
+    ? "Cadastre o endereco da loja para abrir a rota."
+    : !selectedRouteDestinationAddress
+      ? "Endereco do cliente ainda nao disponivel."
+      : null;
   const selectedOpportunity =
     opportunities.find((opportunity) => opportunity.id === selectedOpportunityId) || null;
+  const leadDetailsScopeKey = `${leadId}:${requestedConversationId || ""}:${
+    requestedOpportunityId || ""
+  }`;
+  const selectedDocumentOpportunityId = selectedOpportunity?.id || null;
+  const documentScopeKey =
+    leadId && selectedDocumentOpportunityId
+      ? `${leadId}:${selectedDocumentOpportunityId}`
+      : null;
   const activeOpportunities = opportunities.filter(
     (opportunity) => getCanonicalCrmStage(opportunity.stage)?.area === "pipeline"
   );
@@ -1208,6 +1358,46 @@ export default function LeadPage() {
   const selectedOpportunityStageLabel = selectedOpportunity
     ? formatOpportunityStage(selectedOpportunity.stage)
     : "Nenhuma oportunidade selecionada";
+  const needSummaryDisplay = getQualificationFactDisplay(
+    qualificationFacts,
+    "need_summary"
+  );
+  const productReferenceDisplay = getQualificationFactDisplay(
+    qualificationFacts,
+    "interested_product_reference"
+  );
+  const spaceTextDisplay = getQualificationFactDisplay(qualificationFacts, "space_text");
+  const requestedAreaDisplay = formatAreaFactValue(qualificationFacts);
+  const locationTextDisplay = getQualificationFactDisplay(qualificationFacts, "location_text");
+  const installationInterestDisplay = getQualificationFactDisplay(
+    qualificationFacts,
+    "installation_interest"
+  );
+  const technicalVisitInterestDisplay = getQualificationFactDisplay(
+    qualificationFacts,
+    "technical_visit_interest"
+  );
+  const paymentInterestDisplay = getQualificationFactDisplay(
+    qualificationFacts,
+    "payment_interest"
+  );
+  const budgetTextDisplay = getQualificationFactDisplay(qualificationFacts, "budget_text");
+  const decisionContextDisplay = getQualificationFactDisplay(
+    qualificationFacts,
+    "decision_context"
+  );
+  const preferredPeriodDisplay = getQualificationFactDisplay(
+    qualificationFacts,
+    "preferred_period_text"
+  );
+  const customerPreferencesDisplay = getQualificationFactDisplay(
+    qualificationFacts,
+    "customer_preferences_text"
+  );
+  const relevantObjectionDisplay = getQualificationFactDisplay(
+    qualificationFacts,
+    "relevant_objection_text"
+  );
   const contractsByQuoteId = generatedContracts.reduce<Record<string, GeneratedContractSummary>>(
     (acc, contract) => {
       const quoteId = String(contract.quote_id || "").trim();
@@ -1294,6 +1484,37 @@ export default function LeadPage() {
     quoteValidityDays,
     quoteItems,
   };
+
+  useEffect(() => {
+    if (!commercialActionsOpen) {
+      return;
+    }
+
+    function handleActionsOutsidePointer(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (!commercialActionsRef.current?.contains(target)) {
+        setCommercialActionsOpen(false);
+      }
+    }
+
+    function handleActionsEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") {
+        setCommercialActionsOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handleActionsOutsidePointer);
+    document.addEventListener("keydown", handleActionsEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", handleActionsOutsidePointer);
+      document.removeEventListener("keydown", handleActionsEscape);
+    };
+  }, [commercialActionsOpen]);
 
   useEffect(() => {
     return () => {
@@ -1506,6 +1727,24 @@ export default function LeadPage() {
   }
 
   function applySelectedOpportunity(opportunityId: string) {
+    setCommercialTasks([]);
+    setAppointments([]);
+    setQualificationFacts(null);
+    documentScopeRef.current = null;
+    paymentScopeRef.current = opportunityId;
+    quoteEditScopeRef.current = null;
+    setPaymentState(null);
+    setPaymentLoading(false);
+    setPaymentError(null);
+    setPaymentSuccess(null);
+    setGeneratedQuotes([]);
+    setGeneratedQuotesError(null);
+    setGeneratedQuotesLoading(false);
+    setHasLoadedGeneratedQuotes(false);
+    setGeneratedContracts([]);
+    setGeneratedContractsError(null);
+    setGeneratedContractsLoading(false);
+    setHasLoadedGeneratedContracts(false);
     setSelectedOpportunityId(opportunityId);
     setRequiresOpportunitySelection(false);
     syncSelectedOpportunityInUrl(opportunityId);
@@ -1518,6 +1757,7 @@ export default function LeadPage() {
       return;
     }
 
+    const scopedPaymentKey = selectedOpportunity.id;
     const lifecycleCycle = selectedOpportunity.lifecycleCycle;
 
     if (!Number.isInteger(lifecycleCycle)) {
@@ -1525,6 +1765,8 @@ export default function LeadPage() {
       setStatusText(null);
       return;
     }
+
+    paymentScopeRef.current = scopedPaymentKey;
 
     if (options?.openModal) {
       setIsPaymentModalOpen(true);
@@ -1547,6 +1789,10 @@ export default function LeadPage() {
       const result =
         (await response.json().catch(() => null)) as PaymentGetResponse | null;
 
+      if (paymentScopeRef.current !== scopedPaymentKey) {
+        return;
+      }
+
       if (!response.ok || !result?.ok || !result.payment) {
         throw new Error(
           result?.message ||
@@ -1555,14 +1801,26 @@ export default function LeadPage() {
         );
       }
 
+      if (
+        String(result.commercialOpportunityId || "").trim() !== scopedPaymentKey
+      ) {
+        return;
+      }
+
       setPaymentState(result.payment);
     } catch (error: any) {
+      if (paymentScopeRef.current !== scopedPaymentKey) {
+        return;
+      }
+
       setPaymentState(null);
       setPaymentError(
         error?.message || "Nao foi possivel carregar o estado do pagamento.",
       );
     } finally {
-      setPaymentLoading(false);
+      if (paymentScopeRef.current === scopedPaymentKey) {
+        setPaymentLoading(false);
+      }
     }
   }
 
@@ -1595,6 +1853,10 @@ export default function LeadPage() {
   async function submitSelectedOpportunityPaymentAction(
     action: "confirm_payment" | "settle" | "reopen",
   ) {
+    if (paymentSubmitInFlightRef.current || paymentSubmitting) {
+      return;
+    }
+
     if (!selectedOpportunity) {
       setPaymentError("Selecione uma oportunidade comercial.");
       return;
@@ -1637,6 +1899,7 @@ export default function LeadPage() {
       return;
     }
 
+    paymentSubmitInFlightRef.current = true;
     setPaymentSubmitting(true);
     setPaymentError(null);
     setPaymentSuccess(null);
@@ -1691,6 +1954,7 @@ export default function LeadPage() {
         error?.message || "Nao foi possivel atualizar o pagamento.",
       );
     } finally {
+      paymentSubmitInFlightRef.current = false;
       setPaymentSubmitting(false);
     }
   }
@@ -2102,6 +2366,9 @@ export default function LeadPage() {
 
   async function fetchLeadConversationAndMessages(options?: { silent?: boolean }) {
     const silent = options?.silent ?? false;
+    const scopedLeadDetailsKey = leadDetailsScopeKey;
+
+    leadDetailsScopeRef.current = scopedLeadDetailsKey;
 
     if (silent) {
       setRefreshing(true);
@@ -2133,6 +2400,10 @@ export default function LeadPage() {
 
       const result = (await response.json()) as LeadDetailsResponse;
 
+      if (leadDetailsScopeRef.current !== scopedLeadDetailsKey) {
+        return;
+      }
+
       if (!response.ok || !result?.ok) {
         setErrorText(
           result?.message || result?.error || "Erro ao carregar dados do lead."
@@ -2153,6 +2424,8 @@ export default function LeadPage() {
         Array.isArray(result.commercialTasks) ? result.commercialTasks : []
       );
       setAppointments(Array.isArray(result.appointments) ? result.appointments : []);
+      setQualificationFacts(result.qualificationFacts ?? null);
+      setStoreGeneralAddress(result.storeGeneralAddress ?? null);
       setOpportunities(Array.isArray(result.opportunities) ? result.opportunities : []);
       setSelectedOpportunityId(
         String(result.selectedOpportunityId || "").trim() || null
@@ -2180,9 +2453,19 @@ export default function LeadPage() {
   }
 
   async function fetchGeneratedQuotes(options?: { silent?: boolean }) {
-    if (!leadId) {
+    const scopedLeadId = leadId;
+    const scopedOpportunityId = selectedDocumentOpportunityId;
+    const scopedDocumentKey = documentScopeKey;
+
+    if (!scopedLeadId || !scopedOpportunityId || !scopedDocumentKey) {
+      setGeneratedQuotes([]);
+      setGeneratedQuotesError(null);
+      setGeneratedQuotesLoading(false);
+      setHasLoadedGeneratedQuotes(true);
       return;
     }
+
+    documentScopeRef.current = scopedDocumentKey;
 
     if (!options?.silent) {
       setGeneratedQuotesLoading(true);
@@ -2191,14 +2474,22 @@ export default function LeadPage() {
     setGeneratedQuotesError(null);
 
     try {
+      const params = new URLSearchParams({
+        leadId: scopedLeadId,
+        commercialOpportunityId: scopedOpportunityId,
+      });
       const response = await fetch(
-        `/api/sales-quotes?leadId=${encodeURIComponent(leadId)}`,
+        `/api/sales-quotes?${params.toString()}`,
         {
           method: "GET",
           cache: "no-store",
         }
       );
       const result = (await response.json()) as SalesQuoteListResponse;
+
+      if (documentScopeRef.current !== scopedDocumentKey) {
+        return;
+      }
 
       if (!response.ok || !result?.ok) {
         throw new Error(result?.message || "Nao foi possivel carregar os PDFs gerados.");
@@ -2207,20 +2498,34 @@ export default function LeadPage() {
       setGeneratedQuotes(Array.isArray(result.quotes) ? result.quotes : []);
       setHasLoadedGeneratedQuotes(true);
     } catch (error: any) {
+      if (documentScopeRef.current !== scopedDocumentKey) {
+        return;
+      }
+
       setGeneratedQuotesError(
         error?.message || "Nao foi possivel carregar os PDFs gerados."
       );
     } finally {
-      if (!options?.silent) {
+      if (!options?.silent && documentScopeRef.current === scopedDocumentKey) {
         setGeneratedQuotesLoading(false);
       }
     }
   }
 
   async function fetchGeneratedContracts(options?: { silent?: boolean }) {
-    if (!leadId) {
+    const scopedLeadId = leadId;
+    const scopedOpportunityId = selectedDocumentOpportunityId;
+    const scopedDocumentKey = documentScopeKey;
+
+    if (!scopedLeadId || !scopedOpportunityId || !scopedDocumentKey) {
+      setGeneratedContracts([]);
+      setGeneratedContractsError(null);
+      setGeneratedContractsLoading(false);
+      setHasLoadedGeneratedContracts(true);
       return;
     }
+
+    documentScopeRef.current = scopedDocumentKey;
 
     if (!options?.silent) {
       setGeneratedContractsLoading(true);
@@ -2229,14 +2534,22 @@ export default function LeadPage() {
     setGeneratedContractsError(null);
 
     try {
+      const params = new URLSearchParams({
+        leadId: scopedLeadId,
+        commercialOpportunityId: scopedOpportunityId,
+      });
       const response = await fetch(
-        `/api/sales-contracts?leadId=${encodeURIComponent(leadId)}`,
+        `/api/sales-contracts?${params.toString()}`,
         {
           method: "GET",
           cache: "no-store",
         }
       );
       const result = (await response.json()) as SalesContractListResponse;
+
+      if (documentScopeRef.current !== scopedDocumentKey) {
+        return;
+      }
 
       if (!response.ok || !result?.ok) {
         throw new Error(result?.message || "Nao foi possivel carregar os contratos.");
@@ -2245,13 +2558,28 @@ export default function LeadPage() {
       setGeneratedContracts(Array.isArray(result.contracts) ? result.contracts : []);
       setHasLoadedGeneratedContracts(true);
     } catch (error: any) {
+      if (documentScopeRef.current !== scopedDocumentKey) {
+        return;
+      }
+
       setGeneratedContractsError(
         error?.message || "Nao foi possivel carregar os contratos."
       );
     } finally {
-      if (!options?.silent) {
+      if (!options?.silent && documentScopeRef.current === scopedDocumentKey) {
         setGeneratedContractsLoading(false);
       }
+    }
+  }
+
+  async function refreshCurrentScreenSnapshot() {
+    await fetchLeadConversationAndMessages({ silent: true });
+
+    if (activeDetailsTab === "pdfs" && documentScopeKey) {
+      await Promise.all([
+        fetchGeneratedQuotes({ silent: true }),
+        fetchGeneratedContracts({ silent: true }),
+      ]);
     }
   }
 
@@ -2612,8 +2940,22 @@ export default function LeadPage() {
   ) {
     const safeQuoteId = String(quoteId || "").trim();
     const normalizedStatus = String(currentStatus || "").trim().toLowerCase();
+    const scopedOpportunityId = selectedDocumentOpportunityId;
+    const scopedDocumentKey = documentScopeKey;
+    const scopedQuoteEditKey =
+      scopedOpportunityId && scopedDocumentKey
+        ? `${scopedDocumentKey}:${safeQuoteId}`
+        : null;
 
-    if (!safeQuoteId) {
+    if (!safeQuoteId || !scopedOpportunityId || !scopedQuoteEditKey) {
+      return;
+    }
+
+    const quoteBelongsToCurrentScope = generatedQuotes.some(
+      (quote) => quote.id === safeQuoteId
+    );
+
+    if (!quoteBelongsToCurrentScope) {
       return;
     }
 
@@ -2627,6 +2969,7 @@ export default function LeadPage() {
       return;
     }
 
+    quoteEditScopeRef.current = scopedQuoteEditKey;
     setLoadingQuoteForEdit(safeQuoteId);
     setGeneratedQuotesError(null);
     setQuoteActionError(null);
@@ -2641,6 +2984,14 @@ export default function LeadPage() {
 
       if (!response.ok || !result?.ok || !result.quote) {
         throw new Error(result?.message || "Nao foi possivel carregar o orcamento para edicao.");
+      }
+
+      if (quoteEditScopeRef.current !== scopedQuoteEditKey) {
+        return;
+      }
+
+      if (result.quote.id !== safeQuoteId) {
+        return;
       }
 
       const formItems = Array.isArray(result.items)
@@ -2684,11 +3035,17 @@ export default function LeadPage() {
       setQuoteFormSuccess(null);
       setIsQuoteModalOpen(true);
     } catch (error: any) {
+      if (quoteEditScopeRef.current !== scopedQuoteEditKey) {
+        return;
+      }
+
       setGeneratedQuotesError(
         error?.message || "Nao foi possivel carregar o orcamento para edicao."
       );
     } finally {
-      setLoadingQuoteForEdit(null);
+      if (quoteEditScopeRef.current === scopedQuoteEditKey) {
+        setLoadingQuoteForEdit(null);
+      }
     }
   }
 
@@ -2793,11 +3150,16 @@ export default function LeadPage() {
   }
 
   async function takeOverConversation() {
+    if (takeoverMutationInFlightRef.current || working) {
+      return;
+    }
+
     if (!lead || !conversation) {
       setErrorText("Nao foi possivel assumir: conversa nao encontrada para este lead.");
       return;
     }
 
+    takeoverMutationInFlightRef.current = true;
     setWorking(true);
     setErrorText(null);
     setStatusText(null);
@@ -2818,21 +3180,28 @@ export default function LeadPage() {
       });
 
       setErrorText((error as any)?.message ?? "Erro ao assumir conversa.");
+      takeoverMutationInFlightRef.current = false;
       setWorking(false);
       return;
     }
 
     setStatusText("Conversa assumida. IA pausada.");
+    takeoverMutationInFlightRef.current = false;
     setWorking(false);
     await fetchLeadConversationAndMessages({ silent: true });
   }
 
   async function releaseConversation() {
+    if (takeoverMutationInFlightRef.current || working) {
+      return;
+    }
+
     if (!lead || !conversation) {
       setErrorText("Nao foi possivel liberar: conversa nao encontrada para este lead.");
       return;
     }
 
+    takeoverMutationInFlightRef.current = true;
     setWorking(true);
     setErrorText(null);
     setStatusText(null);
@@ -2853,6 +3222,7 @@ export default function LeadPage() {
       });
 
       setErrorText((error as any)?.message ?? "Erro ao liberar IA.");
+      takeoverMutationInFlightRef.current = false;
       setWorking(false);
       return;
     }
@@ -2860,6 +3230,7 @@ export default function LeadPage() {
     setStatusText(
       "IA liberada novamente. O sistema voltou pelo ultimo estado comercial valido com fallback seguro."
     );
+    takeoverMutationInFlightRef.current = false;
     setWorking(false);
     await fetchLeadConversationAndMessages({ silent: true });
   }
@@ -2952,6 +3323,10 @@ export default function LeadPage() {
   }
 
   async function sendMessage() {
+    if (manualSendInFlightRef.current || working) {
+      return;
+    }
+
     const text = newMessage.trim();
     const pendingAttachment = manualPendingAttachment;
 
@@ -2962,6 +3337,7 @@ export default function LeadPage() {
       return;
     }
 
+    manualSendInFlightRef.current = true;
     setWorking(true);
     setErrorText(null);
     setStatusText(null);
@@ -2973,6 +3349,7 @@ export default function LeadPage() {
       textSent = await sendTextMessage(text);
 
       if (!textSent) {
+        manualSendInFlightRef.current = false;
         setWorking(false);
         return;
       }
@@ -2988,6 +3365,7 @@ export default function LeadPage() {
           await fetchLeadConversationAndMessages({ silent: true });
         }
 
+        manualSendInFlightRef.current = false;
         setWorking(false);
         return;
       }
@@ -3009,11 +3387,16 @@ export default function LeadPage() {
       setStatusText("Mensagem enviada com sucesso.");
     }
 
+    manualSendInFlightRef.current = false;
     setWorking(false);
     await fetchLeadConversationAndMessages({ silent: true });
   }
 
   async function simulateCustomerMessage(options?: { skipRefresh?: boolean }) {
+    if (simulatedCustomerMutationInFlightRef.current || simulatingCustomer) {
+      return false;
+    }
+
     const text = simulatedCustomerMessage.trim();
     const skipRefresh = options?.skipRefresh ?? false;
 
@@ -3024,6 +3407,7 @@ export default function LeadPage() {
       return false;
     }
 
+    simulatedCustomerMutationInFlightRef.current = true;
     setSimulatingCustomer(true);
 
     try {
@@ -3054,6 +3438,7 @@ export default function LeadPage() {
         });
 
         setErrorText(String(errorMessage));
+        simulatedCustomerMutationInFlightRef.current = false;
         setSimulatingCustomer(false);
         return false;
       }
@@ -3070,6 +3455,7 @@ export default function LeadPage() {
         setStatusText("Simulacao concluida.");
       }
 
+      simulatedCustomerMutationInFlightRef.current = false;
       setSimulatingCustomer(false);
       if (!skipRefresh) {
         await fetchLeadConversationAndMessages({ silent: true });
@@ -3081,6 +3467,7 @@ export default function LeadPage() {
       setErrorText(
         error?.message || "Erro inesperado ao simular mensagem do cliente."
       );
+      simulatedCustomerMutationInFlightRef.current = false;
       setSimulatingCustomer(false);
       return false;
     }
@@ -3192,6 +3579,14 @@ export default function LeadPage() {
   }
 
   async function submitSimulatedCustomerComposer() {
+    if (
+      simulatedCustomerSubmitInFlightRef.current ||
+      simulatingCustomer ||
+      uploadingCustomerAttachment
+    ) {
+      return;
+    }
+
     const text = simulatedCustomerMessage.trim();
     const pendingAttachment = simulatedPendingAttachment;
 
@@ -3205,6 +3600,7 @@ export default function LeadPage() {
       return;
     }
 
+    simulatedCustomerSubmitInFlightRef.current = true;
     setErrorText(null);
     setStatusText(null);
 
@@ -3215,6 +3611,7 @@ export default function LeadPage() {
       textSent = await simulateCustomerMessage({ skipRefresh: true });
 
       if (!textSent) {
+        simulatedCustomerSubmitInFlightRef.current = false;
         return;
       }
     }
@@ -3232,6 +3629,7 @@ export default function LeadPage() {
           setStatusText("Texto enviado, mas o anexo falhou. Revise e tente novamente.");
           await fetchLeadConversationAndMessages({ silent: true });
         }
+        simulatedCustomerSubmitInFlightRef.current = false;
         return;
       }
     }
@@ -3251,6 +3649,7 @@ export default function LeadPage() {
     }
 
     await fetchLeadConversationAndMessages({ silent: true });
+    simulatedCustomerSubmitInFlightRef.current = false;
   }
 
   function cancelPendingManualAttachment() {
@@ -3743,6 +4142,7 @@ export default function LeadPage() {
   }, [leadId, requestedConversationId, requestedOpportunityId]);
 
   useEffect(() => {
+    documentScopeRef.current = documentScopeKey;
     setGeneratedQuotes([]);
     setGeneratedQuotesError(null);
     setGeneratedQuotesLoading(false);
@@ -3761,16 +4161,22 @@ export default function LeadPage() {
     setContractActionError(null);
     setContractActionSuccess(null);
     setHasLoadedGeneratedContracts(false);
-  }, [leadId]);
+  }, [documentScopeKey]);
 
   useEffect(() => {
     if (activeDetailsTab !== "pdfs") {
       return;
     }
 
+    if (!documentScopeKey) {
+      setHasLoadedGeneratedQuotes(true);
+      setHasLoadedGeneratedContracts(true);
+      return;
+    }
+
     void fetchGeneratedQuotes();
     void fetchGeneratedContracts();
-  }, [activeDetailsTab, leadId]);
+  }, [activeDetailsTab, documentScopeKey]);
 
   useEffect(() => {
     if (loading) return;
@@ -3976,40 +4382,19 @@ export default function LeadPage() {
   }> = [
     {
       id: "summary",
-      label: "Resumo rapido",
+      label: "Informações",
       value: conversation?.last_message_preview ? "Atualizado" : "Sem resumo",
-      help: "Ultima mensagem e proximo passo",
-    },
-    {
-      id: "opportunity",
-      label: "Dados da oportunidade",
-      value: selectedOpportunity ? selectedOpportunityStageLabel : "Selecionar",
-      help: "Contexto comercial selecionado",
+      help: "Resumo, oportunidade, contexto e pendências",
     },
     {
       id: "appointments",
-      label: "Agenda e compromissos",
+      label: "Agenda",
       value: `${appointments.length}`,
       help: appointments.length === 1 ? "compromisso" : "compromissos",
     },
     {
-      id: "context",
-      label: "Interesses e contexto",
-      value:
-        latestCommercialTask?.task_payload?.recommended_model ||
-        latestCommercialTask?.task_payload?.ad_model_or_requested_model ||
-        "Sem modelo",
-      help: "Modelo, espaco e preferencias",
-    },
-    {
-      id: "tasks",
-      label: "Pendencias comerciais",
-      value: `${commercialTasks.length}`,
-      help: commercialTasks.length === 1 ? "pendencia" : "pendencias",
-    },
-    {
       id: "pdfs",
-      label: "PDFs gerados",
+      label: "Documentos",
       value: `${generatedQuotes.length + generatedContracts.length}`,
       help:
         generatedQuotes.length + generatedContracts.length === 1
@@ -4019,8 +4404,8 @@ export default function LeadPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <div className="mx-auto max-w-6xl px-4 py-4 lg:px-6">
+    <div className="min-h-screen bg-white -mx-4 -mt-4 lg:-mx-6 lg:-mt-6">
+      <div className="w-full max-w-none p-0">
         {refreshing ? (
           <div className="mb-4 flex justify-end">
             <div className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 shadow-sm ring-1 ring-black/10">
@@ -4043,132 +4428,169 @@ export default function LeadPage() {
           </div>
         ) : null}
 
-        <div className="rounded-3xl bg-white shadow-sm ring-1 ring-black/5">
-          <div className="border-b border-gray-100 px-4 py-4 lg:px-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="bg-white">
+          <div className="border-b border-gray-100 px-4 py-3 lg:px-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
                   Conversa com cliente
                 </div>
-                <h1 className="mt-1 break-words text-xl font-bold text-gray-900">
-                  {lead.name ?? "Lead sem nome"}
-                </h1>
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-600">
-                  <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-800">
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <h1 className="break-words text-xl font-bold text-gray-950">
+                    {lead.name ?? "Lead sem nome"}
+                  </h1>
+                  <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-800">
                     {isHumanActive ? "Humano no controle" : "IA ativa"}
+                  </span>
+                  <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
+                    {selectedOpportunityStageLabel}
                   </span>
                 </div>
               </div>
 
-              <div className="flex flex-col items-end gap-2">
-                <div className="flex flex-wrap justify-end gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    isHumanActive
+                      ? void releaseConversation()
+                      : void takeOverConversation()
+                  }
+                  disabled={isHumanActive ? !canReleaseToAI : !canTakeOver}
+                  className="rounded-xl bg-black px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isHumanActive ? "Devolver para IA" : "Assumir conversa"}
+                </button>
+
+                <div ref={commercialActionsRef} className="relative">
                   <button
                     type="button"
-                    onClick={() => setActiveDetailsTab("opportunity")}
-                    className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                    onClick={() => setCommercialActionsOpen((current) => !current)}
+                    className="rounded-xl bg-white px-4 py-2.5 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                    aria-expanded={commercialActionsOpen}
                   >
-                    Dados da oportunidade
+                    Ações
                   </button>
 
-                  <button
-                    onClick={() => void takeOverConversation()}
-                    disabled={!canTakeOver}
-                    className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isHumanActive ? "Conversa assumida" : "Assumir conversa"}
-                  </button>
+                  {commercialActionsOpen ? (
+                    <div className="absolute right-0 top-full z-40 mt-2 w-56 overflow-hidden rounded-2xl bg-white p-2 shadow-xl ring-1 ring-black/10">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCommercialActionsOpen(false);
+                          openCreateQuoteModal();
+                        }}
+                        disabled={
+                          working ||
+                          refreshing ||
+                          simulatingCustomer ||
+                          !selectedOpportunity
+                        }
+                        className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-gray-900 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
+                      >
+                        Criar orçamento
+                      </button>
 
-                  <button
-                    onClick={() => void releaseConversation()}
-                    disabled={!canReleaseToAI}
-                    className="rounded-xl bg-gray-100 px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isHumanActive ? "Liberar IA" : "IA liberada"}
-                  </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCommercialActionsOpen(false);
+                          openPaymentModal();
+                        }}
+                        disabled={
+                          !selectedOpportunity ||
+                          working ||
+                          refreshing ||
+                          simulatingCustomer ||
+                          paymentSubmitting
+                        }
+                        className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-gray-900 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
+                      >
+                        Pagamento
+                      </button>
 
-                  <button
-                    onClick={() => void fetchLeadConversationAndMessages({ silent: true })}
-                    disabled={working || refreshing || simulatingCustomer}
-                    className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Recarregar
-                  </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCommercialActionsOpen(false);
+                          openGoogleMapsRoute(
+                            storeRouteOriginAddress,
+                            selectedRouteDestinationAddress
+                          );
+                        }}
+                        disabled={!selectedRouteUrl}
+                        title={
+                          selectedRouteUrl
+                            ? "Abrir rota no Google Maps"
+                            : selectedRouteDisabledReason || undefined
+                        }
+                        className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-gray-900 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
+                      >
+                        Abrir rota
+                      </button>
 
-                  <button
-                    type="button"
-                    onClick={openCreateQuoteModal}
-                    disabled={
-                      working ||
-                      refreshing ||
-                      simulatingCustomer ||
-                      !selectedOpportunity
-                    }
-                    className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Criar orçamento
-                  </button>
+                      <div className="my-1 h-px bg-gray-100" />
 
-                  <button
-                    type="button"
-                    onClick={openPaymentModal}
-                    disabled={
-                      !selectedOpportunity ||
-                      working ||
-                      refreshing ||
-                      simulatingCustomer ||
-                      paymentSubmitting
-                    }
-                    className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Pagamento
-                  </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCommercialActionsOpen(false);
+                          void refreshCurrentScreenSnapshot();
+                        }}
+                        disabled={working || refreshing || simulatingCustomer}
+                        className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
+                      >
+                        Recarregar
+                      </button>
 
-                  {canConcludeSelectedOpportunity ? (
-                    <button
-                      type="button"
-                      onClick={() => void concludeSelectedOpportunity()}
-                      disabled={
-                        !selectedOpportunity ||
-                        !isConcludeSelectedOpportunityEnabled ||
-                        working ||
-                        refreshing ||
-                        simulatingCustomer
-                      }
-                      title={
-                        selectedOpportunity && !isConcludeSelectedOpportunityEnabled
-                          ? "Disponivel ao final do Pos-venda"
-                          : undefined
-                      }
-                      className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Concluir oportunidade
-                    </button>
-                  ) : null}
+                      {canConcludeSelectedOpportunity ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCommercialActionsOpen(false);
+                            void concludeSelectedOpportunity();
+                          }}
+                          disabled={
+                            !selectedOpportunity ||
+                            !isConcludeSelectedOpportunityEnabled ||
+                            working ||
+                            refreshing ||
+                            simulatingCustomer
+                          }
+                          title={
+                            selectedOpportunity &&
+                            !isConcludeSelectedOpportunityEnabled
+                              ? "Disponivel ao final do Pos-venda"
+                              : undefined
+                          }
+                          className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
+                        >
+                          Concluir oportunidade
+                        </button>
+                      ) : null}
 
-                  {canRenderReopenSelectedOpportunity ? (
-                    <button
-                      type="button"
-                      onClick={() => void reopenSelectedOpportunityForPostSale()}
-                      disabled={
-                        !selectedOpportunity ||
-                        !canEnableReopenSelectedOpportunity ||
-                        working ||
-                        refreshing ||
-                        simulatingCustomer
-                      }
-                      className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Reabrir para Pos-venda
-                    </button>
+                      {canRenderReopenSelectedOpportunity ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCommercialActionsOpen(false);
+                            void reopenSelectedOpportunityForPostSale();
+                          }}
+                          disabled={
+                            !selectedOpportunity ||
+                            !canEnableReopenSelectedOpportunity ||
+                            working ||
+                            refreshing ||
+                            simulatingCustomer
+                          }
+                          className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
+                        >
+                          Reabrir para Pós-venda
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
-
-                <Link
-                  href="/crm"
-                  className="inline-flex items-center rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
-                >
-                  Voltar para o CRM
-                </Link>
               </div>
             </div>
 
@@ -4177,40 +4599,6 @@ export default function LeadPage() {
                 Este lead ainda nao possui conversa. Os controles ficam bloqueados ate existir uma conversa.
               </div>
             ) : null}
-
-            <div className="mt-4 grid gap-3 lg:grid-cols-3">
-              <InfoCard
-                label="Oportunidade atual"
-                value={
-                  selectedOpportunity
-                    ? "Contexto comercial selecionado"
-                    : requiresOpportunitySelection
-                      ? "Selecao obrigatoria"
-                      : "Nenhuma selecionada"
-                }
-                help={
-                  selectedOpportunity
-                    ? "Contexto comercial usado nas acoes desta tela."
-                    : requiresOpportunitySelection
-                      ? "Existem multiplas oportunidades ativas para este lead."
-                      : "Abra pelo board ou selecione nos detalhes da oportunidade."
-                }
-              />
-              <InfoCard
-                label="Etapa atual"
-                value={selectedOpportunityStageLabel}
-                help="A conversa permanece completa; apenas o contexto comercial muda."
-              />
-              <InfoCard
-                label="Oportunidades ativas"
-                value={`${activeOpportunities.length}`}
-                help={
-                  activeOpportunities.length === 1
-                    ? "oportunidade ativa"
-                    : "oportunidades ativas"
-                }
-              />
-            </div>
 
             {requiresOpportunitySelection ? (
               <div className="mt-4 rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-600/20">
@@ -4244,7 +4632,7 @@ export default function LeadPage() {
             ) : null}
           </div>
 
-          <div className="border-b border-gray-100 bg-gray-50/70 px-4 py-3 lg:px-5">
+          <div className="border-b border-gray-100 bg-white px-4 py-2.5 lg:px-5">
             <div className="flex flex-wrap items-center gap-2">
               {detailTabs.map((tab) => {
                 const isActive = activeDetailsTab === tab.id;
@@ -4254,10 +4642,10 @@ export default function LeadPage() {
                     key={tab.id}
                     type="button"
                     onClick={() => setActiveDetailsTab(tab.id)}
-                    className={`rounded-xl px-3.5 py-2 text-xs font-semibold shadow-sm transition ${
+                    className={`rounded-xl px-4 py-2 text-xs font-semibold transition ${
                       isActive
                         ? "bg-black text-white"
-                        : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                        : "bg-gray-100 text-gray-800 hover:bg-gray-200"
                     }`}
                   >
                     {tab.label}
@@ -4268,8 +4656,8 @@ export default function LeadPage() {
           </div>
 
           {activeDetailsTab ? (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4 py-6">
-              <div className="max-h-[82vh] w-full max-w-3xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-3 py-3 lg:px-6 lg:py-5">
+              <div className="max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
                 <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-white/50">
@@ -4292,279 +4680,333 @@ export default function LeadPage() {
                   </button>
                 </div>
 
-                <div className="max-h-[68vh] overflow-y-auto p-5">
+                <div className="max-h-[80vh] overflow-y-auto p-5 lg:p-7">
                   {activeDetailsTab === "summary" ? (
-                    <div className="grid gap-4 lg:grid-cols-2">
-                      <InfoCard
-                        label="Numero do cliente"
-                        value={lead.phone ?? "Sem telefone"}
-                      />
-                      <InfoCard
-                        label="Estagio do funil"
-                        value={formatLeadStage(lead.state)}
-                      />
-                      <InfoCard
-                        label="Status da conversa"
-                        value={
-                          conversation
-                            ? formatConversationStatus(conversation.status)
-                            : "Sem conversa"
-                        }
-                      />
-
-                      <div>
-                        <div className="text-sm font-semibold text-gray-900">
-                          Ultima mensagem
-                        </div>
-                        <div className="mt-2 text-sm leading-6 text-gray-700">
-                          {conversation?.last_message_preview ||
-                            "Ainda sem mensagem resumida na conversa."}
-                        </div>
-                        <div className="mt-2 text-xs text-gray-500">
-                          {conversation?.last_message_at
-                            ? formatDateTime(conversation.last_message_at)
-                            : "Sem horario registrado"}
-                        </div>
+                    <div className="space-y-5">
+                      <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-gray-50 p-2 ring-1 ring-black/5">
+                        <button
+                          type="button"
+                          onClick={() => setActiveInformationSection("summary")}
+                          className={`rounded-xl px-3.5 py-2 text-xs font-semibold shadow-sm transition ${activeInformationSection === "summary"
+                            ? "bg-black text-white"
+                            : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"}`}
+                        >
+                          Resumo rápido
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setActiveInformationSection("opportunity")}
+                          className={`rounded-xl px-3.5 py-2 text-xs font-semibold shadow-sm transition ${activeInformationSection === "opportunity"
+                            ? "bg-black text-white"
+                            : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"}`}
+                        >
+                          Dados da oportunidade
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setActiveInformationSection("context")}
+                          className={`rounded-xl px-3.5 py-2 text-xs font-semibold shadow-sm transition ${activeInformationSection === "context"
+                            ? "bg-black text-white"
+                            : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"}`}
+                        >
+                          Interesses e contexto
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setActiveInformationSection("tasks")}
+                          className={`rounded-xl px-3.5 py-2 text-xs font-semibold shadow-sm transition ${activeInformationSection === "tasks"
+                            ? "bg-black text-white"
+                            : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"}`}
+                        >
+                          Pendências comerciais
+                        </button>
                       </div>
 
-                      <div>
-                        <div className="text-sm font-semibold text-gray-900">
-                          Proximo passo
-                        </div>
-                        <div className="mt-2 text-sm leading-6 text-gray-700">
-                          {latestCommercialTask?.task_payload?.next_step ||
-                            "Ainda sem proximo passo registrado."}
-                        </div>
-                      </div>
+                      {activeInformationSection === "summary" ? (
+                        <section className="rounded-2xl border border-gray-200 bg-white p-5 lg:p-6">
+                                                <div className="mb-3">
+                                                  <h3 className="text-base font-bold text-gray-950">Resumo rápido</h3>
+                                                  <p className="mt-1 text-xs text-gray-500">
+                                                    Situação atual da conversa e dados canônicos da oportunidade.
+                                                  </p>
+                                                </div>
+                                                <div className="grid gap-3 md:grid-cols-2">
+                                                  <InfoCard
+                                                    label="Telefone"
+                                                    value={lead.phone ?? "Sem telefone"}
+                                                  />
+                                                  <InfoCard
+                                                    label="Status da conversa"
+                                                    value={
+                                                      conversation
+                                                        ? formatConversationStatus(conversation.status)
+                                                        : "Sem conversa"
+                                                    }
+                                                  />
+                                                  <InfoCard
+                                                    label="Etapa comercial"
+                                                    value={selectedOpportunityStageLabel}
+                                                  />
+                                                  <InfoCard
+                                                    label="Pendências abertas"
+                                                    value={`${commercialTasks.length}`}
+                                                  />
+                                                </div>
 
-                      <div className="lg:col-span-2">
-                        <div className="text-sm font-semibold text-gray-900">
-                          Resumo comercial
-                        </div>
-                        <div className="mt-2 text-sm leading-6 text-gray-700">
-                          {latestCommercialTask?.task_payload?.conversation_summary ||
-                            "Ainda sem resumo comercial registrado."}
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
+                                                <div className="mt-3 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                                                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                                    Última mensagem
+                                                  </div>
+                                                  <div className="mt-2 text-sm leading-6 text-gray-800">
+                                                    {conversation?.last_message_preview ||
+                                                      "Ainda sem mensagem resumida na conversa."}
+                                                  </div>
+                                                  <div className="mt-2 text-xs text-gray-500">
+                                                    {conversation?.last_message_at
+                                                      ? formatDateTime(conversation.last_message_at)
+                                                      : "Sem horário registrado"}
+                                                  </div>
+                                                </div>
 
-                  {activeDetailsTab === "opportunity" ? (
-                    <div className="space-y-4">
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <InfoCard
-                          label="Oportunidade atual"
-                          value={
-                            selectedOpportunity
-                              ? "Contexto comercial selecionado"
-                              : requiresOpportunitySelection
-                                ? "Selecione uma oportunidade"
-                                : "Nenhuma oportunidade selecionada"
-                          }
-                        />
-                        <InfoCard
-                          label="Etapa atual"
-                          value={selectedOpportunityStageLabel}
-                        />
-                        <InfoCard
-                          label="Cliente"
-                          value={lead.name || "Sem nome"}
-                        />
-                        <InfoCard
-                          label="Telefone"
-                          value={lead.phone || "Sem telefone"}
-                        />
-                        <InfoCard
-                          label="Interesse ou contexto"
-                          value={
-                            latestCommercialTask?.task_payload?.conversation_summary ||
-                            latestCommercialTask?.task_payload?.next_step ||
-                            "Sem contexto comercial registrado"
-                          }
-                        />
-                        <InfoCard
-                          label="Visita e negociacao"
-                          value={
-                            appointments.length > 0
-                              ? `${appointments.length} compromisso(s) ligado(s) a este lead`
-                              : "Sem compromisso registrado"
-                          }
-                        />
-                        <InfoCard
-                          label="Orcamento e contrato"
-                          value={`${generatedQuotes.length} orcamento(s) e ${generatedContracts.length} contrato(s)`}
-                        />
-                        <InfoCard
-                          label="Avisos seguros"
-                          value={
-                            requiresOpportunitySelection
-                              ? "Selecao obrigatoria antes das acoes comerciais."
-                              : "Sem aviso adicional."
-                          }
-                        />
-                      </div>
+                                                <div className="mt-3 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                                                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                                    Necessidade
+                                                  </div>
+                                                  <div className="mt-2 text-sm leading-6 text-gray-800">
+                                                    {needSummaryDisplay.value}
+                                                  </div>
+                                                  {needSummaryDisplay.help ? (
+                                                    <div className="mt-2 text-xs text-gray-500">
+                                                      {needSummaryDisplay.help}
+                                                    </div>
+                                                  ) : null}
+                                                </div>
+                                              </section>
+                      ) : null}
 
-                      {opportunities.length > 0 ? (
-                        <div>
-                          <div className="text-sm font-semibold text-gray-900">
-                            Oportunidades deste lead
-                          </div>
-                      <div className="mt-3 space-y-3">
-                            {opportunities.map((opportunity) => {
-                              const isSelected = selectedOpportunity?.id === opportunity.id;
-                              return (
-                                <div
-                                  key={opportunity.id}
-                                  className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
-                                >
-                                  <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <div>
-                                      <div className="text-sm font-semibold text-gray-900">
-                                        {formatOpportunityStage(opportunity.stage)}
-                                      </div>
-                                      <div className="mt-1 text-xs text-gray-500">
-                                        Atualizada em{" "}
-                                        {formatDateTime(
-                                          opportunity.updatedAt ||
-                                            opportunity.stageChangedAt ||
-                                            opportunity.createdAt
-                                        )}
-                                      </div>
-                                    </div>
+                      {activeInformationSection === "opportunity" ? (
+                        <section className="rounded-2xl border border-gray-200 bg-white p-5 lg:p-6">
+                                                <div className="mb-3">
+                                                  <h3 className="text-base font-bold text-gray-950">Dados da oportunidade</h3>
+                                                  <p className="mt-1 text-xs text-gray-500">
+                                                    Contexto comercial usado pelas ações desta conversa.
+                                                  </p>
+                                                </div>
+                                                <div className="grid gap-3 md:grid-cols-2">
+                                                  <InfoCard
+                                                    label="Oportunidade atual"
+                                                    value={
+                                                      selectedOpportunity
+                                                        ? "Selecionada"
+                                                        : requiresOpportunitySelection
+                                                          ? "Seleção obrigatória"
+                                                          : "Nenhuma selecionada"
+                                                    }
+                                                  />
+                                                  <InfoCard
+                                                    label="Etapa atual"
+                                                    value={selectedOpportunityStageLabel}
+                                                  />
+                                                  <InfoCard
+                                                    label="Oportunidades ativas"
+                                                    value={`${activeOpportunities.length}`}
+                                                  />
+                                                  <InfoCard
+                                                    label="Orçamentos e contratos"
+                                                    value={`${generatedQuotes.length} orçamento(s) e ${generatedContracts.length} contrato(s)`}
+                                                  />
+                                                  <InfoCard
+                                                    label="Avisos seguros"
+                                                    value={
+                                                      requiresOpportunitySelection
+                                                        ? "Seleção obrigatória antes das ações comerciais."
+                                                        : "Sem aviso adicional."
+                                                    }
+                                                  />
+                                                </div>
 
-                                    <div className="flex flex-wrap gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => applySelectedOpportunity(opportunity.id)}
-                                        className={`rounded-xl px-3 py-2 text-xs font-semibold shadow-sm ${
-                                          isSelected
-                                            ? "bg-black text-white"
-                                            : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                                        }`}
-                                      >
-                                        {isSelected ? "Selecionada" : "Selecionar"}
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      ) : (
-                        <EmptyState text="Nenhuma oportunidade comercial foi encontrada para este lead." />
-                      )}
-                    </div>
-                  ) : null}
+                                                {opportunities.length > 0 ? (
+                                                  <div className="mt-4 space-y-2">
+                                                    {opportunities.map((opportunity) => {
+                                                      const isSelected = selectedOpportunity?.id === opportunity.id;
+                                                      return (
+                                                        <div
+                                                          key={opportunity.id}
+                                                          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-white p-3"
+                                                        >
+                                                          <div>
+                                                            <div className="text-sm font-semibold text-gray-900">
+                                                              {formatOpportunityStage(opportunity.stage)}
+                                                            </div>
+                                                            <div className="mt-1 text-xs text-gray-500">
+                                                              Atualizada em{" "}
+                                                              {formatDateTime(
+                                                                opportunity.updatedAt ||
+                                                                  opportunity.stageChangedAt ||
+                                                                  opportunity.createdAt
+                                                              )}
+                                                            </div>
+                                                          </div>
+                                                          <button
+                                                            type="button"
+                                                            onClick={() => applySelectedOpportunity(opportunity.id)}
+                                                            className={`rounded-xl px-3 py-2 text-xs font-semibold ${
+                                                              isSelected
+                                                                ? "bg-black text-white"
+                                                                : "bg-gray-100 text-gray-800 hover:bg-gray-200"
+                                                            }`}
+                                                          >
+                                                            {isSelected ? "Selecionada" : "Selecionar"}
+                                                          </button>
+                                                        </div>
+                                                      );
+                                                    })}
+                                                  </div>
+                                                ) : null}
+                                              </section>
+                      ) : null}
 
-                  {activeDetailsTab === "context" ? (
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <InfoCard
-                        label="Modelo citado"
-                        value={
-                          latestCommercialTask?.task_payload?.ad_model_or_requested_model ||
-                          "Ainda sem modelo registrado"
-                        }
-                      />
-                      <InfoCard
-                        label="Modelo recomendado"
-                        value={
-                          latestCommercialTask?.task_payload?.recommended_model ||
-                          "Ainda sem recomendacao registrada"
-                        }
-                      />
-                      <InfoCard
-                        label="Espaco informado"
-                        value={
-                          latestCommercialTask?.task_payload?.space_text ||
-                          "Ainda sem informacao registrada"
-                        }
-                      />
-                      <InfoCard
-                        label="Localizacao"
-                        value={
-                          latestCommercialTask?.task_payload?.location_text ||
-                          "Ainda sem informacao registrada"
-                        }
-                      />
-                      <InfoCard
-                        label="Periodo preferido"
-                        value={
-                          latestCommercialTask?.task_payload?.preferred_period_text ||
-                          "Ainda sem informacao registrada"
-                        }
-                      />
-                      <InfoCard
-                        label="Preferencias do cliente"
-                        value={
-                          latestCommercialTask?.task_payload?.customer_preferences ||
-                          "Ainda sem informacao registrada"
-                        }
-                      />
-                      <InfoCard
-                        label="Objecao relevante"
-                        value={
-                          latestCommercialTask?.task_payload?.relevant_objection ||
-                          "Ainda sem informacao registrada"
-                        }
-                      />
-                    </div>
-                  ) : null}
+                      {activeInformationSection === "context" ? (
+                        <section className="rounded-2xl border border-gray-200 bg-white p-5 lg:p-6">
+                                                <div className="mb-3">
+                                                  <h3 className="text-base font-bold text-gray-950">
+                                                    Interesses e contexto
+                                                  </h3>
+                                                  <p className="mt-1 text-xs text-gray-500">
+                                                    Informações comerciais já conhecidas sobre o cliente.
+                                                  </p>
+                                                </div>
+                                                <div className="grid gap-3 md:grid-cols-2">
+                                                  <InfoCard
+                                                    label="Produto citado"
+                                                    value={productReferenceDisplay.value}
+                                                    help={productReferenceDisplay.help}
+                                                  />
+                                                  <InfoCard
+                                                    label="Área informada"
+                                                    value={requestedAreaDisplay.value}
+                                                    help={requestedAreaDisplay.help}
+                                                  />
+                                                  <InfoCard
+                                                    label="Espaço informado"
+                                                    value={spaceTextDisplay.value}
+                                                    help={spaceTextDisplay.help}
+                                                  />
+                                                  <InfoCard
+                                                    label="Localização mencionada"
+                                                    value={locationTextDisplay.value}
+                                                    help={locationTextDisplay.help}
+                                                  />
+                                                  <InfoCard
+                                                    label="Interesse em instalação"
+                                                    value={installationInterestDisplay.value}
+                                                    help={installationInterestDisplay.help}
+                                                  />
+                                                  <InfoCard
+                                                    label="Interesse em visita técnica"
+                                                    value={technicalVisitInterestDisplay.value}
+                                                    help={technicalVisitInterestDisplay.help}
+                                                  />
+                                                  <InfoCard
+                                                    label="Pagamento/parcelamento mencionado"
+                                                    value={paymentInterestDisplay.value}
+                                                    help={paymentInterestDisplay.help}
+                                                  />
+                                                  <InfoCard
+                                                    label="Orçamento ou faixa mencionada"
+                                                    value={budgetTextDisplay.value}
+                                                    help={budgetTextDisplay.help}
+                                                  />
+                                                  <InfoCard
+                                                    label="Contexto de decisão"
+                                                    value={decisionContextDisplay.value}
+                                                    help={decisionContextDisplay.help}
+                                                  />
+                                                  <InfoCard
+                                                    label="Período preferido"
+                                                    value={preferredPeriodDisplay.value}
+                                                    help={preferredPeriodDisplay.help}
+                                                  />
+                                                  <InfoCard
+                                                    label="Preferências do cliente"
+                                                    value={customerPreferencesDisplay.value}
+                                                    help={customerPreferencesDisplay.help}
+                                                  />
+                                                  <InfoCard
+                                                    label="Objeção relevante"
+                                                    value={relevantObjectionDisplay.value}
+                                                    help={relevantObjectionDisplay.help}
+                                                  />
+                                                </div>
+                                              </section>
+                      ) : null}
 
-                  {activeDetailsTab === "tasks" ? (
-                    <div>
-                      {commercialTasks.length === 0 ? (
-                        <EmptyState text="Ainda nao existem pendencias comerciais registradas para este cliente." />
-                      ) : (
-                        <div className="space-y-3">
-                          {commercialTasks.map((task) => (
-                            <div
-                              key={task.id}
-                              className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
-                            >
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
-                                  {formatTaskTypeLabel(task.task_type)}
-                                </span>
-                                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
-                                  {formatTaskStatusLabel(task.status)}
-                                </span>
-                                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
-                                  Prioridade {formatPriorityLabel(task.priority)}
-                                </span>
-                              </div>
+                      {activeInformationSection === "tasks" ? (
+                        <section className="rounded-2xl border border-gray-200 bg-white p-5 lg:p-6">
+                                                <div className="mb-3">
+                                                  <h3 className="text-base font-bold text-gray-950">
+                                                    Pendências comerciais
+                                                  </h3>
+                                                  <p className="mt-1 text-xs text-gray-500">
+                                                    Itens que ainda exigem acompanhamento ou ação.
+                                                  </p>
+                                                </div>
 
-                              <div className="mt-3 text-sm font-semibold text-gray-900">
-                                {task.title || formatTaskTypeLabel(task.task_type)}
-                              </div>
-                              <div className="mt-2 text-sm leading-6 text-gray-700">
-                                {task.description || "Sem descricao registrada."}
-                              </div>
+                                                {commercialTasks.length === 0 ? (
+                                                  <EmptyState text="Ainda não existem pendências comerciais registradas para este cliente." />
+                                                ) : (
+                                                  <div className="space-y-3">
+                                                    {commercialTasks.map((task) => (
+                                                      <div
+                                                        key={task.id}
+                                                        className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                                                      >
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                          <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
+                                                            {formatTaskTypeLabel(task.task_type)}
+                                                          </span>
+                                                          <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
+                                                            {formatTaskStatusLabel(task.status)}
+                                                          </span>
+                                                          <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
+                                                            Prioridade {formatPriorityLabel(task.priority)}
+                                                          </span>
+                                                        </div>
 
-                              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                <InfoCard
-                                  label="Ultima mensagem do cliente"
-                                  value={
-                                    task.task_payload?.last_customer_message ||
-                                    "Sem mensagem registrada"
-                                  }
-                                />
-                                <InfoCard
-                                  label="Proximo passo"
-                                  value={
-                                    task.task_payload?.next_step ||
-                                    "Sem proximo passo registrado"
-                                  }
-                                />
-                              </div>
+                                                        <div className="mt-3 text-sm font-semibold text-gray-900">
+                                                          {task.title || formatTaskTypeLabel(task.task_type)}
+                                                        </div>
+                                                        <div className="mt-2 text-sm leading-6 text-gray-700">
+                                                          {task.description || "Sem descrição registrada."}
+                                                        </div>
 
-                              <div className="mt-3 text-xs text-gray-500">
-                                Atualizado em {formatDateTime(task.updated_at || task.created_at)}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                                                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                                          <InfoCard
+                                                            label="Última mensagem do cliente"
+                                                            value={
+                                                              task.task_payload?.last_customer_message ||
+                                                              "Sem mensagem registrada"
+                                                            }
+                                                          />
+                                                          <InfoCard
+                                                            label="Próximo passo"
+                                                            value={
+                                                              task.task_payload?.next_step ||
+                                                              "Sem próximo passo registrado"
+                                                            }
+                                                          />
+                                                        </div>
+
+                                                        <div className="mt-3 text-xs text-gray-500">
+                                                          Atualizado em {formatDateTime(task.updated_at || task.created_at)}
+                                                        </div>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                )}
+                                              </section>
+                      ) : null}
+
                     </div>
                   ) : null}
 
@@ -4580,7 +5022,7 @@ export default function LeadPage() {
                               : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                           }`}
                         >
-                          {`Orcamentos (${generatedQuotes.length})`}
+                          {`Orçamentos (${generatedQuotes.length})`}
                         </button>
 
                         <button
@@ -4599,10 +5041,10 @@ export default function LeadPage() {
                       {activeGeneratedPdfTab === "quotes" ? (
                         <div>
                           <div className="text-sm font-semibold text-gray-900">
-                            Orcamentos
+                            Orçamentos
                           </div>
                           <div className="mt-1 text-xs text-gray-500">
-                            PDFs de orcamento gerados para este lead.
+                            PDFs de orçamento gerados para este lead.
                           </div>
 
                           {generatedQuotesError ? (
@@ -4625,13 +5067,15 @@ export default function LeadPage() {
 
                           {generatedQuotesLoading ? (
                             <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
-                              Carregando orcamentos gerados...
+                              Carregando orçamentos gerados...
                             </div>
                           ) : null}
 
                           {!generatedQuotesLoading && generatedQuotes.length === 0 ? (
                             <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
-                              Nenhum orcamento gerado ainda.
+                              {selectedDocumentOpportunityId
+                                ? "Nenhum orçamento gerado ainda."
+                                : "Selecione uma oportunidade para ver os orçamentos."}
                             </div>
                           ) : null}
 
@@ -4671,7 +5115,7 @@ export default function LeadPage() {
                                       <div className="min-w-0">
                                         <div className="flex flex-wrap items-center gap-2">
                                           <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
-                                            {quote.quote_number || "Sem numero"}
+                                            {quote.quote_number || "Sem número"}
                                           </span>
                                           <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
                                             {formatQuoteStatusLabel(quote.status)}
@@ -4679,7 +5123,7 @@ export default function LeadPage() {
                                         </div>
 
                                         <div className="mt-3 text-sm font-semibold text-gray-900">
-                                          {quote.title || "Orcamento sem titulo"}
+                                          {quote.title || "Orçamento sem título"}
                                         </div>
                                         <div className="mt-2 grid gap-3 text-sm text-gray-700 md:grid-cols-2">
                                           <InfoCard
@@ -4724,7 +5168,7 @@ export default function LeadPage() {
                                           >
                                             {isLoadingForEdit
                                               ? "Carregando..."
-                                              : "Editar orcamento"}
+                                              : "Editar orçamento"}
                                           </button>
                                         ) : null}
 
@@ -4841,7 +5285,9 @@ export default function LeadPage() {
 
                           {!generatedContractsLoading && generatedContracts.length === 0 ? (
                             <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
-                              Nenhum contrato gerado ainda.
+                              {selectedDocumentOpportunityId
+                                ? "Nenhum contrato gerado ainda."
+                                : "Selecione uma oportunidade para ver os contratos."}
                             </div>
                           ) : null}
 
@@ -4874,7 +5320,7 @@ export default function LeadPage() {
                                       <div className="min-w-0">
                                         <div className="flex flex-wrap items-center gap-2">
                                           <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
-                                            {contract.contract_number || "Sem numero"}
+                                            {contract.contract_number || "Sem número"}
                                           </span>
                                           <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
                                             {formatContractStatusLabel(contract.status)}
@@ -5019,6 +5465,12 @@ export default function LeadPage() {
                       ) : (
                         <div className="space-y-3">
                           {appointments.map((appointment) => (
+                            (() => {
+                              const appointmentRouteUrl = buildGoogleMapsDirectionsUrl({
+                                origin: storeRouteOriginAddress,
+                                destination: appointment.address_text,
+                              });
+                              return (
                             <div
                               key={appointment.id}
                               className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
@@ -5039,12 +5491,12 @@ export default function LeadPage() {
                                   </span>
                                   <button
                                     type="button"
-                                    onClick={() => openGoogleMapsRoute(appointment.address_text)}
-                                    disabled={!buildGoogleMapsRouteUrl(appointment.address_text)}
+                                    onClick={() => openGoogleMapsRoute(storeRouteOriginAddress, appointment.address_text)}
+                                    disabled={!appointmentRouteUrl}
                                     title={
-                                      buildGoogleMapsRouteUrl(appointment.address_text)
+                                      appointmentRouteUrl
                                         ? "Abrir rota no Google Maps"
-                                        : "Falta endereco para abrir a rota"
+                                        : "Cadastre o endereco da loja e o endereco do cliente para abrir a rota"
                                     }
                                     className="rounded-lg bg-black px-3 py-1.5 text-[11px] font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
                                   >
@@ -5064,6 +5516,8 @@ export default function LeadPage() {
                                 />
                               </div>
                             </div>
+                              );
+                            })()
                           ))}
                         </div>
                       )}
@@ -5075,8 +5529,8 @@ export default function LeadPage() {
           ) : null}
 
           {isPaymentModalOpen ? (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4 py-6">
-              <div className="max-h-[82vh] w-full max-w-xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-3 py-3 lg:px-6 lg:py-5">
+              <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
                 <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-white/50">
@@ -5098,7 +5552,7 @@ export default function LeadPage() {
                   </button>
                 </div>
 
-                <div className="max-h-[68vh] overflow-y-auto p-5">
+                <div className="max-h-[80vh] overflow-y-auto p-5 lg:p-7">
                   <div className="grid gap-5">
                     <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
                       {paymentLoading ? (
@@ -5283,8 +5737,8 @@ export default function LeadPage() {
           ) : null}
 
           {isQuoteModalOpen ? (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4 py-6">
-              <div className="max-h-[82vh] w-full max-w-3xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-3 py-3 lg:px-6 lg:py-5">
+              <div className="max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
                 <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-white/50">
@@ -5305,7 +5759,7 @@ export default function LeadPage() {
                   </button>
                 </div>
 
-                <div className="max-h-[68vh] overflow-y-auto p-5">
+                <div className="max-h-[80vh] overflow-y-auto p-5 lg:p-7">
                   <div className="grid gap-4">
                     <div>
                       <p className="text-sm leading-6 text-gray-700">

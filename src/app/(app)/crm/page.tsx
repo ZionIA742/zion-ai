@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CANONICAL_CRM_STAGES,
-  type CanonicalCrmStageArea,
   type CanonicalCrmStageDefinition,
   type CanonicalCrmStageId,
   getCanonicalCrmStage,
@@ -53,13 +52,6 @@ type UiCardRow = {
   isFollowUpActive: boolean;
 };
 
-type BoardSection = {
-  id: string;
-  title: string;
-  description: string;
-  area: CanonicalCrmStageArea | "attention";
-  stages: CanonicalCrmStageDefinition[];
-};
 
 type Nivel = "ok" | "pendente" | "critico";
 
@@ -82,12 +74,20 @@ type ManualLeadCreateApiResponse = {
   createdAt: string | null;
 };
 
-const ATTENTION_BUCKET_ID = "__attention__";
-const FOLLOW_UP_BUCKET_ID = "__follow_up__";
+type BoardView = "active" | "followup" | "attention" | "lost" | "completed";
+
+const PIPELINE_STAGES = CANONICAL_CRM_STAGES.filter((stage) => stage.area === "pipeline");
+
+const BOARD_VIEW_OPTIONS: Array<{ id: BoardView; label: string }> = [
+  { id: "active", label: "Ativas" },
+  { id: "followup", label: "Follow-up" },
+  { id: "attention", label: "Ação necessária" },
+  { id: "lost", label: "Perdidas" },
+  { id: "completed", label: "Concluídas" },
+];
+
 const MOVEMENT_LOCK_MESSAGE =
   "Movimentacao temporariamente indisponivel enquanto o board migra para oportunidades.";
-const DETAIL_LOCK_MESSAGE =
-  "Detalhe por oportunidade em atualizacao. Abra a Inbox para seguir o atendimento.";
 
 function cx(...cls: Array<string | false | null | undefined>) {
   return cls.filter(Boolean).join(" ");
@@ -163,9 +163,6 @@ function getAttentionReason() {
   return "Não foi possível identificar corretamente a etapa desta oportunidade.";
 }
 
-function isCanonicalStageId(value: string): value is CanonicalCrmStageId {
-  return CANONICAL_CRM_STAGES.some((stage) => stage.id === value);
-}
 
 function getSearchIndex(card: UiCardRow) {
   return [
@@ -192,7 +189,12 @@ export default function CrmPage() {
   const [cards, setCards] = useState<UiCardRow[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
-  const [selectedBucketId, setSelectedBucketId] = useState<string | null>(null);
+  const [boardView, setBoardView] = useState<BoardView>("active");
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [selectedPipelineStageId, setSelectedPipelineStageId] = useState<CanonicalCrmStageId | null>(
+    PIPELINE_STAGES[0]?.id ?? null,
+  );
+  const [showAllSelectedStageCards, setShowAllSelectedStageCards] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [manualLeadForm, setManualLeadForm] = useState<ManualLeadFormState>({
     name: "",
@@ -209,31 +211,6 @@ export default function CrmPage() {
     return !storeLoading && !!organizationId;
   }, [organizationId, storeLoading]);
 
-  const boardSections = useMemo<BoardSection[]>(() => {
-    return [
-      {
-        id: "pipeline",
-        title: "Pipeline comercial",
-        description: "Etapas ativas do board por oportunidade.",
-        area: "pipeline",
-        stages: CANONICAL_CRM_STAGES.filter((stage) => stage.area === "pipeline"),
-      },
-      {
-        id: "lost",
-        title: "Encerradas como perda",
-        description: "Oportunidades encerradas em perda.",
-        area: "lost",
-        stages: CANONICAL_CRM_STAGES.filter((stage) => stage.area === "lost"),
-      },
-      {
-        id: "completed",
-        title: "Concluidas",
-        description: "Oportunidades que nao exigem mais acoes comerciais.",
-        area: "completed",
-        stages: CANONICAL_CRM_STAGES.filter((stage) => stage.area === "completed"),
-      },
-    ];
-  }, []);
 
   const fetchPageData = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -363,12 +340,28 @@ export default function CrmPage() {
     return map;
   }, [cards]);
 
+  const pipelineCards = useMemo(() => {
+    return sortCards(cards.filter((card) => card.canonicalStage?.area === "pipeline"));
+  }, [cards]);
+
+  const lostCards = useMemo(() => {
+    return sortCards(cards.filter((card) => card.canonicalStage?.area === "lost"));
+  }, [cards]);
+
+  const completedCards = useMemo(() => {
+    return sortCards(cards.filter((card) => card.canonicalStage?.area === "completed"));
+  }, [cards]);
+
   const attentionCards = useMemo(() => {
     return sortCards(cards.filter((card) => !card.canonicalStage));
   }, [cards]);
 
   const followUpCards = useMemo(() => {
-    return sortCards(cards.filter((card) => card.isFollowUpActive));
+    return sortCards(
+      cards.filter(
+        (card) => card.isFollowUpActive && card.canonicalStage?.area === "pipeline",
+      ),
+    );
   }, [cards]);
 
   const searchResults = useMemo(() => {
@@ -378,51 +371,69 @@ export default function CrmPage() {
     return sortCards(cards.filter((card) => getSearchIndex(card).includes(query)));
   }, [cards, searchText]);
 
-  const selectedStage = useMemo(() => {
-    if (
-      !selectedBucketId ||
-      selectedBucketId === ATTENTION_BUCKET_ID ||
-      selectedBucketId === FOLLOW_UP_BUCKET_ID
-    ) {
-      return null;
+  const selectedCard = useMemo(() => {
+    if (!selectedCardId) return null;
+    return cards.find((card) => card.commercialOpportunityId === selectedCardId) || null;
+  }, [cards, selectedCardId]);
+
+  const selectedPipelineStage = useMemo(() => {
+    if (!selectedPipelineStageId) return PIPELINE_STAGES[0] ?? null;
+    return PIPELINE_STAGES.find((stage) => stage.id === selectedPipelineStageId) ?? PIPELINE_STAGES[0] ?? null;
+  }, [selectedPipelineStageId]);
+
+  const selectedPipelineStageCards = useMemo(() => {
+    if (!selectedPipelineStage) return [];
+    return stageCardsById.get(selectedPipelineStage.id) || [];
+  }, [selectedPipelineStage, stageCardsById]);
+
+  const visibleSelectedPipelineStageCards = useMemo(() => {
+    return showAllSelectedStageCards
+      ? selectedPipelineStageCards
+      : selectedPipelineStageCards.slice(0, 9);
+  }, [selectedPipelineStageCards, showAllSelectedStageCards]);
+
+  const selectedViewCards = useMemo(() => {
+    if (boardView === "followup") return followUpCards;
+    if (boardView === "attention") return attentionCards;
+    if (boardView === "lost") return lostCards;
+    if (boardView === "completed") return completedCards;
+    return pipelineCards;
+  }, [attentionCards, boardView, completedCards, followUpCards, lostCards, pipelineCards]);
+
+  const selectedViewMeta = useMemo(() => {
+    if (boardView === "followup") {
+      return {
+        title: "Follow-up",
+        description: "Oportunidades ativas em acompanhamento, sem mudar a etapa comercial.",
+      };
     }
 
-    return CANONICAL_CRM_STAGES.find((stage) => stage.id === selectedBucketId) || null;
-  }, [selectedBucketId]);
-
-  const selectedBucketCards = useMemo(() => {
-    if (!selectedBucketId) return [];
-    if (selectedBucketId === ATTENTION_BUCKET_ID) return attentionCards;
-    if (selectedBucketId === FOLLOW_UP_BUCKET_ID) return followUpCards;
-    if (!isCanonicalStageId(selectedBucketId)) return [];
-    return stageCardsById.get(selectedBucketId) || [];
-  }, [attentionCards, followUpCards, selectedBucketId, stageCardsById]);
-
-  const selectedBucketTitle = useMemo(() => {
-    if (selectedBucketId === FOLLOW_UP_BUCKET_ID) {
-      return "Follow-up";
+    if (boardView === "attention") {
+      return {
+        title: "Ação necessária",
+        description: "Oportunidades cuja etapa precisa de revisão antes de seguir.",
+      };
     }
 
-    return selectedStage ? selectedStage.title : "AÃ§Ã£o necessÃ¡ria";
-  }, [selectedBucketId, selectedStage]);
-
-  const selectedBucketDescription = useMemo(() => {
-    if (selectedBucketId === FOLLOW_UP_BUCKET_ID) {
-      return "Oportunidades com follow-up ativo sem alterar a etapa comercial.";
+    if (boardView === "lost") {
+      return {
+        title: "Perdidas",
+        description: "Oportunidades encerradas como perda.",
+      };
     }
 
-    return selectedStage
-      ? "Oportunidades desta etapa."
-      : "NÃ£o foi possÃ­vel identificar corretamente a etapa destas oportunidades.";
-  }, [selectedBucketId, selectedStage]);
-
-  const selectedBucketDotClass = useMemo(() => {
-    if (selectedBucketId === FOLLOW_UP_BUCKET_ID) {
-      return "bg-violet-500";
+    if (boardView === "completed") {
+      return {
+        title: "Concluídas",
+        description: "Oportunidades encerradas sem novas ações comerciais.",
+      };
     }
 
-    return selectedStage ? getStageUi(selectedStage).dot : "bg-red-500";
-  }, [selectedBucketId, selectedStage]);
+    return {
+      title: "Oportunidades de venda",
+      description: "Acompanhe as oportunidades ativas por etapa comercial.",
+    };
+  }, [boardView]);
 
   const openManualLeadModal = useCallback(() => {
     setManualLeadCreateError(null);
@@ -565,479 +576,477 @@ export default function CrmPage() {
     [activeStoreId, fetchPageData, isCreatingManualLead, manualLeadForm, organizationId, router],
   );
 
-  function renderCard(card: UiCardRow, options?: { compact?: boolean; showStage?: boolean }) {
-    const compact = options?.compact === true;
+  function renderCard(card: UiCardRow, options?: { showStage?: boolean }) {
     const showStage = options?.showStage === true;
     const stage = card.canonicalStage;
     const ui = getStageUi(stage);
 
     return (
-      <div
+      <button
         key={card.commercialOpportunityId}
-        className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-black/5"
+        type="button"
+        onClick={() => setSelectedCardId(card.commercialOpportunityId)}
+        className="group relative w-full overflow-hidden rounded-2xl bg-white text-left shadow-sm ring-1 ring-black/5 transition hover:-translate-y-0.5 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20"
       >
-        <div className={cx("h-1 w-full", ui.bar)} />
+        <div className={cx("absolute inset-x-0 top-0 h-1", ui.bar)} />
 
-        <div className={compact ? "p-3" : "p-4"}>
+        <div className="p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-gray-900">
+              <div className="truncate text-[15px] font-semibold leading-5 text-gray-950">
                 {cardTitle(card)}
               </div>
-
-              {cardPhone(card) ? (
-                <div className="mt-0.5 truncate text-xs text-gray-600">
-                  {cardPhone(card)}
-                </div>
-              ) : (
-                <div className="mt-0.5 text-xs text-gray-400">Sem telefone</div>
-              )}
+              <div className="mt-1 truncate text-[13px] text-gray-500">
+                {cardPhone(card) || "Sem telefone"}
+              </div>
             </div>
 
-            <span className="shrink-0 rounded-full bg-gray-50 px-2 py-1 text-[10px] font-semibold text-gray-700 ring-1 ring-black/10">
+            <span className="shrink-0 rounded-full bg-gray-50 px-2.5 py-1 text-[11px] font-medium text-gray-500 ring-1 ring-black/5">
               {formatCardDate(card)}
             </span>
           </div>
 
           {showStage ? (
-            <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-full bg-gray-50 px-2 py-1 text-[10px] font-semibold text-gray-600 ring-1 ring-black/10">
+            <div className="mt-3 inline-flex max-w-full items-center gap-1.5 rounded-full bg-gray-50 px-2.5 py-1 text-[11px] font-semibold text-gray-700 ring-1 ring-black/5">
               <span className={cx("h-1.5 w-1.5 rounded-full", ui.dot)} />
               <span className="truncate">{stage ? stage.title : "Ação necessária"}</span>
             </div>
           ) : null}
 
-          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-gray-500">
-            <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-black/10">
-              conversa: {card.conversationId ? "sim" : "nao"}
-            </span>
+          <div className="mt-4 flex flex-wrap gap-2">
             {card.isFollowUpActive ? (
-              <span className="rounded-full bg-violet-50 px-2 py-1 text-violet-800 ring-1 ring-violet-200">
-                Em Follow-up
+              <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-800 ring-1 ring-violet-200">
+                Follow-up
               </span>
             ) : null}
+
             {card.isHumanActive ? (
-              <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-800 ring-1 ring-sky-200">
+              <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-800 ring-1 ring-sky-200">
                 Humano assumiu
               </span>
             ) : null}
-            {!card.leadId ? (
-              <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-800 ring-1 ring-amber-200">
-                Sem lead vinculado
-              </span>
-            ) : null}
-            {!card.conversationId ? (
-              <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-800 ring-1 ring-amber-200">
-                Sem conversa vinculada
-              </span>
-            ) : null}
+
             {!stage ? (
-              <span className="rounded-full bg-red-50 px-2 py-1 text-red-800 ring-1 ring-red-200">
+              <span className="rounded-full bg-red-50 px-2.5 py-1 text-[11px] font-semibold text-red-700 ring-1 ring-red-200">
                 Ação necessária
               </span>
             ) : null}
-          </div>
 
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-            {buildCrmLeadConversationHref({
-              leadId: card.leadId,
-              conversationId: card.conversationId,
-              opportunityId: card.commercialOpportunityId,
-            }) ? (
-              <Link
-                href={
-                  buildCrmLeadConversationHref({
-                    leadId: card.leadId,
-                    conversationId: card.conversationId,
-                    opportunityId: card.commercialOpportunityId,
-                  })!
-                }
-                className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 transition hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20"
-              >
-                Abrir oportunidade
-              </Link>
-            ) : (
-              <span className="rounded-lg bg-gray-100 px-3 py-2 text-xs font-semibold text-gray-500 ring-1 ring-gray-200">
-                Lead indisponivel
+            {!card.conversationId ? (
+              <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200">
+                Sem conversa
               </span>
-            )}
-
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                disabled
-                title={MOVEMENT_LOCK_MESSAGE}
-                className="cursor-not-allowed rounded-lg bg-white/60 px-3 py-2 text-xs font-semibold text-gray-400 shadow-sm ring-1 ring-black/10"
-              >
-                ← Voltar
-              </button>
-
-              <button
-                type="button"
-                disabled
-                title={MOVEMENT_LOCK_MESSAGE}
-                className="cursor-not-allowed rounded-lg bg-white/60 px-3 py-2 text-xs font-semibold text-gray-400 shadow-sm ring-1 ring-black/10"
-              >
-                Avancar →
-              </button>
-            </div>
+            ) : null}
           </div>
 
-          <div className="mt-2 text-xs text-gray-500">
-            {!stage ? getAttentionReason() : MOVEMENT_LOCK_MESSAGE}
+          <div className="mt-4 flex items-center justify-between border-t border-black/5 pt-3 text-xs">
+            <span className="text-gray-400">
+              {card.isFollowUpActive ? "Acompanhamento ativo" : "Oportunidade"}
+            </span>
+            <span className="font-semibold text-gray-700 transition group-hover:translate-x-0.5">
+              Ver detalhes →
+            </span>
           </div>
-          {!stage ? (
-            <div className="mt-1 text-xs text-gray-500">
-              As movimentações estão bloqueadas até a correção.
-            </div>
-          ) : null}
         </div>
-      </div>
+      </button>
     );
   }
 
   return (
-    <div className="h-[calc(100vh-151px)] overflow-hidden bg-gray-100">
-      <div className="flex h-full min-h-0 flex-col overflow-hidden">
-        <div className="shrink-0 border-b border-black/5 bg-white">
-          <div className="mx-auto flex max-w-[1320px] items-center justify-between gap-3 px-4 py-3">
-            <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl bg-gray-50 px-3 py-2 ring-1 ring-black/5">
-              <span className="shrink-0 text-sm text-gray-400">⌕</span>
-              <input
-                id="crm-search"
-                value={searchText}
-                onChange={(event) => setSearchText(event.target.value)}
-                placeholder="Buscar oportunidade por nome, telefone ou identificadores"
-                className="min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
-              />
-              {searchText.trim() ? (
-                <button
-                  type="button"
-                  onClick={() => setSearchText("")}
-                  className="shrink-0 rounded-lg bg-white px-2 py-1 text-[11px] font-semibold text-gray-600 ring-1 ring-black/10 hover:bg-gray-50"
-                >
-                  Limpar
-                </button>
-              ) : null}
-            </div>
+    <div className="min-h-[calc(100vh-151px)] overflow-x-hidden bg-gray-100">
+      <div className="min-h-[calc(100vh-151px)]">
+        <div className="border-b border-black/5 bg-white">
+          <div className="mx-auto w-full max-w-[1320px] px-5 py-5">
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <h1 className="text-xl font-bold text-gray-950">Oportunidades de venda</h1>
+                </div>
 
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={openManualLeadModal}
-                disabled={!canOpenManualLeadModal}
-                className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Novo lead
-              </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void fetchPageData()}
+                    title="Recarregar CRM"
+                    aria-label="Recarregar CRM"
+                    className="grid h-10 w-10 place-items-center rounded-xl bg-white text-base font-semibold text-gray-700 ring-1 ring-black/10 transition hover:bg-gray-50"
+                  >
+                    ↻
+                  </button>
 
-              <Link
-                href="/inbox"
-                className="rounded-lg bg-black px-3 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90"
-              >
-                Ir para Inbox
-              </Link>
+                  <button
+                    type="button"
+                    onClick={openManualLeadModal}
+                    disabled={!canOpenManualLeadModal}
+                    className="rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    + Novo lead
+                  </button>
+                </div>
+              </div>
 
-              <button
-                type="button"
-                onClick={() => void fetchPageData()}
-                className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
-              >
-                Recarregar
-              </button>
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl bg-gray-50 px-4 py-3 ring-1 ring-black/5 xl:max-w-[720px]">
+                  <span className="shrink-0 text-sm text-gray-400">⌕</span>
+                  <input
+                    id="crm-search"
+                    value={searchText}
+                    onChange={(event) => setSearchText(event.target.value)}
+                    placeholder="Buscar oportunidade por nome, telefone ou identificadores"
+                    className="min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+                  />
+                  {searchText.trim() ? (
+                    <button
+                      type="button"
+                      onClick={() => setSearchText("")}
+                      className="shrink-0 rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-600 ring-1 ring-black/10 hover:bg-gray-50"
+                    >
+                      Limpar
+                    </button>
+                  ) : null}
+                </div>
+
+                {!searchText.trim() ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {BOARD_VIEW_OPTIONS.map((option) => {
+                      const count =
+                        option.id === "active"
+                          ? pipelineCards.length
+                          : option.id === "followup"
+                            ? followUpCards.length
+                            : option.id === "attention"
+                              ? attentionCards.length
+                              : option.id === "lost"
+                                ? lostCards.length
+                                : completedCards.length;
+                      const selected = boardView === option.id;
+
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => setBoardView(option.id)}
+                          className={cx(
+                            "flex shrink-0 items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold ring-1 transition",
+                            selected
+                              ? "bg-black text-white ring-black"
+                              : "bg-white text-gray-600 ring-black/10 hover:bg-gray-50",
+                          )}
+                        >
+                          <span>{option.label}</span>
+                          <span
+                            className={cx(
+                              "rounded-full px-1.5 py-0.5 text-[10px]",
+                              selected ? "bg-white/15 text-white" : "bg-gray-100 text-gray-600",
+                            )}
+                          >
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
         </div>
 
-        <div className="mx-auto flex min-h-0 w-full max-w-[1320px] flex-1 flex-col overflow-hidden px-4 py-3">
+        <div className="mx-auto w-full max-w-[1320px] px-5 py-5">
           {errorMsg ? (
-            <div className="mb-3 shrink-0 rounded-xl bg-red-50 p-3 text-xs text-red-800 ring-1 ring-red-600/20">
+            <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-600/20">
               <div className="font-semibold">Erro</div>
               <div className="mt-1 break-words">{errorMsg}</div>
             </div>
           ) : null}
 
           {loading ? (
-            <div className="rounded-2xl bg-white p-5 text-sm shadow-sm ring-1 ring-black/5">
+            <div className="rounded-2xl bg-white p-6 text-sm shadow-sm ring-1 ring-black/5">
               Carregando oportunidades...
             </div>
           ) : searchText.trim() ? (
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-              <div className="flex shrink-0 items-center justify-between border-b border-black/5 px-4 py-2">
-                <div>
-                  <div className="text-sm font-semibold text-gray-900">
-                    Resultados da busca
-                  </div>
-                  <div className="mt-0.5 text-xs text-gray-500">
-                    {searchResults.length} resultado(s) encontrado(s)
-                  </div>
+            <div className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+              <div className="border-b border-black/5 px-5 py-4">
+                <div className="text-base font-semibold text-gray-900">Resultados da busca</div>
+                <div className="mt-1 text-sm text-gray-500">
+                  {searchResults.length} resultado(s) encontrado(s)
                 </div>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              <div className="bg-gray-50/70 p-5">
                 {searchResults.length === 0 ? (
-                  <div className="rounded-xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                  <div className="rounded-xl bg-white p-5 text-sm text-gray-600 ring-1 ring-black/5">
                     Nenhuma oportunidade encontrada com essa busca.
                   </div>
                 ) : (
-                  <div className="grid gap-3 lg:grid-cols-2">
-                    {searchResults.map((card) =>
-                      renderCard(card, { compact: true, showStage: true })
-                    )}
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    {searchResults.map((card) => renderCard(card, { showStage: true }))}
                   </div>
                 )}
               </div>
             </div>
-          ) : (
-            <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl bg-white p-3 shadow-sm ring-1 ring-black/5">
-              <div className="space-y-4">
-                <div className="rounded-2xl border border-black/5 bg-gray-50 px-4 py-3">
-                  <div className="text-sm font-semibold text-gray-900">
-                    Board comercial por oportunidade
+          ) : boardView === "active" ? (
+            <div className="space-y-4">
+              <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/5 px-5 py-4">
+                  <div>
+                    <div className="text-base font-semibold text-gray-900">Etapas da venda</div>
                   </div>
-                  <div className="mt-1 text-xs text-gray-500">
-                    {cards.length} oportunidade(s) carregada(s).
+                  <div className="text-sm font-medium text-gray-400">
+                    {pipelineCards.length} oportunidade(s) ativas
                   </div>
                 </div>
 
-                {boardSections
-                  .filter((section) => section.area === "pipeline")
-                  .map((section) => (
-                  <section key={section.id} className="space-y-2">
-                    <div className="px-1">
-                      <div className="text-sm font-semibold text-gray-900">
-                        {section.title}
+                <div className="grid gap-2.5 p-4 sm:grid-cols-2 xl:grid-cols-4">
+                  {PIPELINE_STAGES.map((stage) => {
+                    const items = stageCardsById.get(stage.id) || [];
+                    const ui = getStageUi(stage);
+                    const selected = selectedPipelineStage?.id === stage.id;
+
+                    return (
+                      <button
+                        key={stage.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedPipelineStageId(stage.id);
+                          setShowAllSelectedStageCards(false);
+                        }}
+                        className={cx(
+                          "group flex min-h-[48px] items-center gap-3 rounded-xl px-4 py-2 text-left ring-1 transition",
+                          selected
+                            ? "bg-gray-950 text-white shadow-md ring-gray-950"
+                            : "bg-gray-50 text-gray-900 ring-black/5 hover:bg-white hover:shadow-sm hover:ring-black/10",
+                        )}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className={cx("h-2 w-2 shrink-0 rounded-full", ui.dot)} />
+                            <span className="truncate text-sm font-semibold">{stage.title}</span>
+                          </div>
+                        </div>
+
+                        <span
+                          className={cx(
+                            "shrink-0 rounded-full px-2 py-1 text-xs font-semibold",
+                            selected ? "bg-white/10 text-white" : "bg-white text-gray-600 ring-1 ring-black/5",
+                          )}
+                        >
+                          {items.length}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/5 px-5 py-4">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      className={cx(
+                        "h-2.5 w-2.5 shrink-0 rounded-full",
+                        getStageUi(selectedPipelineStage).dot,
+                      )}
+                    />
+                    <div className="min-w-0">
+                      <div className="truncate text-base font-semibold text-gray-950">
+                        {selectedPipelineStage?.title || "Etapa"}
                       </div>
-                      <div className="mt-0.5 text-xs text-gray-500">
-                        {section.description}
+                      <div className="mt-0.5 text-sm text-gray-500">
+                        {selectedPipelineStageCards.length} oportunidade(s) nesta etapa
                       </div>
-                    </div>
-
-                    <div className="grid gap-1">
-                      {section.stages.map((stage) => {
-                        const items = stageCardsById.get(stage.id) || [];
-                        const ui = getStageUi(stage);
-
-                        return (
-                          <button
-                            key={stage.id}
-                            type="button"
-                            onClick={() => setSelectedBucketId(stage.id)}
-                            className="group flex min-h-[38px] items-center justify-between gap-3 rounded-xl bg-gray-50 px-4 py-2 text-left ring-1 ring-black/5 transition hover:bg-white hover:shadow-sm"
-                          >
-                            <div className="flex min-w-0 items-center gap-3">
-                              <span
-                                className={cx("h-2.5 w-2.5 shrink-0 rounded-full", ui.dot)}
-                              />
-                              <div className="min-w-0">
-                                <div className="truncate text-sm font-semibold text-gray-900">
-                                  {stage.title}
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex shrink-0 items-center gap-2">
-                              <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
-                                {items.length}
-                              </span>
-                              <span
-                                className={cx(
-                                  "rounded-full px-2.5 py-0.5 text-[10px] font-semibold",
-                                  ui.chip
-                                )}
-                              >
-                                {ui.label}
-                              </span>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </section>
-                ))}
-
-                <section className="space-y-2">
-                  <div className="px-1">
-                    <div className="text-sm font-semibold text-gray-900">Follow-up</div>
-                    <div className="mt-0.5 text-xs text-gray-500">
-                      Oportunidades com follow-up ativo sem sair da etapa comercial atual.
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setSelectedBucketId(FOLLOW_UP_BUCKET_ID)}
-                    className="group flex min-h-[38px] items-center justify-between gap-3 rounded-xl bg-violet-50 px-4 py-2 text-left ring-1 ring-violet-200 transition hover:bg-white hover:shadow-sm"
-                  >
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-violet-500" />
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-gray-900">
-                          Follow-up
-                        </div>
-                      </div>
+                  {selectedPipelineStageCards.length > 9 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllSelectedStageCards((current) => !current)}
+                      className="rounded-xl bg-gray-50 px-3.5 py-2 text-xs font-semibold text-gray-700 ring-1 ring-black/10 transition hover:bg-gray-100"
+                    >
+                      {showAllSelectedStageCards
+                        ? "Mostrar menos"
+                        : `Ver todas as ${selectedPipelineStageCards.length}`}
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="bg-gray-50/60 p-4">
+                  {selectedPipelineStageCards.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-gray-200 bg-white px-5 py-10 text-center text-sm text-gray-400">
+                      Nenhuma oportunidade nesta etapa.
                     </div>
-
-                    <div className="flex shrink-0 items-center gap-2">
-                      <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
-                        {followUpCards.length}
-                      </span>
-                      <span className="rounded-full bg-violet-100 px-2.5 py-0.5 text-[10px] font-semibold text-violet-800 ring-1 ring-violet-200">
-                        ATIVO
-                      </span>
+                  ) : (
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                      {visibleSelectedPipelineStageCards.map((card) => renderCard(card))}
                     </div>
-                  </button>
-                </section>
+                  )}
+                </div>
+              </section>
+            </div>
+          ) : (
+            <div className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+              <div className="border-b border-black/5 px-5 py-4">
+                <div className="text-base font-semibold text-gray-900">{selectedViewMeta.title}</div>
+                <div className="mt-1 text-sm text-gray-500">{selectedViewMeta.description}</div>
+              </div>
 
-                {boardSections
-                  .filter((section) => section.area !== "pipeline")
-                  .map((section) => (
-                    <section key={section.id} className="space-y-2">
-                      <div className="px-1">
-                        <div className="text-sm font-semibold text-gray-900">
-                          {section.title}
-                        </div>
-                        <div className="mt-0.5 text-xs text-gray-500">
-                          {section.description}
-                        </div>
-                      </div>
-
-                      <div className="grid gap-1">
-                        {section.stages.map((stage) => {
-                          const items = stageCardsById.get(stage.id) || [];
-                          const ui = getStageUi(stage);
-
-                          return (
-                            <button
-                              key={stage.id}
-                              type="button"
-                              onClick={() => setSelectedBucketId(stage.id)}
-                              className="group flex min-h-[38px] items-center justify-between gap-3 rounded-xl bg-gray-50 px-4 py-2 text-left ring-1 ring-black/5 transition hover:bg-white hover:shadow-sm"
-                            >
-                              <div className="flex min-w-0 items-center gap-3">
-                                <span
-                                  className={cx("h-2.5 w-2.5 shrink-0 rounded-full", ui.dot)}
-                                />
-                                <div className="min-w-0">
-                                  <div className="truncate text-sm font-semibold text-gray-900">
-                                    {stage.title}
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="flex shrink-0 items-center gap-2">
-                                <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
-                                  {items.length}
-                                </span>
-                                <span
-                                  className={cx(
-                                    "rounded-full px-2.5 py-0.5 text-[10px] font-semibold",
-                                    ui.chip
-                                  )}
-                                >
-                                  {ui.label}
-                                </span>
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </section>
-                  ))}
-
-                <section className="space-y-2">
-                  <div className="px-1">
-                    <div className="text-sm font-semibold text-gray-900">
-                      Ação necessária
-                    </div>
-                    <div className="mt-0.5 text-xs text-gray-500">
-                      Oportunidades com etapa não identificada corretamente.
-                    </div>
+              <div className="bg-gray-50/70 p-5">
+                {selectedViewCards.length === 0 ? (
+                  <div className="rounded-xl bg-white p-5 text-sm text-gray-600 ring-1 ring-black/5">
+                    Nenhuma oportunidade nesta visão.
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setSelectedBucketId(ATTENTION_BUCKET_ID)}
-                    className="group flex min-h-[38px] items-center justify-between gap-3 rounded-xl bg-red-50 px-4 py-2 text-left ring-1 ring-red-200 transition hover:bg-white hover:shadow-sm"
-                  >
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-500" />
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-gray-900">
-                          Ação necessária
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex shrink-0 items-center gap-2">
-                      <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
-                        {attentionCards.length}
-                      </span>
-                      <span className="rounded-full bg-red-100 px-2.5 py-0.5 text-[10px] font-semibold text-red-700 ring-1 ring-red-200">
-                        REVISAO
-                      </span>
-                    </div>
-                  </button>
-                </section>
+                ) : (
+                  <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+                    {selectedViewCards.map((card) => renderCard(card, { showStage: true }))}
+                  </div>
+                )}
               </div>
             </div>
           )}
         </div>
       </div>
 
-      {selectedBucketId ? (
+      {selectedCard ? (
         <div
           className="fixed inset-0 z-50 flex justify-end bg-black/30"
-          onClick={() => setSelectedBucketId(null)}
+          onClick={() => setSelectedCardId(null)}
         >
-          <div
-            className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"
+          <aside
+            className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="shrink-0 border-b border-black/10 px-5 py-4">
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={cx("h-2.5 w-2.5 shrink-0 rounded-full", selectedBucketDotClass)}
-                    />
-                    <h2 className="truncate text-lg font-bold text-gray-900">
-                      {selectedBucketTitle}
-                    </h2>
-                    <span className="rounded-full bg-gray-100 px-2 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
-                      {selectedBucketCards.length}
-                    </span>
+                  <div className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">
+                    Oportunidade comercial
                   </div>
-                  <div className="mt-1 text-xs text-gray-500">
-                    {selectedBucketDescription}
+                  <h2 className="mt-1 truncate text-xl font-bold text-gray-950">
+                    {cardTitle(selectedCard)}
+                  </h2>
+                  <div className="mt-1 text-sm text-gray-500">
+                    {cardPhone(selectedCard) || "Sem telefone"}
                   </div>
                 </div>
 
                 <button
                   type="button"
-                  onClick={() => setSelectedBucketId(null)}
-                  className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                  onClick={() => setSelectedCardId(null)}
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gray-50 text-sm font-semibold text-gray-600 ring-1 ring-black/10 hover:bg-gray-100"
+                  aria-label="Fechar detalhes da oportunidade"
                 >
-                  Fechar
+                  ×
                 </button>
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto bg-gray-100 p-4">
-              {selectedBucketCards.length === 0 ? (
-                <div className="rounded-2xl bg-white p-4 text-sm text-gray-600 shadow-sm ring-1 ring-black/5">
-                  Sem oportunidades aqui ainda.
+            <div className="min-h-0 flex-1 overflow-y-auto bg-gray-50 p-5">
+              <div className="space-y-3">
+                <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                    Etapa atual
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span
+                      className={cx(
+                        "h-2.5 w-2.5 rounded-full",
+                        getStageUi(selectedCard.canonicalStage).dot,
+                      )}
+                    />
+                    <span className="text-sm font-semibold text-gray-900">
+                      {selectedCard.canonicalStage?.title || "Ação necessária"}
+                    </span>
+                  </div>
+                  <div className="mt-2 text-xs text-gray-500">
+                    Atualizada em {formatCardDate(selectedCard)}.
+                  </div>
                 </div>
+
+                <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                    Situação operacional
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {selectedCard.isFollowUpActive ? (
+                      <span className="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-800 ring-1 ring-violet-200">
+                        Follow-up ativo
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-gray-50 px-2.5 py-1 text-xs font-semibold text-gray-600 ring-1 ring-black/5">
+                        Sem follow-up ativo
+                      </span>
+                    )}
+
+                    {selectedCard.isHumanActive ? (
+                      <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-800 ring-1 ring-sky-200">
+                        Humano assumiu
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                        IA disponível
+                      </span>
+                    )}
+
+                    {!selectedCard.canonicalStage ? (
+                      <span className="rounded-full bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-700 ring-1 ring-red-200">
+                        Revisar etapa
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                    Vínculos
+                  </div>
+                  <dl className="mt-3 space-y-2 text-xs">
+                    <div className="flex items-center justify-between gap-4">
+                      <dt className="text-gray-500">Conversa</dt>
+                      <dd className="font-semibold text-gray-800">
+                        {selectedCard.conversationId ? "Vinculada" : "Não vinculada"}
+                      </dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <dt className="text-gray-500">Lead</dt>
+                      <dd className="font-semibold text-gray-800">
+                        {selectedCard.leadId ? "Vinculado" : "Não vinculado"}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+
+                <div className="rounded-2xl border border-dashed border-gray-200 bg-white/70 p-4 text-xs text-gray-500">
+                  {selectedCard.canonicalStage ? MOVEMENT_LOCK_MESSAGE : getAttentionReason()}
+                </div>
+              </div>
+            </div>
+
+            <div className="shrink-0 border-t border-black/10 bg-white p-4">
+              {buildCrmLeadConversationHref({
+                leadId: selectedCard.leadId,
+                conversationId: selectedCard.conversationId,
+                opportunityId: selectedCard.commercialOpportunityId,
+              }) ? (
+                <Link
+                  href={
+                    buildCrmLeadConversationHref({
+                      leadId: selectedCard.leadId,
+                      conversationId: selectedCard.conversationId,
+                      opportunityId: selectedCard.commercialOpportunityId,
+                    })!
+                  }
+                  className="flex w-full items-center justify-center rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:opacity-90"
+                >
+                  Abrir oportunidade
+                </Link>
               ) : (
-                <div className="space-y-3">
-                  {selectedBucketCards.map((card) =>
-                    renderCard(card, {
-                      showStage: selectedBucketId === FOLLOW_UP_BUCKET_ID,
-                    })
-                  )}
+                <div className="rounded-xl bg-gray-100 px-4 py-3 text-center text-sm font-semibold text-gray-500 ring-1 ring-gray-200">
+                  Oportunidade sem navegação disponível
                 </div>
               )}
             </div>
-          </div>
+          </aside>
         </div>
       ) : null}
 

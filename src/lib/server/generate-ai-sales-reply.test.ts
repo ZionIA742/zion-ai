@@ -63,6 +63,11 @@ class FakeQuery {
     return this;
   }
 
+  lt(field: string, value: unknown) {
+    this.filters.push((row) => String(row[field] || "") < String(value || ""));
+    return this;
+  }
+
   order(field: string, options?: { ascending?: boolean }) {
     void field;
     void options;
@@ -518,14 +523,19 @@ function createGenerateAiSalesReplySupabase(args?: {
   customerCatalogDocumentsReaderResponse?: RpcMockEntry;
   canonicalReaderResponses?: Array<{ data: unknown; error: { message: string } | null }>;
   writerResponse?: RpcMockEntry;
+  identityWriterResponse?: RpcMockEntry;
   materializerResponse?: RpcMockEntry;
   includeCurrentIntentResolution?: boolean;
   additionalCommercialOpportunities?: Row[];
+  crossSellSuggestions?: Row[];
+  crossSellAcceptanceWriterResponse?: RpcMockEntry;
+  crossSellStatusWriterResponse?: RpcMockEntry;
   cmirWriterResponse?: RpcMockEntry;
   commercialOpportunityStage?: string;
   cmirReopenTargetStage?: string;
   currentIntentDecisionKind?: CommercialMessageIntentDecisionKind;
   currentIntentResolvedOpportunityId?: string | null;
+  additionalMessages?: Row[];
 
 }) {
   const anchorMessageId = args?.anchorMessageId ?? "msg-anchor";
@@ -613,6 +623,7 @@ function createGenerateAiSalesReplySupabase(args?: {
           commercial_context_capture_state: commercialOpportunityId ? "captured" : "no_active_session",
           conversation_session_id: commercialOpportunityId ? "session-1" : null,
         }),
+        ...(args?.additionalMessages ?? []),
       ],
       conversation_sessions: commercialOpportunityId
         ? [
@@ -640,6 +651,8 @@ function createGenerateAiSalesReplySupabase(args?: {
           ]
         : [],
       commercial_opportunities: commercialOpportunities,
+      commercial_opportunity_cross_sell_suggestions:
+        args?.crossSellSuggestions ?? [],
       commercial_message_intent_resolution_current:
         commercialOpportunityId && (args?.includeCurrentIntentResolution ?? true)
         ? [
@@ -777,12 +790,55 @@ function createGenerateAiSalesReplySupabase(args?: {
           ],
           error: null,
         })),
+      write_customer_identity_name_by_system:
+        args?.identityWriterResponse ??
+        ((payload: Record<string, unknown>) => ({
+          data: [
+            {
+              lead_id: payload.p_lead_id,
+              customer_id: "customer-1",
+              display_name: payload.p_display_name,
+              normalized_name: String(payload.p_display_name || "").toLowerCase(),
+              changed: true,
+              outcome: "updated",
+            },
+          ],
+          error: null,
+        })),
       materialize_opportunity_profile_from_qualification_by_system:
         args?.materializerResponse ??
         {
           data: [createProfileMaterializationRow()],
           error: null,
         },
+      accept_commercial_cross_sell_suggestion_by_system:
+        args?.crossSellAcceptanceWriterResponse ??
+        ((payload: Record<string, unknown>) => ({
+          data: [
+            {
+              suggestion_id: payload.p_suggestion_id,
+              accepted_profile_version_id: "profile-version-1",
+              accepted_profile_component_id: "profile-component-1",
+              profile_changed: true,
+              replayed: false,
+              outcome: "accepted",
+            },
+          ],
+          error: null,
+        })),
+      set_commercial_cross_sell_suggestion_status_by_system:
+        args?.crossSellStatusWriterResponse ??
+        ((payload: Record<string, unknown>) => ({
+          data: [
+            {
+              suggestion_id: payload.p_suggestion_id,
+              status: payload.p_status,
+              replayed: false,
+              outcome: "suggestion_rejected",
+            },
+          ],
+          error: null,
+        })),
     },
   );
 }
@@ -2014,6 +2070,44 @@ test("technical visit with canonical location known advances only to operational
     question,
     "Vou verificar na agenda os horarios disponiveis. Qual dia ou periodo costuma ser melhor pra voce?",
   );
+});
+
+test("technical visit with canonical preferred period does not ask operational period again", () => {
+  const snapshot = createContextualQualificationSnapshot({
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "location_text",
+        normalizedValueText: "campinas",
+      }),
+      createCanonicalKnownFact({
+        factKey: "preferred_period_text",
+        normalizedValueText: "de prefer\u00eancia ainda este m\u00eas",
+      }),
+    ],
+    canAskNextQuestion: false,
+  }) as never;
+
+  const question = inferNonQualificationNextBestQuestion({
+    pattern: "general_sales_conversation",
+    facts: {
+      budgetKnown: false,
+      authorityKnown: false,
+      needKnown: false,
+      timingKnown: true,
+      locationKnown: true,
+      sizeKnown: false,
+      installationInterestKnown: false,
+      paymentInterestKnown: false,
+      visitInterestKnown: true,
+    } as never,
+    canonicalQualificationSnapshot: snapshot,
+    lastCustomerMessage: "Quero marcar uma visita tecnica",
+    explicitCatalogRequest: false,
+    patienceSignal: createActiveQualificationPatience() as never,
+    hasCustomerLocationPhoto: true,
+  });
+
+  assert.equal(question, null);
 });
 
 test("technical visit with canonical location missing leaves location to contextual qualification", () => {
@@ -5367,6 +5461,663 @@ test("generateAiSalesReply still answers explicit complementary request with pro
   assert.equal(finalPayload.includes("Cloro Granulado"), true);
 });
 
+test("generateAiSalesReply returns structured included pool candidate key", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "qual piscina voce recomenda para um espaco 3x4?",
+    pools: [{
+      id: "pool-structured-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      name: "Piscina Compacta 300",
+      material: "fibra",
+      shape: "retangular",
+      width_m: 3,
+      length_m: 4,
+      depth_m: 1.2,
+      price: 12000,
+      description: "Boa para espacos compactos.",
+      photo_url: null,
+      is_active: true,
+      track_stock: false,
+      stock_quantity: 0,
+    }],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    {
+      output_text: JSON.stringify({
+        reply_text: "Eu recomendo a Compacta 300 para esse espaco.",
+        cross_sell_suggestions_included: [
+          { candidate_key: "pool:pool-structured-1" },
+        ],
+      }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.aiText, "Eu recomendo a Compacta 300 para esse espaco");
+  assert.deepEqual(result.context.crossSellSuggestionsActuallyIncluded, [
+    {
+      candidateKey: "pool:pool-structured-1",
+      candidateKind: "pool",
+      poolId: "pool-structured-1",
+      catalogItemId: null,
+    },
+  ]);
+  const finalCall = openai.calls[1] as any;
+  const finalPayload = JSON.stringify(finalCall);
+  assert.equal(finalPayload.includes("response_format"), false);
+  assert.equal(finalCall.text?.format?.type, "json_schema");
+  assert.equal(
+    finalCall.text?.format?.name,
+    "sales_ai_reply_with_cross_sell_suggestions_v1",
+  );
+  assert.equal(finalCall.text?.format?.strict, true);
+  assert.deepEqual(finalCall.text?.format?.schema?.required, [
+    "reply_text",
+    "cross_sell_suggestions_included",
+  ]);
+  assert.equal(finalCall.text?.format?.schema?.additionalProperties, false);
+  assert.equal(
+    finalCall.text?.format?.schema?.properties?.cross_sell_suggestions_included
+      ?.items?.required?.includes("candidate_key"),
+    true,
+  );
+  assert.equal(finalPayload.includes("pool:pool-structured-1"), true);
+});
+
+test("generateAiSalesReply returns structured included catalog item candidate key", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "voces tem cloro?",
+    catalogItems: [{
+      id: "catalog-structured-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      sku: "CLORO-1",
+      name: "Cloro Granulado",
+      description: "Produto quimico para piscina.",
+      price_cents: 3000,
+      currency: "BRL",
+      is_active: true,
+      metadata: { categoria: "quimicos" },
+      track_stock: false,
+      stock_quantity: 0,
+    }],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    {
+      output_text: JSON.stringify({
+        reply_text: "Temos Cloro Granulado disponivel para tratamento.",
+        cross_sell_suggestions_included: [
+          { candidate_key: "catalog_item:catalog-structured-1" },
+        ],
+      }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.context.crossSellSuggestionsActuallyIncluded, [
+    {
+      candidateKey: "catalog_item:catalog-structured-1",
+      candidateKind: "catalog_item",
+      poolId: null,
+      catalogItemId: "catalog-structured-1",
+    },
+  ]);
+});
+
+test("generateAiSalesReply leaves structured cross-sell empty when model includes nothing", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "qual piscina voce recomenda para um espaco 3x4?",
+    pools: [{
+      id: "pool-structured-empty",
+      organization_id: "org-1",
+      store_id: "store-1",
+      name: "Piscina Compacta 300",
+      material: "fibra",
+      shape: "retangular",
+      width_m: 3,
+      length_m: 4,
+      depth_m: 1.2,
+      price: 12000,
+      description: "Boa para espacos compactos.",
+      photo_url: null,
+      is_active: true,
+      track_stock: false,
+      stock_quantity: 0,
+    }],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    {
+      output_text: JSON.stringify({
+        reply_text: "Me fala se voce prefere algo mais compacto ou mais confortavel.",
+        cross_sell_suggestions_included: [],
+      }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.context.crossSellSuggestionsActuallyIncluded, []);
+});
+
+test("generateAiSalesReply fails closed for unknown structured candidate key", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "voces tem cloro?",
+    catalogItems: [{
+      id: "catalog-valid-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      sku: "CLORO-1",
+      name: "Cloro Granulado",
+      description: "Produto quimico para piscina.",
+      price_cents: 3000,
+      currency: "BRL",
+      is_active: true,
+      metadata: { categoria: "quimicos" },
+      track_stock: false,
+      stock_quantity: 0,
+    }],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    {
+      output_text: JSON.stringify({
+        reply_text: "Temos Cloro Granulado.",
+        cross_sell_suggestions_included: [
+          { candidate_key: "service:service-1" },
+        ],
+      }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.aiText, "Temos Cloro Granulado");
+  assert.deepEqual(result.context.crossSellSuggestionsActuallyIncluded, []);
+});
+
+function createCrossSellSuggestionRow(overrides?: Row): Row {
+  return {
+    id: "suggestion-1",
+    organization_id: "org-1",
+    store_id: "store-1",
+    commercial_opportunity_id: "opp-1",
+    conversation_id: "conv-1",
+    suggestion_message_id: "msg-ai-suggestion",
+    candidate_kind: "catalog_item",
+    pool_id: null,
+    catalog_item_id: "catalog-cross-1",
+    status: "suggested",
+    created_at: "2026-08-24T09:59:00.000Z",
+    metadata: {},
+    ...overrides,
+  };
+}
+
+function createCrossSellSuggestionMessage(overrides?: Partial<TestMessage>): TestMessage {
+  return createMessage({
+    id: "msg-ai-suggestion",
+    sender: "ai",
+    direction: "outgoing",
+    content: "Tambem posso incluir uma capa termica no projeto.",
+    created_at: "2026-08-24T09:59:00.000Z",
+    conversation_session_context_link_id: undefined,
+    ...overrides,
+  } as Partial<TestMessage>);
+}
+
+function createCrossSellCatalogItem(overrides?: Row): Row {
+  return {
+    id: "catalog-cross-1",
+    organization_id: "org-1",
+    store_id: "store-1",
+    sku: "CAPA-1",
+    name: "Capa Termica",
+    description: "Capa termica para piscina.",
+    price_cents: 120000,
+    price_status: "valid",
+    currency: "BRL",
+    is_active: true,
+    metadata: {},
+    track_stock: false,
+    stock_quantity: 0,
+    stock_status: null,
+    ...overrides,
+  };
+}
+
+function structuredReply(text: string) {
+  return {
+    output_text: JSON.stringify({
+      reply_text: text,
+      cross_sell_suggestions_included: [],
+    }),
+    usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+  };
+}
+
+function classifierReply(args: {
+  decision: string;
+  suggestionKey?: string | null;
+  evidenceText?: string | null;
+}) {
+  return {
+    output_text: JSON.stringify({
+      decision: args.decision,
+      suggestion_key: args.suggestionKey ?? null,
+      evidence_text: args.evidenceText ?? null,
+    }),
+    usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+  };
+}
+
+test("generateAiSalesReply skips cross-sell inbound classifier when no active suggestion exists", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "pode incluir a capa",
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    structuredReply("Claro, vou seguir com isso."),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(openai.calls.length, 2);
+  assert.equal(
+    supabase.rpcCalls.some((call) =>
+      call.fn.includes("cross_sell_suggestion"),
+    ),
+    false,
+  );
+  assert.equal(result.context.crossSellInboundHandling.status, "not_applicable");
+});
+
+test("generateAiSalesReply accepts explicit cross-sell inbound before final reply", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Pode incluir a capa termica",
+    additionalMessages: [createCrossSellSuggestionMessage()],
+    catalogItems: [createCrossSellCatalogItem()],
+    crossSellSuggestions: [createCrossSellSuggestionRow()],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    classifierReply({
+      decision: "cross_sell_acceptance",
+      suggestionKey: "cross_sell_suggestion:suggestion-1",
+      evidenceText: "incluir a capa",
+    }),
+    structuredReply("Perfeito, registrei a inclusao da capa termica."),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const classifierCall = openai.calls[1] as any;
+  const classifierPayload = JSON.stringify(classifierCall);
+  assert.equal(classifierPayload.includes("response_format"), false);
+  assert.equal(classifierCall.text?.format?.type, "json_schema");
+  assert.equal(classifierCall.text?.format?.name, "cross_sell_inbound_decision_v1");
+  assert.equal(classifierCall.text?.format?.strict, true);
+  assert.deepEqual(classifierCall.text?.format?.schema?.required, [
+    "decision",
+    "suggestion_key",
+    "evidence_text",
+  ]);
+  assert.equal(classifierCall.text?.format?.schema?.additionalProperties, false);
+  assert.deepEqual(classifierCall.text?.format?.schema?.properties?.decision?.enum, [
+    "cross_sell_acceptance",
+    "cross_sell_rejection",
+    "cross_sell_ambiguous",
+    "other",
+  ]);
+  const writerCall = supabase.rpcCalls.find(
+    (call) => call.fn === "accept_commercial_cross_sell_suggestion_by_system",
+  );
+  assert.ok(writerCall);
+  assert.equal(writerCall.payload.p_suggestion_id, "suggestion-1");
+  assert.equal(writerCall.payload.p_customer_evidence_message_id, "msg-anchor");
+  assert.equal(
+    writerCall.payload.p_operation_key,
+    "cross-sell-acceptance:msg-anchor:suggestion-1",
+  );
+  assert.match(String(writerCall.payload.p_request_fingerprint), /^[0-9a-f]{64}$/);
+  assert.equal(result.context.crossSellInboundHandling.status, "accepted");
+  assert.equal(
+    JSON.stringify(openai.calls[2]).includes("CROSS-SELL INBOUND: accepted"),
+    true,
+  );
+});
+
+test("generateAiSalesReply rejects explicit cross-sell inbound with terminal writer", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Nao quero essa capa",
+    additionalMessages: [createCrossSellSuggestionMessage()],
+    catalogItems: [createCrossSellCatalogItem()],
+    crossSellSuggestions: [createCrossSellSuggestionRow()],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    classifierReply({
+      decision: "cross_sell_rejection",
+      suggestionKey: "cross_sell_suggestion:suggestion-1",
+      evidenceText: "Nao quero essa capa",
+    }),
+    structuredReply("Sem problema, retirei essa sugestao."),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const writerCall = supabase.rpcCalls.find(
+    (call) => call.fn === "set_commercial_cross_sell_suggestion_status_by_system",
+  );
+  assert.ok(writerCall);
+  assert.equal(writerCall.payload.p_status, "rejected");
+  assert.equal(
+    writerCall.payload.p_operation_key,
+    "cross-sell-rejection:msg-anchor:suggestion-1",
+  );
+  assert.equal(result.context.crossSellInboundHandling.status, "rejected");
+});
+
+test("generateAiSalesReply keeps product question as other and performs zero cross-sell mutation", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "quanto custa essa capa?",
+    additionalMessages: [createCrossSellSuggestionMessage()],
+    catalogItems: [createCrossSellCatalogItem()],
+    crossSellSuggestions: [createCrossSellSuggestionRow()],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    classifierReply({ decision: "other" }),
+    structuredReply("Vou te passar a informacao de preco com cuidado."),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(
+    supabase.rpcCalls.some((call) =>
+      call.fn === "accept_commercial_cross_sell_suggestion_by_system" ||
+      call.fn === "set_commercial_cross_sell_suggestion_status_by_system",
+    ),
+    false,
+  );
+  assert.equal(result.context.crossSellInboundHandling.status, "other");
+});
+
+test("generateAiSalesReply blocks generic yes across multiple active cross-sell suggestions", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "sim",
+    additionalMessages: [createCrossSellSuggestionMessage()],
+    catalogItems: [
+      createCrossSellCatalogItem(),
+      createCrossSellCatalogItem({ id: "catalog-cross-2", name: "Kit Limpeza" }),
+    ],
+    crossSellSuggestions: [
+      createCrossSellSuggestionRow(),
+      createCrossSellSuggestionRow({
+        id: "suggestion-2",
+        catalog_item_id: "catalog-cross-2",
+      }),
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    classifierReply({ decision: "cross_sell_ambiguous" }),
+    structuredReply("So para eu confirmar: voce quer incluir qual item?"),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.context.crossSellInboundHandling.status, "ambiguous");
+  assert.equal(
+    supabase.rpcCalls.some((call) => call.fn.includes("cross_sell_suggestion_by_system")),
+    false,
+  );
+});
+
+test("generateAiSalesReply accepts one clearly identified suggestion among multiple active suggestions", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "pode incluir a capa termica",
+    additionalMessages: [createCrossSellSuggestionMessage()],
+    catalogItems: [
+      createCrossSellCatalogItem(),
+      createCrossSellCatalogItem({ id: "catalog-cross-2", name: "Kit Limpeza" }),
+    ],
+    crossSellSuggestions: [
+      createCrossSellSuggestionRow(),
+      createCrossSellSuggestionRow({
+        id: "suggestion-2",
+        catalog_item_id: "catalog-cross-2",
+      }),
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    classifierReply({
+      decision: "cross_sell_acceptance",
+      suggestionKey: "cross_sell_suggestion:suggestion-1",
+      evidenceText: "incluir a capa termica",
+    }),
+    structuredReply("Perfeito, registrei a capa termica."),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const writerCall = supabase.rpcCalls.find(
+    (call) => call.fn === "accept_commercial_cross_sell_suggestion_by_system",
+  );
+  assert.ok(writerCall);
+  assert.equal(writerCall.payload.p_suggestion_id, "suggestion-1");
+});
+
+test("generateAiSalesReply refuses unknown cross-sell suggestion_key", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "pode incluir",
+    additionalMessages: [createCrossSellSuggestionMessage()],
+    catalogItems: [createCrossSellCatalogItem()],
+    crossSellSuggestions: [createCrossSellSuggestionRow()],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    classifierReply({
+      decision: "cross_sell_acceptance",
+      suggestionKey: "cross_sell_suggestion:unknown",
+      evidenceText: "pode incluir",
+    }),
+    structuredReply("Me confirma qual item voce quer incluir?"),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.context.crossSellInboundHandling.reason, "invalid_suggestion_key");
+  assert.equal(
+    supabase.rpcCalls.some((call) => call.fn.includes("cross_sell_suggestion_by_system")),
+    false,
+  );
+});
+
+test("generateAiSalesReply refuses invented cross-sell evidence_text", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "pode incluir",
+    additionalMessages: [createCrossSellSuggestionMessage()],
+    catalogItems: [createCrossSellCatalogItem()],
+    crossSellSuggestions: [createCrossSellSuggestionRow()],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    classifierReply({
+      decision: "cross_sell_acceptance",
+      suggestionKey: "cross_sell_suggestion:suggestion-1",
+      evidenceText: "quero comprar a capa termica",
+    }),
+    structuredReply("Me confirma se e a capa termica mesmo?"),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.context.crossSellInboundHandling.reason, "invalid_evidence_text");
+  assert.equal(
+    supabase.rpcCalls.some((call) => call.fn.includes("cross_sell_suggestion_by_system")),
+    false,
+  );
+});
+
+test("generateAiSalesReply exposes writer_failed so final reply cannot claim persisted cross-sell", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "pode incluir a capa",
+    additionalMessages: [createCrossSellSuggestionMessage()],
+    catalogItems: [createCrossSellCatalogItem()],
+    crossSellSuggestions: [createCrossSellSuggestionRow()],
+    crossSellAcceptanceWriterResponse: {
+      data: null,
+      error: { message: "writer unavailable" },
+    },
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    classifierReply({
+      decision: "cross_sell_acceptance",
+      suggestionKey: "cross_sell_suggestion:suggestion-1",
+      evidenceText: "incluir a capa",
+    }),
+    structuredReply("Vou confirmar internamente antes de registrar a capa."),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.context.crossSellInboundHandling.status, "writer_failed");
+  assert.equal(
+    JSON.stringify(openai.calls[2]).includes("writer_failed"),
+    true,
+  );
+  assert.equal(result.aiText.includes("registrei"), false);
+});
+
 test("generateAiSalesReply filters proactive complementary candidates by selected canonical category", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent: "qual piscina voce recomenda para um espaco 3x4?",
@@ -6006,8 +6757,8 @@ test("generateAiSalesReply uses canonical payment settings for Pix down payment 
   assert.equal(finalPayload.includes("Pix, Cartao de credito"), true);
   assert.equal(finalPayload.includes("parcelamento em ate 6x"), true);
   assert.equal(finalPayload.includes("Entrada obrigatoria 20%"), true);
-  assert.equal(finalPayload.includes("chave Pix configurada atualmente: sim"), true);
-  assert.equal(finalPayload.includes("regra de entrada/sinal configurada atualmente: sim"), true);
+  assert.equal(finalPayload.includes("estado efetivo Pix: allowed"), true);
+  assert.equal(finalPayload.includes("estado efetivo entrada/sinal: allowed"), true);
   assert.equal(finalPayload.includes("LEGACY_PAYMENT_METHODS_SHOULD_NOT_WIN"), false);
   assert.equal(finalPayload.includes("legacy-pix-key"), false);
   assert.equal(finalPayload.includes("legacy entrada obrigatoria"), false);
@@ -6078,12 +6829,280 @@ test("generateAiSalesReply treats missing canonical payment and false technical 
   const finalPayload = JSON.stringify(finalOpenAiCall);
 
   assert.equal(finalPayload.includes("estado canonico da visita tecnica atualmente: not_offered"), true);
-  assert.equal(finalPayload.includes("chave Pix configurada atualmente: nao"), true);
-  assert.equal(finalPayload.includes("regra de entrada/sinal configurada atualmente: nao"), true);
+  assert.equal(finalPayload.includes("estado efetivo Pix: unconfigured"), true);
+  assert.equal(finalPayload.includes("estado efetivo entrada/sinal: unconfigured"), true);
   assert.equal(finalPayload.includes("LEGACY_PIX_SHOULD_NOT_WIN"), false);
   assert.equal(finalPayload.includes("LEGACY_VISIT_RULE_SHOULD_NOT_WIN"), false);
 });
 
+test("generateAiSalesReply keeps accepted Pix allowed while missing Pix key remains unconfigured", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Qual é a chave Pix para eu pagar?",
+    paymentSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        accepted_payment_methods: ["pix"],
+        pix_key_type: null,
+        pix_key: null,
+        pix_holder_name: null,
+        down_payment_mode: "none",
+        down_payment_value_type: null,
+        down_payment_percent: null,
+        down_payment_amount_cents: null,
+        installments_enabled: false,
+        max_installments: null,
+        installment_interest_policy: null,
+        payment_notes: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      output_text: "A loja aceita Pix; vou confirmar a chave correta.",
+      usage: { input_tokens: 40, output_tokens: 20, total_tokens: 60 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+
+  const finalPayload = JSON.stringify(
+    openai.calls[1] as Record<string, unknown>,
+  );
+
+  assert.equal(
+    finalPayload.includes(
+      "payment.pix: allowed | PAYMENT_METHOD_ALLOWED",
+    ),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes(
+      "payment.pix_key_disclosure: unconfigured | PIX_KEY_UNCONFIGURED",
+    ),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes(
+      "Pix e aceito, mas a chave nao esta autorizada para divulgacao automatica",
+    ),
+    true,
+  );
+});
+
+test("generateAiSalesReply treats canonical installments false as forbidden", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Vocês parcelam? Dá para fazer em 10x?",
+    paymentSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        accepted_payment_methods: ["pix", "cartao_credito"],
+        pix_key_type: null,
+        pix_key: null,
+        pix_holder_name: null,
+        down_payment_mode: "none",
+        down_payment_value_type: null,
+        down_payment_percent: null,
+        down_payment_amount_cents: null,
+        installments_enabled: false,
+        max_installments: null,
+        installment_interest_policy: null,
+        payment_notes: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      output_text: "Essa condição de parcelamento não está disponível.",
+      usage: { input_tokens: 40, output_tokens: 20, total_tokens: 60 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+
+  const finalPayload = JSON.stringify(
+    openai.calls[1] as Record<string, unknown>,
+  );
+
+  assert.equal(
+    finalPayload.includes(
+      "payment.installments: forbidden | INSTALLMENTS_DISABLED",
+    ),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes(
+      "payment.installments: unconfigured | INSTALLMENTS_UNCONFIGURED",
+    ),
+    false,
+  );
+});
+
+test("generateAiSalesReply requires human approval when canonical discount autonomy is approval_required", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Você consegue me dar 10% de desconto?",
+    discountSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        default_discount_percent: 15,
+        max_discount_percent: 28,
+        allow_ask_above_max_discount: true,
+        discount_autonomy_mode: "approval_required",
+        discount_special_rules: null,
+      },
+    ],
+    highValueDiscountSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        enabled: false,
+        threshold_amount_cents: null,
+        discount_percent: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      output_text: "Posso consultar a aprovação dessa condição.",
+      usage: { input_tokens: 40, output_tokens: 20, total_tokens: 60 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+
+  const finalPayload = JSON.stringify(
+    openai.calls[1] as Record<string, unknown>,
+  );
+
+  assert.equal(
+    finalPayload.includes(
+      "discount.default_step: human_approval_required | DISCOUNT_APPROVAL_REQUIRED",
+    ),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes(
+      "discount.within_policy: human_approval_required | DISCOUNT_APPROVAL_REQUIRED",
+    ),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes(
+      "discount.above_max: human_approval_required | DISCOUNT_ABOVE_MAX_CAN_REQUEST_APPROVAL",
+    ),
+    true,
+  );
+
+  assert.equal(
+    finalPayload.includes(
+      "discount.high_value: forbidden | HIGH_VALUE_DISCOUNT_DISABLED",
+    ),
+    true,
+  );
+});
+test("generateAiSalesReply blocks model output that offers forbidden installments", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Vocês parcelam? Dá para fazer em 10x?",
+    paymentSettings: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        accepted_payment_methods: ["pix", "cartao_credito"],
+        pix_key_type: null,
+        pix_key: null,
+        pix_holder_name: null,
+        down_payment_mode: "none",
+        down_payment_value_type: null,
+        down_payment_percent: null,
+        down_payment_amount_cents: null,
+        installments_enabled: false,
+        max_installments: null,
+        installment_interest_policy: null,
+        payment_notes: null,
+      },
+    ],
+  });
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      output_text: "Sim, fazemos em até 10x no cartão.",
+      usage: { input_tokens: 40, output_tokens: 20, total_tokens: 60 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, false);
+
+  if (result.ok) {
+    assert.fail("forbidden installment claim must not reach customer-facing success");
+  }
+
+  assert.equal(
+    result.error,
+    "SALES_AI_BEHAVIOR_CONTRACT_OUTPUT_VIOLATION",
+  );
+});
 test("generateAiSalesReply fails closed when the payment settings reader errors", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     paymentSettingsReaderResponse: {
@@ -6572,6 +7591,209 @@ test("generateAiSalesReply skips structured extraction and writer when no explic
         call.fn === "materialize_opportunity_profile_from_qualification_by_system",
     ),
     false,
+  );
+});
+
+test("generateAiSalesReply writes self-declared customer name without commercial opportunity", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Meu nome é João Silva",
+    commercialOpportunityId: null,
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: "Oi, João Silva. Como posso ajudar?",
+      usage: {
+        input_tokens: 7,
+        output_tokens: 5,
+        total_tokens: 12,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const identityCalls = supabase.rpcCalls.filter(
+    (call) => call.fn === "write_customer_identity_name_by_system",
+  );
+  assert.equal(identityCalls.length, 1);
+  assert.deepEqual(identityCalls[0]?.payload, {
+    p_organization_id: "org-1",
+    p_store_id: "store-1",
+    p_lead_id: "lead-1",
+    p_conversation_id: "conv-1",
+    p_source_message_id: "msg-anchor",
+    p_operation_key: "p9_identity_name_v1:msg-anchor",
+    p_display_name: "João Silva",
+    p_created_by: "sales_ai_identity_name_extractor_v1",
+  });
+  assert.equal(
+    supabase.rpcCalls.some(
+      (call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system",
+    ),
+    false,
+  );
+});
+
+test("generateAiSalesReply ignores third-person name mentions", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "meu marido é João",
+    commercialOpportunityId: null,
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: "Entendi. Me conta como posso ajudar?",
+      usage: {
+        input_tokens: 7,
+        output_tokens: 5,
+        total_tokens: 12,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    supabase.rpcCalls.some((call) => call.fn === "write_customer_identity_name_by_system"),
+    false,
+  );
+});
+
+test("generateAiSalesReply keeps answering when customer identity writer reports existing-name conflict", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Aqui é a Maria",
+    commercialOpportunityId: null,
+    identityWriterResponse: (payload) => ({
+      data: [
+        {
+          lead_id: payload.p_lead_id,
+          customer_id: "customer-1",
+          display_name: payload.p_display_name,
+          normalized_name: "maria",
+          changed: false,
+          outcome: "conflict_existing_name",
+        },
+      ],
+      error: null,
+    }),
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: "Oi, Maria. Me fala o que você procura?",
+      usage: {
+        input_tokens: 7,
+        output_tokens: 5,
+        total_tokens: 12,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(openai.calls.length, 1);
+});
+
+test("generateAiSalesReply fails closed on structurally invalid identity writer payload", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Sou o João",
+    commercialOpportunityId: null,
+    identityWriterResponse: {
+      data: [],
+      error: null,
+    },
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: "não deve responder",
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error, "WRITE_CUSTOMER_IDENTITY_NAME_FAILED");
+  assert.equal(openai.calls.length, 0);
+});
+
+test("generateAiSalesReply writes customer identity and preserves qualification fact pipeline", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Meu nome é João. Quero uma visita tecnica para um espaco 3x4",
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 10,
+        output_tokens: 4,
+        total_tokens: 14,
+      },
+    },
+    {
+      output_text: "João, podemos seguir com a visita tecnica",
+      usage: {
+        input_tokens: 30,
+        output_tokens: 10,
+        total_tokens: 40,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    supabase.rpcCalls.filter((call) => call.fn === "write_customer_identity_name_by_system")
+      .length,
+    1,
+  );
+  assert.deepEqual(
+    supabase.rpcCalls
+      .filter((call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system")
+      .map((call) => call.payload.p_fact_key),
+    ["space_text", "requested_area_m2", "technical_visit_interest"],
   );
 });
 
@@ -8346,6 +9568,38 @@ test("sales brain visit gate trusts canonical location instead of legacy heurist
     brain.plan.questionToAsk,
     "Qual dia ou periodo costuma ser melhor para voce",
   );
+});
+
+test("sales brain preserves canonical preferred visit period and does not ask it again", () => {
+  const canonicalPeriod = "de prefer\u00eancia ainda este m\u00eas";
+  const brain = buildSalesResponseBrain({
+    customerName: null,
+    crmStage: "qualificacao",
+    conversationStatus: "active",
+    humanActive: false,
+    lastCustomerMessage: "Quero agendar uma visita tecnica",
+    orderedMessages: [],
+    offersTechnicalVisit: true,
+    suggestedNextQuestion: null,
+    canonicalVisitLocationState: "known",
+    canonicalPreferredVisitPeriod: canonicalPeriod,
+    contextualQualification: {
+      hasCanonicalSnapshot: true,
+      askNow: false,
+      targetFactKey: "preferred_period_text",
+      targetGroup: "timing",
+      targetStatus: "known",
+    },
+  });
+
+  assert.equal(brain.snapshot.preferredVisitPeriod, canonicalPeriod);
+  assert.equal(brain.snapshot.visitNeedsQualificationBeforeAgenda, false);
+  assert.equal(brain.plan.allowedNextStep, "prepare_visit_handoff");
+  assert.equal(brain.plan.shouldAskQuestion, false);
+  assert.equal(brain.plan.questionToAsk, null);
+  assert.deepEqual(brain.plan.missingCriticalInfo, []);
+  assert.ok(brain.promptBlock.includes(`periodo=${canonicalPeriod}`));
+  assert.ok(brain.promptBlock.includes("preservar a janela temporal canonica"));
 });
 
 test("sales brain visit gate blocks agenda when canonical location still needs contextual qualification", () => {

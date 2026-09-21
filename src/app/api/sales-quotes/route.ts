@@ -29,6 +29,13 @@ type SalesQuoteListItem = {
   } | null;
 };
 
+type CommercialOpportunityScopeRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  origin_lead_id: string | null;
+};
+
 function buildJsonResponse(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
@@ -38,10 +45,18 @@ function buildJsonResponse(body: unknown, status = 200) {
   });
 }
 
-export async function GET(request: Request) {
+export function createSalesQuotesListGetHandler(deps?: {
+  authenticateQuoteRequest?: typeof authenticateQuoteRequest;
+}) {
+  const resolveAuth = deps?.authenticateQuoteRequest ?? authenticateQuoteRequest;
+
+  return async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const leadId = String(url.searchParams.get("leadId") || "").trim();
+    const commercialOpportunityId = String(
+      url.searchParams.get("commercialOpportunityId") || ""
+    ).trim();
 
     if (!leadId) {
       return buildJsonResponse(
@@ -54,7 +69,18 @@ export async function GET(request: Request) {
       );
     }
 
-    const auth = await authenticateQuoteRequest();
+    if (!commercialOpportunityId) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "MISSING_COMMERCIAL_OPPORTUNITY_ID",
+          message: "Opportunity comercial nao informada.",
+        },
+        400
+      );
+    }
+
+    const auth = await resolveAuth();
 
     const { data: lead, error: leadError } = await auth.supabase
       .from("leads")
@@ -87,48 +113,86 @@ export async function GET(request: Request) {
 
     const leadStoreId = String(lead.store_id || "").trim();
 
-    if (leadStoreId) {
-      const { data: store, error: storeError } = await auth.supabase
-        .from("stores")
-        .select("id, organization_id")
-        .eq("id", leadStoreId)
-        .eq("organization_id", lead.organization_id)
-        .in("organization_id", auth.organizationIds)
-        .maybeSingle<{ id: string; organization_id: string }>();
+    if (!leadStoreId) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LEAD_STORE_REQUIRED_FOR_COMMERCIAL_OPPORTUNITY",
+          message: "A lead informada nao possui loja para validar a opportunity.",
+        },
+        403
+      );
+    }
 
-      if (storeError) {
-        return buildJsonResponse(
-          {
-            ok: false,
-            error: "LOAD_STORE_FAILED",
-            message: storeError.message,
-          },
-          500
-        );
-      }
+    const { data: store, error: storeError } = await auth.supabase
+      .from("stores")
+      .select("id, organization_id")
+      .eq("id", leadStoreId)
+      .eq("organization_id", lead.organization_id)
+      .in("organization_id", auth.organizationIds)
+      .maybeSingle<{ id: string; organization_id: string }>();
 
-      if (!store) {
-        return buildJsonResponse(
-          {
-            ok: false,
-            error: "STORE_SCOPE_INVALID",
-            message: "A lead informada pertence a uma loja fora do escopo autorizado.",
-          },
-          403
-        );
-      }
+    if (storeError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_STORE_FAILED",
+          message: storeError.message,
+        },
+        500
+      );
+    }
+
+    if (!store) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "STORE_SCOPE_INVALID",
+          message: "A lead informada pertence a uma loja fora do escopo autorizado.",
+        },
+        403
+      );
+    }
+
+    const { data: opportunity, error: opportunityError } = await auth.supabase
+      .from("commercial_opportunities")
+      .select("id, organization_id, store_id, origin_lead_id")
+      .eq("id", commercialOpportunityId)
+      .eq("organization_id", lead.organization_id)
+      .eq("store_id", leadStoreId)
+      .eq("origin_lead_id", lead.id)
+      .maybeSingle<CommercialOpportunityScopeRow>();
+
+    if (opportunityError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_COMMERCIAL_OPPORTUNITY_FAILED",
+          message: opportunityError.message,
+        },
+        500
+      );
+    }
+
+    if (!opportunity) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "COMMERCIAL_OPPORTUNITY_NOT_FOUND_OR_FORBIDDEN",
+          message: "Opportunity comercial nao encontrada no escopo da lead.",
+        },
+        403
+      );
     }
 
     let quotesQuery = auth.supabase
       .from("sales_quotes")
       .select(getSalesQuotesSelect())
-      .eq("organization_id", lead.organization_id)
+      .eq("organization_id", opportunity.organization_id)
+      .eq("store_id", opportunity.store_id)
       .eq("lead_id", lead.id)
+      .eq("commercial_opportunity_id", opportunity.id)
       .order("created_at", { ascending: false });
-
-    if (leadStoreId) {
-      quotesQuery = quotesQuery.eq("store_id", leadStoreId);
-    }
 
     const { data: quotesData, error: quotesError } = await quotesQuery;
 
@@ -161,7 +225,8 @@ export async function GET(request: Request) {
           "id, quote_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, quote_snapshot, created_at, sent_at"
         )
         .in("id", currentVersionIds)
-        .eq("organization_id", lead.organization_id);
+        .eq("organization_id", opportunity.organization_id)
+        .eq("store_id", opportunity.store_id);
 
       if (versionsError) {
         return buildJsonResponse(
@@ -221,8 +286,9 @@ export async function GET(request: Request) {
     return buildJsonResponse({
       ok: true,
       leadId: lead.id,
-      organizationId: lead.organization_id,
-      storeId: leadStoreId || null,
+      commercialOpportunityId: opportunity.id,
+      organizationId: opportunity.organization_id,
+      storeId: opportunity.store_id,
       quotes: quotesList,
     });
   } catch (error: unknown) {
@@ -246,4 +312,7 @@ export async function GET(request: Request) {
       500
     );
   }
+  };
 }
+
+export const GET = createSalesQuotesListGetHandler();

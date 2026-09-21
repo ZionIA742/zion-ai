@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { loadStoreBrandVisualPolicy } from "@/lib/server/store-brand-visual-policy";
 import { buildContractPdf, loadStoreLogoForContractPdf } from "@/lib/server/sales-contracts/build-contract-pdf";
 import { resolveAuthorizedExistingContract, ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
 import { registerContractBusinessEvent } from "@/lib/server/sales-contracts/contract-events";
@@ -152,15 +153,31 @@ export async function POST(
       },
     });
 
-    const storeLogo = await loadStoreLogoForContractPdf({
-      supabase: scope.supabase,
+    const brandVisualPolicy = await loadStoreBrandVisualPolicy({
+      supabase: scope.sessionSupabase,
       organizationId: scope.organizationId,
       storeId: scope.store.id,
     });
 
+    const storeLogo =
+      !brandVisualPolicy.configured || brandVisualPolicy.useLogoOnContracts === true
+        ? await loadStoreLogoForContractPdf({
+            supabase: scope.supabase,
+            organizationId: scope.organizationId,
+            storeId: scope.store.id,
+          })
+        : null;
+
     const pdfBytes = await buildContractPdf({
       storeName: scope.store.name,
       storeLogo,
+      brandVisual: brandVisualPolicy.configured
+        ? {
+            primaryColor: brandVisualPolicy.primaryColor,
+            secondaryColor: brandVisualPolicy.secondaryColor,
+            documentFooter: brandVisualPolicy.documentFooter,
+          }
+        : null,
       contractNumber: scope.contract.contract_number,
       quoteNumber:
         scope.contract.metadata && typeof scope.contract.metadata === "object"

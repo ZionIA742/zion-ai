@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { loadStoreBrandVisualPolicy } from "@/lib/server/store-brand-visual-policy";
 import {
   buildQuotePdf,
   loadStoreLogoForPdf,
@@ -819,15 +820,31 @@ export async function POST(
     failureSnapshot = snapshot;
     failureVersionNumber = versionNumber;
 
-    const storeLogo = await loadStoreLogoForPdf({
-      supabase: scope.supabase,
+    const brandVisualPolicy = await loadStoreBrandVisualPolicy({
+      supabase: scope.sessionSupabase,
       organizationId: scope.organizationId,
       storeId: scope.store.id,
     });
 
+    const storeLogo =
+      !brandVisualPolicy.configured || brandVisualPolicy.useLogoOnQuotes === true
+        ? await loadStoreLogoForPdf({
+            supabase: scope.supabase,
+            organizationId: scope.organizationId,
+            storeId: scope.store.id,
+          })
+        : null;
+
     const pdfBytes = await buildQuotePdf({
       storeName: scope.store.name,
       storeLogo,
+      brandVisual: brandVisualPolicy.configured
+        ? {
+            primaryColor: brandVisualPolicy.primaryColor,
+            secondaryColor: brandVisualPolicy.secondaryColor,
+            documentFooter: brandVisualPolicy.documentFooter,
+          }
+        : null,
       quoteNumber: String(updatedQuote.quote_number || "").trim() || updatedQuote.id,
       title: updatedQuote.title,
       customerName: updatedQuote.customer_name || scope.lead?.name || null,

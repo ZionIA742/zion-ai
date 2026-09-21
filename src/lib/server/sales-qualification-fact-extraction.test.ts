@@ -66,6 +66,54 @@ test("deterministic extraction confirms dimension area and technical visit", () 
   );
 });
 
+test("natural pilot phrasing survives deterministic extraction and validation", () => {
+  const message =
+    "Tenho um espaço de 8 por 4 metros, aqui em Suzano. Tenho interesse em fazer uma visita técnica. Meu orçamento é de uns 25 mil reais e gostaria de saber se dá para parcelar. Quero decidir isso junto com minha esposa, de preferência ainda este mês. Prefiro uma piscina azul e minha maior preocupação é o custo da manutenção.";
+
+  const validated = extractDeterministicQualificationCandidates(message)
+    .map((candidate) =>
+      validateQualificationFactCandidate({
+        candidate,
+        anchorMessage: message,
+      }),
+    )
+    .filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
+
+  assert.deepEqual(
+    validated.map((candidate) => ({
+      factKey: candidate.factKey,
+      valueJson: candidate.valueJson,
+      evidenceText: candidate.evidenceText,
+    })),
+    [
+      {
+        factKey: "space_text",
+        valueJson: "8 por 4 metros",
+        evidenceText: "8 por 4 metros",
+      },
+      {
+        factKey: "requested_area_m2",
+        valueJson: 32,
+        evidenceText: "8 por 4 metros",
+      },
+      {
+        factKey: "preferred_period_text",
+        valueJson: "de preferência ainda este mês",
+        evidenceText: "de preferência ainda este mês",
+      },
+      {
+        factKey: "payment_interest",
+        valueJson: true,
+        evidenceText: "gostaria de saber se dá para parcelar",
+      },
+      {
+        factKey: "technical_visit_interest",
+        valueJson: true,
+        evidenceText: "Tenho interesse em fazer uma visita técnica",
+      },
+    ],
+  );
+});
 test("deterministic extraction confirms decimal dimension areas with dot and comma", () => {
   assert.deepEqual(
     serializeCandidates("meu espaco e 3.5x4").slice(0, 2),
@@ -280,6 +328,92 @@ test("validation rejects evidence that is not grounded in the anchor message", (
   );
 });
 
+test("structured extraction separates decision context from preferred period", async () => {
+  const message =
+    "Quero decidir isso junto com minha esposa, de preferência ainda este mês.";
+
+  const result = await extractStructuredQualificationCandidates({
+    openai: new FakeOpenAi(
+      JSON.stringify({
+        candidates: [
+          {
+            fact_key: "decision_context",
+            assertion_level: "confirmed",
+            value_kind: "text",
+            text_value: "decidir isso junto com minha esposa, de preferência ainda este mês",
+            number_value: null,
+            boolean_value: null,
+            evidence_text:
+              "decidir isso junto com minha esposa, de preferência ainda este mês",
+          },
+          {
+            fact_key: "preferred_period_text",
+            assertion_level: "confirmed",
+            value_kind: "text",
+            text_value: "de preferência ainda este mês",
+            number_value: null,
+            boolean_value: null,
+            evidence_text: "de preferência ainda este mês",
+          },
+        ],
+      }),
+    ),
+    model: "test-model",
+    anchorMessage: message,
+  });
+
+  const validated = result.candidates
+    .map((candidate) =>
+      validateQualificationFactCandidate({
+        candidate,
+        anchorMessage: message,
+      }),
+    )
+    .filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
+
+  assert.deepEqual(
+    validated.map((candidate) => ({
+      factKey: candidate.factKey,
+      valueJson: candidate.valueJson,
+    })),
+    [
+      {
+        factKey: "decision_context",
+        valueJson: "decidir isso junto com minha esposa",
+      },
+      {
+        factKey: "preferred_period_text",
+        valueJson: "de preferência ainda este mês",
+      },
+    ],
+  );
+});
+
+test("structured extraction rejects period-only decision context", async () => {
+  const message = "De preferência ainda este mês.";
+
+  const result = await extractStructuredQualificationCandidates({
+    openai: new FakeOpenAi(
+      JSON.stringify({
+        candidates: [
+          {
+            fact_key: "decision_context",
+            assertion_level: "confirmed",
+            value_kind: "text",
+            text_value: "de preferência ainda este mês",
+            number_value: null,
+            boolean_value: null,
+            evidence_text: "de preferência ainda este mês",
+          },
+        ],
+      }),
+    ),
+    model: "test-model",
+    anchorMessage: message,
+  });
+
+  assert.deepEqual(result.candidates, []);
+});
 test("validation rejects typed extra or incompatible fields from structured output", async () => {
   const result = await extractStructuredQualificationCandidates({
     openai: new FakeOpenAi(
@@ -313,6 +447,70 @@ test("validation rejects typed extra or incompatible fields from structured outp
   assert.deepEqual(result.candidates, []);
 });
 
+test("merge treats equivalent preferred period wording as the same canonical value", () => {
+  const merged = mergeQualificationFactCandidates({
+    deterministicCandidates: [
+      {
+        factKey: "preferred_period_text",
+        valueKind: "text",
+        valueJson: "de preferência ainda este mês",
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: "de preferência ainda este mês",
+      },
+    ],
+    aiCandidates: [
+      {
+        factKey: "preferred_period_text",
+        valueKind: "text",
+        valueJson: "ainda este mês",
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: "ainda este mês",
+      },
+    ],
+  });
+
+  assert.deepEqual(merged.discardedFactKeys, []);
+  assert.deepEqual(merged.mergedCandidates, [
+    {
+      factKey: "preferred_period_text",
+      valueKind: "text",
+      valueJson: "de preferência ainda este mês",
+      assertionLevel: "confirmed",
+      sourceType: "incoming_customer_message",
+      evidenceText: "de preferência ainda este mês",
+    },
+  ]);
+});
+
+test("merge still discards genuinely conflicting preferred periods", () => {
+  const merged = mergeQualificationFactCandidates({
+    deterministicCandidates: [
+      {
+        factKey: "preferred_period_text",
+        valueKind: "text",
+        valueJson: "este mês",
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: "este mês",
+      },
+    ],
+    aiCandidates: [
+      {
+        factKey: "preferred_period_text",
+        valueKind: "text",
+        valueJson: "próximo mês",
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: "próximo mês",
+      },
+    ],
+  });
+
+  assert.deepEqual(merged.discardedFactKeys, ["preferred_period_text"]);
+  assert.deepEqual(merged.mergedCandidates, []);
+});
 test("merge keeps one confirmed canonical candidate when deterministic and AI agree on area", () => {
   const merged = mergeQualificationFactCandidates({
     deterministicCandidates: [

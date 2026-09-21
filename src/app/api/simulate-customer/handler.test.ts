@@ -845,7 +845,8 @@ const tests: TestCase[] = [
       assert.equal(body.error, "SIMULATE_CUSTOMER_AI_REPLY_UNAVAILABLE");
       assert.equal(body.customerMessageSaved, true);
       assert.equal(body.aiReplySaved, false);
-      assert.equal(String(JSON.stringify(body)).includes("QUEUE_PROCESSING_FAILED"), false);
+      assert.equal(body.diagnosticCode, "QUEUE_PROCESSING_FAILED");
+      assert.equal(String(JSON.stringify(body)).includes("QUEUE_PROCESSING_FAILED"), true);
       assert.equal(aiCalls, 0);
     },
   },
@@ -870,13 +871,14 @@ const tests: TestCase[] = [
       assert.equal(body.error, "SIMULATE_CUSTOMER_AI_REPLY_UNAVAILABLE");
       assert.equal(body.customerMessageSaved, true);
       assert.equal(body.aiReplySaved, false);
+      assert.equal(body.aiErrorCode, "AI_FLOW_EXECUTION_FAILED");
       assert.equal(response.headers.get("Cache-Control"), "no-store");
       assert.equal(String(JSON.stringify(body)).includes("AI_THROW_SENTINEL"), false);
       assert.equal(fakeSupabase.rpcCalls.length, 1);
     },
   },
   {
-    name: "runAiFlow false result stays sanitized with no internal details",
+    name: "runAiFlow false result preserves safe code without internal message",
     run: async () => {
       const fakeSupabase = createFakeSupabase();
       const handler = createSimulateCustomerPostHandler({
@@ -899,8 +901,55 @@ const tests: TestCase[] = [
       assert.equal(body.customerMessageSaved, true);
       assert.equal(body.aiReplySaved, false);
       assert.equal(String(JSON.stringify(body)).includes("AI_RETURN_SENTINEL"), false);
-      assert.equal(String(JSON.stringify(body)).includes("AI_INTERNAL_ERROR"), false);
+      assert.equal(body.aiErrorCode, "AI_INTERNAL_ERROR");
       assert.equal(response.headers.get("Cache-Control"), "no-store");
+    },
+  },
+  {
+    name: "runAiFlow operation settings failure preserves diagnostic code safely",
+    run: async () => {
+      const fakeSupabase = createFakeSupabase();
+      const handler = createSimulateCustomerPostHandler({
+        resolveAccess: async () => createGrantedAccess(),
+        createPrivilegedClient: () => fakeSupabase.client as never,
+        runAiFlow: async () => ({
+          ok: false,
+          error: "LOAD_OPERATION_SETTINGS_FAILED",
+          message: "SENTINEL_PRIVADO",
+        }),
+      });
+
+      const response = await handler(createRequest({ conversationId: "conv-1", text: "Oi" }));
+      const body = (await response.json()) as Record<string, unknown>;
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "SIMULATE_CUSTOMER_AI_REPLY_UNAVAILABLE");
+      assert.equal(body.customerMessageSaved, true);
+      assert.equal(body.aiReplySaved, false);
+      assert.equal(body.aiErrorCode, "LOAD_OPERATION_SETTINGS_FAILED");
+      assert.equal(String(JSON.stringify(body)).includes("SENTINEL_PRIVADO"), false);
+    },
+  },
+  {
+    name: "runAiFlow channel settings failure preserves diagnostic code safely",
+    run: async () => {
+      const fakeSupabase = createFakeSupabase();
+      const handler = createSimulateCustomerPostHandler({
+        resolveAccess: async () => createGrantedAccess(),
+        createPrivilegedClient: () => fakeSupabase.client as never,
+        runAiFlow: async () => ({
+          ok: false,
+          error: "LOAD_CHANNEL_SETTINGS_FAILED",
+          message: "PRIVATE_CHANNEL_DETAILS",
+        }),
+      });
+
+      const response = await handler(createRequest({ conversationId: "conv-1", text: "Oi" }));
+      const body = (await response.json()) as Record<string, unknown>;
+
+      assert.equal(response.status, 409);
+      assert.equal(body.aiErrorCode, "LOAD_CHANNEL_SETTINGS_FAILED");
+      assert.equal(String(JSON.stringify(body)).includes("PRIVATE_CHANNEL_DETAILS"), false);
     },
   },
   {

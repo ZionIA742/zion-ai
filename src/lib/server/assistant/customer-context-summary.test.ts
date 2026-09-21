@@ -141,6 +141,7 @@ function createBaseTables() {
         id: "contract-1",
         organization_id: "org-1",
         store_id: "store-1",
+        commercial_opportunity_id: "opportunity-a",
         lead_id: "lead-1",
         conversation_id: "conv-1",
         quote_id: null,
@@ -155,13 +156,26 @@ function createBaseTables() {
     store_appointments: [],
     conversation_sessions: [],
     commercial_session_context_links: [],
+    commercial_opportunities: [
+      {
+        id: "opportunity-a",
+        organization_id: "org-1",
+        store_id: "store-1",
+        origin_lead_id: "lead-1",
+        primary_conversation_id: "conv-1",
+      },
+    ],
     sales_quotes: [],
   };
 
   return tables;
 }
 
-async function buildSummary(tables: Record<string, Row[]>, relatedMessageId?: string) {
+async function buildSummary(
+  tables: Record<string, Row[]>,
+  relatedMessageId?: string,
+  commercialOpportunityId: string | null = "opportunity-a"
+) {
   return buildCustomerContextSummary({
     supabase: new FakeSupabase(tables),
     organizationId: "org-1",
@@ -169,6 +183,7 @@ async function buildSummary(tables: Record<string, Row[]>, relatedMessageId?: st
     leadId: "lead-1",
     conversationId: "conv-1",
     relatedMessageId,
+    commercialOpportunityId,
     trigger: "customer_requested_contract",
     customerName: "Cliente Atual",
   });
@@ -385,8 +400,127 @@ test("calls without relatedMessageId remain compatible", async () => {
   const summary = await buildSummary(tables);
 
   assert.equal(summary?.contractNumber, "CT-1");
+  assert.equal(summary?.commercialOpportunityId, "opportunity-a");
   assert.equal(summary?.relatedMessageCommercialContext, undefined);
   assert.equal(summary?.latestCustomerMessage, "Mensagem atual");
+});
+
+test("multi-opportunity summary keeps visits and contracts scoped to the explicit opportunity", async () => {
+  const tables = createBaseTables();
+  tables.commercial_opportunities.push({
+    id: "opportunity-b",
+    organization_id: "org-1",
+    store_id: "store-1",
+    origin_lead_id: "lead-1",
+    primary_conversation_id: "conv-1",
+  });
+  tables.sales_contracts.push({
+    id: "contract-b",
+    organization_id: "org-1",
+    store_id: "store-1",
+    commercial_opportunity_id: "opportunity-b",
+    lead_id: "lead-1",
+    conversation_id: "conv-1",
+    quote_id: null,
+    contract_number: "CT-B",
+    status: "customer_signed",
+    sent_at: "2026-07-22T09:00:00.000Z",
+    customer_signed_at: "2026-07-22T10:00:00.000Z",
+    completed_at: null,
+    created_at: "2026-07-22T08:00:00.000Z",
+  });
+  tables.store_appointments.push(
+    {
+      id: "visit-a",
+      organization_id: "org-1",
+      store_id: "store-1",
+      commercial_opportunity_id: "opportunity-a",
+      appointment_type: "technical_visit",
+      status: "completed",
+      scheduled_start: "2026-07-20T08:00:00.000Z",
+      scheduled_end: "2026-07-20T09:00:00.000Z",
+      created_at: "2026-07-20T07:00:00.000Z",
+    },
+    {
+      id: "visit-b",
+      organization_id: "org-1",
+      store_id: "store-1",
+      commercial_opportunity_id: "opportunity-b",
+      appointment_type: "technical_visit",
+      status: "scheduled",
+      scheduled_start: "2026-07-23T08:00:00.000Z",
+      scheduled_end: "2026-07-23T09:00:00.000Z",
+      created_at: "2026-07-23T07:00:00.000Z",
+    }
+  );
+
+  const summaryA = await buildSummary(tables, undefined, "opportunity-a");
+  const summaryB = await buildSummary(tables, undefined, "opportunity-b");
+
+  assert.equal(summaryA?.contractNumber, "CT-1");
+  assert.equal(summaryA?.technicalVisitStatusLabel, "Concluída");
+  assert.equal(summaryB?.contractNumber, "CT-B");
+  assert.equal(summaryB?.technicalVisitStatusLabel, "Agendada");
+});
+
+test("summary without explicit opportunity does not aggregate commercial artifacts by lead or conversation", async () => {
+  const tables = createBaseTables();
+  tables.commercial_opportunities.push({
+    id: "opportunity-b",
+    organization_id: "org-1",
+    store_id: "store-1",
+    origin_lead_id: "lead-1",
+    primary_conversation_id: "conv-1",
+  });
+  tables.sales_contracts.push({
+    id: "contract-b",
+    organization_id: "org-1",
+    store_id: "store-1",
+    commercial_opportunity_id: "opportunity-b",
+    lead_id: "lead-1",
+    conversation_id: "conv-1",
+    quote_id: null,
+    contract_number: "CT-B",
+    status: "sent",
+    sent_at: "2026-07-22T09:00:00.000Z",
+    customer_signed_at: null,
+    completed_at: null,
+    created_at: "2026-07-22T08:00:00.000Z",
+  });
+
+  const summary = await buildSummary(tables, undefined, null);
+
+  assert.equal(summary?.commercialOpportunityId, undefined);
+  assert.equal(summary?.contractNumber, undefined);
+  assert.equal(summary?.technicalVisitStatusLabel, undefined);
+});
+
+test("foreign or mismatched opportunity fails closed for commercial artifacts", async () => {
+  const tables = createBaseTables();
+  tables.commercial_opportunities.push(
+    {
+      id: "opportunity-foreign-store",
+      organization_id: "org-1",
+      store_id: "store-2",
+      origin_lead_id: "lead-1",
+      primary_conversation_id: "conv-1",
+    },
+    {
+      id: "opportunity-other-lead",
+      organization_id: "org-1",
+      store_id: "store-1",
+      origin_lead_id: "lead-2",
+      primary_conversation_id: "conv-1",
+    }
+  );
+
+  const foreignStore = await buildSummary(tables, undefined, "opportunity-foreign-store");
+  const otherLead = await buildSummary(tables, undefined, "opportunity-other-lead");
+
+  assert.equal(foreignStore?.commercialOpportunityId, undefined);
+  assert.equal(foreignStore?.contractNumber, undefined);
+  assert.equal(otherLead?.commercialOpportunityId, undefined);
+  assert.equal(otherLead?.contractNumber, undefined);
 });
 
 test("relatedMessageId from another conversation is not accepted", async () => {

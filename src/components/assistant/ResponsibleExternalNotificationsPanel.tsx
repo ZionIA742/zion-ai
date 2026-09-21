@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type ResponsibleExternalNotificationItem = {
   id: string;
@@ -169,6 +169,20 @@ function getActionErrorText(result: ActionResponse) {
   return result.message || "Nao foi possivel atualizar esse aviso agora.";
 }
 
+function buildPanelScopeKey(
+  organizationId: string | null | undefined,
+  storeId: string | null | undefined,
+) {
+  const normalizedOrganizationId = String(organizationId || "").trim();
+  const normalizedStoreId = String(storeId || "").trim();
+
+  if (!normalizedOrganizationId || !normalizedStoreId) {
+    return null;
+  }
+
+  return `${normalizedOrganizationId}:${normalizedStoreId}`;
+}
+
 export default function ResponsibleExternalNotificationsPanel({
   organizationId,
   storeId,
@@ -181,7 +195,30 @@ export default function ResponsibleExternalNotificationsPanel({
   const [statusText, setStatusText] = useState<string | null>(null);
   const [actionLoadingKeys, setActionLoadingKeys] = useState<Record<string, boolean>>({});
 
+  const panelScopeKey = useMemo(
+    () => buildPanelScopeKey(organizationId, storeId),
+    [organizationId, storeId]
+  );
+  const panelScopeKeyRef = useRef<string | null>(panelScopeKey);
+  const panelLoadRequestSeqRef = useRef(0);
+  const panelActionRequestSeqRef = useRef(0);
   const canLoad = enabled && !!organizationId && !!storeId;
+
+  const isCurrentPanelScope = useCallback((scopeKey: string | null) => {
+    return !!scopeKey && panelScopeKeyRef.current === scopeKey;
+  }, []);
+
+  useEffect(() => {
+    panelScopeKeyRef.current = panelScopeKey;
+    panelLoadRequestSeqRef.current += 1;
+    panelActionRequestSeqRef.current += 1;
+    setItems([]);
+    setLoading(false);
+    setErrorText(null);
+    setStatusText(null);
+    setActionLoadingKeys({});
+    onTotalChange?.(0);
+  }, [onTotalChange, panelScopeKey]);
 
   const setActionLoading = useCallback((key: string, loadingState: boolean) => {
     setActionLoadingKeys((current) => {
@@ -197,6 +234,14 @@ export default function ResponsibleExternalNotificationsPanel({
 
   const loadItems = useCallback(async () => {
     if (!canLoad || !organizationId || !storeId) return;
+
+    const scopeKey = panelScopeKeyRef.current;
+    if (!scopeKey) return;
+    const requestSeq = panelLoadRequestSeqRef.current + 1;
+    panelLoadRequestSeqRef.current = requestSeq;
+    const isCurrentRequest = () =>
+      isCurrentPanelScope(scopeKey) &&
+      panelLoadRequestSeqRef.current === requestSeq;
 
     setLoading(true);
     setErrorText(null);
@@ -218,6 +263,8 @@ export default function ResponsibleExternalNotificationsPanel({
 
       const result = (await response.json()) as ListResponse;
 
+      if (!isCurrentRequest()) return;
+
       if (!response.ok || !result.ok) {
         setErrorText(
           result.message || result.error || "Nao foi possivel carregar a fila externa do responsavel."
@@ -231,15 +278,19 @@ export default function ResponsibleExternalNotificationsPanel({
       const nextTotal = Number(result.total || 0);
       onTotalChange?.(nextTotal);
     } catch (error: unknown) {
+      if (!isCurrentRequest()) return;
+
       setErrorText(
         getErrorMessage(error) || "Erro inesperado ao carregar a fila externa do responsavel."
       );
       setItems([]);
       onTotalChange?.(0);
     } finally {
-      setLoading(false);
+      if (isCurrentRequest()) {
+        setLoading(false);
+      }
     }
-  }, [canLoad, onTotalChange, organizationId, storeId]);
+  }, [canLoad, isCurrentPanelScope, onTotalChange, organizationId, storeId]);
 
   useEffect(() => {
     if (!canLoad) return;
@@ -279,6 +330,14 @@ export default function ResponsibleExternalNotificationsPanel({
     }
 
     const actionKey = `${notificationId}:${action}`;
+    const scopeKey = panelScopeKeyRef.current;
+    if (!scopeKey) return;
+    const requestSeq = panelActionRequestSeqRef.current + 1;
+    panelActionRequestSeqRef.current = requestSeq;
+    const isCurrentRequest = () =>
+      isCurrentPanelScope(scopeKey) &&
+      panelActionRequestSeqRef.current === requestSeq;
+
     setActionLoading(actionKey, true);
     setErrorText(null);
     setStatusText(null);
@@ -305,6 +364,8 @@ export default function ResponsibleExternalNotificationsPanel({
 
       const result = (await response.json()) as ActionResponse;
 
+      if (!isCurrentRequest()) return;
+
       if (!response.ok || !result.ok) {
         setErrorText(getActionErrorText(result));
         return;
@@ -322,9 +383,13 @@ export default function ResponsibleExternalNotificationsPanel({
 
       await loadItems();
     } catch (error: unknown) {
+      if (!isCurrentRequest()) return;
+
       setErrorText(getErrorMessage(error) || "Nao foi possivel atualizar esse aviso agora.");
     } finally {
-      setActionLoading(actionKey, false);
+      if (isCurrentRequest()) {
+        setActionLoading(actionKey, false);
+      }
     }
   }
 

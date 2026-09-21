@@ -100,6 +100,7 @@ class FakeQuery {
 
 class FakeSupabase {
   private readonly tables: Record<string, Row[]>;
+  readonly rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
 
   constructor(tables: Record<string, Row[]>) {
     this.tables = tables;
@@ -107,6 +108,21 @@ class FakeSupabase {
 
   from(table: string) {
     return new FakeQuery(this.tables[table] || []);
+  }
+
+  async rpc(fn: string, args: Record<string, unknown>) {
+    this.rpcCalls.push({ fn, args });
+    const rows = this.tables[fn] || [];
+    return {
+      data: rows.filter((row) => {
+        return (
+          row.organization_id === args.p_organization_id &&
+          row.store_id === args.p_store_id &&
+          row.commercial_opportunity_id === args.p_commercial_opportunity_id
+        );
+      }),
+      error: null,
+    };
   }
 }
 
@@ -175,6 +191,7 @@ function createTables() {
         id: "contract-1",
         organization_id: "org-1",
         store_id: "store-1",
+        commercial_opportunity_id: "opportunity-a",
         lead_id: "lead-1",
         conversation_id: "conv-1",
         quote_id: "quote-1",
@@ -191,6 +208,7 @@ function createTables() {
         id: "quote-1",
         organization_id: "org-1",
         store_id: "store-1",
+        commercial_opportunity_id: "opportunity-a",
         lead_id: "lead-1",
         conversation_id: "conv-1",
         quote_number: "Q-1",
@@ -200,12 +218,22 @@ function createTables() {
         sent_at: "2026-07-20T07:00:00.000Z",
       },
     ],
+    commercial_opportunities: [
+      {
+        id: "opportunity-a",
+        organization_id: "org-1",
+        store_id: "store-1",
+        origin_lead_id: "lead-1",
+        primary_conversation_id: "conv-1",
+      },
+    ],
     store_appointments: [],
     store_assistant_operational_tasks: [
       {
         id: "task-1",
         organization_id: "org-1",
         store_id: "store-1",
+        commercial_opportunity_id: "opportunity-a",
         related_conversation_id: "conv-1",
         related_lead_id: "lead-1",
         task_type: "commercial_followup",
@@ -220,6 +248,26 @@ function createTables() {
         updated_at: "2026-07-20T10:00:00.000Z",
       },
     ],
+    read_commercial_opportunity_qualification_facts_by_system: [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        commercial_opportunity_id: "opportunity-a",
+        known_facts: [
+          {
+            key: "main_interest",
+            status: "confirmed",
+            value_text: "Modelo Canonico A",
+          },
+          {
+            key: "customer_goal",
+            status: "inferred",
+            value_text: "Uso familiar canonico",
+          },
+        ],
+        conflicts: [],
+      },
+    ],
   };
 
   return tables;
@@ -227,7 +275,9 @@ function createTables() {
 
 async function buildMetadata(
   tables: Record<string, Row[]>,
-  relatedMessageId?: string | null
+  relatedMessageId?: string | null,
+  commercialOpportunityId?: string | null,
+  quoteId = "quote-1"
 ) {
   return buildCustomerContextReportMetadata({
     supabase: new FakeSupabase(tables),
@@ -235,8 +285,9 @@ async function buildMetadata(
     storeId: "store-1",
     leadId: "lead-1",
     conversationId: "conv-1",
-    quoteId: "quote-1",
-    quoteNumber: "Q-1",
+    commercialOpportunityId,
+    quoteId,
+    quoteNumber: quoteId === "quote-2" ? "Q-2" : "Q-1",
     customerName: "Lead Atual",
     trigger: "customer_requested_contract",
     source: "assistant",
@@ -259,6 +310,129 @@ test("report remains compatible without relatedMessageId", async () => {
   assert.equal(metadata.related_message_commercial_context, null);
   assert.doesNotMatch(metadata.narrative, /Contexto historico da mensagem relacionada/);
   assert.equal(metadata.related_message_id, null);
+  assert.equal(metadata.commercial_opportunity_id, "opportunity-a");
+});
+
+test("report uses qualification facts instead of stale task payload as current truth", async () => {
+  const metadata = await buildMetadata(createTables(), null);
+
+  assert.equal(metadata.main_interest, "Modelo Canonico A");
+  assert.equal(metadata.customer_goal, "Uso familiar canonico");
+  assert.match(metadata.narrative, /Modelo Canonico A/);
+  assert.doesNotMatch(metadata.narrative, /Modelo X/);
+  assert.doesNotMatch(metadata.narrative, /Quer algo para lazer/);
+});
+
+test("report scopes operational tasks by explicit opportunity", async () => {
+  const tables = createTables();
+  tables.commercial_opportunities.push({
+    id: "opportunity-b",
+    organization_id: "org-1",
+    store_id: "store-1",
+    origin_lead_id: "lead-1",
+    primary_conversation_id: "conv-1",
+  });
+  tables.store_assistant_operational_tasks.push({
+    id: "task-b",
+    organization_id: "org-1",
+    store_id: "store-1",
+    commercial_opportunity_id: "opportunity-b",
+    related_conversation_id: "conv-1",
+    related_lead_id: "lead-1",
+    task_type: "commercial_quote_request",
+    status: "open",
+    customer_name: "Lead Atual",
+    customer_phone: "11999999999",
+    task_payload: {
+      handoff_origin: "ai_sales",
+      conversation_summary: "Resumo antigo B",
+    },
+    updated_at: "2026-07-21T10:00:00.000Z",
+  });
+  tables.sales_quotes.push({
+    id: "quote-2",
+    organization_id: "org-1",
+    store_id: "store-1",
+    commercial_opportunity_id: "opportunity-b",
+    lead_id: "lead-1",
+    conversation_id: "conv-1",
+    quote_number: "Q-2",
+    status: "sent",
+    total_cents: 123456,
+    approved_at: null,
+    sent_at: "2026-07-21T07:00:00.000Z",
+  });
+  tables.read_commercial_opportunity_qualification_facts_by_system.push({
+    organization_id: "org-1",
+    store_id: "store-1",
+    commercial_opportunity_id: "opportunity-b",
+    known_facts: [
+      {
+        key: "main_interest",
+        status: "confirmed",
+        value_text: "Modelo Canonico B",
+      },
+    ],
+    conflicts: [],
+  });
+
+  const metadataA = await buildMetadata(tables, null, "opportunity-a");
+  const metadataB = await buildMetadata(tables, null, "opportunity-b", "quote-2");
+
+  assert.equal(metadataA.main_interest, "Modelo Canonico A");
+  assert.equal(metadataB.main_interest, "Modelo Canonico B");
+  assert.deepEqual(
+    metadataA.conversation_highlights.filter((item: string) => item.includes("commercial_quote_request")),
+    []
+  );
+  assert.deepEqual(
+    metadataB.conversation_highlights.filter((item: string) => item.includes("commercial_quote_request")),
+    ["Pendencia operacional: commercial_quote_request, status open."]
+  );
+  assert.doesNotMatch(metadataB.narrative, /Resumo antigo B/);
+});
+
+test("report without unequivocal opportunity does not aggregate operational tasks", async () => {
+  const tables = createTables();
+  tables.sales_quotes = [];
+
+  const metadata = await buildMetadata(tables, null, null);
+
+  assert.equal(metadata.commercial_opportunity_id, null);
+  assert.equal(metadata.main_interest, null);
+  assert.deepEqual(
+    metadata.conversation_highlights.filter((item: string) => item.includes("Pendencia operacional")),
+    []
+  );
+});
+
+test("report fails closed when explicit opportunity conflicts with quote opportunity", async () => {
+  const tables = createTables();
+  tables.commercial_opportunities.push({
+    id: "opportunity-b",
+    organization_id: "org-1",
+    store_id: "store-1",
+    origin_lead_id: "lead-1",
+    primary_conversation_id: "conv-1",
+  });
+  tables.read_commercial_opportunity_qualification_facts_by_system.push({
+    organization_id: "org-1",
+    store_id: "store-1",
+    commercial_opportunity_id: "opportunity-b",
+    known_facts: [
+      {
+        key: "main_interest",
+        status: "confirmed",
+        value_text: "Modelo Canonico B",
+      },
+    ],
+    conflicts: [],
+  });
+
+  const metadata = await buildMetadata(tables, null, "opportunity-b", "quote-1");
+
+  assert.equal(metadata.commercial_opportunity_id, null);
+  assert.equal(metadata.main_interest, null);
 });
 
 test("report keeps historical message separate from the latest current message", async () => {

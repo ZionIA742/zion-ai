@@ -1,10 +1,17 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseBrowser";
 import { useStoreContext } from "@/components/StoreProvider";
 import ResponsibleExternalNotificationsPanel from "@/components/assistant/ResponsibleExternalNotificationsPanel";
 import { countActiveAssistantPendingActions } from "@/lib/assistant/active-pending-actions";
+import {
+  getAssistantOpportunityPresentation,
+  type AssistantOpportunityMetadata,
+  type AssistantOpportunityPriorityRow,
+} from "./opportunity-priority";
+import { buildAssistantStoreScopeKey } from "./staleness-scope";
 
 type AssistantThreadSummary = {
   thread_id: string;
@@ -27,7 +34,7 @@ type AssistantMessage = {
   related_lead_id: string | null;
   related_conversation_id: string | null;
   related_appointment_id: string | null;
-  metadata: Record<string, unknown> | null;
+  metadata: AssistantOpportunityMetadata | null;
   created_at: string;
 };
 
@@ -125,6 +132,7 @@ type AssistantContractWorkflowDecisionMetadata = {
       }
   >;
   customer_context_summary?: {
+    commercialOpportunityId?: string;
     customerName?: string;
     customerPhone?: string;
     quoteNumber?: string;
@@ -169,6 +177,7 @@ type AssistantCustomerContextReportMetadata = {
 type DocumentFeedbackTone = "success" | "error";
 
 const ASSISTANT_PAGE_MESSAGE_LIMIT = 50;
+const ASSISTANT_PRIORITY_LIMIT = 200;
 const TERMINAL_DOCUMENT_STATUSES = new Set([
   "completed",
   "cancelled",
@@ -706,6 +715,9 @@ export default function AssistantPage() {
 
   const [summary, setSummary] = useState<AssistantThreadSummary | null>(null);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
+  const [priorityByOpportunity, setPriorityByOpportunity] = useState<
+    Record<string, AssistantOpportunityPriorityRow>
+  >({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
@@ -753,14 +765,58 @@ export default function AssistantPage() {
     null
   );
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const assistantScopeKey = useMemo(
+    () => buildAssistantStoreScopeKey(organizationId, activeStoreId),
+    [organizationId, activeStoreId]
+  );
+  const assistantScopeKeyRef = useRef<string | null>(assistantScopeKey);
+  const assistantLoadRequestSeqRef = useRef(0);
+  const assistantPriorityRequestSeqRef = useRef(0);
+  const assistantOlderMessagesRequestSeqRef = useRef(0);
 
   const canLoad = useMemo(() => {
     return !storeLoading && !!organizationId && !!activeStoreId;
   }, [storeLoading, organizationId, activeStoreId]);
 
+  const isCurrentAssistantScope = useCallback((scopeKey: string | null) => {
+    return !!scopeKey && assistantScopeKeyRef.current === scopeKey;
+  }, []);
+
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    assistantScopeKeyRef.current = assistantScopeKey;
+    assistantLoadRequestSeqRef.current += 1;
+    assistantPriorityRequestSeqRef.current += 1;
+    assistantOlderMessagesRequestSeqRef.current += 1;
+
+    setSummary(null);
+    setMessages([]);
+    messagesRef.current = [];
+    setPriorityByOpportunity({});
+    setErrorText(null);
+    setStatusText(null);
+    setLoading(false);
+    setRefreshing(false);
+    setLoadingOlderMessages(false);
+    setSending(false);
+    setDocumentActionLoadingKeys({});
+    setDocumentActionFeedback({});
+    setDismissedApproveActionsByMessage({});
+    setDismissedStoreSignatureActionsByMessage({});
+    setContractWorkflowActionLoadingKeys({});
+    setContractWorkflowActionFeedback({});
+    initialMessagesLoadedRef.current = false;
+    reachedConversationStartRef.current = false;
+    prependScrollRestoreRef.current = null;
+    firstLoadDoneRef.current = false;
+    lastMessageCountRef.current = 0;
+    shouldStickToBottomRef.current = true;
+    forceScrollToBottomRef.current = false;
+    markedNotificationsSeenKeyRef.current = null;
+  }, [assistantScopeKey]);
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     window.requestAnimationFrame(() => {
@@ -780,6 +836,13 @@ export default function AssistantPage() {
     async (options?: { silent?: boolean; reset?: boolean }) => {
       if (!canLoad || !organizationId || !activeStoreId) return;
 
+      const scopeKey = assistantScopeKeyRef.current;
+      if (!scopeKey) return;
+      const requestSeq = assistantLoadRequestSeqRef.current + 1;
+      assistantLoadRequestSeqRef.current = requestSeq;
+      const isCurrentRequest = () =>
+        isCurrentAssistantScope(scopeKey) &&
+        assistantLoadRequestSeqRef.current === requestSeq;
       const silent = options?.silent ?? false;
       const reset = options?.reset ?? false;
       if (silent) setRefreshing(true);
@@ -814,6 +877,8 @@ export default function AssistantPage() {
               }),
         ]);
 
+      if (!isCurrentRequest()) return;
+
       if (summaryError) {
         setErrorText(summaryError.message || "Erro ao carregar resumo da assistente.");
         if (silent) setRefreshing(false);
@@ -836,6 +901,8 @@ export default function AssistantPage() {
         : [];
       const totalMessages = Number(summaryRow?.total_messages || 0);
 
+      if (!isCurrentRequest()) return;
+
       setSummary(summaryRow);
 
       if (lastLoadedMessage) {
@@ -851,12 +918,55 @@ export default function AssistantPage() {
       if (silent) setRefreshing(false);
       else setLoading(false);
     },
-    [canLoad, organizationId, activeStoreId]
+    [canLoad, organizationId, activeStoreId, isCurrentAssistantScope]
   );
+
+  const loadCommercialPriority = useCallback(async () => {
+    if (!canLoad || !organizationId || !activeStoreId) {
+      setPriorityByOpportunity({});
+      return;
+    }
+
+    const scopeKey = assistantScopeKeyRef.current;
+    if (!scopeKey) return;
+    const requestSeq = assistantPriorityRequestSeqRef.current + 1;
+    assistantPriorityRequestSeqRef.current = requestSeq;
+    const isCurrentRequest = () =>
+      isCurrentAssistantScope(scopeKey) &&
+      assistantPriorityRequestSeqRef.current === requestSeq;
+
+    setPriorityByOpportunity({});
+
+    const { data, error } = await supabase.rpc("panel_list_commercial_opportunity_priority_scoped", {
+      p_organization_id: organizationId,
+      p_store_id: activeStoreId,
+      p_limit: ASSISTANT_PRIORITY_LIMIT,
+      p_offset: 0,
+      p_as_of: null,
+    });
+
+    if (!isCurrentRequest()) return;
+
+    if (error) {
+      console.warn("[AssistantPage] panel_list_commercial_opportunity_priority_scoped error:", error);
+      setPriorityByOpportunity({});
+      return;
+    }
+
+    const nextMap: Record<string, AssistantOpportunityPriorityRow> = {};
+    for (const row of (Array.isArray(data) ? data : []) as AssistantOpportunityPriorityRow[]) {
+      const opportunityId = String(row.commercial_opportunity_id || "").trim();
+      if (opportunityId) nextMap[opportunityId] = row;
+    }
+
+    setPriorityByOpportunity(nextMap);
+  }, [canLoad, organizationId, activeStoreId, isCurrentAssistantScope]);
 
   const markNotificationsSeen = useCallback(async () => {
     if (!canLoad || !organizationId || !activeStoreId) return;
 
+    const scopeKey = assistantScopeKeyRef.current;
+    if (!scopeKey) return;
     const seenKey = `${organizationId}:${activeStoreId}`;
     if (markedNotificationsSeenKeyRef.current === seenKey) return;
 
@@ -870,9 +980,11 @@ export default function AssistantPage() {
       return;
     }
 
+    if (!isCurrentAssistantScope(scopeKey)) return;
+
     markedNotificationsSeenKeyRef.current = seenKey;
     await loadAssistant({ silent: true });
-  }, [canLoad, organizationId, activeStoreId, loadAssistant]);
+  }, [canLoad, organizationId, activeStoreId, isCurrentAssistantScope, loadAssistant]);
 
   useEffect(() => {
     if (!canLoad) return;
@@ -884,7 +996,8 @@ export default function AssistantPage() {
     shouldStickToBottomRef.current = true;
     forceScrollToBottomRef.current = false;
     void loadAssistant({ reset: true });
-  }, [canLoad, loadAssistant]);
+    void loadCommercialPriority();
+  }, [canLoad, loadAssistant, loadCommercialPriority]);
 
   useEffect(() => {
     if (!canLoad) return;
@@ -1051,6 +1164,9 @@ export default function AssistantPage() {
       return;
     }
 
+    const scopeKey = assistantScopeKeyRef.current;
+    if (!scopeKey) return;
+
     setSending(true);
     setErrorText(null);
     setStatusText(null);
@@ -1071,6 +1187,7 @@ export default function AssistantPage() {
     forceScrollToBottomRef.current = true;
     setStatusText("Mensagem enviada. Gerando resposta da assistente...");
     await loadAssistant({ silent: true });
+    if (!isCurrentAssistantScope(scopeKey)) return;
     scrollChatToBottom("smooth");
 
     try {
@@ -1087,6 +1204,8 @@ export default function AssistantPage() {
 
       const result = (await response.json()) as AssistantReplyApiResponse;
 
+      if (!isCurrentAssistantScope(scopeKey)) return;
+
       if (!response.ok || !result.ok) {
         setErrorText(result.message || result.error || "Erro ao gerar resposta da assistente.");
         setSending(false);
@@ -1100,6 +1219,8 @@ export default function AssistantPage() {
       await loadAssistant({ silent: true });
       scrollChatToBottom("smooth");
     } catch (error: unknown) {
+      if (!isCurrentAssistantScope(scopeKey)) return;
+
       setErrorText(
         getErrorMessage(error, "Erro inesperado ao gerar resposta da assistente.")
       );
@@ -1173,6 +1294,13 @@ export default function AssistantPage() {
       return;
     }
 
+    const scopeKey = assistantScopeKeyRef.current;
+    if (!scopeKey) return;
+    const requestSeq = assistantOlderMessagesRequestSeqRef.current + 1;
+    assistantOlderMessagesRequestSeqRef.current = requestSeq;
+    const isCurrentRequest = () =>
+      isCurrentAssistantScope(scopeKey) &&
+      assistantOlderMessagesRequestSeqRef.current === requestSeq;
     const firstMessage = messages[0];
     const scrollNode = chatScrollRef.current;
     if (scrollNode) {
@@ -1193,6 +1321,10 @@ export default function AssistantPage() {
       p_before_id: firstMessage.id,
     });
 
+    if (!isCurrentRequest()) return;
+
+    if (!isCurrentAssistantScope(scopeKey)) return;
+
     if (error) {
       prependScrollRestoreRef.current = null;
       setErrorText(error.message || "Erro ao carregar mensagens anteriores.");
@@ -1209,7 +1341,10 @@ export default function AssistantPage() {
       return;
     }
 
+    if (!isCurrentRequest()) return;
+
     setMessages((current) => {
+      if (!isCurrentRequest()) return current;
       const merged = mergeAssistantMessages(current, olderMessages);
       const totalMessages = Number(summary?.total_messages || 0);
       if (
@@ -1226,6 +1361,7 @@ export default function AssistantPage() {
     canLoad,
     organizationId,
     activeStoreId,
+    isCurrentAssistantScope,
     loadingOlderMessages,
     messages,
     summary?.total_messages,
@@ -1336,6 +1472,9 @@ export default function AssistantPage() {
       if (!confirmed) return;
     }
 
+    const scopeKey = assistantScopeKeyRef.current;
+    if (!scopeKey) return;
+
     setDocumentActionLoading(actionKey, true);
     setDocumentActionFeedback((current) => {
       const next = { ...current };
@@ -1357,6 +1496,8 @@ export default function AssistantPage() {
       });
 
       const result = (await response.json()) as AssistantDocumentActionApiResponse;
+
+      if (!isCurrentAssistantScope(scopeKey)) return;
 
       if (!response.ok || !result.ok) {
         setDocumentActionFeedback((current) => ({
@@ -1417,6 +1558,8 @@ export default function AssistantPage() {
         await loadAssistant({ silent: true });
       }
     } catch (error: unknown) {
+      if (!isCurrentAssistantScope(scopeKey)) return;
+
       setDocumentActionFeedback((current) => ({
         ...current,
         [message.id]: {
@@ -1428,7 +1571,9 @@ export default function AssistantPage() {
         },
       }));
     } finally {
-      setDocumentActionLoading(actionKey, false);
+      if (isCurrentAssistantScope(scopeKey)) {
+        setDocumentActionLoading(actionKey, false);
+      }
     }
   }
 
@@ -1467,6 +1612,9 @@ export default function AssistantPage() {
 
     if (!confirmed) return;
 
+    const scopeKey = assistantScopeKeyRef.current;
+    if (!scopeKey) return;
+
     setContractWorkflowActionLoading(actionKey, true);
     setContractWorkflowActionFeedback((current) => {
       const next = { ...current };
@@ -1488,6 +1636,8 @@ export default function AssistantPage() {
 
       const result =
         (await response.json()) as AssistantContractWorkflowActionApiResponse;
+
+      if (!isCurrentAssistantScope(scopeKey)) return;
 
       if (!response.ok || !result.ok) {
         setContractWorkflowActionFeedback((current) => ({
@@ -1516,6 +1666,8 @@ export default function AssistantPage() {
 
       await loadAssistant({ silent: true });
     } catch (error: unknown) {
+      if (!isCurrentAssistantScope(scopeKey)) return;
+
       setContractWorkflowActionFeedback((current) => ({
         ...current,
         [message.id]: {
@@ -1527,11 +1679,13 @@ export default function AssistantPage() {
         },
       }));
     } finally {
-      setContractWorkflowActionLoading(actionKey, false);
+      if (isCurrentAssistantScope(scopeKey)) {
+        setContractWorkflowActionLoading(actionKey, false);
+      }
     }
   }
 
-  if (loading) {
+  if (loading || storeLoading || !organizationId || !activeStoreId) {
     return <div className="p-4 text-sm text-gray-600">Carregando assistente...</div>;
   }
 
@@ -1710,7 +1864,13 @@ export default function AssistantPage() {
                     </div>
 
                     <div className="space-y-2.5">
-                      {group.items.map((message) => (
+                      {group.items.map((message) => {
+                        const opportunityPresentation = getAssistantOpportunityPresentation({
+                          message,
+                          priorityByOpportunity,
+                        });
+
+                        return (
                         <div
                           key={message.id}
                           ref={(node) => {
@@ -1721,8 +1881,27 @@ export default function AssistantPage() {
                           <div className={`max-w-[92%] px-3.5 py-2.5 shadow-sm md:max-w-[78%] ${bubbleClass(message)}`}>
                             <div className="mb-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-gray-500">
                               <span className="font-semibold text-gray-700">{senderLabel(message)}</span>
-                              <span>•</span>
+                              <span>&middot;</span>
                               <span>{formatMessageType(message.message_type)}</span>
+                              {opportunityPresentation.priority?.priority_band ? (
+                                <>
+                                  <span>&middot;</span>
+                                  <span className="rounded-full bg-white px-2 py-0.5 font-semibold text-gray-700 ring-1 ring-black/10">
+                                    Prioridade {opportunityPresentation.priority.priority_band}
+                                  </span>
+                                </>
+                              ) : null}
+                              {opportunityPresentation.crmHref ? (
+                                <>
+                                  <span>&middot;</span>
+                                  <Link
+                                    href={opportunityPresentation.crmHref}
+                                    className="font-semibold text-gray-800 underline decoration-gray-300 underline-offset-2 hover:text-black"
+                                  >
+                                    Abrir oportunidade
+                                  </Link>
+                                </>
+                              ) : null}
                             </div>
 
                             <div className="whitespace-pre-wrap break-words text-[14px] leading-6 text-gray-900">
@@ -2311,7 +2490,8 @@ export default function AssistantPage() {
                             </div>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 ))
@@ -2396,7 +2576,7 @@ export default function AssistantPage() {
                               >
                                 <div className="mb-1 flex items-center gap-2 text-[11px] text-gray-500">
                                   <span className="font-semibold text-gray-700">{senderLabel(message)}</span>
-                                  <span>•</span>
+                                  <span>&middot;</span>
                                   <span>{formatTime(message.created_at)}</span>
                                 </div>
                                 <div className="line-clamp-3 text-sm leading-6 text-gray-900">

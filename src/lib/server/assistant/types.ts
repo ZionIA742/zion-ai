@@ -32,6 +32,7 @@ export type AppointmentRow = {
   notes: string | null;
   lead_id: string | null;
   conversation_id: string | null;
+  commercial_opportunity_id?: string | null;
 };
 
 export type StoreScheduleSettingsRow = {
@@ -60,6 +61,7 @@ export type PendingNotificationRow = {
   related_lead_id: string | null;
   related_conversation_id: string | null;
   related_appointment_id: string | null;
+  commercial_opportunity_id: string | null;
 };
 
 export type PostAppointmentFollowupRow = {
@@ -122,6 +124,7 @@ export type StoreAssistantOperationalTaskRow = {
   related_lead_id: string | null;
   related_conversation_id: string | null;
   related_appointment_id: string | null;
+  commercial_opportunity_id: string | null;
   customer_name: string | null;
   customer_phone: string | null;
   target_date: string | null;

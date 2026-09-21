@@ -49,6 +49,8 @@ export type StoreCommercialAiSettingsRow = {
   store_id: string;
   price_answer_policy: string | null;
   price_context_requirements: string[] | null;
+  price_policy_configured_at?: string | null;
+  complementary_suggestions_configured_at?: string | null;
   complementary_suggestions_enabled?: boolean | null;
   complementary_scope_mode?: string | null;
   complementary_category_keys?: string[] | null;

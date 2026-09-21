@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   createCommercialAssistantHandoff,
+  buildCrossSellSuggestionLedgerFingerprint,
+  buildCrossSellSuggestionLedgerOperationKey,
   findExistingCommercialHandoffTask,
   generateAndSaveAiSalesReply,
   mapGenerateAndSaveAiSalesReplyError,
@@ -248,6 +250,7 @@ function createAiWindowScopeSupabase(args?: {
   storeError?: { message: string } | null;
   scheduleSettings?: Record<string, unknown> | null;
   holidayBlocks?: Array<Record<string, unknown>>;
+  commercialOpportunityRows?: Array<Record<string, unknown>>;
 }) {
   const canonicalOrganizationId = args?.canonicalOrganizationId ?? "org-canonical";
   const canonicalStoreId = args?.canonicalStoreId ?? "store-canonical";
@@ -302,6 +305,36 @@ function createAiWindowScopeSupabase(args?: {
           ai_attends_holidays: false,
         };
   const holidayBlocks = args?.holidayBlocks || [];
+  const commercialOpportunityRows = args?.commercialOpportunityRows || [
+    {
+      id: "opp-canonical",
+      organization_id: canonicalOrganizationId,
+      store_id: canonicalStoreId,
+      origin_lead_id: leadId,
+      primary_conversation_id: conversationId,
+    },
+    {
+      id: "opp-resolved-b",
+      organization_id: canonicalOrganizationId,
+      store_id: canonicalStoreId,
+      origin_lead_id: leadId,
+      primary_conversation_id: conversationId,
+    },
+    {
+      id: "opp-a",
+      organization_id: canonicalOrganizationId,
+      store_id: canonicalStoreId,
+      origin_lead_id: leadId,
+      primary_conversation_id: conversationId,
+    },
+    {
+      id: "opp-b",
+      organization_id: canonicalOrganizationId,
+      store_id: canonicalStoreId,
+      origin_lead_id: leadId,
+      primary_conversation_id: conversationId,
+    },
+  ];
 
   return {
     windowUpserts,
@@ -421,6 +454,41 @@ function createAiWindowScopeSupabase(args?: {
               };
             },
           };
+        }
+
+        if (table === "commercial_opportunities") {
+          const filters: Array<{ column: string; value: unknown }> = [];
+          const builder = {
+            select(_selection: string) {
+              return builder;
+            },
+            eq(column: string, value: unknown) {
+              filters.push({ column, value });
+              return builder;
+            },
+            async maybeSingle() {
+              const matchingRows = commercialOpportunityRows.filter((row) =>
+                filters.every((filter) => row[filter.column] === filter.value)
+              );
+
+              return {
+                data: matchingRows[0] || null,
+                error: null,
+              };
+            },
+            async limit(limitCount: number) {
+              const matchingRows = commercialOpportunityRows.filter((row) =>
+                filters.every((filter) => row[filter.column] === filter.value)
+              );
+
+              return {
+                data: matchingRows.slice(0, limitCount),
+                error: null,
+              };
+            },
+          };
+
+          return builder;
         }
 
         if (table === "conversation_ai_window_state") {
@@ -613,6 +681,87 @@ function createScopeAwareReplyDeps(overrides?: Record<string, unknown>) {
         reason: "handoff_not_requested",
       }) as never,
     ...overrides,
+  };
+}
+
+async function runCommercialHandoffResolutionCase(args: {
+  rows: Array<Record<string, unknown>>;
+  resolvedCommercialOpportunityId?: string | null;
+  handoffCommercialOpportunityId?: string | null;
+  taskType?: "commercial_quote_request" | "commercial_visit_request";
+  organizationId?: string;
+  storeId?: string;
+  conversationId?: string;
+  leadId?: string;
+}) {
+  const organizationId = args.organizationId ?? "org-canonical";
+  const storeId = args.storeId ?? "store-canonical";
+  const conversationId = args.conversationId ?? "conv-canonical";
+  const leadId = args.leadId ?? "lead-canonical";
+  const sentMessages: string[] = [];
+  let receivedHandoff: CommercialHandoffContext | null = null;
+  let result: Awaited<ReturnType<typeof generateAndSaveAiSalesReply>> | null = null;
+
+  await withMockedSupabaseEnv(async () => {
+    result = await generateAndSaveAiSalesReply(
+      {
+        organizationId,
+        storeId,
+        conversationId,
+      },
+      {
+        createSupabaseClient: () =>
+          createAiWindowScopeSupabase({
+            canonicalOrganizationId: organizationId,
+            canonicalStoreId: storeId,
+            conversationId,
+            leadId,
+            commercialOpportunityRows: args.rows,
+          }).client as never,
+        ...createScopeAwareReplyDeps({
+          generateAiSalesReply: async () =>
+            ({
+              ok: true,
+              aiText: "Resposta comercial",
+              anchorMessageId: "msg-1",
+              usage: null,
+              context: {
+                operationalFollowUpDecision: {
+                  kind: "none",
+                  reason: "none",
+                },
+                resolvedCommercialOpportunityId:
+                  args.resolvedCommercialOpportunityId ?? null,
+                commercialHandoff: createHandoff({
+                  taskType: args.taskType ?? "commercial_quote_request",
+                  commercialOpportunityId:
+                    args.handoffCommercialOpportunityId ?? null,
+                }),
+              },
+            }) as never,
+          sendAiPanelMessage: async (sendArgs: { aiText: string }) => {
+            sentMessages.push(sendArgs.aiText);
+            return "msg-ai-1";
+          },
+          createCommercialAssistantHandoff: async (handoffArgs: {
+            handoff: CommercialHandoffContext;
+          }) => {
+            receivedHandoff = handoffArgs.handoff;
+            return ({
+              created: false,
+              skipped: true,
+              reason: "handoff_not_requested",
+            }) as never;
+          },
+        }),
+      },
+    );
+  });
+
+  return {
+    result: result as unknown as Awaited<ReturnType<typeof generateAndSaveAiSalesReply>>,
+    receivedHandoff: receivedHandoff as unknown as CommercialHandoffContext | null,
+    sentMessages,
   };
 }
 
@@ -3236,6 +3385,275 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "outbound cross-sell ledger uses real message id and canonical scope after send",
+    run: async () => {
+      const scope = createAiWindowScopeSupabase();
+      const systemRpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
+      const events: string[] = [];
+      let clientIndex = 0;
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => {
+              clientIndex += 1;
+              if (clientIndex === 1) return scope.client as never;
+
+              return {
+                ...scope.client,
+                async rpc(fn: string, payload: Record<string, unknown>) {
+                  events.push(`rpc:${fn}`);
+                  systemRpcCalls.push({ fn, payload });
+                  return { data: null, error: null };
+                },
+              } as never;
+            },
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Resposta com piscina e cloro.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                    crossSellSuggestionsActuallyIncluded: [
+                      {
+                        candidateKey: "pool:pool-1",
+                        candidateKind: "pool",
+                        poolId: "pool-1",
+                        catalogItemId: null,
+                      },
+                      {
+                        candidateKey: "catalog_item:item-1",
+                        candidateKind: "catalog_item",
+                        poolId: null,
+                        catalogItemId: "item-1",
+                      },
+                    ],
+                  },
+                }) as never,
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                events.push("sendAiPanelMessage");
+                return "msg-ai-real-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.equal(sendCalls, 1);
+        assert.deepEqual(events, [
+          "sendAiPanelMessage",
+          "rpc:record_commercial_cross_sell_suggestion_by_system",
+          "rpc:record_commercial_cross_sell_suggestion_by_system",
+        ]);
+        assert.equal(systemRpcCalls.length, 2);
+        assert.deepEqual(
+          systemRpcCalls.map((call) => call.fn),
+          [
+            "record_commercial_cross_sell_suggestion_by_system",
+            "record_commercial_cross_sell_suggestion_by_system",
+          ],
+        );
+        assert.deepEqual(systemRpcCalls[0]?.payload, {
+          p_organization_id: "org-canonical",
+          p_store_id: "store-canonical",
+          p_commercial_opportunity_id: "opp-canonical",
+          p_conversation_id: "conv-canonical",
+          p_suggestion_message_id: "msg-ai-real-1",
+          p_candidate_kind: "pool",
+          p_pool_id: "pool-1",
+          p_catalog_item_id: null,
+          p_operation_key: "cross-sell-suggestion:msg-ai-real-1:pool:pool-1",
+          p_request_fingerprint: buildCrossSellSuggestionLedgerFingerprint({
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            commercialOpportunityId: "opp-canonical",
+            conversationId: "conv-canonical",
+            messageId: "msg-ai-real-1",
+            suggestion: {
+              candidateKey: "pool:pool-1",
+              candidateKind: "pool",
+              poolId: "pool-1",
+              catalogItemId: null,
+            },
+          }),
+          p_metadata: {
+            source: "sales_ai_outbound_structured_cross_sell_v1",
+            candidate_key: "pool:pool-1",
+            source_message_id: "msg-1",
+          },
+        });
+        assert.equal(
+          systemRpcCalls[1]?.payload.p_operation_key,
+          "cross-sell-suggestion:msg-ai-real-1:catalog_item:item-1",
+        );
+        assert.notEqual(
+          systemRpcCalls[0]?.payload.p_operation_key,
+          systemRpcCalls[1]?.payload.p_operation_key,
+        );
+        assert.deepEqual(result.context?.crossSellSuggestionLedger, {
+          attempted: 2,
+          registered: 2,
+          failed: 0,
+        });
+      });
+    },
+  },
+  {
+    name: "outbound cross-sell ledger writer failure does not resend or claim registered",
+    run: async () => {
+      const scope = createAiWindowScopeSupabase();
+      const systemRpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
+      let clientIndex = 0;
+      let sendCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => {
+              clientIndex += 1;
+              if (clientIndex === 1) return scope.client as never;
+
+              return {
+                ...scope.client,
+                async rpc(fn: string, payload: Record<string, unknown>) {
+                  systemRpcCalls.push({ fn, payload });
+                  return {
+                    data: null,
+                    error: { message: "ledger failed" },
+                  };
+                },
+              } as never;
+            },
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Resposta com piscina.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                    crossSellSuggestionsActuallyIncluded: [
+                      {
+                        candidateKey: "pool:pool-1",
+                        candidateKind: "pool",
+                        poolId: "pool-1",
+                        catalogItemId: null,
+                      },
+                    ],
+                  },
+                }) as never,
+              sendAiPanelMessage: async () => {
+                sendCalls += 1;
+                return "msg-ai-real-1";
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.equal(sendCalls, 1);
+        assert.equal(systemRpcCalls.length, 1);
+        assert.deepEqual(result.context?.crossSellSuggestionLedger, {
+          attempted: 1,
+          registered: 0,
+          failed: 1,
+        });
+        assert.equal(
+          systemRpcCalls.some((call) => /quote|profile/i.test(call.fn)),
+          false,
+        );
+      });
+    },
+  },
+  {
+    name: "outbound cross-sell operation key and fingerprint are deterministic for retry",
+    run: () => {
+      const suggestion = {
+        candidateKey: "catalog_item:item-1",
+        candidateKind: "catalog_item" as const,
+        poolId: null,
+        catalogItemId: "item-1",
+      };
+
+      const operationKeys = [0, 1].map(() =>
+        buildCrossSellSuggestionLedgerOperationKey({
+          messageId: "msg-ai-real-1",
+          suggestion,
+        }),
+      );
+      const fingerprints = [0, 1].map(() =>
+        buildCrossSellSuggestionLedgerFingerprint({
+          organizationId: "org-canonical",
+          storeId: "store-canonical",
+          commercialOpportunityId: "opp-canonical",
+          conversationId: "conv-canonical",
+          messageId: "msg-ai-real-1",
+          suggestion,
+        }),
+      );
+
+      assert.deepEqual(operationKeys, [
+        "cross-sell-suggestion:msg-ai-real-1:catalog_item:item-1",
+        "cross-sell-suggestion:msg-ai-real-1:catalog_item:item-1",
+      ]);
+      assert.equal(fingerprints[0], fingerprints[1]);
+      assert.equal(String(fingerprints[0]).length, 64);
+    },
+  },
+  {
+    name: "outbound cross-sell ledger source does not mutate quote or Profile",
+    run: () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/lib/server/generate-and-save-ai-sales-reply.ts"),
+        "utf8",
+      );
+      const helperStart = source.indexOf(
+        "async function recordIncludedCrossSellSuggestionsBySystem(args:",
+      );
+      const helperEnd = source.indexOf(
+        "const CONVERSATION_SCOPE_MISMATCH_ERRORS",
+        helperStart,
+      );
+
+      assert.equal(helperStart > -1, true);
+      assert.equal(helperEnd > helperStart, true);
+      const helperSource = source.slice(helperStart, helperEnd);
+
+      assert.equal(
+        helperSource.includes('"record_commercial_cross_sell_suggestion_by_system"'),
+        true,
+      );
+      assert.equal(helperSource.includes("sales_quotes"), false);
+      assert.equal(helperSource.includes("quote_id"), false);
+      assert.equal(helperSource.includes("customer_profile"), false);
+      assert.equal(helperSource.includes("Profile"), false);
+    },
+  },
+  {
     name: "stop_contact materializes canonical opportunity opt-out before sending AI reply",
     run: async () => {
       const harness = createStopContactOptOutHarness();
@@ -3961,7 +4379,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "source validates requested handoff opportunity before normal sendAiPanelMessage",
+    name: "source resolves requested handoff opportunity before normal sendAiPanelMessage",
     run: () => {
       const source = readFileSync(
         join(process.cwd(), "src/lib/server/generate-and-save-ai-sales-reply.ts"),
@@ -3980,31 +4398,31 @@ const tests: TestCase[] = [
         handoffIndex
       );
       const validationIndex = source.indexOf(
-        "getRequiredCommercialOpportunityIdFromHandoff(",
+        "resolveCommercialOpportunityForCommercialHandoff({",
         handoffIndex
       );
-      const skipIndex = source.indexOf(
-        'reason: "missing_commercial_opportunity_context"',
+      const blockedIndex = source.indexOf(
+        "commercial handoff blocked",
         validationIndex
       );
       const sendIndex = source.indexOf(
         "messageId = await resolvedDeps.sendAiPanelMessage({",
-        skipIndex
+        blockedIndex
       );
 
       assert.equal(humanHandoffIndex > -1, true);
       assert.equal(handoffIndex > humanHandoffIndex, true);
       assert.equal(humanPriorityIndex > handoffIndex, true);
       assert.equal(validationIndex > humanPriorityIndex, true);
-      assert.equal(skipIndex > validationIndex, true);
-      assert.equal(sendIndex > skipIndex, true);
+      assert.equal(blockedIndex > validationIndex, true);
+      assert.equal(sendIndex > blockedIndex, true);
     },
   },
   {
-    name: "handoff without explicit opportunity binding does not abort the main reply flow",
+    name: "commercial handoff without explicit opportunity binds the single compatible canonical opportunity before sending",
     run: async () => {
       const sentMessages: string[] = [];
-      let receivedHandoff: unknown = "unset";
+      let receivedHandoff: CommercialHandoffContext | null = null;
 
       await withMockedSupabaseEnv(async () => {
         const result = await generateAndSaveAiSalesReply(
@@ -4014,7 +4432,18 @@ const tests: TestCase[] = [
             conversationId: "conv-canonical",
           },
           {
-            createSupabaseClient: () => createAiWindowScopeSupabase().client as never,
+            createSupabaseClient: () =>
+              createAiWindowScopeSupabase({
+                commercialOpportunityRows: [
+                  {
+                    id: "opp-single",
+                    organization_id: "org-canonical",
+                    store_id: "store-canonical",
+                    origin_lead_id: "lead-canonical",
+                    primary_conversation_id: "conv-canonical",
+                  },
+                ],
+              }).client as never,
             ...createScopeAwareReplyDeps({
               generateAiSalesReply: async () =>
                 ({
@@ -4048,7 +4477,9 @@ const tests: TestCase[] = [
                 sentMessages.push(args.aiText);
                 return "msg-ai-1";
               },
-              createCommercialAssistantHandoff: async (args: { handoff: unknown }) => {
+              createCommercialAssistantHandoff: async (args: {
+                handoff: CommercialHandoffContext;
+              }) => {
                 receivedHandoff = args.handoff;
                 return ({
                   created: false,
@@ -4062,7 +4493,80 @@ const tests: TestCase[] = [
 
         assert.equal(result.ok, true);
         assert.deepEqual(sentMessages, ["Resposta comercial"]);
-        assert.equal(receivedHandoff, null);
+        assert.equal(receivedHandoff?.commercialOpportunityId, "opp-single");
+      });
+    },
+  },
+  {
+    name: "commercial handoff without unequivocal opportunity fails closed before send or task",
+    run: async () => {
+      const sentMessages: string[] = [];
+      let handoffCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () =>
+              createAiWindowScopeSupabase({
+                commercialOpportunityRows: [
+                  {
+                    id: "opp-a",
+                    organization_id: "org-canonical",
+                    store_id: "store-canonical",
+                    origin_lead_id: "lead-canonical",
+                    primary_conversation_id: "conv-canonical",
+                  },
+                  {
+                    id: "opp-b",
+                    organization_id: "org-canonical",
+                    store_id: "store-canonical",
+                    origin_lead_id: "lead-canonical",
+                    primary_conversation_id: "conv-canonical",
+                  },
+                ],
+              }).client as never,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Posso abrir a visita para voce.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                    commercialHandoff: createHandoff({
+                      commercialOpportunityId: null,
+                    }),
+                  },
+                }) as never,
+              sendAiPanelMessage: async (args: { aiText: string }) => {
+                sentMessages.push(args.aiText);
+                return "msg-ai-1";
+              },
+              createCommercialAssistantHandoff: async () => {
+                handoffCalls += 1;
+                return ({
+                  created: true,
+                  skipped: false,
+                  reason: "handoff_created",
+                }) as never;
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, false);
+        assert.equal(result.error, "AMBIGUOUS_COMMERCIAL_OPPORTUNITY_CONTEXT");
+        assert.deepEqual(sentMessages, []);
+        assert.equal(handoffCalls, 0);
       });
     },
   },
@@ -4145,7 +4649,137 @@ assert.equal(
 );
       });
     },
-  },  {
+  },
+  {
+    name: "canonical resolved opportunity is primary and does not fall back to handoff or latest",
+    run: async () => {
+      const { result, receivedHandoff, sentMessages } =
+        await runCommercialHandoffResolutionCase({
+          resolvedCommercialOpportunityId: "opp-canonical",
+          handoffCommercialOpportunityId: "opp-other",
+          rows: [
+            {
+              id: "opp-canonical",
+              organization_id: "org-canonical",
+              store_id: "store-canonical",
+              origin_lead_id: "lead-canonical",
+              primary_conversation_id: "conv-canonical",
+            },
+            {
+              id: "opp-other",
+              organization_id: "org-canonical",
+              store_id: "store-canonical",
+              origin_lead_id: "lead-canonical",
+              primary_conversation_id: "conv-canonical",
+            },
+          ],
+        });
+
+      assert.equal(result?.ok, true);
+      assert.deepEqual(sentMessages, ["Resposta comercial"]);
+      assert.equal(receivedHandoff?.commercialOpportunityId, "opp-canonical");
+    },
+  },
+  {
+    name: "canonical opportunity from another lead is blocked",
+    run: async () => {
+      const { result, sentMessages } = await runCommercialHandoffResolutionCase({
+        resolvedCommercialOpportunityId: "opp-other-lead",
+        rows: [
+          {
+            id: "opp-other-lead",
+            organization_id: "org-canonical",
+            store_id: "store-canonical",
+            origin_lead_id: "lead-other",
+            primary_conversation_id: "conv-canonical",
+          },
+        ],
+      });
+
+      assert.equal(result?.ok, false);
+      if (result && !result.ok) {
+        assert.equal(result.error, "COMMERCIAL_HANDOFF_OPPORTUNITY_SCOPE_MISMATCH");
+      }
+      assert.deepEqual(sentMessages, []);
+    },
+  },
+  {
+    name: "real regression UUIDs use the canonical opportunity for commercial handoff",
+    run: async () => {
+      const { result, receivedHandoff } =
+        await runCommercialHandoffResolutionCase({
+          organizationId: "b02252ce-0e73-4371-9e23-f1009e7b1698",
+          storeId: "6ac8f4b1-e50f-42c0-9cae-78951d6daf7b",
+          conversationId: "1b486f6d-a061-4f56-89f5-8e0a3965b03a",
+          leadId: "44ac7092-3e55-4888-8623-745633ed3321",
+          resolvedCommercialOpportunityId:
+            "0796eb5d-df71-5338-ab70-b15fcb67113a",
+          rows: [
+            {
+              id: "0796eb5d-df71-5338-ab70-b15fcb67113a",
+              organization_id: "b02252ce-0e73-4371-9e23-f1009e7b1698",
+              store_id: "6ac8f4b1-e50f-42c0-9cae-78951d6daf7b",
+              origin_lead_id: "44ac7092-3e55-4888-8623-745633ed3321",
+              primary_conversation_id:
+                "1b486f6d-a061-4f56-89f5-8e0a3965b03a",
+            },
+          ],
+        });
+
+      assert.equal(result.ok, true);
+      assert.equal(
+        receivedHandoff?.commercialOpportunityId,
+        "0796eb5d-df71-5338-ab70-b15fcb67113a",
+      );
+    },
+  },
+  {
+    name: "canonical opportunity from another store or organization is blocked",
+    run: async () => {
+      const { result, sentMessages } = await runCommercialHandoffResolutionCase({
+        resolvedCommercialOpportunityId: "opp-other-scope",
+        rows: [
+          {
+            id: "opp-other-scope",
+            organization_id: "org-other",
+            store_id: "store-other",
+            origin_lead_id: "lead-canonical",
+            primary_conversation_id: "conv-canonical",
+          },
+        ],
+      });
+
+      assert.equal(result?.ok, false);
+      if (result && !result.ok) {
+        assert.equal(result.error, "COMMERCIAL_HANDOFF_OPPORTUNITY_SCOPE_MISMATCH");
+      }
+      assert.deepEqual(sentMessages, []);
+    },
+  },
+  {
+    name: "commercial visit handoff receives the same canonical opportunity",
+    run: async () => {
+      const { result, receivedHandoff } =
+        await runCommercialHandoffResolutionCase({
+          resolvedCommercialOpportunityId: "opp-canonical",
+          taskType: "commercial_visit_request",
+          rows: [
+            {
+              id: "opp-canonical",
+              organization_id: "org-canonical",
+              store_id: "store-canonical",
+              origin_lead_id: "lead-canonical",
+              primary_conversation_id: "conv-canonical",
+            },
+          ],
+        });
+
+      assert.equal(result?.ok, true);
+      assert.equal(receivedHandoff?.taskType, "commercial_visit_request");
+      assert.equal(receivedHandoff?.commercialOpportunityId, "opp-canonical");
+    },
+  },
+  {
     name: "qualification signal uses dedicated system client for canonical by_system writer and keeps explicit scope params",
     run: async () => {
       const harness = createQualificationAutoProgressSupabaseHarness();

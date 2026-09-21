@@ -95,6 +95,7 @@ export async function authenticateQuoteRequest() {
   return {
     user,
     supabase,
+    sessionSupabase,
     organizationIds,
   };
 }

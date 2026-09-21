@@ -26,6 +26,7 @@ type SupabaseQueryLike = {
 
 type SupabaseLike = {
   from(table: string): SupabaseQueryLike;
+  rpc?: (fn: string, args: Record<string, unknown>) => QueryResult<unknown>;
 };
 
 type BuildCustomerContextReportInput = {
@@ -34,6 +35,7 @@ type BuildCustomerContextReportInput = {
   storeId: string;
   leadId?: string | null;
   conversationId?: string | null;
+  commercialOpportunityId?: string | null;
   quoteId: string;
   quoteNumber?: string | null;
   customerName?: string | null;
@@ -56,18 +58,11 @@ type MessageRow = {
 
 type OperationalTaskPayload = {
   handoff_origin?: string | null;
-  recommended_model?: string | null;
-  ad_model_or_requested_model?: string | null;
-  customer_preferences?: string | null;
-  conversation_summary?: string | null;
-  relevant_objection?: string | null;
-  last_customer_message?: string | null;
-  space_text?: string | null;
-  requested_area_m2?: number | string | null;
 };
 
 type OperationalTaskRow = {
   id: string;
+  commercial_opportunity_id: string | null;
   task_type: string | null;
   status: string | null;
   customer_name: string | null;
@@ -76,12 +71,20 @@ type OperationalTaskRow = {
   updated_at: string | null;
 };
 
+type QualificationFactsSnapshot = {
+  organization_id?: string | null;
+  store_id?: string | null;
+  commercial_opportunity_id?: string | null;
+  known_facts?: unknown;
+};
+
 export type CustomerContextReportMetadata = {
   kind: "customer_context_report";
   organization_id: string;
   store_id: string;
   lead_id: string | null;
   conversation_id: string | null;
+  commercial_opportunity_id: string | null;
   quote_id: string;
   quote_number: string | null;
   customer_name: string | null;
@@ -182,30 +185,19 @@ async function loadRecentOperationalTasks(args: {
   supabase: SupabaseLike;
   organizationId: string;
   storeId: string;
-  leadId?: string | null;
-  conversationId?: string | null;
+  commercialOpportunityId?: string | null;
 }) {
-  const conversationId = cleanText(args.conversationId);
-  const leadId = cleanText(args.leadId);
-  if (!conversationId && !leadId) return [] as OperationalTaskRow[];
+  const commercialOpportunityId = cleanText(args.commercialOpportunityId);
+  if (!commercialOpportunityId) return [] as OperationalTaskRow[];
 
-  let query = args.supabase
+  const { data, error } = await args.supabase
     .from("store_assistant_operational_tasks")
-    .select("id, task_type, status, customer_name, customer_phone, task_payload, updated_at")
+    .select("id, commercial_opportunity_id, task_type, status, customer_name, customer_phone, task_payload, updated_at")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
+    .eq("commercial_opportunity_id", commercialOpportunityId)
     .order("updated_at", { ascending: false })
     .limit(6);
-
-  if (conversationId && leadId) {
-    query = query.or(`related_conversation_id.eq.${conversationId},related_lead_id.eq.${leadId}`);
-  } else if (conversationId) {
-    query = query.eq("related_conversation_id", conversationId);
-  } else if (leadId) {
-    query = query.eq("related_lead_id", leadId);
-  }
-
-  const { data, error } = await query;
 
   if (error) {
     throw new Error(
@@ -214,6 +206,86 @@ async function loadRecentOperationalTasks(args: {
   }
 
   return (data || []) as OperationalTaskRow[];
+}
+
+async function loadQualificationFactsSnapshot(args: {
+  supabase: SupabaseLike;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId?: string | null;
+}) {
+  const commercialOpportunityId = cleanText(args.commercialOpportunityId);
+  if (!commercialOpportunityId || !args.supabase.rpc) return null;
+
+  const { data, error } = await args.supabase.rpc(
+    "read_commercial_opportunity_qualification_facts_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: commercialOpportunityId,
+    }
+  );
+
+  if (error) {
+    throw new Error(
+      `Falha ao carregar qualification facts para o relatorio: ${error.message}`
+    );
+  }
+
+  const rows = Array.isArray(data) ? (data as QualificationFactsSnapshot[]) : [];
+  const snapshot = rows[0] || null;
+  if (
+    !snapshot ||
+    cleanText(snapshot.organization_id) !== args.organizationId ||
+    cleanText(snapshot.store_id) !== args.storeId ||
+    cleanText(snapshot.commercial_opportunity_id) !== commercialOpportunityId
+  ) {
+    return null;
+  }
+
+  return snapshot;
+}
+
+function readFactRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function getQualificationFactValue(
+  snapshot: QualificationFactsSnapshot | null,
+  keys: string[]
+) {
+  const facts = Array.isArray(snapshot?.known_facts) ? snapshot?.known_facts : [];
+
+  for (const item of facts || []) {
+    const fact = readFactRecord(item);
+    if (!fact) continue;
+
+    const key =
+      cleanText(fact.key) ||
+      cleanText(fact.fact_key) ||
+      cleanText(fact.name) ||
+      cleanText(fact.field);
+    if (!key || !keys.includes(key)) continue;
+
+    const status =
+      cleanText(fact.status) ||
+      cleanText(fact.value_status) ||
+      cleanText(fact.confidence) ||
+      "confirmed";
+    if (normalizeText(status) === "conflict") return null;
+
+    return (
+      cleanText(fact.display_value) ||
+      cleanText(fact.value_label) ||
+      cleanText(fact.normalized_value_text) ||
+      cleanText(fact.value_text) ||
+      cleanText(fact.value)
+    );
+  }
+
+  return null;
 }
 
 function resolveSourceLabel(messages: MessageRow[], tasks: OperationalTaskRow[]) {
@@ -240,22 +312,26 @@ function resolveSourceLabel(messages: MessageRow[], tasks: OperationalTaskRow[])
   return null;
 }
 
-function resolveMainInterest(tasks: OperationalTaskRow[]) {
-  for (const task of tasks) {
-    const value =
-      cleanText(task.task_payload?.ad_model_or_requested_model) ||
-      cleanText(task.task_payload?.recommended_model);
-    if (value) return value;
-  }
-
-  return null;
+function resolveMainInterest(snapshot: QualificationFactsSnapshot | null) {
+  return getQualificationFactValue(snapshot, [
+    "main_interest",
+    "interest",
+    "requested_model",
+    "recommended_model",
+    "ad_model_or_requested_model",
+  ]);
 }
 
-function resolveCustomerGoal(messages: MessageRow[], tasks: OperationalTaskRow[]) {
-  for (const task of tasks) {
-    const preference = cleanText(task.task_payload?.customer_preferences);
-    if (preference) return preference;
-  }
+function resolveCustomerGoal(
+  messages: MessageRow[],
+  snapshot: QualificationFactsSnapshot | null
+) {
+  const factGoal = getQualificationFactValue(snapshot, [
+    "customer_goal",
+    "customer_preferences",
+    "use_case",
+  ]);
+  if (factGoal) return factGoal;
 
   const recentTexts = messages
     .filter(isCustomerMessage)
@@ -277,23 +353,11 @@ function resolveCustomerGoal(messages: MessageRow[], tasks: OperationalTaskRow[]
   return null;
 }
 
-function resolveSpacePoint(tasks: OperationalTaskRow[]) {
-  for (const task of tasks) {
-    const spaceText = cleanText(task.task_payload?.space_text);
-    if (spaceText) {
-      return `O cliente informou ${spaceText} de espaço disponível.`;
-    }
-
-    const areaValue = cleanText(task.task_payload?.requested_area_m2);
-    if (areaValue) {
-      return `O cliente mencionou cerca de ${areaValue} m² de espaço disponível.`;
-    }
-  }
-
-  return null;
-}
-
-function collectImportantConversationPoints(messages: MessageRow[], tasks: OperationalTaskRow[]) {
+function collectOpportunityConversationPoints(args: {
+  messages: MessageRow[];
+  tasks: OperationalTaskRow[];
+  qualificationFacts: QualificationFactsSnapshot | null;
+}) {
   const points: string[] = [];
   const pushPoint = (value: string | null) => {
     const text = cleanText(value);
@@ -301,24 +365,23 @@ function collectImportantConversationPoints(messages: MessageRow[], tasks: Opera
     if (!points.includes(text)) points.push(text);
   };
 
-  const spacePoint = resolveSpacePoint(tasks);
-  pushPoint(spacePoint);
-
-  for (const task of tasks) {
-    pushPoint(
-      cleanText(task.task_payload?.relevant_objection)
-        ? `Ponto relevante registrado: ${cleanText(task.task_payload?.relevant_objection)}.`
-        : null
-    );
-
-    pushPoint(
-      cleanText(task.task_payload?.conversation_summary)
-        ? truncateText(task.task_payload?.conversation_summary, 180)
-        : null
-    );
+  const spaceText = getQualificationFactValue(args.qualificationFacts, ["space_text"]);
+  const areaValue = getQualificationFactValue(args.qualificationFacts, ["requested_area_m2"]);
+  if (spaceText) {
+    pushPoint(`O cliente informou ${spaceText} de espaco disponivel.`);
+  } else if (areaValue) {
+    pushPoint(`O cliente mencionou cerca de ${areaValue} m2 de espaco disponivel.`);
   }
 
-  const recentCustomerMessages = messages.filter(isCustomerMessage);
+  for (const task of args.tasks) {
+    const pieces = [
+      cleanText(task.task_type),
+      cleanText(task.status) ? `status ${cleanText(task.status)}` : null,
+    ].filter(Boolean);
+    pushPoint(pieces.length ? `Pendencia operacional: ${pieces.join(", ")}.` : null);
+  }
+
+  const recentCustomerMessages = args.messages.filter(isCustomerMessage);
   for (const message of recentCustomerMessages) {
     const text = normalizeText(message.content);
     if (!text) continue;
@@ -327,19 +390,19 @@ function collectImportantConversationPoints(messages: MessageRow[], tasks: Opera
       pushPoint("O cliente pediu para seguir com o contrato.");
     }
     if (text.includes("orcamento") || text.includes("orçamento")) {
-      pushPoint("O cliente mencionou o orçamento na conversa.");
+      pushPoint("O cliente mencionou o orcamento na conversa.");
     }
     if (text.includes("instal")) {
-      pushPoint("O cliente trouxe dúvidas ou comentários sobre instalação.");
+      pushPoint("O cliente trouxe duvidas ou comentarios sobre instalacao.");
     }
     if (text.includes("entrega")) {
-      pushPoint("O cliente trouxe dúvidas ou comentários sobre entrega.");
+      pushPoint("O cliente trouxe duvidas ou comentarios sobre entrega.");
     }
     if (text.includes("pagamento") || text.includes("pix") || text.includes("parcela")) {
-      pushPoint("O cliente trouxe dúvidas ou comentários sobre pagamento.");
+      pushPoint("O cliente trouxe duvidas ou comentarios sobre pagamento.");
     }
     if (text.includes("visita")) {
-      pushPoint("O cliente mencionou visita técnica na conversa.");
+      pushPoint("O cliente mencionou visita tecnica na conversa.");
     }
   }
 
@@ -466,8 +529,12 @@ export async function buildCustomerContextReportMetadata(
 ): Promise<CustomerContextReportMetadata> {
   const summary = await buildCustomerContextSummary({
     ...input,
+    commercialOpportunityId: input.commercialOpportunityId,
     relatedMessageId: input.relatedMessageId,
   });
+  const commercialOpportunityId =
+    cleanText(summary?.commercialOpportunityId) ||
+    cleanText(summary?.relatedMessageCommercialContext?.commercialOpportunityId);
   const recentMessages = await loadRecentMessages({
     supabase: input.supabase,
     organizationId: input.organizationId,
@@ -477,8 +544,13 @@ export async function buildCustomerContextReportMetadata(
     supabase: input.supabase,
     organizationId: input.organizationId,
     storeId: input.storeId,
-    leadId: input.leadId,
-    conversationId: input.conversationId,
+    commercialOpportunityId,
+  });
+  const qualificationFacts = await loadQualificationFactsSnapshot({
+    supabase: input.supabase,
+    organizationId: input.organizationId,
+    storeId: input.storeId,
+    commercialOpportunityId,
   });
 
   const relatedMessageId = cleanText(input.relatedMessageId);
@@ -487,9 +559,13 @@ export async function buildCustomerContextReportMetadata(
       (message) => isCustomerMessage(message) && cleanText(message.id) !== relatedMessageId
     )?.content || null;
   const sourceLabel = resolveSourceLabel(recentMessages, recentTasks);
-  const mainInterest = resolveMainInterest(recentTasks);
-  const customerGoal = resolveCustomerGoal(recentMessages, recentTasks);
-  const importantPoints = collectImportantConversationPoints(recentMessages, recentTasks);
+  const mainInterest = resolveMainInterest(qualificationFacts);
+  const customerGoal = resolveCustomerGoal(recentMessages, qualificationFacts);
+  const importantPoints = collectOpportunityConversationPoints({
+    messages: recentMessages,
+    tasks: recentTasks,
+    qualificationFacts,
+  });
   const currentSituation = buildCurrentSituation({ summary });
   const historicalContextNarrative = buildHistoricalContextNarrative(
     summary?.relatedMessageCommercialContext
@@ -512,6 +588,7 @@ export async function buildCustomerContextReportMetadata(
     store_id: input.storeId,
     lead_id: cleanText(input.leadId),
     conversation_id: cleanText(input.conversationId),
+    commercial_opportunity_id: commercialOpportunityId,
     quote_id: input.quoteId,
     quote_number: cleanText(summary?.quoteNumber) || cleanText(input.quoteNumber),
     customer_name: cleanText(summary?.customerName) || cleanText(input.customerName),

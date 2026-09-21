@@ -40,7 +40,7 @@ test("strategy settings row and page select expose redesigned commercial strateg
 test("commercial strategy card persists only through the redesigned canonical writer", () => {
   const saveBlock = blockBetween('  const saveCommercialExperienceCard = useCallback(async (target: string) => {', '  const handleCommercialEditCancel = useCallback(() => {');
   const strategyBranchStart = saveBlock.indexOf('if (target === "strategy") {');
-  const nextBranchStart = saveBlock.indexOf('if (target === "offerings" || target === "brands") {');
+  const nextBranchStart = saveBlock.indexOf('if (target === "offerings") {', strategyBranchStart + 1);
   assert.notEqual(strategyBranchStart, -1);
   assert.notEqual(nextBranchStart, -1);
   assert.equal(strategyBranchStart < nextBranchStart, true);
@@ -81,7 +81,9 @@ test("canonical hydration uses the redesigned configured marker and redesigned d
   }
   assert.equal(hydrationBlock.includes('["equipamentos", "acessorios_equipamentos"].includes(value)'), true);
   assert.equal(
-    pageSource.includes("createCanonicalCommercialExperienceDraft(savedCommercialExperience, strategySettingsInput, strategySettings)"),
+    pageSource.includes("createCanonicalCommercialExperienceDraft(") &&
+      pageSource.includes("savedCommercialExperience") &&
+      pageSource.includes("settingsExperiencePolicies"),
     true,
   );
   assert.equal(
