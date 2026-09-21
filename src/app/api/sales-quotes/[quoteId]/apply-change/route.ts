@@ -70,6 +70,10 @@ type EditableSalesQuoteItemRow = SalesQuoteItemRow & {
 };
 type NormalizedApplyChangeItem = {
   id: string | null;
+  commercialOpportunityId: string | null;
+  profileComponentId: string | null;
+  poolId: string | null;
+  catalogItemId: string | null;
   itemType: AllowedApplyChangeItemType;
   name: string;
   description: string | null;
@@ -256,6 +260,10 @@ function normalizeApplyChangeItems(
 
     return {
       id: inputItemId || null,
+      commercialOpportunityId: previousItem?.commercial_opportunity_id || null,
+      profileComponentId: previousItem?.profile_component_id || null,
+      poolId: previousItem?.pool_id || null,
+      catalogItemId: previousItem?.catalog_item_id || null,
       itemType,
       name,
       description: normalizeOptionalText(record?.description),
@@ -334,6 +342,10 @@ export function buildUpdatedQuote(args: {
   );
   let nextItems: NormalizedApplyChangeItem[] = args.currentItems.map((item, index) => ({
     id: item.id,
+    commercialOpportunityId: item.commercial_opportunity_id || null,
+    profileComponentId: item.profile_component_id || null,
+    poolId: item.pool_id || null,
+    catalogItemId: item.catalog_item_id || null,
     itemType: normalizeApplyChangeItemType(item.item_type || "custom", index),
     name: String(item.name || "").trim(),
     description: normalizeOptionalText(item.description),
@@ -536,7 +548,7 @@ async function loadQuoteItems(args: { supabase: any; quoteId: string }) {
   const { data, error } = await args.supabase
     .from("sales_quote_items")
     .select(
-      "id, quote_id, organization_id, store_id, item_type, name, description, quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents, sort_order, sku, metadata, created_at, updated_at"
+      "id, quote_id, organization_id, store_id, commercial_opportunity_id, profile_component_id, pool_id, catalog_item_id, item_type, name, description, quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents, sort_order, sku, metadata, created_at, updated_at"
     )
     .eq("quote_id", args.quoteId)
     .order("sort_order", { ascending: true });
@@ -561,6 +573,10 @@ async function loadQuoteItems(args: { supabase: any; quoteId: string }) {
 function serializeQuoteItemsForAtomicWriter(items: NormalizedApplyChangeItem[]) {
   return items.map((item) => ({
     id: item.id,
+    commercial_opportunity_id: item.commercialOpportunityId,
+    profile_component_id: item.profileComponentId,
+    pool_id: item.poolId,
+    catalog_item_id: item.catalogItemId,
     item_type: item.itemType,
     name: item.name,
     description: item.description,
@@ -578,6 +594,10 @@ function serializeQuoteItemsForAtomicWriter(items: NormalizedApplyChangeItem[]) 
 function normalizePersistedQuoteItemsForAtomicWriter(items: EditableSalesQuoteItemRow[]) {
   return items.map((item, index) => ({
     id: item.id,
+    commercialOpportunityId: item.commercial_opportunity_id || null,
+    profileComponentId: item.profile_component_id || null,
+    poolId: item.pool_id || null,
+    catalogItemId: item.catalog_item_id || null,
     itemType: normalizeApplyChangeItemType(item.item_type || "custom", index),
     name: String(item.name || "").trim(),
     description: normalizeOptionalText(item.description),

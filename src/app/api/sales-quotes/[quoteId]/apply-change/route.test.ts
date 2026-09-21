@@ -180,6 +180,193 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "apply-change preserva lineage persistida de itens catalog pool e service custom",
+    run: async () => {
+      const { buildUpdatedQuote } = await loadRouteModule();
+      const currentItems = [
+        createCurrentItem({
+          id: "catalog-item-row",
+          item_type: "catalog_item",
+          name: "Filtro",
+          commercial_opportunity_id: "opp-catalog",
+          profile_component_id: "component-catalog",
+          catalog_item_id: "catalog-1",
+          pool_id: null,
+          quantity: 1,
+          unit_price_cents: 10000,
+          discount_cents: 0,
+          subtotal_cents: 10000,
+          total_cents: 10000,
+          sort_order: 1,
+        }),
+        createCurrentItem({
+          id: "pool-item-row",
+          item_type: "pool",
+          name: "Piscina",
+          commercial_opportunity_id: "opp-pool",
+          profile_component_id: "component-pool",
+          catalog_item_id: null,
+          pool_id: "pool-1",
+          quantity: 1,
+          unit_price_cents: 20000,
+          discount_cents: 0,
+          subtotal_cents: 20000,
+          total_cents: 20000,
+          sort_order: 2,
+        }),
+        createCurrentItem({
+          id: "service-item-row",
+          item_type: "service",
+          name: "Instalacao especial",
+          commercial_opportunity_id: "opp-service",
+          profile_component_id: "component-service",
+          catalog_item_id: null,
+          pool_id: null,
+          quantity: 1,
+          unit_price_cents: 5000,
+          discount_cents: 0,
+          subtotal_cents: 5000,
+          total_cents: 5000,
+          sort_order: 3,
+        }),
+      ];
+
+      const result = buildUpdatedQuote({
+        quote: createQuote({
+          subtotal_cents: 35000,
+          discount_cents: 0,
+          total_cents: 35000,
+        }),
+        body: {
+          items: [
+            {
+              id: "catalog-item-row",
+              item_type: "catalog_item",
+              name: "Filtro",
+              quantity: 1,
+              unit_price_cents: 10000,
+              discount_cents: 500,
+            },
+            {
+              id: "pool-item-row",
+              item_type: "pool",
+              name: "Piscina",
+              quantity: 1,
+              unit_price_cents: 20000,
+              discount_cents: 1000,
+            },
+            {
+              id: "service-item-row",
+              item_type: "service",
+              name: "Instalacao especial",
+              quantity: 1,
+              unit_price_cents: 5000,
+              discount_cents: 250,
+            },
+          ],
+        } as any,
+        currentItems,
+      });
+
+      assert.deepEqual(
+        result.nextItems.map((item: any) => ({
+          commercialOpportunityId: item.commercialOpportunityId,
+          profileComponentId: item.profileComponentId,
+          poolId: item.poolId,
+          catalogItemId: item.catalogItemId,
+        })),
+        [
+          {
+            commercialOpportunityId: "opp-catalog",
+            profileComponentId: "component-catalog",
+            poolId: null,
+            catalogItemId: "catalog-1",
+          },
+          {
+            commercialOpportunityId: "opp-pool",
+            profileComponentId: "component-pool",
+            poolId: "pool-1",
+            catalogItemId: null,
+          },
+          {
+            commercialOpportunityId: "opp-service",
+            profileComponentId: "component-service",
+            poolId: null,
+            catalogItemId: null,
+          },
+        ],
+      );
+      assert.equal(result.updatedQuote.discount_cents, 1750);
+      assert.equal(result.updatedQuote.total_cents, 33250);
+    },
+  },
+  {
+    name: "apply-change mantem item novo manual sem lineage canonica",
+    run: async () => {
+      const { buildUpdatedQuote } = await loadRouteModule();
+      const result = buildUpdatedQuote({
+        quote: createQuote(),
+        body: {
+          items: [
+            {
+              item_type: "custom",
+              name: "Item manual novo",
+              quantity: 1,
+              unit_price_cents: 30000,
+              discount_cents: 1000,
+            },
+          ],
+        } as any,
+        currentItems: [createCurrentItem()],
+      });
+
+      assert.equal(result.nextItems[0].id, null);
+      assert.equal((result.nextItems[0] as any).commercialOpportunityId, null);
+      assert.equal((result.nextItems[0] as any).profileComponentId, null);
+      assert.equal((result.nextItems[0] as any).poolId, null);
+      assert.equal((result.nextItems[0] as any).catalogItemId, null);
+    },
+  },
+  {
+    name: "apply-change ignora lineage enviada no body e usa item persistido",
+    run: async () => {
+      const { buildUpdatedQuote } = await loadRouteModule();
+      const result = buildUpdatedQuote({
+        quote: createQuote(),
+        body: {
+          items: [
+            {
+              id: "item-1",
+              item_type: "catalog_item",
+              name: "Item antigo",
+              quantity: 3,
+              unit_price_cents: 10000,
+              discount_cents: 1500,
+              commercial_opportunity_id: "opp-malicious",
+              profile_component_id: "component-malicious",
+              catalog_item_id: "catalog-malicious",
+              pool_id: "pool-malicious",
+            },
+          ],
+        } as any,
+        currentItems: [
+          createCurrentItem({
+            item_type: "catalog_item",
+            commercial_opportunity_id: "opp-persisted",
+            profile_component_id: "component-persisted",
+            catalog_item_id: "catalog-persisted",
+            pool_id: null,
+          }),
+        ],
+      });
+
+      assert.equal((result.nextItems[0] as any).commercialOpportunityId, "opp-persisted");
+      assert.equal((result.nextItems[0] as any).profileComponentId, "component-persisted");
+      assert.equal((result.nextItems[0] as any).catalogItemId, "catalog-persisted");
+      assert.equal((result.nextItems[0] as any).poolId, null);
+    },
+  },
+  {
     name: "apply-change rejeita quantity menor ou igual a zero",
     run: () =>
       assertApplyChangeMoneyError({
@@ -675,6 +862,10 @@ const tests: TestCase[] = [
         items: [
           {
             id: "item-1",
+            commercialOpportunityId: "opp-1",
+            profileComponentId: "component-1",
+            poolId: null,
+            catalogItemId: "catalog-1",
             itemType: "custom",
             name: "Piscina",
             description: null,
@@ -710,6 +901,24 @@ const tests: TestCase[] = [
       assert.equal(rpcCalls[0].payload.p_discount_cents, 2000);
       assert.equal(rpcCalls[0].payload.p_total_cents, 23000);
       assert.equal((rpcCalls[0].payload.p_items as unknown[]).length, 2);
+      assert.deepEqual((rpcCalls[0].payload.p_items as any[])[0], {
+        id: "item-1",
+        commercial_opportunity_id: "opp-1",
+        profile_component_id: "component-1",
+        pool_id: null,
+        catalog_item_id: "catalog-1",
+        item_type: "custom",
+        name: "Piscina",
+        description: null,
+        quantity: 2,
+        unit_price_cents: 10000,
+        discount_cents: 1500,
+        subtotal_cents: 20000,
+        total_cents: 18500,
+        sort_order: 1,
+        sku: null,
+        metadata: {},
+      });
     },
   },
   {
