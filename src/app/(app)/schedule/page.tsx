@@ -59,6 +59,21 @@ type ActionReadinessApiResponse = {
   reasonCode?: string | null;
 };
 
+type CustomerLocationApiResponse = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  leadId?: string;
+  commercialOpportunityId?: string | null;
+  resolution?:
+    | "resolved"
+    | "requires_opportunity_selection"
+    | "no_active_opportunity";
+  location?: {
+    state: "confirmed" | "inferred" | "conflict" | "absent";
+    text: string | null;
+  } | null;
+};
 type AppointmentEditForm = {
   title: string;
   appointmentType: string;
@@ -919,6 +934,12 @@ export default function SchedulePage() {
       lastMessageAt: null,
     });
 
+  const [appointmentCustomerLocationHint, setAppointmentCustomerLocationHint] =
+    useState<string | null>(null);
+  const customerLocationRequestIdRef = useRef(0);
+  const appointmentAddressSourceRef = useRef<
+    "empty" | "manual" | "canonical"
+  >("empty");
   const lastKnownTodayKeyRef = useRef<string>(toDateKey(new Date()));
   const selectedItemRef = useRef<ScheduleItem | null>(null);
   const editModeRef = useRef(false);
@@ -1500,6 +1521,144 @@ export default function SchedulePage() {
     setSaveErrorText(null);
   }
 
+  const loadAppointmentCustomerLocation = useCallback(
+    async (args: {
+      leadId: string;
+      commercialOpportunityId?: string | null;
+    }) => {
+      const leadId = String(args.leadId || "").trim();
+      const commercialOpportunityId =
+        String(args.commercialOpportunityId || "").trim() || null;
+
+      const requestId = ++customerLocationRequestIdRef.current;
+
+      setAppointmentCustomerLocationHint(null);
+
+      if (!leadId) {
+        return;
+      }
+
+      try {
+        const params = new URLSearchParams({
+          leadId,
+        });
+
+        if (commercialOpportunityId) {
+          params.set("commercialOpportunityId", commercialOpportunityId);
+        }
+
+        const response = await fetch(
+          `/api/schedule/customer-location?${params.toString()}`,
+          {
+            method: "GET",
+            cache: "no-store",
+          },
+        );
+
+        const body = (await response
+          .json()
+          .catch(() => null)) as CustomerLocationApiResponse | null;
+
+        if (requestId !== customerLocationRequestIdRef.current) {
+          return;
+        }
+
+        if (!response.ok || body?.ok !== true) {
+          setAppointmentCustomerLocationHint(
+            body?.message ||
+              "Não foi possível carregar a localização registrada para este cliente.",
+          );
+          return;
+        }
+
+        if (body.leadId !== leadId) {
+          return;
+        }
+
+        if (body.resolution === "requires_opportunity_selection") {
+          setAppointmentCustomerLocationHint(
+            "Há mais de uma oportunidade comercial ativa. Confirme o endereço manualmente.",
+          );
+          return;
+        }
+
+        if (body.resolution === "no_active_opportunity") {
+          setAppointmentCustomerLocationHint(
+            "Não há uma oportunidade comercial ativa com localização para preencher.",
+          );
+          return;
+        }
+
+        if (body.location?.state === "conflict") {
+          setAppointmentCustomerLocationHint(
+            "A localização registrada no CRM possui informações conflitantes. Confirme o endereço antes de salvar.",
+          );
+          return;
+        }
+
+        if (
+          body.location?.state !== "confirmed" &&
+          body.location?.state !== "inferred"
+        ) {
+          setAppointmentCustomerLocationHint(
+            "Localização ainda não informada no CRM para este cliente.",
+          );
+          return;
+        }
+
+        const locationText = String(body.location.text || "").trim();
+
+        if (!locationText) {
+          setAppointmentCustomerLocationHint(
+            "Localização ainda não informada no CRM para este cliente.",
+          );
+          return;
+        }
+
+        setAppointmentCreateForm((prev) => {
+          if (prev.leadId !== leadId) {
+            return prev;
+          }
+
+          if (
+            commercialOpportunityId &&
+            prev.commercialOpportunityId !== commercialOpportunityId
+          ) {
+            return prev;
+          }
+
+          if (appointmentAddressSourceRef.current === "manual") {
+            return prev;
+          }
+
+          appointmentAddressSourceRef.current = "canonical";
+
+          return {
+            ...prev,
+            addressText: locationText,
+          };
+        });
+
+        setAppointmentCustomerLocationHint(
+          body.location.state === "inferred"
+            ? "Localização preenchida pelo CRM com base nas informações inferidas da conversa. Confirme antes de salvar."
+            : "Localização preenchida automaticamente a partir do CRM.",
+        );
+      } catch (error: unknown) {
+        if (requestId !== customerLocationRequestIdRef.current) {
+          return;
+        }
+
+        setAppointmentCustomerLocationHint(
+          getErrorMessage(
+            error,
+            "Não foi possível carregar a localização registrada para este cliente.",
+          ),
+        );
+      }
+    },
+    [],
+  );
   const syncCreateConversationPreview = useCallback(
     async (leadId: string, preferredLead?: LeadConversationOption | null) => {
       if (!leadId) {
@@ -1668,6 +1827,9 @@ export default function SchedulePage() {
   }
 
   function openCreateAppointmentPanel() {
+    customerLocationRequestIdRef.current += 1;
+    appointmentAddressSourceRef.current = "empty";
+    setAppointmentCustomerLocationHint(null);
     setCreateAppointmentOpen(true);
     setAppointmentCreateErrorText(null);
     setCreateLeadConversationState({
@@ -1682,6 +1844,9 @@ export default function SchedulePage() {
   }
 
   function closeCreateAppointmentPanel() {
+    customerLocationRequestIdRef.current += 1;
+    appointmentAddressSourceRef.current = "empty";
+    setAppointmentCustomerLocationHint(null);
     setCreateAppointmentOpen(false);
     setAppointmentCreateErrorText(null);
     setSavingAppointmentCreate(false);
@@ -1700,12 +1865,17 @@ export default function SchedulePage() {
     const matchedLead = leadOptions.find((lead) => lead.leadId === nextLeadId) || null;
 
     setAppointmentCreateErrorText(null);
+    const customerLocationContextId =
+      ++customerLocationRequestIdRef.current;
+    setAppointmentCustomerLocationHint(null);
+    appointmentAddressSourceRef.current = "empty";
 
     setAppointmentCreateForm((prev) => ({
       ...prev,
       leadId: nextLeadId,
       conversationId: matchedLead?.conversationId || "",
       commercialOpportunityId: "",
+      addressText: "",
       customerName: matchedLead?.leadName || prev.customerName,
       customerPhone: matchedLead?.leadPhone
         ? applyPhoneMask(matchedLead.leadPhone)
@@ -1714,6 +1884,21 @@ export default function SchedulePage() {
 
     await syncCreateConversationPreview(nextLeadId, matchedLead);
     await loadLeadCommercialOpportunityOptions(nextLeadId);
+
+    if (
+      customerLocationContextId !== customerLocationRequestIdRef.current
+    ) {
+      return;
+    }
+
+    if (
+      nextLeadId &&
+      appointmentCreateForm.appointmentType !== "technical_visit"
+    ) {
+      await loadAppointmentCustomerLocation({
+        leadId: nextLeadId,
+      });
+    }
   }
 
   async function resolveAppointmentCommercialOpportunityId(appointmentId: string) {
@@ -3682,12 +3867,36 @@ export default function SchedulePage() {
                       </label>
                       <select
                         value={appointmentCreateForm.appointmentType}
-                        onChange={(e) =>
-                          setAppointmentCreateForm((prev) => ({
-                            ...prev,
-                            appointmentType: e.target.value,
-                          }))
-                        }
+                        onChange={(e) => {
+                            const nextAppointmentType = e.target.value;
+                            const addressWasManual =
+                              appointmentAddressSourceRef.current === "manual";
+
+                            customerLocationRequestIdRef.current += 1;
+                            setAppointmentCustomerLocationHint(null);
+
+                            appointmentAddressSourceRef.current =
+                              addressWasManual ? "manual" : "empty";
+
+                            setAppointmentCreateForm((prev) => ({
+                              ...prev,
+                              appointmentType: nextAppointmentType,
+                              commercialOpportunityId: "",
+                              addressText: addressWasManual
+                                ? prev.addressText
+                                : "",
+                            }));
+
+                            if (
+                              nextAppointmentType !== "technical_visit" &&
+                              appointmentCreateForm.leadId &&
+                              !addressWasManual
+                            ) {
+                              void loadAppointmentCustomerLocation({
+                                leadId: appointmentCreateForm.leadId,
+                              });
+                            }
+                          }}
                         className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                       >
                         <option value="technical_visit">Visita técnica</option>
@@ -3832,12 +4041,29 @@ export default function SchedulePage() {
                       </label>
                       <select
                         value={appointmentCreateForm.commercialOpportunityId}
-                        onChange={(e) =>
-                          setAppointmentCreateForm((prev) => ({
-                            ...prev,
-                            commercialOpportunityId: e.target.value,
-                          }))
-                        }
+                        onChange={(e) => {
+                            const commercialOpportunityId = e.target.value;
+
+                            customerLocationRequestIdRef.current += 1;
+                            setAppointmentCustomerLocationHint(null);
+                            appointmentAddressSourceRef.current = "empty";
+
+                            setAppointmentCreateForm((prev) => ({
+                              ...prev,
+                              commercialOpportunityId,
+                              addressText: "",
+                            }));
+
+                            if (
+                              commercialOpportunityId &&
+                              appointmentCreateForm.leadId
+                            ) {
+                              void loadAppointmentCustomerLocation({
+                                leadId: appointmentCreateForm.leadId,
+                                commercialOpportunityId,
+                              });
+                            }
+                          }}
                         disabled={!appointmentCreateForm.leadId}
                         className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-50"
                       >
@@ -3908,15 +4134,24 @@ export default function SchedulePage() {
                     </label>
                     <input
                       value={appointmentCreateForm.addressText}
-                      onChange={(e) =>
-                        setAppointmentCreateForm((prev) => ({
-                          ...prev,
-                          addressText: e.target.value,
-                        }))
-                      }
+                      onChange={(e) => {
+                          customerLocationRequestIdRef.current += 1;
+                          appointmentAddressSourceRef.current = "manual";
+                          setAppointmentCustomerLocationHint(null);
+
+                          setAppointmentCreateForm((prev) => ({
+                            ...prev,
+                            addressText: e.target.value,
+                          }));
+                        }}
                       placeholder="Endereço do atendimento"
                       className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                     />
+                      {appointmentCustomerLocationHint ? (
+                        <div className="mt-1 text-[11px] text-gray-500">
+                          {appointmentCustomerLocationHint}
+                        </div>
+                      ) : null}
                   </div>
 
                   <div>
