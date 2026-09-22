@@ -130,7 +130,7 @@ const tests: TestCase[] = [
       const source = readFileSync(
         join(process.cwd(), "src/app/(app)/schedule/page.tsx"),
         "utf8",
-      );
+      ).replace(/\r\n/g, "\n");
       const readinessIndex = source.indexOf(
         'fetch(\n          "/api/crm/opportunities/action-readiness"',
       );
@@ -143,6 +143,53 @@ const tests: TestCase[] = [
       assert.equal(readinessIndex > -1, true);
       assert.equal(rpcIndex > -1, true);
       assert.equal(readinessIndex < rpcIndex, true);
+    },
+  },
+  {
+    name: "post_sale behaves as a regular appointment without commercial context",
+    run: () => {
+      const result = resolveCommercialOpportunityIdForAppointmentCreate({
+        appointmentType: "post_sale",
+        selectedCommercialOpportunityId: "opp-qualificacao-a",
+        availableCommercialOpportunities: leadOpportunities,
+      });
+
+      assert.deepEqual(result, {
+        ok: true,
+        commercialOpportunityId: null,
+      });
+    },
+  },
+  {
+    name: "schedule page exposes post_sale consistently",
+    run: () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/app/(app)/schedule/page.tsx"),
+        "utf8",
+      ).replace(/\r\n/g, "\n");
+
+      assert.equal(
+        source.includes(
+          '{ value: "post_sale", label: "Pós-venda", dotClass: "bg-red-700" }',
+        ),
+        true,
+      );
+
+      assert.equal(
+        source.includes('if (normalized === "post_sale") return "Pós-venda";'),
+        true,
+      );
+
+      assert.equal(
+        source.includes('if (normalizedType === "post_sale") {'),
+        true,
+      );
+
+      assert.equal(
+        (source.match(/<option value="post_sale">Pós-venda<\/option>/g) || [])
+          .length,
+        2,
+      );
     },
   },
 ];

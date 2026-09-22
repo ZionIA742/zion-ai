@@ -127,6 +127,7 @@ const SCHEDULE_TYPE_LEGEND = [
   { value: "meeting", label: "Reunião", dotClass: "bg-cyan-500" },
   { value: "measurement", label: "Medição", dotClass: "bg-[#8B5A2B]" },
   { value: "maintenance", label: "Manutenção", dotClass: "bg-orange-500" },
+  { value: "post_sale", label: "Pós-venda", dotClass: "bg-red-700" },
   { value: "block", label: "Bloqueio", dotClass: "bg-slate-600" },
 ] as const;
 
@@ -240,6 +241,7 @@ function formatItemType(value: string) {
   if (normalized === "meeting") return "Reunião";
   if (normalized === "measurement") return "Medição";
   if (normalized === "maintenance") return "Manutenção";
+  if (normalized === "post_sale") return "Pós-venda";
   if (normalized === "personal_unavailable") return "Indisponível";
   if (normalized === "team_unavailable") return "Equipe indisponível";
   if (normalized === "holiday") return "Bloqueio por feriado";
@@ -314,6 +316,10 @@ function getItemTypeClass(item: ScheduleItem) {
 
   if (normalizedType === "maintenance") {
     return "bg-orange-500 text-white border-orange-600";
+  }
+
+  if (normalizedType === "post_sale") {
+    return "bg-red-700 text-white border-red-800";
   }
 
   return "bg-slate-500 text-white border-slate-600";
@@ -2946,6 +2952,7 @@ export default function SchedulePage() {
                           <option value="meeting">Reunião</option>
                           <option value="measurement">Medição</option>
                           <option value="maintenance">Manutenção</option>
+                          <option value="post_sale">Pós-venda</option>
                           <option value="other">Outro</option>
                         </select>
                       </div>
@@ -3689,6 +3696,7 @@ export default function SchedulePage() {
                         <option value="meeting">Reunião</option>
                         <option value="measurement">Medição</option>
                         <option value="maintenance">Manutenção</option>
+                        <option value="post_sale">Pós-venda</option>
                         <option value="other">Outro</option>
                       </select>
                     </div>
