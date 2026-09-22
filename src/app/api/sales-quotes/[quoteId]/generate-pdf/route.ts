@@ -19,7 +19,6 @@ import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/docum
 import {
   buildQuoteSnapshot,
   createQuoteVersion,
-  getNextQuoteVersionNumber,
   recordQuoteGenerationFailure,
 } from "@/lib/server/sales-quotes/quote-versioning";
 import type { SalesQuoteItemRow } from "@/lib/server/sales-quotes/types";
@@ -86,7 +85,6 @@ export async function POST(
     | {
         supabase: any;
         quote: any;
-        versionNumber: number;
         snapshot: any;
       }
     | null = null;
@@ -151,11 +149,6 @@ export async function POST(
       );
     }
 
-    const versionNumber = await getNextQuoteVersionNumber({
-      supabase: scope.supabase,
-      quoteId: scope.quote.id,
-    });
-
     const snapshot = buildQuoteSnapshot({
       quote: scope.quote,
       items,
@@ -167,7 +160,6 @@ export async function POST(
     generationContext = {
       supabase: scope.supabase,
       quote: scope.quote,
-      versionNumber,
       snapshot,
     };
 
@@ -231,14 +223,13 @@ export async function POST(
       storeId: scope.store.id,
       quoteId: scope.quote.id,
       quoteNumber: String(scope.quote.quote_number || "").trim() || scope.quote.id,
-      versionNumber,
+      versionNumber: null,
       pdfBytes,
     });
 
     const versionRow = await createQuoteVersion({
       supabase: scope.supabase,
       quote: scope.quote,
-      versionNumber,
       storeFileId: storedFile.storeFileId,
       storageBucket: storedFile.storageBucket,
       storagePath: storedFile.storagePath,
@@ -308,7 +299,6 @@ export async function POST(
         await recordQuoteGenerationFailure({
           supabase: generationContext.supabase,
           quote: generationContext.quote,
-          versionNumber: generationContext.versionNumber,
           quoteSnapshot: {
             ...generationContext.snapshot,
             generationError:

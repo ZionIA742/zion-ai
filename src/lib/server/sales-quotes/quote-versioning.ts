@@ -45,7 +45,28 @@ type SupabaseTableBuilderLike<T> = SupabaseSelectBuilderLike<T> & {
 
 type QuoteVersioningSupabaseClient = {
   from(table: string): SupabaseTableBuilderLike<Record<string, unknown>>;
+  rpc(
+    functionName: string,
+    args: Record<string, unknown>,
+  ): PromiseLike<{
+    data: unknown;
+    error: SupabaseErrorLike | null;
+  }>;
 };
+
+function normalizeOptionalText(value: unknown) {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
+function readQuoteHeaderText(
+  quote: SalesQuoteRow,
+  key: "payment_terms" | "delivery_terms" | "warranty_terms" | "valid_until",
+) {
+  const metadata =
+    quote.metadata && typeof quote.metadata === "object" ? quote.metadata : {};
+  return normalizeOptionalText(quote[key]) || normalizeOptionalText(metadata[key]);
+}
 
 export function buildQuoteSnapshot(args: {
   quote: SalesQuoteRow;
@@ -61,8 +82,15 @@ export function buildQuoteSnapshot(args: {
       quoteNumber: String(args.quote.quote_number || "").trim(),
       title: args.quote.title,
       status: String(args.quote.status || "").trim() || "draft",
+      customerName: normalizeOptionalText(args.quote.customer_name) || args.lead?.name || null,
+      customerPhone: normalizeOptionalText(args.quote.customer_phone) || args.lead?.phone || null,
       customerNotes: args.quote.customer_notes,
       internalNotes: args.quote.internal_notes,
+      paymentTerms: readQuoteHeaderText(args.quote, "payment_terms"),
+      deliveryTerms: readQuoteHeaderText(args.quote, "delivery_terms"),
+      warrantyTerms: readQuoteHeaderText(args.quote, "warranty_terms"),
+      validUntil: readQuoteHeaderText(args.quote, "valid_until"),
+      createdAt: args.quote.created_at,
       subtotalCents: toNumber(args.quote.subtotal_cents),
       discountCents: toNumber(args.quote.discount_cents),
       totalCents: toNumber(args.quote.total_cents),
@@ -121,7 +149,7 @@ export async function getNextQuoteVersionNumber(args: {
 export async function createQuoteVersion(args: {
   supabase: unknown;
   quote: SalesQuoteRow;
-  versionNumber: number;
+  versionNumber?: number;
   storeFileId: string;
   storageBucket: string;
   storagePath: string;
@@ -133,59 +161,38 @@ export async function createQuoteVersion(args: {
 }) {
   const supabase = args.supabase as QuoteVersioningSupabaseClient;
 
-  if (args.quote.current_version_id) {
-    const { error: supersedeError } = await supabase
-      .from("sales_quote_versions")
-      .update({
-        status: "superseded",
-      })
-      .eq("id", args.quote.current_version_id);
+  const { data, error } = await supabase.rpc(
+    "create_sales_quote_version_by_system",
+    {
+      p_organization_id: args.quote.organization_id,
+      p_store_id: args.quote.store_id,
+      p_quote_id: args.quote.id,
+      p_version_status: "generated",
+      p_next_quote_status: args.nextQuoteStatus,
+      p_quote_kind: args.quoteKind ?? null,
+      p_store_file_id: args.storeFileId,
+      p_storage_bucket: args.storageBucket,
+      p_storage_path: args.storagePath,
+      p_original_filename: args.originalFilename,
+      p_mime_type: "application/pdf",
+      p_size_bytes: args.sizeBytes,
+      p_quote_snapshot: args.quoteSnapshot,
+    },
+  );
 
-    if (supersedeError) {
-      throw new Error(
-        `Falha ao marcar versao anterior como superseded: ${supersedeError.message}`
-      );
-    }
+  const versionRow = Array.isArray(data) ? data[0] : data;
+
+  if (error || !versionRow || typeof versionRow !== "object" || !(versionRow as { id?: unknown }).id) {
+    throw new Error(error?.message || "Falha ao criar sales_quote_versions.");
   }
 
-  const { data: versionRow, error: versionError } = await supabase
-    .from("sales_quote_versions")
-    .insert({
-      quote_id: args.quote.id,
-      organization_id: args.quote.organization_id,
-      store_id: args.quote.store_id,
-      version_number: args.versionNumber,
-      status: "generated",
-      quote_kind: args.quoteKind ?? null,
-      store_file_id: args.storeFileId,
-      storage_bucket: args.storageBucket,
-      storage_path: args.storagePath,
-      original_filename: args.originalFilename,
-      mime_type: "application/pdf",
-      size_bytes: args.sizeBytes,
-      quote_snapshot: args.quoteSnapshot,
-    })
-    .select(
-      "id, quote_id, organization_id, store_id, version_number, status, quote_kind, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, quote_snapshot, created_at"
-    )
-    .maybeSingle();
-
-  if (versionError || !versionRow?.id) {
-    throw new Error(versionError?.message || "Falha ao criar sales_quote_versions.");
-  }
-
-  const { error: quoteUpdateError } = await supabase
-    .from("sales_quotes")
-    .update({
-      current_version_id: versionRow.id,
-      status: args.nextQuoteStatus,
-    })
-    .eq("id", args.quote.id);
-
-  if (quoteUpdateError) {
-    throw new Error(
-      `Falha ao atualizar sales_quotes.current_version_id: ${quoteUpdateError.message}`
-    );
+  if (
+    String((versionRow as { quote_id?: unknown }).quote_id || "") !== args.quote.id ||
+    String((versionRow as { organization_id?: unknown }).organization_id || "") !== args.quote.organization_id ||
+    String((versionRow as { store_id?: unknown }).store_id || "") !== args.quote.store_id ||
+    String((versionRow as { status?: unknown }).status || "") !== "generated"
+  ) {
+    throw new Error("Falha ao criar sales_quote_versions: retorno divergente.");
   }
 
   return versionRow as SalesQuoteVersionRow;
@@ -194,24 +201,45 @@ export async function createQuoteVersion(args: {
 export async function recordQuoteGenerationFailure(args: {
   supabase: unknown;
   quote: SalesQuoteRow;
-  versionNumber: number;
+  versionNumber?: number;
   quoteSnapshot: QuoteSnapshot;
 }) {
   const supabase = args.supabase as QuoteVersioningSupabaseClient;
-  const { error } = await supabase.from("sales_quote_versions").insert({
-    quote_id: args.quote.id,
-    organization_id: args.quote.organization_id,
-    store_id: args.quote.store_id,
-    version_number: args.versionNumber,
-    status: "failed",
-    quote_kind: null,
-    store_file_id: null,
-    storage_bucket: null,
-    storage_path: null,
-    quote_snapshot: args.quoteSnapshot,
-  });
+  const { data, error } = await supabase.rpc(
+    "create_sales_quote_version_by_system",
+    {
+      p_organization_id: args.quote.organization_id,
+      p_store_id: args.quote.store_id,
+      p_quote_id: args.quote.id,
+      p_version_status: "failed",
+      p_next_quote_status: null,
+      p_quote_kind: null,
+      p_store_file_id: null,
+      p_storage_bucket: null,
+      p_storage_path: null,
+      p_original_filename: null,
+      p_mime_type: null,
+      p_size_bytes: null,
+      p_quote_snapshot: args.quoteSnapshot,
+    },
+  );
 
-  if (error) {
-    throw new Error(`Falha ao registrar versao com erro: ${error.message}`);
+  const versionRow = Array.isArray(data) ? data[0] : data;
+
+  if (error || !versionRow || typeof versionRow !== "object") {
+    throw new Error(
+      `Falha ao registrar versao com erro: ${
+        error?.message || "retorno invalido do writer"
+      }`,
+    );
+  }
+
+  if (
+    String((versionRow as { quote_id?: unknown }).quote_id || "") !== args.quote.id ||
+    String((versionRow as { organization_id?: unknown }).organization_id || "") !== args.quote.organization_id ||
+    String((versionRow as { store_id?: unknown }).store_id || "") !== args.quote.store_id ||
+    String((versionRow as { status?: unknown }).status || "") !== "failed"
+  ) {
+    throw new Error("Falha ao registrar versao com erro: retorno divergente.");
   }
 }

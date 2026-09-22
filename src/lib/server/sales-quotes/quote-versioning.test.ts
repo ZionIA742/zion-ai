@@ -22,8 +22,14 @@ function createQuote(overrides: Partial<SalesQuoteRow> = {}): SalesQuoteRow {
     quote_number: "ORC-1",
     title: "Quote",
     status: "draft",
+    customer_name: "Quote Customer",
+    customer_phone: "11888888888",
     customer_notes: null,
     internal_notes: null,
+    payment_terms: null,
+    delivery_terms: null,
+    warranty_terms: null,
+    valid_until: null,
     subtotal_cents: 1000,
     discount_cents: 0,
     total_cents: 1000,
@@ -84,11 +90,37 @@ const lead: QuoteLeadRow = {
 function createSupabaseRecorder() {
   const inserts: Array<{ table: string; payload: Record<string, unknown> }> = [];
   const updates: Array<{ table: string; payload: Record<string, unknown> }> = [];
+  const rpcs: Array<{ functionName: string; args: Record<string, unknown> }> = [];
 
   return {
     inserts,
     updates,
+    rpcs,
     supabase: {
+      async rpc(functionName: string, args: Record<string, unknown>) {
+        rpcs.push({ functionName, args });
+        return {
+          data: {
+            id: `version-${rpcs.length}`,
+            quote_id: args.p_quote_id,
+            organization_id: args.p_organization_id,
+            store_id: args.p_store_id,
+            version_number: rpcs.length,
+            status: args.p_version_status,
+            quote_kind: args.p_quote_kind ?? null,
+            store_file_id: args.p_store_file_id ?? null,
+            storage_bucket: args.p_storage_bucket ?? null,
+            storage_path: args.p_storage_path ?? null,
+            original_filename: args.p_original_filename ?? null,
+            mime_type: args.p_mime_type ?? null,
+            size_bytes: args.p_size_bytes ?? null,
+            quote_snapshot: args.p_quote_snapshot,
+            created_at: "2026-09-04T00:00:00.000Z",
+            sent_at: null,
+          },
+          error: null,
+        };
+      },
       from(table: string) {
         return {
           insert(payload: Record<string, unknown>) {
@@ -233,6 +265,34 @@ const tests: Array<{ name: string; run: () => Promise<void> }> = [
     },
   },
   {
+    name: "buildQuoteSnapshot freezes rendered header fields",
+    run: async () => {
+      const snapshot = buildQuoteSnapshot({
+        quote: createQuote({
+          customer_name: "Ada Customer",
+          customer_phone: "11977776666",
+          payment_terms: "Pix em 2 parcelas",
+          delivery_terms: "Entrega em 10 dias",
+          warranty_terms: "Garantia de 12 meses",
+          valid_until: "2026-10-01",
+          created_at: "2026-09-04T12:00:00.000Z",
+        }),
+        items: [createItem()],
+        settings,
+        store,
+        lead,
+      });
+
+      assert.equal(snapshot.quote.customerName, "Ada Customer");
+      assert.equal(snapshot.quote.customerPhone, "11977776666");
+      assert.equal(snapshot.quote.paymentTerms, "Pix em 2 parcelas");
+      assert.equal(snapshot.quote.deliveryTerms, "Entrega em 10 dias");
+      assert.equal(snapshot.quote.warrantyTerms, "Garantia de 12 meses");
+      assert.equal(snapshot.quote.validUntil, "2026-10-01");
+      assert.equal(snapshot.quote.createdAt, "2026-09-04T12:00:00.000Z");
+    },
+  },
+  {
     name: "createQuoteVersion persists the buildQuoteSnapshot payload without monetary mutation",
     run: async () => {
       const recorder = createSupabaseRecorder();
@@ -270,9 +330,11 @@ const tests: Array<{ name: string; run: () => Promise<void> }> = [
         nextQuoteStatus: "pending_review",
       });
 
-      assert.equal(recorder.inserts[0].table, "sales_quote_versions");
-      assert.strictEqual(recorder.inserts[0].payload.quote_snapshot, snapshot);
-      assert.deepEqual(recorder.inserts[0].payload.quote_snapshot, snapshot);
+      assert.equal(recorder.rpcs[0].functionName, "create_sales_quote_version_by_system");
+      assert.strictEqual(recorder.rpcs[0].args.p_quote_snapshot, snapshot);
+      assert.deepEqual(recorder.rpcs[0].args.p_quote_snapshot, snapshot);
+      assert.equal(recorder.rpcs[0].args.p_version_status, "generated");
+      assert.equal(recorder.rpcs[0].args.p_next_quote_status, "pending_review");
     },
   },
   {
@@ -307,13 +369,15 @@ const tests: Array<{ name: string; run: () => Promise<void> }> = [
         quoteSnapshot: snapshot,
       });
 
-      assert.equal(recorder.inserts[0].table, "sales_quote_versions");
-      assert.strictEqual(recorder.inserts[0].payload.quote_snapshot, snapshot);
-      assert.deepEqual(recorder.inserts[0].payload.quote_snapshot, snapshot);
+      assert.equal(recorder.rpcs[0].functionName, "create_sales_quote_version_by_system");
+      assert.strictEqual(recorder.rpcs[0].args.p_quote_snapshot, snapshot);
+      assert.deepEqual(recorder.rpcs[0].args.p_quote_snapshot, snapshot);
+      assert.equal(recorder.rpcs[0].args.p_version_status, "failed");
+      assert.equal(recorder.rpcs[0].args.p_next_quote_status, null);
     },
   },
   {
-    name: "legacy createQuoteVersion preserves null quote_kind",
+    name: "createQuoteVersion sends null quote_kind to the canonical writer",
     run: async () => {
       const recorder = createSupabaseRecorder();
 
@@ -330,8 +394,8 @@ const tests: Array<{ name: string; run: () => Promise<void> }> = [
         nextQuoteStatus: "pending_review",
       });
 
-      assert.equal(recorder.inserts[0].table, "sales_quote_versions");
-      assert.equal(recorder.inserts[0].payload.quote_kind, null);
+      assert.equal(recorder.rpcs[0].functionName, "create_sales_quote_version_by_system");
+      assert.equal(recorder.rpcs[0].args.p_quote_kind, null);
     },
   },
   {
@@ -353,7 +417,7 @@ const tests: Array<{ name: string; run: () => Promise<void> }> = [
         quoteKind: "definitive",
       });
 
-      assert.equal(recorder.inserts[0].payload.quote_kind, "definitive");
+      assert.equal(recorder.rpcs[0].args.p_quote_kind, "definitive");
     },
   },
   {
@@ -368,8 +432,8 @@ const tests: Array<{ name: string; run: () => Promise<void> }> = [
         quoteSnapshot: {} as never,
       });
 
-      assert.equal(recorder.inserts[0].table, "sales_quote_versions");
-      assert.equal(recorder.inserts[0].payload.quote_kind, null);
+      assert.equal(recorder.rpcs[0].functionName, "create_sales_quote_version_by_system");
+      assert.equal(recorder.rpcs[0].args.p_quote_kind, null);
     },
   },
 ];

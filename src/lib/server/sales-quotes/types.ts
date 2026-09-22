@@ -183,8 +183,15 @@ export type QuoteSnapshot = {
     quoteNumber: string;
     title: string | null;
     status: string;
+    customerName: string | null;
+    customerPhone: string | null;
     customerNotes: string | null;
     internalNotes: string | null;
+    paymentTerms: string | null;
+    deliveryTerms: string | null;
+    warrantyTerms: string | null;
+    validUntil: string | null;
+    createdAt: string | null;
     subtotalCents: number;
     discountCents: number;
     totalCents: number;

@@ -14,7 +14,7 @@ function buildQuoteStoragePath(args: {
   organizationId: string;
   storeId: string;
   quoteId: string;
-  versionNumber: number;
+  versionNumber?: number | null;
 }) {
   const now = new Date();
   const dateKey = [
@@ -24,17 +24,24 @@ function buildQuoteStoragePath(args: {
   ].join("");
   const random = Math.random().toString(36).slice(2, 8);
 
+  const versionKey = args.versionNumber
+    ? `v${String(args.versionNumber).padStart(4, "0")}`
+    : "pending";
+
   return [
     args.organizationId,
     args.storeId,
     "sales-quotes",
     args.quoteId,
-    `${dateKey}-v${String(args.versionNumber).padStart(4, "0")}-${random}.pdf`,
+    `${dateKey}-${versionKey}-${random}.pdf`,
   ].join("/");
 }
 
-function buildPdfFileName(quoteNumber: string, versionNumber: number) {
+function buildPdfFileName(quoteNumber: string, versionNumber?: number | null) {
   const safeQuoteNumber = sanitizeFilePart(quoteNumber || "orcamento");
+  if (!versionNumber) {
+    return `${safeQuoteNumber}.pdf`;
+  }
   return `${safeQuoteNumber}-v${String(versionNumber).padStart(4, "0")}.pdf`;
 }
 
@@ -44,7 +51,7 @@ export async function storeQuotePdfFile(args: {
   storeId: string;
   quoteId: string;
   quoteNumber: string;
-  versionNumber: number;
+  versionNumber?: number | null;
   pdfBytes: Uint8Array;
 }) {
   const storagePath = buildQuoteStoragePath(args);
@@ -116,4 +123,3 @@ export function buildQuotePdfMessageMetadata(args: {
     generated_by: "system",
   };
 }
-

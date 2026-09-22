@@ -17,7 +17,6 @@ import { storeQuotePdfFile } from "@/lib/server/sales-quotes/quote-storage";
 import {
   buildQuoteSnapshot,
   createQuoteVersion,
-  getNextQuoteVersionNumber,
   recordQuoteGenerationFailure,
 } from "@/lib/server/sales-quotes/quote-versioning";
 import {
@@ -738,7 +737,6 @@ export async function POST(
       }
     | null = null;
   let failureSnapshot: QuoteSnapshot | null = null;
-  let failureVersionNumber: number | null = null;
 
   try {
     const body = (await request.json().catch(() => null)) as ApplyChangeBody | null;
@@ -779,10 +777,6 @@ export async function POST(
       storeId: scope.store.id,
     });
     const previousVersionId = scope.quote.current_version_id || null;
-    const versionNumber = await getNextQuoteVersionNumber({
-      supabase: scope.supabase,
-      quoteId: scope.quote.id,
-    });
     const {
       updatedQuote,
       nextMetadata,
@@ -824,7 +818,6 @@ export async function POST(
       lead: scope.lead,
     });
     failureSnapshot = snapshot;
-    failureVersionNumber = versionNumber;
 
     const brandVisualPolicy = await loadStoreBrandVisualPolicy({
       supabase: scope.sessionSupabase,
@@ -881,7 +874,7 @@ export async function POST(
       storeId: scope.store.id,
       quoteId: scope.quote.id,
       quoteNumber: String(updatedQuote.quote_number || "").trim() || updatedQuote.id,
-      versionNumber,
+      versionNumber: null,
       pdfBytes,
     });
 
@@ -933,7 +926,6 @@ export async function POST(
     const versionRow = await createQuoteVersion({
       supabase: scope.supabase,
       quote: updatedQuote,
-      versionNumber,
       storeFileId: storedFile.storeFileId,
       storageBucket: storedFile.storageBucket,
       storagePath: storedFile.storagePath,
@@ -1042,12 +1034,11 @@ export async function POST(
       }
     }
 
-    if (revertContext && failureSnapshot && failureVersionNumber && !versionCreated) {
+    if (revertContext && failureSnapshot && !versionCreated) {
       try {
         await recordQuoteGenerationFailure({
           supabase: revertContext.supabase,
           quote: revertContext.originalQuote,
-          versionNumber: failureVersionNumber,
           quoteSnapshot: {
             ...failureSnapshot,
             generationError:

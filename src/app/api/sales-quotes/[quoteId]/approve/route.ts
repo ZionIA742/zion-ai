@@ -16,11 +16,15 @@ const ALLOWED_VERSION_STATUSES = new Set(["generated", "pending_review"]);
 async function readQuoteApprovalAudit(args: {
   supabase: any;
   quoteId: string;
+  organizationId: string;
+  storeId: string;
 }) {
   const { data, error } = await args.supabase
     .from("sales_quotes")
     .select("id, status, approved_at, approved_by")
     .eq("id", args.quoteId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
     .maybeSingle();
 
   if (error) {
@@ -35,6 +39,47 @@ async function readQuoteApprovalAudit(args: {
         approved_by?: string | null;
       }
     | null;
+}
+
+async function approveQuoteVersionBySystem(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  quoteId: string;
+  versionId: string;
+}) {
+  const { data, error } = await args.supabase.rpc(
+    "approve_sales_quote_version_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_quote_id: args.quoteId,
+      p_sales_quote_version_id: args.versionId,
+    },
+  );
+
+  const row = Array.isArray(data) ? data[0] : data;
+
+  if (error || !row) {
+    throw new Error(
+      `Falha ao aprovar sales_quote_versions: ${
+        error?.message || "retorno invalido do writer"
+      }`,
+    );
+  }
+
+  if (
+    String(row.id || "") !== args.versionId ||
+    String(row.quote_id || "") !== args.quoteId ||
+    String(row.organization_id || "") !== args.organizationId ||
+    String(row.store_id || "") !== args.storeId ||
+    String(row.status || "") !== "approved" ||
+    String(row.sent_at || "").trim()
+  ) {
+    throw new Error("Falha ao aprovar sales_quote_versions: retorno divergente.");
+  }
+
+  return row as SalesQuoteVersionRow;
 }
 
 function buildErrorResponse(error: unknown) {
@@ -76,6 +121,8 @@ export async function POST(
       const audit = await readQuoteApprovalAudit({
         supabase: scope.supabase,
         quoteId: scope.quote.id,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
       });
       const approvedAt = String(audit?.approved_at || "").trim();
       const approvedBy = String(audit?.approved_by || "").trim();
@@ -88,7 +135,9 @@ export async function POST(
             approved_by: approvedBy || scope.user.id,
             updated_at: approvalTimestamp,
           })
-          .eq("id", scope.quote.id);
+          .eq("id", scope.quote.id)
+          .eq("organization_id", scope.organizationId)
+          .eq("store_id", scope.store.id);
 
         if (approvalAuditError) {
           throw new Error(
@@ -214,24 +263,21 @@ export async function POST(
         approved_by: scope.user.id,
         updated_at: approvalTimestamp,
       })
-      .eq("id", scope.quote.id);
+      .eq("id", scope.quote.id)
+      .eq("organization_id", scope.organizationId)
+      .eq("store_id", scope.store.id);
 
     if (quoteUpdateError) {
       throw new Error(`Falha ao atualizar sales_quotes: ${quoteUpdateError.message}`);
     }
 
-    const { error: versionUpdateError } = await scope.supabase
-      .from("sales_quote_versions")
-      .update({
-        status: "approved",
-      })
-      .eq("id", version.id);
-
-    if (versionUpdateError) {
-      throw new Error(
-        `Falha ao atualizar sales_quote_versions: ${versionUpdateError.message}`
-      );
-    }
+    await approveQuoteVersionBySystem({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      quoteId: scope.quote.id,
+      versionId: version.id,
+    });
 
     await insertQuoteConversationEvent({
       supabase: scope.supabase,
