@@ -34,5 +34,15 @@ assert.equal(
   false,
   "approve must not update sales_quote_versions directly",
 );
+assert.match(
+  routeSource,
+  /assertSalesQuoteVersionNotExpired\(\{/,
+  "approve must validate lazy expiration in the route before mutating sales_quotes",
+);
+assert.match(
+  routeSource,
+  /assertSalesQuoteVersionNotExpired\(\{[\s\S]*?\.from\("sales_quotes"\)[\s\S]*?\.update\(\{/,
+  "approve must block expired versions before the first sales_quotes update",
+);
 
 console.log("approve versioning route contracts passed");

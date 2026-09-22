@@ -17,10 +17,12 @@ import { loadStoreQuoteSettings } from "@/lib/server/sales-quotes/quote-settings
 import { storeQuotePdfFile } from "@/lib/server/sales-quotes/quote-storage";
 import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/document-review-messages";
 import {
+  buildQuoteKindNotice,
   buildQuoteSnapshot,
   createQuoteVersion,
   recordQuoteGenerationFailure,
 } from "@/lib/server/sales-quotes/quote-versioning";
+import { resolveSalesQuoteKindForVersion } from "@/lib/server/sales-quotes/quote-kind";
 import type { SalesQuoteItemRow } from "@/lib/server/sales-quotes/types";
 
 export const runtime = "nodejs";
@@ -62,7 +64,7 @@ function buildErrorResponse(error: unknown) {
   );
 }
 
-function normalizeQuoteKind(value: unknown): "preliminary" | "definitive" | null {
+function normalizeQuoteKindHint(value: unknown): "preliminary" | "definitive" | null {
   if (value == null || String(value).trim() === "") return null;
 
   const normalized = String(value).trim().toLowerCase();
@@ -70,11 +72,7 @@ function normalizeQuoteKind(value: unknown): "preliminary" | "definitive" | null
     return normalized;
   }
 
-  throw new QuoteAccessError(
-    400,
-    "QUOTE_KIND_INVALID",
-    "quoteKind precisa ser preliminary ou definitive.",
-  );
+  return null;
 }
 
 export async function POST(
@@ -94,7 +92,7 @@ export async function POST(
     const body = (await request.json().catch(() => null)) as
       | { quoteKind?: unknown; quote_kind?: unknown }
       | null;
-    const quoteKind = normalizeQuoteKind(body?.quoteKind ?? body?.quote_kind);
+    const requestedQuoteKind = normalizeQuoteKindHint(body?.quoteKind ?? body?.quote_kind);
     const { quoteId: rawQuoteId } = await context.params;
     const quoteId = String(rawQuoteId || "").trim();
     const scope = await resolveAuthorizedExistingQuote(quoteId);
@@ -149,12 +147,22 @@ export async function POST(
       );
     }
 
+    const quoteKind = await resolveSalesQuoteKindForVersion({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      quoteId: scope.quote.id,
+      commercialOpportunityId: scope.quote.commercial_opportunity_id,
+      fallbackQuoteKind: requestedQuoteKind,
+    });
+
     const snapshot = buildQuoteSnapshot({
       quote: scope.quote,
       items,
       settings,
       store: scope.store,
       lead: scope.lead,
+      quoteKind,
     });
 
     generationContext = {
@@ -194,6 +202,8 @@ export async function POST(
           }
         : null,
       quoteNumber: String(scope.quote.quote_number || "").trim() || scope.quote.id,
+      quoteKind,
+      quoteKindNotice: buildQuoteKindNotice(quoteKind),
       title: scope.quote.title,
       customerName: scope.lead?.name || null,
       customerPhone: scope.lead?.phone || null,

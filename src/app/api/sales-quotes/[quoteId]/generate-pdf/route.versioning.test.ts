@@ -24,5 +24,20 @@ assert.match(
   /recordQuoteGenerationFailure\(\{/,
   "generate-pdf failed generation should use the shared canonical helper",
 );
+assert.match(
+  routeSource,
+  /resolveSalesQuoteKindForVersion\(\{/,
+  "generate-pdf must resolve canonical quote_kind server-side",
+);
+assert.equal(
+  routeSource.indexOf("resolveSalesQuoteKindForVersion({") < routeSource.indexOf("createQuoteVersion({"),
+  true,
+  "generate-pdf must resolve quote_kind before creating a version",
+);
+assert.match(
+  routeSource,
+  /quoteKind,\s*\n\s*\}\);/,
+  "generate-pdf must persist the resolved quote_kind through the version writer",
+);
 
 console.log("generate-pdf versioning route contracts passed");

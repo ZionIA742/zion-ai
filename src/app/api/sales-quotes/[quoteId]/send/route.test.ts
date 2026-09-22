@@ -278,6 +278,42 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "expired current version blocks before readiness and materialization",
+    run: async () => {
+      const { createSendQuotePostHandler } = await loadRouteModule();
+      let readinessCalls = 0;
+      let materialized = false;
+      const handler = createSendQuotePostHandler({
+        resolveQuoteScope: async () => createScope({
+          supabase: createSupabaseRecorder({
+            version: createVersionFixture({
+              quote_snapshot: { quote: { validUntil: "2000-01-01" } },
+            }),
+          }),
+        }) as never,
+        loadQuoteSettings: async () => createSettingsResult() as never,
+        refreshActionReadiness: async () => {
+          readinessCalls += 1;
+          return createReadyReadiness();
+        },
+        materializeQuoteSend: async () => {
+          materialized = true;
+          return createOperation() as never;
+        },
+      });
+
+      const response = await handler(new Request("https://example.test"), {
+        params: Promise.resolve({ quoteId: "quote-1" }),
+      });
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "QUOTE_VERSION_EXPIRED");
+      assert.equal(readinessCalls, 0);
+      assert.equal(materialized, false);
+    },
+  },
+  {
     name: "same operation can return already_queued without creating another logical send",
     run: async () => {
       const { createSendQuotePostHandler } = await loadRouteModule();

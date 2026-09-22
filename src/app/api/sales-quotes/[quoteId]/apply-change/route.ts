@@ -15,10 +15,12 @@ import {
 import { loadStoreQuoteSettings } from "@/lib/server/sales-quotes/quote-settings";
 import { storeQuotePdfFile } from "@/lib/server/sales-quotes/quote-storage";
 import {
+  buildQuoteKindNotice,
   buildQuoteSnapshot,
   createQuoteVersion,
   recordQuoteGenerationFailure,
 } from "@/lib/server/sales-quotes/quote-versioning";
+import { resolveSalesQuoteKindForVersion } from "@/lib/server/sales-quotes/quote-kind";
 import {
   parseValidityDays,
   resolveDisplayValidityDays,
@@ -777,6 +779,26 @@ export async function POST(
       storeId: scope.store.id,
     });
     const previousVersionId = scope.quote.current_version_id || null;
+    let previousQuoteKind: string | null = null;
+    if (previousVersionId) {
+      const { data: previousVersionData, error: previousVersionError } = await scope.supabase
+        .from("sales_quote_versions")
+        .select("id, quote_id, organization_id, store_id, quote_kind")
+        .eq("id", previousVersionId)
+        .eq("quote_id", scope.quote.id)
+        .eq("organization_id", scope.organizationId)
+        .eq("store_id", scope.store.id)
+        .maybeSingle();
+
+      if (previousVersionError) {
+        throw new Error(`Falha ao carregar quote_kind da versao atual: ${previousVersionError.message}`);
+      }
+
+      previousQuoteKind =
+        typeof previousVersionData?.quote_kind === "string"
+          ? previousVersionData.quote_kind
+          : null;
+    }
     const {
       updatedQuote,
       nextMetadata,
@@ -790,6 +812,15 @@ export async function POST(
       quote: scope.quote,
       body: safeBody,
       currentItems: items,
+    });
+
+    const quoteKind = await resolveSalesQuoteKindForVersion({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      quoteId: scope.quote.id,
+      commercialOpportunityId: updatedQuote.commercial_opportunity_id,
+      fallbackQuoteKind: previousQuoteKind,
     });
 
     const snapshot = buildQuoteSnapshot({
@@ -816,6 +847,7 @@ export async function POST(
       settings,
       store: scope.store,
       lead: scope.lead,
+      quoteKind,
     });
     failureSnapshot = snapshot;
 
@@ -845,6 +877,8 @@ export async function POST(
           }
         : null,
       quoteNumber: String(updatedQuote.quote_number || "").trim() || updatedQuote.id,
+      quoteKind,
+      quoteKindNotice: buildQuoteKindNotice(quoteKind),
       title: updatedQuote.title,
       customerName: updatedQuote.customer_name || scope.lead?.name || null,
       customerPhone: updatedQuote.customer_phone || scope.lead?.phone || null,
@@ -933,6 +967,7 @@ export async function POST(
       sizeBytes: storedFile.sizeBytes,
       quoteSnapshot: snapshot,
       nextQuoteStatus: "pending_review",
+      quoteKind,
     });
     versionCreated = true;
 

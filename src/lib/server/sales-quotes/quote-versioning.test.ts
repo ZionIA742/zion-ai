@@ -281,10 +281,16 @@ const tests: Array<{ name: string; run: () => Promise<void> }> = [
         settings,
         store,
         lead,
+        quoteKind: "preliminary",
       });
 
       assert.equal(snapshot.quote.customerName, "Ada Customer");
       assert.equal(snapshot.quote.customerPhone, "11977776666");
+      assert.equal(snapshot.quote.quoteKind, "preliminary");
+      assert.equal(
+        snapshot.quote.quoteKindNotice,
+        "Valores e condicoes sujeitos a conclusao da visita tecnica.",
+      );
       assert.equal(snapshot.quote.paymentTerms, "Pix em 2 parcelas");
       assert.equal(snapshot.quote.deliveryTerms, "Entrega em 10 dias");
       assert.equal(snapshot.quote.warrantyTerms, "Garantia de 12 meses");

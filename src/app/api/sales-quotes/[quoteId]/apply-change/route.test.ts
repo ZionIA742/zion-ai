@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import Module from "node:module";
 import { join } from "node:path";
 
@@ -35,6 +36,7 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
 };
 
 const routeModulePromise = import("./route");
+const routeSource = readFileSync(join(__dirname, "route.ts"), "utf8");
 
 async function loadRouteModule() {
   return routeModulePromise;
@@ -964,6 +966,23 @@ const tests: TestCase[] = [
       );
 
       assert.equal(directTableWrites, 0);
+    },
+  },
+  {
+    name: "apply-change resolve e persiste quote_kind na nova versao",
+    run: () => {
+      assert.match(routeSource, /resolveSalesQuoteKindForVersion\(\{/);
+      assert.equal(
+        routeSource.indexOf("resolveSalesQuoteKindForVersion({") <
+          routeSource.indexOf("buildQuoteSnapshot({"),
+        true,
+        "apply-change must resolve quote_kind before snapshot creation",
+      );
+      assert.match(
+        routeSource,
+        /createQuoteVersion\(\{[\s\S]*quoteKind,/,
+        "apply-change must pass resolved quote_kind to the version writer",
+      );
     },
   },
 ];

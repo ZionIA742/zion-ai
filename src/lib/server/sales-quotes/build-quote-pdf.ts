@@ -30,6 +30,8 @@ export type BuildQuotePdfInput = {
     documentFooter?: string | null;
   } | null;
   quoteNumber: string;
+  quoteKind?: "preliminary" | "definitive" | null;
+  quoteKindNotice?: string | null;
   title: string | null;
   customerName: string | null;
   customerPhone: string | null;
@@ -102,9 +104,15 @@ function formatCurrency(cents: number | null | undefined) {
   }).format(safeValue);
 }
 
-function formatDate(value: string | null | undefined) {
+export function formatQuotePdfDate(value: string | null | undefined) {
   const safeValue = String(value || "").trim();
   if (!safeValue) return "-";
+
+  const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(safeValue);
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch;
+    return `${day}/${month}/${year}`;
+  }
 
   const date = new Date(safeValue);
   if (Number.isNaN(date.getTime())) return safeValue;
@@ -468,6 +476,10 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
   const safeCustomerName = String(input.customerName || "").trim() || "-";
   const safeCustomerPhone = String(input.customerPhone || "").trim() || "-";
   const safeQuoteNumber = String(input.quoteNumber || "").trim() || "-";
+  const isPreliminaryQuote = input.quoteKind === "preliminary";
+  const preliminaryNotice =
+    String(input.quoteKindNotice || "").trim() ||
+    "Valores e condicoes sujeitos a conclusao da visita tecnica.";
 
   cursor.page.drawRectangle({
     x: PAGE_MARGIN,
@@ -569,7 +581,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
   drawLabeledValue({
     page: cursor.page,
     label: "Data",
-    value: formatDate(input.createdAt),
+    value: formatQuotePdfDate(input.createdAt),
     x: summaryCardX + 14,
     y: summaryCardTopY - 55,
     labelFont: boldFont,
@@ -580,7 +592,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
   drawLabeledValue({
     page: cursor.page,
     label: "Validade",
-    value: formatDate(input.validUntil),
+    value: formatQuotePdfDate(input.validUntil),
     x: summaryCardX + 96,
     y: summaryCardTopY - 55,
     labelFont: boldFont,
@@ -598,6 +610,34 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
     color: COLOR_TEXT,
   });
   cursor.y -= 18;
+
+  if (isPreliminaryQuote) {
+    const noticeHeight = 38;
+    cursor.page.drawRectangle({
+      x: PAGE_MARGIN,
+      y: cursor.y - noticeHeight,
+      width: CONTENT_WIDTH,
+      height: noticeHeight,
+      color: panelStrongColor,
+      borderWidth: 0.8,
+      borderColor: COLOR_BORDER,
+    });
+    cursor.page.drawText("ORCAMENTO PRELIMINAR", {
+      x: PAGE_MARGIN + 14,
+      y: cursor.y - 15,
+      size: FONT_SIZE,
+      font: boldFont,
+      color: accentTextColor,
+    });
+    cursor.page.drawText(clampText(preliminaryNotice, 100), {
+      x: PAGE_MARGIN + 14,
+      y: cursor.y - 29,
+      size: SMALL_FONT_SIZE,
+      font,
+      color: COLOR_TEXT,
+    });
+    cursor.y -= noticeHeight + 12;
+  }
 
   const infoCardHeight = 56;
   const infoCardGap = 12;
@@ -671,7 +711,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
   drawLabeledValue({
     page: cursor.page,
     label: "Validade",
-    value: formatDate(input.validUntil),
+    value: formatQuotePdfDate(input.validUntil),
     x: rightCardX + 108,
     y: cursor.y - 34,
     labelFont: boldFont,
@@ -916,7 +956,7 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
   cursor = drawTextBlock({
     cursor,
     title: "Validade",
-    body: input.validUntil ? `Este orçamento é válido até ${formatDate(input.validUntil)}.` : null,
+    body: input.validUntil ? `Este orçamento é válido até ${formatQuotePdfDate(input.validUntil)}.` : null,
     font,
     boldFont,
     pdfDoc,

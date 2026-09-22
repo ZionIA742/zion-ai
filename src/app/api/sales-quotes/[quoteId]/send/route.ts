@@ -10,6 +10,7 @@ import {
 } from "@/lib/server/sales-quotes/quote-auth";
 import { loadStoreQuoteSettings } from "@/lib/server/sales-quotes/quote-settings";
 import { buildQuotePdfMessageMetadata } from "@/lib/server/sales-quotes/quote-storage";
+import { assertSalesQuoteVersionNotExpired } from "@/lib/server/sales-quotes/quote-expiration";
 import {
   SalesQuoteSendMaterializationError,
   buildSalesQuoteSendIdempotencyKey,
@@ -238,6 +239,10 @@ export function createSendQuotePostHandler(deps?: SendRouteDeps) {
 
       const version = versionData as SalesQuoteVersionRow;
       const versionStatus = String(version.status || "").trim().toLowerCase();
+      assertSalesQuoteVersionNotExpired({
+        version,
+        quote: scope.quote,
+      });
       const quoteAlreadySent =
         String(scope.quote.status || "").trim().toLowerCase() === "sent";
       const versionHasCanonicalSentEvidence = hasCanonicalSentQuoteVersionEvidence(version);

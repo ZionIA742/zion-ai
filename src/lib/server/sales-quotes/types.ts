@@ -183,6 +183,8 @@ export type QuoteSnapshot = {
     quoteNumber: string;
     title: string | null;
     status: string;
+    quoteKind?: "preliminary" | "definitive" | null;
+    quoteKindNotice?: string | null;
     customerName: string | null;
     customerPhone: string | null;
     customerNotes: string | null;

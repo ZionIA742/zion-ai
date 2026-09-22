@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { insertQuoteConversationEvent } from "@/lib/server/sales-quotes/quote-events";
+import { assertSalesQuoteVersionNotExpired } from "@/lib/server/sales-quotes/quote-expiration";
 import {
   QuoteAccessError,
   resolveAuthorizedExistingQuote,
@@ -254,6 +255,11 @@ export async function POST(
         { status: 409 }
       );
     }
+
+    assertSalesQuoteVersionNotExpired({
+      version,
+      quote: scope.quote,
+    });
 
     const { error: quoteUpdateError } = await scope.supabase
       .from("sales_quotes")

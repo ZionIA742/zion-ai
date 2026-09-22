@@ -59,6 +59,12 @@ function normalizeOptionalText(value: unknown) {
   return normalized || null;
 }
 
+export function buildQuoteKindNotice(quoteKind: unknown) {
+  return String(quoteKind || "").trim().toLowerCase() === "preliminary"
+    ? "Valores e condicoes sujeitos a conclusao da visita tecnica."
+    : null;
+}
+
 function readQuoteHeaderText(
   quote: SalesQuoteRow,
   key: "payment_terms" | "delivery_terms" | "warranty_terms" | "valid_until",
@@ -74,14 +80,18 @@ export function buildQuoteSnapshot(args: {
   settings: QuoteSettings;
   store: QuoteStoreRow;
   lead: QuoteLeadRow | null;
+  quoteKind?: "preliminary" | "definitive" | null;
   generationError?: string | null;
 }): QuoteSnapshot {
+  const quoteKind = args.quoteKind ?? null;
   return {
     quote: {
       id: args.quote.id,
       quoteNumber: String(args.quote.quote_number || "").trim(),
       title: args.quote.title,
       status: String(args.quote.status || "").trim() || "draft",
+      quoteKind,
+      quoteKindNotice: buildQuoteKindNotice(quoteKind),
       customerName: normalizeOptionalText(args.quote.customer_name) || args.lead?.name || null,
       customerPhone: normalizeOptionalText(args.quote.customer_phone) || args.lead?.phone || null,
       customerNotes: args.quote.customer_notes,
