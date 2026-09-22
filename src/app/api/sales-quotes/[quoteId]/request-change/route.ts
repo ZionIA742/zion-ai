@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { insertQuoteConversationEvent } from "@/lib/server/sales-quotes/quote-events";
+import { requestQuoteChangeAtomically } from "@/lib/server/sales-quotes/quote-change-requests";
+import { ensureQuoteConversationReadyForQuoteEvent } from "@/lib/server/sales-quotes/quote-conversation-readiness";
+import { canInsertQuoteConversationEvent } from "@/lib/server/sales-quotes/quote-events";
 import {
   QuoteAccessError,
   resolveAuthorizedExistingQuote,
@@ -10,6 +12,13 @@ export const dynamic = "force-dynamic";
 
 const CHANGE_REQUEST_EVENT_TYPE = "orcamento_alteracao_solicitada";
 
+type RequestChangeDeps = {
+  resolveQuoteScope?: typeof resolveAuthorizedExistingQuote;
+  ensureConversationReady?: typeof ensureQuoteConversationReadyForQuoteEvent;
+  canInsertEvent?: typeof canInsertQuoteConversationEvent;
+  requestQuoteChange?: typeof requestQuoteChangeAtomically;
+};
+
 function buildErrorResponse(error: unknown) {
   if (error instanceof QuoteAccessError) {
     return NextResponse.json(
@@ -18,7 +27,7 @@ function buildErrorResponse(error: unknown) {
         error: error.code,
         message: error.message,
       },
-      { status: error.status }
+      { status: error.status },
     );
   }
 
@@ -31,88 +40,100 @@ function buildErrorResponse(error: unknown) {
           ? error.message
           : "Erro inesperado ao registrar alteracao do orcamento.",
     },
-    { status: 500 }
+    { status: 500 },
   );
 }
 
-export async function POST(
-  request: Request,
-  context: { params: Promise<{ quoteId: string }> }
-) {
-  try {
-    const body = (await request.json().catch(() => null)) as
-      | { request_text?: string | null }
-      | null;
-    const requestText = String(body?.request_text || "").trim();
+export function createRequestChangePostHandler(deps?: RequestChangeDeps) {
+  const resolveQuoteScope = deps?.resolveQuoteScope ?? resolveAuthorizedExistingQuote;
+  const ensureConversationReady =
+    deps?.ensureConversationReady ?? ensureQuoteConversationReadyForQuoteEvent;
+  const canInsertEvent = deps?.canInsertEvent ?? canInsertQuoteConversationEvent;
+  const requestQuoteChange = deps?.requestQuoteChange ?? requestQuoteChangeAtomically;
 
-    if (!requestText) {
-      throw new QuoteAccessError(
-        400,
-        "INVALID_REQUEST_TEXT",
-        "Descreva a alteracao solicitada."
-      );
+  return async function POST(
+    request: Request,
+    context: { params: Promise<{ quoteId: string }> },
+  ) {
+    try {
+      const body = (await request.json().catch(() => null)) as
+        | { request_text?: string | null }
+        | null;
+      const requestText = String(body?.request_text || "").trim();
+
+      if (!requestText) {
+        throw new QuoteAccessError(
+          400,
+          "INVALID_REQUEST_TEXT",
+          "Descreva a alteracao solicitada.",
+        );
+      }
+
+      const { quoteId: rawQuoteId } = await context.params;
+      const quoteId = String(rawQuoteId || "").trim();
+      const scope = await resolveQuoteScope(quoteId);
+      const conversationId =
+        String(scope.conversation?.id || scope.quote.conversation_id || "").trim() || null;
+      const leadId = String(scope.lead?.id || scope.quote.lead_id || "").trim() || null;
+
+      await ensureConversationReady({
+        supabase: scope.supabase,
+        actorUserId: scope.user.id,
+        organizationId: scope.organizationId,
+        conversationId,
+        leadId,
+        source: "quote_change_request",
+      });
+
+      const eventGuard = await canInsertEvent({
+        supabase: scope.supabase,
+        quote: scope.quote,
+        eventType: CHANGE_REQUEST_EVENT_TYPE,
+      });
+
+      if (!eventGuard.allowed) {
+        throw new QuoteAccessError(
+          409,
+          "QUOTE_EVENT_NOT_ALLOWED",
+          "A solicitacao de alteracao do orcamento nao esta permitida no estado atual da conversa.",
+        );
+      }
+
+      if (!conversationId || !leadId) {
+        throw new QuoteAccessError(
+          409,
+          "QUOTE_CONVERSATION_CONTEXT_REQUIRED",
+          "Este orcamento precisa de conversa e lead para registrar a solicitacao de alteracao.",
+        );
+      }
+
+      const result = await requestQuoteChange({
+        supabase: scope.supabase,
+        quote: scope.quote,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        conversationId,
+        leadId,
+        requestText,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        quoteId: scope.quote.id,
+        quoteNumber: scope.quote.quote_number,
+        changeRequestId: result.changeRequestId,
+        status: result.status,
+        reusedExistingRequest: result.reusedExistingRequest,
+        replayed: result.reusedExistingRequest,
+        conversationEvent: {
+          created: result.eventCreated,
+          skippedReason: null,
+        },
+      });
+    } catch (error) {
+      return buildErrorResponse(error);
     }
-
-    const { quoteId: rawQuoteId } = await context.params;
-    const quoteId = String(rawQuoteId || "").trim();
-    const scope = await resolveAuthorizedExistingQuote(quoteId);
-
-    const { data: changeRequest, error: changeRequestError } = await scope.supabase
-      .from("sales_quote_change_requests")
-      .insert({
-        quote_id: scope.quote.id,
-        organization_id: scope.organizationId,
-        store_id: scope.store.id,
-        status: "open",
-        requested_by: "human",
-        request_text: requestText,
-      })
-      .select("id, quote_id, organization_id, store_id, status, requested_by, request_text, created_at")
-      .maybeSingle();
-
-    if (changeRequestError || !changeRequest?.id) {
-      throw new Error(
-        changeRequestError?.message ||
-          "Falha ao registrar sales_quote_change_requests."
-      );
-    }
-
-    const { error: quoteUpdateError } = await scope.supabase
-      .from("sales_quotes")
-      .update({
-        status: "changes_requested",
-        last_change_request_id: changeRequest.id,
-      })
-      .eq("id", scope.quote.id);
-
-    if (quoteUpdateError) {
-      throw new Error(quoteUpdateError.message);
-    }
-
-    const conversationEvent = await insertQuoteConversationEvent({
-      supabase: scope.supabase,
-      quote: scope.quote,
-      eventType: CHANGE_REQUEST_EVENT_TYPE,
-      payload: {
-        quote_id: scope.quote.id,
-        change_request_id: changeRequest.id,
-        quote_number: scope.quote.quote_number,
-        status: "changes_requested",
-        current_version_id: scope.quote.current_version_id,
-        request_text: requestText,
-      },
-      createdBy: "human",
-    });
-
-    return NextResponse.json({
-      ok: true,
-      quoteId: scope.quote.id,
-      quoteNumber: scope.quote.quote_number,
-      changeRequestId: changeRequest.id,
-      status: "changes_requested",
-      conversationEvent,
-    });
-  } catch (error) {
-    return buildErrorResponse(error);
-  }
+  };
 }
+
+export const POST = createRequestChangePostHandler();
