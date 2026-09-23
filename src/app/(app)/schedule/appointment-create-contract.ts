@@ -85,15 +85,13 @@ export function resolveCommercialOpportunityIdForAppointmentCreate(args: {
   );
 
   if (!selectedCommercialOpportunityId) {
-    if (validOpportunityIds.size > 0) {
-      return {
-        ok: false,
-        errorMessage:
-          "Selecione explicitamente a opportunity comercial desta visita tecnica antes de salvar.",
-      };
-    }
-
-    return { ok: true, commercialOpportunityId: null };
+    return {
+      ok: false,
+      errorMessage:
+        validOpportunityIds.size > 0
+          ? "Selecione explicitamente a opportunity comercial desta visita tecnica antes de salvar."
+          : "Nao foi encontrada uma opportunity comercial valida para vincular esta visita tecnica.",
+    };
   }
 
   if (!validOpportunityIds.has(selectedCommercialOpportunityId)) {

@@ -110,6 +110,22 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "technical_visit without any commercial opportunity is blocked",
+    run: () => {
+      const result = resolveCommercialOpportunityIdForAppointmentCreate({
+        appointmentType: "technical_visit",
+        selectedCommercialOpportunityId: "",
+        availableCommercialOpportunities: [],
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(
+        "errorMessage" in result &&
+          result.errorMessage.includes("opportunity"),
+        true,
+      );
+    },
+  },  {
     name: "regular appointment without commercial context still works with null opportunity",
     run: () => {
       const result = resolveCommercialOpportunityIdForAppointmentCreate({
