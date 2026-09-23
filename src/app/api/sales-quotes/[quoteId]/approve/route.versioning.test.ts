@@ -12,7 +12,12 @@ assert.match(
 assert.match(
   routeSource,
   /p_sales_quote_version_id:\s*args\.versionId/,
-  "approve writer call must use the explicit current version id",
+  "approve writer call must use the explicit requested version id",
+);
+assert.match(
+  routeSource,
+  /p_approved_by:\s*args\.approvedBy/,
+  "approve writer call must pass the human approver to the canonical writer",
 );
 assert.match(
   routeSource,
@@ -34,15 +39,35 @@ assert.equal(
   false,
   "approve must not update sales_quote_versions directly",
 );
-assert.match(
-  routeSource,
-  /assertSalesQuoteVersionNotExpired\(\{/,
-  "approve must validate lazy expiration in the route before mutating sales_quotes",
+assert.equal(
+  /\.from\("sales_quotes"\)\s*\.update\(/.test(routeSource),
+  false,
+  "approve must not update sales_quotes directly",
+);
+assert.equal(
+  routeSource.includes("insertQuoteConversationEvent"),
+  false,
+  "approve must not insert the approval event outside the canonical writer",
 );
 assert.match(
   routeSource,
-  /assertSalesQuoteVersionNotExpired\(\{[\s\S]*?\.from\("sales_quotes"\)[\s\S]*?\.update\(\{/,
-  "approve must block expired versions before the first sales_quotes update",
+  /readQuoteVersionIdFromBody/,
+  "approve must read quoteVersionId from an explicit request body",
+);
+assert.equal(
+  routeSource.includes("versionId: currentVersionId"),
+  false,
+  "approve must not fall back to current_version_id as the requested approval version",
+);
+assert.match(
+  routeSource,
+  /assertSalesQuoteVersionNotExpired\(\{/,
+  "approve must preserve lazy expiration validation before invoking the writer",
+);
+assert.match(
+  routeSource,
+  /assertSalesQuoteVersionNotExpired\(\{[\s\S]*?approveQuoteVersion\(\{/,
+  "approve must block expired versions before invoking the writer",
 );
 
 console.log("approve versioning route contracts passed");

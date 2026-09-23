@@ -128,43 +128,12 @@ async function ensurePersistedQuoteApproval(scope: Awaited<ReturnType<typeof res
     };
   }
 
-  const approvalTimestamp = current.approved_at || new Date().toISOString();
-  const approverUserId = current.approved_by || scope.user.id;
-
-  const { error: patchError } = await scope.supabase
-    .from("sales_quotes")
-    .update({
-      approved_at: approvalTimestamp,
-      approved_by: approverUserId,
-      updated_at: approvalTimestamp,
-    })
-    .eq("id", scope.quote.id)
-    .eq("organization_id", scope.organizationId)
-    .eq("store_id", scope.store.id);
-
-  if (patchError) {
-    return {
-      ok: false as const,
-      status: 500,
-      error: "QUOTE_APPROVAL_PERSISTENCE_FAILED",
-      message: `Falha ao persistir approved_at/approved_by do orcamento: ${patchError.message}`,
-    };
-  }
-
-  const patched = await loadPersistedQuoteApprovalState(scope);
-  if (!patched.approved_at || !patched.approved_by) {
-    return {
-      ok: false as const,
-      status: 500,
-      error: "QUOTE_APPROVAL_PERSISTENCE_FAILED",
-      message: "Nao consegui confirmar approved_at/approved_by no orcamento antes do envio.",
-    };
-  }
-
   return {
-    ok: true as const,
-    alreadySent: false,
-    approvalState: patched,
+    ok: false as const,
+    status: 409,
+    error: "QUOTE_APPROVAL_AUDIT_INCOMPLETE",
+    message:
+      "A aprovacao do orcamento esta sem auditoria canonica; reexecute a aprovacao antes do envio.",
   };
 }
 
@@ -293,10 +262,26 @@ async function approveAndSendQuote(request: Request, quoteId: string) {
     }
 
     if (currentStatus !== "approved") {
+      const currentVersionId = String(scope.quote.current_version_id || "").trim();
+      if (!currentVersionId) {
+        return {
+          ok: false as const,
+          status: 400,
+          error: "QUOTE_VERSION_REQUIRED",
+          message: "Este orcamento ainda nao possui uma versao atual para aprovacao.",
+        };
+      }
+
       const approveResult = await callInternalJson(
         request,
         `/api/sales-quotes/${encodeURIComponent(quoteId)}/approve`,
-        { method: "POST" }
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ quoteVersionId: currentVersionId }),
+        }
       );
 
       const approveErrorCode = String(approveResult.body?.error || "").trim();

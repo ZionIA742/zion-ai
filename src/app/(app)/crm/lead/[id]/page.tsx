@@ -3049,11 +3049,24 @@ export default function LeadPage() {
     }
   }
 
-  async function approveGeneratedQuote(quoteId: string, currentStatus: string | null | undefined) {
+  async function approveGeneratedQuote(
+    quoteId: string,
+    currentStatus: string | null | undefined,
+    displayedVersionId: string | null | undefined
+  ) {
     const safeQuoteId = String(quoteId || "").trim();
     const normalizedStatus = String(currentStatus || "").trim().toLowerCase();
+    const safeVersionId = String(displayedVersionId || "").trim();
 
     if (!safeQuoteId) {
+      return;
+    }
+
+    if (!safeVersionId) {
+      setQuoteActionError(
+        "Recarregue o orcamento e revise a versao atual antes de aprovar."
+      );
+      setQuoteActionSuccess(null);
       return;
     }
 
@@ -3074,11 +3087,23 @@ export default function LeadPage() {
         {
           method: "POST",
           cache: "no-store",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ quoteVersionId: safeVersionId }),
         }
       );
       const result = (await response.json()) as SalesQuoteActionResponse;
 
       if (!response.ok || !result?.ok) {
+        if (result?.error === "QUOTE_VERSION_STALE") {
+          await fetchGeneratedQuotes({ silent: true });
+          throw new Error(
+            result.message ||
+              "Existe uma versao mais recente do orcamento. Revise antes de aprovar."
+          );
+        }
+
         throw new Error(result?.message || "Nao foi possivel aprovar o orcamento.");
       }
 
@@ -5176,7 +5201,12 @@ export default function LeadPage() {
                                           <button
                                             type="button"
                                             onClick={() =>
-                                              void approveGeneratedQuote(quote.id, quote.status)
+                                              void approveGeneratedQuote(
+                                                quote.id,
+                                                quote.status,
+                                                quote.current_version?.id ||
+                                                  quote.current_version_id
+                                              )
                                             }
                                             disabled={isActionLoading}
                                             className="rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-200 disabled:text-emerald-700"
