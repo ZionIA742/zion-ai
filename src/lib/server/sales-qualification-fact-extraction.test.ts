@@ -594,3 +594,133 @@ test("merge discards only the conflicting fact key and keeps the rest", () => {
     ["technical_visit_interest"],
   );
 });
+test("structured extraction accepts canonical customer address from explicit address message", async () => {
+  const message =
+    "Quero agendar uma visita técnica. O endereço é Rua General Francisco Glicério, 130, Suzano - SP.";
+
+  const result = await extractStructuredQualificationCandidates({
+    openai: new FakeOpenAi(
+      JSON.stringify({
+        candidates: [
+          {
+            fact_key: "customer_address_text",
+            assertion_level: "confirmed",
+            value_kind: "text",
+            text_value: "Rua General Francisco Glicério, 130, Suzano - SP",
+            number_value: null,
+            boolean_value: null,
+            evidence_text: "Rua General Francisco Glicério, 130, Suzano - SP",
+          },
+        ],
+      }),
+    ),
+    model: "test-model",
+    anchorMessage: message,
+  });
+
+  const validated = result.candidates
+    .map((candidate) =>
+      validateQualificationFactCandidate({
+        candidate,
+        anchorMessage: message,
+      }),
+    )
+    .filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
+
+  assert.deepEqual(
+    validated.map((candidate) => ({
+      factKey: candidate.factKey,
+      valueJson: candidate.valueJson,
+      assertionLevel: candidate.assertionLevel,
+    })),
+    [
+      {
+        factKey: "customer_address_text",
+        valueJson: "Rua General Francisco Glicério, 130, Suzano - SP",
+        assertionLevel: "confirmed",
+      },
+    ],
+  );
+});
+
+test("merge suppresses location_text when it duplicates the canonical customer address", () => {
+  const address = "Rua General Francisco Glicério, 130, Suzano - SP";
+
+  const merged = mergeQualificationFactCandidates({
+    deterministicCandidates: [],
+    aiCandidates: [
+      {
+        factKey: "location_text",
+        valueKind: "text",
+        valueJson: address,
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: address,
+      },
+      {
+        factKey: "customer_address_text",
+        valueKind: "text",
+        valueJson: address,
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: address,
+      },
+    ],
+  });
+
+  assert.deepEqual(merged.discardedFactKeys, []);
+  assert.deepEqual(
+    merged.mergedCandidates.map((candidate) => ({
+      factKey: candidate.factKey,
+      valueJson: candidate.valueJson,
+    })),
+    [
+      {
+        factKey: "customer_address_text",
+        valueJson: address,
+      },
+    ],
+  );
+});
+
+test("merge preserves independent general location alongside canonical customer address", () => {
+  const merged = mergeQualificationFactCandidates({
+    deterministicCandidates: [],
+    aiCandidates: [
+      {
+        factKey: "location_text",
+        valueKind: "text",
+        valueJson: "Suzano",
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: "Suzano",
+      },
+      {
+        factKey: "customer_address_text",
+        valueKind: "text",
+        valueJson: "Rua General Francisco Glicério, 130, Suzano - SP",
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: "Rua General Francisco Glicério, 130, Suzano - SP",
+      },
+    ],
+  });
+
+  assert.deepEqual(merged.discardedFactKeys, []);
+  assert.deepEqual(
+    merged.mergedCandidates.map((candidate) => ({
+      factKey: candidate.factKey,
+      valueJson: candidate.valueJson,
+    })),
+    [
+      {
+        factKey: "location_text",
+        valueJson: "Suzano",
+      },
+      {
+        factKey: "customer_address_text",
+        valueJson: "Rua General Francisco Glicério, 130, Suzano - SP",
+      },
+    ],
+  );
+});

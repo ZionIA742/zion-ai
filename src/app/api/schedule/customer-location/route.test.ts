@@ -175,11 +175,11 @@ function createHandlerHarness(args?: {
       createQualificationRow({
         knownFacts: [
           {
-            factKey: "location_text",
+            factKey: "customer_address_text",
             state: "confirmed",
             valueKind: "text",
-            value: "Rua Canonica, 123",
-            normalizedValueText: "Rua Canonica, 123",
+            value: "Rua Canônica, 123 - Suzano/SP",
+            normalizedValueText: "rua canônica, 123 - suzano/sp",
           },
         ],
       }),
@@ -286,7 +286,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "single active opportunity returns confirmed canonical location",
+    name: "single active opportunity returns confirmed canonical customer address",
     run: async () => {
       const harness = createHandlerHarness();
       const handler = await harness.build();
@@ -299,7 +299,7 @@ const tests: TestCase[] = [
       assert.equal(body.resolution, "resolved");
       assert.equal(body.commercialOpportunityId, "opp-1");
       assert.equal(body.location.state, "confirmed");
-      assert.equal(body.location.text, "Rua Canonica, 123");
+      assert.equal(body.location.text, "Rua Canônica, 123 - Suzano/SP");
 
       assert.equal(harness.calls.qualificationReads.length, 1);
       assert.equal(
@@ -317,18 +317,18 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "inferred canonical location may be suggested",
+    name: "inferred canonical customer address may be suggested",
     run: async () => {
       const harness = createHandlerHarness({
         qualificationRows: [
           createQualificationRow({
             knownFacts: [
               {
-                factKey: "location_text",
+                factKey: "customer_address_text",
                 state: "inferred",
                 valueKind: "text",
-                value: "Suzano",
-                normalizedValueText: "Suzano",
+                value: "Rua das Flores, 45, Suzano - SP",
+                normalizedValueText: "rua das flores, 45, suzano - sp",
               },
             ],
           }),
@@ -341,18 +341,18 @@ const tests: TestCase[] = [
 
       assert.equal(response.status, 200);
       assert.equal(body.location.state, "inferred");
-      assert.equal(body.location.text, "Suzano");
+      assert.equal(body.location.text, "Rua das Flores, 45, Suzano - SP");
     },
   },
   {
-    name: "location conflict suppresses automatic value even when known fact exists",
+    name: "customer address conflict suppresses automatic value even when known fact exists",
     run: async () => {
       const harness = createHandlerHarness({
         qualificationRows: [
           createQualificationRow({
             knownFacts: [
               {
-                factKey: "location_text",
+                factKey: "customer_address_text",
                 state: "confirmed",
                 valueKind: "text",
                 value: "Rua A",
@@ -361,7 +361,7 @@ const tests: TestCase[] = [
             ],
             conflicts: [
               {
-                factKey: "location_text",
+                factKey: "customer_address_text",
                 candidates: [
                   { value: "Rua A" },
                   { value: "Rua B" },
@@ -382,18 +382,18 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "missing location stays absent instead of inventing an address",
+    name: "general location alone does not populate customer address",
     run: async () => {
       const harness = createHandlerHarness({
         qualificationRows: [
           createQualificationRow({
             knownFacts: [
               {
-                factKey: "need_summary",
+                factKey: "location_text",
                 state: "confirmed",
                 valueKind: "text",
-                value: "Precisa de cobertura",
-                normalizedValueText: "Precisa de cobertura",
+                value: "Suzano",
+                normalizedValueText: "suzano",
               },
             ],
           }),
@@ -448,7 +448,7 @@ const tests: TestCase[] = [
             opportunityId: "opp-post-sale",
             knownFacts: [
               {
-                factKey: "location_text",
+                factKey: "customer_address_text",
                 state: "confirmed",
                 valueKind: "text",
                 value: "Rua Pos Venda, 45",
@@ -483,7 +483,7 @@ const tests: TestCase[] = [
             opportunityId: "opp-b",
             knownFacts: [
               {
-                factKey: "location_text",
+                factKey: "customer_address_text",
                 state: "confirmed",
                 valueKind: "text",
                 value: "Endereco B",
@@ -624,7 +624,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "location resolver gives conflict precedence",
+    name: "customer address resolver gives conflict precedence",
     run: async () => {
       const { resolveLocationFromQualificationFacts } =
         await loadRouteModule();
@@ -633,14 +633,14 @@ const tests: TestCase[] = [
         createQualificationRow({
           knownFacts: [
             {
-              factKey: "location_text",
+              factKey: "customer_address_text",
               state: "confirmed",
               valueKind: "text",
               value: "Rua A",
               normalizedValueText: "Rua A",
             },
           ],
-          conflicts: [{ factKey: "location_text" }],
+          conflicts: [{ factKey: "customer_address_text" }],
         }),
       );
 

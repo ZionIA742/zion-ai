@@ -9416,7 +9416,7 @@ test("boolean false representation stays semantically false and neutral", () => 
   );
 });
 
-test("all 13 canonical fact keys have concrete known fact representation", () => {
+test("all 14 canonical fact keys have concrete known fact representation", () => {
   const snapshot = {
     organizationId: "org-1",
     storeId: "store-1",
@@ -9434,6 +9434,10 @@ test("all 13 canonical fact keys have concrete known fact representation", () =>
         value: 12,
       }),
       createCanonicalKnownFact({ factKey: "location_text", normalizedValueText: "campinas" }),
+      createCanonicalKnownFact({
+        factKey: "customer_address_text",
+        normalizedValueText: "rua general francisco glicério, 130, suzano - sp",
+      }),
       createCanonicalKnownFact({
         factKey: "preferred_period_text",
         normalizedValueText: "setembro",
@@ -9470,25 +9474,25 @@ test("all 13 canonical fact keys have concrete known fact representation", () =>
     missingFactGroups: [],
     conflicts: [],
     provenanceSummary: {
-      knownFactCount: 13,
-      confirmedCount: 13,
+      knownFactCount: 14,
+      confirmedCount: 14,
       inferredCount: 0,
       conflictCount: 0,
       messageBackedCount: 0,
       conversationBackedCount: 0,
       sourceCounts: {
-        system_correction: 13,
+        system_correction: 14,
       },
     },
     canAskNextQuestion: false,
-    knownFactCount: 13,
+    knownFactCount: 14,
     missingGroupCount: 0,
     conflictCount: 0,
   };
 
   const summary = summarizeCanonicalKnownFacts(snapshot as never);
 
-  assert.equal(summary.length, 13);
+  assert.equal(summary.length, 14);
   assert.equal(summary.every(Boolean), true);
 });
 

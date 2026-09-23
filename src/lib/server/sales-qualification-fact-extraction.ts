@@ -4,6 +4,7 @@ type CanonicalQualificationFactKey =
   | "space_text"
   | "requested_area_m2"
   | "location_text"
+  | "customer_address_text"
   | "preferred_period_text"
   | "budget_text"
   | "decision_context"
@@ -32,6 +33,7 @@ const FACT_VALUE_KIND_BY_KEY: Record<
   space_text: "text",
   requested_area_m2: "number",
   location_text: "text",
+  customer_address_text: "text",
   preferred_period_text: "text",
   budget_text: "text",
   decision_context: "text",
@@ -742,7 +744,7 @@ export async function extractStructuredQualificationCandidates(args: {
             properties: {
               candidates: {
                 type: "array",
-                maxItems: 13,
+                maxItems: 14,
                 items: {
                   type: "object",
                   additionalProperties: false,
@@ -778,6 +780,9 @@ export async function extractStructuredQualificationCandidates(args: {
         "Nunca extraia fato a partir de respostas vagas como sim, nao, ok, beleza.",
         "decision_context descreve somente quem decide, como decide, pessoas envolvidas ou contexto da decisao; nunca inclua prazo ou periodo temporal.",
         "Prazo, janela temporal ou preferencia de quando deve ir exclusivamente em preferred_period_text.",
+        "location_text representa somente cidade, bairro, regiao ou localizacao geral do cliente; nao coloque endereco postal completo nesse fato.",
+        "customer_address_text representa endereco completo ou especifico informado pelo cliente, como rua ou avenida, numero, complemento, bairro, cidade, estado ou CEP.",
+        "Quando a mesma mensagem trouxer um endereco completo, extraia esse endereco em customer_address_text e nao repita o mesmo endereco em location_text. So extraia location_text separadamente quando houver evidencia literal independente de cidade, bairro, regiao ou localizacao geral.",
         "evidence_text deve ser um substring literal curto da mensagem do cliente.",
         "Retorne array vazio quando houver duvida, pergunta sem confirmacao, ou evidencia insuficiente.",
       ].join(" "),
@@ -848,8 +853,23 @@ export function mergeQualificationFactCandidates(args: {
     discardedFactKeys.push(factKey);
   }
 
+  const customerAddressCandidate =
+    mergedCandidates.find((candidate) => candidate.factKey === "customer_address_text") ?? null;
+
+  const customerAddressCanonicalValue = customerAddressCandidate
+    ? canonicalizeCandidateValue(customerAddressCandidate)
+    : null;
+
+  const finalMergedCandidates = customerAddressCanonicalValue
+    ? mergedCandidates.filter((candidate) => {
+        if (candidate.factKey !== "location_text") return true;
+
+        return canonicalizeCandidateValue(candidate) !== customerAddressCanonicalValue;
+      })
+    : mergedCandidates;
+
   return {
-    mergedCandidates,
+    mergedCandidates: finalMergedCandidates,
     discardedFactKeys,
   };
 }

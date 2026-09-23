@@ -221,7 +221,7 @@ export function resolveLocationFromQualificationFacts(
     : [];
 
   const hasLocationConflict = conflicts.some(
-    (fact) => normalizeOptionalText(fact?.factKey) === "location_text",
+    (fact) => normalizeOptionalText(fact?.factKey) === "customer_address_text",
   );
 
   if (hasLocationConflict) {
@@ -241,7 +241,7 @@ export function resolveLocationFromQualificationFacts(
       const state = normalizeOptionalText(fact?.state);
 
       return (
-        factKey === "location_text" &&
+        factKey === "customer_address_text" &&
         (state === "confirmed" || state === "inferred")
       );
     }) ?? null;
@@ -262,7 +262,7 @@ export function resolveLocationFromQualificationFacts(
       ? normalizeOptionalText(locationFact.value)
       : null;
 
-  const text = normalizedValueText || rawText;
+  const text = rawText || normalizedValueText;
 
   if (!text || (factState !== "confirmed" && factState !== "inferred")) {
     return {
