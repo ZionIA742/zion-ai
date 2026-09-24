@@ -188,12 +188,37 @@ export function createSendQuotePostHandler(deps?: SendRouteDeps) {
     deps?.readQuoteKindSendReadiness ?? readQuoteKindSendReadiness;
 
   return async function POST(
-    _request: Request,
+    request: Request,
     context: { params: Promise<{ quoteId: string }> },
   ) {
     try {
       const { quoteId: rawQuoteId } = await context.params;
       const quoteId = String(rawQuoteId || "").trim();
+
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        throw new QuoteAccessError(
+          400,
+          "QUOTE_VERSION_REQUIRED",
+          "Informe explicitamente a versao do orcamento que deve ser enviada.",
+        );
+      }
+
+      const requestedVersionId =
+        body && typeof body === "object" && !Array.isArray(body)
+          ? String((body as { quoteVersionId?: unknown }).quoteVersionId || "").trim()
+          : "";
+
+      if (!requestedVersionId) {
+        throw new QuoteAccessError(
+          400,
+          "QUOTE_VERSION_REQUIRED",
+          "Informe explicitamente a versao do orcamento que deve ser enviada.",
+        );
+      }
+
       const scope = await resolveQuoteScope(quoteId);
       const commercialOpportunityId =
         String(scope.quote.commercial_opportunity_id || "").trim() || null;
@@ -215,12 +240,20 @@ export function createSendQuotePostHandler(deps?: SendRouteDeps) {
         );
       }
 
+      if (requestedVersionId !== currentVersionId) {
+        throw new QuoteAccessError(
+          409,
+          "QUOTE_VERSION_STALE_FOR_SEND",
+          "Existe uma versao mais nova deste orcamento. Revise a versao atual antes de enviar.",
+        );
+      }
+
       const { data: versionData, error: versionError } = await scope.supabase
         .from("sales_quote_versions")
         .select(
           "id, quote_id, organization_id, store_id, version_number, status, quote_kind, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, quote_snapshot, created_at, sent_at",
         )
-        .eq("id", currentVersionId)
+        .eq("id", requestedVersionId)
         .eq("quote_id", scope.quote.id)
         .eq("organization_id", scope.organizationId)
         .eq("store_id", scope.store.id)

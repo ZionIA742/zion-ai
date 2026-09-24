@@ -488,6 +488,28 @@ const tests: TestCase[] = [
       assert.equal(result.sent, 1);
     },
   },
+  {
+    name: "production sender uses quote-aware final WhatsApp gate v2",
+    run: () => {
+      const source = readFileSync(senderPath, "utf8");
+
+      assert.equal(
+        source.includes(
+          '"validate_or_cancel_whatsapp_external_send_v2_by_system"',
+        ),
+        true,
+        "production sender must call the quote-aware final gate v2",
+      );
+
+      assert.equal(
+        source.includes(
+          '"validate_or_cancel_whatsapp_external_send_by_system"',
+        ),
+        false,
+        "production sender must not bypass v2 by calling the legacy gate directly",
+      );
+    },
+  },
 ];
 
 void (async () => {

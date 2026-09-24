@@ -261,17 +261,17 @@ async function approveAndSendQuote(request: Request, quoteId: string) {
       };
     }
 
-    if (currentStatus !== "approved") {
-      const currentVersionId = String(scope.quote.current_version_id || "").trim();
-      if (!currentVersionId) {
-        return {
-          ok: false as const,
-          status: 400,
-          error: "QUOTE_VERSION_REQUIRED",
-          message: "Este orcamento ainda nao possui uma versao atual para aprovacao.",
-        };
-      }
+    const currentVersionId = String(scope.quote.current_version_id || "").trim();
+    if (!currentVersionId) {
+      return {
+        ok: false as const,
+        status: 400,
+        error: "QUOTE_VERSION_REQUIRED",
+        message: "Este orcamento ainda nao possui uma versao atual para aprovacao.",
+      };
+    }
 
+    if (currentStatus !== "approved") {
       const approveResult = await callInternalJson(
         request,
         `/api/sales-quotes/${encodeURIComponent(quoteId)}/approve`,
@@ -320,7 +320,13 @@ async function approveAndSendQuote(request: Request, quoteId: string) {
     const sendResult = await callInternalJson(
       request,
       `/api/sales-quotes/${encodeURIComponent(quoteId)}/send`,
-      { method: "POST" }
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ quoteVersionId: currentVersionId }),
+      }
     );
 
     const sendErrorCode = String(sendResult.body?.error || "").trim();

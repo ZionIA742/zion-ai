@@ -215,7 +215,73 @@ async function parseBody(response: Response) {
   return (await response.json()) as Record<string, unknown>;
 }
 
+function createSendRequest(
+  quoteVersionId: string | null = "version-1",
+) {
+  return new Request("https://example.test", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(
+      quoteVersionId === null ? {} : { quoteVersionId },
+    ),
+  });
+}
+
 const tests: TestCase[] = [
+  {
+    name: "missing quoteVersionId is rejected before resolving quote scope",
+    run: async () => {
+      const { createSendQuotePostHandler } = await loadRouteModule();
+      let scopeResolved = false;
+
+      const handler = createSendQuotePostHandler({
+        resolveQuoteScope: async () => {
+          scopeResolved = true;
+          return createScope() as never;
+        },
+      });
+
+      const response = await handler(createSendRequest(null), {
+        params: Promise.resolve({ quoteId: "quote-1" }),
+      });
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 400);
+      assert.equal(body.error, "QUOTE_VERSION_REQUIRED");
+      assert.equal(scopeResolved, false);
+    },
+  },
+  {
+    name: "stale explicit quoteVersionId is rejected before materializing send",
+    run: async () => {
+      const { createSendQuotePostHandler } = await loadRouteModule();
+      let materialized = false;
+
+      const handler = createSendQuotePostHandler({
+        resolveQuoteScope: async () =>
+          createScope({
+            quote: createQuoteFixture({
+              current_version_id: "version-2",
+            }),
+          }) as never,
+        materializeQuoteSend: async () => {
+          materialized = true;
+          return createOperation() as never;
+        },
+      });
+
+      const response = await handler(createSendRequest("version-1"), {
+        params: Promise.resolve({ quoteId: "quote-1" }),
+      });
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "QUOTE_VERSION_STALE_FOR_SEND");
+      assert.equal(materialized, false);
+    },
+  },
   {
     name: "approved quote can be sent without depending on legacy ai send autonomy flag",
     run: async () => {
@@ -231,7 +297,7 @@ const tests: TestCase[] = [
         },
         refreshActionReadiness: async () => createReadyReadiness(),
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -259,7 +325,7 @@ const tests: TestCase[] = [
         },
         refreshActionReadiness: async () => createReadyReadiness(),
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -302,7 +368,7 @@ const tests: TestCase[] = [
         },
       });
 
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -323,7 +389,7 @@ const tests: TestCase[] = [
         materializeQuoteSend: async () => createOperation({ outcome: "already_queued" }) as never,
         refreshActionReadiness: async () => createReadyReadiness(),
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -343,7 +409,7 @@ const tests: TestCase[] = [
           createOperation({ outcome: "uncertain", outbound_delivery_state: "uncertain" }) as never,
         refreshActionReadiness: async () => createReadyReadiness(),
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -362,7 +428,7 @@ const tests: TestCase[] = [
           createOperation({ outcome: "failed", outbound_delivery_state: "failed" }) as never,
         refreshActionReadiness: async () => createReadyReadiness(),
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -396,7 +462,7 @@ const tests: TestCase[] = [
           return createReadyReadiness();
         },
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -432,7 +498,7 @@ const tests: TestCase[] = [
             return createReadiness(state);
           },
         });
-        const response = await handler(new Request("https://example.test"), {
+        const response = await handler(createSendRequest(), {
           params: Promise.resolve({ quoteId: "quote-1" }),
         });
         const body = await parseBody(response);
@@ -463,7 +529,7 @@ const tests: TestCase[] = [
         },
       });
 
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -506,7 +572,7 @@ const tests: TestCase[] = [
         },
       });
 
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -551,7 +617,7 @@ const tests: TestCase[] = [
         },
       });
 
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -581,7 +647,7 @@ const tests: TestCase[] = [
           message: "read failed",
         }),
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -599,7 +665,7 @@ const tests: TestCase[] = [
           quote: createQuoteFixture({ commercial_opportunity_id: null }),
         }) as never,
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -624,7 +690,7 @@ const tests: TestCase[] = [
           return createOperation() as never;
         },
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -645,7 +711,7 @@ const tests: TestCase[] = [
         }) as never,
         loadQuoteSettings: async () => createSettingsResult() as never,
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -666,7 +732,7 @@ const tests: TestCase[] = [
         }) as never,
         loadQuoteSettings: async () => createSettingsResult() as never,
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -685,7 +751,7 @@ const tests: TestCase[] = [
         loadQuoteSettings: async () =>
           createSettingsResult({ requiresHumanApprovalBeforeSend: true }) as never,
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);
@@ -712,7 +778,7 @@ const tests: TestCase[] = [
           return createOperation() as never;
         },
       });
-      const response = await handler(new Request("https://example.test"), {
+      const response = await handler(createSendRequest(), {
         params: Promise.resolve({ quoteId: "quote-1" }),
       });
       const body = await parseBody(response);

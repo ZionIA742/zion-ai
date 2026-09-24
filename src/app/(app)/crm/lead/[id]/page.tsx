@@ -3120,12 +3120,16 @@ export default function LeadPage() {
 
   async function sendGeneratedQuoteToCustomer(
     quoteId: string,
+    quoteVersionId: string | null | undefined,
     currentStatus: string | null | undefined
   ) {
     const safeQuoteId = String(quoteId || "").trim();
+    const safeVersionId = String(quoteVersionId || "").trim();
     const normalizedStatus = String(currentStatus || "").trim().toLowerCase();
 
-    if (!safeQuoteId) {
+    if (!safeQuoteId || !safeVersionId) {
+      setQuoteActionError("Nao foi possivel identificar a versao exata do orcamento para envio.");
+      setQuoteActionSuccess(null);
       return;
     }
 
@@ -3144,6 +3148,10 @@ export default function LeadPage() {
       const response = await fetch(`/api/sales-quotes/${encodeURIComponent(safeQuoteId)}/send`, {
         method: "POST",
         cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ quoteVersionId: safeVersionId }),
       });
       const result = (await response.json()) as SalesQuoteActionResponse;
 
@@ -5221,7 +5229,11 @@ export default function LeadPage() {
                                           <button
                                             type="button"
                                             onClick={() =>
-                                              void sendGeneratedQuoteToCustomer(quote.id, quote.status)
+                                              void sendGeneratedQuoteToCustomer(
+                                                quote.id,
+                                                quote.current_version_id,
+                                                quote.status
+                                              )
                                             }
                                             disabled={isActionLoading}
                                             className="rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-200 disabled:text-blue-700"

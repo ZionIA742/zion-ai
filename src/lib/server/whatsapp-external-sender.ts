@@ -502,7 +502,7 @@ async function validateOrCancelWhatsappExternalSend(
   message: MessageScope,
 ): Promise<WhatsappExternalSendGateResult> {
   const { data, error } = await supabase.rpc(
-    "validate_or_cancel_whatsapp_external_send_by_system",
+    "validate_or_cancel_whatsapp_external_send_v2_by_system",
     {
       p_organization_id: message.organizationId,
       p_store_id: message.storeId,
