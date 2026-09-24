@@ -813,19 +813,36 @@ export type CommercialAssistantHandoffDeps = {
   autoProgressBudgetFromQuote: typeof maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical;
 };
 
-type ContractWorkflowQuoteCandidateRow = {
+type CurrentCommercialProposalRow = {
+  organization_id: string;
+  store_id: string;
+  commercial_opportunity_id: string;
+  lifecycle_cycle: number | null;
+  proposal_state: string | null;
+  current_quote_id: string | null;
+  current_quote_version_id: string | null;
+  quote_number: string | null;
+  lead_id: string | null;
+  conversation_id: string | null;
+  version_status: string | null;
+  version_number: number | null;
+  version_sent_at: string | null;
+  reason_code: string | null;
+};
+
+type CurrentCommercialProposalLoadResult = {
+  proposal: CurrentCommercialProposalRow | null;
+  reason: string | null;
+};
+
+type CurrentCommercialProposalQuote = {
   id: string;
   organization_id: string;
   store_id: string;
-  conversation_id: string | null;
   lead_id: string | null;
+  conversation_id: string | null;
   quote_number: string | null;
-  status: string | null;
-  customer_name: string | null;
-  total_cents: number | null;
   current_version_id: string | null;
-  created_at: string | null;
-  updated_at: string | null;
 };
 
 type ExistingContractStateRow = {
@@ -4736,110 +4753,61 @@ export async function createCommercialAssistantHandoff(
   };
 }
 
-async function loadEligibleQuotesByConversationOrLead(args: {
-  supabase: any;
+async function loadCurrentCommercialProposalBySystem(args: {
+  systemSupabase: any;
   organizationId: string;
   storeId: string;
-  conversationId?: string | null;
-  leadId?: string | null;
-}) {
-  const select =
-    "id, organization_id, store_id, conversation_id, lead_id, quote_number, status, customer_name, total_cents, current_version_id, created_at, updated_at";
+  commercialOpportunityId: string;
+}): Promise<CurrentCommercialProposalLoadResult> {
+  const { data, error } = await args.systemSupabase.rpc(
+    "read_current_commercial_proposal_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+    },
+  );
 
-  const loadByConversation = async () => {
-    const conversationId = cleanText(args.conversationId);
-    if (!conversationId) return [] as ContractWorkflowQuoteCandidateRow[];
+  if (error) {
+    throw new Error(
+      `Falha ao carregar proposta comercial vigente: ${error.message}`,
+    );
+  }
 
-    const { data, error } = await args.supabase
-      .from("sales_quotes")
-      .select(select)
-      .eq("organization_id", args.organizationId)
-      .eq("store_id", args.storeId)
-      .eq("conversation_id", conversationId)
-      .in("status", ["approved", "sent"])
-      .not("current_version_id", "is", null)
-      .order("updated_at", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(5);
-
-    if (error) {
-      throw new Error(
-        `Falha ao carregar orcamentos elegiveis por conversa: ${error.message}`
-      );
-    }
-
-    return (data || []) as ContractWorkflowQuoteCandidateRow[];
-  };
-
-  const loadByLead = async () => {
-    const leadId = cleanText(args.leadId);
-    if (!leadId) return [] as ContractWorkflowQuoteCandidateRow[];
-
-    const { data, error } = await args.supabase
-      .from("sales_quotes")
-      .select(select)
-      .eq("organization_id", args.organizationId)
-      .eq("store_id", args.storeId)
-      .eq("lead_id", leadId)
-      .in("status", ["approved", "sent"])
-      .not("current_version_id", "is", null)
-      .order("updated_at", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(5);
-
-    if (error) {
-      throw new Error(
-        `Falha ao carregar orcamentos elegiveis por lead: ${error.message}`
-      );
-    }
-
-    return (data || []) as ContractWorkflowQuoteCandidateRow[];
-  };
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  if (rows.length !== 1) {
+    return {
+      proposal: null,
+      reason: rows.length === 0
+        ? "current_commercial_proposal_not_found"
+        : "current_commercial_proposal_not_unequivocal",
+    };
+  }
 
   return {
-    byConversation: await loadByConversation(),
-    byLead: await loadByLead(),
+    proposal: rows[0] as CurrentCommercialProposalRow,
+    reason: null,
   };
 }
 
-function pickInequivocalQuoteCandidate(args: {
-  byConversation: ContractWorkflowQuoteCandidateRow[];
-  byLead: ContractWorkflowQuoteCandidateRow[];
-}) {
-  if (args.byConversation.length === 1) {
-    return {
-      candidate: args.byConversation[0],
-      source: "conversation_id" as const,
-    };
-  }
+function mapCurrentCommercialProposalToQuote(
+  proposal: CurrentCommercialProposalRow,
+): CurrentCommercialProposalQuote | null {
+  const quoteId = cleanText(proposal.current_quote_id);
+  const quoteVersionId = cleanText(proposal.current_quote_version_id);
+  const organizationId = cleanText(proposal.organization_id);
+  const storeId = cleanText(proposal.store_id);
 
-  if (args.byConversation.length > 1) {
-    return {
-      candidate: null,
-      source: "conversation_id" as const,
-      ambiguous: true,
-    };
-  }
-
-  if (args.byLead.length === 1) {
-    return {
-      candidate: args.byLead[0],
-      source: "lead_id" as const,
-    };
-  }
-
-  if (args.byLead.length > 1) {
-    return {
-      candidate: null,
-      source: "lead_id" as const,
-      ambiguous: true,
-    };
-  }
+  if (!quoteId || !quoteVersionId || !organizationId || !storeId) return null;
 
   return {
-    candidate: null,
-    source: "none" as const,
-    ambiguous: false,
+    id: quoteId,
+    organization_id: organizationId,
+    store_id: storeId,
+    lead_id: cleanText(proposal.lead_id),
+    conversation_id: cleanText(proposal.conversation_id),
+    quote_number: cleanText(proposal.quote_number),
+    current_version_id: quoteVersionId,
   };
 }
 
@@ -4865,10 +4833,12 @@ async function loadExistingContractsForQuote(args: {
 
 async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
   supabase: any;
+  systemSupabase: any;
   organizationId: string;
   storeId: string;
   conversationId: string;
   leadId: string | null;
+  commercialOpportunityId?: string | null;
   customerName: string | null;
   lastCustomerMessage: string | null | undefined;
 }) : Promise<ContractWorkflowCardCreationResult> {
@@ -4881,20 +4851,48 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
     };
   }
 
-  const quoteCandidates = await loadEligibleQuotesByConversationOrLead({
-    supabase: args.supabase,
-    organizationId: args.organizationId,
-    storeId: args.storeId,
-    conversationId: args.conversationId,
-    leadId: args.leadId,
-  });
-
-  const selectedQuote = pickInequivocalQuoteCandidate(quoteCandidates);
-  if (!selectedQuote.candidate) {
+  const commercialOpportunityId = cleanText(args.commercialOpportunityId);
+  if (!commercialOpportunityId) {
     return {
       attempted: true,
       created: false,
-      reason: selectedQuote.ambiguous ? "quote_ambiguous" : "quote_not_found",
+      reason: "current_commercial_opportunity_missing",
+      trigger,
+    };
+  }
+
+  const proposalResult = await loadCurrentCommercialProposalBySystem({
+    systemSupabase: args.systemSupabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    commercialOpportunityId,
+  });
+  const proposal = proposalResult.proposal;
+  if (!proposal) {
+    return {
+      attempted: true,
+      created: false,
+      reason: proposalResult.reason || "current_commercial_proposal_not_found",
+      trigger,
+    };
+  }
+
+  const proposalState = cleanText(proposal.proposal_state);
+  if (proposalState !== "available") {
+    return {
+      attempted: true,
+      created: false,
+      reason: `current_commercial_proposal_${proposalState || "unknown"}`,
+      trigger,
+    };
+  }
+
+  const selectedQuote = mapCurrentCommercialProposalToQuote(proposal);
+  if (!selectedQuote) {
+    return {
+      attempted: true,
+      created: false,
+      reason: "current_commercial_proposal_incomplete",
       trigger,
     };
   }
@@ -4903,19 +4901,18 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
     supabase: args.supabase,
     organizationId: args.organizationId,
     storeId: args.storeId,
-    quoteId: selectedQuote.candidate.id,
+    quoteId: selectedQuote.id,
   });
 
   const decision = evaluateContractWorkflowDecision({
     quote: {
-      id: selectedQuote.candidate.id,
-      status: selectedQuote.candidate.status,
-      lead_id: selectedQuote.candidate.lead_id,
-      conversation_id: selectedQuote.candidate.conversation_id,
-      store_id: selectedQuote.candidate.store_id,
-      organization_id: selectedQuote.candidate.organization_id,
-      total_cents: selectedQuote.candidate.total_cents,
-      current_version_id: selectedQuote.candidate.current_version_id,
+      id: selectedQuote.id,
+      status: "sent",
+      lead_id: selectedQuote.lead_id,
+      conversation_id: selectedQuote.conversation_id,
+      store_id: selectedQuote.store_id,
+      organization_id: selectedQuote.organization_id,
+      current_version_id: selectedQuote.current_version_id,
     },
     trigger,
     hasHumanConfirmation: false,
@@ -4927,8 +4924,8 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
       attempted: true,
       created: false,
       reason: "decision_did_not_require_human_card",
-      quoteId: selectedQuote.candidate.id,
-      quoteNumber: cleanText(selectedQuote.candidate.quote_number),
+      quoteId: selectedQuote.id,
+      quoteNumber: cleanText(selectedQuote.quote_number),
       trigger,
     };
   }
@@ -4941,8 +4938,8 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
       attempted: true,
       created: false,
       reason: decision.reasonCode,
-      quoteId: selectedQuote.candidate.id,
-      quoteNumber: cleanText(selectedQuote.candidate.quote_number),
+      quoteId: selectedQuote.id,
+      quoteNumber: cleanText(selectedQuote.quote_number),
       trigger,
     };
   }
@@ -4956,12 +4953,11 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
     supabase: args.supabase,
     organizationId: args.organizationId,
     storeId: args.storeId,
-    leadId: selectedQuote.candidate.lead_id || args.leadId,
-    conversationId: selectedQuote.candidate.conversation_id || args.conversationId,
-    quoteId: selectedQuote.candidate.id,
-    quoteNumber: cleanText(selectedQuote.candidate.quote_number),
-    customerName:
-      cleanText(selectedQuote.candidate.customer_name) || cleanText(args.customerName),
+    leadId: selectedQuote.lead_id || args.leadId,
+    conversationId: selectedQuote.conversation_id || args.conversationId,
+    quoteId: selectedQuote.id,
+    quoteNumber: cleanText(selectedQuote.quote_number),
+    customerName: cleanText(args.customerName),
     trigger,
     decision,
     summary,
@@ -4973,8 +4969,8 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
     created: pushResult.created === true,
     deduped: pushResult.deduped === true,
     reason: pushResult.deduped ? "assistant_card_deduped" : "assistant_card_created",
-    quoteId: selectedQuote.candidate.id,
-    quoteNumber: cleanText(selectedQuote.candidate.quote_number),
+    quoteId: selectedQuote.id,
+    quoteNumber: cleanText(selectedQuote.quote_number),
     trigger,
   };
 }
@@ -5754,10 +5750,12 @@ export async function generateAndSaveAiSalesReply(
     try {
       preContractCardResult = await maybeCreateAssistantPreContractCardFromCustomerSignal({
         supabase,
+        systemSupabase,
         organizationId: canonicalOrganizationId,
         storeId: canonicalStoreId,
         conversationId: canonicalConversationId,
         leadId: normalizedConversation.lead_id || null,
+        commercialOpportunityId: generationResolvedCommercialOpportunityId,
         customerName: generationResult.context?.leadName || null,
         lastCustomerMessage:
           generationResult.context?.lastCustomerMessage ||

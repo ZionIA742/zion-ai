@@ -914,6 +914,255 @@ function createQualificationAutoProgressSupabaseHarness(args?: {
   };
 }
 
+function createCurrentCommercialProposalRow(
+  overrides?: Partial<Record<string, unknown>>,
+) {
+  return {
+    organization_id: "org-canonical",
+    store_id: "store-canonical",
+    commercial_opportunity_id: "opp-canonical",
+    lifecycle_cycle: 1,
+    proposal_state: "available",
+    current_quote_id: "quote-current-v1",
+    current_quote_version_id: "quote-version-v1",
+    quote_number: "ORC-001",
+    lead_id: "lead-canonical",
+    conversation_id: "conv-canonical",
+    version_status: "sent",
+    version_number: 1,
+    version_sent_at: "2026-09-24T10:00:00.000Z",
+    reason_code: "current_proposal_available",
+    ...overrides,
+  };
+}
+
+function createPreContractCurrentProposalHarness(args?: {
+  proposalRows?: Array<Record<string, unknown>>;
+  resolvedCommercialOpportunityId?: string | null;
+  lastCustomerMessage?: string | null;
+  existingContracts?: Array<Record<string, unknown>>;
+}) {
+  const scope = createAiWindowScopeSupabase({
+    commercialOpportunityRows: [
+      {
+        id: "opp-canonical",
+        organization_id: "org-canonical",
+        store_id: "store-canonical",
+        origin_lead_id: "lead-canonical",
+        primary_conversation_id: "conv-canonical",
+      },
+    ],
+  });
+  const requestTables: string[] = [];
+  const requestRpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
+  const systemRpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
+  const salesContractQuoteIds: unknown[] = [];
+  const existingContracts = args?.existingContracts || [];
+  let clientIndex = 0;
+
+  const createThenableResult = <T>(resolveValue: T) => ({
+    then<TResult1 = T, TResult2 = never>(
+      onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    ) {
+      return Promise.resolve(resolveValue).then(onfulfilled, onrejected);
+    },
+  });
+
+  const requestClient = {
+    from(table: string) {
+      requestTables.push(table);
+
+      if (table === "sales_quotes") {
+        throw new Error("pre-contract flow must not query sales_quotes");
+      }
+
+      if (table === "sales_contracts") {
+        const filters: Array<{ column: string; value: unknown }> = [];
+        const builder = {
+          select(_selection: string) {
+            return builder;
+          },
+          eq(column: string, value: unknown) {
+            filters.push({ column, value });
+            if (column === "quote_id") {
+              salesContractQuoteIds.push(value);
+            }
+            return builder;
+          },
+          then<TResult1 = { data: Array<Record<string, unknown>>; error: null }, TResult2 = never>(
+            onfulfilled?:
+              | ((value: { data: Array<Record<string, unknown>>; error: null }) => TResult1 | PromiseLike<TResult1>)
+              | null,
+            onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ) {
+            return Promise.resolve({ data: existingContracts, error: null }).then(
+              onfulfilled,
+              onrejected,
+            );
+          },
+        };
+        return builder;
+      }
+
+      if (table === "store_assistant_threads") {
+        return {
+          select(_selection: string) {
+            return this;
+          },
+          insert(_row: Record<string, unknown>) {
+            return {
+              select() {
+                return {
+                  async maybeSingle() {
+                    return { data: { id: "thread-created" }, error: null };
+                  },
+                };
+              },
+            };
+          },
+          update(_payload: Record<string, unknown>) {
+            return {
+              eq(_column: string, _value: unknown) {
+                return createThenableResult({ error: null });
+              },
+            };
+          },
+          eq(_column: string, _value: unknown) {
+            return this;
+          },
+          order(_column: string, _options: Record<string, unknown>) {
+            return this;
+          },
+          limit(_value: number) {
+            return this;
+          },
+          async maybeSingle() {
+            return { data: { id: "thread-existing" }, error: null };
+          },
+        };
+      }
+
+      if (table === "store_assistant_messages") {
+        const containsValues: Array<Record<string, unknown>> = [];
+        return {
+          select(_selection: string) {
+            return this;
+          },
+          eq(_column: string, _value: unknown) {
+            return this;
+          },
+          contains(_column: string, value: Record<string, unknown>) {
+            containsValues.push(value);
+            return this;
+          },
+          order(_column: string, _options: Record<string, unknown>) {
+            return this;
+          },
+          limit(_value: number) {
+            return this;
+          },
+          async maybeSingle() {
+            const metadata = containsValues[containsValues.length - 1] || {};
+            if (metadata.kind === "contract_workflow_decision") {
+              return { data: { id: "contract-card-existing" }, error: null };
+            }
+            if (metadata.kind === "customer_context_report") {
+              return { data: { id: "customer-report-existing" }, error: null };
+            }
+            return { data: null, error: null };
+          },
+        };
+      }
+
+      return scope.client.from(table);
+    },
+    async rpc(fn: string, payload: Record<string, unknown>) {
+      requestRpcCalls.push({ fn, payload });
+
+      if (fn === "transition_conversation_state_internal") {
+        return { data: null, error: null };
+      }
+
+      if (
+        fn === "assistant_push_system_message" ||
+        fn === "assistant_enqueue_internal_notification"
+      ) {
+        return { data: null, error: null };
+      }
+
+      throw new Error(`Unexpected request rpc: ${fn}`);
+    },
+  };
+
+  const systemClient = {
+    from(table: string) {
+      return scope.client.from(table);
+    },
+    async rpc(fn: string, payload: Record<string, unknown>) {
+      systemRpcCalls.push({ fn, payload });
+
+      if (fn === "read_current_commercial_proposal_by_system") {
+        return {
+          data: args && "proposalRows" in args
+            ? args.proposalRows
+            : [createCurrentCommercialProposalRow()],
+          error: null,
+        };
+      }
+
+      if (fn === "transition_commercial_opportunity_stage_by_system") {
+        return {
+          data: {
+            commercial_opportunity_id: "opp-canonical",
+            stage: String(payload.p_target_stage || ""),
+          },
+          error: null,
+        };
+      }
+
+      throw new Error(`Unexpected system rpc: ${fn}`);
+    },
+  };
+
+  return {
+    requestTables,
+    requestRpcCalls,
+    systemRpcCalls,
+    salesContractQuoteIds,
+    createSupabaseClient() {
+      clientIndex += 1;
+      return (clientIndex === 1 ? requestClient : systemClient) as never;
+    },
+    createDeps() {
+      return createScopeAwareReplyDeps({
+        generateAiSalesReply: async () =>
+          ({
+            ok: true,
+            aiText: "Resposta comercial",
+            anchorMessageId: "msg-1",
+            usage: null,
+            context: {
+              lastCustomerMessage:
+                args && "lastCustomerMessage" in args
+                  ? args.lastCustomerMessage
+                  : "pode mandar o contrato",
+              leadName: "Cliente",
+              operationalFollowUpDecision: {
+                kind: "none",
+                reason: "none",
+              },
+              resolvedCommercialOpportunityId:
+                args && "resolvedCommercialOpportunityId" in args
+                  ? args.resolvedCommercialOpportunityId
+                  : "opp-canonical",
+            },
+          }) as never,
+      });
+    },
+  };
+}
+
 const tests: TestCase[] = [
   {
     name: "contract access errors are preserved in the public result",
@@ -4777,6 +5026,295 @@ assert.equal(
       assert.equal(result?.ok, true);
       assert.equal(receivedHandoff?.taskType, "commercial_visit_request");
       assert.equal(receivedHandoff?.commercialOpportunityId, "opp-canonical");
+    },
+  },
+  {
+    name: "pre-contract customer signal uses current commercial proposal quote and version exactly",
+    run: async () => {
+      const harness = createPreContractCurrentProposalHarness({
+        proposalRows: [
+          createCurrentCommercialProposalRow({
+            current_quote_id: "quote-canonical",
+            current_quote_version_id: "version-canonical-v1",
+            quote_number: "ORC-CANON",
+          }),
+        ],
+      });
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...harness.createDeps(),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.deepEqual(result.context?.preContractCardResult, {
+          attempted: true,
+          created: false,
+          deduped: true,
+          reason: "assistant_card_deduped",
+          quoteId: "quote-canonical",
+          quoteNumber: "ORC-CANON",
+          trigger: "customer_requested_contract",
+        });
+        assert.deepEqual(harness.salesContractQuoteIds, ["quote-canonical"]);
+        assert.deepEqual(harness.systemRpcCalls[0], {
+          fn: "read_current_commercial_proposal_by_system",
+          payload: {
+            p_organization_id: "org-canonical",
+            p_store_id: "store-canonical",
+            p_commercial_opportunity_id: "opp-canonical",
+          },
+        });
+        assert.equal(harness.requestTables.includes("sales_quotes"), false);
+      });
+    },
+  },
+  {
+    name: "pre-contract customer signal keeps presented v1 when quote current version has internal v2",
+    run: async () => {
+      const internalV2ThatMustNotBeObserved = {
+        sales_quotes_current_version_id: "version-internal-v2",
+        version_status: "generated",
+        quote_status: "pending_review",
+      };
+      const harness = createPreContractCurrentProposalHarness({
+        proposalRows: [
+          createCurrentCommercialProposalRow({
+            current_quote_id: "quote-presented-v1",
+            current_quote_version_id: "version-presented-v1",
+            quote_number: "ORC-V1",
+            internal_sales_quotes_current_version_id:
+              internalV2ThatMustNotBeObserved.sales_quotes_current_version_id,
+          }),
+        ],
+      });
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...harness.createDeps(),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.equal(
+          result.context?.preContractCardResult?.quoteId,
+          "quote-presented-v1",
+        );
+        assert.deepEqual(harness.salesContractQuoteIds, ["quote-presented-v1"]);
+        assert.equal(harness.requestTables.includes("sales_quotes"), false);
+        assert.equal(
+          JSON.stringify(result.context?.preContractCardResult).includes(
+            internalV2ThatMustNotBeObserved.sales_quotes_current_version_id,
+          ),
+          false,
+        );
+        assert.equal(
+          JSON.stringify(harness.requestRpcCalls).includes(
+            internalV2ThatMustNotBeObserved.sales_quotes_current_version_id,
+          ),
+          false,
+        );
+        assert.equal(
+          JSON.stringify(harness.systemRpcCalls).includes(
+            internalV2ThatMustNotBeObserved.sales_quotes_current_version_id,
+          ),
+          false,
+        );
+
+        const source = readFileSync(
+          join(process.cwd(), "src/lib/server/generate-and-save-ai-sales-reply.ts"),
+          "utf8",
+        );
+        const mapperStart = source.indexOf(
+          "function mapCurrentCommercialProposalToQuote(",
+        );
+        const mapperEnd = source.indexOf(
+          "async function loadExistingContractsForQuote",
+          mapperStart,
+        );
+        const mapperSource = source.slice(mapperStart, mapperEnd);
+
+        assert.equal(mapperStart > -1, true);
+        assert.equal(mapperEnd > mapperStart, true);
+        assert.equal(
+          mapperSource.includes(
+            "const quoteVersionId = cleanText(proposal.current_quote_version_id)",
+          ),
+          true,
+        );
+        assert.equal(
+          mapperSource.includes("current_version_id: quoteVersionId"),
+          true,
+        );
+        assert.equal(
+          mapperSource.includes("sales_quotes.current_version_id"),
+          false,
+        );
+      });
+    },
+  },
+  {
+    name: "pre-contract current proposal accepts superseded presented version as sent authority",
+    run: async () => {
+      const harness = createPreContractCurrentProposalHarness({
+        proposalRows: [
+          createCurrentCommercialProposalRow({
+            current_quote_id: "quote-superseded-presented",
+            current_quote_version_id: "version-superseded-presented",
+            quote_number: "ORC-SUP",
+            version_status: "superseded",
+          }),
+        ],
+      });
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...harness.createDeps(),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.equal(
+          result.context?.preContractCardResult?.reason,
+          "assistant_card_deduped",
+        );
+        assert.equal(
+          result.context?.preContractCardResult?.quoteId,
+          "quote-superseded-presented",
+        );
+      });
+    },
+  },
+  ...(["none", "needs_resolution", "conflict"] as const).map((proposalState) => ({
+    name: `pre-contract current proposal ${proposalState} fails closed without heuristic fallback`,
+    run: async () => {
+      const harness = createPreContractCurrentProposalHarness({
+        proposalRows: [
+          createCurrentCommercialProposalRow({
+            proposal_state: proposalState,
+            current_quote_id: proposalState === "none" ? null : "quote-blocked",
+            current_quote_version_id:
+              proposalState === "none" ? null : "version-blocked",
+          }),
+        ],
+      });
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...harness.createDeps(),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.deepEqual(result.context?.preContractCardResult, {
+          attempted: true,
+          created: false,
+          reason: `current_commercial_proposal_${proposalState}`,
+          trigger: "customer_requested_contract",
+        });
+        assert.equal(harness.requestTables.includes("sales_quotes"), false);
+        assert.deepEqual(harness.salesContractQuoteIds, []);
+      });
+    },
+  })),
+  {
+    name: "pre-contract customer signal without canonical opportunity fails closed without quote lookup",
+    run: async () => {
+      const harness = createPreContractCurrentProposalHarness({
+        resolvedCommercialOpportunityId: null,
+      });
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...harness.createDeps(),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.deepEqual(result.context?.preContractCardResult, {
+          attempted: true,
+          created: false,
+          reason: "current_commercial_opportunity_missing",
+          trigger: "customer_requested_contract",
+        });
+        assert.equal(
+          harness.systemRpcCalls.some(
+            (call) => call.fn === "read_current_commercial_proposal_by_system",
+          ),
+          false,
+        );
+        assert.equal(harness.requestTables.includes("sales_quotes"), false);
+      });
+    },
+  },
+  {
+    name: "pre-contract current proposal source has no sales quote heuristic selector",
+    run: () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/lib/server/generate-and-save-ai-sales-reply.ts"),
+        "utf8",
+      );
+      const helperStart = source.indexOf(
+        "async function loadCurrentCommercialProposalBySystem(args:",
+      );
+      const helperEnd = source.indexOf(
+        "export async function generateAndSaveAiSalesReply",
+        helperStart,
+      );
+      const helperSource = source.slice(helperStart, helperEnd);
+
+      assert.equal(helperStart > -1, true);
+      assert.equal(helperEnd > helperStart, true);
+      assert.equal(helperSource.includes('.from("sales_quotes")'), false);
+      assert.equal(helperSource.includes('order("updated_at"'), false);
+      assert.equal(helperSource.includes('order("created_at"'), false);
+      assert.equal(helperSource.includes("limit(5)"), false);
+      assert.equal(
+        helperSource.includes("loadEligibleQuotesByConversationOrLead"),
+        false,
+      );
+      assert.equal(helperSource.includes("pickInequivocalQuoteCandidate"), false);
+      assert.equal(
+        helperSource.includes("read_current_commercial_proposal_by_system"),
+        true,
+      );
+      assert.equal(helperSource.includes("current_quote_version_id"), true);
     },
   },
   {
