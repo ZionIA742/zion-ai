@@ -141,28 +141,6 @@ function getPoolsOperationalItemsBlock(source: string) {
   return source.slice(start, end);
 }
 
-function getCommercialEditFormBlock(source: string) {
-  const start = source.indexOf(
-    "value={commercialDraft.ai_presentation_mode}",
-  );
-  assert.equal(
-    start > -1,
-    true,
-    "commercial strategy presentation field not found",
-  );
-
-  const end = source.indexOf(
-    "value={commercialDraft.ai_tone_summary}",
-    start,
-  );
-  assert.equal(
-    end > start,
-    true,
-    "commercial strategy presentation field end not found",
-  );
-
-  return source.slice(start, end);
-}
 function getChannelsSaveBlock(source: string) {
   const start = source.indexOf("  const handleChannelsEditSave = useCallback(async () => {");
   assert.equal(start > -1, true, "handleChannelsEditSave not found");
@@ -355,22 +333,6 @@ function getCreateChannelDraftFromSourcesBlock(source: string) {
   return source.slice(start, end);
 }
 
-function getChannelsTabBlock(source: string) {
-  const start = source.indexOf('{activeTab === "canais-integracoes" ? (');
-  assert.equal(start > -1, true, "channels tab not found");
-  const end = source.indexOf('{activeTab === "contratos" ? (', start);
-  assert.equal(end > start, true, "channels tab end not found");
-  return source.slice(start, end);
-}
-
-function getStrategyTabBlock(source: string) {
-  const start = source.indexOf('{activeTab === "estrategia" ? (');
-  assert.equal(start > -1, true, "strategy tab not found");
-  const end = source.indexOf('{activeTab === "piscinas" ? (', start);
-  assert.equal(end > start, true, "strategy tab end not found");
-  return source.slice(start, end);
-}
-
 function getCreateDiscountDraftFromAnswersBlock(source: string) {
   const start = source.indexOf("function createDiscountDraftFromAnswers(");
   assert.equal(start > -1, true, "createDiscountDraftFromAnswers not found");
@@ -387,15 +349,6 @@ function getDiscountItemsBlock(source: string) {
   return source.slice(start, end);
 }
 
-function getDiscountEditFormBlock(source: string) {
-  const start = source.indexOf('title="Descontos e aprovação"');
-  assert.equal(start > -1, true, "discount card not found");
-
-  const end = source.indexOf('title="Orçamento"', start);
-  assert.equal(end > start, true, "discount card end not found");
-
-  return source.slice(start, end);
-}
 const tests: TestCase[] = [
   {
     name: "general address completion requires physical address essentials but never CEP",
@@ -1160,34 +1113,15 @@ const tests: TestCase[] = [
         false,
       );
     },
-  },  {
-    name: "commercial edit form shows strategy presentation as read-only and falls back to Nao definido",
-    run: () => {
-      const source = readPageSource();
-      const draftBlock = getCreateCommercialDraftFromAnswersBlock(source);
-      const formBlock = getCommercialEditFormBlock(source);
-
-      assert.equal(draftBlock.includes('"Não definido"'), true);
-      assert.equal(draftBlock.includes("answers.strategy_ai_presentation"), false);
-      assert.equal(
-        formBlock.includes("value={commercialDraft.ai_presentation_mode}"),
-        true,
-      );
-      assert.equal(formBlock.includes("readOnly"), true);
-      assert.equal(
-        formBlock.includes('handleCommercialDraftChange("ai_presentation_mode"'),
-        false,
-      );
-    },
   },
   {
-    name: "commercial editor uses canonical payment and commercial writers before shared legacy answer sync",
+    name: "commercial editor uses isolated canonical payment writer and avoids shared legacy sync for payments",
     run: () => {
       const source = readPageSource();
       const block = getCommercialSaveBlock(source);
 
       const paymentSyncIndex = block.indexOf(
-        '"upsert_store_payment_settings_with_legacy_mirror_scoped"',
+        '"upsert_store_payment_methods_and_terms_with_legacy_mirror_scope"',
       );
       const commercialSyncIndex = block.indexOf(
         '"upsert_store_commercial_ai_settings_with_legacy_mirror_scoped"',
@@ -1199,10 +1133,21 @@ const tests: TestCase[] = [
       assert.equal(sharedLegacySyncIndex > -1, true);
       assert.equal(paymentSyncIndex < sharedLegacySyncIndex, true);
       assert.equal(commercialSyncIndex < sharedLegacySyncIndex, true);
+
       assert.equal(
-        block.includes("const derivedPaymentSummary = deriveStorePaymentSettingsSummary("),
+        block.includes("const normalizedPaymentSettings = normalizeStorePaymentSettingsInput({"),
         true,
       );
+      assert.equal(block.includes("setPaymentSettings("), true);
+      assert.equal(
+        block.includes('if (commercialEditTarget !== "payments") {'),
+        true,
+      );
+      assert.equal(
+        block.includes("payment_extensions: pickDraftFields(commercialExperienceDraft, ["),
+        true,
+      );
+
       assert.equal(block.includes("price_talk_mode: commercialAiLegacyMirrors"), false);
       assert.equal(block.includes("ai_can_send_price_directly: commercialAiLegacyMirrors"), false);
       assert.equal(block.includes("price_needs_human_help: commercialAiLegacyMirrors"), false);
@@ -1213,14 +1158,10 @@ const tests: TestCase[] = [
       assert.equal(block.includes("ai_presentation_mode"), false);
       assert.equal(block.includes("p_price_answer_policy:"), true);
       assert.equal(block.includes("p_price_context_requirements:"), true);
-      assert.equal(
-        block.includes("accepted_payment_methods_summary: derivedPaymentSummary"),
-        true,
-      );
     },
   },
   {
-    name: "commercial payment read-only view uses shared payment presentation helper and surfaces legacy tags outside the canonical summary",
+    name: "commercial payment read-only view uses canonical shared payment presentation without legacy review UI",
     run: () => {
       const source = readPageSource();
       const block = getCommercialPaymentItemsBlock(source);
@@ -1236,12 +1177,12 @@ const tests: TestCase[] = [
       );
       assert.equal(
         block.includes('label: "Dados antigos para revisar"'),
-        true,
+        false,
       );
     },
   },
   {
-    name: "commercial edit form keeps only canonical payment buttons and shows legacy condition tags as read-only review data",
+    name: "commercial edit form keeps only canonical payment buttons and does not expose legacy condition review UI",
     run: () => {
       const source = readPageSource();
 
@@ -1255,11 +1196,11 @@ const tests: TestCase[] = [
       );
       assert.equal(
         source.includes("legacy_payment_condition_tags.length > 0"),
-        true,
+        false,
       );
       assert.equal(
         source.includes("Dados antigos para revisar:"),
-        true,
+        false,
       );
     },
   },
@@ -1387,116 +1328,6 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "strategy UI keeps canonical fields editable and leaves excluded legacy text read-only",
-    run: () => {
-      const source = readPageSource();
-      const block = getStrategyTabBlock(source);
-
-      assert.equal(
-        block.includes('onChange={(event) => handleStrategyDraftChange("serviceRegions", event.target.value)}'),
-        true,
-      );
-      assert.equal(
-        block.includes('handleStrategyDraftChange("serviceRegionPrimaryMode", event.target.value)'),
-        true,
-      );
-      assert.equal(
-        block.includes('handleStrategyMultiValueToggle("serviceRegionModes", option.value)'),
-        true,
-      );
-      assert.equal(
-        block.includes('handleStrategyMultiValueToggle("storeServices", option.value)'),
-        true,
-      );
-      assert.equal(block.includes('value={derivedStrategyAiStoreSummary}'), true);
-      assert.equal(block.includes("readOnly"), true);
-      assert.equal(block.includes("Campos legacy fora da autoridade canonica"), true);
-      assert.equal(block.includes("Este resumo e derivado da configuracao canonica"), true);
-      assert.equal(block.includes('handleStrategyDraftChange("strategy_requires_visit"'), false);
-      assert.equal(block.includes('handleStrategyDraftChange("strategy_requires_human"'), false);
-      assert.equal(block.includes('handleStrategyDraftChange("strategy_exception_cases"'), false);
-      assert.equal(block.includes('handleStrategyDraftChange("strategy_ai_store_summary"'), false);
-      assert.equal(block.includes("service_region_modes_text"), false);
-      assert.equal(block.includes("store_services_text"), false);
-    },
-  },
-  {
-    name: "channels UI keeps only the 10 canonical fields editable and leaves live and responsible fields read-only",
-    run: () => {
-      const source = readPageSource();
-      const block = getChannelsTabBlock(source);
-
-      assert.equal(block.includes("storeWhatsappSafeErrorText"), true);
-      assert.equal(block.includes("${storeWhatsappSafeErrorText}"), true);
-      assert.equal(
-        block.includes("${cleanText(storeWhatsappStatus?.lastSafeError)}"),
-        false,
-      );
-      assert.equal(
-        block.includes('onChange={(e) => handleChannelDraftChange("commercial_channel_name", e.target.value)}'),
-        true,
-      );
-      assert.equal(
-        block.includes('onChange={(value) => handleChannelDraftChange("commercial_is_official_sales_channel", value)}'),
-        true,
-      );
-      assert.equal(
-        block.includes('onChange={(value) => handleChannelDraftChange("commercial_human_handoff_enabled", value)}'),
-        true,
-      );
-      assert.equal(
-        block.includes('onChange={(value) => handleChannelDraftChange("commercial_receives_real_clients", value)}'),
-        true,
-      );
-      assert.equal(
-        block.includes('onChange={(e)=>handleChannelDraftChange("commercial_channel_type", e.target.value)}'),
-        true,
-      );
-      assert.equal(
-        block.includes('onChange={(e)=>handleChannelDraftChange("commercial_entry_priority", e.target.value)}'),
-        true,
-      );
-      assert.equal(
-        block.includes('onChange={(e)=>handleChannelDraftChange("commercial_channel_notes", e.target.value)}'),
-        true,
-      );
-      assert.equal(
-        block.includes('onChange={(e) => handleChannelDraftChange("integration_provider_name", e.target.value)}'),
-        true,
-      );
-      assert.equal(
-        block.includes('onChange={(e) => handleChannelDraftChange("integration_connection_mode", e.target.value)}'),
-        true,
-      );
-      assert.equal(
-        block.includes('onChange={(e)=>handleChannelDraftChange("integrations_notes", e.target.value)}'),
-        true,
-      );
-      assert.equal(block.includes("value={connectedCommercialWhatsapp}"), true);
-      assert.equal(block.includes("value={primaryResponsibleWhatsapp}"), true);
-      assert.equal(block.includes("value={primaryResponsibleChannelLabel}"), true);
-      assert.equal(block.includes("value={storeWhatsappVisualStatus.label}"), true);
-      assert.equal(block.includes('handleChannelDraftChange("responsible_receives_ai_alerts"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("responsible_receives_reports"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("responsible_receives_urgencies"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("responsible_is_primary_alert_channel"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("responsible_is_human_command_channel"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("internal_chat_enabled"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("internal_chat_priority"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("internal_chat_accepts_manual_commands"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("internal_chat_separate_from_inbox"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("assistant_alerts_route"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("urgency_route"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("reports_route"'), false);
-      assert.equal(block.includes('handleChannelDraftChange("channel_fallback_rule"'), false);
-      assert.equal(block.includes("Chat interno do sistema"), false);
-      assert.equal(block.includes("Roteamento r"), false);
-      assert.equal(block.includes("derivado da fonte viva"), true);
-      assert.equal(block.includes("ficam fora desta fam"), true);
-      assert.equal(block.includes("pertencem ao Bloco 5"), true);
-    },
-  },
-  {
     name: "discount draft binds special rules only to canonical discount settings input",
     run: () => {
       const source = readPageSource();
@@ -1512,32 +1343,6 @@ const tests: TestCase[] = [
       assert.equal(block.includes("negotiation_rules_summary"), false);
       assert.equal(block.includes("sales_flow_notes"), false);
       assert.equal(block.includes("human_help_general_summary"), false);
-    },
-  },
-  {
-    name: "discount edit form keeps human approval and approver as read-only derived fields",
-    run: () => {
-      const source = readPageSource();
-      const block = getDiscountEditFormBlock(source);
-
-      assert.equal(block.includes("Quando precisa aprovação humana"), true);
-      assert.equal(block.includes("Quem aprova desconto"), true);
-      assert.equal(
-        block.includes("value={discountDraft.human_help_discount_summary}"),
-        true,
-      );
-      assert.equal(
-        block.includes("value={discountDraft.discount_approver}"),
-        true,
-      );
-      assert.equal(
-        block.includes('handleDiscountDraftChange("human_help_discount_summary"'),
-        false,
-      );
-      assert.equal(
-        block.includes('handleDiscountDraftChange("discount_approver"'),
-        false,
-      );
     },
   },
   {

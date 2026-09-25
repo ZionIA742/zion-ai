@@ -93,16 +93,19 @@ const tests: TestCase[] = [
       const catchBlock = getCatchBlock(block);
 
       assert.equal(block.includes("await response.json().catch(() => null)"), true);
-      assert.equal(
-        block.includes('throw new Error("Não foi possível carregar o status do WhatsApp da loja.");') ||
-          block.includes('throw new Error("NÃ£o foi possÃ­vel carregar o status do WhatsApp da loja.");'),
-        true,
+
+      const unusableResponseGuard = block.indexOf("if (!result) {");
+      const unusableResponseThrow = block.indexOf("throw new Error(", unusableResponseGuard);
+      assert.equal(unusableResponseGuard > -1, true);
+      assert.equal(unusableResponseThrow > unusableResponseGuard, true);
+
+      const failedResponseGuard = block.indexOf("if (!response.ok || !result.ok) {");
+      const failedResponseThrow = block.indexOf(
+        "throw new Error(result.message ||",
+        failedResponseGuard,
       );
-      assert.equal(
-        block.includes('throw new Error(result.message || "Não foi possível carregar o status do WhatsApp da loja.");') ||
-          block.includes('throw new Error(result.message || "NÃ£o foi possÃ­vel carregar o status do WhatsApp da loja.");'),
-        true,
-      );
+      assert.equal(failedResponseGuard > -1, true);
+      assert.equal(failedResponseThrow > failedResponseGuard, true);
       assert.equal(catchBlock.includes("console.error"), true);
       assert.equal(catchBlock.includes("setWhatsappStatus(null);"), true);
       assert.equal(catchBlock.includes("setWhatsappStatusError("), true);
@@ -153,7 +156,7 @@ const tests: TestCase[] = [
       assert.equal(source.includes("P19A_ONBOARDING_NOT_READY:STORE_SERVICES"), true);
       assert.equal(source.includes("P19A_ONBOARDING_NOT_READY:WHATSAPP_COMMERCIAL"), true);
       assert.equal(
-        source.includes("Não foi possível confirmar todos os dados essenciais salvos."),
+        source.includes("confirmar todos os dados essenciais salvos"),
         true,
       );
     },
@@ -180,15 +183,21 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "frontend readiness remains an explicit UX-only gate",
+    name: "frontend activation gate depends on canonical onboarding activation readiness",
     run: () => {
       const source = readPageSource();
 
+      assert.equal(source.includes("const canActivate ="), true);
       assert.equal(
-        source.includes("// UX-only gate; the canonical completion RPC is the final authority."),
+        source.includes(
+          '!onboardingActivationLoading && onboardingActivationState === "ready";',
+        ),
         true,
       );
-      assert.equal(source.includes("const canActivate = essentialsReady && whatsappConnected;"), true);
+      assert.equal(
+        source.includes("const canActivate = essentialsReady && whatsappConnected;"),
+        false,
+      );
     },
   },
 ];

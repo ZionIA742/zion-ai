@@ -37,7 +37,7 @@ assert.equal(
 const saveStart = source.indexOf("  async function saveStep3(event: FormEvent) {");
 assert.equal(saveStart > -1, true, "saveStep3 not found");
 
-const saveEnd = source.indexOf("  const whatsappConnected = useMemo(() => {", saveStart);
+const saveEnd = source.indexOf("  const whatsappStatusConnected = useMemo(() => {", saveStart);
 assert.equal(saveEnd > saveStart, true, "saveStep3 end not found");
 
 const saveBlock = source.slice(saveStart, saveEnd);
