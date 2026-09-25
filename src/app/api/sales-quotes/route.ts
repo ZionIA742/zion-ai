@@ -36,6 +36,35 @@ type CommercialOpportunityScopeRow = {
   origin_lead_id: string | null;
 };
 
+type CurrentCommercialProposalSummary = {
+  proposal_state: string | null;
+  current_quote_id: string | null;
+  current_quote_version_id: string | null;
+  commercial_opportunity_id: string | null;
+  reason_code: string | null;
+};
+
+function cleanText(value: unknown) {
+  const text = String(value || "").trim();
+  return text || null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeCurrentCommercialProposalRows(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.filter(isRecord);
+  }
+
+  if (isRecord(value)) {
+    return [value];
+  }
+
+  return [];
+}
+
 function buildJsonResponse(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
@@ -185,6 +214,68 @@ export function createSalesQuotesListGetHandler(deps?: {
       );
     }
 
+    const { data: currentProposalData, error: currentProposalError } =
+      await auth.supabase.rpc("read_current_commercial_proposal_by_system", {
+        p_organization_id: opportunity.organization_id,
+        p_store_id: opportunity.store_id,
+        p_commercial_opportunity_id: opportunity.id,
+      });
+
+    if (currentProposalError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_CURRENT_COMMERCIAL_PROPOSAL_FAILED",
+          message: currentProposalError.message,
+        },
+        500
+      );
+    }
+
+    const currentProposalRows =
+      normalizeCurrentCommercialProposalRows(currentProposalData);
+    const currentProposalRow =
+      currentProposalRows.length === 1 ? currentProposalRows[0] : null;
+
+    if (
+      !currentProposalRow ||
+      cleanText(currentProposalRow.organization_id) !== opportunity.organization_id ||
+      cleanText(currentProposalRow.store_id) !== opportunity.store_id ||
+      cleanText(currentProposalRow.commercial_opportunity_id) !== opportunity.id
+    ) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "CURRENT_COMMERCIAL_PROPOSAL_SCOPE_INVALID",
+          message: "Proposta comercial atual invalida para a opportunity informada.",
+        },
+        409
+      );
+    }
+
+    const currentCommercialProposal: CurrentCommercialProposalSummary = {
+      proposal_state: cleanText(currentProposalRow.proposal_state),
+      current_quote_id: cleanText(currentProposalRow.current_quote_id),
+      current_quote_version_id: cleanText(currentProposalRow.current_quote_version_id),
+      commercial_opportunity_id: cleanText(currentProposalRow.commercial_opportunity_id),
+      reason_code: cleanText(currentProposalRow.reason_code),
+    };
+
+    if (
+      currentCommercialProposal.proposal_state === "available" &&
+      (!currentCommercialProposal.current_quote_id ||
+        !currentCommercialProposal.current_quote_version_id)
+    ) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "CURRENT_COMMERCIAL_PROPOSAL_MALFORMED",
+          message: "Proposta comercial atual sem quote/version canonica.",
+        },
+        409
+      );
+    }
+
     let quotesQuery = auth.supabase
       .from("sales_quotes")
       .select(getSalesQuotesSelect())
@@ -289,6 +380,7 @@ export function createSalesQuotesListGetHandler(deps?: {
       commercialOpportunityId: opportunity.id,
       organizationId: opportunity.organization_id,
       storeId: opportunity.store_id,
+      currentCommercialProposal,
       quotes: quotesList,
     });
   } catch (error: unknown) {

@@ -192,6 +192,7 @@ export type ContractSnapshot = {
 
 export type CreateContractFromQuoteInput = {
   quoteId: string;
+  quoteVersionId: string;
 };
 
 export type GenerateContractPdfInput = {

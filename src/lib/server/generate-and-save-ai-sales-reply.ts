@@ -4956,6 +4956,7 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
     leadId: selectedQuote.lead_id || args.leadId,
     conversationId: selectedQuote.conversation_id || args.conversationId,
     quoteId: selectedQuote.id,
+    quoteVersionId: selectedQuote.current_version_id,
     quoteNumber: cleanText(selectedQuote.quote_number),
     customerName: cleanText(args.customerName),
     trigger,

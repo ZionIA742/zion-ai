@@ -14,6 +14,7 @@ type HandleAssistantContractGenerationArgs = {
   storeId: string;
   recentMessages: AssistantRecentMessage[];
   lastHumanMessage: string;
+  executeAssistantContractGeneration?: typeof executeAssistantContractGeneration;
 };
 
 type HandleAssistantContractGenerationResult =
@@ -32,8 +33,12 @@ export type ExecuteAssistantContractGenerationArgs = {
   organizationId: string;
   storeId: string;
   quoteId: string;
+  quoteVersionId?: string | null;
   quoteNumber?: string | null;
   source?: string | null;
+  callInternalJson?: typeof callInternalJson;
+  evaluateContractWorkflowDecision?: typeof evaluateContractWorkflowDecision;
+  resolveAuthorizedExistingQuote?: typeof resolveAuthorizedExistingQuote;
 };
 
 export type ExecuteAssistantContractGenerationResult = {
@@ -42,6 +47,7 @@ export type ExecuteAssistantContractGenerationResult = {
   reply: string;
   metadata: Record<string, unknown>;
   quoteId?: string | null;
+  quoteVersionId?: string | null;
   contractId?: string | null;
 };
 
@@ -133,6 +139,182 @@ function resolveRecentQuoteContext(messages: AssistantRecentMessage[]) {
   return {
     kind: "selected" as const,
     candidate: uniqueById[0],
+  };
+}
+
+function buildContractGenerationFailClosedResult(args: {
+  reasonCode: string;
+  reply: string;
+  quoteId?: string | null;
+  quoteNumber?: string | null;
+  commercialOpportunityId?: string | null;
+  quoteVersionId?: string | null;
+  extraMetadata?: Record<string, unknown>;
+}): Extract<HandleAssistantContractGenerationResult, { handled: true }> {
+  return {
+    handled: true,
+    reply: args.reply,
+    metadata: {
+      source: "assistant_contract_generation_workflow_v1",
+      contractGenerationHandled: true,
+      reasonCode: args.reasonCode,
+      quoteId: cleanText(args.quoteId),
+      quoteNumber: cleanText(args.quoteNumber),
+      commercialOpportunityId: cleanText(args.commercialOpportunityId),
+      quoteVersionId: cleanText(args.quoteVersionId),
+      trigger: "human_explicit_request",
+      ...(args.extraMetadata || {}),
+    },
+  };
+}
+
+async function loadContractGenerationQuoteReference(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  quoteId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("sales_quotes")
+    .select("id, quote_number, commercial_opportunity_id")
+    .eq("id", args.quoteId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao carregar orcamento para contrato: ${error.message}`);
+  }
+
+  const quoteId = cleanText(data?.id);
+  if (!quoteId) {
+    return null;
+  }
+
+  return {
+    id: quoteId,
+    quoteNumber: cleanText(data?.quote_number),
+    commercialOpportunityId: cleanText(data?.commercial_opportunity_id),
+  };
+}
+
+function normalizeCurrentCommercialProposalRows(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.filter(isRecord);
+  }
+
+  if (isRecord(value)) {
+    return [value];
+  }
+
+  return [];
+}
+
+async function resolveCurrentProposalQuoteVersionForTextContract(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  quoteId: string;
+  quoteNumber?: string | null;
+}) {
+  const quoteReference = await loadContractGenerationQuoteReference({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    quoteId: args.quoteId,
+  });
+
+  if (!quoteReference) {
+    return {
+      ok: false as const,
+      result: buildContractGenerationFailClosedResult({
+        reasonCode: "QUOTE_NOT_FOUND",
+        reply: "Nao encontrei esse orcamento. Confira o numero e tente novamente.",
+        quoteId: args.quoteId,
+        quoteNumber: args.quoteNumber,
+      }),
+    };
+  }
+
+  const quoteNumber = quoteReference.quoteNumber || cleanText(args.quoteNumber);
+  const commercialOpportunityId = quoteReference.commercialOpportunityId;
+
+  if (!commercialOpportunityId) {
+    return {
+      ok: false as const,
+      result: buildContractGenerationFailClosedResult({
+        reasonCode: "QUOTE_COMMERCIAL_OPPORTUNITY_REQUIRED_FOR_CONTRACT",
+        reply:
+          "Esse orcamento ainda nao tem uma oportunidade comercial vinculada para gerar contrato com seguranca.",
+        quoteId: quoteReference.id,
+        quoteNumber,
+      }),
+    };
+  }
+
+  const { data, error } = await args.supabase.rpc(
+    "read_current_commercial_proposal_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: commercialOpportunityId,
+    }
+  );
+
+  if (error) {
+    throw new Error(`Falha ao carregar proposta comercial atual: ${error.message}`);
+  }
+
+  const proposalRows = normalizeCurrentCommercialProposalRows(data);
+  const currentProposal = proposalRows.length === 1 ? proposalRows[0] : null;
+  const proposalQuoteVersionId = cleanText(currentProposal?.current_quote_version_id);
+
+  if (
+    !currentProposal ||
+    cleanText(currentProposal.organization_id) !== args.organizationId ||
+    cleanText(currentProposal.store_id) !== args.storeId ||
+    cleanText(currentProposal.commercial_opportunity_id) !== commercialOpportunityId ||
+    cleanText(currentProposal.proposal_state) !== "available" ||
+    !cleanText(currentProposal.current_quote_id) ||
+    !proposalQuoteVersionId
+  ) {
+    return {
+      ok: false as const,
+      result: buildContractGenerationFailClosedResult({
+        reasonCode: !proposalQuoteVersionId
+          ? "CURRENT_COMMERCIAL_PROPOSAL_QUOTE_VERSION_REQUIRED"
+          : "CURRENT_COMMERCIAL_PROPOSAL_UNAVAILABLE",
+        reply:
+          "Nao encontrei uma proposta comercial vigente para gerar contrato com seguranca.",
+        quoteId: quoteReference.id,
+        quoteNumber,
+        commercialOpportunityId,
+        quoteVersionId: proposalQuoteVersionId,
+      }),
+    };
+  }
+
+  if (cleanText(currentProposal.current_quote_id) !== quoteReference.id) {
+    return {
+      ok: false as const,
+      result: buildContractGenerationFailClosedResult({
+        reasonCode: "QUOTE_IS_NOT_CURRENT_COMMERCIAL_PROPOSAL",
+        reply:
+          "Esse orcamento nao e a proposta comercial vigente. Revise a proposta atual antes de gerar contrato.",
+        quoteId: quoteReference.id,
+        quoteNumber,
+        commercialOpportunityId,
+        quoteVersionId: proposalQuoteVersionId,
+      }),
+    };
+  }
+
+  return {
+    ok: true as const,
+    quoteId: quoteReference.id,
+    quoteNumber,
+    commercialOpportunityId,
+    quoteVersionId: proposalQuoteVersionId,
   };
 }
 
@@ -272,9 +454,33 @@ export async function executeAssistantContractGeneration(
 ): Promise<ExecuteAssistantContractGenerationResult> {
   const source =
     cleanText(args.source) || "assistant_contract_generation_workflow_v1";
+  const quoteVersionId = cleanText(args.quoteVersionId);
 
   try {
-    const quoteScope = await resolveAuthorizedExistingQuote(args.quoteId);
+    if (!quoteVersionId) {
+      return {
+        ok: false,
+        status: 409,
+        reply: "Nao encontrei a versao exata desse orcamento para gerar contrato com seguranca.",
+        metadata: {
+          source,
+          contractGenerationHandled: true,
+          quoteId: cleanText(args.quoteId),
+          quoteVersionId: null,
+          reasonCode: "QUOTE_VERSION_REFERENCE_REQUIRED",
+          trigger: "human_explicit_request",
+        },
+        quoteId: cleanText(args.quoteId),
+      };
+    }
+
+    const resolveQuote =
+      args.resolveAuthorizedExistingQuote ?? resolveAuthorizedExistingQuote;
+    const evaluateDecision =
+      args.evaluateContractWorkflowDecision ?? evaluateContractWorkflowDecision;
+    const callJson = args.callInternalJson ?? callInternalJson;
+
+    const quoteScope = await resolveQuote(args.quoteId);
 
     if (
       quoteScope.organizationId !== args.organizationId ||
@@ -289,6 +495,7 @@ export async function executeAssistantContractGeneration(
           contractGenerationHandled: true,
           reasonCode: "QUOTE_SCOPE_MISMATCH",
           quoteId: args.quoteId,
+          quoteVersionId,
           trigger: "human_explicit_request",
         },
         quoteId: args.quoteId,
@@ -302,7 +509,7 @@ export async function executeAssistantContractGeneration(
       quoteId: quoteScope.quote.id,
     });
 
-    const decision = evaluateContractWorkflowDecision({
+    const decision = evaluateDecision({
       quote: {
         id: quoteScope.quote.id,
         status: quoteScope.quote.status,
@@ -311,7 +518,7 @@ export async function executeAssistantContractGeneration(
         store_id: quoteScope.quote.store_id,
         organization_id: quoteScope.quote.organization_id,
         total_cents: quoteScope.quote.total_cents,
-        current_version_id: quoteScope.quote.current_version_id,
+        current_version_id: quoteVersionId,
       },
       trigger: "human_explicit_request",
       hasHumanConfirmation: true,
@@ -332,6 +539,7 @@ export async function executeAssistantContractGeneration(
           source,
           contractGenerationHandled: true,
           quoteId: quoteScope.quote.id,
+          quoteVersionId,
           quoteNumber:
             cleanText(quoteScope.quote.quote_number) || cleanText(args.quoteNumber),
           reasonCode: decision.reasonCode,
@@ -344,7 +552,7 @@ export async function executeAssistantContractGeneration(
       };
     }
 
-    const createContractResult = await callInternalJson(
+    const createContractResult = await callJson(
       args.request,
       "/api/sales-contracts/create-from-quote",
       {
@@ -354,6 +562,7 @@ export async function executeAssistantContractGeneration(
         },
         body: JSON.stringify({
           quoteId: quoteScope.quote.id,
+          quoteVersionId,
         }),
       }
     );
@@ -369,6 +578,7 @@ export async function executeAssistantContractGeneration(
           source,
           contractGenerationHandled: true,
           quoteId: quoteScope.quote.id,
+          quoteVersionId,
           quoteNumber:
             cleanText(quoteScope.quote.quote_number) || cleanText(args.quoteNumber),
           reasonCode:
@@ -389,16 +599,18 @@ export async function executeAssistantContractGeneration(
           source,
           contractGenerationHandled: true,
           quoteId: quoteScope.quote.id,
+          quoteVersionId,
           quoteNumber:
             cleanText(quoteScope.quote.quote_number) || cleanText(args.quoteNumber),
           reasonCode: "CONTRACT_ID_MISSING_AFTER_CREATE",
           trigger: "human_explicit_request",
         },
         quoteId: quoteScope.quote.id,
+        quoteVersionId,
       };
     }
 
-    const generatePdfResult = await callInternalJson(
+    const generatePdfResult = await callJson(
       args.request,
       `/api/sales-contracts/${encodeURIComponent(contractId)}/generate-pdf`,
       {
@@ -415,6 +627,7 @@ export async function executeAssistantContractGeneration(
           source,
           contractGenerationHandled: true,
           quoteId: quoteScope.quote.id,
+          quoteVersionId,
           contractId,
           quoteNumber:
             cleanText(quoteScope.quote.quote_number) || cleanText(args.quoteNumber),
@@ -423,6 +636,7 @@ export async function executeAssistantContractGeneration(
           trigger: "human_explicit_request",
         },
         quoteId: quoteScope.quote.id,
+        quoteVersionId,
         contractId,
       };
     }
@@ -436,6 +650,7 @@ export async function executeAssistantContractGeneration(
         source,
         contractGenerationHandled: true,
         quoteId: quoteScope.quote.id,
+        quoteVersionId,
         contractId,
         quoteNumber:
           cleanText(quoteScope.quote.quote_number) || cleanText(args.quoteNumber),
@@ -444,6 +659,7 @@ export async function executeAssistantContractGeneration(
         generatedPdf: true,
       },
       quoteId: quoteScope.quote.id,
+      quoteVersionId,
       contractId,
     };
   } catch (error) {
@@ -463,9 +679,11 @@ export async function executeAssistantContractGeneration(
         source,
         contractGenerationHandled: true,
         reasonCode: "ASSISTANT_CONTRACT_GENERATION_FAILED",
+        quoteVersionId: quoteVersionId || null,
         trigger: "human_explicit_request",
       },
       quoteId: cleanText(args.quoteId),
+      quoteVersionId: quoteVersionId || null,
     };
   }
 }
@@ -527,13 +745,30 @@ export async function handleAssistantContractGenerationRequest(
       resolvedQuoteNumber = recentContext.candidate.quoteNumber;
     }
 
-    const execution = await executeAssistantContractGeneration({
+    const currentProposalResolution =
+      await resolveCurrentProposalQuoteVersionForTextContract({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        quoteId: resolvedQuoteId,
+        quoteNumber: resolvedQuoteNumber,
+      });
+
+    if (!currentProposalResolution.ok) {
+      return currentProposalResolution.result;
+    }
+
+    const executeContractGeneration =
+      args.executeAssistantContractGeneration ?? executeAssistantContractGeneration;
+
+    const execution = await executeContractGeneration({
       request: args.request,
       supabase: args.supabase,
       organizationId: args.organizationId,
       storeId: args.storeId,
-      quoteId: resolvedQuoteId,
-      quoteNumber: resolvedQuoteNumber,
+      quoteId: currentProposalResolution.quoteId,
+      quoteVersionId: currentProposalResolution.quoteVersionId,
+      quoteNumber: currentProposalResolution.quoteNumber,
       source: "assistant_contract_generation_workflow_v1",
     });
 

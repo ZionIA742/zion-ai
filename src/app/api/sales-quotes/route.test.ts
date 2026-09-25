@@ -8,6 +8,10 @@ type TestCase = {
 };
 
 type Row = Record<string, unknown>;
+type RpcCall = {
+  fn: string;
+  payload: Record<string, unknown>;
+};
 
 const projectSrcPath = join(process.cwd(), "src");
 type ResolveFilenameHook = (
@@ -38,7 +42,11 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
 
 const routeModulePromise = import("./route");
 
-function createFixtureSupabase() {
+function createFixtureSupabase(args?: {
+  currentProposalRows?: Row[];
+  currentProposalError?: { message: string };
+}) {
+  const rpcCalls: RpcCall[] = [];
   const tables: Record<string, Row[]> = {
     leads: [
       { id: "lead-a", organization_id: "org-1", store_id: "store-1" },
@@ -63,7 +71,7 @@ function createFixtureSupabase() {
         title: "Quote 1",
         status: "approved",
         total_cents: 1000,
-        current_version_id: null,
+        current_version_id: "version-internal-v2",
         created_at: "2026-09-12T10:00:00.000Z",
       },
       {
@@ -95,6 +103,24 @@ function createFixtureSupabase() {
     ],
     sales_quote_versions: [],
   };
+
+  function buildDefaultCurrentProposalRows(commercialOpportunityId: unknown): Row[] {
+    const opportunityId = String(commercialOpportunityId || "").trim();
+    const quoteId = opportunityId === "opp-2" ? "quote-2" : "quote-1";
+
+    return [
+      {
+        organization_id: "org-1",
+        store_id: "store-1",
+        commercial_opportunity_id: opportunityId || "opp-1",
+        proposal_state: "available",
+        current_quote_id: quoteId,
+        current_quote_version_id:
+          opportunityId === "opp-2" ? "version-presented-v2" : "version-presented-v1",
+        reason_code: "current_proposal_available",
+      },
+    ];
+  }
 
   function createQueryBuilder(table: string) {
     const filters: Array<{ column: string; value: unknown }> = [];
@@ -151,8 +177,27 @@ function createFixtureSupabase() {
   }
 
   return {
+    rpcCalls,
     from(table: string) {
       return createQueryBuilder(table);
+    },
+    async rpc(fn: string, payload: Record<string, unknown>) {
+      rpcCalls.push({ fn, payload });
+
+      if (fn !== "read_current_commercial_proposal_by_system") {
+        throw new Error(`Unexpected rpc: ${fn}`);
+      }
+
+      if (args?.currentProposalError) {
+        return { data: null, error: args.currentProposalError };
+      }
+
+      return {
+        data: args && "currentProposalRows" in args
+          ? args.currentProposalRows
+          : buildDefaultCurrentProposalRows(payload.p_commercial_opportunity_id),
+        error: null,
+      };
     },
   };
 }
@@ -161,9 +206,21 @@ async function parseBody(response: Response) {
   return (await response.json()) as Record<string, unknown>;
 }
 
-async function requestQuotes(args: { leadId: string; commercialOpportunityId: string }) {
+async function requestQuotes(args: {
+  leadId: string;
+  commercialOpportunityId: string;
+  currentProposalRows?: Row[];
+  currentProposalError?: { message: string };
+}) {
   const { createSalesQuotesListGetHandler } = await routeModulePromise;
-  const supabase = createFixtureSupabase();
+  const fixtureOptions: Parameters<typeof createFixtureSupabase>[0] = {};
+  if ("currentProposalRows" in args) {
+    fixtureOptions.currentProposalRows = args.currentProposalRows;
+  }
+  if ("currentProposalError" in args) {
+    fixtureOptions.currentProposalError = args.currentProposalError;
+  }
+  const supabase = createFixtureSupabase(fixtureOptions);
   const handler = createSalesQuotesListGetHandler({
     authenticateQuoteRequest: async () =>
       ({
@@ -171,9 +228,12 @@ async function requestQuotes(args: { leadId: string; commercialOpportunityId: st
         organizationIds: ["org-1"],
       }) as never,
   });
-  const params = new URLSearchParams(args);
+  const params = new URLSearchParams({
+    leadId: args.leadId,
+    commercialOpportunityId: args.commercialOpportunityId,
+  });
   const response = await handler(new Request(`https://example.test/api/sales-quotes?${params}`));
-  return { response, body: await parseBody(response) };
+  return { response, body: await parseBody(response), supabase };
 }
 
 const tests: TestCase[] = [
@@ -185,9 +245,119 @@ const tests: TestCase[] = [
         commercialOpportunityId: "opp-1",
       });
       const quotes = body.quotes as Array<Record<string, unknown>>;
+      const currentProposal = body.currentCommercialProposal as Record<string, unknown>;
 
       assert.equal(response.status, 200);
       assert.deepEqual(quotes.map((quote) => quote.quote_number), ["Q1"]);
+      assert.equal(quotes[0]?.current_version_id, "version-internal-v2");
+      assert.equal(currentProposal.current_quote_id, "quote-1");
+      assert.equal(currentProposal.current_quote_version_id, "version-presented-v1");
+    },
+  },
+  {
+    name: "current commercial proposal rpc uses authorized opportunity scope",
+    run: async () => {
+      const { response, supabase } = await requestQuotes({
+        leadId: "lead-a",
+        commercialOpportunityId: "opp-1",
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(supabase.rpcCalls, [
+        {
+          fn: "read_current_commercial_proposal_by_system",
+          payload: {
+            p_organization_id: "org-1",
+            p_store_id: "store-1",
+            p_commercial_opportunity_id: "opp-1",
+          },
+        },
+      ]);
+    },
+  },
+  {
+    name: "needs resolution current proposal is preserved without quote fallback",
+    run: async () => {
+      const { response, body } = await requestQuotes({
+        leadId: "lead-a",
+        commercialOpportunityId: "opp-1",
+        currentProposalRows: [
+          {
+            organization_id: "org-1",
+            store_id: "store-1",
+            commercial_opportunity_id: "opp-1",
+            proposal_state: "needs_resolution",
+            current_quote_id: null,
+            current_quote_version_id: null,
+            reason_code: "current_proposal_needs_resolution",
+          },
+        ],
+      });
+      const currentProposal = body.currentCommercialProposal as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(currentProposal.proposal_state, "needs_resolution");
+      assert.equal(currentProposal.current_quote_id, null);
+      assert.equal(currentProposal.current_quote_version_id, null);
+    },
+  },
+  {
+    name: "current commercial proposal rpc error fails closed",
+    run: async () => {
+      const { response, body } = await requestQuotes({
+        leadId: "lead-a",
+        commercialOpportunityId: "opp-1",
+        currentProposalError: { message: "rpc failed" },
+      });
+
+      assert.equal(response.status, 500);
+      assert.equal(body.error, "LOAD_CURRENT_COMMERCIAL_PROPOSAL_FAILED");
+    },
+  },
+  {
+    name: "current commercial proposal scope mismatch fails closed",
+    run: async () => {
+      const { response, body } = await requestQuotes({
+        leadId: "lead-a",
+        commercialOpportunityId: "opp-1",
+        currentProposalRows: [
+          {
+            organization_id: "org-2",
+            store_id: "store-1",
+            commercial_opportunity_id: "opp-1",
+            proposal_state: "available",
+            current_quote_id: "quote-1",
+            current_quote_version_id: "version-presented-v1",
+          },
+        ],
+      });
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "CURRENT_COMMERCIAL_PROPOSAL_SCOPE_INVALID");
+    },
+  },
+  {
+    name: "available current proposal without version fails closed without quote fallback",
+    run: async () => {
+      const { response, body } = await requestQuotes({
+        leadId: "lead-a",
+        commercialOpportunityId: "opp-1",
+        currentProposalRows: [
+          {
+            organization_id: "org-1",
+            store_id: "store-1",
+            commercial_opportunity_id: "opp-1",
+            proposal_state: "available",
+            current_quote_id: "quote-1",
+            current_quote_version_id: null,
+            reason_code: "current_proposal_available",
+          },
+        ],
+      });
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "CURRENT_COMMERCIAL_PROPOSAL_MALFORMED");
+      assert.equal(Array.isArray(body.quotes), false);
     },
   },
   {

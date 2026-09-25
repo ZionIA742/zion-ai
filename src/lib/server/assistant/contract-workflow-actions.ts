@@ -32,6 +32,14 @@ type ExecuteAssistantContractWorkflowActionResult = {
   error?: string;
 };
 
+type ContractWorkflowActionDeps = {
+  ensureAuthenticatedUser: typeof ensureAuthenticatedUser;
+  loadAuthorizedContractWorkflowMessage: typeof loadAuthorizedContractWorkflowMessage;
+  resolveAuthorizedExistingQuote: typeof resolveAuthorizedExistingQuote;
+  executeAssistantContractGeneration: typeof executeAssistantContractGeneration;
+  pushAssistantActionResultMessage: typeof pushAssistantActionResultMessage;
+};
+
 function cleanText(value: unknown) {
   const text = String(value || "").trim();
   return text || null;
@@ -137,9 +145,16 @@ async function pushAssistantActionResultMessage(args: {
 
 async function generateContractFromWorkflowCard(
   request: Request,
-  workflowMessageId: string
+  workflowMessageId: string,
+  deps: Pick<
+    ContractWorkflowActionDeps,
+    | "executeAssistantContractGeneration"
+    | "loadAuthorizedContractWorkflowMessage"
+    | "pushAssistantActionResultMessage"
+    | "resolveAuthorizedExistingQuote"
+  >
 ) {
-  const messageScope = await loadAuthorizedContractWorkflowMessage(workflowMessageId);
+  const messageScope = await deps.loadAuthorizedContractWorkflowMessage(workflowMessageId);
   const messageMetadata = readContractWorkflowMetadata(messageScope.message.metadata || null);
 
   if (!messageMetadata) {
@@ -164,6 +179,7 @@ async function generateContractFromWorkflowCard(
   }
 
   const quoteId = cleanText(messageMetadata.quote_id);
+  const quoteVersionId = cleanText(messageMetadata.quote_version_id);
   const quoteNumber = cleanText(messageMetadata.quote_number);
 
   if (!quoteId) {
@@ -175,7 +191,16 @@ async function generateContractFromWorkflowCard(
     };
   }
 
-  const quoteScope = await resolveAuthorizedExistingQuote(quoteId);
+  if (!quoteVersionId) {
+    return {
+      ok: false as const,
+      status: 409,
+      error: "QUOTE_VERSION_REFERENCE_MISSING",
+      message: "Nao encontrei a versao exata desse orcamento no card atual.",
+    };
+  }
+
+  const quoteScope = await deps.resolveAuthorizedExistingQuote(quoteId);
 
   if (
     quoteScope.organizationId !== messageOrganizationId ||
@@ -221,17 +246,18 @@ async function generateContractFromWorkflowCard(
     };
   }
 
-  const execution = await executeAssistantContractGeneration({
+  const execution = await deps.executeAssistantContractGeneration({
     request,
     supabase: messageScope.supabase,
     organizationId: messageOrganizationId,
     storeId: messageStoreId,
     quoteId,
+    quoteVersionId,
     quoteNumber,
     source: "assistant_contract_workflow_button_v1",
   });
 
-  await pushAssistantActionResultMessage({
+  await deps.pushAssistantActionResultMessage({
     supabase: messageScope.supabase,
     organizationId: messageOrganizationId,
     storeId: messageStoreId,
@@ -244,6 +270,7 @@ async function generateContractFromWorkflowCard(
       related_workflow_message_id: workflowMessageId,
       action: "generate_contract",
       quote_id: quoteId,
+      quote_version_id: quoteVersionId,
       quote_number: quoteNumber,
       contract_id: execution.contractId || null,
       result_ok: execution.ok,
@@ -261,9 +288,19 @@ async function generateContractFromWorkflowCard(
 }
 
 export async function executeAssistantContractWorkflowAction(
-  args: ExecuteAssistantContractWorkflowActionArgs
+  args: ExecuteAssistantContractWorkflowActionArgs,
+  deps?: Partial<ContractWorkflowActionDeps>
 ): Promise<ExecuteAssistantContractWorkflowActionResult> {
-  const auth = await ensureAuthenticatedUser();
+  const resolvedDeps: ContractWorkflowActionDeps = {
+    ensureAuthenticatedUser,
+    loadAuthorizedContractWorkflowMessage,
+    resolveAuthorizedExistingQuote,
+    executeAssistantContractGeneration,
+    pushAssistantActionResultMessage,
+    ...deps,
+  };
+
+  const auth = await resolvedDeps.ensureAuthenticatedUser();
   if (!auth.ok) {
     return {
       ok: false,
@@ -276,7 +313,11 @@ export async function executeAssistantContractWorkflowAction(
   }
 
   try {
-    const result = await generateContractFromWorkflowCard(args.request, args.messageId);
+    const result = await generateContractFromWorkflowCard(
+      args.request,
+      args.messageId,
+      resolvedDeps,
+    );
 
     return {
       ok: result.ok,

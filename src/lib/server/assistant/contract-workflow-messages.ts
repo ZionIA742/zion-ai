@@ -35,6 +35,7 @@ export type PushAssistantContractWorkflowDecisionMessageInput = {
   leadId?: string | null;
   conversationId?: string | null;
   quoteId: string;
+  quoteVersionId: string;
   quoteNumber?: string | null;
   customerName?: string | null;
   trigger: ContractWorkflowDecisionTrigger;
@@ -144,6 +145,7 @@ async function buildContractWorkflowMetadata(
     lead_id: cleanText(input.leadId),
     conversation_id: cleanText(input.conversationId),
     quote_id: cleanText(input.quoteId),
+    quote_version_id: cleanText(input.quoteVersionId),
     quote_number: cleanText(input.quoteNumber),
     customer_name: cleanText(input.customerName),
     trigger: input.trigger,
@@ -230,6 +232,7 @@ async function findExistingContractWorkflowMessage(args: {
   organizationId: string;
   storeId: string;
   quoteId: string;
+  quoteVersionId: string;
   trigger: ContractWorkflowDecisionTrigger;
   source?: string | null;
 }) {
@@ -241,6 +244,7 @@ async function findExistingContractWorkflowMessage(args: {
     .contains("metadata", {
       kind: "contract_workflow_decision",
       quote_id: args.quoteId,
+      quote_version_id: args.quoteVersionId,
       trigger: args.trigger,
       source: cleanText(args.source) || CONTRACT_WORKFLOW_SOURCE,
     })
@@ -441,6 +445,7 @@ async function enqueueContractWorkflowNotification(args: {
     "assistant_contract_workflow_decision",
     cleanText(args.metadata.source) || CONTRACT_WORKFLOW_SOURCE,
     cleanText(args.metadata.quote_id) || "unknown",
+    cleanText(args.metadata.quote_version_id) || "unknown-version",
     cleanText(args.metadata.trigger) || "unknown",
   ].join(":");
 
@@ -467,6 +472,7 @@ async function enqueueContractWorkflowNotification(args: {
       event_key: eventKey,
       kind: cleanText(args.metadata.kind) || "contract_workflow_decision",
       quote_id: cleanText(args.metadata.quote_id),
+      quote_version_id: cleanText(args.metadata.quote_version_id),
       quote_number: cleanText(args.metadata.quote_number),
       customer_name: cleanText(args.metadata.customer_name),
       trigger: cleanText(args.metadata.trigger),
@@ -518,6 +524,11 @@ export async function pushAssistantContractWorkflowDecisionMessage(
   input: PushAssistantContractWorkflowDecisionMessageInput
 ) {
   const source = cleanText(input.sourceOverride) || CONTRACT_WORKFLOW_SOURCE;
+  const quoteVersionId = cleanText(input.quoteVersionId);
+  if (!quoteVersionId) {
+    throw new Error("QUOTE_VERSION_REFERENCE_MISSING");
+  }
+
   const threadId = await getOrCreateAssistantPrimaryThread({
     supabase: input.supabase,
     organizationId: input.organizationId,
@@ -529,6 +540,7 @@ export async function pushAssistantContractWorkflowDecisionMessage(
     organizationId: input.organizationId,
     storeId: input.storeId,
     quoteId: input.quoteId,
+    quoteVersionId,
     trigger: input.trigger,
     source,
   });
@@ -606,6 +618,7 @@ export async function pushAssistantContractWorkflowDecisionMessage(
       organizationId: input.organizationId,
       storeId: input.storeId,
       quoteId: input.quoteId,
+      quoteVersionId,
       trigger: input.trigger,
       source,
     })) || null;

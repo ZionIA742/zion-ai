@@ -304,9 +304,18 @@ type GeneratedQuoteSummary = {
   } | null;
 };
 
+type CurrentCommercialProposalSummary = {
+  proposal_state: string | null;
+  current_quote_id: string | null;
+  current_quote_version_id: string | null;
+  commercial_opportunity_id?: string | null;
+  reason_code?: string | null;
+};
+
 type SalesQuoteListResponse = {
   ok: boolean;
   quotes?: GeneratedQuoteSummary[];
+  currentCommercialProposal?: CurrentCommercialProposalSummary | null;
   error?: string;
   message?: string;
 };
@@ -629,6 +638,34 @@ function appendQuoteSendWarning(
   }
 
   return `${baseMessage} Aviso: ${warningMessage}`;
+}
+
+function normalizeCurrentCommercialProposalSummary(
+  value: SalesQuoteListResponse["currentCommercialProposal"]
+): CurrentCommercialProposalSummary | null {
+  if (!value || typeof value !== "object") return null;
+
+  return {
+    proposal_state: String(value.proposal_state || "").trim() || null,
+    current_quote_id: String(value.current_quote_id || "").trim() || null,
+    current_quote_version_id:
+      String(value.current_quote_version_id || "").trim() || null,
+    commercial_opportunity_id:
+      String(value.commercial_opportunity_id || "").trim() || null,
+    reason_code: String(value.reason_code || "").trim() || null,
+  };
+}
+
+function buildContractQuoteVersionKey(
+  quoteId: string | null | undefined,
+  quoteVersionId: string | null | undefined
+) {
+  const safeQuoteId = String(quoteId || "").trim();
+  const safeQuoteVersionId = String(quoteVersionId || "").trim();
+
+  if (!safeQuoteId || !safeQuoteVersionId) return null;
+
+  return `${safeQuoteId}:${safeQuoteVersionId}`;
 }
 
 function createQuoteFormItemId() {
@@ -1267,6 +1304,8 @@ export default function LeadPage() {
   const [editingQuoteStatus, setEditingQuoteStatus] = useState<string | null>(null);
   const [loadingQuoteForEdit, setLoadingQuoteForEdit] = useState<string | null>(null);
   const [generatedQuotes, setGeneratedQuotes] = useState<GeneratedQuoteSummary[]>([]);
+  const [currentCommercialProposal, setCurrentCommercialProposal] =
+    useState<CurrentCommercialProposalSummary | null>(null);
   const [generatedQuotesLoading, setGeneratedQuotesLoading] = useState(false);
   const [generatedQuotesError, setGeneratedQuotesError] = useState<string | null>(null);
   const [openingGeneratedQuoteId, setOpeningGeneratedQuoteId] = useState<string | null>(null);
@@ -1408,6 +1447,15 @@ export default function LeadPage() {
     },
     {}
   );
+  const contractsByQuoteVersionKey = generatedContracts.reduce<
+    Record<string, GeneratedContractSummary>
+  >((acc, contract) => {
+    const key = buildContractQuoteVersionKey(contract.quote_id, contract.quote_version_id);
+    if (key && !acc[key]) {
+      acc[key] = contract;
+    }
+    return acc;
+  }, {});
   const canTakeOver =
     hasConversation && !isHumanActive && !working && !simulatingCustomer;
   const canReleaseToAI =
@@ -1738,6 +1786,7 @@ export default function LeadPage() {
     setPaymentError(null);
     setPaymentSuccess(null);
     setGeneratedQuotes([]);
+    setCurrentCommercialProposal(null);
     setGeneratedQuotesError(null);
     setGeneratedQuotesLoading(false);
     setHasLoadedGeneratedQuotes(false);
@@ -2459,6 +2508,7 @@ export default function LeadPage() {
 
     if (!scopedLeadId || !scopedOpportunityId || !scopedDocumentKey) {
       setGeneratedQuotes([]);
+      setCurrentCommercialProposal(null);
       setGeneratedQuotesError(null);
       setGeneratedQuotesLoading(false);
       setHasLoadedGeneratedQuotes(true);
@@ -2472,6 +2522,7 @@ export default function LeadPage() {
     }
 
     setGeneratedQuotesError(null);
+    setCurrentCommercialProposal(null);
 
     try {
       const params = new URLSearchParams({
@@ -2496,12 +2547,16 @@ export default function LeadPage() {
       }
 
       setGeneratedQuotes(Array.isArray(result.quotes) ? result.quotes : []);
+      setCurrentCommercialProposal(
+        normalizeCurrentCommercialProposalSummary(result.currentCommercialProposal)
+      );
       setHasLoadedGeneratedQuotes(true);
     } catch (error: any) {
       if (documentScopeRef.current !== scopedDocumentKey) {
         return;
       }
 
+      setCurrentCommercialProposal(null);
       setGeneratedQuotesError(
         error?.message || "Nao foi possivel carregar os PDFs gerados."
       );
@@ -2617,10 +2672,20 @@ export default function LeadPage() {
     }
   }
 
-  async function createContractFromQuote(quoteId: string) {
+  async function createContractFromQuote(quoteId: string, quoteVersionId: string | null) {
     const safeQuoteId = String(quoteId || "").trim();
+    const safeQuoteVersionId = String(quoteVersionId || "").trim();
+    const contractKey = buildContractQuoteVersionKey(safeQuoteId, safeQuoteVersionId);
 
-    if (!safeQuoteId || contractsByQuoteId[safeQuoteId]) {
+    if (!safeQuoteId || !safeQuoteVersionId || !contractKey) {
+      setContractActionError(
+        "Nao foi possivel confirmar a versao vigente deste orcamento para gerar contrato."
+      );
+      setContractActionSuccess(null);
+      return;
+    }
+
+    if (contractsByQuoteVersionKey[contractKey]) {
       return;
     }
 
@@ -2637,6 +2702,7 @@ export default function LeadPage() {
         },
         body: JSON.stringify({
           quoteId: safeQuoteId,
+          quoteVersionId: safeQuoteVersionId,
         }),
       });
       const result =
@@ -4177,6 +4243,7 @@ export default function LeadPage() {
   useEffect(() => {
     documentScopeRef.current = documentScopeKey;
     setGeneratedQuotes([]);
+    setCurrentCommercialProposal(null);
     setGeneratedQuotesError(null);
     setGeneratedQuotesLoading(false);
     setOpeningGeneratedQuoteId(null);
@@ -5119,6 +5186,25 @@ export default function LeadPage() {
                                   .trim()
                                   .toLowerCase();
                                 const linkedContract = contractsByQuoteId[quote.id];
+                                const currentProposalQuoteId = String(
+                                  currentCommercialProposal?.current_quote_id || ""
+                                ).trim();
+                                const currentProposalQuoteVersionId = String(
+                                  currentCommercialProposal?.current_quote_version_id || ""
+                                ).trim();
+                                const isCurrentCommercialProposal =
+                                  currentCommercialProposal?.proposal_state === "available" &&
+                                  currentProposalQuoteId === quote.id &&
+                                  Boolean(currentProposalQuoteVersionId);
+                                const exactContractKey = isCurrentCommercialProposal
+                                  ? buildContractQuoteVersionKey(
+                                      quote.id,
+                                      currentProposalQuoteVersionId
+                                    )
+                                  : null;
+                                const exactLinkedContract = exactContractKey
+                                  ? contractsByQuoteVersionKey[exactContractKey]
+                                  : null;
                                 const hasPdf =
                                   Boolean(quote.current_version?.storage_bucket) &&
                                   Boolean(quote.current_version?.storage_path);
@@ -5132,7 +5218,8 @@ export default function LeadPage() {
                                 const canCreateContract =
                                   hasLoadedGeneratedContracts &&
                                   (normalizedStatus === "approved" || normalizedStatus === "sent") &&
-                                  !linkedContract;
+                                  isCurrentCommercialProposal &&
+                                  !exactLinkedContract;
                                 const canEditQuote =
                                   normalizedStatus === "pending_review" ||
                                   normalizedStatus === "changes_requested" ||
@@ -5259,7 +5346,12 @@ export default function LeadPage() {
                                         {canCreateContract ? (
                                           <button
                                             type="button"
-                                            onClick={() => void createContractFromQuote(quote.id)}
+                                            onClick={() =>
+                                              void createContractFromQuote(
+                                                quote.id,
+                                                currentProposalQuoteVersionId
+                                              )
+                                            }
                                             disabled={isContractActionLoading}
                                             className="rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-sky-200 disabled:text-sky-700"
                                           >

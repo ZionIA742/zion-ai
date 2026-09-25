@@ -941,6 +941,7 @@ function createPreContractCurrentProposalHarness(args?: {
   resolvedCommercialOpportunityId?: string | null;
   lastCustomerMessage?: string | null;
   existingContracts?: Array<Record<string, unknown>>;
+  existingContractWorkflowMessage?: boolean;
 }) {
   const scope = createAiWindowScopeSupabase({
     commercialOpportunityRows: [
@@ -957,7 +958,13 @@ function createPreContractCurrentProposalHarness(args?: {
   const requestRpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
   const systemRpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
   const salesContractQuoteIds: unknown[] = [];
+  const assistantMessageContainsValues: Array<Record<string, unknown>> = [];
+  const pushedContractWorkflowMetadata: Array<Record<string, unknown>> = [];
+  const notificationContexts: Array<Record<string, unknown>> = [];
+  const notificationEventKeys: string[] = [];
   const existingContracts = args?.existingContracts || [];
+  const existingContractWorkflowMessage =
+    args?.existingContractWorkflowMessage !== false;
   let clientIndex = 0;
 
   const createThenableResult = <T>(resolveValue: T) => ({
@@ -1054,6 +1061,7 @@ function createPreContractCurrentProposalHarness(args?: {
           },
           contains(_column: string, value: Record<string, unknown>) {
             containsValues.push(value);
+            assistantMessageContainsValues.push(value);
             return this;
           },
           order(_column: string, _options: Record<string, unknown>) {
@@ -1065,12 +1073,34 @@ function createPreContractCurrentProposalHarness(args?: {
           async maybeSingle() {
             const metadata = containsValues[containsValues.length - 1] || {};
             if (metadata.kind === "contract_workflow_decision") {
-              return { data: { id: "contract-card-existing" }, error: null };
+              return {
+                data: existingContractWorkflowMessage
+                  ? { id: "contract-card-existing" }
+                  : null,
+                error: null,
+              };
             }
             if (metadata.kind === "customer_context_report") {
               return { data: { id: "customer-report-existing" }, error: null };
             }
             return { data: null, error: null };
+          },
+        };
+      }
+
+      if (table === "store_assistant_notification_queue") {
+        return {
+          select(_selection: string) {
+            return this;
+          },
+          eq(_column: string, _value: unknown) {
+            return this;
+          },
+          order(_column: string, _options: Record<string, unknown>) {
+            return this;
+          },
+          limit(_value: number) {
+            return createThenableResult({ data: [], error: null });
           },
         };
       }
@@ -1088,6 +1118,16 @@ function createPreContractCurrentProposalHarness(args?: {
         fn === "assistant_push_system_message" ||
         fn === "assistant_enqueue_internal_notification"
       ) {
+        if (fn === "assistant_push_system_message") {
+          const metadata = payload.p_metadata as Record<string, unknown> | undefined;
+          if (metadata?.kind === "contract_workflow_decision") {
+            pushedContractWorkflowMetadata.push(metadata);
+          }
+        }
+        if (fn === "assistant_enqueue_internal_notification") {
+          notificationContexts.push((payload.p_context || {}) as Record<string, unknown>);
+          notificationEventKeys.push(String(payload.p_event_key || ""));
+        }
         return { data: null, error: null };
       }
 
@@ -1130,6 +1170,10 @@ function createPreContractCurrentProposalHarness(args?: {
     requestRpcCalls,
     systemRpcCalls,
     salesContractQuoteIds,
+    assistantMessageContainsValues,
+    pushedContractWorkflowMetadata,
+    notificationContexts,
+    notificationEventKeys,
     createSupabaseClient() {
       clientIndex += 1;
       return (clientIndex === 1 ? requestClient : systemClient) as never;
@@ -5065,6 +5109,15 @@ assert.equal(
           trigger: "customer_requested_contract",
         });
         assert.deepEqual(harness.salesContractQuoteIds, ["quote-canonical"]);
+        assert.equal(
+          harness.assistantMessageContainsValues.some(
+            (metadata) =>
+              metadata.kind === "contract_workflow_decision" &&
+              metadata.quote_id === "quote-canonical" &&
+              metadata.quote_version_id === "version-canonical-v1",
+          ),
+          true,
+        );
         assert.deepEqual(harness.systemRpcCalls[0], {
           fn: "read_current_commercial_proposal_by_system",
           payload: {
@@ -5074,6 +5127,58 @@ assert.equal(
           },
         });
         assert.equal(harness.requestTables.includes("sales_quotes"), false);
+      });
+    },
+  },
+  {
+    name: "pre-contract customer signal created card stores canonical quote version metadata",
+    run: async () => {
+      const harness = createPreContractCurrentProposalHarness({
+        existingContractWorkflowMessage: false,
+        proposalRows: [
+          createCurrentCommercialProposalRow({
+            current_quote_id: "quote-v1",
+            current_quote_version_id: "version-presented-v1",
+            quote_number: "ORC-V1",
+          }),
+        ],
+      });
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: harness.createSupabaseClient,
+            ...harness.createDeps(),
+          },
+        );
+
+        assert.equal(result.ok, true);
+        assert.equal(result.context?.preContractCardResult?.created, true);
+        assert.equal(harness.pushedContractWorkflowMetadata.length, 1);
+        assert.equal(
+          harness.pushedContractWorkflowMetadata[0]?.quote_id,
+          "quote-v1",
+        );
+        assert.equal(
+          harness.pushedContractWorkflowMetadata[0]?.quote_version_id,
+          "version-presented-v1",
+        );
+        assert.equal(harness.notificationContexts[0]?.quote_id, "quote-v1");
+        assert.equal(
+          harness.notificationContexts[0]?.quote_version_id,
+          "version-presented-v1",
+        );
+        assert.equal(
+          String(harness.notificationEventKeys[0] || "").includes(
+            "version-presented-v1",
+          ),
+          true,
+        );
       });
     },
   },
@@ -5116,6 +5221,15 @@ assert.equal(
           "quote-presented-v1",
         );
         assert.deepEqual(harness.salesContractQuoteIds, ["quote-presented-v1"]);
+        assert.equal(
+          harness.assistantMessageContainsValues.some(
+            (metadata) =>
+              metadata.kind === "contract_workflow_decision" &&
+              metadata.quote_id === "quote-presented-v1" &&
+              metadata.quote_version_id === "version-presented-v1",
+          ),
+          true,
+        );
         assert.equal(harness.requestTables.includes("sales_quotes"), false);
         assert.equal(
           JSON.stringify(result.context?.preContractCardResult).includes(

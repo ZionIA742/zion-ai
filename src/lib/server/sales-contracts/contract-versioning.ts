@@ -1,6 +1,20 @@
-import type { QuoteLeadRow, QuoteStoreRow, SalesQuoteItemRow } from "@/lib/server/sales-quotes/types";
+import type { QuoteLeadRow, QuoteStoreRow } from "@/lib/server/sales-quotes/types";
 import type { ContractSnapshot, SalesContract, SalesContractVersion } from "./types";
 import type { ContractTemplateTermsResolution } from "./contract-template-terms";
+
+export type ContractQuoteSnapshotItem = {
+  id?: string | null;
+  name: string | null;
+  description: string | null;
+  quantity: number | null;
+  unitPriceCents: number | null;
+  discountCents: number | null;
+  subtotalCents: number | null;
+  totalCents: number | null;
+  sku: string | null;
+  sortOrder: number | null;
+  metadata: Record<string, unknown> | null;
+};
 
 function toNumber(value: number | null | undefined) {
   return Number.isFinite(value) ? Number(value) : 0;
@@ -10,7 +24,7 @@ export function buildContractSnapshot(args: {
   contract: SalesContract;
   store: QuoteStoreRow;
   lead: QuoteLeadRow | null;
-  items: SalesQuoteItemRow[];
+  items: ContractQuoteSnapshotItem[];
   templateTerms?: ContractTemplateTermsResolution | null;
 }) {
   return {
@@ -53,9 +67,9 @@ export function buildContractSnapshot(args: {
       name: item.name,
       description: item.description,
       quantity: item.quantity,
-      unitPriceCents: item.unit_price_cents,
-      discountCents: item.discount_cents,
-      totalCents: item.total_cents,
+      unitPriceCents: item.unitPriceCents,
+      discountCents: item.discountCents,
+      totalCents: item.totalCents,
       metadata: item.metadata,
     })),
     generatedAt: new Date().toISOString(),

@@ -8,12 +8,12 @@ import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/docum
 import {
   buildContractSnapshot,
   createContractVersion,
+  type ContractQuoteSnapshotItem,
   getNextContractVersionNumber,
   markContractVersionStatus,
   setContractCurrentVersion,
 } from "@/lib/server/sales-contracts/contract-versioning";
 import { resolveContractTemplateTerms } from "@/lib/server/sales-contracts/contract-template-terms";
-import type { SalesQuoteItemRow } from "@/lib/server/sales-quotes/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,6 +29,38 @@ const NON_EDITABLE_CONTRACT_STATUSES = new Set([
 ]);
 const PDF_REGENERATION_BLOCKED_MESSAGE =
   "Este contrato ja foi enviado ou assinado e nao pode ter o PDF regenerado. Para alterar, crie um novo contrato ou cancele o contrato atual conforme o fluxo permitido.";
+
+type GenerateContractPdfDeps = {
+  buildContractPdf: typeof buildContractPdf;
+  buildContractSnapshot: typeof buildContractSnapshot;
+  createContractVersion: typeof createContractVersion;
+  getNextContractVersionNumber: typeof getNextContractVersionNumber;
+  loadStoreBrandVisualPolicy: typeof loadStoreBrandVisualPolicy;
+  loadStoreLogoForContractPdf: typeof loadStoreLogoForContractPdf;
+  markContractVersionStatus: typeof markContractVersionStatus;
+  pushAssistantDocumentReviewMessage: typeof pushAssistantDocumentReviewMessage;
+  registerContractBusinessEvent: typeof registerContractBusinessEvent;
+  resolveAuthorizedExistingContract: typeof resolveAuthorizedExistingContract;
+  resolveContractTemplateTerms: typeof resolveContractTemplateTerms;
+  setContractCurrentVersion: typeof setContractCurrentVersion;
+  storeContractPdfFile: typeof storeContractPdfFile;
+};
+
+const defaultGenerateContractPdfDeps: GenerateContractPdfDeps = {
+  buildContractPdf,
+  buildContractSnapshot,
+  createContractVersion,
+  getNextContractVersionNumber,
+  loadStoreBrandVisualPolicy,
+  loadStoreLogoForContractPdf,
+  markContractVersionStatus,
+  pushAssistantDocumentReviewMessage,
+  registerContractBusinessEvent,
+  resolveAuthorizedExistingContract,
+  resolveContractTemplateTerms,
+  setContractCurrentVersion,
+  storeContractPdfFile,
+};
 
 function buildErrorResponse(error: unknown) {
   if (error instanceof ContractAccessError) {
@@ -58,10 +90,220 @@ function normalizeOptionalText(value: unknown) {
   return normalized || null;
 }
 
-export async function POST(
-  _request: Request,
-  context: { params: Promise<{ contractId: string }> }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function nullableString(value: unknown, fieldName: string) {
+  if (value == null) return null;
+  if (typeof value === "string") return value;
+  throw new ContractAccessError(
+    409,
+    "CONTRACT_QUOTE_SNAPSHOT_INVALID",
+    `quote_snapshot.items possui ${fieldName} invalido.`
+  );
+}
+
+function nullableNumber(value: unknown, fieldName: string) {
+  if (value == null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  throw new ContractAccessError(
+    409,
+    "CONTRACT_QUOTE_SNAPSHOT_INVALID",
+    `quote_snapshot.items possui ${fieldName} invalido.`
+  );
+}
+
+function nullableMetadata(value: unknown) {
+  if (value == null) return null;
+  if (isRecord(value)) return value;
+  throw new ContractAccessError(
+    409,
+    "CONTRACT_QUOTE_SNAPSHOT_INVALID",
+    "quote_snapshot.items possui metadata invalido."
+  );
+}
+
+function normalizeQuoteSnapshotItems(items: unknown): ContractQuoteSnapshotItem[] {
+  if (!Array.isArray(items)) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_QUOTE_SNAPSHOT_ITEMS_INVALID",
+      "quote_snapshot.items precisa ser um array."
+    );
+  }
+
+  return items.map((item, index) => {
+    if (!isRecord(item)) {
+      throw new ContractAccessError(
+        409,
+        "CONTRACT_QUOTE_SNAPSHOT_INVALID",
+        `quote_snapshot.items[${index}] precisa ser um objeto.`
+      );
+    }
+
+    return {
+      id: nullableString(item.id, "id"),
+      name: nullableString(item.name, "name"),
+      description: nullableString(item.description, "description"),
+      quantity: nullableNumber(item.quantity, "quantity"),
+      unitPriceCents: nullableNumber(item.unitPriceCents, "unitPriceCents"),
+      discountCents: nullableNumber(item.discountCents, "discountCents"),
+      subtotalCents: nullableNumber(item.subtotalCents, "subtotalCents"),
+      totalCents: nullableNumber(item.totalCents, "totalCents"),
+      sku: nullableString(item.sku, "sku"),
+      sortOrder: nullableNumber(item.sortOrder, "sortOrder"),
+      metadata: nullableMetadata(item.metadata),
+    };
+  });
+}
+
+async function loadContractQuoteSnapshotItems(
+  scope: Awaited<ReturnType<typeof resolveAuthorizedExistingContract>>,
 ) {
+  const quoteId = normalizeOptionalText(scope.contract.quote_id);
+  const quoteVersionId = normalizeOptionalText(scope.contract.quote_version_id);
+
+  if (!quoteId) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_QUOTE_ID_REQUIRED_FOR_PDF",
+      "Contrato sem quote_id nao pode gerar PDF com lineage comprovada."
+    );
+  }
+
+  if (!quoteVersionId) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_QUOTE_VERSION_ID_REQUIRED_FOR_PDF",
+      "Contrato sem quote_version_id nao pode gerar PDF com lineage comprovada."
+    );
+  }
+
+  const { data: quoteVersion, error: quoteVersionError } = await scope.supabase
+    .from("sales_quote_versions")
+    .select("id, quote_id, organization_id, store_id, status, sent_at, quote_snapshot")
+    .eq("id", quoteVersionId)
+    .eq("quote_id", quoteId)
+    .eq("organization_id", scope.organizationId)
+    .eq("store_id", scope.store.id)
+    .maybeSingle();
+
+  if (quoteVersionError) {
+    throw new Error(
+      `Falha ao carregar versao exata do orcamento do contrato: ${quoteVersionError.message}`
+    );
+  }
+
+  if (!quoteVersion) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_QUOTE_VERSION_NOT_FOUND",
+      "Versao exata do orcamento do contrato nao encontrada."
+    );
+  }
+
+  if (
+    quoteVersion.id !== quoteVersionId ||
+    quoteVersion.quote_id !== quoteId ||
+    quoteVersion.organization_id !== scope.organizationId ||
+    quoteVersion.store_id !== scope.store.id
+  ) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_QUOTE_VERSION_LINEAGE_MISMATCH",
+      "Versao do orcamento nao corresponde a lineage do contrato."
+    );
+  }
+
+  const normalizedStatus = String(quoteVersion.status || "").trim().toLowerCase();
+  if (normalizedStatus !== "sent" && normalizedStatus !== "superseded") {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_QUOTE_VERSION_STATUS_INVALID",
+      "Versao do orcamento precisa estar sent ou superseded para gerar PDF do contrato."
+    );
+  }
+
+  if (!normalizeOptionalText(quoteVersion.sent_at)) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_QUOTE_VERSION_SENT_AT_REQUIRED",
+      "Versao do orcamento precisa ter sent_at para gerar PDF do contrato."
+    );
+  }
+
+  const quoteSnapshot = quoteVersion.quote_snapshot;
+  if (!isRecord(quoteSnapshot)) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_QUOTE_SNAPSHOT_INVALID",
+      "quote_snapshot da versao do orcamento precisa ser um objeto."
+    );
+  }
+
+  if (!isRecord(quoteSnapshot.quote)) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_QUOTE_SNAPSHOT_INVALID",
+      "quote_snapshot.quote precisa ser um objeto."
+    );
+  }
+
+  if (String(quoteSnapshot.quote.id || "").trim() !== quoteId) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_QUOTE_SNAPSHOT_LINEAGE_MISMATCH",
+      "quote_snapshot.quote.id nao corresponde ao quote_id do contrato."
+    );
+  }
+
+  return normalizeQuoteSnapshotItems(quoteSnapshot.items);
+}
+
+export function createGenerateContractPdfPostHandler(
+  deps: Partial<GenerateContractPdfDeps> = {},
+) {
+  const buildContractPdf =
+    deps.buildContractPdf ?? defaultGenerateContractPdfDeps.buildContractPdf;
+  const buildContractSnapshot =
+    deps.buildContractSnapshot ?? defaultGenerateContractPdfDeps.buildContractSnapshot;
+  const createContractVersion =
+    deps.createContractVersion ?? defaultGenerateContractPdfDeps.createContractVersion;
+  const getNextVersionNumber =
+    deps.getNextContractVersionNumber ??
+    defaultGenerateContractPdfDeps.getNextContractVersionNumber;
+  const loadStoreBrandVisualPolicy =
+    deps.loadStoreBrandVisualPolicy ??
+    defaultGenerateContractPdfDeps.loadStoreBrandVisualPolicy;
+  const loadStoreLogoForContractPdf =
+    deps.loadStoreLogoForContractPdf ??
+    defaultGenerateContractPdfDeps.loadStoreLogoForContractPdf;
+  const markContractVersionStatus =
+    deps.markContractVersionStatus ??
+    defaultGenerateContractPdfDeps.markContractVersionStatus;
+  const pushDocumentReviewMessage =
+    deps.pushAssistantDocumentReviewMessage ??
+    defaultGenerateContractPdfDeps.pushAssistantDocumentReviewMessage;
+  const registerBusinessEvent =
+    deps.registerContractBusinessEvent ??
+    defaultGenerateContractPdfDeps.registerContractBusinessEvent;
+  const resolveContract =
+    deps.resolveAuthorizedExistingContract ??
+    defaultGenerateContractPdfDeps.resolveAuthorizedExistingContract;
+  const resolveTemplateTerms =
+    deps.resolveContractTemplateTerms ??
+    defaultGenerateContractPdfDeps.resolveContractTemplateTerms;
+  const setContractCurrentVersion =
+    deps.setContractCurrentVersion ??
+    defaultGenerateContractPdfDeps.setContractCurrentVersion;
+  const storeContractPdfFile =
+    deps.storeContractPdfFile ?? defaultGenerateContractPdfDeps.storeContractPdfFile;
+
+  return async function POST(
+    _request: Request,
+    context: { params: Promise<{ contractId: string }> }
+  ) {
   let scope:
     | Awaited<ReturnType<typeof resolveAuthorizedExistingContract>>
     | null = null;
@@ -77,7 +319,7 @@ export async function POST(
   try {
     const { contractId: rawContractId } = await context.params;
     const contractId = String(rawContractId || "").trim();
-    scope = await resolveAuthorizedExistingContract(contractId);
+    scope = await resolveContract(contractId);
 
     const normalizedStatus = String(scope.contract.status || "").trim().toLowerCase();
     const sentAt = normalizeOptionalText(scope.contract.sent_at);
@@ -99,31 +341,14 @@ export async function POST(
       );
     }
 
-    let items: SalesQuoteItemRow[] = [];
-    if (scope.contract.quote_id) {
-      const { data: itemsData, error: itemsError } = await scope.supabase
-        .from("sales_quote_items")
-        .select(
-          "id, quote_id, organization_id, store_id, item_type, name, description, quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents, sort_order, sku, metadata, created_at, updated_at"
-        )
-        .eq("quote_id", scope.contract.quote_id)
-        .eq("organization_id", scope.organizationId)
-        .eq("store_id", scope.store.id)
-        .order("sort_order", { ascending: true });
+    const items = await loadContractQuoteSnapshotItems(scope);
 
-      if (itemsError) {
-        throw new Error(`Falha ao carregar itens do orcamento base: ${itemsError.message}`);
-      }
-
-      items = (itemsData || []) as SalesQuoteItemRow[];
-    }
-
-    const versionNumber = await getNextContractVersionNumber({
+    const versionNumber = await getNextVersionNumber({
       supabase: scope.supabase,
       contractId: scope.contract.id,
     });
 
-    const templateTerms = await resolveContractTemplateTerms({
+    const templateTerms = await resolveTemplateTerms({
       supabase: scope.supabase,
       organizationId: scope.organizationId,
       storeId: scope.store.id,
@@ -192,9 +417,9 @@ export async function POST(
         name: item.name,
         description: item.description,
         quantity: item.quantity,
-        unit_price_cents: item.unit_price_cents,
-        discount_cents: item.discount_cents,
-        total_cents: item.total_cents,
+        unit_price_cents: item.unitPriceCents,
+        discount_cents: item.discountCents,
+        total_cents: item.totalCents,
       })),
       subtotalCents: Number(scope.contract.subtotal_cents || 0),
       discountCents: Number(scope.contract.discount_cents || 0),
@@ -252,7 +477,7 @@ export async function POST(
     });
 
     if (versionNumber === 1) {
-      await registerContractBusinessEvent({
+      await registerBusinessEvent({
         supabase: scope.supabase,
         organizationId: scope.organizationId,
         storeId: scope.store.id,
@@ -272,7 +497,7 @@ export async function POST(
     }
 
     try {
-      await pushAssistantDocumentReviewMessage({
+      await pushDocumentReviewMessage({
         supabase: scope.supabase,
         organizationId: scope.organizationId,
         storeId: scope.store.id,
@@ -337,4 +562,7 @@ export async function POST(
 
     return buildErrorResponse(error);
   }
+  };
 }
+
+export const POST = createGenerateContractPdfPostHandler();

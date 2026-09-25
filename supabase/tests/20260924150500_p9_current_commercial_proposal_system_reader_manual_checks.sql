@@ -573,33 +573,57 @@ begin
   where id = v_opp_cycle2;
 
   -- ==========================================================================
-  -- 1. Function metadata, grants and anti-heuristic contract.
+  -- 1. Public wrapper + private semantic authority contract.
   -- ==========================================================================
 
+  declare
+    v_wrapper_oid oid;
+    v_internal_oid oid;
+    v_wrapper_definition text;
+    v_internal_definition text;
   begin
-    v_proc_oid := pg_catalog.to_regprocedure(
+    v_wrapper_oid := pg_catalog.to_regprocedure(
       'public.read_current_commercial_proposal_by_system(uuid,uuid,uuid)'
     );
 
-    if v_proc_oid is not null then
+    v_internal_oid := pg_catalog.to_regprocedure(
+      'public.p9_resolve_current_commercial_proposal_internal(uuid,uuid,uuid)'
+    );
+
+    if v_wrapper_oid is not null then
       select pg_catalog.lower(
         pg_catalog.regexp_replace(
-          pg_catalog.pg_get_functiondef(v_proc_oid),
+          pg_catalog.pg_get_functiondef(v_wrapper_oid),
           '\s+',
           ' ',
           'g'
         )
       )
-      into v_definition;
+      into v_wrapper_definition;
     end if;
 
-    if v_proc_oid is not null
+    if v_internal_oid is not null then
+      select pg_catalog.lower(
+        pg_catalog.regexp_replace(
+          pg_catalog.pg_get_functiondef(v_internal_oid),
+          '\s+',
+          ' ',
+          'g'
+        )
+      )
+      into v_internal_definition;
+    end if;
+
+    if v_wrapper_oid is not null
+       and v_internal_oid is not null
+
+       -- Public system reader remains hardened and service-role only.
        and exists (
          select 1
          from pg_catalog.pg_proc proc_row
          join pg_catalog.pg_roles owner_row
            on owner_row.oid = proc_row.proowner
-         where proc_row.oid = v_proc_oid
+         where proc_row.oid = v_wrapper_oid
            and owner_row.rolname = 'postgres'
            and proc_row.prosecdef
            and proc_row.provolatile = 's'::"char"
@@ -608,7 +632,8 @@ begin
              from pg_catalog.unnest(
                coalesce(proc_row.proconfig, array[]::text[])
              ) config_row
-             where config_row = 'search_path=pg_catalog, pg_temp, public'
+             where config_row =
+               'search_path=pg_catalog, pg_temp, public'
            )
            and exists (
              select 1
@@ -618,21 +643,25 @@ begin
              where config_row = 'row_security=off'
            )
        )
+
        and pg_catalog.has_function_privilege(
          'service_role',
-         v_proc_oid,
+         v_wrapper_oid,
          'EXECUTE'
        )
+
        and not pg_catalog.has_function_privilege(
          'authenticated',
-         v_proc_oid,
+         v_wrapper_oid,
          'EXECUTE'
        )
+
        and not pg_catalog.has_function_privilege(
          'anon',
-         v_proc_oid,
+         v_wrapper_oid,
          'EXECUTE'
        )
+
        and not exists (
          select 1
          from pg_catalog.pg_proc proc_row
@@ -642,46 +671,125 @@ begin
              pg_catalog.acldefault('f', proc_row.proowner)
            )
          ) acl_row
-         where proc_row.oid = v_proc_oid
+         where proc_row.oid = v_wrapper_oid
            and acl_row.grantee = 0
            and acl_row.privilege_type = 'EXECUTE'
        )
-       and v_definition like '%current_quote_id%'
-       and v_definition like '%current_quote_version_id%'
-       and v_definition like '%v_version.sent_at is not null%'
-       and v_definition like '%lifecycle_cycle > 1%'
-       and v_definition not like '%order by%'
-       and v_definition not like '%limit %'
-       and v_definition not like '%created_at%'
-       and v_definition not like '%updated_at%'
-       and v_definition not like '%v_quote.status%'
-       and v_definition not like '%v_quote.total_cents%'
-       and v_definition not like '%v_quote.current_version_id%'
-       and v_definition not like '%v_quote.customer_name%' then
+
+       -- Wrapper must delegate instead of duplicating semantics.
+       and v_wrapper_definition like
+         '%p9_resolve_current_commercial_proposal_internal%'
+
+       and v_wrapper_definition not like
+         '%from public.commercial_opportunities%'
+
+       and v_wrapper_definition not like
+         '%from public.sales_quotes%'
+
+       and v_wrapper_definition not like
+         '%from public.sales_quote_versions%'
+
+       -- Private authority remains private.
+       and exists (
+         select 1
+         from pg_catalog.pg_proc proc_row
+         join pg_catalog.pg_roles owner_row
+           on owner_row.oid = proc_row.proowner
+         where proc_row.oid = v_internal_oid
+           and owner_row.rolname = 'postgres'
+           and proc_row.prosecdef
+           and proc_row.provolatile = 's'::"char"
+           and exists (
+             select 1
+             from pg_catalog.unnest(
+               coalesce(proc_row.proconfig, array[]::text[])
+             ) config_row
+             where config_row =
+               'search_path=pg_catalog, pg_temp, public'
+           )
+           and exists (
+             select 1
+             from pg_catalog.unnest(
+               coalesce(proc_row.proconfig, array[]::text[])
+             ) config_row
+             where config_row = 'row_security=off'
+           )
+       )
+
+       and not pg_catalog.has_function_privilege(
+         'service_role',
+         v_internal_oid,
+         'EXECUTE'
+       )
+
+       and not pg_catalog.has_function_privilege(
+         'authenticated',
+         v_internal_oid,
+         'EXECUTE'
+       )
+
+       and not pg_catalog.has_function_privilege(
+         'anon',
+         v_internal_oid,
+         'EXECUTE'
+       )
+
+       and not exists (
+         select 1
+         from pg_catalog.pg_proc proc_row
+         cross join lateral pg_catalog.aclexplode(
+           coalesce(
+             proc_row.proacl,
+             pg_catalog.acldefault('f', proc_row.proowner)
+           )
+         ) acl_row
+         where proc_row.oid = v_internal_oid
+           and acl_row.grantee = 0
+           and acl_row.privilege_type = 'EXECUTE'
+       )
+
+       -- Anti-heuristic/current-proposal semantics live in the private authority.
+       and v_internal_definition like '%current_quote_id%'
+       and v_internal_definition like '%current_quote_version_id%'
+       and v_internal_definition like '%v_version.sent_at is not null%'
+       and v_internal_definition like '%lifecycle_cycle > 1%'
+       and v_internal_definition like '%quote_sent_without_current_proposal%'
+       and v_internal_definition like '%current_proposal_unknown%'
+       and v_internal_definition like '%current_proposal_sent_evidence_conflict%'
+       and v_internal_definition not like '%order by%'
+       and v_internal_definition not like '%limit %'
+       and v_internal_definition not like '%created_at%'
+       and v_internal_definition not like '%updated_at%' then
+
       perform pg_temp._p9_67_record(
         1,
-        'reader possui authority grants e anti-recency canonicos',
+        'reader wrapper e authority privada preservam contrato canonico',
         'PASS',
-        'postgres/security definer/stable/service_role only; sem latest/order/limit'
+        'wrapper service_role-only delega; resolver privado stable/security-definer preserva pointer exato, sent evidence, lifecycle e anti-recency'
       );
     else
       perform pg_temp._p9_67_record(
         1,
-        'reader possui authority grants e anti-recency canonicos',
+        'reader wrapper e authority privada preservam contrato canonico',
         'SUT_FAIL',
-        coalesce(v_definition, 'function metadata missing')
+        pg_catalog.jsonb_build_object(
+          'wrapper_exists', v_wrapper_oid is not null,
+          'internal_exists', v_internal_oid is not null,
+          'wrapper_definition', v_wrapper_definition,
+          'internal_definition', v_internal_definition
+        )::text
       );
     end if;
+
   exception
     when others then
       perform pg_temp._p9_67_record(
         1,
-        'reader possui authority grants e anti-recency canonicos',
+        'reader wrapper e authority privada preservam contrato canonico',
         'HARNESS_ERROR',
-        sqlerrm
+        sqlstate || ' ' || sqlerrm
       );
   end;
-
   -- ==========================================================================
   -- 2. Sent facts without explicit pointer remain NONE; reader never infers.
   -- ==========================================================================

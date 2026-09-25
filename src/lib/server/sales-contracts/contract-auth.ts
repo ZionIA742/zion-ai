@@ -221,12 +221,24 @@ async function loadAuthorizedLead(args: {
   return lead as QuoteLeadRow;
 }
 
-export async function resolveAuthorizedQuoteForContract(quoteId: string) {
+export async function resolveAuthorizedQuoteForContract(
+  quoteId: string,
+  quoteVersionId: string,
+) {
   const auth = await authenticateContractRequest();
   const safeQuoteId = String(quoteId || "").trim();
+  const safeQuoteVersionId = String(quoteVersionId || "").trim();
 
   if (!safeQuoteId) {
     throw new ContractAccessError(400, "INVALID_QUOTE_ID", "Quote ID nao informado.");
+  }
+
+  if (!safeQuoteVersionId) {
+    throw new ContractAccessError(
+      400,
+      "INVALID_QUOTE_VERSION_ID",
+      "quoteVersionId nao informado para criar contrato."
+    );
   }
 
   const { data: quote, error: quoteError } = await auth.supabase
@@ -273,19 +285,10 @@ export async function resolveAuthorizedQuoteForContract(quoteId: string) {
     leadId: quote.lead_id,
   });
 
-  const currentVersionId = String(quote.current_version_id || "").trim();
-  if (!currentVersionId) {
-    throw new ContractAccessError(
-      400,
-      "QUOTE_VERSION_REQUIRED",
-      "Este orcamento ainda nao possui current_version_id."
-    );
-  }
-
   const { data: quoteVersion, error: quoteVersionError } = await auth.supabase
     .from("sales_quote_versions")
     .select(SALES_QUOTE_VERSIONS_SELECT)
-    .eq("id", currentVersionId)
+    .eq("id", safeQuoteVersionId)
     .eq("quote_id", quote.id)
     .eq("organization_id", quote.organization_id)
     .eq("store_id", quote.store_id)
@@ -303,7 +306,7 @@ export async function resolveAuthorizedQuoteForContract(quoteId: string) {
     throw new ContractAccessError(
       404,
       "QUOTE_VERSION_NOT_FOUND",
-      "Versao atual do orcamento nao encontrada."
+      "Versao solicitada do orcamento nao encontrada."
     );
   }
 
