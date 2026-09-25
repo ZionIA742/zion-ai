@@ -842,7 +842,7 @@ type CurrentCommercialProposalQuote = {
   lead_id: string | null;
   conversation_id: string | null;
   quote_number: string | null;
-  current_version_id: string | null;
+  current_version_id: string;
 };
 
 type ExistingContractStateRow = {
