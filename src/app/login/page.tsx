@@ -597,6 +597,9 @@ export default function LoginPage() {
             Exclusão de Dados
           </Link>
         </div>
+        <p className="mt-3 text-center text-xs text-zinc-500">
+          ZION INOVA SIMPLES (I.S.)
+        </p>
       </footer>
     </main>
   );
