@@ -14,6 +14,16 @@ import {
   resolveCommercialOpportunityIdForAppointmentCreate,
   type LeadCommercialOpportunityOption,
 } from "./appointment-create-contract";
+import {
+  isValidScheduleTimeZone,
+  addStoreCalendarDays,
+  getStoreLocalDateKey,
+  getStoreLocalDateTimeParts,
+  storeDateKeyToUtcIso,
+  storeTodayDateKey,
+  storeLocalDateTimeToUtcIso,
+  utcIsoToStoreLocalDateTime,
+} from "./schedule-timezone";
 
 type ScheduleItem = {
   itemKind: "appointment" | "block" | string;
@@ -137,11 +147,15 @@ const SCHEDULE_TYPE_LEGEND = [
   { value: "block", label: "Bloqueio", dotClass: "bg-slate-600" },
 ] as const;
 
-function formatDateTime(value: string | null) {
+function formatDateTime(value: string | null, timezoneName: string | null) {
   if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString("pt-BR");
+  const parts = getStoreLocalDateTimeParts(value, timezoneName);
+  if (!parts) return "-";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: timezoneName || "UTC",
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(value));
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -150,6 +164,7 @@ function getErrorMessage(error: unknown, fallback: string) {
 
 function formatMonthYear(date: Date) {
   return date.toLocaleDateString("pt-BR", {
+    timeZone: "UTC",
     month: "long",
     year: "numeric",
   });
@@ -342,19 +357,19 @@ function getItemStatusPrefix(item: ScheduleItem) {
 }
 
 function startOfMonth(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
 }
 
 function endOfMonth(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0, 23, 59, 59, 999));
 }
 
 function startOfCalendarGrid(date: Date) {
   const firstDay = startOfMonth(date);
-  const sundayBasedOffset = firstDay.getDay();
+  const sundayBasedOffset = firstDay.getUTCDay();
   const result = new Date(firstDay);
-  result.setDate(firstDay.getDate() - sundayBasedOffset);
-  result.setHours(0, 0, 0, 0);
+  result.setUTCDate(firstDay.getUTCDate() - sundayBasedOffset);
+  result.setUTCHours(0, 0, 0, 0);
   return result;
 }
 
@@ -364,7 +379,7 @@ function buildCalendarDays(date: Date) {
 
   for (let i = 0; i < 42; i += 1) {
     const day = new Date(start);
-    day.setDate(start.getDate() + i);
+    day.setUTCDate(start.getUTCDate() + i);
     days.push(day);
   }
 
@@ -372,51 +387,31 @@ function buildCalendarDays(date: Date) {
 }
 
 function toDateKey(date: Date) {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
+  const year = date.getUTCFullYear();
+  const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getUTCDate()}`.padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
 
-function itemSpansDate(item: ScheduleItem, date: Date) {
-  const dayStart = new Date(date);
-  dayStart.setHours(0, 0, 0, 0);
-
-  const dayEnd = new Date(date);
-  dayEnd.setHours(23, 59, 59, 999);
-
-  const itemStart = new Date(item.startAt);
-  const itemEnd = new Date(item.endAt);
-
-  if (Number.isNaN(itemStart.getTime()) || Number.isNaN(itemEnd.getTime())) {
-    return false;
-  }
-
-  return itemStart <= dayEnd && itemEnd >= dayStart;
+function itemSpansDate(item: ScheduleItem, date: Date, timezoneName: string | null) {
+  const dayKey = toDateKey(date);
+  const itemStartKey = getStoreLocalDateKey(item.startAt, timezoneName);
+  const itemEndKey = getStoreLocalDateKey(item.endAt, timezoneName);
+  return Boolean(itemStartKey && itemEndKey && itemStartKey <= dayKey && dayKey <= itemEndKey);
 }
 
-function toDateTimeLocalValue(value: string | null) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  const hours = `${date.getHours()}`.padStart(2, "0");
-  const minutes = `${date.getMinutes()}`.padStart(2, "0");
-
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
+function toDateTimeLocalValue(value: string | null, timezoneName: string | null) {
+  return utcIsoToStoreLocalDateTime(value, timezoneName);
 }
 
-function createAppointmentFormFromItem(item: ScheduleItem): AppointmentEditForm {
+function createAppointmentFormFromItem(item: ScheduleItem, timezoneName: string | null): AppointmentEditForm {
   return {
     title: item.title || "",
     appointmentType: item.itemType || "technical_visit",
     status:
       item.status && item.status !== "blocked" ? item.status : "scheduled",
-    scheduledStart: toDateTimeLocalValue(item.startAt),
-    scheduledEnd: toDateTimeLocalValue(item.endAt),
+    scheduledStart: toDateTimeLocalValue(item.startAt, timezoneName),
+    scheduledEnd: toDateTimeLocalValue(item.endAt, timezoneName),
     customerName: item.customerName || "",
     customerPhone: formatPhone(item.customerPhone === null ? "" : item.customerPhone),
     addressText: item.addressText || "",
@@ -424,57 +419,26 @@ function createAppointmentFormFromItem(item: ScheduleItem): AppointmentEditForm 
   };
 }
 
-function createBlockFormFromItem(item: ScheduleItem): BlockForm {
+function createBlockFormFromItem(item: ScheduleItem, timezoneName: string | null): BlockForm {
   return {
     title: item.title || "",
     blockType: item.itemType || "manual_block",
-    startAt: toDateTimeLocalValue(item.startAt),
-    endAt: toDateTimeLocalValue(item.endAt),
+    startAt: toDateTimeLocalValue(item.startAt, timezoneName),
+    endAt: toDateTimeLocalValue(item.endAt, timezoneName),
     notes: item.notes || "",
   };
 }
 
 function createDefaultAppointmentCreateForm(
-  selectedDateKey: string
+  selectedDateKey: string,
+  timezoneName: string | null,
 ): AppointmentCreateForm {
-  const base = selectedDateKey
-    ? new Date(`${selectedDateKey}T09:00:00`)
-    : new Date();
-
-  if (Number.isNaN(base.getTime())) {
-    const fallback = new Date();
-    fallback.setHours(9, 0, 0, 0);
-
-    const fallbackEnd = new Date(fallback);
-    fallbackEnd.setHours(10, 0, 0, 0);
-
-    return {
-      title: "",
-      appointmentType: "technical_visit",
-      status: "scheduled",
-      scheduledStart: toDateTimeLocalValue(fallback.toISOString()),
-      scheduledEnd: toDateTimeLocalValue(fallbackEnd.toISOString()),
-      customerName: "",
-      customerPhone: "",
-      addressText: "",
-      notes: "",
-      leadId: "",
-      conversationId: "",
-      commercialOpportunityId: "",
-    };
-  }
-
-  base.setHours(9, 0, 0, 0);
-
-  const end = new Date(base);
-  end.setHours(10, 0, 0, 0);
-
   return {
     title: "",
     appointmentType: "technical_visit",
     status: "scheduled",
-    scheduledStart: toDateTimeLocalValue(base.toISOString()),
-    scheduledEnd: toDateTimeLocalValue(end.toISOString()),
+    scheduledStart: isValidScheduleTimeZone(timezoneName) && selectedDateKey ? `${selectedDateKey}T09:00` : "",
+    scheduledEnd: isValidScheduleTimeZone(timezoneName) && selectedDateKey ? `${selectedDateKey}T10:00` : "",
     customerName: "",
     customerPhone: "",
     addressText: "",
@@ -485,62 +449,37 @@ function createDefaultAppointmentCreateForm(
   };
 }
 
-function createDefaultBlockForm(selectedDateKey: string): BlockForm {
-  const base = selectedDateKey
-    ? new Date(`${selectedDateKey}T09:00:00`)
-    : new Date();
-
-  if (Number.isNaN(base.getTime())) {
-    const fallback = new Date();
-    fallback.setHours(9, 0, 0, 0);
-
-    const fallbackEnd = new Date(fallback);
-    fallbackEnd.setHours(10, 0, 0, 0);
-
-    return {
-      title: "",
-      blockType: "manual_block",
-      startAt: toDateTimeLocalValue(fallback.toISOString()),
-      endAt: toDateTimeLocalValue(fallbackEnd.toISOString()),
-      notes: "",
-    };
-  }
-
-  base.setHours(9, 0, 0, 0);
-
-  const end = new Date(base);
-  end.setHours(10, 0, 0, 0);
-
+function createDefaultBlockForm(selectedDateKey: string, timezoneName: string | null): BlockForm {
   return {
     title: "",
     blockType: "manual_block",
-    startAt: toDateTimeLocalValue(base.toISOString()),
-    endAt: toDateTimeLocalValue(end.toISOString()),
+    startAt: isValidScheduleTimeZone(timezoneName) && selectedDateKey ? `${selectedDateKey}T09:00` : "",
+    endAt: isValidScheduleTimeZone(timezoneName) && selectedDateKey ? `${selectedDateKey}T10:00` : "",
     notes: "",
   };
 }
 
 function startOfLocalDay(date: Date) {
   const result = new Date(date);
-  result.setHours(0, 0, 0, 0);
+  result.setUTCHours(0, 0, 0, 0);
   return result;
 }
 
 function endOfLocalDay(date: Date) {
   const result = new Date(date);
-  result.setHours(23, 59, 59, 999);
+  result.setUTCHours(23, 59, 59, 999);
   return result;
 }
 
 function addCalendarDays(date: Date, amount: number) {
   const result = new Date(date);
-  result.setDate(result.getDate() + amount);
+  result.setUTCDate(result.getUTCDate() + amount);
   return result;
 }
 
 function startOfWeek(date: Date) {
   const result = startOfLocalDay(date);
-  result.setDate(result.getDate() - result.getDay());
+  result.setUTCDate(result.getUTCDate() - result.getUTCDay());
   return result;
 }
 
@@ -556,6 +495,7 @@ function buildWeekDays(date: Date) {
 function formatPeriodLabel(date: Date, view: CalendarView) {
   if (view === "day") {
     return date.toLocaleDateString("pt-BR", {
+      timeZone: "UTC",
       day: "2-digit",
       month: "long",
       year: "numeric",
@@ -566,20 +506,22 @@ function formatPeriodLabel(date: Date, view: CalendarView) {
     const start = startOfWeek(date);
     const end = addCalendarDays(start, 6);
     const sameMonth =
-      start.getFullYear() === end.getFullYear() &&
-      start.getMonth() === end.getMonth();
+      start.getUTCFullYear() === end.getUTCFullYear() &&
+      start.getUTCMonth() === end.getUTCMonth();
 
     if (sameMonth) {
-      return `${start.getDate().toString().padStart(2, "0")}–${end
-        .getDate()
+      return `${start.getUTCDate().toString().padStart(2, "0")}–${end
+        .getUTCDate()
         .toString()
         .padStart(2, "0")} de ${start.toLocaleDateString("pt-BR", {
+        timeZone: "UTC",
         month: "long",
         year: "numeric",
       })}`;
     }
 
     return `${start.toLocaleDateString("pt-BR", {
+      timeZone: "UTC",
       day: "2-digit",
       month: "short",
     })} – ${end.toLocaleDateString("pt-BR", {
@@ -594,46 +536,31 @@ function formatPeriodLabel(date: Date, view: CalendarView) {
 
 function formatWeekHeader(date: Date) {
   return {
-    weekday: date.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", ""),
-    day: date.toLocaleDateString("pt-BR", { day: "2-digit" }),
+    weekday: date.toLocaleDateString("pt-BR", { timeZone: "UTC", weekday: "short" }).replace(".", ""),
+    day: date.toLocaleDateString("pt-BR", { timeZone: "UTC", day: "2-digit" }),
   };
 }
 
-function formatClock(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "--:--";
-  return date.toLocaleTimeString("pt-BR", {
+function formatClock(value: string, timezoneName: string | null) {
+  if (!getStoreLocalDateTimeParts(value, timezoneName)) return "--:--";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: timezoneName || "UTC",
     hour: "2-digit",
     minute: "2-digit",
-  });
+  }).format(new Date(value));
 }
 
-function getTimelinePosition(item: ScheduleItem, day: Date) {
-  const itemStart = new Date(item.startAt);
-  const itemEnd = new Date(item.endAt);
+function getTimelinePosition(item: ScheduleItem, day: Date, timezoneName: string | null) {
+  const itemStart = getStoreLocalDateTimeParts(item.startAt, timezoneName);
+  const itemEnd = getStoreLocalDateTimeParts(item.endAt, timezoneName);
+  if (!itemStart || !itemEnd) return null;
+  const dayKey = toDateKey(day);
+  const itemStartKey = `${itemStart.year}-${itemStart.month}-${itemStart.day}`;
+  const itemEndKey = `${itemEnd.year}-${itemEnd.month}-${itemEnd.day}`;
+  if (itemEndKey < dayKey || itemStartKey > dayKey) return null;
 
-  if (Number.isNaN(itemStart.getTime()) || Number.isNaN(itemEnd.getTime())) {
-    return null;
-  }
-
-  const dayStart = startOfLocalDay(day);
-  const dayEnd = endOfLocalDay(day);
-
-  if (itemEnd < dayStart || itemStart > dayEnd) {
-    return null;
-  }
-
-  const effectiveStart = itemStart < dayStart ? dayStart : itemStart;
-  const effectiveEnd = itemEnd > dayEnd ? dayEnd : itemEnd;
-
-  const startMinutes =
-    effectiveStart.getHours() * 60 +
-    effectiveStart.getMinutes() +
-    effectiveStart.getSeconds() / 60;
-  const endMinutes =
-    effectiveEnd.getHours() * 60 +
-    effectiveEnd.getMinutes() +
-    effectiveEnd.getSeconds() / 60;
+  const startMinutes = itemStartKey < dayKey ? 0 : Number(itemStart.hour) * 60 + Number(itemStart.minute);
+  const endMinutes = itemEndKey > dayKey ? 24 * 60 : Number(itemEnd.hour) * 60 + Number(itemEnd.minute);
 
   const top = (startMinutes / 60) * TIMELINE_HOUR_HEIGHT;
   const rawHeight = ((Math.max(endMinutes, startMinutes + 15) - startMinutes) / 60) *
@@ -655,11 +582,12 @@ function formatDateOnlyPtBr(value: string) {
   if (!value) return "-";
 
   const [year, month, day] = value.split("-");
-  const date = new Date(Number(year), Number(month) - 1, Number(day), 12, 0, 0);
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 12, 0, 0));
 
   if (Number.isNaN(date.getTime())) return value;
 
   return date.toLocaleDateString("pt-BR", {
+    timeZone: "UTC",
     weekday: "short",
     day: "2-digit",
     month: "2-digit",
@@ -695,6 +623,7 @@ function combineDateAndTime(datePart: string, timePart: string) {
 
 type DateTimePickerFieldProps = {
   label: string;
+  timezoneName: string | null;
   dateValue: string;
   timeValue: string;
   onDateChange: (nextDate: string) => void;
@@ -702,11 +631,11 @@ type DateTimePickerFieldProps = {
 };
 
 function DateTimePickerField(props: DateTimePickerFieldProps) {
-  const { label, dateValue, timeValue, onDateChange, onTimeChange } = props;
+  const { label, timezoneName, dateValue, timeValue, onDateChange, onTimeChange } = props;
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState<Date>(() => {
-    const initial = dateValue ? new Date(`${dateValue}T12:00:00`) : new Date();
-    return startOfMonth(Number.isNaN(initial.getTime()) ? new Date() : initial);
+    const initial = dateValue ? new Date(`${dateValue}T12:00:00Z`) : new Date(Date.UTC(2000, 0, 1));
+    return startOfMonth(Number.isNaN(initial.getTime()) ? new Date(Date.UTC(2000, 0, 1)) : initial);
   });
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -725,7 +654,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
 
   function toggleCalendar() {
     if (!calendarOpen && dateValue) {
-      const nextDate = new Date(`${dateValue}T12:00:00`);
+      const nextDate = new Date(`${dateValue}T12:00:00Z`);
       if (!Number.isNaN(nextDate.getTime())) {
         setCalendarMonth(startOfMonth(nextDate));
       }
@@ -760,7 +689,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
                   type="button"
                   onClick={() =>
                     setCalendarMonth(
-                      (prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1)
+                      (prev) => new Date(Date.UTC(prev.getUTCFullYear(), prev.getUTCMonth() - 1, 1))
                     )
                   }
                   className="rounded-lg bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700 hover:bg-gray-200"
@@ -776,7 +705,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
                   type="button"
                   onClick={() =>
                     setCalendarMonth(
-                      (prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1)
+                      (prev) => new Date(Date.UTC(prev.getUTCFullYear(), prev.getUTCMonth() + 1, 1))
                     )
                   }
                   className="rounded-lg bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700 hover:bg-gray-200"
@@ -799,9 +728,9 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
               <div className="grid grid-cols-7 gap-1">
                 {calendarMonthDays.map((day) => {
                   const dayKey = toDateKey(day);
-                  const sameMonth = day.getMonth() === calendarMonth.getMonth();
+                  const sameMonth = day.getUTCMonth() === calendarMonth.getUTCMonth();
                   const isSelected = dayKey === dateValue;
-                  const isToday = dayKey === toDateKey(new Date());
+                  const isToday = dayKey === storeTodayDateKey(timezoneName);
 
                   return (
                     <button
@@ -821,7 +750,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
                           : "hover:bg-gray-100",
                       ].join(" ")}
                     >
-                      {day.getDate()}
+                      {day.getUTCDate()}
                     </button>
                   );
                 })}
@@ -856,16 +785,17 @@ export default function SchedulePage() {
   } = useStoreContext();
 
   const [calendarView, setCalendarView] = useState<CalendarView>("week");
-  const [viewDate, setViewDate] = useState<Date>(() => new Date());
+  const [viewDate, setViewDate] = useState<Date>(() => new Date(Date.UTC(2000, 0, 1)));
   const [items, setItems] = useState<ScheduleItem[]>([]);
   const [selectedDateKey, setSelectedDateKey] = useState<string>(() =>
-    toDateKey(new Date())
+    ""
   );
   const [selectedItem, setSelectedItem] = useState<ScheduleItem | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [scheduleTimezoneName, setScheduleTimezoneName] = useState<string | null>(null);
 
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState<AppointmentEditForm | null>(null);
@@ -876,7 +806,7 @@ export default function SchedulePage() {
 
   const [createBlockOpen, setCreateBlockOpen] = useState(false);
   const [blockForm, setBlockForm] = useState<BlockForm>(() =>
-    createDefaultBlockForm(toDateKey(new Date()))
+    createDefaultBlockForm("", null)
   );
   const [savingBlock, setSavingBlock] = useState(false);
   const [blockErrorText, setBlockErrorText] = useState<string | null>(null);
@@ -884,7 +814,7 @@ export default function SchedulePage() {
   const [createAppointmentOpen, setCreateAppointmentOpen] = useState(false);
   const [appointmentCreateForm, setAppointmentCreateForm] =
     useState<AppointmentCreateForm>(() =>
-      createDefaultAppointmentCreateForm(toDateKey(new Date()))
+      createDefaultAppointmentCreateForm("", null)
     );
   const [savingAppointmentCreate, setSavingAppointmentCreate] = useState(false);
   const [appointmentCreateErrorText, setAppointmentCreateErrorText] =
@@ -911,7 +841,7 @@ export default function SchedulePage() {
   const appointmentAddressSourceRef = useRef<
     "empty" | "manual" | "canonical"
   >("empty");
-  const lastKnownTodayKeyRef = useRef<string>(toDateKey(new Date()));
+  const lastKnownTodayKeyRef = useRef<string>("");
   const selectedItemRef = useRef<ScheduleItem | null>(null);
   const editModeRef = useRef(false);
   const loadRequestIdRef = useRef(0);
@@ -928,9 +858,42 @@ export default function SchedulePage() {
     }
   }, [editMode]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!organizationId || !activeStoreId || storeLoading) {
+      setScheduleTimezoneName(null);
+      return () => { cancelled = true; };
+    }
+
+    void supabase
+      .from("store_schedule_settings")
+      .select("timezone_name")
+      .eq("organization_id", organizationId)
+      .eq("store_id", activeStoreId)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        const timezoneName = !error && isValidScheduleTimeZone(data?.timezone_name)
+          ? data.timezone_name
+          : null;
+        setScheduleTimezoneName(timezoneName);
+        if (timezoneName) {
+          const todayKey = storeTodayDateKey(timezoneName);
+          if (todayKey) {
+            setViewDate(new Date(`${todayKey}T12:00:00Z`));
+            setSelectedDateKey(todayKey);
+            lastKnownTodayKeyRef.current = todayKey;
+          }
+        }
+        if (!timezoneName) setErrorText("Fuso horário canônico da loja indisponível.");
+      });
+
+    return () => { cancelled = true; };
+  }, [organizationId, activeStoreId, storeLoading]);
+
   const canLoadSchedule = useMemo(() => {
-    return !storeLoading && !!organizationId && !!activeStoreId;
-  }, [storeLoading, organizationId, activeStoreId]);
+    return !storeLoading && !!organizationId && !!activeStoreId && !!scheduleTimezoneName;
+  }, [storeLoading, organizationId, activeStoreId, scheduleTimezoneName]);
 
   const calendarDays = useMemo(() => buildCalendarDays(viewDate), [viewDate]);
   const weekDays = useMemo(() => buildWeekDays(viewDate), [viewDate]);
@@ -992,11 +955,16 @@ export default function SchedulePage() {
       setErrorText(null);
 
       try {
+        const startIso = storeDateKeyToUtcIso(toDateKey(rangeStart), scheduleTimezoneName);
+        const endIso = storeDateKeyToUtcIso(addStoreCalendarDays(toDateKey(rangeEnd), 1), scheduleTimezoneName);
+        if (!startIso || !endIso) {
+          throw new Error("Fuso horário canônico da loja indisponível para consultar a agenda.");
+        }
         const params = new URLSearchParams({
           organizationId,
           storeId: activeStoreId,
-          start: rangeStart.toISOString(),
-          end: rangeEnd.toISOString(),
+          start: startIso,
+          end: endIso,
         });
 
         const response = await fetch(`/api/schedule?${params.toString()}`, {
@@ -1035,10 +1003,10 @@ export default function SchedulePage() {
 
           if (refreshedSelectedItem && editModeRef.current) {
             if (refreshedSelectedItem.itemKind === "appointment") {
-              setEditForm(createAppointmentFormFromItem(refreshedSelectedItem));
+              setEditForm(createAppointmentFormFromItem(refreshedSelectedItem, scheduleTimezoneName));
               setBlockEditForm(null);
             } else if (refreshedSelectedItem.itemKind === "block") {
-              setBlockEditForm(createBlockFormFromItem(refreshedSelectedItem));
+              setBlockEditForm(createBlockFormFromItem(refreshedSelectedItem, scheduleTimezoneName));
               setEditForm(null);
             }
           }
@@ -1071,7 +1039,7 @@ export default function SchedulePage() {
         }
       }
     },
-    [canLoadSchedule, organizationId, activeStoreId, rangeStart, rangeEnd]
+    [canLoadSchedule, organizationId, activeStoreId, rangeStart, rangeEnd, scheduleTimezoneName]
   );
 
   useEffect(() => {
@@ -1247,12 +1215,13 @@ export default function SchedulePage() {
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      const nextTodayKey = toDateKey(new Date());
+      const nextTodayKey = storeTodayDateKey(scheduleTimezoneName);
+      if (!nextTodayKey) return;
       const previousTodayKey = lastKnownTodayKeyRef.current;
 
       if (nextTodayKey !== previousTodayKey) {
         if (selectedDateKey === previousTodayKey) {
-          const now = new Date();
+          const now = new Date(`${nextTodayKey}T12:00:00Z`);
           setSelectedDateKey(nextTodayKey);
           setViewDate(now);
         }
@@ -1264,7 +1233,7 @@ export default function SchedulePage() {
     return () => {
       window.clearInterval(interval);
     };
-  }, [selectedDateKey]);
+  }, [selectedDateKey, scheduleTimezoneName]);
 
   const itemsByDate = useMemo(() => {
     const map: Record<string, ScheduleItem[]> = {};
@@ -1275,7 +1244,7 @@ export default function SchedulePage() {
 
     items.forEach((item) => {
       visibleDays.forEach((day) => {
-        if (itemSpansDate(item, day)) {
+        if (itemSpansDate(item, day, scheduleTimezoneName)) {
           const key = toDateKey(day);
           map[key] = map[key] || [];
           map[key].push(item);
@@ -1292,7 +1261,7 @@ export default function SchedulePage() {
     });
 
     return map;
-  }, [visibleDays, items]);
+  }, [visibleDays, items, scheduleTimezoneName]);
 
   const selectedLeadOption = useMemo(() => {
     return leadOptions.find((lead) => lead.leadId === appointmentCreateForm.leadId) || null;
@@ -1355,7 +1324,9 @@ export default function SchedulePage() {
   ]);
 
   function changeCalendarView(nextView: CalendarView) {
-    const now = new Date();
+    const todayKey = storeTodayDateKey(scheduleTimezoneName);
+    if (!todayKey) return;
+    const now = new Date(`${todayKey}T12:00:00Z`);
     setCalendarView(nextView);
     setViewDate(now);
     setSelectedDateKey(toDateKey(now));
@@ -1370,7 +1341,7 @@ export default function SchedulePage() {
       } else if (calendarView === "week") {
         nextDate = addCalendarDays(prev, -7);
       } else {
-        nextDate = new Date(prev.getFullYear(), prev.getMonth() - 1, 1);
+        nextDate = new Date(Date.UTC(prev.getUTCFullYear(), prev.getUTCMonth() - 1, 1));
       }
 
       setSelectedDateKey(toDateKey(nextDate));
@@ -1387,7 +1358,7 @@ export default function SchedulePage() {
       } else if (calendarView === "week") {
         nextDate = addCalendarDays(prev, 7);
       } else {
-        nextDate = new Date(prev.getFullYear(), prev.getMonth() + 1, 1);
+        nextDate = new Date(Date.UTC(prev.getUTCFullYear(), prev.getUTCMonth() + 1, 1));
       }
 
       setSelectedDateKey(toDateKey(nextDate));
@@ -1396,7 +1367,9 @@ export default function SchedulePage() {
   }
 
   function goToToday() {
-    const now = new Date();
+    const todayKey = storeTodayDateKey(scheduleTimezoneName);
+    if (!todayKey) return;
+    const now = new Date(`${todayKey}T12:00:00Z`);
     setViewDate(now);
     setSelectedDateKey(toDateKey(now));
   }
@@ -1410,13 +1383,13 @@ export default function SchedulePage() {
     setSaveErrorText(null);
 
     if (item.itemKind === "appointment") {
-      setEditForm(createAppointmentFormFromItem(item));
+      setEditForm(createAppointmentFormFromItem(item, scheduleTimezoneName));
       setBlockEditForm(null);
       return;
     }
 
     if (item.itemKind === "block") {
-      setBlockEditForm(createBlockFormFromItem(item));
+      setBlockEditForm(createBlockFormFromItem(item, scheduleTimezoneName));
       setEditForm(null);
       return;
     }
@@ -1440,7 +1413,7 @@ export default function SchedulePage() {
     if (!selectedItem) return;
 
     if (selectedItem.itemKind === "appointment") {
-      setEditForm(createAppointmentFormFromItem(selectedItem));
+      setEditForm(createAppointmentFormFromItem(selectedItem, scheduleTimezoneName));
       setBlockEditForm(null);
       setEditMode(true);
       editModeRef.current = true;
@@ -1449,7 +1422,7 @@ export default function SchedulePage() {
     }
 
     if (selectedItem.itemKind === "block") {
-      setBlockEditForm(createBlockFormFromItem(selectedItem));
+      setBlockEditForm(createBlockFormFromItem(selectedItem, scheduleTimezoneName));
       setEditForm(null);
       setEditMode(true);
       editModeRef.current = true;
@@ -1468,7 +1441,7 @@ export default function SchedulePage() {
     }
 
     if (selectedItem.itemKind === "appointment") {
-      setEditForm(createAppointmentFormFromItem(selectedItem));
+      setEditForm(createAppointmentFormFromItem(selectedItem, scheduleTimezoneName));
       setBlockEditForm(null);
       setEditMode(false);
       editModeRef.current = false;
@@ -1477,7 +1450,7 @@ export default function SchedulePage() {
     }
 
     if (selectedItem.itemKind === "block") {
-      setBlockEditForm(createBlockFormFromItem(selectedItem));
+      setBlockEditForm(createBlockFormFromItem(selectedItem, scheduleTimezoneName));
       setEditForm(null);
       setEditMode(false);
       editModeRef.current = false;
@@ -1787,14 +1760,14 @@ export default function SchedulePage() {
   function openCreateBlockPanel() {
     setCreateBlockOpen(true);
     setBlockErrorText(null);
-    setBlockForm(createDefaultBlockForm(selectedDateKey));
+    setBlockForm(createDefaultBlockForm(selectedDateKey, scheduleTimezoneName));
   }
 
   function closeCreateBlockPanel() {
     setCreateBlockOpen(false);
     setBlockErrorText(null);
     setSavingBlock(false);
-    setBlockForm(createDefaultBlockForm(selectedDateKey));
+    setBlockForm(createDefaultBlockForm(selectedDateKey, scheduleTimezoneName));
   }
 
   function openCreateAppointmentPanel() {
@@ -1811,7 +1784,7 @@ export default function SchedulePage() {
       isHumanActive: null,
       lastMessageAt: null,
     });
-    setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey));
+    setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey, scheduleTimezoneName));
   }
 
   function closeCreateAppointmentPanel() {
@@ -1829,7 +1802,7 @@ export default function SchedulePage() {
       isHumanActive: null,
       lastMessageAt: null,
     });
-    setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey));
+    setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey, scheduleTimezoneName));
   }
 
   async function handleAppointmentLeadChange(nextLeadId: string) {
@@ -1870,26 +1843,6 @@ export default function SchedulePage() {
         leadId: nextLeadId,
       });
     }
-  }
-
-  async function resolveAppointmentCommercialOpportunityId(appointmentId: string) {
-    if (!organizationId || !activeStoreId) {
-      return null;
-    }
-
-    const { data, error } = await supabase
-      .from("store_appointments")
-      .select("commercial_opportunity_id")
-      .eq("organization_id", organizationId)
-      .eq("store_id", activeStoreId)
-      .eq("id", appointmentId)
-      .maybeSingle();
-
-    if (error) {
-      throw error;
-    }
-
-    return String(data?.commercial_opportunity_id || "").trim() || null;
   }
 
   async function maybeProjectAppointmentToTechnicalVisitStage(args: {
@@ -1941,10 +1894,10 @@ export default function SchedulePage() {
       return;
     }
 
-    const startDate = new Date(editForm.scheduledStart);
-    const endDate = new Date(editForm.scheduledEnd);
+    const startIso = storeLocalDateTimeToUtcIso(editForm.scheduledStart, scheduleTimezoneName);
+    const endIso = storeLocalDateTimeToUtcIso(editForm.scheduledEnd, scheduleTimezoneName);
 
-    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    if (!startIso || !endIso) {
       setSaveErrorText("Preencha um período válido.");
       return;
     }
@@ -1957,8 +1910,8 @@ export default function SchedulePage() {
       : null;
 
     const timeChanged =
-      originalStartIso !== startDate.toISOString() ||
-      originalEndIso !== endDate.toISOString();
+      originalStartIso !== startIso ||
+      originalEndIso !== endIso;
 
     const nextStatus =
       timeChanged && editForm.status === "scheduled"
@@ -1985,8 +1938,8 @@ export default function SchedulePage() {
         p_title: editForm.title,
         p_appointment_type: editForm.appointmentType,
         p_status: nextStatus,
-        p_scheduled_start: startDate.toISOString(),
-        p_scheduled_end: endDate.toISOString(),
+        p_scheduled_start: startIso,
+        p_scheduled_end: endIso,
         p_customer_name: editForm.customerName || null,
         p_customer_phone: normalizePhoneForSave(editForm.customerPhone),
         p_address_text: editForm.addressText || null,
@@ -2026,18 +1979,6 @@ export default function SchedulePage() {
         return;
       }
 
-      const appointmentCommercialOpportunityId = !isCompletingNow
-        ? await resolveAppointmentCommercialOpportunityId(selectedItem.itemId)
-        : null;
-      const projectionWarning = !isCompletingNow
-        ? await maybeProjectAppointmentToTechnicalVisitStage({
-            appointmentId: selectedItem.itemId,
-            appointmentType: editForm.appointmentType,
-            appointmentStatus: nextStatus,
-            commercialOpportunityId: appointmentCommercialOpportunityId,
-          })
-        : null;
-
       const updatedItem = data
         ? ({
             itemKind: "appointment",
@@ -2046,8 +1987,7 @@ export default function SchedulePage() {
             storeId: data.store_id,
             leadId: data.lead_id,
             conversationId: data.conversation_id,
-            commercialOpportunityId:
-              String(data.commercial_opportunity_id || "").trim() || appointmentCommercialOpportunityId,
+            commercialOpportunityId: String(data.commercial_opportunity_id || "").trim() || null,
             title: data.title,
             itemType: data.appointment_type,
             status: data.status,
@@ -2067,7 +2007,7 @@ export default function SchedulePage() {
       if (updatedItem) {
         selectedItemRef.current = updatedItem;
         setSelectedItem(updatedItem);
-        setEditForm(createAppointmentFormFromItem(updatedItem));
+        setEditForm(createAppointmentFormFromItem(updatedItem, scheduleTimezoneName));
       }
 
       setCompletionDecisionOpen(false);
@@ -2075,7 +2015,6 @@ export default function SchedulePage() {
       editModeRef.current = false;
 
       await loadSchedule({ silent: true });
-      setErrorText(projectionWarning);
       setSavingEdit(false);
     } catch (error: unknown) {
       setSaveErrorText(getErrorMessage(error, "Erro inesperado ao salvar compromisso."));
@@ -2097,8 +2036,8 @@ export default function SchedulePage() {
     setSaveErrorText(null);
 
     try {
-      const startDate = new Date(blockEditForm.startAt);
-      const endDate = new Date(blockEditForm.endAt);
+      const startIso = storeLocalDateTimeToUtcIso(blockEditForm.startAt, scheduleTimezoneName);
+      const endIso = storeLocalDateTimeToUtcIso(blockEditForm.endAt, scheduleTimezoneName);
 
       if (!blockEditForm.title.trim()) {
         setSaveErrorText("Preencha o título do bloqueio.");
@@ -2106,7 +2045,7 @@ export default function SchedulePage() {
         return;
       }
 
-      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      if (!startIso || !endIso) {
         setSaveErrorText("Preencha um período válido.");
         setSavingEdit(false);
         return;
@@ -2118,8 +2057,8 @@ export default function SchedulePage() {
         p_store_id: activeStoreId,
         p_title: blockEditForm.title.trim(),
         p_block_type: blockEditForm.blockType,
-        p_start_at: startDate.toISOString(),
-        p_end_at: endDate.toISOString(),
+        p_start_at: startIso,
+        p_end_at: endIso,
         p_notes: blockEditForm.notes.trim() || null,
       });
 
@@ -2156,7 +2095,7 @@ export default function SchedulePage() {
       if (updatedItem) {
         selectedItemRef.current = updatedItem;
         setSelectedItem(updatedItem);
-        setBlockEditForm(createBlockFormFromItem(updatedItem));
+        setBlockEditForm(createBlockFormFromItem(updatedItem, scheduleTimezoneName));
       }
 
       setEditMode(false);
@@ -2228,7 +2167,7 @@ export default function SchedulePage() {
       if (updatedItem) {
         selectedItemRef.current = updatedItem;
         setSelectedItem(updatedItem);
-        setEditForm(createAppointmentFormFromItem(updatedItem));
+        setEditForm(createAppointmentFormFromItem(updatedItem, scheduleTimezoneName));
       }
 
       setEditMode(false);
@@ -2300,8 +2239,8 @@ export default function SchedulePage() {
     setBlockErrorText(null);
 
     try {
-      const startDate = new Date(blockForm.startAt);
-      const endDate = new Date(blockForm.endAt);
+      const startIso = storeLocalDateTimeToUtcIso(blockForm.startAt, scheduleTimezoneName);
+      const endIso = storeLocalDateTimeToUtcIso(blockForm.endAt, scheduleTimezoneName);
 
       if (!blockForm.title.trim()) {
         setBlockErrorText("Preencha o título do bloqueio.");
@@ -2309,7 +2248,7 @@ export default function SchedulePage() {
         return;
       }
 
-      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      if (!startIso || !endIso) {
         setBlockErrorText("Preencha um período válido.");
         setSavingBlock(false);
         return;
@@ -2320,8 +2259,8 @@ export default function SchedulePage() {
         p_store_id: activeStoreId,
         p_title: blockForm.title.trim(),
         p_block_type: blockForm.blockType,
-        p_start_at: startDate.toISOString(),
-        p_end_at: endDate.toISOString(),
+        p_start_at: startIso,
+        p_end_at: endIso,
         p_notes: blockForm.notes.trim() || null,
         p_source: "panel",
         p_created_by_user_id: null,
@@ -2352,8 +2291,8 @@ export default function SchedulePage() {
     setAppointmentCreateErrorText(null);
 
     try {
-      const startDate = new Date(appointmentCreateForm.scheduledStart);
-      const endDate = new Date(appointmentCreateForm.scheduledEnd);
+      const startIso = storeLocalDateTimeToUtcIso(appointmentCreateForm.scheduledStart, scheduleTimezoneName);
+      const endIso = storeLocalDateTimeToUtcIso(appointmentCreateForm.scheduledEnd, scheduleTimezoneName);
 
       if (!appointmentCreateForm.title.trim()) {
         setAppointmentCreateErrorText("Preencha o título do compromisso.");
@@ -2361,7 +2300,7 @@ export default function SchedulePage() {
         return;
       }
 
-      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      if (!startIso || !endIso) {
         setAppointmentCreateErrorText("Preencha um período válido.");
         setSavingAppointmentCreate(false);
         return;
@@ -2432,8 +2371,8 @@ export default function SchedulePage() {
             conversationId: resolvedConversationId,
             title: appointmentCreateForm.title.trim(),
             status: appointmentCreateForm.status,
-            scheduledStart: startDate.toISOString(),
-            scheduledEnd: endDate.toISOString(),
+            scheduledStart: startIso,
+            scheduledEnd: endIso,
             customerName: appointmentCreateForm.customerName.trim() || null,
             customerPhone: normalizePhoneForSave(appointmentCreateForm.customerPhone),
             addressText: appointmentCreateForm.addressText.trim() || null,
@@ -2466,8 +2405,8 @@ export default function SchedulePage() {
           p_title: appointmentCreateForm.title.trim(),
           p_appointment_type: appointmentCreateForm.appointmentType,
           p_status: appointmentCreateForm.status,
-          p_scheduled_start: startDate.toISOString(),
-          p_scheduled_end: endDate.toISOString(),
+          p_scheduled_start: startIso,
+          p_scheduled_end: endIso,
           p_customer_name: appointmentCreateForm.customerName.trim() || null,
           p_customer_phone: normalizePhoneForSave(appointmentCreateForm.customerPhone),
           p_address_text: appointmentCreateForm.addressText.trim() || null,
@@ -2672,9 +2611,9 @@ export default function SchedulePage() {
                     const dayKey = toDateKey(date);
                     const dayItems = itemsByDate[dayKey] || [];
                     const isCurrentMonth =
-                      date.getMonth() === viewDate.getMonth() &&
-                      date.getFullYear() === viewDate.getFullYear();
-                    const isToday = dayKey === toDateKey(new Date());
+                      date.getUTCMonth() === viewDate.getUTCMonth() &&
+                      date.getUTCFullYear() === viewDate.getUTCFullYear();
+                    const isToday = dayKey === storeTodayDateKey(scheduleTimezoneName);
                     const isSelected = dayKey === selectedDateKey;
 
                     return (
@@ -2706,7 +2645,7 @@ export default function SchedulePage() {
                                 : "text-gray-400",
                             ].join(" ")}
                           >
-                            {date.getDate()}
+                            {date.getUTCDate()}
                           </span>
                           {dayItems.length > 0 ? (
                             <span className="text-[9px] text-gray-400">
@@ -2728,12 +2667,10 @@ export default function SchedulePage() {
                               className={`block w-full truncate rounded-md px-2 py-1.5 text-left text-[10px] font-semibold leading-tight shadow-sm ${getItemChipClass(
                                 item
                               )}`}
-                              title={`${formatItemType(item.itemType)} · ${item.title} · ${formatClock(
-                                item.startAt
-                              )}`}
+                              title={`${formatItemType(item.itemType)} · ${item.title} · ${formatClock(item.startAt, scheduleTimezoneName)}`}
                             >
                               {getItemStatusPrefix(item)}
-                              {formatClock(item.startAt)} {item.title || "-"}
+                              {formatClock(item.startAt, scheduleTimezoneName)} {item.title || "-"}
                             </button>
                           ))}
 
@@ -2771,7 +2708,7 @@ export default function SchedulePage() {
                       {visibleDays.map((date) => {
                         const dayKey = toDateKey(date);
                         const header = formatWeekHeader(date);
-                        const isToday = dayKey === toDateKey(new Date());
+                        const isToday = dayKey === storeTodayDateKey(scheduleTimezoneName);
                         const isSelected = dayKey === selectedDateKey;
 
                         return (
@@ -2806,6 +2743,7 @@ export default function SchedulePage() {
                               {calendarView === "day" ? (
                                 <span className="text-xs capitalize text-gray-500">
                                   {date.toLocaleDateString("pt-BR", {
+                                    timeZone: "UTC",
                                     month: "long",
                                     year: "numeric",
                                   })}
@@ -2846,11 +2784,11 @@ export default function SchedulePage() {
                       {visibleDays.map((date) => {
                         const dayKey = toDateKey(date);
                         const dayItems = itemsByDate[dayKey] || [];
-                        const isToday = dayKey === toDateKey(new Date());
+                        const isToday = dayKey === storeTodayDateKey(scheduleTimezoneName);
                         const isSelected = dayKey === selectedDateKey;
-                        const now = new Date();
+                        const nowParts = getStoreLocalDateTimeParts(new Date(), scheduleTimezoneName);
                         const nowTop =
-                          ((now.getHours() * 60 + now.getMinutes()) / 60) *
+                          (((nowParts ? Number(nowParts.hour) * 60 + Number(nowParts.minute) : 0) / 60)) *
                           TIMELINE_HOUR_HEIGHT;
 
                         return (
@@ -2902,7 +2840,7 @@ export default function SchedulePage() {
                             ) : null}
 
                             {dayItems.map((item, index) => {
-                              const position = getTimelinePosition(item, date);
+                              const position = getTimelinePosition(item, date, scheduleTimezoneName);
                               if (!position) return null;
 
                               return (
@@ -2924,9 +2862,7 @@ export default function SchedulePage() {
                                     right: "4px",
                                     zIndex: 10 + Math.min(index, 20),
                                   }}
-                                  title={`${formatItemType(item.itemType)} · ${item.title} · ${formatClock(
-                                    item.startAt
-                                  )}–${formatClock(item.endAt)}`}
+                                  title={`${formatItemType(item.itemType)} · ${item.title} · ${formatClock(item.startAt, scheduleTimezoneName)}–${formatClock(item.endAt, scheduleTimezoneName)}`}
                                 >
                                   <div className="truncate">
                                     {getItemStatusPrefix(item)}
@@ -2934,7 +2870,7 @@ export default function SchedulePage() {
                                   </div>
                                   {position.height >= 36 ? (
                                     <div className="truncate text-[9px] font-medium opacity-90">
-                                      {formatClock(item.startAt)}–{formatClock(item.endAt)}
+                                      {formatClock(item.startAt, scheduleTimezoneName)}–{formatClock(item.endAt, scheduleTimezoneName)}
                                       {calendarView === "day" && item.customerName
                                         ? ` · ${item.customerName}`
                                         : ""}
@@ -3163,6 +3099,7 @@ export default function SchedulePage() {
 
                       <DateTimePickerField
                         label="Início"
+                        timezoneName={scheduleTimezoneName}
                         dateValue={extractDatePart(editForm.scheduledStart)}
                         timeValue={extractTimePart(editForm.scheduledStart)}
                         onDateChange={(nextDate) =>
@@ -3195,6 +3132,7 @@ export default function SchedulePage() {
 
                       <DateTimePickerField
                         label="Fim"
+                        timezoneName={scheduleTimezoneName}
                         dateValue={extractDatePart(editForm.scheduledEnd)}
                         timeValue={extractTimePart(editForm.scheduledEnd)}
                         onDateChange={(nextDate) =>
@@ -3384,6 +3322,7 @@ export default function SchedulePage() {
                     <div className="grid gap-3 md:grid-cols-2">
                       <DateTimePickerField
                         label="Início"
+                        timezoneName={scheduleTimezoneName}
                         dateValue={extractDatePart(blockEditForm.startAt)}
                         timeValue={extractTimePart(blockEditForm.startAt)}
                         onDateChange={(nextDate) =>
@@ -3416,6 +3355,7 @@ export default function SchedulePage() {
 
                       <DateTimePickerField
                         label="Fim"
+                        timezoneName={scheduleTimezoneName}
                         dateValue={extractDatePart(blockEditForm.endAt)}
                         timeValue={extractTimePart(blockEditForm.endAt)}
                         onDateChange={(nextDate) =>
@@ -3490,7 +3430,7 @@ export default function SchedulePage() {
                         Início
                       </div>
                       <div className="mt-0.5 text-xs font-medium text-gray-900">
-                        {formatDateTime(selectedItem.startAt)}
+                        {formatDateTime(selectedItem.startAt, scheduleTimezoneName)}
                       </div>
                     </div>
 
@@ -3499,7 +3439,7 @@ export default function SchedulePage() {
                         Fim
                       </div>
                       <div className="mt-0.5 text-xs font-medium text-gray-900">
-                        {formatDateTime(selectedItem.endAt)}
+                        {formatDateTime(selectedItem.endAt, scheduleTimezoneName)}
                       </div>
                     </div>
 
@@ -3702,6 +3642,7 @@ export default function SchedulePage() {
                   <div className="grid gap-3 md:grid-cols-2">
                     <DateTimePickerField
                       label="Início"
+                      timezoneName={scheduleTimezoneName}
                       dateValue={extractDatePart(blockForm.startAt)}
                       timeValue={extractTimePart(blockForm.startAt)}
                       onDateChange={(nextDate) =>
@@ -3726,6 +3667,7 @@ export default function SchedulePage() {
 
                     <DateTimePickerField
                       label="Fim"
+                      timezoneName={scheduleTimezoneName}
                       dateValue={extractDatePart(blockForm.endAt)}
                       timeValue={extractTimePart(blockForm.endAt)}
                       onDateChange={(nextDate) =>
@@ -3917,6 +3859,7 @@ export default function SchedulePage() {
                   <div className="grid gap-3 md:grid-cols-2">
                     <DateTimePickerField
                       label="Início"
+                      timezoneName={scheduleTimezoneName}
                       dateValue={extractDatePart(appointmentCreateForm.scheduledStart)}
                       timeValue={extractTimePart(appointmentCreateForm.scheduledStart)}
                       onDateChange={(nextDate) =>
@@ -3941,6 +3884,7 @@ export default function SchedulePage() {
 
                     <DateTimePickerField
                       label="Fim"
+                      timezoneName={scheduleTimezoneName}
                       dateValue={extractDatePart(appointmentCreateForm.scheduledEnd)}
                       timeValue={extractTimePart(appointmentCreateForm.scheduledEnd)}
                       onDateChange={(nextDate) =>
@@ -4009,7 +3953,7 @@ export default function SchedulePage() {
                           ? createLeadConversationState.isHumanActive
                             ? "Conversa conectada com humano ativo neste momento."
                             : createLeadConversationState.lastMessageAt
-                            ? `Conversa conectada • Última mensagem em ${formatDateTime(createLeadConversationState.lastMessageAt)}`
+                            ? `Conversa conectada • Última mensagem em ${formatDateTime(createLeadConversationState.lastMessageAt, scheduleTimezoneName)}`
                             : "Conversa conectada."
                           : ""}
                       </div>

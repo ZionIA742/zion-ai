@@ -612,6 +612,37 @@ function formatAppointmentTypeForCustomer(value: string | null | undefined) {
   return "compromisso";
 }
 
+function isValidOperationalTimeZone(value: string | null | undefined): value is string {
+  if (!String(value || '').trim()) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: String(value) }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveCanonicalStoreTimeZone(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  taskTimeZone: string | null | undefined;
+}) {
+  if (isValidOperationalTimeZone(args.taskTimeZone)) return args.taskTimeZone;
+  const { data, error } = await args.supabase
+    .from('store_schedule_settings')
+    .select('timezone_name')
+    .eq('organization_id', args.organizationId)
+    .eq('store_id', args.storeId)
+    .maybeSingle();
+  if (error) throw new Error(`Falha ao carregar timezone canonico da loja: ${error.message}`);
+  if (data?.timezone_name == null || String(data.timezone_name).trim() === '') return 'America/Sao_Paulo';
+  if (!isValidOperationalTimeZone(data.timezone_name)) {
+    throw new Error('Timezone canonico da loja invalido; operacao abortada.');
+  }
+  return data.timezone_name;
+}
+
 function formatDateOnlyInTimeZone(value: string | null | undefined, timezoneName = "America/Sao_Paulo") {
   if (!value) return "data não definida";
 
@@ -1014,6 +1045,13 @@ async function processCreateAppointmentTask(args: {
     throw new Error("Task de criacao sem identidade canonica ou janela de horario.");
   }
 
+  const taskTimezone = await resolveCanonicalStoreTimeZone({
+    supabase,
+    organizationId: queue.organization_id,
+    storeId: queue.store_id,
+    taskTimeZone: currentTask.timezone_name,
+  });
+
   const livePayload = currentTask.task_payload || {};
   let appointmentType = String(livePayload.appointment_type || initialPayload.appointment_type || "").trim();
   let targetStartAt = currentTask.target_start_at;
@@ -1084,7 +1122,7 @@ async function processCreateAppointmentTask(args: {
         content: customerMessage,
         targetStartAt,
         targetEndAt,
-        timezoneName: currentTask.timezone_name,
+        timezoneName: taskTimezone,
       });
 
       if (!suggestedWindow) {
@@ -1378,7 +1416,7 @@ async function processCreateAppointmentTask(args: {
     });
   }
 
-  const timezone = currentTask.timezone_name || "America/Sao_Paulo";
+  const timezone = taskTimezone;
   let messageId = String(latestPayload.customer_confirmation_message_id || "").trim() || null;
   if (latestPayload.customer_confirmation_message_sent !== true) {
     const content = `Oi, ${currentTask.customer_name || "tudo bem"}. Confirmado: sua ${appointmentType === "installation" ? "instalacao" : "visita tecnica"} ficou para ${formatDateOnlyInTimeZone(targetStartAt, timezone)} as ${formatTimeOnlyInTimeZone(targetStartAt, timezone)}.`;
@@ -1661,7 +1699,12 @@ async function processQueueItem(args: {
     throw new Error("Divergencia de oportunidade comercial entre task e compromisso.");
   }
 
-  const timezoneName = task.timezone_name || "America/Sao_Paulo";
+  const timezoneName = await resolveCanonicalStoreTimeZone({
+    supabase,
+    organizationId: queue.organization_id,
+    storeId: queue.store_id,
+    taskTimeZone: task.timezone_name,
+  });
   const taskPayload = task.task_payload || {};
   const lastConversationId = String(taskPayload.last_processed_conversation_id || "");
   const currentConversationId = String(task.related_conversation_id || queue.conversation_id || "");

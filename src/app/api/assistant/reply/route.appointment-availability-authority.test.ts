@@ -41,6 +41,28 @@ test("responsible-approved reschedule sends the current appointment type to cano
   );
 });
 
+test("responsible-approved reschedule updates without projecting commercial stage", () => {
+  const block = sliceBetween(
+    "async function resolveSuggestedTimeApprovalReply",
+    "function buildProfessionalAppointmentClarificationReply",
+  );
+
+  assert.equal(block.includes('rpc("update_store_appointment"'), true);
+  assert.equal(block.includes("maybeProjectAppointmentToTechnicalVisitStageBySystem"), false);
+  assert.equal(block.includes("projectTechnicalVisitStageBySystem"), false);
+});
+
+test("responsible-approved reschedule validates task and store timezone before side effect", () => {
+  const block = sliceBetween(
+    "async function resolveSuggestedTimeApprovalReply",
+    "function buildProfessionalAppointmentClarificationReply",
+  );
+
+  assert.equal(block.includes("resolveSuggestedTimeApprovalTimezone"), true);
+  assert.equal(block.indexOf("resolveSuggestedTimeApprovalTimezone") < block.indexOf('rpc("update_store_appointment"'), true);
+  assert.equal(source.includes("if (!isValidTimeZone(normalizedConfiguredTimezone))"), true);
+});
+
 test("canonical availability failures expose the relevant capacity reasons", () => {
   const block = sliceBetween(
     "async function checkSuggestedTimeApprovalAvailability",

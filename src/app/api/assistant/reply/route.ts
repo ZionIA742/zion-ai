@@ -34,6 +34,7 @@ import {
   getScheduleTimezone,
   hasAmbiguousBareDayDateReference,
   isoDateToLocalDateForDb,
+  isValidTimeZone,
   localScheduleDateTimeToUtcIso,
   normalizeScheduleTimeText,
   padTwoDigits,
@@ -4400,6 +4401,36 @@ function buildCustomerConfirmationTextForSuggestedTime(args: { appointment: Appo
   return `Oi, ${customerName}. Confirmado então: sua ${appointmentTypeLabel} ficou para ${suggestedDate} às ${suggestedTime}. Qualquer coisa, é só me avisar.`;
 }
 
+async function resolveSuggestedTimeApprovalTimezone(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  taskTimezone: string | null | undefined;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const taskTimezone = String(args.taskTimezone || '').trim();
+  if (taskTimezone && isValidTimeZone(taskTimezone)) return taskTimezone;
+
+  let configuredTimezone = args.scheduleSettings?.timezone_name;
+  if (!args.scheduleSettings) {
+    const { data, error } = await args.supabase
+      .from("store_schedule_settings")
+      .select("timezone_name")
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .maybeSingle();
+    if (error) throw new Error(`Falha ao carregar timezone canônico da loja: ${error.message}`);
+    configuredTimezone = data?.timezone_name || null;
+  }
+
+  const normalizedConfiguredTimezone = String(configuredTimezone || '').trim();
+  if (!normalizedConfiguredTimezone) return "America/Sao_Paulo";
+  if (!isValidTimeZone(normalizedConfiguredTimezone)) {
+    throw new Error("Timezone canônico da loja inválido; remarcação abortada.");
+  }
+  return normalizedConfiguredTimezone;
+}
+
 export async function resolveSuggestedTimeApprovalReply(args: { supabase: any; organizationId: string; storeId: string; threadId: string; assistantContextState?: StoreAssistantContextStateRow | null; openOperationalTasks: StoreAssistantOperationalTaskRow[]; lastHumanMessage: string; scheduleSettings?: StoreScheduleSettingsRow | null; }) {
   const taskResolution = findSuggestedTimeApprovalTask({
     tasks: args.openOperationalTasks || [],
@@ -4413,7 +4444,18 @@ export async function resolveSuggestedTimeApprovalReply(args: { supabase: any; o
   const payload = getOperationalTaskPayload(task);
   const suggestedStartIso = String(payload.suggested_start_at || "").trim();
   const suggestedEndIso = String(payload.suggested_end_at || "").trim();
-  const timezoneName = task.timezone_name || "America/Sao_Paulo";
+  let timezoneName: string;
+  try {
+    timezoneName = await resolveSuggestedTimeApprovalTimezone({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      taskTimezone: task.timezone_name,
+      scheduleSettings: args.scheduleSettings,
+    });
+  } catch (error) {
+    return `NÃ£o confirmei a remarcaÃ§Ã£o porque o fuso horÃ¡rio canÃ´nico da loja nÃ£o pÃ´de ser validado com seguranÃ§a: ${error instanceof Error ? error.message : "configuraÃ§Ã£o invÃ¡lida"}`;
+  }
   const customerName = task.customer_name || "O cliente";
 
   if (isResponsibleRejectingSuggestedTime(args.lastHumanMessage)) {
@@ -4477,38 +4519,6 @@ export async function resolveSuggestedTimeApprovalReply(args: { supabase: any; o
     return `Não confirmei com ${customerName}, porque a agenda não aceitou esse horário: ${updateError.message}`;
   }
 
-  const updatedAppointmentWithCommercialContext =
-    updatedAppointment as (AppointmentRow & {
-      commercial_opportunity_id?: string | null;
-    }) | null;
-  const appointmentWithCommercialContext =
-    appointment as AppointmentRow & {
-      commercial_opportunity_id?: string | null;
-    };
-  const updatedAppointmentCommercialOpportunityId =
-    String(
-      updatedAppointmentWithCommercialContext?.commercial_opportunity_id ||
-        appointmentWithCommercialContext.commercial_opportunity_id ||
-        "",
-    ).trim() || null;
-  const projectionWarning =
-    typeof updatedAppointment?.id === "string"
-      ? await maybeProjectAppointmentToTechnicalVisitStageBySystem({
-          supabase: args.supabase,
-          organizationId: args.organizationId,
-          storeId: args.storeId,
-          appointmentId: updatedAppointment.id,
-          appointmentType:
-            updatedAppointmentWithCommercialContext?.appointment_type ||
-            appointment.appointment_type,
-          appointmentStatus:
-            updatedAppointmentWithCommercialContext?.status || "rescheduled",
-          commercialOpportunityId: updatedAppointmentCommercialOpportunityId,
-          source: "assistant_reply_route",
-          operationSummary: "atualizado",
-        })
-      : null;
-
   const customerMessageResult = appointment.conversation_id
     ? await sendAiMessageToCustomerConversation({
         supabase: args.supabase,
@@ -4520,27 +4530,24 @@ export async function resolveSuggestedTimeApprovalReply(args: { supabase: any; o
   if (!customerMessageResult?.ok) {
     await args.supabase.from("store_assistant_operational_tasks").update({
       status: "failed", error_text: customerMessageResult?.error || "Conversa do cliente não encontrada.",
-      task_payload: { ...payload, last_responsible_reply: args.lastHumanMessage, responsible_approved_suggested_time: true, customer_confirmation_message_sent: false, appointment_update_attempted: true, appointment_update_succeeded: true, updated_appointment: updatedAppointment, commercial_projection_warning: projectionWarning, last_execution_error: customerMessageResult?.error || "Conversa do cliente não encontrada.", updated_by_assistant_route_at: new Date().toISOString() },
+      task_payload: { ...payload, last_responsible_reply: args.lastHumanMessage, responsible_approved_suggested_time: true, customer_confirmation_message_sent: false, appointment_update_attempted: true, appointment_update_succeeded: true, updated_appointment: updatedAppointment, last_execution_error: customerMessageResult?.error || "Conversa do cliente não encontrada.", updated_by_assistant_route_at: new Date().toISOString() },
       last_action_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     }).eq("id", task.id).eq("organization_id", args.organizationId).eq("store_id", args.storeId);
-    return `Atualizei a agenda para ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}, mas não consegui avisar ${customerName}. ${customerMessageResult?.error ? `Erro: ${customerMessageResult.error}` : "Conversa do cliente não encontrada."}${projectionWarning ? ` Aviso: ${projectionWarning}` : ""}`;
+    return `Atualizei a agenda para ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}, mas não consegui avisar ${customerName}. ${customerMessageResult?.error ? `Erro: ${customerMessageResult.error}` : "Conversa do cliente não encontrada."}`;
   }
 
   const resolvedPayload: Record<string, unknown> = { ...payload, needs_responsible_approval: false, responsible_approved_suggested_time: true, responsible_approved_suggested_time_at: new Date().toISOString(), last_responsible_reply: args.lastHumanMessage, customer_confirmation_message_sent: true, customer_confirmation_message_id: customerMessageResult.messageId || null, appointment_update_attempted: true, appointment_update_succeeded: true, updated_appointment: updatedAppointment, updated_by_assistant_route_at: new Date().toISOString() };
-  if (projectionWarning) {
-    resolvedPayload.commercial_projection_warning = projectionWarning;
-  }
   const { error: taskUpdateError } = await args.supabase.from("store_assistant_operational_tasks").update({
     status: "resolved", resolved_at: new Date().toISOString(), task_payload: resolvedPayload,
     last_action_at: new Date().toISOString(), description: "Responsável aprovou o horário sugerido pelo cliente. Cliente avisado e agenda atualizada.", updated_at: new Date().toISOString(),
   }).eq("id", task.id).eq("organization_id", args.organizationId).eq("store_id", args.storeId);
-  if (taskUpdateError) return `Atualizei a agenda e avisei ${customerName}, mas não consegui finalizar a tarefa operacional: ${taskUpdateError.message}${projectionWarning ? ` Aviso: ${projectionWarning}` : ""}`;
+  if (taskUpdateError) return `Atualizei a agenda e avisei ${customerName}, mas não consegui finalizar a tarefa operacional: ${taskUpdateError.message}`;
 
   const contextResult = await resolveAssistantContextState({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, threadId: args.threadId, currentContextState: args.assistantContextState || null, lastUserMessage: args.lastHumanMessage, lastAssistantMessage: `${customerName} confirmado em ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}.` });
   if (!contextResult.ok) {
     return `Atualizei a agenda e avisei ${customerName}, mas não consegui fechar o contexto da Assistente: ${contextResult.error || "erro desconhecido"}. Reconciliação necessária.`;
   }
-  return `Pronto. Confirmei com ${customerName} e atualizei ${appointment.title} para ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}.${projectionWarning ? `\n\nAviso: ${projectionWarning}` : ""}`;
+  return `Pronto. Confirmei com ${customerName} e atualizei ${appointment.title} para ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}.`;
 }
 
 function buildProfessionalAppointmentClarificationReply(args: {

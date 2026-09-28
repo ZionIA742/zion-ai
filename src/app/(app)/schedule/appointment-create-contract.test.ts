@@ -176,6 +176,21 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "appointment edits do not project commercial opportunity stage",
+    run: () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/app/(app)/schedule/page.tsx"),
+        "utf8",
+      ).replace(/\r\n/g, "\n");
+      const editStart = source.indexOf("async function saveAppointmentEdit(");
+      const nextFunction = source.indexOf("async function saveBlockEdit(", editStart);
+      assert.ok(editStart >= 0 && nextFunction > editStart);
+      const editSource = source.slice(editStart, nextFunction);
+      assert.equal(editSource.includes("maybeProjectAppointmentToTechnicalVisitStage"), false);
+      assert.equal(source.includes("const projectionWarning ="), true);
+    },
+  },
+  {
     name: "post_sale behaves as a regular appointment without commercial context",
     run: () => {
       const result = resolveCommercialOpportunityIdForAppointmentCreate({
