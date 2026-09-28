@@ -1995,13 +1995,24 @@ const tests: TestCase[] = [
 
       const appointmentAction = getResolveAppointmentActionReplySource(source);
       const actionAssertionIndex = appointmentAction.indexOf("const selectedAppointmentTargetAssertion = assertCommercialTargetForSideEffect({");
-      const rescheduleUpdateIndex = appointmentAction.indexOf('.from("store_appointments")');
+      const rescheduleUpdateIndex = appointmentAction.indexOf('"update_store_appointment"');
       const completeIndex = appointmentAction.indexOf('rpc("complete_store_appointment_with_outcome"');
       const cancelIndex = appointmentAction.indexOf('rpc("cancel_store_appointment"');
       assert.equal(actionAssertionIndex > -1, true);
       assert.equal(rescheduleUpdateIndex > actionAssertionIndex, true);
+      assert.equal(appointmentAction.includes('.from("store_appointments")'), false);
       assert.equal(completeIndex > actionAssertionIndex, true);
       assert.equal(cancelIndex > actionAssertionIndex, true);
+
+      const createBlock = getFunctionSource(
+        source,
+        "async function executeCreateAppointmentWithSafeIdentity(",
+        "async function resolvePendingCustomerIdentityDisambiguationReply(",
+      );
+      const genericCreateIndex = createBlock.indexOf("const targetAssertion = assertCommercialTargetForSideEffect({");
+      assert.equal(genericCreateIndex > -1, true);
+      assert.equal(createBlock.slice(genericCreateIndex).includes("technical_visit"), false);
+      assert.equal(createBlock.slice(genericCreateIndex).includes('"create_store_appointment_with_commercial_context"'), true);
     },
   },
   {

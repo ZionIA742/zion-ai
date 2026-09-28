@@ -50,15 +50,6 @@ type ScheduleApiResponse = {
   items?: ScheduleItem[];
 };
 
-type ActionReadinessApiResponse = {
-  ok?: boolean;
-  error?: string;
-  message?: string;
-  actionKey?: string;
-  readinessState?: string;
-  reasonCode?: string | null;
-};
-
 type CustomerLocationApiResponse = {
   ok?: boolean;
   error?: string;
@@ -155,26 +146,6 @@ function formatDateTime(value: string | null) {
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
-}
-
-function buildTechnicalVisitReadinessErrorMessage(
-  readiness: ActionReadinessApiResponse | null,
-) {
-  if (readiness?.message) return readiness.message;
-
-  if (readiness?.readinessState === "blocked") {
-    return "A visita tecnica ainda possui bloqueios comerciais pendentes.";
-  }
-
-  if (readiness?.readinessState === "needs_resolution") {
-    return "A visita tecnica precisa de resolucao comercial antes do agendamento.";
-  }
-
-  if (readiness?.readinessState === "conflict") {
-    return "A visita tecnica possui conflito comercial antes do agendamento.";
-  }
-
-  return "Nao foi possivel validar a prontidao comercial da visita tecnica agora.";
 }
 
 function formatMonthYear(date: Date) {
@@ -2449,58 +2420,65 @@ export default function SchedulePage() {
       const commercialOpportunityId =
         commercialOpportunityResolution.commercialOpportunityId;
 
-      if (
-        appointmentCreateForm.appointmentType === "technical_visit" &&
-        commercialOpportunityId
-      ) {
-        const readinessResponse = await fetch(
-          "/api/crm/opportunities/action-readiness",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              commercialOpportunityId,
-              actionKey: "schedule_technical_visit",
-            }),
-          }
-        );
-        const readinessBody = (await readinessResponse
-          .json()
-          .catch(() => null)) as ActionReadinessApiResponse | null;
+      let data: { id?: string } | null = null;
+      let error: { message: string } | null = null;
 
-        if (
-          !readinessResponse.ok ||
-          readinessBody?.ok !== true ||
-          readinessBody.readinessState !== "ready"
-        ) {
-          setAppointmentCreateErrorText(
-            buildTechnicalVisitReadinessErrorMessage(readinessBody)
-          );
-          setSavingAppointmentCreate(false);
-          return;
+      if (appointmentCreateForm.appointmentType === "technical_visit") {
+        const response = await fetch("/api/schedule/technical-visit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            leadId: appointmentCreateForm.leadId || null,
+            conversationId: resolvedConversationId,
+            title: appointmentCreateForm.title.trim(),
+            status: appointmentCreateForm.status,
+            scheduledStart: startDate.toISOString(),
+            scheduledEnd: endDate.toISOString(),
+            customerName: appointmentCreateForm.customerName.trim() || null,
+            customerPhone: normalizePhoneForSave(appointmentCreateForm.customerPhone),
+            addressText: appointmentCreateForm.addressText.trim() || null,
+            notes: appointmentCreateForm.notes.trim() || null,
+            commercialOpportunityId,
+          }),
+        });
+        const body = (await response.json().catch(() => null)) as {
+          ok?: boolean;
+          data?: unknown;
+          message?: string;
+          error?: string;
+        } | null;
+        if (!response.ok || body?.ok !== true) {
+          error = {
+            message:
+              body?.message ||
+              body?.error ||
+              "Não foi possível criar a visita técnica.",
+          };
+        } else {
+          data = (body.data as { id?: string } | undefined) || null;
         }
+      } else {
+        const result = await supabase.rpc("create_store_appointment_with_commercial_context", {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_lead_id: appointmentCreateForm.leadId || null,
+          p_conversation_id: resolvedConversationId,
+          p_title: appointmentCreateForm.title.trim(),
+          p_appointment_type: appointmentCreateForm.appointmentType,
+          p_status: appointmentCreateForm.status,
+          p_scheduled_start: startDate.toISOString(),
+          p_scheduled_end: endDate.toISOString(),
+          p_customer_name: appointmentCreateForm.customerName.trim() || null,
+          p_customer_phone: normalizePhoneForSave(appointmentCreateForm.customerPhone),
+          p_address_text: appointmentCreateForm.addressText.trim() || null,
+          p_notes: appointmentCreateForm.notes.trim() || null,
+          p_source: "panel",
+          p_created_by_user_id: null,
+          p_commercial_opportunity_id: commercialOpportunityId,
+        });
+        data = result.data;
+        error = result.error;
       }
-
-      const { data, error } = await supabase.rpc("create_store_appointment_with_commercial_context", {
-        p_organization_id: organizationId,
-        p_store_id: activeStoreId,
-        p_lead_id: appointmentCreateForm.leadId || null,
-        p_conversation_id: resolvedConversationId,
-        p_title: appointmentCreateForm.title.trim(),
-        p_appointment_type: appointmentCreateForm.appointmentType,
-        p_status: appointmentCreateForm.status,
-        p_scheduled_start: startDate.toISOString(),
-        p_scheduled_end: endDate.toISOString(),
-        p_customer_name: appointmentCreateForm.customerName.trim() || null,
-        p_customer_phone: normalizePhoneForSave(appointmentCreateForm.customerPhone),
-        p_address_text: appointmentCreateForm.addressText.trim() || null,
-        p_notes: appointmentCreateForm.notes.trim() || null,
-        p_source: "panel",
-        p_created_by_user_id: null,
-        p_commercial_opportunity_id: commercialOpportunityId,
-      });
 
       if (error) {
         setAppointmentCreateErrorText(error.message);
@@ -3122,12 +3100,16 @@ export default function SchedulePage() {
                         </label>
                         <select
                           value={editForm.appointmentType}
+                          disabled={selectedItem.itemType === "technical_visit"}
                           onChange={(e) =>
-                            setEditForm((prev) =>
-                              prev
-                                ? { ...prev, appointmentType: e.target.value }
-                                : prev
-                            )
+                            e.target.value === "technical_visit" &&
+                            selectedItem.itemType !== "technical_visit"
+                              ? undefined
+                              : setEditForm((prev) =>
+                                  prev
+                                    ? { ...prev, appointmentType: e.target.value }
+                                    : prev
+                                )
                           }
                           className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                         >

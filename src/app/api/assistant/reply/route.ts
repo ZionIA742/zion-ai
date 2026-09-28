@@ -5750,7 +5750,7 @@ export async function executeCreateAppointmentWithSafeIdentity(args: {
 }) {
   const createPayload = args.createPayload;
   const identityCandidate = args.identityCandidate;
-  let opportunityResolution:
+  const opportunityResolution:
     | { ok: boolean; commercialOpportunityId: string | null; leadId: string | null; conversationId: string | null; reason?: string }
     | null =
     createPayload.appointment_type === "technical_visit"
@@ -5805,17 +5805,16 @@ export async function executeCreateAppointmentWithSafeIdentity(args: {
     if (!args.threadId || !commercialConversationId || !commercialLeadId) {
       return "Identifiquei o pedido, mas nao consegui registrar uma task canonica para confirmar o horario com o cliente. Nenhuma agenda foi alterada.";
     }
-    const { data: serviceSettings, error: serviceSettingsError } = await args.supabase
-      .from("store_operation_settings")
-      .select("offers_installation,offers_technical_visit")
-      .eq("organization_id", args.organizationId)
-      .eq("store_id", args.storeId)
-      .maybeSingle();
-    const serviceEnabled = createPayload.appointment_type === "technical_visit"
-      ? serviceSettings?.offers_technical_visit === true
-      : serviceSettings?.offers_installation === true;
-    if (serviceSettingsError || !serviceEnabled) {
-      return "Esse servico nao esta configurado como disponivel para esta loja. Nenhuma mensagem foi enviada e nenhuma agenda foi alterada.";
+    if (createPayload.appointment_type === "installation") {
+      const { data: serviceSettings, error: serviceSettingsError } = await args.supabase
+        .from("store_operation_settings")
+        .select("offers_installation")
+        .eq("organization_id", args.organizationId)
+        .eq("store_id", args.storeId)
+        .maybeSingle();
+      if (serviceSettingsError || serviceSettings?.offers_installation !== true) {
+        return "Esse servico nao esta configurado como disponivel para esta loja. Nenhuma mensagem foi enviada e nenhuma agenda foi alterada.";
+      }
     }
 
     const operationKey = [
@@ -5963,15 +5962,10 @@ export async function executeCreateAppointmentWithSafeIdentity(args: {
   }
 
   const targetAssertion = assertCommercialTargetForSideEffect({
-    target:
-      createPayload.appointment_type === "technical_visit"
-        ? {
-            source: "technical_visit_opportunity_resolution",
-            leadId: commercialLeadId,
-            conversationId: commercialConversationId,
-            customerName: identityCandidate?.customer_name || createPayload.customer_name,
-          }
-        : buildCommercialTargetFromIdentityCandidate(identityCandidate, "identity_disambiguation"),
+    target: buildCommercialTargetFromIdentityCandidate(
+      identityCandidate,
+      "identity_disambiguation",
+    ),
     sideEffect: "create_store_appointment_with_commercial_context",
   });
 
@@ -7181,26 +7175,29 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
       });
     }
 
-    const { data: updatedRows, error } = await args.supabase
-      .from("store_appointments")
-      .update({
-        status: "rescheduled",
-        scheduled_start: reschedulePayload.payload.scheduled_start,
-        scheduled_end: reschedulePayload.payload.scheduled_end,
-        notes: ((selectedAppointment.notes ? `${selectedAppointment.notes}\n\n` : "") + "Remarcado pela assistente operacional.").trim(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", selectedAppointment.id)
-      .eq("organization_id", args.organizationId)
-      .eq("store_id", args.storeId)
-      .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id")
-      .maybeSingle();
+    const { data: updatedAppointment, error } = await args.supabase.rpc(
+      "update_store_appointment",
+      {
+        p_appointment_id: selectedAppointment.id,
+        p_organization_id: args.organizationId,
+        p_store_id: args.storeId,
+        p_title: selectedAppointment.title,
+        p_appointment_type: selectedAppointment.appointment_type,
+        p_status: "rescheduled",
+        p_scheduled_start: reschedulePayload.payload.scheduled_start,
+        p_scheduled_end: reschedulePayload.payload.scheduled_end,
+        p_customer_name: selectedAppointment.customer_name,
+        p_customer_phone: selectedAppointment.customer_phone,
+        p_address_text: selectedAppointment.address_text,
+        p_notes: ((selectedAppointment.notes ? `${selectedAppointment.notes}\n\n` : "") + "Remarcado pela assistente operacional.").trim(),
+      },
+    );
 
     if (error) {
       return `Tentei remarcar, mas encontrei um erro: ${error.message}`;
     }
 
-    if (!updatedRows?.id) {
+    if (!updatedAppointment?.id) {
       return "Eu tentei remarcar o compromisso, mas não consegui confirmar a alteração real na agenda.";
     }
 
@@ -7212,13 +7209,13 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
         threadId: args.threadId,
         currentContextState: args.assistantContextState || null,
         lastUserMessage: args.lastHumanMessage,
-        lastAssistantMessage: `Compromisso remarcado para ${formatAppointmentStartInTimeZone({ value: (updatedRows as AppointmentRow).scheduled_start, scheduleSettings: args.scheduleSettings || null })}.`,
+        lastAssistantMessage: `Compromisso remarcado para ${formatAppointmentStartInTimeZone({ value: (updatedAppointment as AppointmentRow).scheduled_start, scheduleSettings: args.scheduleSettings || null })}.`,
       });
     }
 
     return buildAppointmentActionSuccessReply({
       action,
-      appointment: updatedRows as AppointmentRow,
+      appointment: updatedAppointment as AppointmentRow,
       scheduleSettings: args.scheduleSettings || null,
     });
   }

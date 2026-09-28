@@ -817,7 +817,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "disabled Settings before write fail closed with zero appointment",
+    name: "legacy technical Settings mirror does not authorize or block the writer",
     run: async () => {
       const supabase = createMockSupabase({
         serviceSettings: { offers_installation: false, offers_technical_visit: false },
@@ -825,8 +825,8 @@ const tests: TestCase[] = [
 
       await runCustomerReply(supabase, "sim", "message-1");
 
-      assert.equal(supabase.state.calls.writer, 0);
-      assert.notEqual(supabase.state.task.status, "resolved");
+      assert.equal(supabase.state.calls.writer, 1);
+      assert.equal(supabase.state.calls.atomicWriter, 1);
     },
   },
   {

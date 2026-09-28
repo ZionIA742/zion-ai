@@ -820,16 +820,18 @@ async function validateCreateServiceSettings(args: {
   storeId: string;
   appointmentType: string;
 }) {
+  if (args.appointmentType === "technical_visit") return;
+
   const { data: serviceSettings, error: serviceSettingsError } = await args.supabase
     .from("store_operation_settings")
-    .select("offers_installation,offers_technical_visit")
+    .select("offers_installation")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .maybeSingle();
 
-  const serviceEnabled = args.appointmentType === "technical_visit"
-    ? serviceSettings?.offers_technical_visit === true
-    : args.appointmentType === "installation" && serviceSettings?.offers_installation === true;
+  const serviceEnabled =
+    args.appointmentType === "installation" &&
+    serviceSettings?.offers_installation === true;
 
   if (serviceSettingsError || !serviceEnabled) {
     throw new Error("O servico deixou de estar habilitado nas Settings; efeito externo abortado.");

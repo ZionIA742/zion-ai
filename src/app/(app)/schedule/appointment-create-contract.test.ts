@@ -141,24 +141,38 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "technical visit creation checks action readiness before appointment rpc",
+    name: "technical visit creation uses the fresh server boundary",
     run: () => {
       const source = readFileSync(
         join(process.cwd(), "src/app/(app)/schedule/page.tsx"),
         "utf8",
       ).replace(/\r\n/g, "\n");
-      const readinessIndex = source.indexOf(
-        'fetch(\n          "/api/crm/opportunities/action-readiness"',
+      assert.equal(source.includes('fetch("/api/schedule/technical-visit"'), true);
+      assert.equal(
+        source.includes('"create_store_appointment_with_commercial_context"'),
+        true,
       );
-      const rpcIndex = source.indexOf(
-        'supabase.rpc("create_store_appointment_with_commercial_context"',
+      assert.equal(
+        source.includes("commercialOpportunityId"),
+        true,
       );
-
-      assert.equal(source.includes('actionKey: "schedule_technical_visit"'), true);
-      assert.equal(source.includes('readinessBody.readinessState !== "ready"'), true);
-      assert.equal(readinessIndex > -1, true);
-      assert.equal(rpcIndex > -1, true);
-      assert.equal(readinessIndex < rpcIndex, true);
+    },
+  },
+  {
+    name: "technical visit type is immutable in the schedule editor",
+    run: () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/app/(app)/schedule/page.tsx"),
+        "utf8",
+      ).replace(/\r\n/g, "\n");
+      assert.equal(
+        source.includes('disabled={selectedItem.itemType === "technical_visit"}'),
+        true,
+      );
+      assert.equal(
+        source.includes('selectedItem.itemType !== "technical_visit"'),
+        true,
+      );
     },
   },
   {
