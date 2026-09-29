@@ -9,7 +9,7 @@ type TestCase = {
 
 const migrationPath = join(
   process.cwd(),
-  "supabase/migrations/20260925170000_p9_technical_visit_p19a_applicability.sql",
+  "supabase/migrations/20260929160000_p9_technical_visit_measurements_confirmation_authority.sql",
 );
 
 const runnerPath = join(
@@ -194,12 +194,65 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "measurements and technical_visit_interest are explicitly not authorities",
+    name: "technical_visit_interest and requested area absence remain non-authorities",
     run: () => {
       const block = technicalVisitBlock(readMigration());
 
       assert.equal(block.includes("'technical_visit_interest_used', false"), true);
       assert.equal(block.includes("'requested_area_m2_absence_used', false"), true);
+      assert.equal(block.includes("technical_visit_interest=true"), false);
+      assert.equal(block.includes("requested_area_m2 is null"), false);
+    },
+  },
+  {
+    name: "medidas uses explicit measurements confirmation qualification authority",
+    run: () => {
+      const block = technicalVisitBlock(readMigration());
+
+      assert.equal(block.includes("measurements_confirmation_required"), true);
+      assert.equal(
+        block.includes("commercial_opportunity_qualification_facts_current"),
+        true,
+      );
+      assert.equal(
+        block.includes("fact_key = 'measurements_confirmation_required'"),
+        true,
+      );
+      assert.equal(block.includes("when 'medidas' then"), true);
+      assert.equal(
+        block.includes("v_measurements_confirmation_fact_state = 'confirmed'"),
+        true,
+      );
+      assert.equal(
+        block.includes("v_measurements_confirmation_required is true"),
+        true,
+      );
+      assert.equal(
+        block.includes("v_measurements_confirmation_required is false"),
+        true,
+      );
+      assert.equal(
+        block.includes("v_measurements_confirmation_fact_state = 'conflict'"),
+        true,
+      );
+
+      assert.equal(
+        block.includes("technical_visit_required_for_measurements_confirmation"),
+        true,
+      );
+      assert.equal(
+        block.includes("technical_visit_measurements_already_confirmed"),
+        true,
+      );
+      assert.equal(
+        block.includes("technical_visit_measurements_confirmation_authority_missing"),
+        true,
+      );
+      assert.equal(
+        block.includes("technical_visit_measurements_confirmation_authority_conflict"),
+        true,
+      );
+
       assert.equal(block.includes("technical_visit_interest=true"), false);
       assert.equal(block.includes("requested_area_m2 is null"), false);
     },

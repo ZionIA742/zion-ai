@@ -11,6 +11,7 @@ type CanonicalQualificationFactKey =
   | "installation_interest"
   | "payment_interest"
   | "technical_visit_interest"
+  | "measurements_confirmation_required"
   | "customer_preferences_text"
   | "relevant_objection_text";
 
@@ -40,6 +41,7 @@ const FACT_VALUE_KIND_BY_KEY: Record<
   installation_interest: "boolean",
   payment_interest: "boolean",
   technical_visit_interest: "boolean",
+  measurements_confirmation_required: "boolean",
   customer_preferences_text: "text",
   relevant_objection_text: "text",
 };
@@ -629,6 +631,18 @@ export function validateQualificationFactCandidate(args: {
   if (typeof args.candidate.valueJson !== "boolean") return null;
 
   if (args.candidate.assertionLevel === "confirmed") {
+    if (args.candidate.factKey === "measurements_confirmation_required") {
+      const parsed = parseExplicitMeasurementsConfirmationRequirement(
+        args.candidate.evidenceText,
+      );
+
+      if (parsed == null || parsed !== args.candidate.valueJson) {
+        return null;
+      }
+
+      return args.candidate;
+    }
+
     const factKey = args.candidate.factKey as SupportedBooleanFactKey;
     const parsed = parseDeterministicBooleanCandidate({
       factKey,
@@ -642,6 +656,62 @@ export function validateQualificationFactCandidate(args: {
   return args.candidate;
 }
 
+function parseExplicitMeasurementsConfirmationRequirement(
+  text: string,
+): boolean | null {
+  const normalized = normalizeEvidence(text);
+
+  if (!normalized) return null;
+
+  const mentionsMeasurement =
+    /\b(?:medida|medidas|medicao|medicoes)\b/i.test(normalized);
+
+  const mentionsConfirmation =
+    /\b(?:confirmar|confirmacao|confirmada|confirmadas|confirmado|confirmados|conferir|conferencia|conferida|conferidas|conferido|conferidos|validar|validacao|validada|validadas|validado|validados)\b/i.test(
+      normalized,
+    );
+
+  if (!mentionsMeasurement || !mentionsConfirmation) {
+    return null;
+  }
+
+  const explicitlyStillUnconfirmed =
+    /\b(?:ainda\s+)?nao\s+(?:esta|estao|foi|foram)\s+(?:confirmada|confirmadas|confirmado|confirmados|conferida|conferidas|conferido|conferidos|validada|validadas|validado|validados)\b/i.test(
+      normalized,
+    );
+
+  if (explicitlyStillUnconfirmed) {
+    return true;
+  }
+
+  const explicitlyAlreadyConfirmed =
+    /\b(?:ja\s+)?(?:esta|estao|foi|foram|ficou|ficaram)\s+(?:confirmada|confirmadas|confirmado|confirmados|conferida|conferidas|conferido|conferidos|validada|validadas|validado|validados)\b/i.test(
+      normalized,
+    );
+
+  if (explicitlyAlreadyConfirmed) {
+    return false;
+  }
+
+  const explicitlyNoFurtherConfirmation =
+    /\bnao\s+(?:precisa|precisam|preciso|precisamos|necessita|necessitam|necessitamos|e\s+necessario)\s+(?:mais\s+)?(?:confirmar|conferir|validar)\b/i.test(
+      normalized,
+    );
+
+  if (explicitlyNoFurtherConfirmation) {
+    return false;
+  }
+
+  const explicitlyPending =
+    /\b(?:ainda\s+)?(?:precisa|precisam|preciso|precisamos|necessita|necessitam|necessitamos|falta|faltam|tem\s+que|deve|devem)\s+(?:confirmar|conferir|validar)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:pendente|pendentes)\s+de\s+(?:confirmacao|conferencia|validacao)\b/i.test(
+      normalized,
+    );
+
+  return explicitlyPending ? true : null;
+}
 function parseStructuredCandidate(
   rawCandidate: StructuredCandidatePayload,
 ): QualificationFactCandidate | null {
@@ -744,7 +814,7 @@ export async function extractStructuredQualificationCandidates(args: {
             properties: {
               candidates: {
                 type: "array",
-                maxItems: 14,
+                maxItems: 15,
                 items: {
                   type: "object",
                   additionalProperties: false,
@@ -778,6 +848,9 @@ export async function extractStructuredQualificationCandidates(args: {
         "Use confirmed somente quando a evidencia literal estiver explicitamente na mensagem.",
         "Use inferred somente para inferencias conservadoras sustentadas por trecho literal, sem inventar contexto.",
         "Nunca extraia fato a partir de respostas vagas como sim, nao, ok, beleza.",
+        "measurements_confirmation_required indica somente se as medidas desta venda ainda precisam de confirmacao; true significa que ainda precisam ser confirmadas e false significa que ja estao explicitamente confirmadas ou que nao precisam mais de confirmacao.",
+        "Nunca infira measurements_confirmation_required a partir de dimensoes, requested_area_m2, tamanho do espaco, interesse em visita tecnica, existencia de visita tecnica ou simples necessidade de alguem ir ao local medir.",
+        "Se a necessidade de confirmar as medidas nao estiver explicitamente sustentada pela mensagem, nao extraia measurements_confirmation_required.",
         "decision_context descreve somente quem decide, como decide, pessoas envolvidas ou contexto da decisao; nunca inclua prazo ou periodo temporal.",
         "Prazo, janela temporal ou preferencia de quando deve ir exclusivamente em preferred_period_text.",
         "location_text representa somente cidade, bairro, regiao ou localizacao geral do cliente; nao coloque endereco postal completo nesse fato.",

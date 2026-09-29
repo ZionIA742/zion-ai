@@ -286,6 +286,7 @@ type CanonicalQualificationFactKey =
   | "installation_interest"
   | "payment_interest"
   | "technical_visit_interest"
+  | "measurements_confirmation_required"
   | "customer_preferences_text"
   | "relevant_objection_text";
 
@@ -1524,7 +1525,8 @@ function getCanonicalQualificationExpectedValueKind(
   if (
     factKey === "installation_interest" ||
     factKey === "payment_interest" ||
-    factKey === "technical_visit_interest"
+    factKey === "technical_visit_interest" ||
+    factKey === "measurements_confirmation_required"
   ) {
     return "boolean";
   }
@@ -1571,6 +1573,7 @@ function parseCanonicalQualificationFactKey(
     case "installation_interest":
     case "payment_interest":
     case "technical_visit_interest":
+    case "measurements_confirmation_required":
     case "customer_preferences_text":
     case "relevant_objection_text":
       return candidate;
@@ -1919,11 +1922,30 @@ function looksLikePaymentQuestion(text: string): boolean {
 
 type CanonicalTechnicalVisitAvailability = "offered" | "not_offered" | "unconfigured";
 
+export type TechnicalVisitMeasurementsConfirmationPolicy =
+  | "required"
+  | "not_applicable"
+  | "unconfigured";
+
 function resolveCanonicalTechnicalVisitAvailability(
   executionPolicies: StoreOperationExecutionPoliciesRow | null,
 ): CanonicalTechnicalVisitAvailability {
   if (!executionPolicies?.technical_visit_configured_at) return "unconfigured";
   return executionPolicies.technical_visit_policy ? "offered" : "not_offered";
+}
+
+export function resolveTechnicalVisitMeasurementsConfirmationPolicy(
+  executionPolicies: StoreOperationExecutionPoliciesRow | null,
+): TechnicalVisitMeasurementsConfirmationPolicy {
+  if (!executionPolicies?.technical_visit_configured_at) return "unconfigured";
+  const policy = executionPolicies.technical_visit_policy;
+  if (!policy) return "not_applicable";
+
+  return policy.required_situations.some(
+    (situation) => normalizeText(situation) === "medidas",
+  )
+    ? "required"
+    : "not_applicable";
 }
 
 function formatCentsAsCurrency(cents: number | null | undefined): string | null {
@@ -6874,6 +6896,11 @@ export function describeCanonicalKnownFact(
     if (booleanValue === false) return `technical_visit_interest: false${suffix}`;
     return `interesse em visita tecnica registrado${suffix}`;
   }
+  if (fact.factKey === "measurements_confirmation_required") {
+    if (booleanValue === true) return `measurements_confirmation_required: true${suffix}`;
+    if (booleanValue === false) return `measurements_confirmation_required: false${suffix}`;
+    return `confirmacao de medidas registrada${suffix}`;
+  }
   if (fact.factKey === "customer_preferences_text") {
     return displayValue
       ? `preferencias adicionais registradas: ${displayValue}${suffix}`
@@ -7061,6 +7088,7 @@ export function resolveContextualQualificationDecision(args: {
   explicitCatalogRequest: boolean;
   responseMode: ResponseMode;
   patienceSignal: CustomerPatienceSignal;
+  technicalVisitMeasurementsConfirmationPolicy?: TechnicalVisitMeasurementsConfirmationPolicy;
 }): QualificationDecision {
   const {
     snapshot,
@@ -7071,6 +7099,7 @@ export function resolveContextualQualificationDecision(args: {
     lastCustomerMessage,
     explicitCatalogRequest,
     patienceSignal,
+    technicalVisitMeasurementsConfirmationPolicy = "not_applicable",
   } = args;
 
   if (!snapshot) {
@@ -7107,8 +7136,45 @@ export function resolveContextualQualificationDecision(args: {
     explicitCatalogRequest,
   });
 
-  if (!target) {
+  const resolveMeasurementsDecision = (): QualificationDecision | null => {
+    if (technicalVisitMeasurementsConfirmationPolicy !== "required") {
+      return null;
+    }
+
+    const exactConflict = getCanonicalQualificationConflict(
+      snapshot,
+      "measurements_confirmation_required",
+    );
+    if (exactConflict) {
+      return {
+        targetFactKey: "measurements_confirmation_required",
+        targetGroup: null,
+        targetStatus: "conflict",
+        askNow: true,
+        reason: "target_conflict_requires_clarification",
+      };
+    }
+
+    if (
+      findCanonicalQualificationFact(
+        snapshot,
+        "measurements_confirmation_required",
+      )
+    ) {
+      return null;
+    }
+
     return {
+      targetFactKey: "measurements_confirmation_required",
+      targetGroup: null,
+      targetStatus: "unproven",
+      askNow: true,
+      reason: "target_unproven_and_relevant",
+    };
+  };
+
+  if (!target) {
+    return resolveMeasurementsDecision() || {
       targetFactKey: null,
       targetGroup: null,
       targetStatus: "not_applicable",
@@ -7138,7 +7204,7 @@ export function resolveContextualQualificationDecision(args: {
   );
 
   if (knownFact) {
-    return {
+    return resolveMeasurementsDecision() || {
       targetFactKey: target.factKey,
       targetGroup: target.groupKey,
       targetStatus: "known",
@@ -7154,7 +7220,7 @@ export function resolveContextualQualificationDecision(args: {
     );
 
     if (!groupGap) {
-      return {
+      return resolveMeasurementsDecision() || {
         targetFactKey: target.factKey,
         targetGroup: target.groupKey,
         targetStatus: "unproven",
@@ -7941,6 +8007,7 @@ function buildCommercialObjective(args: {
   commercialSuggestionPolicy?: CommercialSuggestionPolicy;
   explicitComplementaryRequest?: boolean;
   explicitSuperiorOptionRequest?: boolean;
+  technicalVisitMeasurementsConfirmationPolicy?: TechnicalVisitMeasurementsConfirmationPolicy;
   requestedPoolReference: RequestedPoolReference | null;
   strongestPoolReferenceMatch: PoolReferenceMatchStrength;
   bestNamedPoolMatch: MatchedPool | null;
@@ -7976,6 +8043,8 @@ function buildCommercialObjective(args: {
     explicitCatalogRequest: args.explicitCatalogRequest,
     responseMode,
     patienceSignal,
+    technicalVisitMeasurementsConfirmationPolicy:
+      args.technicalVisitMeasurementsConfirmationPolicy,
   });
 
   const nonQualificationNextBestQuestion =
@@ -8129,7 +8198,13 @@ export function buildCommercialObjectiveBlock(objective: CommercialObjective): s
     `- estado do alvo: ${objective.qualificationDecision.targetStatus}`,
     `- motivo da decisao: ${objective.qualificationDecision.reason}`,
     objective.qualificationDecision.askNow
-      ? "- se houver pergunta de qualificacao, use somente esse alvo; formule naturalmente e faca no maximo uma pergunta principal"
+      ? objective.qualificationDecision.targetFactKey ===
+        "measurements_confirmation_required"
+        ? [
+            "- se houver pergunta de qualificacao, pergunte: As medidas desse local ja estao confirmadas ou ainda precisam ser conferidas?",
+            "- nao pergunte se precisamos marcar visita para medir; nao confunda confirmar medidas com necessidade de visita presencial; faca no maximo uma pergunta principal",
+          ].join("\n")
+        : "- se houver pergunta de qualificacao, use somente esse alvo; formule naturalmente e faca no maximo uma pergunta principal"
       : "- nao crie pergunta de qualificacao so porque existem fatos faltando",
   ].join("\n");
 
@@ -11870,6 +11945,10 @@ export async function generateAiSalesReply(
       resolveCanonicalTechnicalVisitAvailability(
         canonicalOperationExecutionPolicies,
       );
+    const technicalVisitMeasurementsConfirmationPolicy =
+      resolveTechnicalVisitMeasurementsConfirmationPolicy(
+        canonicalOperationExecutionPolicies,
+      );
     const canonicalOffersTechnicalVisit =
       canonicalTechnicalVisitAvailability === "offered";
     const canonicalTechnicalVisitExecutionPolicyBlock =
@@ -12809,6 +12888,7 @@ export async function generateAiSalesReply(
       commercialSuggestionPolicy,
       explicitComplementaryRequest,
       explicitSuperiorOptionRequest,
+      technicalVisitMeasurementsConfirmationPolicy,
       requestedPoolReference,
       strongestPoolReferenceMatch,
       bestNamedPoolMatch,

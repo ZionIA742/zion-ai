@@ -24,6 +24,7 @@ import {
   resolveQualificationProfileInstallationEvidenceState,
   resolveNextBestQuestionAfterQualificationAuthority,
   resolveContextualQualificationDecision,
+  resolveTechnicalVisitMeasurementsConfirmationPolicy,
   loadScopedRecentMessages,
   resolveGenerationAnchorMessage,
   resolveMessagesWithCommercialContext,
@@ -1424,6 +1425,238 @@ function createActiveQualificationPatience(shouldAvoidNewQuestion = false) {
     shouldAvoidNewQuestion,
   };
 }
+
+function resolveMeasurementsDecisionForTest(args?: {
+  snapshot?: ReturnType<typeof createContextualQualificationSnapshot> | null;
+  crmStage?: string;
+  pattern?: string;
+  patienceSignal?: { status: string; shouldAvoidNewQuestion: boolean };
+}) {
+  return resolveContextualQualificationDecision({
+    snapshot:
+      args && Object.prototype.hasOwnProperty.call(args, "snapshot")
+        ? (args.snapshot as never)
+        : (createContextualQualificationSnapshot() as never),
+    crmStage: args?.crmStage ?? "qualificacao",
+    pattern: (args?.pattern ?? "general_sales_conversation") as never,
+    intents: [],
+    lastCustomerMessage: "Quero continuar",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: (args?.patienceSignal ??
+      createActiveQualificationPatience()) as never,
+    technicalVisitMeasurementsConfirmationPolicy: "required",
+  });
+}
+
+test("technical visit measurements policy resolves from canonical execution policy", () => {
+  assert.equal(
+    resolveTechnicalVisitMeasurementsConfirmationPolicy(null),
+    "unconfigured",
+  );
+  assert.equal(
+    resolveTechnicalVisitMeasurementsConfirmationPolicy({
+      technical_visit_configured_at: null,
+      technical_visit_policy: null,
+    } as never),
+    "unconfigured",
+  );
+  assert.equal(
+    resolveTechnicalVisitMeasurementsConfirmationPolicy({
+      technical_visit_configured_at: "2026-09-15T12:00:00.000Z",
+      technical_visit_policy: null,
+    } as never),
+    "not_applicable",
+  );
+  assert.equal(
+    resolveTechnicalVisitMeasurementsConfirmationPolicy({
+      technical_visit_configured_at: "2026-09-15T12:00:00.000Z",
+      technical_visit_policy: { required_situations: ["medidas"] },
+    } as never),
+    "required",
+  );
+  assert.equal(
+    resolveTechnicalVisitMeasurementsConfirmationPolicy({
+      technical_visit_configured_at: "2026-09-15T12:00:00.000Z",
+      technical_visit_policy: { required_situations: ["instalacao"] },
+    } as never),
+    "not_applicable",
+  );
+});
+
+test("measurements policy targets an unproven confirmation without adding a global missing group", () => {
+  const decision = resolveMeasurementsDecisionForTest();
+
+  assert.deepEqual(decision, {
+    targetFactKey: "measurements_confirmation_required",
+    targetGroup: null,
+    targetStatus: "unproven",
+    askNow: true,
+    reason: "target_unproven_and_relevant",
+  });
+});
+
+test("measurements policy does not target when it is not applicable", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot() as never,
+    crmStage: "qualificacao",
+    pattern: "general_sales_conversation",
+    intents: [],
+    lastCustomerMessage: "Quero continuar",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+    technicalVisitMeasurementsConfirmationPolicy: "not_applicable",
+  });
+
+  assert.equal(decision.targetFactKey, null);
+  assert.equal(decision.reason, "no_relevant_qualification_target");
+});
+
+for (const value of [true, false]) {
+  test(`known measurements confirmation ${value} is not asked again`, () => {
+    const decision = resolveMeasurementsDecisionForTest({
+      snapshot: createContextualQualificationSnapshot({
+        knownFacts: [
+          createCanonicalKnownFact({
+            factKey: "measurements_confirmation_required",
+            valueKind: "boolean",
+            value,
+          }),
+        ],
+      }),
+    });
+
+    assert.equal(decision.targetFactKey, null);
+    assert.equal(decision.askNow, false);
+  });
+}
+
+test("measurements confirmation conflict asks for clarification", () => {
+  const decision = resolveMeasurementsDecisionForTest({
+    snapshot: createContextualQualificationSnapshot({
+      conflicts: [
+        createCanonicalConflict({
+          factKey: "measurements_confirmation_required",
+          valueKind: "boolean",
+        }),
+      ],
+    }),
+  });
+
+  assert.deepEqual(decision, {
+    targetFactKey: "measurements_confirmation_required",
+    targetGroup: null,
+    targetStatus: "conflict",
+    askNow: true,
+    reason: "target_conflict_requires_clarification",
+  });
+});
+
+for (const stage of ["perdido", "concluido_sem_mais_acoes"]) {
+  test(`${stage} blocks measurements confirmation`, () => {
+    const decision = resolveMeasurementsDecisionForTest({ crmStage: stage });
+    assert.equal(decision.targetFactKey, null);
+    assert.equal(decision.askNow, false);
+    assert.equal(decision.reason, "current_context_does_not_justify_question");
+  });
+}
+
+test("patience pause blocks measurements confirmation", () => {
+  const decision = resolveMeasurementsDecisionForTest({
+    patienceSignal: createActiveQualificationPatience(true),
+  });
+  assert.equal(decision.targetFactKey, null);
+  assert.equal(decision.askNow, false);
+});
+
+test("normal qualification missing has priority over measurements confirmation", () => {
+  const decision = resolveMeasurementsDecisionForTest({
+    pattern: "pool_size_discovery",
+    snapshot: createContextualQualificationSnapshot({
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "need",
+          factKeys: ["customer_preferences_text"],
+        }),
+      ],
+      canAskNextQuestion: true,
+    }),
+  });
+  assert.equal(decision.targetFactKey, "customer_preferences_text");
+  assert.equal(decision.askNow, true);
+});
+
+test("normal qualification conflict has priority over measurements confirmation", () => {
+  const decision = resolveMeasurementsDecisionForTest({
+    pattern: "pool_size_discovery",
+    snapshot: createContextualQualificationSnapshot({
+      conflicts: [createCanonicalConflict({ factKey: "customer_preferences_text" })],
+    }),
+  });
+  assert.equal(decision.targetFactKey, "customer_preferences_text");
+  assert.equal(decision.targetStatus, "conflict");
+});
+
+test("known or satisfied normal qualification falls back to measurements confirmation", () => {
+  const knownDecision = resolveMeasurementsDecisionForTest({
+    pattern: "photo_or_simulation_request",
+    snapshot: createContextualQualificationSnapshot({
+      knownFacts: [createCanonicalKnownFact({ factKey: "space_text" })],
+    }),
+  });
+  assert.equal(knownDecision.targetFactKey, "measurements_confirmation_required");
+
+  const satisfiedGroupDecision = resolveMeasurementsDecisionForTest({
+    pattern: "photo_or_simulation_request",
+    snapshot: createContextualQualificationSnapshot(),
+  });
+  assert.equal(
+    satisfiedGroupDecision.targetFactKey,
+    "measurements_confirmation_required",
+  );
+});
+
+test("area, space and technical visit interest facts do not satisfy measurements confirmation", () => {
+  for (const fact of [
+    createCanonicalKnownFact({ factKey: "requested_area_m2", valueKind: "number", value: 12 }),
+    createCanonicalKnownFact({ factKey: "space_text" }),
+    createCanonicalKnownFact({ factKey: "technical_visit_interest", valueKind: "boolean", value: true }),
+  ]) {
+    const decision = resolveMeasurementsDecisionForTest({
+      snapshot: createContextualQualificationSnapshot({ knownFacts: [fact] }),
+    });
+    assert.equal(decision.targetFactKey, "measurements_confirmation_required");
+  }
+});
+
+test("measurements confirmation receives safe natural guidance in the structured objective block", () => {
+  const block = buildCommercialObjectiveBlock({
+    pattern: "general_sales_conversation",
+    paymentOrClosingSubtype: "none",
+    intents: [],
+    primaryIntent: "general_sales_conversation",
+    mustAnswerFirst: ["responder diretamente"],
+    knownFacts: [],
+    missingFacts: [],
+    qualificationDecision: {
+      targetFactKey: "measurements_confirmation_required",
+      targetGroup: null,
+      targetStatus: "unproven",
+      askNow: true,
+      reason: "target_unproven_and_relevant",
+    },
+    nextBestQuestion: null,
+    responseGoal: "avancar um passo util",
+    forbiddenInThisReply: [],
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience(),
+  } as never);
+
+  assert.match(block, /As medidas desse local ja estao confirmadas ou ainda precisam ser conferidas\?/);
+  assert.match(block, /nao pergunte se precisamos marcar visita para medir/);
+  assert.match(block, /nao confunda confirmar medidas com necessidade de visita presencial/);
+});
 
 test("local photo context can make canonical space the structured qualification target", () => {
   const decision = resolveContextualQualificationDecision({

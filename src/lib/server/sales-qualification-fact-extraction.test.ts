@@ -724,3 +724,120 @@ test("merge preserves independent general location alongside canonical customer 
     ],
   );
 });
+
+test("structured extraction accepts explicit measurements confirmation requirement", async () => {
+  const message = "Ainda preciso confirmar as medidas.";
+
+  const result = await extractStructuredQualificationCandidates({
+    openai: new FakeOpenAi(
+      JSON.stringify({
+        candidates: [
+          {
+            fact_key: "measurements_confirmation_required",
+            assertion_level: "confirmed",
+            value_kind: "boolean",
+            text_value: null,
+            number_value: null,
+            boolean_value: true,
+            evidence_text: "Ainda preciso confirmar as medidas",
+          },
+        ],
+      }),
+    ),
+    model: "test-model",
+    anchorMessage: message,
+  });
+
+  assert.deepEqual(
+    result.candidates.map((candidate) => ({
+      factKey: candidate.factKey,
+      valueKind: candidate.valueKind,
+      valueJson: candidate.valueJson,
+      assertionLevel: candidate.assertionLevel,
+      sourceType: candidate.sourceType,
+      evidenceText: candidate.evidenceText,
+    })),
+    [
+      {
+        factKey: "measurements_confirmation_required",
+        valueKind: "boolean",
+        valueJson: true,
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: "Ainda preciso confirmar as medidas",
+      },
+    ],
+  );
+
+  const deterministic = extractDeterministicQualificationCandidates(
+    "quero uma visita tecnica para um espaco 3x4",
+  );
+
+  assert.equal(
+    deterministic.some(
+      (candidate) =>
+        String(candidate.factKey) === "measurements_confirmation_required",
+    ),
+    false,
+  );
+});
+
+test("validation accepts explicit pending and confirmed measurement states", () => {
+  const pendingCandidate = {
+    factKey: "measurements_confirmation_required",
+    valueKind: "boolean",
+    valueJson: true,
+    assertionLevel: "confirmed",
+    sourceType: "incoming_customer_message",
+    evidenceText: "ainda preciso confirmar uma medida",
+  } as any;
+
+  assert.deepEqual(
+    validateQualificationFactCandidate({
+      candidate: pendingCandidate,
+      anchorMessage: "Medi o local, mas ainda preciso confirmar uma medida.",
+    }),
+    pendingCandidate,
+  );
+
+  const confirmedCandidate = {
+    ...pendingCandidate,
+    valueJson: false,
+    evidenceText: "As medidas ja estao confirmadas",
+  };
+
+  assert.deepEqual(
+    validateQualificationFactCandidate({
+      candidate: confirmedCandidate,
+      anchorMessage: "As medidas ja estao confirmadas.",
+    }),
+    confirmedCandidate,
+  );
+});
+
+test("measurements confirmation authority rejects indirect evidence", () => {
+  const baseCandidate = {
+    factKey: "measurements_confirmation_required",
+    valueKind: "boolean",
+    valueJson: true,
+    assertionLevel: "confirmed",
+    sourceType: "incoming_customer_message",
+  } as any;
+
+  for (const [anchorMessage, evidenceText] of [
+    ["Tenho um espaco 3x4.", "espaco 3x4"],
+    ["Quero uma visita tecnica.", "visita tecnica"],
+    ["A equipe precisa ir ao local medir.", "precisa ir ao local medir"],
+  ]) {
+    assert.equal(
+      validateQualificationFactCandidate({
+        candidate: {
+          ...baseCandidate,
+          evidenceText,
+        },
+        anchorMessage,
+      }),
+      null,
+    );
+  }
+});
