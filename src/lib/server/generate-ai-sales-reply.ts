@@ -7499,6 +7499,14 @@ export function resolveNextBestQuestionAfterQualificationAuthority(args: {
   snapshot: CanonicalQualificationSnapshot | null;
   qualificationDecision: QualificationDecision;
 }): string | null {
+  if (
+    args.qualificationDecision.askNow &&
+    args.qualificationDecision.targetFactKey ===
+      "measurements_confirmation_required"
+  ) {
+    return "As medidas desse local ja estao confirmadas ou ainda precisam ser conferidas?";
+  }
+
   if (args.nonQualificationQuestion) {
     return args.nonQualificationQuestion;
   }

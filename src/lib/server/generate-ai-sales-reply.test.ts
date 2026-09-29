@@ -1919,6 +1919,65 @@ test("structured qualification target removes the legacy qualification sentence 
   assert.equal(nextQuestion, null);
 });
 
+test("measurements confirmation qualification takes priority over a photo question", () => {
+  const nextQuestion = resolveNextBestQuestionAfterQualificationAuthority({
+    pattern: "photo_or_simulation_request",
+    nonQualificationQuestion: "Voce tem uma foto do lugar?",
+    heuristicQuestion: null,
+    snapshot: createContextualQualificationSnapshot() as never,
+    qualificationDecision: {
+      targetFactKey: "measurements_confirmation_required",
+      targetGroup: null,
+      targetStatus: "unproven",
+      askNow: true,
+      reason: "target_unproven_and_relevant",
+    },
+  });
+
+  assert.equal(
+    nextQuestion,
+    "As medidas desse local ja estao confirmadas ou ainda precisam ser conferidas?",
+  );
+});
+
+test("known measurements confirmation does not override an available non-qualification question", () => {
+  const photoQuestion = "Voce tem uma foto do lugar?";
+  const nextQuestion = resolveNextBestQuestionAfterQualificationAuthority({
+    pattern: "photo_or_simulation_request",
+    nonQualificationQuestion: photoQuestion,
+    heuristicQuestion: null,
+    snapshot: createContextualQualificationSnapshot() as never,
+    qualificationDecision: {
+      targetFactKey: "measurements_confirmation_required",
+      targetGroup: null,
+      targetStatus: "known",
+      askNow: false,
+      reason: "target_already_known",
+    },
+  });
+
+  assert.equal(nextQuestion, photoQuestion);
+});
+
+test("other qualification decisions preserve non-qualification question priority", () => {
+  const operationalQuestion = "Qual dia ou periodo costuma ser melhor pra voce?";
+  const nextQuestion = resolveNextBestQuestionAfterQualificationAuthority({
+    pattern: "general_sales_conversation",
+    nonQualificationQuestion: operationalQuestion,
+    heuristicQuestion: null,
+    snapshot: createContextualQualificationSnapshot() as never,
+    qualificationDecision: {
+      targetFactKey: "space_text",
+      targetGroup: "space",
+      targetStatus: "missing",
+      askNow: true,
+      reason: "target_missing_and_relevant",
+    },
+  });
+
+  assert.equal(nextQuestion, operationalQuestion);
+});
+
 test("commercial or operational next question remains available when qualification authority is structured", () => {
   const operationalQuestion =
     "Vou verificar na agenda os horarios disponiveis. Qual dia ou periodo costuma ser melhor pra voce?";
