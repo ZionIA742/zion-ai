@@ -153,18 +153,29 @@ function normalizeReadinessDecision(
   };
 }
 
-export async function refreshCommercialActionReadiness(args: {
+export type MaterializeCommercialOpportunityChecklistAndProgressResult =
+  | { ok: true }
+  | {
+      ok: false;
+      error:
+        | "INVALID_SCOPE"
+        | "CHECKLIST_MATERIALIZATION_FAILED"
+        | "CHECKLIST_MATERIALIZATION_INVALID"
+        | "PROGRESS_MATERIALIZATION_FAILED"
+        | "PROGRESS_MATERIALIZATION_INVALID";
+      message: string;
+    };
+
+export async function materializeCommercialOpportunityChecklistAndProgress(args: {
   supabase: SupabaseRpcLike;
   organizationId: string;
   storeId: string;
   commercialOpportunityId: string;
-  actionKey: string;
   eventKeyBase?: string;
-}): Promise<RefreshCommercialActionReadinessResult> {
+}): Promise<MaterializeCommercialOpportunityChecklistAndProgressResult> {
   const organizationId = cleanText(args.organizationId);
   const storeId = cleanText(args.storeId);
   const commercialOpportunityId = cleanText(args.commercialOpportunityId);
-  const rawActionKey = cleanText(args.actionKey);
 
   if (!organizationId || !storeId || !commercialOpportunityId) {
     return {
@@ -174,17 +185,9 @@ export async function refreshCommercialActionReadiness(args: {
     };
   }
 
-  if (!isCommercialActionKey(rawActionKey)) {
-    return {
-      ok: false,
-      error: "INVALID_ACTION_KEY",
-      message: "actionKey invalida.",
-    };
-  }
-
   const eventKeyBase =
     cleanText(args.eventKeyBase) ||
-    `commercial_action_readiness:${rawActionKey}:${randomUUID()}`;
+    `commercial_checklist_progress:${randomUUID()}`;
 
   const basePayload = {
     p_organization_id: organizationId,
@@ -256,6 +259,55 @@ export async function refreshCommercialActionReadiness(args: {
       error: "PROGRESS_MATERIALIZATION_INVALID",
       message: "O progresso comercial retornou uma materializacao invalida.",
     };
+  }
+
+  return { ok: true };
+}
+
+export async function refreshCommercialActionReadiness(args: {
+  supabase: SupabaseRpcLike;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+  actionKey: string;
+  eventKeyBase?: string;
+}): Promise<RefreshCommercialActionReadinessResult> {
+  const organizationId = cleanText(args.organizationId);
+  const storeId = cleanText(args.storeId);
+  const commercialOpportunityId = cleanText(args.commercialOpportunityId);
+  const rawActionKey = cleanText(args.actionKey);
+
+  if (!organizationId || !storeId || !commercialOpportunityId) {
+    return {
+      ok: false,
+      error: "INVALID_SCOPE",
+      message: "organizationId, storeId e commercialOpportunityId sao obrigatorios.",
+    };
+  }
+
+  if (!isCommercialActionKey(rawActionKey)) {
+    return {
+      ok: false,
+      error: "INVALID_ACTION_KEY",
+      message: "actionKey invalida.",
+    };
+  }
+
+  const eventKeyBase =
+    cleanText(args.eventKeyBase) ||
+    `commercial_action_readiness:${rawActionKey}:${randomUUID()}`;
+
+  const materialization =
+    await materializeCommercialOpportunityChecklistAndProgress({
+      supabase: args.supabase,
+      organizationId,
+      storeId,
+      commercialOpportunityId,
+      eventKeyBase,
+    });
+
+  if (!materialization.ok) {
+    return materialization;
   }
 
   let readiness: Awaited<ReturnType<SupabaseRpcLike["rpc"]>>;

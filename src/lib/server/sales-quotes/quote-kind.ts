@@ -1,3 +1,4 @@
+import { materializeCommercialOpportunityChecklistAndProgress } from "@/lib/server/commercial-action-readiness";
 import { QuoteAccessError } from "@/lib/server/sales-quotes/quote-auth";
 
 export type ResolvedSalesQuoteKind = "preliminary" | "definitive";
@@ -43,6 +44,25 @@ export async function resolveSalesQuoteKindForVersion(args: {
 
   if (!commercialOpportunityId) {
     return fallbackQuoteKind;
+  }
+
+  const preparation =
+    await materializeCommercialOpportunityChecklistAndProgress({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      commercialOpportunityId,
+    });
+
+  if (!preparation.ok) {
+    throw new QuoteAccessError(
+      503,
+      "QUOTE_KIND_PREPARATION_FAILED",
+      preparation.message,
+      {
+        preparationError: preparation.error,
+      },
+    );
   }
 
   const { data, error } = await args.supabase.rpc(
