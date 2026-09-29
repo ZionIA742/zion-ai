@@ -12,6 +12,18 @@ type AiRunQueueRow = {
   input: Record<string, unknown> | null;
 };
 
+const SUPPORTED_SALES_RESUME_REASONS = new Set([
+  "sales_ai_after_hours_policy",
+  "fast_lead_delay",
+  "normal_reply_delay",
+  "next_day_window",
+  "customer_requested_tomorrow",
+  "customer_requested_next_week",
+  "customer_requested_next_month",
+  "customer_needs_internal_alignment",
+  "customer_requested_later",
+]);
+
 type ConversationAutomationRow = {
   id: string;
   status: string | null;
@@ -59,22 +71,29 @@ function safeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error || "unknown_error");
 }
 
-function isDueSalesResume(row: AiRunQueueRow): boolean {
+function hasValidSalesResumeContract(row: AiRunQueueRow): boolean {
   const input = row.input && typeof row.input === "object" ? row.input : {};
   const reason = String(input.reason || "");
 
-  const supportedReasons = new Set([
-    "sales_ai_after_hours_policy",
-    "customer_requested_tomorrow",
-    "customer_requested_next_week",
-    "customer_requested_next_month",
-  ]);
-
   return (
     input.type === "resume_sales_conversation" &&
-    supportedReasons.has(reason) &&
+    SUPPORTED_SALES_RESUME_REASONS.has(reason) &&
     Boolean(input.resumeAt) &&
-    Date.parse(String(input.resumeAt)) <= Date.now()
+    Number.isFinite(Date.parse(String(input.resumeAt)))
+  );
+}
+
+function isDueSalesResume(row: AiRunQueueRow): boolean {
+  const input = row.input && typeof row.input === "object" ? row.input : {};
+  return hasValidSalesResumeContract(row) && Date.parse(String(input.resumeAt)) <= Date.now();
+}
+
+function isSalesResumeQueueCandidate(row: AiRunQueueRow): boolean {
+  const input = row.input && typeof row.input === "object" ? row.input : {};
+  return (
+    String(row.queue_key || "").startsWith("resume:") ||
+    input.system_event === "ai_window_resume" ||
+    input.resume_mode != null
   );
 }
 
@@ -181,7 +200,32 @@ export async function processDueAiRunQueue(
   let failed = 0;
   let skipped = 0;
 
-  for (const row of ((data || []) as AiRunQueueRow[]).filter(isDueSalesResume)) {
+  for (const row of (data || []) as AiRunQueueRow[]) {
+    if (!isSalesResumeQueueCandidate(row)) continue;
+
+    if (!hasValidSalesResumeContract(row)) {
+      const queueId = String(row.id || "").trim();
+      if (!queueId) continue;
+
+      await markQueueProcessed({
+        supabase,
+        id: queueId,
+        organizationId,
+        storeId,
+        detail: "invalid_resume_contract",
+      });
+      skipped += 1;
+      results.push({
+        queueId,
+        queueKey: row.queue_key || null,
+        status: "skipped",
+        detail: "invalid_resume_contract",
+      });
+      continue;
+    }
+
+    if (!isDueSalesResume(row)) continue;
+
     const queueId = String(row.id || "").trim();
     const conversationId = String(row.conversation_id || "").trim();
     const queueKey = row.queue_key || null;
@@ -294,9 +338,14 @@ export async function processDueAiRunQueue(
           queueKey,
           reason: resumeReason as
             | "sales_ai_after_hours_policy"
+            | "fast_lead_delay"
+            | "normal_reply_delay"
+            | "next_day_window"
             | "customer_requested_tomorrow"
             | "customer_requested_next_week"
-            | "customer_requested_next_month",
+            | "customer_requested_next_month"
+            | "customer_needs_internal_alignment"
+            | "customer_requested_later",
           resumeAt,
           anchorMessageId,
           styleHint,

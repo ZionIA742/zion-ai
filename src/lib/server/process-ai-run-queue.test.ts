@@ -418,6 +418,7 @@ const tests: TestCase[] = [
             type: "resume_sales_conversation",
             reason: "customer_requested_tomorrow",
             resumeAt: "2999-01-01T00:00:00.000Z",
+            anchorMessageId: "msg-customer-1",
           },
         }),
       ]);
@@ -440,6 +441,84 @@ const tests: TestCase[] = [
       assert.equal(result.skipped, 0);
       assert.equal(calls, 0);
       assert.equal(recorder.updates.length, 0);
+    },
+  },
+  {
+    name: "all real resume reasons are executable by the canonical consumer",
+    run: async () => {
+      const reasons = [
+        "sales_ai_after_hours_policy",
+        "fast_lead_delay",
+        "normal_reply_delay",
+        "next_day_window",
+        "customer_requested_tomorrow",
+        "customer_requested_next_week",
+        "customer_requested_next_month",
+        "customer_needs_internal_alignment",
+        "customer_requested_later",
+      ] as const;
+
+      for (const reason of reasons) {
+        const recorder = createQueueSupabase([
+          queueRow({
+            queue_key: `resume:conv-1:${reason}:202609050900`,
+            input: {
+              type: "resume_sales_conversation",
+              reason,
+              resumeAt: "2020-01-01T00:00:00.000Z",
+              anchorMessageId: "msg-customer-1",
+            },
+          }),
+        ]);
+        let calls = 0;
+
+        const result = await processDueAiRunQueue({
+          organizationId: "org-1",
+          storeId: "store-1",
+          supabaseClient: recorder.supabase,
+          runAiFlow: async () => {
+            calls += 1;
+            return {
+              ok: true,
+              aiText: "retomada ok",
+              context: {},
+              usage: null,
+              persisted: true,
+              messageId: `msg-ai-${reason}`,
+            };
+          },
+        });
+
+        assert.equal(result.succeeded, 1, reason);
+        assert.equal(calls, 1, reason);
+      }
+    },
+  },
+  {
+    name: "invalid resume contract is terminalized instead of remaining invisible",
+    run: async () => {
+      const recorder = createQueueSupabase([
+        queueRow({
+          input: {
+            system_event: "ai_window_resume",
+            resume_mode: "normal_reply_delay",
+          },
+        }),
+      ]);
+
+      const result = await processDueAiRunQueue({
+        organizationId: "org-1",
+        storeId: "store-1",
+        supabaseClient: recorder.supabase,
+        runAiFlow: async () => {
+          throw new Error("invalid resume must not run");
+        },
+      });
+
+      assert.equal(result.skipped, 1);
+      assert.equal(result.results[0]?.detail, "invalid_resume_contract");
+      assert.equal(recorder.updates.length, 1);
+      assert.equal(recorder.updates[0]?.payload.processing_error, "invalid_resume_contract");
     },
   },
   {

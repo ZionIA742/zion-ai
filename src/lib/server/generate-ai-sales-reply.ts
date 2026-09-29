@@ -768,9 +768,14 @@ type PhotoOrSimulationSubtype =
 export type SalesAiScheduledResumeContext = {
   reason:
     | "sales_ai_after_hours_policy"
+    | "fast_lead_delay"
+    | "normal_reply_delay"
+    | "next_day_window"
     | "customer_requested_tomorrow"
     | "customer_requested_next_week"
-    | "customer_requested_next_month";
+    | "customer_requested_next_month"
+    | "customer_needs_internal_alignment"
+    | "customer_requested_later";
   resumeAt: string;
   styleHint?: string | null;
 };
@@ -10801,11 +10806,21 @@ function buildScheduledResumePromptBlock(
   const reasonLabel =
     context.reason === "sales_ai_after_hours_policy"
       ? "retomada apos a janela operacional"
-      : context.reason === "customer_requested_tomorrow"
+      : context.reason === "fast_lead_delay"
+        ? "retomada por atraso curto do lead"
+        : context.reason === "normal_reply_delay"
+          ? "retomada por atraso normal de resposta"
+          : context.reason === "next_day_window"
+            ? "retomada na janela do dia seguinte"
+            : context.reason === "customer_requested_tomorrow"
         ? "retomada pedida pelo cliente para o dia seguinte"
         : context.reason === "customer_requested_next_week"
           ? "retomada pedida pelo cliente para a semana seguinte"
-          : "retomada pedida pelo cliente para o mes seguinte";
+          : context.reason === "customer_requested_next_month"
+            ? "retomada pedida pelo cliente para o mes seguinte"
+            : context.reason === "customer_needs_internal_alignment"
+              ? "retomada apos alinhamento interno"
+              : "retomada pedida pelo cliente para outro momento";
 
   return [
     "RETOMADA PROGRAMADA",

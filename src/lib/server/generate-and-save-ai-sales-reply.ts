@@ -28,9 +28,14 @@ import {
 
 type ScheduledSalesResumeReason =
   | "sales_ai_after_hours_policy"
+  | "fast_lead_delay"
+  | "normal_reply_delay"
+  | "next_day_window"
   | "customer_requested_tomorrow"
   | "customer_requested_next_week"
-  | "customer_requested_next_month";
+  | "customer_requested_next_month"
+  | "customer_needs_internal_alignment"
+  | "customer_requested_later";
 
 type ScheduledSalesResumeExecutionContext = {
   kind: "scheduled_resume";
@@ -140,9 +145,14 @@ export function buildCrossSellSuggestionLedgerFingerprint(payload: {
 
 const SCHEDULED_SALES_RESUME_REASONS = new Set<ScheduledSalesResumeReason>([
   "sales_ai_after_hours_policy",
+  "fast_lead_delay",
+  "normal_reply_delay",
+  "next_day_window",
   "customer_requested_tomorrow",
   "customer_requested_next_week",
   "customer_requested_next_month",
+  "customer_needs_internal_alignment",
+  "customer_requested_later",
 ]);
 
 function resolveScheduledSalesResumeExecutionContext(
