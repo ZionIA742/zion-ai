@@ -6,6 +6,13 @@ import {
   downloadAndStoreWhatsappInboundMedia,
   removeWhatsappInboundStoredMedia,
 } from "@/lib/server/whatsapp-inbound-media";
+import {
+  recordPostTechnicalVisitResponsibleInbound,
+} from "@/lib/server/post-technical-visit-followups";
+import {
+  loadCanonicalActivePrimaryStoreResponsible,
+  normalizeResponsibleWhatsappDestination,
+} from "@/lib/server/store-responsibles";
 
 type Json =
   | string
@@ -114,6 +121,9 @@ type MetaMessagePayload = {
   audio?: MetaAudioPayload | null;
   video?: MetaVideoPayload | null;
   document?: MetaDocumentPayload | null;
+  context?: {
+    id?: unknown;
+  } | null;
 };
 
 type StoredInboxPayload = {
@@ -333,7 +343,7 @@ function extractContactName(payload: StoredInboxPayload): string | null {
   return null;
 }
 
-function extractIncomingMessage(payload: StoredInboxPayload) {
+export function extractIncomingMessage(payload: StoredInboxPayload) {
   const message = isRecord(payload.message) ? payload.message : null;
   const messageId = asTrimmedString(message?.id);
   const fromPhoneRaw = asTrimmedString(message?.from);
@@ -344,11 +354,13 @@ function extractIncomingMessage(payload: StoredInboxPayload) {
   const audioNode = isRecord(message?.audio) ? message?.audio : null;
   const videoNode = isRecord(message?.video) ? message?.video : null;
   const documentNode = isRecord(message?.document) ? message?.document : null;
+  const contextNode = isRecord(message?.context) ? message?.context : null;
   const phoneNumberId = asTrimmedString(payload.phone_number_id);
   const contactName = extractContactName(payload);
 
   return {
     messageId,
+    contextMessageId: asTrimmedString(contextNode?.id),
     fromPhoneRaw,
     fromPhoneNormalized: fromPhoneRaw ? normalizePhone(fromPhoneRaw) : null,
     rawMessageType,
@@ -375,6 +387,50 @@ function extractIncomingMessage(payload: StoredInboxPayload) {
     displayPhoneNumber: asTrimmedString(payload.display_phone_number),
     contactName,
   };
+}
+
+async function handleResponsibleInboundBeforeCustomerThread(args: {
+  inbox: InboxRow;
+  extracted: ReturnType<typeof extractIncomingMessage>;
+  payload: StoredInboxPayload;
+}) {
+  const responsible = await loadCanonicalActivePrimaryStoreResponsible({
+    organizationId: args.inbox.organization_id,
+    storeId: args.inbox.store_id,
+  });
+  if (!responsible.ok) return { isResponsible: false as const };
+
+  const incoming = normalizeResponsibleWhatsappDestination(
+    args.extracted.fromPhoneRaw || "",
+  );
+  if (!incoming || incoming !== responsible.responsible.whatsappNumber) {
+    return { isResponsible: false as const };
+  }
+
+  const result = await recordPostTechnicalVisitResponsibleInbound({
+    organizationId: args.inbox.organization_id,
+    storeId: args.inbox.store_id,
+    responsibleId: responsible.responsible.id,
+    inboundExternalMessageId: args.extracted.messageId || args.inbox.external_event_id,
+    repliedToExternalMessageId: args.extracted.contextMessageId,
+    rawContent: args.extracted.textBody,
+    metadata: {
+      source: "meta_whatsapp_webhook",
+      event_kind: args.payload.event_kind || null,
+      message_type: args.extracted.rawMessageType,
+      context_message_id: args.extracted.contextMessageId,
+      inbox_id: args.inbox.id,
+      external_event_id: args.inbox.external_event_id,
+      media_ids: {
+        image: args.extracted.imageMediaId,
+        audio: args.extracted.audioMediaId,
+        video: args.extracted.videoMediaId,
+        document: args.extracted.documentMediaId,
+      },
+    },
+  });
+
+  return { isResponsible: true as const, result };
 }
 
 async function listPendingInboxRows(
@@ -1486,6 +1542,21 @@ async function processSingleInboxRow(
       lead_id: existingMessage.lead_id,
       conversation_id: existingMessage.conversation_id,
       ai_status: "skipped_duplicate",
+    };
+  }
+
+  const responsibleInbound = await handleResponsibleInboundBeforeCustomerThread({
+    inbox,
+    extracted,
+    payload,
+  });
+  if (responsibleInbound.isResponsible) {
+    await markInboxProcessed(supabase, inbox.id);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "succeeded",
+      detail: `responsible_inbound_${responsibleInbound.result.correlationStatus}`,
     };
   }
 

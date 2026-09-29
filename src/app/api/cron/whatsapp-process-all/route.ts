@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { processWhatsappInbox } from "@/lib/server/whatsapp-inbox-processor";
 import { processWhatsappPendingMessages } from "@/lib/server/whatsapp-external-sender";
 import { processDueAiRunQueue } from "@/lib/server/process-ai-run-queue";
+import { processPostTechnicalVisitFollowups } from "@/lib/server/post-technical-visit-followups";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +26,13 @@ type StoreExecutionSummary = {
     processed: number;
     sent: number;
     failed: number;
+  };
+  postAppointmentFollowups?: {
+    processed: number;
+    sent: number;
+    failed: number;
+    uncertain: number;
+    skipped: number;
   };
   aiQueue?: {
     processed: number;
@@ -137,6 +145,10 @@ export async function GET(req: Request) {
   try {
     const inboxLimit = parseEnvLimit(process.env.WHATSAPP_CRON_INBOX_LIMIT, 10);
     const pendingLimit = parseEnvLimit(process.env.WHATSAPP_CRON_PENDING_LIMIT, 10);
+    const postAppointmentFollowupLimit = parseEnvLimit(
+      process.env.WHATSAPP_CRON_POST_APPOINTMENT_FOLLOWUP_LIMIT,
+      10,
+    );
     const aiQueueLimit = parseEnvLimit(process.env.WHATSAPP_CRON_AI_QUEUE_LIMIT, 10);
     const stores = await listActiveWhatsappStores();
 
@@ -187,6 +199,12 @@ export async function GET(req: Request) {
           limit: inboxLimit,
         });
 
+        const postAppointmentFollowupResult = await processPostTechnicalVisitFollowups({
+          organizationId: store.organizationId,
+          storeId: store.storeId,
+          limit: postAppointmentFollowupLimit,
+        });
+
         const pendingResult = await processWhatsappPendingMessages({
           organizationId: store.organizationId,
           storeId: store.storeId,
@@ -206,6 +224,7 @@ export async function GET(req: Request) {
         pendingProcessed += pendingResult.processed;
         pendingSent += pendingResult.sent;
         pendingFailed += pendingResult.failed;
+
         aiQueueProcessed += aiQueueResult.processed;
         aiQueueSucceeded += aiQueueResult.succeeded;
         aiQueueFailed += aiQueueResult.failed;
@@ -225,6 +244,7 @@ export async function GET(req: Request) {
             sent: pendingResult.sent,
             failed: pendingResult.failed,
           },
+          postAppointmentFollowups: postAppointmentFollowupResult,
           aiQueue: {
             processed: aiQueueResult.processed,
             succeeded: aiQueueResult.succeeded,
@@ -260,6 +280,10 @@ export async function GET(req: Request) {
       pendingProcessed,
       pendingSent,
       pendingFailed,
+      postAppointmentFollowupProcessed: results.reduce(
+        (total, item) => total + (item.postAppointmentFollowups?.processed || 0),
+        0,
+      ),
       aiQueueProcessed,
       aiQueueSucceeded,
       aiQueueFailed,
@@ -267,6 +291,7 @@ export async function GET(req: Request) {
       limits: {
         inbox: inboxLimit,
         pending: pendingLimit,
+        postAppointmentFollowups: postAppointmentFollowupLimit,
         aiQueue: aiQueueLimit,
       },
       results,

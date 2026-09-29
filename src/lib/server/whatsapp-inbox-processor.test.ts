@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   dispatchAiSalesReplyForConversation,
   bootstrapCommercialContextBeforeInsert,
+  processWhatsappInbox,
   resolveWhatsappInboundThreadBySystem,
 } from "./whatsapp-inbox-processor.js";
 
@@ -15,6 +16,205 @@ function readProcessorSource() {
     "utf8",
   );
 }
+
+function jsonFetchResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+test("responsible primary inbound is recorded before the customer thread path", async () => {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+
+  const previousFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method: string; body: string }> = [];
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    const body = typeof init?.body === "string" ? init.body : "";
+    calls.push({ url, method, body });
+
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "GET") {
+      return jsonFetchResponse([
+        {
+          id: "inbox-responsible",
+          organization_id: "org-1",
+          store_id: "store-1",
+          provider: "whatsapp",
+          external_event_id: "event-responsible",
+          payload: {
+            source: "meta_whatsapp_webhook",
+            event_kind: "message",
+            phone_number_id: "phone-1",
+            message: {
+              id: "inbound-responsible",
+              from: "5511999999999",
+              type: "text",
+              text: { body: "Visita concluída" },
+              context: { id: "outbound-context" },
+            },
+          },
+          received_at: "2026-09-29T12:00:00.000Z",
+          processed_at: null,
+          processing_error: null,
+        },
+      ]);
+    }
+
+    if (url.includes("/rest/v1/messages") && method === "GET") {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/store_responsibles") && method === "GET") {
+      return jsonFetchResponse([
+        {
+          id: "responsible-1",
+          name: "Responsável",
+          role: "owner",
+          whatsapp_number: "5511999999999",
+        },
+      ]);
+    }
+
+    if (url.includes("/rest/v1/rpc/record_post_technical_visit_followup_response")) {
+      return jsonFetchResponse({
+        handled: true,
+        correlation_status: "matched",
+        response_id: "response-1",
+      });
+    }
+
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") {
+      return jsonFetchResponse([]);
+    }
+
+    throw new Error(`unexpected responsible inbound fetch: ${method} ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await processWhatsappInbox({
+      organizationId: "org-1",
+      storeId: "store-1",
+      limit: 1,
+    });
+
+    assert.equal(result.succeeded, 1);
+    assert.equal(result.results[0]?.detail, "responsible_inbound_matched");
+    assert.equal(
+      calls.some((call) => call.url.includes("resolve_whatsapp_inbound_thread_by_system")),
+      false,
+    );
+    assert.equal(
+      calls.some((call) => call.url.includes("generateAndSaveAiSalesReply")),
+      false,
+    );
+
+    const recordCall = calls.find((call) =>
+      call.url.includes("record_post_technical_visit_followup_response"),
+    );
+    assert.ok(recordCall);
+    const recordBody = JSON.parse(recordCall.body) as Record<string, unknown>;
+    assert.equal(recordBody.p_inbound_external_message_id, "inbound-responsible");
+    assert.equal(recordBody.p_replied_to_external_message_id, "outbound-context");
+    assert.equal(
+      calls.some(
+        (call) =>
+          call.url.includes("channel_whatsapp_inbox") && call.method === "PATCH",
+      ),
+      true,
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("non-responsible inbound continues to the customer thread resolver", async () => {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+
+  const previousFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    calls.push(`${method} ${url}`);
+
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "GET") {
+      return jsonFetchResponse([
+        {
+          id: "inbox-customer",
+          organization_id: "org-1",
+          store_id: "store-1",
+          provider: "whatsapp",
+          external_event_id: "event-customer",
+          payload: {
+            source: "meta_whatsapp_webhook",
+            event_kind: "message",
+            phone_number_id: "phone-1",
+            message: {
+              id: "inbound-customer",
+              from: "5511888888888",
+              type: "text",
+              text: { body: "Olá" },
+            },
+          },
+          received_at: "2026-09-29T12:00:00.000Z",
+          processed_at: null,
+          processing_error: null,
+        },
+      ]);
+    }
+
+    if (url.includes("/rest/v1/messages") && method === "GET") {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/store_responsibles") && method === "GET") {
+      return jsonFetchResponse([
+        {
+          id: "responsible-1",
+          name: "Responsável",
+          role: "owner",
+          whatsapp_number: "5511999999999",
+        },
+      ]);
+    }
+
+    if (url.includes("/rest/v1/rpc/resolve_whatsapp_inbound_thread_by_system")) {
+      throw new Error("customer_thread_resolver_reached");
+    }
+
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") {
+      return jsonFetchResponse([]);
+    }
+
+    throw new Error(`unexpected customer inbound fetch: ${method} ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await processWhatsappInbox({
+      organizationId: "org-1",
+      storeId: "store-1",
+      limit: 1,
+    });
+
+    assert.equal(result.failed, 1);
+    assert.match(result.results[0]?.detail || "", /customer_thread_resolver_reached/);
+    assert.equal(
+      calls.some((call) => call.includes("record_post_technical_visit_followup_response")),
+      false,
+    );
+    assert.equal(
+      calls.some((call) => call.includes("resolve_whatsapp_inbound_thread_by_system")),
+      true,
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
 
 test("resolveWhatsappInboundThreadBySystem preserves explicit scope in the RPC payload", async () => {
   const calls: Array<{ fn: string; payload: Record<string, unknown> }> = [];

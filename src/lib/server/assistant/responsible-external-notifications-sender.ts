@@ -69,6 +69,7 @@ export type SendResponsibleExternalNotificationInput = {
   organizationId: string;
   storeId: string;
   notificationId: string;
+  uncertainOnTransportFailure?: boolean;
 };
 
 export type SendResponsibleExternalNotificationResult =
@@ -176,40 +177,63 @@ async function sendWhatsappTextMessage(params: {
   to: string;
   body: string;
 }) {
-  const response = await fetch(
-    `https://graph.facebook.com/${WHATSAPP_GRAPH_API_VERSION}/${params.phoneNumberId}/messages`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${params.accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        to: params.to,
-        type: "text",
-        text: {
-          preview_url: false,
-          body: params.body,
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://graph.facebook.com/${WHATSAPP_GRAPH_API_VERSION}/${params.phoneNumberId}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${params.accessToken}`,
+          "Content-Type": "application/json",
         },
-      }),
-    },
-  );
-
-  const payload = (await response.json()) as WhatsAppSendResponse;
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: params.to,
+          type: "text",
+          text: {
+            preview_url: false,
+            body: params.body,
+          },
+        }),
+      },
+    );
+  } catch (error) {
+    const uncertain = new Error(safeErrorText(error));
+    uncertain.name = "WHATSAPP_TRANSPORT_UNCERTAIN";
+    throw uncertain;
+  }
 
   if (!response.ok) {
+    let payload: WhatsAppSendResponse | null = null;
+    try {
+      payload = (await response.json()) as WhatsAppSendResponse;
+    } catch {
+      // The HTTP status is already a deterministic provider rejection. Do not
+      // turn an unreadable error body into transport uncertainty.
+    }
     throw new Error(
       cleanText(payload?.error?.message) ||
         `Falha HTTP ${response.status} ao enviar texto para WhatsApp`,
     );
   }
 
+  let payload: WhatsAppSendResponse;
+  try {
+    payload = (await response.json()) as WhatsAppSendResponse;
+  } catch (error) {
+    const uncertain = new Error(safeErrorText(error));
+    uncertain.name = "WHATSAPP_TRANSPORT_UNCERTAIN";
+    throw uncertain;
+  }
+
   const messageId = cleanText(payload?.messages?.[0]?.id);
 
   if (!messageId) {
-    throw new Error("Resposta do WhatsApp sem messages[0].id no envio de texto");
+    const uncertain = new Error("Resposta do WhatsApp sem messages[0].id no envio de texto");
+    uncertain.name = "WHATSAPP_TRANSPORT_UNCERTAIN";
+    throw uncertain;
   }
 
   return messageId;
@@ -402,6 +426,30 @@ async function markResponsibleExternalNotificationFailed(args: {
   }
 }
 
+async function markResponsibleExternalNotificationUncertain(args: {
+  supabase: ReturnType<typeof getSupabaseAdmin>;
+  notificationId: string;
+  organizationId: string;
+  storeId: string;
+  errorText: string;
+}) {
+  const now = new Date().toISOString();
+  const { error } = await args.supabase
+    .from("store_responsible_external_notifications")
+    .update({
+      status: "uncertain",
+      processed_at: now,
+      error_text: args.errorText,
+      locked_at: null,
+      locked_by: null,
+      updated_at: now,
+    })
+    .eq("id", args.notificationId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId);
+  if (error) throw new Error(`Falha ao marcar notificacao como uncertain: ${error.message}`);
+}
+
 export async function sendResponsibleExternalNotification(
   input: SendResponsibleExternalNotificationInput,
 ): Promise<SendResponsibleExternalNotificationResult> {
@@ -447,6 +495,7 @@ export async function sendResponsibleExternalNotification(
     };
   }
 
+  let acceptedExternalMessageId: string | null = null;
   try {
     const integration = await getResponsibleSendWhatsappIntegration({
       supabase,
@@ -460,6 +509,7 @@ export async function sendResponsibleExternalNotification(
       to: cleanText(claimedNotification.destination),
       body: cleanText(claimedNotification.rendered_message),
     });
+    acceptedExternalMessageId = externalMessageId;
 
     await markResponsibleExternalNotificationSent({
       supabase,
@@ -478,18 +528,30 @@ export async function sendResponsibleExternalNotification(
   } catch (error) {
     const errorText = safeErrorText(error);
 
-    await markResponsibleExternalNotificationFailed({
-      supabase,
-      notificationId,
-      organizationId,
-      storeId,
-      errorText,
-    });
+    const isTransportUncertain = error instanceof Error && error.name === "WHATSAPP_TRANSPORT_UNCERTAIN";
+    const isAcceptanceUncertain = Boolean(acceptedExternalMessageId);
+    if (isAcceptanceUncertain || (input.uncertainOnTransportFailure && isTransportUncertain)) {
+      await markResponsibleExternalNotificationUncertain({
+        supabase,
+        notificationId,
+        organizationId,
+        storeId,
+        errorText,
+      });
+    } else {
+      await markResponsibleExternalNotificationFailed({
+        supabase,
+        notificationId,
+        organizationId,
+        storeId,
+        errorText,
+      });
+    }
 
     return {
       ok: false,
       sent: false,
-      reason: "send_failed",
+      reason: isAcceptanceUncertain || (input.uncertainOnTransportFailure && isTransportUncertain) ? "send_uncertain" : "send_failed",
       notificationId,
     };
   }
