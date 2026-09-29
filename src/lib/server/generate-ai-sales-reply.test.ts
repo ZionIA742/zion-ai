@@ -185,7 +185,28 @@ class FakeOpenAi {
       if (this.responsesQueue.length === 0) {
         throw new Error("missing openai response mock");
       }
-      return this.responsesQueue.shift();
+      const response = this.responsesQueue.shift();
+      if (
+        response &&
+        typeof response === "object" &&
+        typeof (response as { output_text?: unknown }).output_text === "string"
+      ) {
+        const outputText = String(
+          (response as { output_text: string }).output_text,
+        ).trim();
+
+        if (outputText && !outputText.startsWith("{") && !outputText.startsWith("[")) {
+          return {
+            ...(response as Record<string, unknown>),
+            output_text: JSON.stringify({
+              reply_text: outputText,
+              cross_sell_suggestions_included: [],
+            }),
+          };
+        }
+      }
+
+      return response;
     },
   };
 }
@@ -5741,6 +5762,88 @@ function structuredReply(text: string) {
   };
 }
 
+test("generateAiSalesReply retries truncated structured output without leaking JSON", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Oi",
+    commercialOpportunityId: null,
+  });
+  const truncatedOutput =
+    '{"reply_text":"Claro! Posso te ajudar.","cross_sell_suggestions_included":[{"candidate_key":"pool:abc';
+  const openai = new FakeOpenAi([
+    {
+      output_text: truncatedOutput,
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+      usage: { input_tokens: 10, output_tokens: 240, total_tokens: 250 },
+    },
+    structuredReply("Resposta segura e estruturada."),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.aiText, "Resposta segura e estruturada");
+  assert.equal(result.aiText.includes("candidate_key"), false);
+  const structuredCalls = openai.calls.filter(
+    (call) =>
+      (call as { text?: { format?: { name?: string } } }).text?.format?.name ===
+      "sales_ai_reply_with_cross_sell_suggestions_v1",
+  );
+  assert.equal(structuredCalls.length, 2);
+  assert.equal(
+    (structuredCalls[0] as { max_output_tokens?: number }).max_output_tokens,
+    800,
+  );
+  assert.equal(
+    (structuredCalls[1] as { max_output_tokens?: number }).max_output_tokens,
+    800,
+  );
+  assert.deepEqual(
+    (structuredCalls[1] as { input?: unknown }).input,
+    (structuredCalls[0] as { input?: unknown }).input,
+  );
+});
+
+test("generateAiSalesReply fails closed after one invalid structured-output retry", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Oi",
+    commercialOpportunityId: null,
+  });
+  const truncatedOutput =
+    '{"reply_text":"Claro!","cross_sell_suggestions_included":[{"candidate_key":"pool:abc';
+  const openai = new FakeOpenAi([
+    { output_text: truncatedOutput },
+    { output_text: truncatedOutput },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, false);
+  const structuredCalls = openai.calls.filter(
+    (call) =>
+      (call as { text?: { format?: { name?: string } } }).text?.format?.name ===
+      "sales_ai_reply_with_cross_sell_suggestions_v1",
+  );
+  assert.equal(structuredCalls.length, 2);
+  assert.equal(JSON.stringify(result).includes("candidate_key"), false);
+  assert.equal(JSON.stringify(result).includes("Claro!"), false);
+});
+
 function classifierReply(args: {
   decision: string;
   suggestionKey?: string | null;
@@ -8019,7 +8122,10 @@ test("generateAiSalesReply keeps deterministic facts when structured extraction 
           throw new Error("structured extraction exploded");
         }
         return {
-          output_text: "Consigo seguir com essa medida",
+          output_text: JSON.stringify({
+            reply_text: "Consigo seguir com essa medida",
+            cross_sell_suggestions_included: [],
+          }),
           usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
         };
       },

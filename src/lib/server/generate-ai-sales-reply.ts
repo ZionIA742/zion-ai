@@ -9228,6 +9228,17 @@ const SALES_AI_REPLY_STRUCTURED_RESPONSE_FORMAT = {
   },
 } as const;
 
+const SALES_AI_REPLY_STRUCTURED_MAX_OUTPUT_TOKENS = 800;
+
+class StructuredAiSalesReplyOutputError extends Error {
+  readonly code = "INVALID_STRUCTURED_AI_SALES_REPLY_OUTPUT";
+
+  constructor(reason: string) {
+    super(`${"INVALID_STRUCTURED_AI_SALES_REPLY_OUTPUT"}: ${reason}`);
+    this.name = "StructuredAiSalesReplyOutputError";
+  }
+}
+
 function parseStructuredAiSalesReplyOutput(rawOutputText: string): {
   replyText: string;
   candidateKeys: string[];
@@ -9235,47 +9246,84 @@ function parseStructuredAiSalesReplyOutput(rawOutputText: string): {
 } {
   const raw = String(rawOutputText || "").trim();
   if (!raw) {
-    return {
-      replyText: "",
-      candidateKeys: [],
-      usedStructuredOutput: false,
-    };
+    throw new StructuredAiSalesReplyOutputError("empty_output");
   }
 
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as {
-      reply_text?: unknown;
-      cross_sell_suggestions_included?: unknown;
-    };
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new StructuredAiSalesReplyOutputError("invalid_json");
+  }
 
-    if (!parsed || typeof parsed !== "object") {
-      throw new Error("structured output root is not object");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new StructuredAiSalesReplyOutputError("root_is_not_object");
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.length !== 2 ||
+    keys[0] !== "cross_sell_suggestions_included" ||
+    keys[1] !== "reply_text"
+  ) {
+    throw new StructuredAiSalesReplyOutputError("root_schema_mismatch");
+  }
+
+  if (typeof record.reply_text !== "string" || !record.reply_text.trim()) {
+    throw new StructuredAiSalesReplyOutputError("reply_text_missing_or_empty");
+  }
+
+  if (!Array.isArray(record.cross_sell_suggestions_included)) {
+    throw new StructuredAiSalesReplyOutputError("cross_sell_suggestions_not_array");
+  }
+
+  const candidateKeys = record.cross_sell_suggestions_included.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new StructuredAiSalesReplyOutputError("cross_sell_candidate_invalid");
     }
 
-    const replyText = String(parsed.reply_text || "").trim();
-    const rawIncluded = Array.isArray(parsed.cross_sell_suggestions_included)
-      ? parsed.cross_sell_suggestions_included
-      : [];
-    const candidateKeys = rawIncluded
-      .map((entry) =>
-        entry && typeof entry === "object"
-          ? String((entry as { candidate_key?: unknown }).candidate_key || "").trim()
-          : "",
-      )
-      .filter(Boolean);
+    const candidate = entry as Record<string, unknown>;
+    if (
+      Object.keys(candidate).length !== 1 ||
+      !Object.prototype.hasOwnProperty.call(candidate, "candidate_key") ||
+      typeof candidate.candidate_key !== "string" ||
+      !candidate.candidate_key.trim()
+    ) {
+      throw new StructuredAiSalesReplyOutputError("cross_sell_candidate_schema_mismatch");
+    }
 
-    return {
-      replyText,
-      candidateKeys,
-      usedStructuredOutput: true,
-    };
-  } catch {
-    return {
-      replyText: raw,
-      candidateKeys: [],
-      usedStructuredOutput: false,
-    };
-  }
+    return candidate.candidate_key.trim();
+  });
+
+  return {
+    replyText: record.reply_text.trim(),
+    candidateKeys,
+    usedStructuredOutput: true,
+  };
+}
+
+function isIncompleteStructuredAiResponse(response: unknown): boolean {
+  if (!response || typeof response !== "object") return false;
+
+  const candidate = response as {
+    status?: unknown;
+    incomplete_details?: { reason?: unknown } | null;
+  };
+  const status = String(candidate.status || "").trim().toLowerCase();
+  const incompleteReason = String(
+    candidate.incomplete_details?.reason || "",
+  )
+    .trim()
+    .toLowerCase();
+
+  return status === "incomplete" || Boolean(incompleteReason);
+}
+
+function getStructuredAiResponseText(response: unknown): string {
+  if (!response || typeof response !== "object") return "";
+  const outputText = (response as { output_text?: unknown }).output_text;
+  return typeof outputText === "string" ? outputText.trim() : "";
 }
 
 function resolveIncludedCrossSellSuggestions(args: {
@@ -12950,24 +12998,66 @@ export async function generateAiSalesReply(
 
     const input = buildModelInput(messagesForConversationContinuity);
 
-    const response = await (openai.responses.create as any)({
-      model,
-      instructions,
-      input,
-      max_output_tokens: commercialObjective.responseMode === "objective" ? 180 : 240,
-      text: {
-        format: SALES_AI_REPLY_STRUCTURED_RESPONSE_FORMAT,
-      },
-    });
+    const createStructuredReplyResponse = () =>
+      openai.responses.create({
+        model,
+        instructions,
+        input,
+        max_output_tokens: SALES_AI_REPLY_STRUCTURED_MAX_OUTPUT_TOKENS,
+        text: {
+          format: SALES_AI_REPLY_STRUCTURED_RESPONSE_FORMAT,
+        },
+      });
+
+    const responseAttempts: unknown[] = [];
+    let response = await createStructuredReplyResponse();
+    responseAttempts.push(response);
+    let structuredReply: ReturnType<typeof parseStructuredAiSalesReplyOutput> | null = null;
+
+    try {
+      if (isIncompleteStructuredAiResponse(response)) {
+        throw new StructuredAiSalesReplyOutputError("provider_marked_incomplete");
+      }
+
+      structuredReply = parseStructuredAiSalesReplyOutput(
+        getStructuredAiResponseText(response),
+      );
+    } catch (firstStructuredOutputError) {
+      response = await createStructuredReplyResponse();
+      responseAttempts.push(response);
+
+      if (isIncompleteStructuredAiResponse(response)) {
+        throw new StructuredAiSalesReplyOutputError("provider_marked_incomplete_after_retry");
+      }
+
+      try {
+        structuredReply = parseStructuredAiSalesReplyOutput(
+          getStructuredAiResponseText(response),
+        );
+      } catch (secondStructuredOutputError) {
+        const firstReason =
+          firstStructuredOutputError instanceof Error
+            ? firstStructuredOutputError.message
+            : String(firstStructuredOutputError || "unknown");
+        const secondReason =
+          secondStructuredOutputError instanceof Error
+            ? secondStructuredOutputError.message
+            : String(secondStructuredOutputError || "unknown");
+        throw new StructuredAiSalesReplyOutputError(
+          `retry_failed:first=${firstReason};second=${secondReason}`,
+        );
+      }
+    }
+
+    if (!structuredReply) {
+      throw new StructuredAiSalesReplyOutputError("structured_output_missing_after_retry");
+    }
 
     const usage = mergeOpenAiUsage([
       ...extractionUsages,
-      extractOpenAiUsage(response, model),
+      ...responseAttempts.map((attempt) => extractOpenAiUsage(attempt, model)),
     ]);
 
-    const structuredReply = parseStructuredAiSalesReplyOutput(
-      String((response as any)?.output_text || "").trim(),
-    );
     const aiText = cleanupAiText(
       structuredReply.replyText,
       commercialObjective.responseMode,
