@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  dispatchAiSalesReplyForConversation,
   bootstrapCommercialContextBeforeInsert,
   resolveWhatsappInboundThreadBySystem,
 } from "./whatsapp-inbox-processor.js";
@@ -218,6 +219,118 @@ test("bootstrapCommercialContextBeforeInsert accepts an explicit active context 
 
   assert.equal(result.commercialOpportunityId, "opp-active");
   assert.equal(result.bootstrapState, "existing_active_commercial_context");
+});
+
+test("dispatchAiSalesReplyForConversation applies the live status, takeover, terminal, unknown, and pause gates", async () => {
+  const cases = [
+    { status: "active", human: false, expected: "called" },
+    { status: "qualificacao", human: false, expected: "called" },
+    { status: "qualificacao", human: true, expected: "skipped_human_active" },
+    { status: "closed", human: false, expected: "failed" },
+    { status: "unknown_status", human: false, expected: "failed" },
+  ] as const;
+
+  for (const scenario of cases) {
+    let aiCalls = 0;
+    const supabase = {
+      from(table: string) {
+        const builder = {
+          select() {
+            return builder;
+          },
+          eq() {
+            return builder;
+          },
+          async maybeSingle() {
+            if (table === "conversations") {
+              return {
+                data: {
+                  id: "conv-1",
+                  organization_id: "org-1",
+                  lead_id: "lead-1",
+                  status: scenario.status,
+                  is_human_active: scenario.human,
+                },
+                error: null,
+              };
+            }
+            return { data: null, error: null };
+          },
+        };
+        return builder;
+      },
+    };
+
+    const result = await dispatchAiSalesReplyForConversation({
+      supabase: supabase as never,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      runAiFlow: async () => {
+        aiCalls += 1;
+        return {
+          ok: true,
+          aiText: "ok",
+          context: {},
+          usage: null,
+          persisted: true,
+          messageId: "ai-1",
+        };
+      },
+    });
+
+    assert.equal(result.ai_status, scenario.expected, scenario.status);
+    assert.equal(aiCalls, scenario.expected === "called" ? 1 : 0, scenario.status);
+  }
+
+  let pausedCalls = 0;
+  const pausedSupabase = {
+    from(table: string) {
+      const builder = {
+        select() {
+          return builder;
+        },
+        eq() {
+          return builder;
+        },
+        async maybeSingle() {
+          if (table === "conversations") {
+            return {
+              data: {
+                id: "conv-1",
+                organization_id: "org-1",
+                lead_id: "lead-1",
+                status: "qualificacao",
+                is_human_active: false,
+              },
+              error: null,
+            };
+          }
+          return {
+            data: {
+              conversation_id: "conv-1",
+              next_resume_at: "2999-01-01T00:00:00.000Z",
+            },
+            error: null,
+          };
+        },
+      };
+      return builder;
+    },
+  };
+
+  const pausedResult = await dispatchAiSalesReplyForConversation({
+    supabase: pausedSupabase as never,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    runAiFlow: async () => {
+      pausedCalls += 1;
+      throw new Error("future window must not run");
+    },
+  });
+  assert.equal(pausedResult.ai_status, "skipped_ai_paused");
+  assert.equal(pausedCalls, 0);
 });
 
 test("bootstrapCommercialContextBeforeInsert rejects empty, unknown or internally inconsistent RPC rows", async () => {

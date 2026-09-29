@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { processDueAiRunQueue } from "./process-ai-run-queue";
+import { isSalesAiConversationStatusEligible } from "./conversation-ai-sales-eligibility";
 
 type TestCase = {
   name: string;
@@ -159,6 +160,39 @@ function queueRow(overrides?: Record<string, unknown>) {
 }
 
 const tests: TestCase[] = [
+  {
+    name: "sales AI status contract is explicit and fail closed",
+    run: async () => {
+      for (const status of [
+        "active",
+        "novo_lead",
+        "qualificacao",
+        "negociacao",
+        "orcamento",
+      ]) {
+        assert.equal(isSalesAiConversationStatusEligible(status), true, status);
+      }
+      for (const status of [
+        "open",
+        "aguardando_aprovacao",
+        "fechamento_pagamento",
+        "pagamento_pendente_confirmacao",
+        "pagamento_confirmado",
+        "agendar_visita",
+        "agendar_instalacao",
+        "pos_venda_nps",
+        "perdido",
+        "paused",
+        "resolved",
+        "closed",
+        "humano_assumiu",
+        "unknown",
+        "",
+      ]) {
+        assert.equal(isSalesAiConversationStatusEligible(status), false, status);
+      }
+    },
+  },
   {
     name: "due after-hours queue reopens the canonical sales AI flow with current conversation ids",
     run: async () => {
@@ -320,6 +354,58 @@ const tests: TestCase[] = [
           { column: "next_resume_at", value: "2020-01-01T00:00:00.000Z" },
         ]);
       }
+    },
+  },
+  {
+    name: "qualificacao conversation resumes without human takeover",
+    run: async () => {
+      const recorder = createQueueSupabase(
+        [queueRow()],
+        { id: "conv-1", status: "qualificacao", is_human_active: false },
+      );
+      let calls = 0;
+      const result = await processDueAiRunQueue({
+        organizationId: "org-1",
+        storeId: "store-1",
+        supabaseClient: recorder.supabase,
+        runAiFlow: async () => {
+          calls += 1;
+          return {
+            ok: true,
+            aiText: "ok",
+            context: {},
+            usage: null,
+            persisted: true,
+            messageId: "msg-ai-qualificacao",
+          };
+        },
+      });
+
+      assert.equal(result.succeeded, 1);
+      assert.equal(calls, 1);
+    },
+  },
+  {
+    name: "unknown conversation status remains fail closed for scheduled resume",
+    run: async () => {
+      const recorder = createQueueSupabase(
+        [queueRow()],
+        { id: "conv-1", status: "future_unknown_status", is_human_active: false },
+      );
+      let calls = 0;
+      const result = await processDueAiRunQueue({
+        organizationId: "org-1",
+        storeId: "store-1",
+        supabaseClient: recorder.supabase,
+        runAiFlow: async () => {
+          calls += 1;
+          throw new Error("unknown status must not run");
+        },
+      });
+
+      assert.equal(result.skipped, 1);
+      assert.equal(result.results[0]?.detail, "conversation_not_active");
+      assert.equal(calls, 0);
     },
   },
   {

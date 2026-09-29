@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { generateAndSaveAiSalesReply } from "@/lib/server/generate-and-save-ai-sales-reply";
+import { isSalesAiConversationStatusEligible } from "@/lib/server/conversation-ai-sales-eligibility";
 import { routeIncomingCustomerReplyToOperationalTask } from "@/lib/server/process-assistant-operational-tasks";
 import {
   downloadAndStoreWhatsappInboundMedia,
@@ -1046,13 +1047,14 @@ async function loadConversationAiWindowState(args: {
   return (data as ConversationAiWindowStateRow | null) ?? null;
 }
 
-async function dispatchAiSalesReplyForConversation(args: {
+export async function dispatchAiSalesReplyForConversation(args: {
   supabase: SupabaseClient;
   organizationId: string;
   storeId: string;
   conversationId: string;
   messageId?: string | null;
   customerMessage?: string | null;
+  runAiFlow?: typeof generateAndSaveAiSalesReply;
 }) {
   const messageId = String(args.messageId || "").trim();
   const customerMessage = String(args.customerMessage || "").trim();
@@ -1099,7 +1101,7 @@ async function dispatchAiSalesReplyForConversation(args: {
     };
   }
 
-  if (String(conversationState.status || "").trim() !== "active") {
+  if (!isSalesAiConversationStatusEligible(conversationState.status)) {
     return {
       ai_status: "failed" as const,
       ai_error: "conversation_not_active",
@@ -1128,7 +1130,7 @@ async function dispatchAiSalesReplyForConversation(args: {
     };
   }
 
-  const aiResult = await generateAndSaveAiSalesReply({
+  const aiResult = await (args.runAiFlow || generateAndSaveAiSalesReply)({
     organizationId: args.organizationId,
     storeId: args.storeId,
     conversationId: args.conversationId,

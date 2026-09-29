@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { generateAndSaveAiSalesReply } from "./generate-and-save-ai-sales-reply";
+import { isSalesAiConversationStatusEligible } from "./conversation-ai-sales-eligibility";
 
 type AiRunQueueRow = {
   id: string;
@@ -236,7 +237,7 @@ export async function processDueAiRunQueue(
         conversationId,
       });
 
-      if (!conversation?.id || String(conversation.status || "").trim() !== "active") {
+      if (!conversation?.id || !isSalesAiConversationStatusEligible(conversation.status)) {
         await markQueueProcessed({
           supabase,
           id: queueId,
