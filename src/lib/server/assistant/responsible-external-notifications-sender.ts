@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
 
 type Json =
   | string
@@ -237,6 +238,58 @@ async function sendWhatsappTextMessage(params: {
   }
 
   return messageId;
+}
+
+export async function sendResponsibleAssistantText(args: {
+  organizationId: string;
+  storeId: string;
+  responsibleId: string;
+  destination: string;
+  text: string;
+}): Promise<
+  | { ok: true; externalMessageId: string }
+  | { ok: false; reason: string }
+> {
+  const organizationId = cleanText(args.organizationId);
+  const storeId = cleanText(args.storeId);
+  const destination = cleanText(args.destination);
+  const text = cleanText(args.text);
+  if (!organizationId || !storeId || !cleanText(args.responsibleId) || !destination || !text) {
+    return { ok: false, reason: "RESPONSIBLE_ASSISTANT_SEND_INVALID_INPUT" };
+  }
+
+  const supabase = getSupabaseAdmin();
+  const responsible = await loadCanonicalActivePrimaryStoreResponsible({
+    supabase,
+    organizationId,
+    storeId,
+  });
+  if (!responsible.ok || responsible.responsible.id !== args.responsibleId) {
+    return { ok: false, reason: "RESPONSIBLE_ASSISTANT_DESTINATION_SCOPE_MISMATCH" };
+  }
+  if (responsible.responsible.whatsappNumber !== destination) {
+    return { ok: false, reason: "RESPONSIBLE_ASSISTANT_DESTINATION_CHANGED" };
+  }
+
+  try {
+    const integration = await getResponsibleSendWhatsappIntegration({
+      supabase,
+      organizationId,
+      storeId,
+    });
+    const externalMessageId = await sendWhatsappTextMessage({
+      accessToken: integration.accessToken,
+      phoneNumberId: integration.phoneNumberId,
+      to: destination,
+      body: text,
+    });
+    return { ok: true, externalMessageId };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : "RESPONSIBLE_ASSISTANT_SEND_FAILED",
+    };
+  }
 }
 
 async function loadResponsibleExternalNotification(args: {

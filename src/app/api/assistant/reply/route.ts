@@ -3772,12 +3772,14 @@ function buildAssistantContextBlock(contextState?: StoreAssistantContextStateRow
   return lines.length ? lines.join("\n") : "- nenhum assunto ativo salvo";
 }
 
-async function getOrCreateAssistantThread(args: { supabase: any; organizationId: string; storeId: string; }) {
+export async function getOrCreateAssistantThread(args: { supabase: any; organizationId: string; storeId: string; }) {
   const { data: existingThread, error: findError } = await args.supabase
     .from("store_assistant_threads")
     .select("id")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
+    .eq("thread_type", "primary")
+    .eq("status", "active")
     .order("updated_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -9299,10 +9301,11 @@ function cleanupAiText(
   return paragraphs.join("\n\n").trim();
 }
 
-async function generateAssistantReply(params: {
+export async function generateAssistantReply(params: {
   request: Request;
   organizationId: string;
   storeId: string;
+  sourceExternalMessageId?: string | null;
 }): Promise<AssistantReplyResult> {
   try {
     const organizationId = String(params.organizationId || "").trim();
@@ -9546,6 +9549,7 @@ async function generateAssistantReply(params: {
         p_related_appointment_id: null,
         p_metadata: {
           source: "assistant.reply.route",
+          source_external_message_id: params.sourceExternalMessageId || null,
           contractGenerationHandled: true,
           ...contractGenerationResult.metadata,
         },
@@ -9597,6 +9601,7 @@ async function generateAssistantReply(params: {
         p_related_appointment_id: null,
         p_metadata: {
           source: "assistant.reply.route",
+          source_external_message_id: params.sourceExternalMessageId || null,
           documentEditHandled: true,
           ...documentEditResult.metadata,
         },
@@ -10228,6 +10233,7 @@ async function generateAssistantReply(params: {
       p_related_appointment_id: null,
       p_metadata: {
         source: "assistant.reply.route",
+        source_external_message_id: params.sourceExternalMessageId || null,
         genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage) || nextVisitMode,
         postAppointmentContextUsed: postAppointmentMode,
         morningReportMode,

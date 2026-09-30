@@ -9,6 +9,8 @@ import {
 import {
   recordPostTechnicalVisitResponsibleInbound,
 } from "@/lib/server/post-technical-visit-followups";
+import { runPostTechnicalVisitRuntime } from "@/lib/server/post-technical-visit-runtime";
+import { routeResponsibleWhatsappToAssistant } from "@/lib/server/assistant/responsible-whatsapp-conversation";
 import {
   loadCanonicalActivePrimaryStoreResponsible,
   normalizeResponsibleWhatsappDestination,
@@ -430,7 +432,39 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
     },
   });
 
-  return { isResponsible: true as const, result };
+  if (result.handled) {
+    if (!result.responseId) {
+      throw new Error("POST_TECHNICAL_VISIT_RESPONSE_ID_MISSING");
+    }
+
+    const runtime = await runPostTechnicalVisitRuntime({
+      organizationId: args.inbox.organization_id,
+      storeId: args.inbox.store_id,
+      responseId: result.responseId,
+    });
+
+    return { isResponsible: true as const, result, runtime };
+  }
+
+  const assistantResult = await routeResponsibleWhatsappToAssistant({
+    organizationId: args.inbox.organization_id,
+    storeId: args.inbox.store_id,
+    responsibleId: responsible.responsible.id,
+    externalMessageId: args.extracted.messageId || args.inbox.external_event_id,
+    fromPhone: args.extracted.fromPhoneRaw || "",
+    phoneNumberId: args.extracted.phoneNumberId || "",
+    content: args.extracted.textBody || "",
+    messageType: args.extracted.rawMessageType || undefined,
+    metadata: {
+      source: "meta_whatsapp_webhook",
+      event_kind: args.payload.event_kind || null,
+      context_message_id: args.extracted.contextMessageId,
+      inbox_id: args.inbox.id,
+      external_event_id: args.inbox.external_event_id,
+    },
+  });
+
+  return { isResponsible: true as const, result: { ...result, ...assistantResult } };
 }
 
 async function listPendingInboxRows(
@@ -757,7 +791,7 @@ export async function resolveWhatsappInboundThreadBySystem(
 
   if (error) {
     throw new Error(
-      `Falha ao resolver lead/conversation canônicos do inbound: ${error.message}`,
+      `Falha ao resolver lead/conversation canÃ´nicos do inbound: ${error.message}`,
     );
   }
 
@@ -784,7 +818,7 @@ export async function resolveWhatsappInboundThreadBySystem(
       threadState !== "created_active_thread")
   ) {
     throw new Error(
-      "resolve_whatsapp_inbound_thread_by_system retornou contrato inválido.",
+      "resolve_whatsapp_inbound_thread_by_system retornou contrato inv\u00e1lido.",
     );
   }
 
@@ -1304,7 +1338,7 @@ export async function bootstrapCommercialContextBeforeInsert(
       bootstrapState !== "created_first_contextual_opportunity")
   ) {
     throw new Error(
-      "bootstrap_first_commercial_context_for_inbound_by_system retornou contrato inválido.",
+      "bootstrap_first_commercial_context_for_inbound_by_system retornou contrato inv\u00e1lido.",
     );
   }
 
