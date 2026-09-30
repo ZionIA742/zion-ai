@@ -29,7 +29,7 @@ function clean(value: unknown) {
 }
 
 function isValidExternalMessageId(value: string) {
-  return /^[A-Za-z0-9:_-]{1,512}$/.test(value);
+  return /^[\x21-\x7E]{1,512}$/.test(value);
 }
 
 async function loadOrCreateEvent(args: {

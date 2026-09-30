@@ -2,6 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
+test("responsible WhatsApp bridge accepts real Meta wamid punctuation", () => {
+  const source = readFileSync(
+    "src/lib/server/assistant/responsible-whatsapp-conversation.ts",
+    "utf8",
+  );
+
+  assert.match(source, /\\x21-\\x7E/);
+
+  const providerMessageId = "wamid.HBgNNTUxMTk5NDcyOTQ2MxUCABIYIEFDMkRBM0IxODU4RDM5MzA5MUNGQjk2Q0E1NkRGOTg2AA==";
+  assert.match(providerMessageId, /^[\x21-\x7E]{1,512}$/);
+  assert.doesNotMatch("bad id with spaces", /^[\x21-\x7E]{1,512}$/);
+  assert.doesNotMatch("bad\nid", /^[\x21-\x7E]{1,512}$/);
+});
 test("responsible WhatsApp bridge uses the canonical assistant thread and sender role", () => {
   const source = readFileSync(
     "src/lib/server/assistant/responsible-whatsapp-conversation.ts",
