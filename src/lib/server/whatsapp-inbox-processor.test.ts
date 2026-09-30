@@ -24,9 +24,45 @@ function jsonFetchResponse(body: unknown, status = 200) {
   });
 }
 
+async function processResponsibleTerminalScenario(args: {
+  currentResultEventId?: string;
+  currentMissing?: boolean;
+  decisionError?: boolean;
+  responseIdMissing?: boolean;
+}) {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+  process.env.OPENAI_API_KEY = "openai-test";
+  const previousFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method: string; body: string }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    const body = typeof init?.body === "string" ? init.body : "";
+    calls.push({ url, method, body });
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "GET") return jsonFetchResponse([{ id: "inbox-terminal", organization_id: "org-1", store_id: "store-1", provider: "whatsapp", external_event_id: "event-terminal", payload: { source: "meta_whatsapp_webhook", event_kind: "message", phone_number_id: "phone-1", message: { id: "inbound-terminal", from: "5511999999999", type: "text", text: { body: "A visita ocorreu" }, context: { id: "outbound-context" } } }, received_at: "2026-09-29T12:00:00.000Z", processed_at: null, processing_error: null }]);
+    if (url.includes("/rest/v1/messages") && method === "GET") return jsonFetchResponse([]);
+    if (url.includes("/rest/v1/store_responsibles") && method === "GET") return jsonFetchResponse([{ id: "responsible-1", name: "Responsavel", role: "owner", whatsapp_number: "5511999999999" }]);
+    if (url.includes("/rest/v1/rpc/record_post_technical_visit_followup_response")) return jsonFetchResponse({ handled: true, correlation_status: "matched", response_id: args.responseIdMissing ? null : "response-terminal" });
+    if (url.includes("/rest/v1/schedule_post_appointment_followup_responses") && method === "GET") return jsonFetchResponse([{ id: "response-terminal", organization_id: "org-1", store_id: "store-1", raw_content: "A visita ocorreu" }]);
+    if (url.includes("/rest/v1/store_technical_visit_result_events") && method === "GET") return jsonFetchResponse([{ id: "result-old", organization_id: "org-1", store_id: "store-1", appointment_id: "appointment-1", source_response_id: "response-terminal" }]);
+    if (url.includes("/rest/v1/store_technical_visit_result_current") && method === "GET") return jsonFetchResponse(args.currentMissing ? [] : [{ organization_id: "org-1", store_id: "store-1", appointment_id: "appointment-1", current_result_event_id: args.currentResultEventId || "result-new" }]);
+    if (url.includes("/rest/v1/rpc/decide_post_technical_visit_by_system")) return args.decisionError ? jsonFetchResponse({ message: "decision unavailable" }, 500) : jsonFetchResponse([]);
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") return jsonFetchResponse([]);
+    if (url.includes("api.openai.com/v1/responses")) throw new Error("LLM must not run for terminal result");
+    throw new Error(`unexpected terminal fetch: ${method} ${url}`);
+  }) as typeof fetch;
+  try {
+    return { result: await processWhatsappInbox({ organizationId: "org-1", storeId: "store-1", limit: 1 }), calls };
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+}
+
 test("responsible primary inbound is recorded before the customer thread path", async () => {
   process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+  process.env.OPENAI_API_KEY = "openai-test";
 
   const previousFetch = globalThis.fetch;
   const calls: Array<{ url: string; method: string; body: string }> = [];
@@ -53,7 +89,7 @@ test("responsible primary inbound is recorded before the customer thread path", 
               id: "inbound-responsible",
               from: "5511999999999",
               type: "text",
-              text: { body: "Visita concluída" },
+              text: { body: "A visita ocorreu" },
               context: { id: "outbound-context" },
             },
           },
@@ -85,6 +121,54 @@ test("responsible primary inbound is recorded before the customer thread path", 
         correlation_status: "matched",
         response_id: "response-1",
       });
+    }
+
+    if (url.includes("/rest/v1/schedule_post_appointment_followup_responses") && method === "GET") {
+      return jsonFetchResponse([
+        {
+          id: "response-1",
+          organization_id: "org-1",
+          store_id: "store-1",
+          raw_content: "A visita ocorreu",
+        },
+      ]);
+    }
+
+    if (url.includes("/rest/v1/store_technical_visit_result_events") && method === "GET") {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("api.openai.com/v1/responses") && method === "POST") {
+      return jsonFetchResponse({
+        output_text: JSON.stringify({
+          result_kind: "pending",
+          evidence_text: "A visita ocorreu",
+          adjustment_summary: null,
+          uncertainty_reason: null,
+          occurrence: "occurred",
+          occurrence_evidence_text: "A visita ocorreu",
+        }),
+      });
+    }
+
+    if (url.includes("/rest/v1/rpc/persist_post_technical_visit_result_by_system")) {
+      return jsonFetchResponse([{ event_id: "result-event-1" }]);
+    }
+
+    if (url.includes("/rest/v1/rpc/decide_post_technical_visit_by_system")) {
+      return jsonFetchResponse([{
+        decision_id: "decision-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        appointment_id: "appointment-1",
+        commercial_opportunity_id: "opportunity-1",
+        lifecycle_cycle: 1,
+        result_event_id: "result-event-1",
+        decision_kind: "needs_resolution",
+        decision_reason: "technical_visit_result_pending",
+        decision_basis: {},
+        replayed: false,
+      }]);
     }
 
     if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") {
@@ -129,6 +213,51 @@ test("responsible primary inbound is recorded before the customer thread path", 
   } finally {
     globalThis.fetch = previousFetch;
   }
+});
+
+test("inbox marks superseded responsible inbound as processed without decision", async () => {
+  const { result, calls } = await processResponsibleTerminalScenario({});
+  assert.equal(result.succeeded, 1);
+  assert.equal(result.failed, 0);
+  assert.equal(calls.some((call) => call.url.includes("decide_post_technical_visit_by_system")), false);
+  const successPatch = calls.find((call) => call.method === "PATCH");
+  assert.ok(successPatch);
+  const payload = JSON.parse(successPatch.body) as Record<string, unknown>;
+  assert.equal(payload.processing_error, null);
+  assert.equal(typeof payload.processed_at, "string");
+});
+
+test("inbox keeps current-missing responsible inbound retryable", async () => {
+  const { result, calls } = await processResponsibleTerminalScenario({ currentMissing: true });
+  assert.equal(result.succeeded, 0);
+  assert.equal(result.failed, 1);
+  const failurePatch = calls.find((call) => call.method === "PATCH");
+  assert.ok(failurePatch);
+  const payload = JSON.parse(failurePatch.body) as Record<string, unknown>;
+  assert.equal(typeof payload.processing_error, "string");
+  assert.equal(Object.prototype.hasOwnProperty.call(payload, "processed_at"), false);
+});
+
+test("inbox keeps decision failure retryable instead of converting it to success", async () => {
+  const { result, calls } = await processResponsibleTerminalScenario({ currentResultEventId: "result-old", decisionError: true });
+  assert.equal(result.succeeded, 0);
+  assert.equal(result.failed, 1);
+  const failurePatch = calls.find((call) => call.method === "PATCH");
+  assert.ok(failurePatch);
+  const payload = JSON.parse(failurePatch.body) as Record<string, unknown>;
+  assert.equal(typeof payload.processing_error, "string");
+  assert.equal(Object.prototype.hasOwnProperty.call(payload, "processed_at"), false);
+});
+
+test("inbox fails closed when handled response has no response id", async () => {
+  const { result, calls } = await processResponsibleTerminalScenario({ responseIdMissing: true });
+  assert.equal(result.succeeded, 0);
+  assert.equal(result.failed, 1);
+  const failurePatch = calls.find((call) => call.method === "PATCH");
+  assert.ok(failurePatch);
+  const payload = JSON.parse(failurePatch.body) as Record<string, unknown>;
+  assert.match(String(payload.processing_error), /RESPONSE_ID_MISSING/);
+  assert.equal(Object.prototype.hasOwnProperty.call(payload, "processed_at"), false);
 });
 
 test("non-responsible inbound continues to the customer thread resolver", async () => {
