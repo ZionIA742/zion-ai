@@ -401,6 +401,18 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "onboarding review override does not allow blocked access",
+    run: () => {
+      const result = resolveAccountAccessPageGate(
+        createResolution({ status: "store_missing_membership" }),
+        "onboarding",
+        { allowCompletedOnboardingReview: true },
+      );
+
+      assertRedirectDecision(result, "/account/access-blocked");
+    },
+  },
+  {
     name: "onboarding redirects first access to reset password",
     run: () => {
       const result = resolveAccountAccessPageGate(
