@@ -122,6 +122,7 @@ class FakeQuery {
 
 class FakeSupabase {
   readonly fromCalls: string[] = [];
+  readonly events: string[] = [];
   readonly rpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
   private readonly tables: Record<string, Row[]>;
   private readonly tableErrors: Record<string, { message: string } | null>;
@@ -144,10 +145,12 @@ class FakeSupabase {
 
   from(table: string) {
     this.fromCalls.push(table);
+    this.events.push(`from:${table}`);
     return new FakeQuery(this.tables[table] || [], this.tableErrors[table] || null);
   }
 
   async rpc(fn: string, payload: Record<string, unknown>) {
+    this.events.push(`rpc:${fn}`);
     this.rpcCalls.push({ fn, payload });
     const configured = this.rpcResults[fn];
 
@@ -330,6 +333,7 @@ function createCanonicalKnownFact(args: {
     | "system_inference"
     | "system_correction"
     | "migration_backfill";
+  lastEventId?: string | null;
 }) {
   return {
     factKey: args.factKey,
@@ -340,7 +344,7 @@ function createCanonicalKnownFact(args: {
     sourceType: args.sourceType ?? "system_correction",
     sourceMessageId: null,
     sourceConversationId: null,
-    lastEventId: null,
+    lastEventId: args.lastEventId ?? null,
     lastOperationKey: null,
     updatedAt: null,
   };
@@ -539,6 +543,8 @@ function createGenerateAiSalesReplySupabase(args?: {
   catalogItemPhotos?: Row[];
   pools?: Row[];
   poolPhotos?: Row[];
+  brazilianMunicipalities?: Row[];
+  brazilianMunicipalityError?: { message: string } | null;
   paymentSettingsReaderResponse?: RpcMockEntry;
   channelSettingsReaderResponse?: RpcMockEntry;
   operationExecutionPoliciesReaderResponse?: RpcMockEntry;
@@ -636,6 +642,7 @@ function createGenerateAiSalesReplySupabase(args?: {
       store_catalog_item_photos: args?.catalogItemPhotos ?? [],
       pools: args?.pools ?? [],
       pool_photos: args?.poolPhotos ?? [],
+      brazilian_municipalities: args?.brazilianMunicipalities ?? [],
       messages: [
         createMessage({
           id: anchorMessageId,
@@ -708,7 +715,9 @@ function createGenerateAiSalesReplySupabase(args?: {
           ]
         : [],
     },
-    {},
+    args?.brazilianMunicipalityError
+      ? { brazilian_municipalities: args.brazilianMunicipalityError }
+      : {},
     {
       read_store_payment_settings_by_system:
         args?.paymentSettingsReaderResponse ?? {
@@ -8265,6 +8274,336 @@ test("generateAiSalesReply writes customer identity and preserves qualification 
       .filter((call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system")
       .map((call) => call.payload.p_fact_key),
     ["space_text", "requested_area_m2", "technical_visit_interest"],
+  );
+});
+
+test("generateAiSalesReply infers customer state from a unique confirmed city", async () => {
+  const cityFact = createCanonicalKnownFact({
+    factKey: "customer_city",
+    value: "Suzano",
+    normalizedValueText: "suzano",
+    sourceType: "incoming_customer_message",
+    lastEventId: "11111111-1111-4111-8111-111111111111",
+  });
+  const inferredStateFact = createCanonicalKnownFact({
+    factKey: "customer_state_code",
+    value: "SP",
+    normalizedValueText: "sp",
+    state: "inferred",
+    sourceType: "system_inference",
+  });
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Oi",
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [cityFact],
+            canAskNextQuestion: true,
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [cityFact, inferredStateFact],
+            provenanceSummary: {
+              knownFactCount: 2,
+              confirmedCount: 1,
+              inferredCount: 1,
+              conflictCount: 0,
+              messageBackedCount: 1,
+              conversationBackedCount: 0,
+              sourceCounts: {
+                incoming_customer_message: 1,
+                system_inference: 1,
+              },
+            },
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+    brazilianMunicipalities: [
+      {
+        ibge_code: 3552502,
+        name: "Suzano",
+        normalized_name: "suzano",
+        state_code: "SP",
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    { output_text: JSON.stringify({ candidates: [] }) },
+    structuredReply("Vou seguir com seu atendimento."),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const geographyWrite = supabase.rpcCalls.find(
+    (call) =>
+      call.fn === "write_commercial_opportunity_qualification_fact_by_system" &&
+      call.payload.p_fact_key === "customer_state_code",
+  );
+  assert.deepEqual(geographyWrite?.payload, {
+    p_organization_id: "org-1",
+    p_store_id: "store-1",
+    p_commercial_opportunity_id: "opp-1",
+    p_operation_key:
+      "p9_qfact_customer_state_from_city_v1:11111111-1111-4111-8111-111111111111:customer_state_code",
+    p_fact_key: "customer_state_code",
+    p_value_json: "SP",
+    p_assertion_level: "inferred",
+    p_source_type: "system_inference",
+    p_source_message_id: null,
+    p_source_conversation_id: null,
+    p_created_by: "sales_ai_customer_geography_resolver_v1",
+    p_resolves_conflict: false,
+  });
+  assert.equal(
+    supabase.fromCalls.includes("brazilian_municipalities"),
+    true,
+  );
+});
+
+test("generateAiSalesReply resolves city and UF in the same message execution", async () => {
+  const cityEventId = "22222222-2222-4222-8222-222222222222";
+  const cityFact = createCanonicalKnownFact({
+    factKey: "customer_city",
+    value: "Suzano",
+    normalizedValueText: "suzano",
+    sourceType: "incoming_customer_message",
+    lastEventId: cityEventId,
+  });
+  const stateFact = createCanonicalKnownFact({
+    factKey: "customer_state_code",
+    value: "SP",
+    normalizedValueText: "sp",
+    state: "inferred",
+    sourceType: "system_inference",
+  });
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Moro em Suzano",
+    canonicalReaderResponses: [
+      {
+        data: [createCanonicalQualificationReaderRow({ knownFacts: [] })],
+        error: null,
+      },
+      {
+        data: [createCanonicalQualificationReaderRow({ knownFacts: [cityFact] })],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [cityFact, stateFact],
+            provenanceSummary: {
+              knownFactCount: 2,
+              confirmedCount: 1,
+              inferredCount: 1,
+              conflictCount: 0,
+              messageBackedCount: 1,
+              conversationBackedCount: 0,
+              sourceCounts: {
+                incoming_customer_message: 1,
+                system_inference: 1,
+              },
+            },
+          }),
+        ],
+        error: null,
+      },
+    ],
+    brazilianMunicipalities: [
+      {
+        ibge_code: 3552502,
+        name: "Suzano",
+        normalized_name: "suzano",
+        state_code: "SP",
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        candidates: [
+          {
+            fact_key: "customer_city",
+            assertion_level: "confirmed",
+            value_kind: "text",
+            text_value: "Suzano",
+            number_value: null,
+            boolean_value: null,
+            evidence_text: "Suzano",
+          },
+        ],
+      }),
+    },
+    structuredReply("Entendi, Suzano."),
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const relevantEvents = supabase.events.filter(
+    (event) =>
+      event === "from:brazilian_municipalities" ||
+      event === "rpc:read_commercial_opportunity_qualification_facts_by_system" ||
+      event === "rpc:write_commercial_opportunity_qualification_fact_by_system",
+  );
+  assert.deepEqual(relevantEvents, [
+    "rpc:read_commercial_opportunity_qualification_facts_by_system",
+    "rpc:write_commercial_opportunity_qualification_fact_by_system",
+    "rpc:read_commercial_opportunity_qualification_facts_by_system",
+    "from:brazilian_municipalities",
+    "rpc:write_commercial_opportunity_qualification_fact_by_system",
+    "rpc:read_commercial_opportunity_qualification_facts_by_system",
+  ]);
+  const writes = supabase.rpcCalls.filter(
+    (call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system",
+  );
+  assert.equal(writes[0]?.payload.p_fact_key, "customer_city");
+  assert.equal(writes[1]?.payload.p_fact_key, "customer_state_code");
+  assert.equal(
+    writes[1]?.payload.p_operation_key,
+    `p9_qfact_customer_state_from_city_v1:${cityEventId}:customer_state_code`,
+  );
+  assert.equal(writes[1]?.payload.p_source_message_id, null);
+  assert.equal(writes[1]?.payload.p_source_conversation_id, null);
+});
+
+test("generateAiSalesReply keeps all 5C inference gates fail-closed", async () => {
+  const cityEventId = "33333333-3333-4333-8333-333333333333";
+  const city = createCanonicalKnownFact({
+    factKey: "customer_city",
+    value: "Suzano",
+    normalizedValueText: "suzano",
+    sourceType: "incoming_customer_message",
+    lastEventId: cityEventId,
+  });
+  const inferredState = createCanonicalKnownFact({
+    factKey: "customer_state_code",
+    value: "SP",
+    normalizedValueText: "sp",
+    state: "inferred",
+    sourceType: "system_inference",
+  });
+  const cases: Array<{
+    name: string;
+    knownFacts?: Row[];
+    conflicts?: Row[];
+    provenanceSummary?: Row;
+  }> = [
+    { name: "state confirmed", knownFacts: [city, createCanonicalKnownFact({ factKey: "customer_state_code", value: "SP", normalizedValueText: "sp", sourceType: "incoming_customer_message" })] },
+    { name: "state inferred", knownFacts: [city, inferredState], provenanceSummary: { knownFactCount: 2, confirmedCount: 1, inferredCount: 1, conflictCount: 0, messageBackedCount: 1, conversationBackedCount: 0, sourceCounts: { incoming_customer_message: 1, system_inference: 1 } } },
+    { name: "state conflict", knownFacts: [city], conflicts: [createCanonicalConflict({ factKey: "customer_state_code" })] },
+    { name: "city conflict", knownFacts: [city], conflicts: [createCanonicalConflict({ factKey: "customer_city" })] },
+    { name: "city absent", knownFacts: [] },
+    { name: "city inferred", knownFacts: [createCanonicalKnownFact({ ...city, state: "inferred", sourceType: "system_inference" })], provenanceSummary: { knownFactCount: 1, confirmedCount: 0, inferredCount: 1, conflictCount: 0, messageBackedCount: 0, conversationBackedCount: 0, sourceCounts: { system_inference: 1 } } },
+    { name: "city event missing", knownFacts: [createCanonicalKnownFact({ ...city, lastEventId: null })] },
+  ];
+
+  for (const testCase of cases) {
+    const supabase = createGenerateAiSalesReplySupabase({
+      anchorMessageContent: "Oi",
+      canonicalReaderResponses: [
+        {
+          data: [
+            createCanonicalQualificationReaderRow({
+              knownFacts: testCase.knownFacts,
+              conflicts: testCase.conflicts,
+              provenanceSummary: testCase.provenanceSummary,
+            }),
+          ],
+          error: null,
+        },
+      ],
+    });
+    const result = await generateAiSalesReply({
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      anchorMessageId: "msg-anchor",
+      supabaseClient: supabase,
+      openaiClient: new FakeOpenAi([
+        { output_text: JSON.stringify({ candidates: [] }) },
+        structuredReply("Tudo certo."),
+      ]),
+    });
+
+    assert.equal(result.ok, true, testCase.name);
+    assert.equal(
+      supabase.fromCalls.includes("brazilian_municipalities"),
+      false,
+      testCase.name,
+    );
+    assert.equal(
+      supabase.rpcCalls.some(
+        (call) =>
+          call.fn === "write_commercial_opportunity_qualification_fact_by_system" &&
+          call.payload.p_fact_key === "customer_state_code",
+      ),
+      false,
+      testCase.name,
+    );
+  }
+});
+
+test("generateAiSalesReply does not fail or invent UF when municipality lookup fails", async () => {
+  const city = createCanonicalKnownFact({
+    factKey: "customer_city",
+    value: "Suzano",
+    normalizedValueText: "suzano",
+    sourceType: "incoming_customer_message",
+    lastEventId: "44444444-4444-4444-8444-444444444444",
+  });
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Oi",
+    brazilianMunicipalityError: { message: "reference unavailable" },
+    canonicalReaderResponses: [
+      {
+        data: [createCanonicalQualificationReaderRow({ knownFacts: [city] })],
+        error: null,
+      },
+    ],
+  });
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([
+      { output_text: JSON.stringify({ candidates: [] }) },
+      structuredReply("Vou continuar o atendimento."),
+    ]),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    supabase.rpcCalls.some(
+      (call) =>
+        call.fn === "write_commercial_opportunity_qualification_fact_by_system" &&
+        call.payload.p_fact_key === "customer_state_code",
+    ),
+    false,
   );
 });
 

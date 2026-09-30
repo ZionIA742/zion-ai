@@ -63,6 +63,10 @@ import {
   validateQualificationFactCandidate,
 } from "./sales-qualification-fact-extraction";
 import {
+  buildCustomerStateFromCityOperationKey,
+  resolveCustomerStateCodeFromCity,
+} from "./customer-geography-resolution";
+import {
   buildCustomerIdentityNameOperationKey,
   extractCustomerSelfDeclaredName,
 } from "./customer-identity-name-extraction";
@@ -2974,7 +2978,7 @@ export async function materializeCommercialOpportunityProfileFromQualificationBy
   if (error) {
     return {
       ok: false as const,
-      message: error.message,
+      message: error.message || "Canonical qualification writer failed.",
     };
   }
 
@@ -3040,7 +3044,7 @@ async function writeCanonicalQualificationFactBySystem(args: {
   if (error) {
     return {
       ok: false as const,
-      message: error.message,
+      message: error.message || "Canonical qualification writer failed.",
     };
   }
 
@@ -3063,6 +3067,82 @@ async function writeCanonicalQualificationFactBySystem(args: {
     commercialOpportunityId !== args.commercialOpportunityId ||
     factKey !== args.candidate.factKey ||
     valueKind !== args.candidate.valueKind ||
+    (currentState !== "confirmed" && currentState !== "inferred" && currentState !== "conflict") ||
+    changed == null ||
+    !isValidQualificationWriterOutcome(outcome)
+  ) {
+    return {
+      ok: false as const,
+      message: "Canonical qualification writer returned an invalid payload.",
+    };
+  }
+
+  return {
+    ok: true as const,
+    row,
+  };
+}
+
+async function writeInferredCustomerStateFromCityBySystem(args: {
+  supabase: {
+    rpc(
+      functionName: string,
+      payload: Record<string, unknown>,
+    ): PromiseLike<{
+      data: unknown;
+      error: { message?: string | null } | null;
+    }>;
+  };
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+  stateCode: string;
+  operationKey: string;
+}) {
+  const { data, error } = await args.supabase.rpc(
+    "write_commercial_opportunity_qualification_fact_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+      p_operation_key: args.operationKey,
+      p_fact_key: "customer_state_code",
+      p_value_json: args.stateCode,
+      p_assertion_level: "inferred",
+      p_source_type: "system_inference",
+      p_source_message_id: null,
+      p_source_conversation_id: null,
+      p_created_by: "sales_ai_customer_geography_resolver_v1",
+      p_resolves_conflict: false,
+    },
+  );
+
+  if (error) {
+    return {
+      ok: false as const,
+      message: error.message || "Canonical qualification writer failed.",
+    };
+  }
+
+  if (!Array.isArray(data) || data.length !== 1 || !isRecord(data[0])) {
+    return {
+      ok: false as const,
+      message: "Canonical qualification writer returned unexpected cardinality.",
+    };
+  }
+
+  const row = data[0] as CanonicalQualificationWriterRow;
+  const commercialOpportunityId = asNullableString(row.commercial_opportunity_id);
+  const factKey = asNullableString(row.fact_key);
+  const valueKind = asNullableString(row.value_kind);
+  const currentState = asNullableString(row.current_state);
+  const changed = typeof row.changed === "boolean" ? row.changed : null;
+  const outcome = asNullableString(row.outcome);
+
+  if (
+    commercialOpportunityId !== args.commercialOpportunityId ||
+    factKey !== "customer_state_code" ||
+    valueKind !== "text" ||
     (currentState !== "confirmed" && currentState !== "inferred" && currentState !== "conflict") ||
     changed == null ||
     !isValidQualificationWriterOutcome(outcome)
@@ -12275,6 +12355,85 @@ export async function generateAiSalesReply(
         }
 
         canonicalQualificationSnapshot = postWriteQualificationResult.snapshot;
+      }
+
+      if (canonicalQualificationSnapshot) {
+      const customerCityFact = canonicalQualificationSnapshot.knownFacts.find(
+        (fact) => fact.factKey === "customer_city",
+      );
+      const customerStateFact = canonicalQualificationSnapshot.knownFacts.find(
+        (fact) => fact.factKey === "customer_state_code",
+      );
+      const hasCustomerCityConflict = canonicalQualificationSnapshot.conflicts.some(
+        (conflict) => conflict.factKey === "customer_city",
+      );
+      const hasCustomerStateConflict = canonicalQualificationSnapshot.conflicts.some(
+        (conflict) => conflict.factKey === "customer_state_code",
+      );
+
+      if (
+        customerCityFact?.state === "confirmed" &&
+        typeof customerCityFact.value === "string" &&
+        !customerStateFact &&
+        !hasCustomerCityConflict &&
+        !hasCustomerStateConflict
+      ) {
+        const operationKey = buildCustomerStateFromCityOperationKey(
+          customerCityFact.lastEventId,
+        );
+
+        if (operationKey) {
+          const geographyResolution = await resolveCustomerStateCodeFromCity({
+            supabase,
+            cityValue: customerCityFact.value,
+          });
+          const inferredStateCode = geographyResolution.stateCode;
+
+          if (
+            geographyResolution.status !== "unique" ||
+            !inferredStateCode
+          ) {
+            // Ambiguous, absent, or malformed reference data never becomes a fact.
+          } else {
+          const geographyWriteResult =
+            await writeInferredCustomerStateFromCityBySystem({
+              supabase,
+              organizationId,
+              storeId: resolvedStoreId,
+              commercialOpportunityId: resolvedCommercialOpportunityId,
+              stateCode: inferredStateCode,
+              operationKey,
+            });
+
+          if (!geographyWriteResult.ok) {
+            return {
+              ok: false,
+              error: "WRITE_CANONICAL_QUALIFICATION_FAILED",
+              message: geographyWriteResult.message,
+            };
+          }
+
+          const postGeographyQualificationResult =
+            await loadCanonicalQualificationSnapshotBySystem({
+              supabase,
+              organizationId,
+              storeId: resolvedStoreId,
+              commercialOpportunityId: resolvedCommercialOpportunityId,
+            });
+
+          if (!postGeographyQualificationResult.ok) {
+            return {
+              ok: false,
+              error: "LOAD_CANONICAL_QUALIFICATION_FAILED",
+              message: postGeographyQualificationResult.message,
+            };
+          }
+
+          canonicalQualificationSnapshot =
+            postGeographyQualificationResult.snapshot;
+          }
+        }
+      }
       }
 
       const profileMaterializationResult =
