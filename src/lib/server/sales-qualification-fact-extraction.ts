@@ -5,6 +5,8 @@ type CanonicalQualificationFactKey =
   | "requested_area_m2"
   | "location_text"
   | "customer_address_text"
+  | "customer_city"
+  | "customer_state_code"
   | "preferred_period_text"
   | "budget_text"
   | "decision_context"
@@ -35,6 +37,8 @@ const FACT_VALUE_KIND_BY_KEY: Record<
   requested_area_m2: "number",
   location_text: "text",
   customer_address_text: "text",
+  customer_city: "text",
+  customer_state_code: "text",
   preferred_period_text: "text",
   budget_text: "text",
   decision_context: "text",
@@ -49,6 +53,36 @@ const FACT_VALUE_KIND_BY_KEY: Record<
 const ALL_FACT_KEYS = Object.keys(
   FACT_VALUE_KIND_BY_KEY,
 ) as CanonicalQualificationFactKey[];
+
+const BRAZILIAN_STATE_CODES = new Set([
+  "AC",
+  "AL",
+  "AP",
+  "AM",
+  "BA",
+  "CE",
+  "DF",
+  "ES",
+  "GO",
+  "MA",
+  "MT",
+  "MS",
+  "MG",
+  "PA",
+  "PB",
+  "PR",
+  "PE",
+  "PI",
+  "RJ",
+  "RN",
+  "RS",
+  "RO",
+  "RR",
+  "SC",
+  "SP",
+  "SE",
+  "TO",
+]);
 
 type SupportedBooleanFactKey =
   | "installation_interest"
@@ -168,6 +202,32 @@ function normalizeTextValue(value: string): string {
 
 function normalizeComparableText(value: string): string {
   return collapseWhitespace(normalizeText(value));
+}
+
+function containsExplicitStateCodeToken(evidence: string, stateCode: string): boolean {
+  const normalizedStateCode = normalizeComparableText(stateCode);
+  if (!normalizedStateCode) return false;
+
+  return new RegExp(
+    `(^|[^a-z0-9])${normalizedStateCode}($|[^a-z0-9])`,
+  ).test(evidence);
+}
+
+function isApproximateCustomerCityEvidence(args: {
+  evidence: string;
+  city: string;
+}): boolean {
+  const normalizedCity = normalizeComparableText(args.city);
+  if (!normalizedCity) return false;
+
+  return [
+    "perto de",
+    "proximo de",
+    "regiao de",
+    "zona de",
+    "bairro de",
+    "bairro",
+  ].some((prefix) => args.evidence.includes(`${prefix} ${normalizedCity}`));
 }
 
 function canonicalizePreferredPeriodComparableText(value: string): string {
@@ -591,10 +651,42 @@ export function validateQualificationFactCandidate(args: {
     return null;
   }
 
+  if (
+    (args.candidate.factKey === "customer_city" ||
+      args.candidate.factKey === "customer_state_code") &&
+    (args.candidate.assertionLevel !== "confirmed" ||
+      args.candidate.sourceType !== "incoming_customer_message")
+  ) {
+    return null;
+  }
+
   if (expectedValueKind === "text") {
     if (typeof args.candidate.valueJson !== "string") return null;
     const normalizedValue = normalizeTextValue(args.candidate.valueJson);
     if (!normalizedValue) return null;
+
+    if (
+      args.candidate.factKey === "customer_city" &&
+      isApproximateCustomerCityEvidence({
+        evidence: normalizedEvidence,
+        city: normalizedValue,
+      })
+    ) {
+      return null;
+    }
+
+    if (args.candidate.factKey === "customer_state_code") {
+      const normalizedStateCode = normalizedValue.toUpperCase();
+      if (!BRAZILIAN_STATE_CODES.has(normalizedStateCode)) return null;
+
+      if (args.candidate.assertionLevel === "confirmed") {
+        if (!containsExplicitStateCodeToken(normalizedEvidence, normalizedStateCode)) {
+          return null;
+        }
+      }
+
+      return { ...args.candidate, valueJson: normalizedStateCode };
+    }
 
     if (args.candidate.assertionLevel === "confirmed") {
       const comparableValue = normalizeComparableText(normalizedValue);
@@ -814,7 +906,7 @@ export async function extractStructuredQualificationCandidates(args: {
             properties: {
               candidates: {
                 type: "array",
-                maxItems: 15,
+                maxItems: 17,
                 items: {
                   type: "object",
                   additionalProperties: false,
@@ -855,6 +947,10 @@ export async function extractStructuredQualificationCandidates(args: {
         "Prazo, janela temporal ou preferencia de quando deve ir exclusivamente em preferred_period_text.",
         "location_text representa somente cidade, bairro, regiao ou localizacao geral do cliente; nao coloque endereco postal completo nesse fato.",
         "customer_address_text representa endereco completo ou especifico informado pelo cliente, como rua ou avenida, numero, complemento, bairro, cidade, estado ou CEP.",
+        "customer_city representa somente o municipio ou cidade explicitamente informado como localizacao do cliente; confirme apenas quando a mensagem sustentar literalmente essa cidade.",
+        "customer_state_code representa somente a UF brasileira de 2 letras explicitamente informada pelo cliente; nunca infira a UF a partir da cidade.",
+        "Nunca trate bairro, regiao, zona ou uma relacao de proximidade como customer_city confirmado, incluindo frases como perto de uma cidade.",
+        "Um endereco completo pode produzir customer_address_text e tambem customer_city e customer_state_code quando cidade e UF estiverem explicitamente presentes.",
         "Quando a mesma mensagem trouxer um endereco completo, extraia esse endereco em customer_address_text e nao repita o mesmo endereco em location_text. So extraia location_text separadamente quando houver evidencia literal independente de cidade, bairro, regiao ou localizacao geral.",
         "evidence_text deve ser um substring literal curto da mensagem do cliente.",
         "Retorne array vazio quando houver duvida, pergunta sem confirmacao, ou evidencia insuficiente.",

@@ -643,6 +643,203 @@ test("structured extraction accepts canonical customer address from explicit add
   );
 });
 
+test("structured extraction accepts explicit customer city and state facts", async () => {
+  const message = "Moro em Suzano, SP.";
+  const result = await extractStructuredQualificationCandidates({
+    openai: new FakeOpenAi(
+      JSON.stringify({
+        candidates: [
+          {
+            fact_key: "customer_city",
+            assertion_level: "confirmed",
+            value_kind: "text",
+            text_value: "Suzano",
+            number_value: null,
+            boolean_value: null,
+            evidence_text: "Suzano",
+          },
+          {
+            fact_key: "customer_state_code",
+            assertion_level: "confirmed",
+            value_kind: "text",
+            text_value: "SP",
+            number_value: null,
+            boolean_value: null,
+            evidence_text: "SP",
+          },
+        ],
+      }),
+    ),
+    model: "test-model",
+    anchorMessage: message,
+  });
+
+  const validated = result.candidates
+    .map((candidate) =>
+      validateQualificationFactCandidate({ candidate, anchorMessage: message }),
+    )
+    .filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
+
+  assert.deepEqual(
+    validated.map((candidate) => [candidate.factKey, candidate.valueJson]),
+    [
+      ["customer_city", "Suzano"],
+      ["customer_state_code", "SP"],
+    ],
+  );
+});
+
+test("customer state code accepts explicit standalone tokens in common formats", () => {
+  const createCandidate = (valueJson: string, evidenceText = valueJson) => ({
+    factKey: "customer_state_code" as const,
+    valueKind: "text" as const,
+    valueJson,
+    assertionLevel: "confirmed" as const,
+    sourceType: "incoming_customer_message" as const,
+    evidenceText,
+  });
+
+  assert.equal(
+    validateQualificationFactCandidate({
+      candidate: createCandidate("sp"),
+      anchorMessage: "Moro em Suzano, sp.",
+    })?.valueJson,
+    "SP",
+  );
+  for (const [evidenceText, anchorMessage] of [
+    ["SP", "Moro em Suzano/SP."],
+    ["Suzano - SP", "Moro em Suzano - SP."],
+    ["(SP)", "Minha UF Ã© (SP)."],
+  ]) {
+    assert.equal(
+      validateQualificationFactCandidate({
+        candidate: createCandidate("SP", evidenceText),
+        anchorMessage,
+      })?.valueJson,
+      "SP",
+    );
+  }
+});
+
+test("customer state code rejects substrings inside other words and invalid values", () => {
+  const createCandidate = (valueJson: string, evidenceText: string) => ({
+    factKey: "customer_state_code" as const,
+    valueKind: "text" as const,
+    valueJson,
+    assertionLevel: "confirmed" as const,
+    sourceType: "incoming_customer_message" as const,
+    evidenceText,
+  });
+
+  for (const [stateCode, evidenceText, anchorMessage] of [
+    ["SP", "espaÃ§o", "Tenho um espaÃ§o 3x4."],
+    ["AP", "apartamento", "Moro neste apartamento."],
+  ]) {
+    assert.equal(
+      validateQualificationFactCandidate({
+        candidate: createCandidate(stateCode, evidenceText),
+        anchorMessage,
+      }),
+      null,
+    );
+  }
+
+  assert.equal(
+    validateQualificationFactCandidate({
+      candidate: createCandidate("ZZ", "ZZ"),
+      anchorMessage: "Moro em Suzano, ZZ.",
+    }),
+    null,
+  );
+});
+
+test("customer city and state reject extractor inference and approximate location evidence", () => {
+  const city = {
+    factKey: "customer_city" as const,
+    valueKind: "text" as const,
+    valueJson: "Suzano",
+    evidenceText: "Suzano",
+  };
+  const state = {
+    factKey: "customer_state_code" as const,
+    valueKind: "text" as const,
+    valueJson: "SP",
+    evidenceText: "SP",
+  };
+
+  for (const candidate of [city, state]) {
+    assert.equal(
+      validateQualificationFactCandidate({
+        candidate: {
+          ...candidate,
+          assertionLevel: "inferred",
+          sourceType: "system_inference",
+        },
+        anchorMessage: candidate.evidenceText,
+      }),
+      null,
+    );
+  }
+
+  for (const evidenceText of [
+    "perto de Suzano",
+    "bairro Suzano",
+    "regiao de Suzano",
+    "zona de Suzano",
+  ]) {
+    assert.equal(
+      validateQualificationFactCandidate({
+        candidate: {
+          ...city,
+          assertionLevel: "confirmed",
+          sourceType: "incoming_customer_message",
+          evidenceText,
+        },
+        anchorMessage: `Fico ${evidenceText}.`,
+      }),
+      null,
+    );
+  }
+});
+
+test("explicit address, city and state facts coexist without location suppression", () => {
+  const address = "Rua General Francisco Glicerio, 130, Suzano - SP";
+  const merged = mergeQualificationFactCandidates({
+    deterministicCandidates: [],
+    aiCandidates: [
+      {
+        factKey: "customer_address_text",
+        valueKind: "text",
+        valueJson: address,
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: address,
+      },
+      {
+        factKey: "customer_city",
+        valueKind: "text",
+        valueJson: "Suzano",
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: "Suzano",
+      },
+      {
+        factKey: "customer_state_code",
+        valueKind: "text",
+        valueJson: "SP",
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText: "SP",
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    merged.mergedCandidates.map((candidate) => candidate.factKey),
+    ["customer_address_text", "customer_city", "customer_state_code"],
+  );
+});
+
 test("merge suppresses location_text when it duplicates the canonical customer address", () => {
   const address = "Rua General Francisco Glicério, 130, Suzano - SP";
 

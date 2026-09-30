@@ -956,6 +956,55 @@ test("canonical qualification reader is called only with explicit organization, 
   ]);
 });
 
+test("canonical qualification reader accepts explicit customer city and state facts", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      read_commercial_opportunity_qualification_facts_by_system: {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "customer_city",
+                normalizedValueText: "Suzano",
+                value: "Suzano",
+                sourceType: "incoming_customer_message",
+              }),
+              createCanonicalKnownFact({
+                factKey: "customer_state_code",
+                normalizedValueText: "SP",
+                value: "SP",
+                sourceType: "incoming_customer_message",
+              }),
+            ],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    },
+  );
+
+  const result = await loadCanonicalQualificationSnapshotBySystem({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.deepEqual(
+    result.snapshot.knownFacts.map((fact) => [fact.factKey, fact.normalizedValueText]),
+    [
+      ["customer_city", "Suzano"],
+      ["customer_state_code", "SP"],
+    ],
+  );
+});
+
 test("canonical qualification reader failure does not degrade into synthetic zero facts", async () => {
   const supabase = new FakeSupabase(
     {},
@@ -3956,8 +4005,9 @@ test("qualification profile materializer fails closed on rpc error cardinality i
   assert.equal(missingEventKeyResult.ok, false);
 });
 
-test("generateAiSalesReply writes canonical qualification facts, rereads snapshot, and aggregates usage", async () => {
+test("generateAiSalesReply writes canonical qualification facts including city and state, rereads snapshot, and aggregates usage", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "quero uma visita tecnica para um espaco 3x4 em Suzano, SP",
     canonicalReaderResponses: [
       {
         data: [
@@ -4025,6 +4075,24 @@ test("generateAiSalesReply writes canonical qualification facts, rereads snapsho
             boolean_value: null,
             evidence_text: "3x4",
           },
+          {
+            fact_key: "customer_city",
+            assertion_level: "confirmed",
+            value_kind: "text",
+            text_value: "Suzano",
+            number_value: null,
+            boolean_value: null,
+            evidence_text: "Suzano",
+          },
+          {
+            fact_key: "customer_state_code",
+            assertion_level: "confirmed",
+            value_kind: "text",
+            text_value: "SP",
+            number_value: null,
+            boolean_value: null,
+            evidence_text: "SP",
+          },
         ],
       }),
       usage: {
@@ -4063,18 +4131,24 @@ test("generateAiSalesReply writes canonical qualification facts, rereads snapsho
   const writerCalls = supabase.rpcCalls.filter(
     (call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system",
   );
-  assert.equal(writerCalls.length, 3);
+  assert.equal(writerCalls.length, 5);
   assert.deepEqual(
     writerCalls.map((call) => call.payload.p_fact_key),
-    ["space_text", "requested_area_m2", "technical_visit_interest"],
+    [
+      "space_text",
+      "requested_area_m2",
+      "technical_visit_interest",
+      "customer_city",
+      "customer_state_code",
+    ],
   );
   assert.deepEqual(
     writerCalls.map((call) => call.payload.p_source_message_id),
-    ["msg-anchor", "msg-anchor", "msg-anchor"],
+    ["msg-anchor", "msg-anchor", "msg-anchor", "msg-anchor", "msg-anchor"],
   );
   assert.deepEqual(
     writerCalls.map((call) => call.payload.p_source_conversation_id),
-    ["conv-1", "conv-1", "conv-1"],
+    ["conv-1", "conv-1", "conv-1", "conv-1", "conv-1"],
   );
   assert.deepEqual(
     writerCalls.map((call) => call.payload.p_operation_key),
@@ -4082,6 +4156,8 @@ test("generateAiSalesReply writes canonical qualification facts, rereads snapsho
       "p9_qfact_extract_v1:msg-anchor:space_text",
       "p9_qfact_extract_v1:msg-anchor:requested_area_m2",
       "p9_qfact_extract_v1:msg-anchor:technical_visit_interest",
+      "p9_qfact_extract_v1:msg-anchor:customer_city",
+      "p9_qfact_extract_v1:msg-anchor:customer_state_code",
     ],
   );
   assert.equal(
@@ -9811,6 +9887,27 @@ test("boolean false representation stays semantically false and neutral", () => 
       }) as never,
     ),
     "technical_visit_interest: false",
+  );
+});
+
+test("customer city and state have distinct canonical known fact descriptions", () => {
+  assert.equal(
+    describeCanonicalKnownFact(
+      createCanonicalKnownFact({
+        factKey: "customer_city",
+        normalizedValueText: "Suzano",
+      }) as never,
+    ),
+    "cidade do cliente registrada: Suzano",
+  );
+  assert.equal(
+    describeCanonicalKnownFact(
+      createCanonicalKnownFact({
+        factKey: "customer_state_code",
+        normalizedValueText: "SP",
+      }) as never,
+    ),
+    "UF do cliente registrada: SP",
   );
 });
 

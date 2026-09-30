@@ -280,6 +280,8 @@ type CanonicalQualificationFactKey =
   | "requested_area_m2"
   | "location_text"
   | "customer_address_text"
+  | "customer_city"
+  | "customer_state_code"
   | "preferred_period_text"
   | "budget_text"
   | "decision_context"
@@ -1567,6 +1569,8 @@ function parseCanonicalQualificationFactKey(
     case "requested_area_m2":
     case "location_text":
     case "customer_address_text":
+    case "customer_city":
+    case "customer_state_code":
     case "preferred_period_text":
     case "budget_text":
     case "decision_context":
@@ -6865,6 +6869,16 @@ export function describeCanonicalKnownFact(
     return displayValue
       ? `endereco completo do cliente registrado: ${displayValue}${suffix}`
       : `endereco completo do cliente registrado${suffix}`;
+  }
+  if (fact.factKey === "customer_city") {
+    return displayValue
+      ? `cidade do cliente registrada: ${displayValue}${suffix}`
+      : `cidade do cliente ja registrada${suffix}`;
+  }
+  if (fact.factKey === "customer_state_code") {
+    return displayValue
+      ? `UF do cliente registrada: ${displayValue}${suffix}`
+      : `UF do cliente ja registrada${suffix}`;
   }
   if (fact.factKey === "preferred_period_text") {
     return displayValue
