@@ -65,6 +65,7 @@ import {
 import {
   buildCustomerStateFromCityOperationKey,
   resolveCustomerStateCodeFromCity,
+  type CustomerGeographyLookupStatus,
 } from "./customer-geography-resolution";
 import {
   buildCustomerIdentityNameOperationKey,
@@ -3074,6 +3075,130 @@ async function writeCanonicalQualificationFactBySystem(args: {
     return {
       ok: false as const,
       message: "Canonical qualification writer returned an invalid payload.",
+    };
+  }
+
+  return {
+    ok: true as const,
+    row,
+  };
+}
+
+function isFreshCustomerGeographyConflictCandidate(args: {
+  candidate: {
+    factKey: string;
+    valueJson: string | number | boolean;
+    assertionLevel: "confirmed" | "inferred";
+    sourceType: "incoming_customer_message" | "system_inference";
+  };
+  writeRow: CanonicalQualificationWriterRow;
+  snapshot: CanonicalQualificationSnapshot;
+  anchorMessageId: string;
+  conversationId: string;
+}): boolean {
+  if (
+    args.candidate.assertionLevel !== "confirmed" ||
+    args.candidate.sourceType !== "incoming_customer_message" ||
+    (args.candidate.factKey !== "customer_city" &&
+      args.candidate.factKey !== "customer_state_code")
+  ) {
+    return false;
+  }
+
+  const eventId = asNullableString(args.writeRow.event_id);
+  const currentLastEventId = asNullableString(args.writeRow.current_last_event_id);
+  const outcome = asNullableString(args.writeRow.outcome);
+  const conflict = args.snapshot.conflicts.find(
+    (item) => item.factKey === args.candidate.factKey,
+  );
+
+  if (
+    args.writeRow.current_state !== "conflict" ||
+    !eventId ||
+    currentLastEventId !== eventId ||
+    !conflict ||
+    conflict.lastEventId !== eventId ||
+    conflict.sourceType !== "incoming_customer_message" ||
+    conflict.sourceMessageId !== args.anchorMessageId ||
+    conflict.sourceConversationId !== args.conversationId ||
+    (outcome !== "confirmed_conflict_created" &&
+      outcome !== "conflict_preserved" &&
+      outcome !== "idempotent_replay_current")
+  ) {
+    return false;
+  }
+
+  return conflict.candidates.some(
+    (candidate) =>
+      candidate.eventId === eventId &&
+      candidate.sourceType === "incoming_customer_message" &&
+      candidate.sourceMessageId === args.anchorMessageId &&
+      candidate.sourceConversationId === args.conversationId &&
+      candidate.value === args.candidate.valueJson,
+  );
+}
+
+async function writeCustomerGeographyConflictResolutionBySystem(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+  conversationId: string;
+  anchorMessageId: string;
+  factKey: "customer_city" | "customer_state_code";
+  valueJson: string;
+}) {
+  const { data, error } = await args.supabase.rpc(
+    "write_commercial_opportunity_qualification_fact_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+      p_operation_key: `p9_qfact_geo_resolve_v1:${args.anchorMessageId}:${args.factKey}`,
+      p_fact_key: args.factKey,
+      p_value_json: args.valueJson,
+      p_assertion_level: "confirmed",
+      p_source_type: "incoming_customer_message",
+      p_source_message_id: args.anchorMessageId,
+      p_source_conversation_id: args.conversationId,
+      p_created_by: "sales_ai_customer_geography_conflict_resolver_v1",
+      p_resolves_conflict: true,
+    },
+  );
+
+  if (error) {
+    return {
+      ok: false as const,
+      message: error.message || "Canonical qualification writer failed.",
+    };
+  }
+
+  if (!Array.isArray(data) || data.length !== 1 || !isRecord(data[0])) {
+    return {
+      ok: false as const,
+      message: "Canonical qualification writer returned unexpected cardinality.",
+    };
+  }
+
+  const row = data[0] as CanonicalQualificationWriterRow;
+  const commercialOpportunityId = asNullableString(row.commercial_opportunity_id);
+  const factKey = asNullableString(row.fact_key);
+  const valueKind = asNullableString(row.value_kind);
+  const currentState = asNullableString(row.current_state);
+  const changed = typeof row.changed === "boolean" ? row.changed : null;
+  const outcome = asNullableString(row.outcome);
+
+  if (
+    commercialOpportunityId !== args.commercialOpportunityId ||
+    factKey !== args.factKey ||
+    valueKind !== "text" ||
+    currentState !== "confirmed" ||
+    changed == null ||
+    !isValidQualificationWriterOutcome(outcome)
+  ) {
+    return {
+      ok: false as const,
+      message: "Canonical geography conflict resolver returned an invalid payload.",
     };
   }
 
@@ -7112,18 +7237,6 @@ function inferContextualQualificationTarget(args: {
   } = args;
 
 
-  if (
-    intents.includes("installation") ||
-    intents.includes("technical_visit") ||
-    intents.includes("region") ||
-    looksLikeTechnicalVisitQuestion(lastCustomerMessage)
-  ) {
-    return {
-      factKey: "location_text",
-      groupKey: "location",
-    };
-  }
-
   if (intents.includes("payment")) {
     return {
       factKey: "payment_interest",
@@ -7172,6 +7285,100 @@ function inferContextualQualificationTarget(args: {
   return null;
 }
 
+function isRegionalQualificationContext(args: {
+  intents: DetectedIntent[];
+  lastCustomerMessage: string;
+}): boolean {
+  return (
+    args.intents.includes("installation") ||
+    args.intents.includes("technical_visit") ||
+    args.intents.includes("region") ||
+    looksLikeTechnicalVisitQuestion(args.lastCustomerMessage)
+  );
+}
+
+function resolveCustomerGeographyQualificationDecision(args: {
+  snapshot: CanonicalQualificationSnapshot;
+  lookupStatus: CustomerGeographyLookupStatus | null;
+}): QualificationDecision | null {
+  if (getCanonicalQualificationConflict(args.snapshot, "customer_city")) {
+    return {
+      targetFactKey: "customer_city",
+      targetGroup: null,
+      targetStatus: "conflict",
+      askNow: true,
+      reason: "target_conflict_requires_clarification",
+    };
+  }
+
+  if (getCanonicalQualificationConflict(args.snapshot, "customer_state_code")) {
+    return {
+      targetFactKey: "customer_state_code",
+      targetGroup: null,
+      targetStatus: "conflict",
+      askNow: true,
+      reason: "target_conflict_requires_clarification",
+    };
+  }
+
+  const city = findCanonicalQualificationFact(args.snapshot, "customer_city");
+  const state = findCanonicalQualificationFact(
+    args.snapshot,
+    "customer_state_code",
+  );
+
+  if (!city || city.state !== "confirmed") {
+    return {
+      targetFactKey: "customer_city",
+      targetGroup: null,
+      targetStatus: "missing",
+      askNow: true,
+      reason: "target_missing_and_relevant",
+    };
+  }
+
+  if (state && (state.state === "confirmed" || state.state === "inferred")) {
+    return null;
+  }
+
+  if (args.lookupStatus === "not_found") {
+    return {
+      targetFactKey: "customer_city",
+      targetGroup: null,
+      targetStatus: "unproven",
+      askNow: true,
+      reason: "target_unproven_and_relevant",
+    };
+  }
+
+  return {
+    targetFactKey: "customer_state_code",
+    targetGroup: null,
+    targetStatus: "unproven",
+    askNow: true,
+    reason: "target_unproven_and_relevant",
+  };
+}
+
+function hasCustomerGeographyAuthority(
+  snapshot: CanonicalQualificationSnapshot | null,
+): boolean {
+  if (!snapshot) return false;
+  if (
+    getCanonicalQualificationConflict(snapshot, "customer_city") ||
+    getCanonicalQualificationConflict(snapshot, "customer_state_code")
+  ) {
+    return false;
+  }
+
+  const city = findCanonicalQualificationFact(snapshot, "customer_city");
+  const state = findCanonicalQualificationFact(snapshot, "customer_state_code");
+  return (
+    city?.state === "confirmed" &&
+    (state?.state === "confirmed" || state?.state === "inferred")
+  );
+}
+
 export function resolveContextualQualificationDecision(args: {
   snapshot: CanonicalQualificationSnapshot | null;
   crmStage: string | null;
@@ -7182,6 +7389,7 @@ export function resolveContextualQualificationDecision(args: {
   explicitCatalogRequest: boolean;
   responseMode: ResponseMode;
   patienceSignal: CustomerPatienceSignal;
+  customerGeographyLookupStatus?: CustomerGeographyLookupStatus | null;
   technicalVisitMeasurementsConfirmationPolicy?: TechnicalVisitMeasurementsConfirmationPolicy;
 }): QualificationDecision {
   const {
@@ -7193,6 +7401,7 @@ export function resolveContextualQualificationDecision(args: {
     lastCustomerMessage,
     explicitCatalogRequest,
     patienceSignal,
+    customerGeographyLookupStatus = null,
     technicalVisitMeasurementsConfirmationPolicy = "not_applicable",
   } = args;
 
@@ -7220,6 +7429,14 @@ export function resolveContextualQualificationDecision(args: {
       askNow: false,
       reason: "current_context_does_not_justify_question",
     };
+  }
+
+  if (isRegionalQualificationContext({ intents, lastCustomerMessage })) {
+    const geographyDecision = resolveCustomerGeographyQualificationDecision({
+      snapshot,
+      lookupStatus: customerGeographyLookupStatus,
+    });
+    if (geographyDecision) return geographyDecision;
   }
 
   const target = inferContextualQualificationTarget({
@@ -7595,6 +7812,25 @@ export function resolveNextBestQuestionAfterQualificationAuthority(args: {
 }): string | null {
   if (
     args.qualificationDecision.askNow &&
+    args.qualificationDecision.targetFactKey === "customer_city"
+  ) {
+    return args.qualificationDecision.targetStatus === "conflict" ||
+      args.qualificationDecision.targetStatus === "unproven"
+      ? "So para eu confirmar certinho: qual e a sua cidade?"
+      : "Qual e a sua cidade?";
+  }
+
+  if (
+    args.qualificationDecision.askNow &&
+    args.qualificationDecision.targetFactKey === "customer_state_code"
+  ) {
+    return args.qualificationDecision.targetStatus === "conflict"
+      ? "So para eu confirmar certinho: qual e o estado (UF) correto?"
+      : "E qual e o estado (UF) dessa cidade?";
+  }
+
+  if (
+    args.qualificationDecision.askNow &&
     args.qualificationDecision.targetFactKey ===
       "measurements_confirmation_required"
   ) {
@@ -7667,12 +7903,9 @@ export function inferNonQualificationNextBestQuestion(args: {
   }
 
   if (looksLikeTechnicalVisitQuestion(lastCustomerMessage)) {
-    const locationKnownForVisit = canonicalQualificationSnapshot
-      ? hasCanonicalQualificationKnownGroup(
-          canonicalQualificationSnapshot,
-          "location",
-        )
-      : false;
+    const locationKnownForVisit = hasCustomerGeographyAuthority(
+      canonicalQualificationSnapshot,
+    );
     const preferredPeriodKnownForVisit = canonicalQualificationSnapshot
       ? Boolean(
           findCanonicalQualificationFact(
@@ -8109,6 +8342,7 @@ function buildCommercialObjective(args: {
   commercialSuggestionPolicy?: CommercialSuggestionPolicy;
   explicitComplementaryRequest?: boolean;
   explicitSuperiorOptionRequest?: boolean;
+  customerGeographyLookupStatus?: CustomerGeographyLookupStatus | null;
   technicalVisitMeasurementsConfirmationPolicy?: TechnicalVisitMeasurementsConfirmationPolicy;
   requestedPoolReference: RequestedPoolReference | null;
   strongestPoolReferenceMatch: PoolReferenceMatchStrength;
@@ -8145,6 +8379,7 @@ function buildCommercialObjective(args: {
     explicitCatalogRequest: args.explicitCatalogRequest,
     responseMode,
     patienceSignal,
+    customerGeographyLookupStatus: args.customerGeographyLookupStatus,
     technicalVisitMeasurementsConfirmationPolicy:
       args.technicalVisitMeasurementsConfirmationPolicy,
   });
@@ -8306,6 +8541,10 @@ export function buildCommercialObjectiveBlock(objective: CommercialObjective): s
             "- se houver pergunta de qualificacao, pergunte: As medidas desse local ja estao confirmadas ou ainda precisam ser conferidas?",
             "- nao pergunte se precisamos marcar visita para medir; nao confunda confirmar medidas com necessidade de visita presencial; faca no maximo uma pergunta principal",
           ].join("\n")
+        : objective.qualificationDecision.targetFactKey === "customer_city"
+          ? "- pergunte somente a cidade do cliente; nao use location_text como substituto e faca no maximo uma pergunta principal"
+          : objective.qualificationDecision.targetFactKey === "customer_state_code"
+            ? "- pergunte somente a UF do cliente; nao invente o estado por aproximacao e faca no maximo uma pergunta principal"
         : "- se houver pergunta de qualificacao, use somente esse alvo; formule naturalmente e faca no maximo uma pergunta principal"
       : "- nao crie pergunta de qualificacao so porque existem fatos faltando",
   ].join("\n");
@@ -12262,6 +12501,7 @@ export async function generateAiSalesReply(
 
     let canonicalQualificationSnapshot =
       canonicalCommercialContextResult.canonicalQualificationSnapshot;
+    let customerGeographyLookupStatus: CustomerGeographyLookupStatus | null = null;
     const crmStageForReply = canonicalCommercialContextResult.crmStageForReply;
 
     if (resolvedCommercialOpportunityId) {
@@ -12318,6 +12558,10 @@ export async function generateAiSalesReply(
       }
 
       if (mergedCandidatesResult.mergedCandidates.length > 0) {
+        const qualificationWriteResults = new Map<
+          string,
+          CanonicalQualificationWriterRow
+        >();
         for (const candidate of mergedCandidatesResult.mergedCandidates) {
           const writeResult = await writeCanonicalQualificationFactBySystem({
             supabase,
@@ -12336,6 +12580,7 @@ export async function generateAiSalesReply(
               message: writeResult.message,
             };
           }
+          qualificationWriteResults.set(candidate.factKey, writeResult.row);
         }
 
         const postWriteQualificationResult =
@@ -12355,6 +12600,75 @@ export async function generateAiSalesReply(
         }
 
         canonicalQualificationSnapshot = postWriteQualificationResult.snapshot;
+
+        let resolvedCustomerGeographyConflict = false;
+        for (const candidate of mergedCandidatesResult.mergedCandidates) {
+          if (
+            (candidate.factKey !== "customer_city" &&
+              candidate.factKey !== "customer_state_code") ||
+            candidate.assertionLevel !== "confirmed" ||
+            candidate.sourceType !== "incoming_customer_message" ||
+            typeof candidate.valueJson !== "string"
+          ) {
+            continue;
+          }
+
+          const writeRow = qualificationWriteResults.get(candidate.factKey);
+          if (
+            !writeRow ||
+            !isFreshCustomerGeographyConflictCandidate({
+              candidate,
+              writeRow,
+              snapshot: canonicalQualificationSnapshot,
+              anchorMessageId,
+              conversationId,
+            })
+          ) {
+            continue;
+          }
+
+          const resolutionWriteResult =
+            await writeCustomerGeographyConflictResolutionBySystem({
+              supabase,
+              organizationId,
+              storeId: resolvedStoreId,
+              commercialOpportunityId: resolvedCommercialOpportunityId,
+              conversationId,
+              anchorMessageId,
+              factKey: candidate.factKey,
+              valueJson: candidate.valueJson,
+            });
+
+          if (!resolutionWriteResult.ok) {
+            return {
+              ok: false,
+              error: "WRITE_CANONICAL_QUALIFICATION_FAILED",
+              message: resolutionWriteResult.message,
+            };
+          }
+          resolvedCustomerGeographyConflict = true;
+        }
+
+        if (resolvedCustomerGeographyConflict) {
+          const postResolutionQualificationResult =
+            await loadCanonicalQualificationSnapshotBySystem({
+              supabase,
+              organizationId,
+              storeId: resolvedStoreId,
+              commercialOpportunityId: resolvedCommercialOpportunityId,
+            });
+
+          if (!postResolutionQualificationResult.ok) {
+            return {
+              ok: false,
+              error: "LOAD_CANONICAL_QUALIFICATION_FAILED",
+              message: postResolutionQualificationResult.message,
+            };
+          }
+
+          canonicalQualificationSnapshot =
+            postResolutionQualificationResult.snapshot;
+        }
       }
 
       if (canonicalQualificationSnapshot) {
@@ -12387,6 +12701,7 @@ export async function generateAiSalesReply(
             supabase,
             cityValue: customerCityFact.value,
           });
+          customerGeographyLookupStatus = geographyResolution.status;
           const inferredStateCode = geographyResolution.stateCode;
 
           if (
@@ -13069,6 +13384,7 @@ export async function generateAiSalesReply(
       commercialSuggestionPolicy,
       explicitComplementaryRequest,
       explicitSuperiorOptionRequest,
+      customerGeographyLookupStatus,
       technicalVisitMeasurementsConfirmationPolicy,
       requestedPoolReference,
       strongestPoolReferenceMatch,
@@ -13105,10 +13421,7 @@ export async function generateAiSalesReply(
       offersTechnicalVisit: canonicalOffersTechnicalVisit,
       suggestedNextQuestion: effectiveNextBestQuestion,
       canonicalVisitLocationState: canonicalQualificationSnapshot
-        ? hasCanonicalQualificationKnownGroup(
-            canonicalQualificationSnapshot,
-            "location",
-          )
+        ? hasCustomerGeographyAuthority(canonicalQualificationSnapshot)
           ? "known"
           : "not_known"
         : "unproven",
