@@ -9,7 +9,6 @@ import {
 import {
   recordPostTechnicalVisitResponsibleInbound,
 } from "@/lib/server/post-technical-visit-followups";
-import { runPostTechnicalVisitRuntime } from "@/lib/server/post-technical-visit-runtime";
 import { routeResponsibleWhatsappToAssistant } from "@/lib/server/assistant/responsible-whatsapp-conversation";
 import {
   loadCanonicalActivePrimaryStoreResponsible,
@@ -433,17 +432,7 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
   });
 
   if (result.handled) {
-    if (!result.responseId) {
-      throw new Error("POST_TECHNICAL_VISIT_RESPONSE_ID_MISSING");
-    }
-
-    const runtime = await runPostTechnicalVisitRuntime({
-      organizationId: args.inbox.organization_id,
-      storeId: args.inbox.store_id,
-      responseId: result.responseId,
-    });
-
-    return { isResponsible: true as const, result, runtime };
+    return { isResponsible: true as const, result };
   }
 
   const assistantResult = await routeResponsibleWhatsappToAssistant({
