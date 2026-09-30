@@ -376,7 +376,14 @@ function createCanonicalMissingGroup(args: {
   };
 }
 
-function createCanonicalConflict(args: { factKey: string; valueKind?: string; candidates?: Row[] }) {
+function createCanonicalConflict(args: {
+  factKey: string;
+  valueKind?: string;
+  candidates?: Row[];
+  sourceMessageId?: string;
+  sourceConversationId?: string;
+  lastEventId?: string;
+}) {
   return {
     factKey: args.factKey,
     valueKind: args.valueKind ?? "text",
@@ -402,9 +409,9 @@ function createCanonicalConflict(args: { factKey: string; valueKind?: string; ca
         },
       ],
     sourceType: "incoming_customer_message",
-    sourceMessageId: "msg-a",
-    sourceConversationId: "conv-a",
-    lastEventId: "event-a",
+    sourceMessageId: args.sourceMessageId ?? "msg-a",
+    sourceConversationId: args.sourceConversationId ?? "conv-a",
+    lastEventId: args.lastEventId ?? "event-a",
     lastOperationKey: null,
     updatedAt: null,
   };
@@ -881,12 +888,14 @@ function createWriterRow(args?: {
   currentState?: "confirmed" | "inferred" | "conflict";
   changed?: boolean;
   outcome?: string;
+  eventId?: string;
+  currentLastEventId?: string;
 }) {
   return {
     commercial_opportunity_id: args?.commercialOpportunityId ?? "opp-1",
     fact_key: args?.factKey ?? "space_text",
-    event_id: "event-1",
-    current_last_event_id: "event-1",
+    event_id: args?.eventId ?? "event-1",
+    current_last_event_id: args?.currentLastEventId ?? args?.eventId ?? "event-1",
     current_state: args?.currentState ?? "confirmed",
     current_value_json: "3x4",
     normalized_value_text: "3x4",
@@ -1482,6 +1491,30 @@ function createActiveQualificationPatience(shouldAvoidNewQuestion = false) {
     status: "active_interest",
     shouldAvoidNewQuestion,
   };
+}
+
+function resolveRegionalDecisionForTest(args?: {
+  knownFacts?: Row[];
+  conflicts?: Row[];
+  intents?: string[];
+  lookupStatus?: "unique" | "ambiguous" | "not_found" | "lookup_failed" | null;
+  lastCustomerMessage?: string;
+}) {
+  return resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      knownFacts: args?.knownFacts,
+      conflicts: args?.conflicts,
+      canAskNextQuestion: true,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "general_sales_conversation",
+    intents: (args?.intents ?? ["region"]) as never,
+    lastCustomerMessage: args?.lastCustomerMessage ?? "Quero saber se atendem minha regiao",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+    customerGeographyLookupStatus: args?.lookupStatus,
+  });
 }
 
 function resolveMeasurementsDecisionForTest(args?: {
@@ -2315,16 +2348,9 @@ test("contextual qualification asks a relevant canonical space gap without readi
 test("contextual qualification prioritizes canonical conflict clarification for relevant location", () => {
   const decision = resolveContextualQualificationDecision({
     snapshot: createContextualQualificationSnapshot({
-      missingFactGroups: [
-        createCanonicalMissingGroup({
-          groupKey: "location",
-          status: "conflict",
-          factKeys: ["location_text"],
-        }),
-      ],
       conflicts: [
         createCanonicalConflict({
-          factKey: "location_text",
+          factKey: "customer_city",
         }),
       ],
       canAskNextQuestion: true,
@@ -2339,12 +2365,164 @@ test("contextual qualification prioritizes canonical conflict clarification for 
   });
 
   assert.deepEqual(decision, {
-    targetFactKey: "location_text",
-    targetGroup: "location",
+    targetFactKey: "customer_city",
+    targetGroup: null,
     targetStatus: "conflict",
     askNow: true,
     reason: "target_conflict_requires_clarification",
   });
+});
+
+test("customer geography asks city first for regional, visit, and installation intents", () => {
+  for (const intents of [["region"], ["technical_visit"], ["installation"]]) {
+    const decision = resolveRegionalDecisionForTest({ intents });
+    assert.equal(decision.targetFactKey, "customer_city");
+    assert.equal(decision.askNow, true);
+    assert.equal(decision.targetGroup, null);
+  }
+});
+
+test("generic opening does not ask geography when city and UF are absent", () => {
+  const decision = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({ canAskNextQuestion: true }) as never,
+    crmStage: "qualificacao",
+    pattern: "generic_pool_opening",
+    intents: [],
+    lastCustomerMessage: "Oi, quero conhecer as piscinas",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+  assert.notEqual(decision.targetFactKey, "customer_city");
+  assert.notEqual(decision.targetFactKey, "customer_state_code");
+});
+
+test("geography authority asks city for absent or inferred city", () => {
+  const absent = resolveRegionalDecisionForTest();
+  assert.equal(absent.targetFactKey, "customer_city");
+
+  const inferred = resolveRegionalDecisionForTest({
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "customer_city",
+        value: "Suzano",
+        normalizedValueText: "suzano",
+        state: "inferred",
+        sourceType: "system_inference",
+      }),
+    ],
+  });
+  assert.equal(inferred.targetFactKey, "customer_city");
+});
+
+test("complete confirmed or inferred geography does not ask geography again", () => {
+  const decision = resolveRegionalDecisionForTest({
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "customer_city",
+        value: "Suzano",
+        normalizedValueText: "suzano",
+        sourceType: "incoming_customer_message",
+      }),
+      createCanonicalKnownFact({
+        factKey: "customer_state_code",
+        value: "SP",
+        normalizedValueText: "sp",
+        state: "inferred",
+        sourceType: "system_inference",
+      }),
+    ],
+  });
+  assert.notEqual(decision.targetFactKey, "customer_city");
+  assert.notEqual(decision.targetFactKey, "customer_state_code");
+});
+
+test("geography conflict priority is city, then UF, before missing facts", () => {
+  const city = resolveRegionalDecisionForTest({
+    conflicts: [createCanonicalConflict({ factKey: "customer_city" })],
+  });
+  assert.equal(city.targetFactKey, "customer_city");
+  assert.equal(city.targetStatus, "conflict");
+
+  const state = resolveRegionalDecisionForTest({
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "customer_city",
+        value: "Suzano",
+        normalizedValueText: "suzano",
+        sourceType: "incoming_customer_message",
+      }),
+    ],
+    conflicts: [createCanonicalConflict({ factKey: "customer_state_code" })],
+  });
+  assert.equal(state.targetFactKey, "customer_state_code");
+  assert.equal(state.targetStatus, "conflict");
+});
+
+test("geography lookup statuses choose deterministic UF or city clarification", () => {
+  const city = [
+    createCanonicalKnownFact({
+      factKey: "customer_city",
+      value: "Suzano",
+      normalizedValueText: "suzano",
+      sourceType: "incoming_customer_message",
+    }),
+  ];
+  for (const lookupStatus of ["ambiguous", "lookup_failed", null] as const) {
+    assert.equal(
+      resolveRegionalDecisionForTest({ knownFacts: city, lookupStatus }).targetFactKey,
+      "customer_state_code",
+    );
+  }
+  const notFoundDecision = resolveRegionalDecisionForTest({
+    knownFacts: city,
+    lookupStatus: "not_found",
+  });
+
+  assert.equal(notFoundDecision.targetFactKey, "customer_city");
+  assert.equal(notFoundDecision.targetStatus, "unproven");
+
+  assert.equal(
+    resolveNextBestQuestionAfterQualificationAuthority({
+      pattern: "general_sales_conversation",
+      nonQualificationQuestion: null,
+      heuristicQuestion: null,
+      snapshot: null,
+      qualificationDecision: notFoundDecision,
+    }),
+    "So para eu confirmar certinho: qual e a sua cidade?",
+  );
+});
+
+test("geography questions are deterministic and never use the legacy location group", () => {
+  const cityQuestion = resolveNextBestQuestionAfterQualificationAuthority({
+    pattern: "general_sales_conversation",
+    nonQualificationQuestion: null,
+    heuristicQuestion: null,
+    snapshot: null,
+    qualificationDecision: {
+      targetFactKey: "customer_city",
+      targetGroup: null,
+      targetStatus: "missing",
+      askNow: true,
+      reason: "target_missing_and_relevant",
+    },
+  });
+  const stateQuestion = resolveNextBestQuestionAfterQualificationAuthority({
+    pattern: "general_sales_conversation",
+    nonQualificationQuestion: null,
+    heuristicQuestion: null,
+    snapshot: null,
+    qualificationDecision: {
+      targetFactKey: "customer_state_code",
+      targetGroup: null,
+      targetStatus: "conflict",
+      askNow: true,
+      reason: "target_conflict_requires_clarification",
+    },
+  });
+  assert.equal(cityQuestion, "Qual e a sua cidade?");
+  assert.equal(stateQuestion, "So para eu confirmar certinho: qual e o estado (UF) correto?");
 });
 
 test("contextual qualification does not confuse a satisfied need group with exact product reference being known", () => {
@@ -2410,8 +2588,16 @@ test("technical visit with canonical location known advances only to operational
   const snapshot = createContextualQualificationSnapshot({
     knownFacts: [
       createCanonicalKnownFact({
-        factKey: "location_text",
+        factKey: "customer_city",
+        value: "Campinas",
         normalizedValueText: "campinas",
+      }),
+      createCanonicalKnownFact({
+        factKey: "customer_state_code",
+        value: "SP",
+        normalizedValueText: "sp",
+        state: "inferred",
+        sourceType: "system_inference",
       }),
     ],
     canAskNextQuestion: false,
@@ -2447,8 +2633,16 @@ test("technical visit with canonical preferred period does not ask operational p
   const snapshot = createContextualQualificationSnapshot({
     knownFacts: [
       createCanonicalKnownFact({
-        factKey: "location_text",
+        factKey: "customer_city",
+        value: "Campinas",
         normalizedValueText: "campinas",
+      }),
+      createCanonicalKnownFact({
+        factKey: "customer_state_code",
+        value: "SP",
+        normalizedValueText: "sp",
+        state: "inferred",
+        sourceType: "system_inference",
       }),
       createCanonicalKnownFact({
         factKey: "preferred_period_text",
@@ -2483,12 +2677,6 @@ test("technical visit with canonical preferred period does not ask operational p
 
 test("technical visit with canonical location missing leaves location to contextual qualification", () => {
   const snapshot = createContextualQualificationSnapshot({
-    missingFactGroups: [
-      createCanonicalMissingGroup({
-        groupKey: "location",
-        factKeys: ["location_text"],
-      }),
-    ],
     canAskNextQuestion: true,
   }) as never;
 
@@ -2526,8 +2714,8 @@ test("technical visit with canonical location missing leaves location to context
   });
 
   assert.deepEqual(decision, {
-    targetFactKey: "location_text",
-    targetGroup: "location",
+    targetFactKey: "customer_city",
+    targetGroup: null,
     targetStatus: "missing",
     askNow: true,
     reason: "target_missing_and_relevant",
@@ -8697,6 +8885,796 @@ test("generateAiSalesReply accepts current_state conflict with confirmed_conflic
   assert.equal(result.ok, true);
 });
 
+test("explicit geography clarification resolves the same-message conflict with a separate idempotent operation", async () => {
+  const conflict = createCanonicalConflict({
+    factKey: "customer_city",
+    sourceMessageId: "msg-anchor",
+    sourceConversationId: "conv-1",
+    lastEventId: "geo-event",
+    candidates: [
+      {
+        value: "Campinas",
+        event_id: "old-event",
+        value_kind: "text",
+        source_type: "incoming_customer_message",
+        normalized_value_text: "campinas",
+        source_message_id: "msg-old",
+        source_conversation_id: "conv-1",
+      },
+      {
+        value: "Suzano",
+        event_id: "geo-event",
+        value_kind: "text",
+        source_type: "incoming_customer_message",
+        normalized_value_text: "suzano",
+        source_message_id: "msg-anchor",
+        source_conversation_id: "conv-1",
+      },
+    ],
+  });
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Nao, minha cidade e Suzano",
+    canonicalReaderResponses: [
+      {
+        data: [createCanonicalQualificationReaderRow({ knownFacts: [] })],
+        error: null,
+      },
+      {
+        data: [createCanonicalQualificationReaderRow({ conflicts: [conflict] })],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "customer_city",
+                value: "Suzano",
+                normalizedValueText: "suzano",
+                sourceType: "incoming_customer_message",
+              }),
+              createCanonicalKnownFact({
+                factKey: "customer_state_code",
+                value: "SP",
+                normalizedValueText: "sp",
+                sourceType: "incoming_customer_message",
+              }),
+            ],
+          }),
+        ],
+        error: null,
+      },
+    ],
+    writerResponse: (payload) => ({
+      data: [
+        createWriterRow({
+          factKey: String(payload.p_fact_key),
+          currentState: payload.p_resolves_conflict ? "confirmed" : "conflict",
+          eventId: payload.p_resolves_conflict ? "resolution-event" : "geo-event",
+          outcome: payload.p_resolves_conflict
+            ? "conflict_resolved"
+            : "confirmed_conflict_created",
+        }),
+      ],
+      error: null,
+    }),
+  });
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([
+      {
+        output_text: JSON.stringify({
+          candidates: [
+            {
+              fact_key: "customer_city",
+              assertion_level: "confirmed",
+              value_kind: "text",
+              text_value: "Suzano",
+              number_value: null,
+              boolean_value: null,
+              evidence_text: "Suzano",
+            },
+          ],
+        }),
+      },
+      structuredReply("Entendi, Suzano."),
+    ]),
+  });
+
+  assert.equal(result.ok, true);
+  const geographyWrites = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_opportunity_qualification_fact_by_system" &&
+      call.payload.p_fact_key === "customer_city",
+  );
+  assert.equal(geographyWrites.length, 2);
+  assert.equal(geographyWrites[0]?.payload.p_resolves_conflict, false);
+  assert.equal(geographyWrites[1]?.payload.p_resolves_conflict, true);
+  assert.equal(
+    geographyWrites[1]?.payload.p_operation_key,
+    "p9_qfact_geo_resolve_v1:msg-anchor:customer_city",
+  );
+  assert.equal(
+    geographyWrites[1]?.payload.p_created_by,
+    "sales_ai_customer_geography_conflict_resolver_v1",
+  );
+  assert.equal(
+    supabase.rpcCalls.filter(
+      (call) => call.fn === "read_commercial_opportunity_qualification_facts_by_system",
+    ).length,
+    3,
+  );
+});
+
+test("stale geography replay cannot resolve a later conflict", async () => {
+  const conflict = createCanonicalConflict({
+    factKey: "customer_city",
+    sourceMessageId: "msg-newer",
+    sourceConversationId: "conv-1",
+    lastEventId: "newer-event",
+  });
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Suzano",
+    canonicalReaderResponses: [
+      { data: [createCanonicalQualificationReaderRow({ knownFacts: [] })], error: null },
+      { data: [createCanonicalQualificationReaderRow({ conflicts: [conflict] })], error: null },
+    ],
+    writerResponse: (payload) => ({
+      data: [
+        createWriterRow({
+          factKey: String(payload.p_fact_key),
+          currentState: "conflict",
+          eventId: "old-event",
+          currentLastEventId: "newer-event",
+          outcome: "idempotent_replay_stale",
+        }),
+      ],
+      error: null,
+    }),
+  });
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([
+      { output_text: JSON.stringify({ candidates: [{ fact_key: "customer_city", assertion_level: "confirmed", value_kind: "text", text_value: "Suzano", evidence_text: "Suzano" }] }) },
+      structuredReply("Vou confirmar a cidade."),
+    ]),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    supabase.rpcCalls.filter(
+      (call) =>
+        call.fn === "write_commercial_opportunity_qualification_fact_by_system" &&
+        call.payload.p_resolves_conflict === true,
+    ).length,
+    0,
+  );
+});
+
+test("customer geography keeps state-only and legacy location_text fail-closed and prioritizes city when both geography facts conflict", () => {
+  const stateOnly = resolveRegionalDecisionForTest({
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "customer_state_code",
+        value: "SP",
+        normalizedValueText: "sp",
+        sourceType: "incoming_customer_message",
+      }),
+    ],
+  });
+
+  assert.equal(stateOnly.targetFactKey, "customer_city");
+  assert.equal(stateOnly.targetGroup, null);
+  assert.equal(stateOnly.askNow, true);
+
+  const bothConflicts = resolveRegionalDecisionForTest({
+    conflicts: [
+      createCanonicalConflict({ factKey: "customer_city" }),
+      createCanonicalConflict({ factKey: "customer_state_code" }),
+    ],
+  });
+
+  assert.equal(bothConflicts.targetFactKey, "customer_city");
+  assert.equal(bothConflicts.targetStatus, "conflict");
+
+  const legacyLocationOnly = resolveContextualQualificationDecision({
+    snapshot: createContextualQualificationSnapshot({
+      knownFacts: [
+        createCanonicalKnownFact({
+          factKey: "location_text",
+          value: "Campinas",
+          normalizedValueText: "campinas",
+          sourceType: "incoming_customer_message",
+        }),
+      ],
+      canAskNextQuestion: true,
+    }) as never,
+    crmStage: "qualificacao",
+    pattern: "general_sales_conversation",
+    intents: ["technical_visit"],
+    lastCustomerMessage: "Quero marcar uma visita tecnica",
+    explicitCatalogRequest: false,
+    responseMode: "consultative",
+    patienceSignal: createActiveQualificationPatience() as never,
+  });
+
+  assert.equal(legacyLocationOnly.targetFactKey, "customer_city");
+  assert.equal(legacyLocationOnly.targetGroup, null);
+  assert.equal(legacyLocationOnly.targetStatus, "missing");
+  assert.equal(legacyLocationOnly.askNow, true);
+});
+
+test("explicit customer UF clarification resolves the current state conflict with geography-specific authority", async () => {
+  const city = createCanonicalKnownFact({
+    factKey: "customer_city",
+    value: "Suzano",
+    normalizedValueText: "suzano",
+    sourceType: "incoming_customer_message",
+  });
+
+  const conflict = createCanonicalConflict({
+    factKey: "customer_state_code",
+    sourceMessageId: "msg-anchor",
+    sourceConversationId: "conv-1",
+    lastEventId: "state-event",
+    candidates: [
+      {
+        value: "RJ",
+        event_id: "old-state-event",
+        value_kind: "text",
+        source_type: "incoming_customer_message",
+        normalized_value_text: "rj",
+        source_message_id: "msg-old",
+        source_conversation_id: "conv-1",
+      },
+      {
+        value: "SP",
+        event_id: "state-event",
+        value_kind: "text",
+        source_type: "incoming_customer_message",
+        normalized_value_text: "sp",
+        source_message_id: "msg-anchor",
+        source_conversation_id: "conv-1",
+      },
+    ],
+  });
+
+  const state = createCanonicalKnownFact({
+    factKey: "customer_state_code",
+    value: "SP",
+    normalizedValueText: "sp",
+    sourceType: "incoming_customer_message",
+  });
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "O estado correto e SP",
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [city],
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [city],
+            conflicts: [conflict],
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [city, state],
+          }),
+        ],
+        error: null,
+      },
+    ],
+    writerResponse: (payload) => ({
+      data: [
+        createWriterRow({
+          factKey: String(payload.p_fact_key),
+          valueKind: "text",
+          currentState: payload.p_resolves_conflict ? "confirmed" : "conflict",
+          eventId: payload.p_resolves_conflict
+            ? "state-resolution-event"
+            : "state-event",
+          outcome: payload.p_resolves_conflict
+            ? "conflict_resolved"
+            : "confirmed_conflict_created",
+        }),
+      ],
+      error: null,
+    }),
+  });
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([
+      {
+        output_text: JSON.stringify({
+          candidates: [
+            {
+              fact_key: "customer_state_code",
+              assertion_level: "confirmed",
+              value_kind: "text",
+              text_value: "SP",
+              number_value: null,
+              boolean_value: null,
+              evidence_text: "SP",
+            },
+          ],
+        }),
+      },
+      structuredReply("Perfeito, confirmei o estado."),
+    ]),
+  });
+
+  assert.equal(result.ok, true);
+
+  const stateWrites = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_opportunity_qualification_fact_by_system" &&
+      call.payload.p_fact_key === "customer_state_code",
+  );
+
+  assert.equal(stateWrites.length, 2);
+  assert.equal(stateWrites[0]?.payload.p_resolves_conflict, false);
+  assert.equal(stateWrites[1]?.payload.p_resolves_conflict, true);
+  assert.equal(
+    stateWrites[1]?.payload.p_operation_key,
+    "p9_qfact_geo_resolve_v1:msg-anchor:customer_state_code",
+  );
+  assert.equal(
+    stateWrites[1]?.payload.p_created_by,
+    "sales_ai_customer_geography_conflict_resolver_v1",
+  );
+  assert.equal(stateWrites[1]?.payload.p_assertion_level, "confirmed");
+  assert.equal(
+    stateWrites[1]?.payload.p_source_type,
+    "incoming_customer_message",
+  );
+  assert.equal(stateWrites[1]?.payload.p_source_message_id, "msg-anchor");
+  assert.equal(stateWrites[1]?.payload.p_source_conversation_id, "conv-1");
+});
+
+test("geography conflict recovery completes after idempotent_replay_current from the normal writer", async () => {
+  const conflict = createCanonicalConflict({
+    factKey: "customer_city",
+    sourceMessageId: "msg-anchor",
+    sourceConversationId: "conv-1",
+    lastEventId: "geo-event",
+    candidates: [
+      {
+        value: "Campinas",
+        event_id: "old-event",
+        value_kind: "text",
+        source_type: "incoming_customer_message",
+        normalized_value_text: "campinas",
+        source_message_id: "msg-old",
+        source_conversation_id: "conv-1",
+      },
+      {
+        value: "Suzano",
+        event_id: "geo-event",
+        value_kind: "text",
+        source_type: "incoming_customer_message",
+        normalized_value_text: "suzano",
+        source_message_id: "msg-anchor",
+        source_conversation_id: "conv-1",
+      },
+    ],
+  });
+
+  const city = createCanonicalKnownFact({
+    factKey: "customer_city",
+    value: "Suzano",
+    normalizedValueText: "suzano",
+    sourceType: "incoming_customer_message",
+  });
+
+  const state = createCanonicalKnownFact({
+    factKey: "customer_state_code",
+    value: "SP",
+    normalizedValueText: "sp",
+    sourceType: "incoming_customer_message",
+  });
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Minha cidade e Suzano",
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            conflicts: [conflict],
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            conflicts: [conflict],
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [city, state],
+          }),
+        ],
+        error: null,
+      },
+    ],
+    writerResponse: (payload) => ({
+      data: [
+        createWriterRow({
+          factKey: String(payload.p_fact_key),
+          valueKind: "text",
+          currentState: payload.p_resolves_conflict ? "confirmed" : "conflict",
+          changed: payload.p_resolves_conflict ? true : false,
+          eventId: payload.p_resolves_conflict
+            ? "resolution-event"
+            : "geo-event",
+          currentLastEventId: payload.p_resolves_conflict
+            ? "resolution-event"
+            : "geo-event",
+          outcome: payload.p_resolves_conflict
+            ? "conflict_resolved"
+            : "idempotent_replay_current",
+        }),
+      ],
+      error: null,
+    }),
+  });
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([
+      {
+        output_text: JSON.stringify({
+          candidates: [
+            {
+              fact_key: "customer_city",
+              assertion_level: "confirmed",
+              value_kind: "text",
+              text_value: "Suzano",
+              number_value: null,
+              boolean_value: null,
+              evidence_text: "Suzano",
+            },
+          ],
+        }),
+      },
+      structuredReply("Seguimos com seu atendimento."),
+    ]),
+  });
+
+  assert.equal(result.ok, true);
+
+  const geographyWrites = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_opportunity_qualification_fact_by_system" &&
+      call.payload.p_fact_key === "customer_city",
+  );
+
+  assert.equal(geographyWrites.length, 2);
+  assert.equal(geographyWrites[0]?.payload.p_resolves_conflict, false);
+  assert.equal(geographyWrites[1]?.payload.p_resolves_conflict, true);
+});
+
+test("retry after resolved geography does not invoke conflict resolution again", async () => {
+  const city = createCanonicalKnownFact({
+    factKey: "customer_city",
+    value: "Suzano",
+    normalizedValueText: "suzano",
+    sourceType: "incoming_customer_message",
+    lastEventId: "11111111-1111-4111-8111-111111111111",
+  });
+
+  const state = createCanonicalKnownFact({
+    factKey: "customer_state_code",
+    value: "SP",
+    normalizedValueText: "sp",
+    sourceType: "incoming_customer_message",
+  });
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Minha cidade e Suzano",
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [city, state],
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [city, state],
+          }),
+        ],
+        error: null,
+      },
+    ],
+    writerResponse: (payload) => ({
+      data: [
+        createWriterRow({
+          factKey: String(payload.p_fact_key),
+          valueKind: "text",
+          currentState: "confirmed",
+          changed: false,
+          eventId: "11111111-1111-4111-8111-111111111111",
+          currentLastEventId: "11111111-1111-4111-8111-111111111111",
+          outcome: "idempotent_replay_current",
+        }),
+      ],
+      error: null,
+    }),
+  });
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([
+      {
+        output_text: JSON.stringify({
+          candidates: [
+            {
+              fact_key: "customer_city",
+              assertion_level: "confirmed",
+              value_kind: "text",
+              text_value: "Suzano",
+              number_value: null,
+              boolean_value: null,
+              evidence_text: "Suzano",
+            },
+          ],
+        }),
+      },
+      structuredReply("Seguimos com seu atendimento."),
+    ]),
+  });
+
+  assert.equal(result.ok, true);
+
+  const cityWrites = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_opportunity_qualification_fact_by_system" &&
+      call.payload.p_fact_key === "customer_city",
+  );
+
+  assert.equal(cityWrites.length, 1);
+  assert.equal(cityWrites[0]?.payload.p_resolves_conflict, false);
+
+  assert.equal(
+    supabase.rpcCalls.some(
+      (call) => call.payload.p_resolves_conflict === true,
+    ),
+    false,
+  );
+});
+
+test("resolved customer city conflict continues into deterministic UF inference in the same execution", async () => {
+  const conflictEventId = "55555555-5555-4555-8555-555555555555";
+  const resolutionEventId = "66666666-6666-4666-8666-666666666666";
+
+  const conflict = createCanonicalConflict({
+    factKey: "customer_city",
+    sourceMessageId: "msg-anchor",
+    sourceConversationId: "conv-1",
+    lastEventId: conflictEventId,
+    candidates: [
+      {
+        value: "Campinas",
+        event_id: "44444444-4444-4444-8444-444444444444",
+        value_kind: "text",
+        source_type: "incoming_customer_message",
+        normalized_value_text: "campinas",
+        source_message_id: "msg-old",
+        source_conversation_id: "conv-1",
+      },
+      {
+        value: "Suzano",
+        event_id: conflictEventId,
+        value_kind: "text",
+        source_type: "incoming_customer_message",
+        normalized_value_text: "suzano",
+        source_message_id: "msg-anchor",
+        source_conversation_id: "conv-1",
+      },
+    ],
+  });
+
+  const city = createCanonicalKnownFact({
+    factKey: "customer_city",
+    value: "Suzano",
+    normalizedValueText: "suzano",
+    sourceType: "incoming_customer_message",
+    lastEventId: resolutionEventId,
+  });
+
+  const inferredState = createCanonicalKnownFact({
+    factKey: "customer_state_code",
+    value: "SP",
+    normalizedValueText: "sp",
+    state: "inferred",
+    sourceType: "system_inference",
+  });
+
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Nao, minha cidade e Suzano",
+    canonicalReaderResponses: [
+      {
+        data: [createCanonicalQualificationReaderRow({ knownFacts: [] })],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            conflicts: [conflict],
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [city],
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [city, inferredState],
+            provenanceSummary: {
+              knownFactCount: 2,
+              confirmedCount: 1,
+              inferredCount: 1,
+              conflictCount: 0,
+              messageBackedCount: 1,
+              conversationBackedCount: 0,
+              sourceCounts: {
+                incoming_customer_message: 1,
+                system_inference: 1,
+              },
+            },
+          }),
+        ],
+        error: null,
+      },
+    ],
+    brazilianMunicipalities: [
+      {
+        ibge_code: 3552502,
+        name: "Suzano",
+        normalized_name: "suzano",
+        state_code: "SP",
+      },
+    ],
+    writerResponse: (payload) => {
+      if (payload.p_fact_key === "customer_state_code") {
+        return {
+          data: [
+            createWriterRow({
+              factKey: "customer_state_code",
+              valueKind: "text",
+              currentState: "inferred",
+              eventId: "77777777-7777-4777-8777-777777777777",
+              currentLastEventId: "77777777-7777-4777-8777-777777777777",
+              outcome: "inferred_created",
+            }),
+          ],
+          error: null,
+        };
+      }
+
+      return {
+        data: [
+          createWriterRow({
+            factKey: "customer_city",
+            valueKind: "text",
+            currentState: payload.p_resolves_conflict ? "confirmed" : "conflict",
+            eventId: payload.p_resolves_conflict
+              ? resolutionEventId
+              : conflictEventId,
+            currentLastEventId: payload.p_resolves_conflict
+              ? resolutionEventId
+              : conflictEventId,
+            outcome: payload.p_resolves_conflict
+              ? "conflict_resolved"
+              : "confirmed_conflict_created",
+          }),
+        ],
+        error: null,
+      };
+    },
+  });
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: new FakeOpenAi([
+      {
+        output_text: JSON.stringify({
+          candidates: [
+            {
+              fact_key: "customer_city",
+              assertion_level: "confirmed",
+              value_kind: "text",
+              text_value: "Suzano",
+              number_value: null,
+              boolean_value: null,
+              evidence_text: "Suzano",
+            },
+          ],
+        }),
+      },
+      structuredReply("Perfeito, confirmei Suzano."),
+    ]),
+  });
+
+  assert.equal(result.ok, true);
+
+  const writes = supabase.rpcCalls.filter(
+    (call) =>
+      call.fn === "write_commercial_opportunity_qualification_fact_by_system",
+  );
+
+  assert.equal(writes.length, 3);
+
+  assert.equal(writes[0]?.payload.p_fact_key, "customer_city");
+  assert.equal(writes[0]?.payload.p_resolves_conflict, false);
+
+  assert.equal(writes[1]?.payload.p_fact_key, "customer_city");
+  assert.equal(writes[1]?.payload.p_resolves_conflict, true);
+
+  assert.equal(writes[2]?.payload.p_fact_key, "customer_state_code");
+  assert.equal(writes[2]?.payload.p_source_type, "system_inference");
+  assert.equal(writes[2]?.payload.p_resolves_conflict, false);
+  assert.equal(
+    writes[2]?.payload.p_operation_key,
+    `p9_qfact_customer_state_from_city_v1:${resolutionEventId}:customer_state_code`,
+  );
+
+  assert.equal(
+    supabase.fromCalls.includes("brazilian_municipalities"),
+    true,
+  );
+});
 test("generateAiSalesReply rejects structurally invalid canonical writer payload", async () => {
   const supabase = createGenerateAiSalesReplySupabase({
     writerResponse: {
