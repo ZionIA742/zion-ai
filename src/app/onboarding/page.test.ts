@@ -40,15 +40,57 @@ function getActivateZionBlock(source: string) {
 function getFetchWhatsappStatusBlock(source: string) {
   return getFunctionBlock(
     source,
-    "  const fetchWhatsappStatus = useCallback(async () => {",
+    "  const fetchWhatsappStatus = useCallback(async (): Promise<StoreWhatsappStatusApiResponse | null> => {",
     "  const loadBaseData = useCallback(async () => {",
+  );
+}
+
+function getSaveStep2Block(source: string) {
+  return getFunctionBlock(
+    source,
+    "  async function saveStep2(",
+    "  async function saveStep3(",
+  );
+}
+
+function getMetaSignupSessionParserBlock(source: string) {
+  return getFunctionBlock(
+    source,
+    "function extractMetaEmbeddedSignupSession(",
+    "function isMetaEmbeddedSignupCancellation(",
+  );
+}
+
+function getStartMetaSignupBlock(source: string) {
+  return getFunctionBlock(
+    source,
+    "  async function startMetaEmbeddedSignup() {",
+    "  useEffect(() => {\n    if (!embeddedSignupCode) return;",
+  );
+}
+
+function getEmbeddedSignupSubmitBlock(source: string) {
+  return getFunctionBlock(
+    source,
+    "  useEffect(() => {\n    if (!embeddedSignupCode || !embeddedSignupSession) return;",
+    "  async function activateZion() {",
+  );
+}
+
+function getFacebookSdkLoaderBlock(source: string) {
+  return getFunctionBlock(
+    source,
+    "function ensureFacebookSdkLoaded(appId: string) {",
+    "function isKnownWhatsappOperationalUnavailability(",
   );
 }
 
 function getCatchBlock(block: string) {
   const start = block.indexOf("    } catch (error) {");
   assert.equal(start > -1, true, "catch block not found");
-  const end = block.indexOf("    } finally {", start);
+  const finallyEnd = block.indexOf("    } finally {", start);
+  const asyncEnd = block.indexOf("    })();", start);
+  const end = finallyEnd > -1 ? finallyEnd : asyncEnd;
   assert.equal(end > start, true, "catch block end not found");
   return block.slice(start, end);
 }
@@ -66,8 +108,8 @@ const tests: TestCase[] = [
       const setStatusIndex = block.indexOf("setWhatsappStatus({", knownIndex);
       const connectedFalseIndex = block.indexOf("connected: false", setStatusIndex);
       const isActiveFalseIndex = block.indexOf("isActive: false", setStatusIndex);
-      const setErrorIndex = block.indexOf("setWhatsappStatusError(cleanText(result.message));", setStatusIndex);
-      const returnIndex = block.indexOf("return;", setErrorIndex);
+      const setErrorIndex = block.indexOf("setWhatsappStatusError(WHATSAPP_STATUS_UNAVAILABLE_MESSAGE);", setStatusIndex);
+      const returnIndex = block.indexOf("return result;", setErrorIndex);
       const throwIndex = block.indexOf("throw new Error", returnIndex);
 
       assert.equal(source.includes("function isKnownWhatsappOperationalUnavailability("), true);
@@ -101,7 +143,7 @@ const tests: TestCase[] = [
 
       const failedResponseGuard = block.indexOf("if (!response.ok || !result.ok) {");
       const failedResponseThrow = block.indexOf(
-        "throw new Error(result.message ||",
+        'throw new Error("WHATSAPP_STATUS_REQUEST_FAILED")',
         failedResponseGuard,
       );
       assert.equal(failedResponseGuard > -1, true);
@@ -198,6 +240,320 @@ const tests: TestCase[] = [
         source.includes("const canActivate = essentialsReady && whatsappConnected;"),
         false,
       );
+    },
+  },
+  {
+    name: "Meta Embedded Signup ignores invalid window message origins",
+    run: () => {
+      const source = readPageSource();
+      const parserBlock = getMetaSignupSessionParserBlock(source);
+
+      assert.equal(source.includes("window.addEventListener(\"message\", handleEmbeddedSignupMessage)"), true);
+      assert.equal(source.includes("window.removeEventListener(\"message\", handleEmbeddedSignupMessage)"), true);
+      assert.equal(source.includes("META_EMBEDDED_SIGNUP_ALLOWED_ORIGINS"), true);
+      assert.equal(
+        parserBlock.includes("if (!isAllowedMetaEmbeddedSignupOrigin(event.origin)) return null;"),
+        true,
+      );
+    },
+  },
+  {
+    name: "Meta Embedded Signup ignores irrelevant message events",
+    run: () => {
+      const source = readPageSource();
+      const parserBlock = getMetaSignupSessionParserBlock(source);
+
+      assert.equal(
+        parserBlock.includes("payload.type !== META_EMBEDDED_SIGNUP_MESSAGE_TYPE"),
+        true,
+      );
+      assert.equal(parserBlock.includes('eventName !== "FINISH"'), true);
+      assert.equal(source.includes('"WA_EMBEDDED_SIGNUP"'), true);
+    },
+  },
+  {
+    name: "valid Meta Embedded Signup session captures WABA and phone ids",
+    run: () => {
+      const source = readPageSource();
+      const parserBlock = getMetaSignupSessionParserBlock(source);
+
+      assert.equal(parserBlock.includes("normalizeMetaIdentifier(payloadData.whatsapp_business_account_id)"), true);
+      assert.equal(parserBlock.includes("normalizeMetaIdentifier(payloadData.waba_id)"), true);
+      assert.equal(parserBlock.includes("normalizeMetaIdentifier(payloadData.phone_number_id)"), true);
+      assert.equal(parserBlock.includes("whatsappBusinessAccountId,"), true);
+      assert.equal(parserBlock.includes("phoneNumberId,"), true);
+      assert.equal(parserBlock.includes("display_phone_number"), false);
+    },
+  },
+  {
+    name: "FB.login callback captures only the authorization code",
+    run: () => {
+      const source = readPageSource();
+      const block = getStartMetaSignupBlock(source);
+
+      assert.equal(block.includes("window.FB.login("), true);
+      assert.equal(block.includes("config_id: metaEmbeddedSignupConfig.configId"), true);
+      assert.equal(block.includes('response_type: "code"'), true);
+      assert.equal(block.includes("override_default_response_type: true"), true);
+      assert.equal(block.includes('version: "v4"'), true);
+      assert.equal(block.includes("typeof response.authResponse?.code === \"string\""), true);
+      assert.equal(block.includes("setEmbeddedSignupCode(code);"), true);
+      assert.equal(block.includes("accessToken"), false);
+    },
+  },
+  {
+    name: "Meta Embedded Signup PIN must be exactly six digits",
+    run: () => {
+      const source = readPageSource();
+
+      assert.equal(source.includes("function isValidTwoStepPin(value: string)"), true);
+      assert.equal(source.includes("/^[0-9]{6}$/.test(value)"), true);
+      assert.equal(source.includes("event.target.value.replace(/[^\\d]/g, \"\").slice(0, 6)"), true);
+      assert.equal(source.includes("!isValidTwoStepPin(embeddedSignupPin)"), true);
+    },
+  },
+  {
+    name: "Meta Embedded Signup POST sends only code WABA phone and PIN",
+    run: () => {
+      const source = readPageSource();
+      const block = getEmbeddedSignupSubmitBlock(source);
+      const payloadStart = block.indexOf("body: JSON.stringify({");
+      const payloadEnd = block.indexOf("}),", payloadStart);
+      const payloadBlock = block.slice(payloadStart, payloadEnd);
+
+      assert.equal(block.includes('fetch("/api/store/whatsapp/embedded-signup"'), true);
+      assert.equal(payloadBlock.includes("code: embeddedSignupCode"), true);
+      assert.equal(payloadBlock.includes("whatsappBusinessAccountId:"), true);
+      assert.equal(payloadBlock.includes("phoneNumberId:"), true);
+      assert.equal(payloadBlock.includes("twoStepPin: embeddedSignupPin"), true);
+      assert.equal(payloadBlock.includes("displayPhoneNumber"), false);
+      assert.equal(payloadBlock.includes("token"), false);
+    },
+  },
+  {
+    name: "Facebook SDK loader observes an existing script and can retry after timeout or failure",
+    run: () => {
+      const source = readPageSource();
+      const block = getFacebookSdkLoaderBlock(source);
+
+      assert.equal(block.includes("document.getElementById(FACEBOOK_SDK_SCRIPT_ID)"), true);
+      assert.equal(block.includes("script.addEventListener(\"load\", handleScriptLoad"), true);
+      assert.equal(block.includes("script.addEventListener(\"error\", handleScriptError"), true);
+      assert.equal(block.includes("window.setTimeout(() => fail(\"FACEBOOK_SDK_UNAVAILABLE\"), 10000)"), true);
+      assert.equal(block.includes("facebookSdkLoadPromise = null;"), true);
+      assert.equal(block.includes("script.parentNode.removeChild(script)"), true);
+      assert.equal(block.includes("setTimeout(() => {"), false);
+      assert.equal(block.includes("}, 0)"), false);
+      assert.equal(
+        block.includes('["complete", "loaded"].includes('),
+        true,
+      );
+      assert.equal(
+        block.includes(
+          "} else {\n      handleFacebookSdkReady();\n    }",
+        ),
+        false,
+      );
+    },
+  },
+  {
+    name: "Embedded Signup submission uses a ref guard without depending on its own submitting state",
+    run: () => {
+      const source = readPageSource();
+      const block = getEmbeddedSignupSubmitBlock(source);
+      const dependenciesStart = block.lastIndexOf("  }, [");
+      const dependencies = block.slice(dependenciesStart);
+
+      assert.equal(block.includes("embeddedSignupSubmittingRef.current"), true);
+      assert.equal(block.includes("embeddedSignupSubmittingRef.current = true;"), true);
+      assert.equal(block.includes("embeddedSignupSubmittingRef.current = false;"), true);
+      assert.equal(dependencies.includes("embeddedSignupSubmitting,"), false);
+      assert.equal(block.includes("cancelled"), false);
+      assert.equal(block.includes("return () =>"), false);
+      assert.equal(block.includes("embeddedSignupAttemptRef.current = attempt;"), true);
+      assert.equal(
+        block.indexOf("embeddedSignupAttemptRef.current = null;") >
+          block.indexOf("await refreshActivationReadinessAfterEmbeddedSignup();"),
+        true,
+      );
+    },
+  },
+  {
+    name: "Embedded Signup PIN is immutable while the attempt is in progress",
+    run: () => {
+      const source = readPageSource();
+      const inputStart = source.indexOf("value={embeddedSignupPin}");
+      const inputEnd = source.indexOf("aria-label=\"PIN de verificacao", inputStart);
+      const inputBlock = source.slice(inputStart, inputEnd);
+
+      assert.equal(inputStart > -1, true);
+      assert.equal(inputBlock.includes("disabled={embeddedSignupLoading || embeddedSignupSubmitting}"), true);
+      assert.equal(inputBlock.includes("embeddedSignupAttemptRef.current || embeddedSignupSubmittingRef.current"), true);
+    },
+  },
+  {
+    name: "onboarding frontend never handles Meta tokens or persists code and PIN",
+    run: () => {
+      const source = readPageSource();
+
+      assert.equal(source.includes("accessToken"), false);
+      assert.equal(source.includes("access_token"), false);
+      assert.equal(source.includes("META_WHATSAPP_ACCESS_TOKEN"), false);
+      assert.equal(source.includes("sessionStorage"), false);
+      assert.equal(source.includes("embeddedSignupPin") && source.includes("localStorage.setItem"), true);
+      assert.equal(/localStorage\.setItem\([^)]*embeddedSignup(Pin|Code)/.test(source), false);
+      assert.equal(/window\.location[^;]*(embeddedSignupPin|embeddedSignupCode|twoStepPin|code)/.test(source), false);
+    },
+  },
+  {
+    name: "successful Meta Embedded Signup refreshes WhatsApp status and onboarding readiness",
+    run: () => {
+      const source = readPageSource();
+      const block = getEmbeddedSignupSubmitBlock(source);
+
+      const clearIndex = block.indexOf("clearEmbeddedSignupSensitiveState();");
+      const statusIndex = block.indexOf("await fetchWhatsappStatus();", clearIndex);
+      const readinessIndex = block.indexOf(
+        "await refreshActivationReadinessAfterEmbeddedSignup();",
+        statusIndex,
+      );
+
+      assert.equal(clearIndex > -1, true);
+      assert.equal(statusIndex > clearIndex, true);
+      assert.equal(readinessIndex > statusIndex, true);
+    },
+  },
+  {
+    name: "Embedded Signup only confirms connection after canonical status and readiness",
+    run: () => {
+      const source = readPageSource();
+      const block = getEmbeddedSignupSubmitBlock(source);
+      const postSuccessIndex = block.indexOf("if (!response.ok || result?.ok !== true)");
+      const neutralMessageIndex = block.indexOf(
+        'setEmbeddedSignupMessage("Validando conexao oficial...");',
+        postSuccessIndex,
+      );
+      const statusIndex = block.indexOf("const confirmedWhatsappStatus = await fetchWhatsappStatus();", neutralMessageIndex);
+      const statusGuardIndex = block.indexOf(
+        "if (!isWhatsappStatusConnected(confirmedWhatsappStatus))",
+        statusIndex,
+      );
+      const readinessIndex = block.indexOf(
+        "const readinessConfirmed = await refreshActivationReadinessAfterEmbeddedSignup();",
+        statusGuardIndex,
+      );
+      const readinessGuardIndex = block.indexOf(
+        "if (!readinessConfirmed)",
+        readinessIndex,
+      );
+      const finalMessageIndex = block.indexOf(
+        'setEmbeddedSignupMessage("WhatsApp conectado pela Meta.");',
+        readinessGuardIndex,
+      );
+
+      assert.equal(neutralMessageIndex > postSuccessIndex, true);
+      assert.equal(statusIndex > neutralMessageIndex, true);
+      assert.equal(statusGuardIndex > statusIndex, true);
+      assert.equal(readinessIndex > statusGuardIndex, true);
+      assert.equal(readinessGuardIndex > readinessIndex, true);
+      assert.equal(finalMessageIndex > readinessGuardIndex, true);
+      assert.equal(
+        block.indexOf('setEmbeddedSignupMessage("WhatsApp conectado pela Meta.");', postSuccessIndex) >
+          readinessGuardIndex,
+        true,
+      );
+      assert.equal(source.includes("function isWhatsappStatusConnected("), true);
+      assert.equal(source.includes("function mapEmbeddedSignupError("), true);
+    },
+  },
+  {
+    name: "Embedded Signup status and readiness failures remain neutral or mapped",
+    run: () => {
+      const source = readPageSource();
+      const block = getEmbeddedSignupSubmitBlock(source);
+      const statusGuardIndex = block.indexOf(
+        "if (!isWhatsappStatusConnected(confirmedWhatsappStatus))",
+      );
+      const statusThrowIndex = block.indexOf(
+        'throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED")',
+        statusGuardIndex,
+      );
+      const readinessGuardIndex = block.indexOf("if (!readinessConfirmed)", statusThrowIndex);
+      const readinessThrowIndex = block.indexOf(
+        'throw new Error("ONBOARDING_READINESS_NOT_CONFIRMED")',
+        readinessGuardIndex,
+      );
+      const finalMessageIndex = block.indexOf(
+        'setEmbeddedSignupMessage("WhatsApp conectado pela Meta.");',
+      );
+
+      assert.equal(statusThrowIndex > statusGuardIndex, true);
+      assert.equal(readinessThrowIndex > readinessGuardIndex, true);
+      assert.equal(finalMessageIndex > readinessThrowIndex, true);
+      assert.equal(source.includes("WHATSAPP_STATUS_UNAVAILABLE_MESSAGE"), true);
+      assert.equal(source.includes("EMBEDDED_SIGNUP_STATUS_NOT_CONFIRMED_MESSAGE"), true);
+      assert.equal(source.includes("EMBEDDED_SIGNUP_READINESS_NOT_CONFIRMED_MESSAGE"), true);
+    },
+  },
+  {
+    name: "arbitrary backend messages never reach Embedded Signup UI",
+    run: () => {
+      const source = readPageSource();
+      const block = getEmbeddedSignupSubmitBlock(source);
+      const catchBlock = getCatchBlock(block);
+
+      assert.equal(block.includes("cleanText(result?.message)"), false);
+      assert.equal(catchBlock.includes("error.message"), false);
+      assert.equal(catchBlock.includes("mapEmbeddedSignupError(error)"), true);
+      assert.equal(source.includes("function mapEmbeddedSignupError(error: unknown)"), true);
+      assert.equal(source.includes("result.message ||"), false);
+    },
+  },
+  {
+    name: "success, error and cancellation clear Embedded Signup code and PIN",
+    run: () => {
+      const source = readPageSource();
+      const submitBlock = getEmbeddedSignupSubmitBlock(source);
+      const sessionListenerBlock = getFunctionBlock(
+        source,
+        "    const handleEmbeddedSignupMessage = (event: MessageEvent) => {",
+        "    window.addEventListener(\"message\", handleEmbeddedSignupMessage);",
+      );
+      const startBlock = getStartMetaSignupBlock(source);
+
+      assert.equal(submitBlock.includes("clearEmbeddedSignupSensitiveState();"), true);
+      assert.equal(getCatchBlock(submitBlock).includes("clearEmbeddedSignupSensitiveState();"), true);
+      assert.equal(sessionListenerBlock.includes("clearEmbeddedSignupSensitiveState();"), true);
+      assert.equal(startBlock.includes("clearEmbeddedSignupSensitiveState();"), true);
+    },
+  },
+  {
+    name: "Meta Embedded Signup errors do not mark WhatsApp connected",
+    run: () => {
+      const source = readPageSource();
+      const block = getEmbeddedSignupSubmitBlock(source);
+      const catchBlock = getCatchBlock(block);
+
+      assert.equal(catchBlock.includes("clearEmbeddedSignupSensitiveState();"), true);
+      assert.equal(catchBlock.includes("await fetchWhatsappStatus();"), true);
+      assert.equal(catchBlock.includes("connected: false"), false);
+      assert.equal(catchBlock.includes("isActive: false"), false);
+      assert.equal(catchBlock.includes("setEmbeddedSignupError("), true);
+      assert.equal(catchBlock.includes("setWhatsappStatusConnected"), false);
+      assert.equal(catchBlock.includes("setWhatsappStatus((current)"), false);
+    },
+  },
+  {
+    name: "other onboarding steps keep the existing Step 2 draft and persistence flow",
+    run: () => {
+      const source = readPageSource();
+      const block = getSaveStep2Block(source);
+
+      assert.equal(source.includes("const step2DraftStorageKey = storagePrefix ? `${storagePrefix}:step2` : null;"), true);
+      assert.equal(source.includes("persistToLocalStorageSafe(step2DraftStorageKey, JSON.stringify(step2Form));"), true);
+      assert.equal(block.includes("await saveStrategySettingsPartial({"), true);
+      assert.equal(block.includes("storeServices:"), true);
+      assert.equal(block.includes("changeStep(3);"), true);
     },
   },
 ];

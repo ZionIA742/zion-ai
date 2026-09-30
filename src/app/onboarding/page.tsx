@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
@@ -73,6 +74,236 @@ type StoreWhatsappStatusApiResponse = {
   message?: string;
 };
 
+type FacebookLoginResponse = {
+  authResponse?: {
+    code?: unknown;
+  } | null;
+  status?: string;
+};
+
+type FacebookSdk = {
+  init: (options: {
+    appId: string;
+    cookie?: boolean;
+    xfbml?: boolean;
+  }) => void;
+  login: (
+    callback: (response: FacebookLoginResponse) => void,
+    options: {
+      config_id: string;
+      response_type: "code";
+      override_default_response_type: true;
+      extras: {
+        version: "v4";
+      };
+    },
+  ) => void;
+};
+
+type MetaEmbeddedSignupSession = {
+  whatsappBusinessAccountId: string;
+  phoneNumberId: string;
+};
+
+declare global {
+  interface Window {
+    FB?: FacebookSdk;
+    fbAsyncInit?: () => void;
+  }
+}
+
+const FACEBOOK_SDK_SCRIPT_ID = "facebook-jssdk";
+const FACEBOOK_SDK_SRC = "https://connect.facebook.net/pt_BR/sdk.js";
+const META_EMBEDDED_SIGNUP_MESSAGE_TYPE = "WA_EMBEDDED_SIGNUP";
+const META_EMBEDDED_SIGNUP_ALLOWED_ORIGINS = new Set([
+  "https://www.facebook.com",
+  "https://web.facebook.com",
+  "https://business.facebook.com",
+]);
+let facebookSdkLoadPromise: Promise<void> | null = null;
+
+function getMetaEmbeddedSignupConfig() {
+  return {
+    appId: cleanText(process.env.NEXT_PUBLIC_META_APP_ID),
+    configId: cleanText(process.env.NEXT_PUBLIC_META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID),
+  };
+}
+
+function isValidMetaIdentifier(value: string) {
+  return /^[0-9]{6,32}$/.test(value);
+}
+
+function normalizeMetaIdentifier(value: unknown) {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim();
+  return isValidMetaIdentifier(normalized) ? normalized : "";
+}
+
+function isValidTwoStepPin(value: string) {
+  return /^[0-9]{6}$/.test(value);
+}
+
+function isAllowedMetaEmbeddedSignupOrigin(origin: string) {
+  if (!origin) return false;
+
+  try {
+    const url = new URL(origin);
+    return url.protocol === "https:" && META_EMBEDDED_SIGNUP_ALLOWED_ORIGINS.has(url.origin);
+  } catch {
+    return false;
+  }
+}
+
+function parseMessageData(data: unknown): Record<string, unknown> | null {
+  if (typeof data === "string") {
+    try {
+      const parsed = JSON.parse(data) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  return data && typeof data === "object" && !Array.isArray(data)
+    ? (data as Record<string, unknown>)
+    : null;
+}
+
+function extractMetaEmbeddedSignupSession(event: MessageEvent): MetaEmbeddedSignupSession | null {
+  if (!isAllowedMetaEmbeddedSignupOrigin(event.origin)) return null;
+
+  const payload = parseMessageData(event.data);
+  if (!payload || payload.type !== META_EMBEDDED_SIGNUP_MESSAGE_TYPE) return null;
+
+  const eventName = cleanText(payload.event).toUpperCase();
+  if (eventName !== "FINISH") return null;
+
+  const payloadData =
+    payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+      ? (payload.data as Record<string, unknown>)
+      : {};
+
+  const whatsappBusinessAccountId =
+    normalizeMetaIdentifier(payloadData.whatsapp_business_account_id) ||
+    normalizeMetaIdentifier(payloadData.waba_id) ||
+    normalizeMetaIdentifier(payload.whatsapp_business_account_id) ||
+    normalizeMetaIdentifier(payload.waba_id);
+  const phoneNumberId =
+    normalizeMetaIdentifier(payloadData.phone_number_id) ||
+    normalizeMetaIdentifier(payload.phone_number_id);
+
+  if (!whatsappBusinessAccountId || !phoneNumberId) return null;
+
+  return {
+    whatsappBusinessAccountId,
+    phoneNumberId,
+  };
+}
+
+function isMetaEmbeddedSignupCancellation(event: MessageEvent) {
+  if (!isAllowedMetaEmbeddedSignupOrigin(event.origin)) return false;
+
+  const payload = parseMessageData(event.data);
+  if (!payload || payload.type !== META_EMBEDDED_SIGNUP_MESSAGE_TYPE) return false;
+
+  const eventName = cleanText(payload.event).toUpperCase();
+  return eventName === "CANCEL" || eventName === "CANCELLED";
+}
+
+function ensureFacebookSdkLoaded(appId: string) {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return Promise.reject(new Error("FACEBOOK_SDK_BROWSER_UNAVAILABLE"));
+  }
+
+  if (!appId) {
+    return Promise.reject(new Error("FACEBOOK_SDK_APP_ID_MISSING"));
+  }
+
+  if (window.FB) {
+    window.FB.init({ appId, cookie: true, xfbml: false });
+    return Promise.resolve();
+  }
+
+  if (facebookSdkLoadPromise) return facebookSdkLoadPromise;
+
+  facebookSdkLoadPromise = new Promise<void>((resolve, reject) => {
+    const existingScript = document.getElementById(FACEBOOK_SDK_SCRIPT_ID) as HTMLScriptElement | null;
+    const script = existingScript || document.createElement("script");
+    const previousFbAsyncInit = window.fbAsyncInit;
+    let settled = false;
+    let timeoutId: number | null = null;
+
+    const cleanup = () => {
+      script.removeEventListener("load", handleScriptLoad);
+      script.removeEventListener("error", handleScriptError);
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+      if (window.fbAsyncInit === handleFacebookSdkReady) {
+        window.fbAsyncInit = previousFbAsyncInit;
+      }
+    };
+
+    const fail = (message: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      facebookSdkLoadPromise = null;
+      if (!window.FB && script.parentNode) script.parentNode.removeChild(script);
+      reject(new Error(message));
+    };
+
+    const handleFacebookSdkReady = () => {
+      if (!window.FB) {
+        fail("FACEBOOK_SDK_UNAVAILABLE");
+        return;
+      }
+
+      if (settled) return;
+      try {
+        window.FB.init({ appId, cookie: true, xfbml: false });
+        settled = true;
+        cleanup();
+        resolve();
+      } catch {
+        fail("FACEBOOK_SDK_INIT_FAILED");
+      }
+    };
+
+    const handleScriptLoad = () => {
+      handleFacebookSdkReady();
+    };
+
+    const handleScriptError = () => {
+      fail("FACEBOOK_SDK_LOAD_FAILED");
+    };
+
+    window.fbAsyncInit = handleFacebookSdkReady;
+    script.addEventListener("load", handleScriptLoad, { once: true });
+    script.addEventListener("error", handleScriptError, { once: true });
+    timeoutId = window.setTimeout(() => fail("FACEBOOK_SDK_UNAVAILABLE"), 10000);
+
+    if (!existingScript) {
+      script.id = FACEBOOK_SDK_SCRIPT_ID;
+      script.async = true;
+      script.defer = true;
+      script.crossOrigin = "anonymous";
+      script.src = FACEBOOK_SDK_SRC;
+      document.body.appendChild(script);
+    } else if (
+      ["complete", "loaded"].includes(
+        (script as HTMLScriptElement & { readyState?: string }).readyState || "",
+      )
+    ) {
+      // A script that already finished without exposing FB cannot emit load
+      // again. Fail closed here; a later call can remove it and retry.
+      handleFacebookSdkReady();
+    }
+  });
+
+  return facebookSdkLoadPromise;
+}
+
 function isKnownWhatsappOperationalUnavailability(
   response: Response,
   result: StoreWhatsappStatusApiResponse | null,
@@ -85,6 +316,43 @@ function isKnownWhatsappOperationalUnavailability(
       safeMessage &&
       (response.status === 400 || response.status === 401 || response.status === 403),
   );
+}
+
+const WHATSAPP_STATUS_UNAVAILABLE_MESSAGE =
+  "Nao foi possivel confirmar a conexao oficial do WhatsApp da loja.";
+const EMBEDDED_SIGNUP_REJECTED_MESSAGE =
+  "A Meta recusou a conexao. Reinicie o Embedded Signup para tentar novamente.";
+const EMBEDDED_SIGNUP_STATUS_NOT_CONFIRMED_MESSAGE =
+  "A conexao foi recebida, mas o status oficial ainda nao confirmou o WhatsApp ativo.";
+const EMBEDDED_SIGNUP_READINESS_NOT_CONFIRMED_MESSAGE =
+  "A conexao foi recebida, mas a ativacao da loja ainda nao foi confirmada.";
+const EMBEDDED_SIGNUP_GENERIC_ERROR_MESSAGE =
+  "Nao foi possivel concluir a conexao com a Meta. Reinicie o Embedded Signup.";
+
+function isWhatsappStatusConnected(status: StoreWhatsappStatusApiResponse | null) {
+  const normalizedStatus = cleanText(status?.status).toLowerCase();
+
+  return Boolean(
+    status?.connected &&
+      status?.isActive &&
+      normalizedStatus === "active" &&
+      cleanText(status?.displayPhoneNumber),
+  );
+}
+
+function mapEmbeddedSignupError(error: unknown) {
+  const code = error instanceof Error ? error.message : "";
+
+  switch (code) {
+    case "EMBEDDED_SIGNUP_BACKEND_REJECTED":
+      return EMBEDDED_SIGNUP_REJECTED_MESSAGE;
+    case "WHATSAPP_STATUS_NOT_CONFIRMED":
+      return EMBEDDED_SIGNUP_STATUS_NOT_CONFIRMED_MESSAGE;
+    case "ONBOARDING_READINESS_NOT_CONFIRMED":
+      return EMBEDDED_SIGNUP_READINESS_NOT_CONFIRMED_MESSAGE;
+    default:
+      return EMBEDDED_SIGNUP_GENERIC_ERROR_MESSAGE;
+  }
 }
 
 const STORE_SERVICE_OPTIONS: Option[] = [
@@ -488,6 +756,17 @@ function OnboardingContent() {
   const [whatsappStatus, setWhatsappStatus] = useState<StoreWhatsappStatusApiResponse | null>(null);
   const [whatsappStatusLoading, setWhatsappStatusLoading] = useState(false);
   const [whatsappStatusError, setWhatsappStatusError] = useState<string | null>(null);
+  const [embeddedSignupPin, setEmbeddedSignupPin] = useState("");
+  const [embeddedSignupCode, setEmbeddedSignupCode] = useState("");
+  const [embeddedSignupSession, setEmbeddedSignupSession] =
+    useState<MetaEmbeddedSignupSession | null>(null);
+  const [embeddedSignupLoading, setEmbeddedSignupLoading] = useState(false);
+  const [embeddedSignupSubmitting, setEmbeddedSignupSubmitting] = useState(false);
+  const embeddedSignupMountedRef = useRef(true);
+  const embeddedSignupSubmittingRef = useRef(false);
+  const embeddedSignupAttemptRef = useRef<Promise<void> | null>(null);
+  const [embeddedSignupError, setEmbeddedSignupError] = useState<string | null>(null);
+  const [embeddedSignupMessage, setEmbeddedSignupMessage] = useState<string | null>(null);
 
   const [step1Form, setStep1Form] = useState<Step1FormData>({
     store_display_name: "",
@@ -517,6 +796,7 @@ function OnboardingContent() {
   const step1DraftStorageKey = storagePrefix ? `${storagePrefix}:step1` : null;
   const step2DraftStorageKey = storagePrefix ? `${storagePrefix}:step2` : null;
   const step3DraftStorageKey = storagePrefix ? `${storagePrefix}:step3` : null;
+  const metaEmbeddedSignupConfig = useMemo(getMetaEmbeddedSignupConfig, []);
 
   const updateStep1Field = <K extends keyof Step1FormData>(field: K, value: Step1FormData[K]) => {
     setStep1Form((current) => ({ ...current, [field]: value }));
@@ -566,9 +846,10 @@ function OnboardingContent() {
     return status;
   }, [organizationId, activeStore?.id]);
 
-  const fetchWhatsappStatus = useCallback(async () => {
-    if (!activeStore?.id) return;
+  const fetchWhatsappStatus = useCallback(async (): Promise<StoreWhatsappStatusApiResponse | null> => {
+    if (!activeStore?.id) return null;
 
+    if (!embeddedSignupMountedRef.current) return null;
     setWhatsappStatusLoading(true);
     setWhatsappStatusError(null);
 
@@ -584,6 +865,8 @@ function OnboardingContent() {
 
       const result = (await response.json().catch(() => null)) as StoreWhatsappStatusApiResponse | null;
 
+      if (!embeddedSignupMountedRef.current) return null;
+
       if (result && isKnownWhatsappOperationalUnavailability(response, result)) {
         setWhatsappStatus({
           ...result,
@@ -591,8 +874,8 @@ function OnboardingContent() {
           isActive: false,
           displayPhoneNumber: result.displayPhoneNumber ?? null,
         });
-        setWhatsappStatusError(cleanText(result.message));
-        return;
+        setWhatsappStatusError(WHATSAPP_STATUS_UNAVAILABLE_MESSAGE);
+        return result;
       }
 
       if (!result) {
@@ -600,20 +883,19 @@ function OnboardingContent() {
       }
 
       if (!response.ok || !result.ok) {
-        throw new Error(result.message || "Não foi possível carregar o status do WhatsApp da loja.");
+        throw new Error("WHATSAPP_STATUS_REQUEST_FAILED");
       }
 
       setWhatsappStatus(result);
+      return result;
     } catch (error) {
       console.error("[OnboardingPage] fetchWhatsappStatus error:", error);
+      if (!embeddedSignupMountedRef.current) return null;
       setWhatsappStatus(null);
-      setWhatsappStatusError(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível carregar o status do WhatsApp da loja.",
-      );
+      setWhatsappStatusError(WHATSAPP_STATUS_UNAVAILABLE_MESSAGE);
+      return null;
     } finally {
-      setWhatsappStatusLoading(false);
+      if (embeddedSignupMountedRef.current) setWhatsappStatusLoading(false);
     }
   }, [activeStore?.id]);
 
@@ -1075,16 +1357,51 @@ function OnboardingContent() {
     }
   }
 
-  const whatsappStatusConnected = useMemo(() => {
-    const normalizedStatus = cleanText(whatsappStatus?.status).toLowerCase();
+  const whatsappStatusConnected = useMemo(
+    () => isWhatsappStatusConnected(whatsappStatus),
+    [whatsappStatus],
+  );
 
-    return Boolean(
-      whatsappStatus?.connected &&
-        whatsappStatus?.isActive &&
-        normalizedStatus === "active" &&
-        cleanText(whatsappStatus?.displayPhoneNumber),
-    );
-  }, [whatsappStatus]);
+  const clearEmbeddedSignupSensitiveState = useCallback(() => {
+    setEmbeddedSignupCode("");
+    setEmbeddedSignupPin("");
+  }, []);
+
+  useEffect(() => {
+    embeddedSignupMountedRef.current = true;
+    return () => {
+      embeddedSignupMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleEmbeddedSignupMessage = (event: MessageEvent) => {
+      const session = extractMetaEmbeddedSignupSession(event);
+      if (session) {
+        setEmbeddedSignupSession(session);
+        setEmbeddedSignupError(null);
+        setEmbeddedSignupMessage("Sessao Meta recebida. Finalizando a conexao oficial.");
+        return;
+      }
+
+      if (isMetaEmbeddedSignupCancellation(event)) {
+        if (embeddedSignupAttemptRef.current) return;
+        setEmbeddedSignupLoading(false);
+        setEmbeddedSignupSubmitting(false);
+        setEmbeddedSignupSession(null);
+        clearEmbeddedSignupSensitiveState();
+        setEmbeddedSignupMessage(null);
+        setEmbeddedSignupError("Embedded Signup cancelado antes da conclusao.");
+      }
+    };
+
+    window.addEventListener("message", handleEmbeddedSignupMessage);
+    return () => {
+      window.removeEventListener("message", handleEmbeddedSignupMessage);
+    };
+  }, [clearEmbeddedSignupSensitiveState]);
 
   const [onboardingActivationState, setOnboardingActivationState] = useState<string | null>(
     null,
@@ -1163,6 +1480,226 @@ function OnboardingContent() {
 
   const canActivate =
     !onboardingActivationLoading && onboardingActivationState === "ready";
+
+  const refreshActivationReadinessAfterEmbeddedSignup = useCallback(async () => {
+    if (!organizationId || !activeStore?.id) return false;
+    if (!embeddedSignupMountedRef.current) return false;
+
+    setOnboardingActivationLoading(true);
+    setOnboardingActivationState(null);
+
+    try {
+      const response = await fetch("/api/store/readiness", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            capabilities_by_key?: {
+              onboarding_activation?: {
+                state?: string;
+              };
+            };
+          }
+        | null;
+
+      if (!embeddedSignupMountedRef.current) return false;
+
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error("P19A_ONBOARDING_ACTIVATION_READINESS_REQUEST_FAILED");
+      }
+
+      const activationState = cleanText(
+        payload.capabilities_by_key?.onboarding_activation?.state,
+      );
+      if (!activationState) throw new Error("P19A_ONBOARDING_ACTIVATION_READINESS_MISSING");
+
+      if (embeddedSignupMountedRef.current) setOnboardingActivationState(activationState);
+      return activationState === "ready";
+    } catch (error) {
+      console.error("[OnboardingPage] activation readiness error:", error);
+      if (!embeddedSignupMountedRef.current) return false;
+      setOnboardingActivationState(null);
+      setFormError(
+        "NÃ£o foi possÃ­vel verificar se o onboarding estÃ¡ pronto para ativaÃ§Ã£o.",
+      );
+    } finally {
+      if (embeddedSignupMountedRef.current) setOnboardingActivationLoading(false);
+    }
+  }, [activeStore?.id, organizationId]);
+
+  async function startMetaEmbeddedSignup() {
+    if (embeddedSignupAttemptRef.current || embeddedSignupSubmittingRef.current) return;
+
+    setFormError(null);
+    setSuccessMessage(null);
+    setEmbeddedSignupError(null);
+    setEmbeddedSignupMessage(null);
+    setEmbeddedSignupSession(null);
+    setEmbeddedSignupCode("");
+
+    if (!isValidTwoStepPin(embeddedSignupPin)) {
+      setEmbeddedSignupError("Informe um PIN numerico de exatamente 6 digitos.");
+      return;
+    }
+
+    if (!metaEmbeddedSignupConfig.appId || !metaEmbeddedSignupConfig.configId) {
+      setEmbeddedSignupError("Configuracao publica da Meta ausente no frontend.");
+      return;
+    }
+
+    setEmbeddedSignupLoading(true);
+
+    try {
+      await ensureFacebookSdkLoaded(metaEmbeddedSignupConfig.appId);
+
+      if (!window.FB?.login) {
+        throw new Error("FACEBOOK_SDK_LOGIN_UNAVAILABLE");
+      }
+
+      window.FB.login(
+        (response) => {
+          if (!embeddedSignupMountedRef.current) return;
+          const code =
+            typeof response.authResponse?.code === "string"
+              ? response.authResponse.code.trim()
+              : "";
+
+          if (!code) {
+            setEmbeddedSignupLoading(false);
+            setEmbeddedSignupSubmitting(false);
+            setEmbeddedSignupSession(null);
+            clearEmbeddedSignupSensitiveState();
+            setEmbeddedSignupError("Embedded Signup cancelado antes da autorizacao.");
+            return;
+          }
+
+          setEmbeddedSignupCode(code);
+          setEmbeddedSignupMessage("Autorizacao Meta recebida. Validando a sessao.");
+        },
+        {
+          config_id: metaEmbeddedSignupConfig.configId,
+          response_type: "code",
+          override_default_response_type: true,
+          extras: {
+            version: "v4",
+          },
+        },
+      );
+    } catch {
+      if (!embeddedSignupMountedRef.current) return;
+      setEmbeddedSignupLoading(false);
+      setEmbeddedSignupSubmitting(false);
+      setEmbeddedSignupSession(null);
+      clearEmbeddedSignupSensitiveState();
+      setEmbeddedSignupError("Nao foi possivel carregar o SDK da Meta. Tente novamente.");
+    }
+  }
+
+  useEffect(() => {
+    if (!embeddedSignupCode) return;
+    if (embeddedSignupSession) return;
+
+    const timeout = window.setTimeout(() => {
+      setEmbeddedSignupLoading(false);
+      setEmbeddedSignupSubmitting(false);
+      setEmbeddedSignupSession(null);
+      clearEmbeddedSignupSensitiveState();
+      setEmbeddedSignupMessage(null);
+      setEmbeddedSignupError("Sessao Meta incompleta. Reinicie o Embedded Signup.");
+    }, 10000);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [clearEmbeddedSignupSensitiveState, embeddedSignupCode, embeddedSignupSession]);
+
+  useEffect(() => {
+    if (!embeddedSignupCode || !embeddedSignupSession) return;
+    if (!isValidTwoStepPin(embeddedSignupPin)) return;
+    if (embeddedSignupSubmittingRef.current) return;
+
+    embeddedSignupSubmittingRef.current = true;
+    setEmbeddedSignupSubmitting(true);
+    setEmbeddedSignupError(null);
+    setEmbeddedSignupMessage("Conectando WhatsApp oficial da loja.");
+
+    const attempt = (async () => {
+      try {
+        const response = await fetch("/api/store/whatsapp/embedded-signup", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          credentials: "include",
+          body: JSON.stringify({
+            code: embeddedSignupCode,
+            whatsappBusinessAccountId: embeddedSignupSession.whatsappBusinessAccountId,
+            phoneNumberId: embeddedSignupSession.phoneNumberId,
+            twoStepPin: embeddedSignupPin,
+          }),
+        });
+
+        const result = (await response.json().catch(() => null)) as
+          | { ok?: boolean; message?: string; error?: string }
+          | null;
+
+        if (!response.ok || result?.ok !== true) {
+          throw new Error("EMBEDDED_SIGNUP_BACKEND_REJECTED");
+        }
+
+        if (!embeddedSignupMountedRef.current) return;
+
+        clearEmbeddedSignupSensitiveState();
+        setEmbeddedSignupSession(null);
+        setEmbeddedSignupMessage("Validando conexao oficial...");
+        setEmbeddedSignupError(null);
+        if (!embeddedSignupMountedRef.current) return;
+        const confirmedWhatsappStatus = await fetchWhatsappStatus();
+        if (!embeddedSignupMountedRef.current) return;
+        if (!isWhatsappStatusConnected(confirmedWhatsappStatus)) {
+          throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED");
+        }
+        const readinessConfirmed = await refreshActivationReadinessAfterEmbeddedSignup();
+        if (!readinessConfirmed) {
+          throw new Error("ONBOARDING_READINESS_NOT_CONFIRMED");
+        }
+        if (!embeddedSignupMountedRef.current) return;
+        setEmbeddedSignupMessage("WhatsApp conectado pela Meta.");
+      } catch (error) {
+        if (!embeddedSignupMountedRef.current) return;
+
+        clearEmbeddedSignupSensitiveState();
+        setEmbeddedSignupSession(null);
+        await fetchWhatsappStatus();
+        if (!embeddedSignupMountedRef.current) return;
+        setEmbeddedSignupMessage(null);
+        setEmbeddedSignupError(mapEmbeddedSignupError(error));
+      }
+    })();
+
+    embeddedSignupAttemptRef.current = attempt;
+    void attempt
+      .finally(() => {
+        if (embeddedSignupAttemptRef.current !== attempt) return;
+        embeddedSignupAttemptRef.current = null;
+        embeddedSignupSubmittingRef.current = false;
+        if (embeddedSignupMountedRef.current) {
+          setEmbeddedSignupLoading(false);
+          setEmbeddedSignupSubmitting(false);
+        }
+      })
+      .catch(() => undefined);
+  }, [
+    clearEmbeddedSignupSensitiveState,
+    embeddedSignupCode,
+    embeddedSignupPin,
+    embeddedSignupSession,
+    fetchWhatsappStatus,
+    refreshActivationReadinessAfterEmbeddedSignup,
+  ]);
 
   async function activateZion() {
     if (!organizationId || !activeStore?.id) return;
@@ -1517,10 +2054,53 @@ function OnboardingContent() {
                 ) : null}
 
                 {!whatsappStatusConnected ? (
-                  <p className="mt-4 text-sm leading-6 text-amber-900">
-                    A conexão oficial por Meta/Embedded Signup ficará nesta etapa. Nesta versão não existe botão fictício de conexão: a ativação só é liberada quando o status vivo confirmar o WhatsApp oficial.
-                  </p>
+                  <div className="mt-4 space-y-4 rounded-xl border border-amber-200 bg-white p-4">
+                    <div>
+                      <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        PIN de verificacao em duas etapas
+                      </label>
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        value={embeddedSignupPin}
+                        onChange={(event) => {
+                          if (embeddedSignupAttemptRef.current || embeddedSignupSubmittingRef.current) return;
+                          const digits = event.target.value.replace(/[^\d]/g, "").slice(0, 6);
+                          setEmbeddedSignupPin(digits);
+                          setEmbeddedSignupError(null);
+                        }}
+                        disabled={embeddedSignupLoading || embeddedSignupSubmitting}
+                        className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                        placeholder="6 digitos"
+                        aria-label="PIN de verificacao em duas etapas do WhatsApp"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={startMetaEmbeddedSignup}
+                      disabled={
+                        embeddedSignupLoading ||
+                        embeddedSignupSubmitting ||
+                        !isValidTwoStepPin(embeddedSignupPin)
+                      }
+                      className="w-full rounded-xl bg-black px-5 py-2.5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40 md:w-auto"
+                    >
+                      {embeddedSignupLoading || embeddedSignupSubmitting
+                        ? "Conectando com a Meta..."
+                        : "Conectar WhatsApp pela Meta"}
+                    </button>
+
+                    {embeddedSignupMessage ? (
+                      <p className="text-sm leading-6 text-emerald-800">{embeddedSignupMessage}</p>
+                    ) : null}
+                    {embeddedSignupError ? (
+                      <p className="text-sm leading-6 text-red-800">{embeddedSignupError}</p>
+                    ) : null}
+                  </div>
                 ) : null}
+
               </div>
 
               <div className="rounded-2xl border border-gray-200 p-5">
