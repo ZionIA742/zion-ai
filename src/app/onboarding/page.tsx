@@ -1002,13 +1002,6 @@ function OnboardingContent() {
   }, [loadBaseData, loadOnboardingStatus, fetchWhatsappStatus]);
 
   useEffect(() => {
-    if (process.env.NODE_ENV !== "production") return;
-    if (onboardingStatus === "completed") {
-      router.replace("/dashboard");
-    }
-  }, [onboardingStatus, router]);
-
-  useEffect(() => {
     if (!currentStepStorageKey || typeof window === "undefined") return;
 
     const paramStep = Number(searchParams.get("step"));

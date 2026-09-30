@@ -358,7 +358,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "onboarding redirects active access to crm",
+    name: "onboarding renders active access for revisitable completed onboarding",
     run: () => {
       const result = resolveAccountAccessPageGate(
         createResolution({
@@ -373,43 +373,9 @@ const tests: TestCase[] = [
           commercialAccess: "allowed",
         }),
         "onboarding",
-      );
-
-      assertRedirectDecision(result, "/crm");
-    },
-  },
-  {
-    name: "onboarding can temporarily render active access when review override is enabled",
-    run: () => {
-      const result = resolveAccountAccessPageGate(
-        createResolution({
-          status: "store_ready_active",
-          safeHtmlDestination: "/crm",
-          apiDecision: "allow",
-          reasonCode: "ready_active",
-          organizationResolution: "single",
-          storeResolution: "single",
-          organizationId: "org-1",
-          storeId: "store-1",
-          commercialAccess: "allowed",
-        }),
-        "onboarding",
-        { allowCompletedOnboardingReview: true },
       );
 
       assertRenderDecision(result);
-    },
-  },
-  {
-    name: "onboarding review override does not allow blocked access",
-    run: () => {
-      const result = resolveAccountAccessPageGate(
-        createResolution({ status: "store_missing_membership" }),
-        "onboarding",
-        { allowCompletedOnboardingReview: true },
-      );
-
-      assertRedirectDecision(result, "/account/access-blocked");
     },
   },
   {

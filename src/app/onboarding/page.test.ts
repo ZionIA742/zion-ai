@@ -97,6 +97,22 @@ function getCatchBlock(block: string) {
 
 const tests: TestCase[] = [
   {
+    name: "completed onboarding does not redirect away from the revisitable page",
+    run: () => {
+      const source = readPageSource();
+
+      assert.equal(source.includes('router.replace("/dashboard")'), true);
+      assert.equal(
+        source.includes('if (onboardingStatus === "completed") {'),
+        false,
+      );
+      assert.equal(
+        source.includes('if (process.env.NODE_ENV !== "production") return;'),
+        false,
+      );
+    },
+  },
+  {
     name: "expected WhatsApp operational unavailability is preserved as UI state without fatal throw",
     run: () => {
       const source = readPageSource();
