@@ -7361,7 +7361,7 @@ function resolveCustomerGeographyQualificationDecision(args: {
 }
 
 function hasCustomerGeographyAuthority(
-  snapshot: CanonicalQualificationSnapshot | null,
+  snapshot: CanonicalQualificationSnapshot | null | undefined,
 ): boolean {
   if (!snapshot) return false;
   if (
