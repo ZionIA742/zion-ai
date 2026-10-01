@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import Image from "next/image";
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
@@ -341,26 +343,43 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-dvh flex-col bg-zinc-950 text-zinc-50">
-      <div className="flex flex-1 items-center justify-center px-4 py-10">
-        <section className="w-full max-w-md rounded-3xl border border-white/10 bg-zinc-900/70 p-6 shadow-2xl shadow-black/30">
-        <div className="mb-6 flex items-center justify-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-sm font-black tracking-tight text-black">
-            Z
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight">ZION</h1>
+    <main className="relative flex min-h-dvh flex-col overflow-hidden bg-zinc-950 text-zinc-50">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_22%,rgba(255,255,255,0.08),transparent_34%),radial-gradient(circle_at_50%_78%,rgba(161,161,170,0.05),transparent_38%)]" />
+      <div className="relative z-10 flex flex-1 items-center justify-center px-4 pt-3">
+        <section className="w-full max-w-[420px] rounded-[20px] border border-white/10 bg-[#121214]/90 p-[22px] shadow-[0_24px_70px_rgba(0,0,0,0.38)] backdrop-blur-md sm:p-6">
+        <div className="mb-5 flex items-center justify-center gap-2.5">
+          <span className="relative h-[46px] w-[46px] shrink-0 overflow-hidden" aria-hidden="true">
+            <Image
+              src="/branding/zion-logo.png"
+              alt=""
+              width={500}
+              height={500}
+              priority
+              className="absolute left-1/2 top-1/2 h-[90px] w-[90px] max-w-none -translate-x-1/2 -translate-y-1/2 object-contain"
+            />
+          </span>
+
+          <h1
+            className="flex items-center gap-[0.04em] text-[25px] font-semibold uppercase leading-none text-zinc-100 [font-family:var(--font-geist-sans)]"
+            aria-label="ZION"
+          >
+            <span className="inline-block -skew-x-[14deg] tracking-[0.01em]">Z</span>
+            <span className="inline-block -skew-x-[14deg] tracking-[0.01em]">I</span>
+            <span className="inline-block -skew-x-[14deg] tracking-[0.01em]">O</span>
+            <span className="inline-block -skew-x-[14deg] tracking-[0.01em]">N</span>
+          </h1>
         </div>
 
-        <h2 className="mb-4 text-lg font-bold">{title}</h2>
+        <h2 className="mb-4 text-[18px] font-semibold tracking-[-0.015em] text-zinc-100">{title}</h2>
 
         {message ? (
-          <div className="mb-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+          <div className="mb-4 rounded-2xl border border-emerald-400/25 bg-emerald-500/[0.08] px-4 py-3 text-sm leading-6 text-emerald-100">
             {message}
           </div>
         ) : null}
 
         {error ? (
-          <div className="mb-4 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          <div className="mb-4 rounded-2xl border border-red-400/25 bg-red-500/[0.08] px-4 py-3 text-sm leading-6 text-red-100">
             {error}
           </div>
         ) : null}
@@ -368,11 +387,11 @@ export default function LoginPage() {
         {mode === "password" ? (
           <form onSubmit={handlePasswordLogin} className="space-y-3">
             <div>
-              <label className="text-xs font-semibold text-zinc-300">E-mail</label>
+              <label className="text-xs font-medium text-zinc-400">E-mail</label>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 text-sm outline-none transition focus:border-white/30"
+                className="mt-1.5 w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
@@ -380,12 +399,12 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-zinc-300">Senha</label>
-              <div className="relative mt-1">
+              <label className="text-xs font-medium text-zinc-400">Senha</label>
+              <div className="relative mt-1.5">
                 <input
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  className="w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 pr-12 text-sm outline-none transition focus:border-white/30"
+                  className="w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 pr-12 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
                   placeholder="••••••••"
                   type={showPassword ? "text" : "password"}
                   autoComplete="current-password"
@@ -393,7 +412,7 @@ export default function LoginPage() {
                 <button
                   type="button"
                   onClick={() => setShowPassword((current) => !current)}
-                  className="absolute inset-y-0 right-3 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white"
+                  className="absolute inset-y-0 right-3 flex items-center justify-center rounded-xl px-2 text-zinc-500 transition hover:bg-white/[0.06] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
                   aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
                   title={showPassword ? "Ocultar senha" : "Mostrar senha"}
                 >
@@ -432,11 +451,11 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <button
                 type="submit"
                 disabled={busy}
-                className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-[14px] bg-zinc-100 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busy ? "Entrando..." : "Entrar"}
               </button>
@@ -445,7 +464,7 @@ export default function LoginPage() {
                 type="button"
                 onClick={() => changeMode("code")}
                 disabled={busy}
-                className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-bold text-white transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-[14px] border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Código
               </button>
@@ -456,11 +475,11 @@ export default function LoginPage() {
         {mode === "code" ? (
           <form onSubmit={handleSendCode} className="space-y-3">
             <div>
-              <label className="text-xs font-semibold text-zinc-300">E-mail</label>
+              <label className="text-xs font-medium text-zinc-400">E-mail</label>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 text-sm outline-none transition focus:border-white/30"
+                className="mt-1.5 w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
@@ -470,7 +489,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={busy}
-              className="w-full rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full rounded-[14px] bg-zinc-100 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? "Enviando..." : "Enviar código"}
             </button>
@@ -480,11 +499,11 @@ export default function LoginPage() {
         {mode === "verifyCode" ? (
           <form onSubmit={handleVerifyCode} className="space-y-3">
             <div>
-              <label className="text-xs font-semibold text-zinc-300">E-mail</label>
+              <label className="text-xs font-medium text-zinc-400">E-mail</label>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 text-sm outline-none transition focus:border-white/30"
+                className="mt-1.5 w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
@@ -492,11 +511,11 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-zinc-300">Código</label>
+              <label className="text-xs font-medium text-zinc-400">Código</label>
               <input
                 value={code}
                 onChange={(event) => setCode(event.target.value)}
-                className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 text-center text-lg font-bold tracking-[0.35em] outline-none transition focus:border-white/30"
+                className="mt-1.5 w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 text-center text-lg font-bold tracking-[0.35em] text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
                 placeholder="000000"
                 inputMode="numeric"
                 autoComplete="one-time-code"
@@ -506,7 +525,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={busy}
-              className="w-full rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full rounded-[14px] bg-zinc-100 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? "Validando..." : "Entrar com código"}
             </button>
@@ -515,7 +534,7 @@ export default function LoginPage() {
               type="button"
               onClick={() => changeMode("code")}
               disabled={busy}
-              className="w-full rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full rounded-[14px] border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
             >
               Enviar novo código
             </button>
@@ -525,11 +544,11 @@ export default function LoginPage() {
         {mode === "forgot" ? (
           <form onSubmit={handleForgotPassword} className="space-y-3">
             <div>
-              <label className="text-xs font-semibold text-zinc-300">E-mail</label>
+              <label className="text-xs font-medium text-zinc-400">E-mail</label>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 text-sm outline-none transition focus:border-white/30"
+                className="mt-1.5 w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
@@ -539,19 +558,19 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={busy}
-              className="w-full rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full rounded-[14px] bg-zinc-100 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? "Enviando..." : "Recuperar senha"}
             </button>
           </form>
         ) : null}
 
-        <div className="mt-5 grid gap-2">
+        <div className="mt-4 grid gap-2">
           {mode !== "forgot" ? (
             <button
               type="button"
               onClick={() => changeMode("forgot")}
-              className="w-full rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-white/10"
+              className="w-full rounded-[14px] border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200 transition hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
             >
               Esqueci a senha
             </button>
@@ -561,7 +580,7 @@ export default function LoginPage() {
             <button
               type="button"
               onClick={() => changeMode("password")}
-              className="w-full rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-white/10"
+              className="w-full rounded-[14px] border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200 transition hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
             >
               Voltar para login
             </button>
@@ -570,8 +589,8 @@ export default function LoginPage() {
         </section>
       </div>
 
-      <footer className="px-4 pb-8 pt-2">
-        <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-center gap-x-3 gap-y-2 text-center text-sm text-zinc-400">
+      <footer className="relative z-10 px-4 pb-5 pt-5">
+        <div className="mx-auto flex max-w-md flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-center text-[13px] text-zinc-400">
           <Link
             href="/privacy-policy"
             className="transition hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
@@ -597,7 +616,7 @@ export default function LoginPage() {
             Exclusão de Dados
           </Link>
         </div>
-        <p className="mt-3 text-center text-xs text-zinc-500">
+        <p className="mt-2.5 text-center text-xs text-zinc-500">
           ZION INOVA SIMPLES (I.S.)
         </p>
       </footer>
