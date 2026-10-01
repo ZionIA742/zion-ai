@@ -237,6 +237,28 @@ export function shouldEnqueueResponsibleExternalNotification(
     return { eligible: false as const, reason: "missing_context" };
   }
 
+  const reason = normalizeText(context.reason);
+
+  if (reason === "customer_suggested_available_time_requires_approval") {
+    if (
+      context.suggested_available !== true ||
+      !cleanText(context.task_id) ||
+      !cleanText(context.queue_id) ||
+      !safeUuidOrNull(internalNotification.related_conversation_id) ||
+      !safeUuidOrNull(internalNotification.related_appointment_id)
+    ) {
+      return {
+        eligible: false as const,
+        reason: "operational_approval_context_incomplete",
+      };
+    }
+
+    return {
+      eligible: true as const,
+      requiresResponsibleNotification: true as const,
+    };
+  }
+
   if (context.needs_human_action !== true) {
     return { eligible: false as const, reason: "needs_human_action_false" };
   }
@@ -246,7 +268,6 @@ export function shouldEnqueueResponsibleExternalNotification(
     return { eligible: false as const, reason: "document_type_not_supported" };
   }
 
-  const reason = normalizeText(context.reason);
   if (reason !== "pending_review" && reason !== "customer_signed") {
     return { eligible: false as const, reason: "reason_not_supported" };
   }
@@ -264,6 +285,21 @@ export function renderResponsibleExternalNotificationMessage(args: {
 }) {
   const documentType = normalizeText(args.context.document_type);
   const reason = normalizeText(args.context.reason);
+
+  if (reason === "customer_suggested_available_time_requires_approval") {
+    const suggestedLabel = cleanText(args.context.suggested_label);
+    const body = cleanText(args.body);
+
+    return [
+      "Aprovacao necessaria para novo horario.",
+      body ||
+        (suggestedLabel
+          ? `O cliente sugeriu ${suggestedLabel}.`
+          : "O cliente sugeriu um novo horario para a remarcacao."),
+      "",
+      "Responda por aqui com sim para aprovar ou nao para recusar.",
+    ].join("\n");
+  }
   const documentNumber =
     cleanText(args.context.document_number) ||
     (documentType === "quote" ? "ORC-000000" : "CTR-000000");
@@ -330,11 +366,11 @@ async function findExistingResponsibleExternalNotification(args: {
   }
 
   if (byInternalData?.id) {
-    return { exists: true, reason: "already_materialized_by_internal_notification" };
+    return { exists: true, reason: "already_materialized_by_internal_notification", rowId: cleanText(byInternalData.id) };
   }
 
   if (!args.sourceEventKey) {
-    return { exists: false, reason: null };
+    return { exists: false, reason: null, rowId: null };
   }
 
   const { data: byEventKeyData, error: byEventKeyError } = await args.supabase
@@ -355,10 +391,10 @@ async function findExistingResponsibleExternalNotification(args: {
   }
 
   if (byEventKeyData?.id) {
-    return { exists: true, reason: "already_materialized_by_source_event_key" };
+    return { exists: true, reason: "already_materialized_by_source_event_key", rowId: cleanText(byEventKeyData.id) };
   }
 
-  return { exists: false, reason: null };
+  return { exists: false, reason: null, rowId: null };
 }
 
 function isDuplicateInsertError(error: { code?: string | null; message?: string | null }) {
@@ -419,7 +455,11 @@ export async function enqueueResponsibleExternalNotificationFromAssistantNotific
   });
 
   if (existing.exists) {
-    return { created: false as const, skippedReason: existing.reason || "already_materialized" };
+    return {
+      created: false as const,
+      skippedReason: existing.reason || "already_materialized",
+      rowId: existing.rowId || null,
+    };
   }
 
   const renderedMessage = renderResponsibleExternalNotificationMessage({

@@ -65,7 +65,7 @@ function createMandatoryNotification() {
   };
 }
 
-function createSupabaseRecorder() {
+function createSupabaseRecorder(options?: { existingExternalNotificationId?: string | null }) {
   const insertCalls: Array<{ table: string; payload: Record<string, unknown> }> = [];
   let onboardingPreferenceWasRead = false;
 
@@ -97,7 +97,12 @@ function createSupabaseRecorder() {
                 }
 
                 if (table === "store_responsible_external_notifications") {
-                  return { data: null, error: null };
+                  return {
+                    data: options?.existingExternalNotificationId
+                      ? { id: options.existingExternalNotificationId }
+                      : null,
+                    error: null,
+                  };
                 }
 
                 return { data: null, error: null };
@@ -169,6 +174,126 @@ const tests: TestCase[] = [
         supabase.insertCalls[0]?.payload.related_document_status,
         "pending_review",
       );
+    },
+  },
+  {
+    name: "operational reschedule approval materializes as mandatory responsible notification",
+    run: async () => {
+      const {
+        enqueueResponsibleExternalNotificationFromAssistantNotification,
+      } = await modulePromise;
+      const supabase = createSupabaseRecorder();
+
+      const result = await enqueueResponsibleExternalNotificationFromAssistantNotification({
+        supabase: supabase.client as never,
+        internalNotification: {
+          ...createMandatoryNotification(),
+          title: "Aprovacao necessaria para novo horario",
+          body: "O cliente sugeriu 02/10/2026 as 10:00. Esse horario parece estar livre.",
+          context: {
+            source: "assistant_operational_task_worker",
+            reason: "customer_suggested_available_time_requires_approval",
+            queue_id: "queue-1",
+            task_id: "task-1",
+            classification: "suggested_other_time",
+            suggested_label: "02/10/2026 as 10:00",
+            suggested_available: true,
+            event_key: "operational-task:test:approval-required",
+          },
+          related_conversation_id: "11111111-1111-4111-8111-111111111111",
+          related_appointment_id: "22222222-2222-4222-8222-222222222222",
+        },
+      });
+
+      assert.equal(result.created, true);
+      assert.equal(supabase.onboardingPreferenceWasRead, false);
+      assert.equal(supabase.insertCalls.length, 1);
+
+      const payload = supabase.insertCalls[0]?.payload;
+      assert.equal(
+        payload.related_conversation_id,
+        "11111111-1111-4111-8111-111111111111",
+      );
+      assert.equal(
+        payload.related_appointment_id,
+        "22222222-2222-4222-8222-222222222222",
+      );
+      assert.match(
+        String(payload.rendered_message || ""),
+        /sim para aprovar/i,
+      );
+      assert.match(
+        String(payload.rendered_message || ""),
+        /nao para recusar/i,
+      );
+    },
+  },
+  {
+    name: "operational reschedule approval fails closed when canonical context is incomplete",
+    run: async () => {
+      const { shouldEnqueueResponsibleExternalNotification } = await modulePromise;
+
+      const result = shouldEnqueueResponsibleExternalNotification({
+        ...createMandatoryNotification(),
+        context: {
+          source: "assistant_operational_task_worker",
+          reason: "customer_suggested_available_time_requires_approval",
+          queue_id: "queue-1",
+          task_id: "task-1",
+          suggested_available: true,
+        },
+        related_conversation_id: null,
+        related_appointment_id: "22222222-2222-4222-8222-222222222222",
+      });
+
+      assert.equal(result.eligible, false);
+      assert.equal(result.reason, "operational_approval_context_incomplete");
+    },
+  },
+  {
+    name: "operational reschedule approval renderer gives WhatsApp approval instructions",
+    run: async () => {
+      const { renderResponsibleExternalNotificationMessage } = await modulePromise;
+
+      const message = renderResponsibleExternalNotificationMessage({
+        title: "Aprovacao necessaria para novo horario",
+        body: "O cliente sugeriu 02/10/2026 as 10:00. Esse horario parece estar livre.",
+        context: {
+          reason: "customer_suggested_available_time_requires_approval",
+          suggested_label: "02/10/2026 as 10:00",
+        },
+      });
+
+      assert.match(message, /Aprovacao necessaria para novo horario/);
+      assert.match(message, /cliente sugeriu 02\/10\/2026 as 10:00/i);
+      assert.match(message, /sim para aprovar/i);
+      assert.match(message, /nao para recusar/i);
+    },
+  },
+  {
+    name: "existing responsible outbox row is recovered with rowId instead of duplicated",
+    run: async () => {
+      const {
+        enqueueResponsibleExternalNotificationFromAssistantNotification,
+      } = await modulePromise;
+
+      const supabase = createSupabaseRecorder({
+        existingExternalNotificationId: "external-existing-1",
+      });
+
+      const result =
+        await enqueueResponsibleExternalNotificationFromAssistantNotification({
+          supabase: supabase.client as never,
+          internalNotification: createMandatoryNotification(),
+        });
+
+      assert.equal(result.created, false);
+      assert.equal(
+        result.skippedReason,
+        "already_materialized_by_internal_notification",
+      );
+      assert.equal(result.rowId, "external-existing-1");
+      assert.equal(supabase.insertCalls.length, 0);
     },
   },
   {

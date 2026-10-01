@@ -4,6 +4,7 @@ import { processWhatsappInbox } from "@/lib/server/whatsapp-inbox-processor";
 import { processWhatsappPendingMessages } from "@/lib/server/whatsapp-external-sender";
 import { processDueAiRunQueue } from "@/lib/server/process-ai-run-queue";
 import { processPostTechnicalVisitFollowups } from "@/lib/server/post-technical-visit-followups";
+import { drainResponsibleOperationalApprovalNotifications } from "@/lib/server/assistant/responsible-external-notifications-drainer";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,6 +30,15 @@ type StoreExecutionSummary = {
   };
   postAppointmentFollowups?: {
     processed: number;
+    sent: number;
+    failed: number;
+    uncertain: number;
+    skipped: number;
+  };
+  responsibleOperationalApprovals?: {
+    scanned: number;
+    eligible: number;
+    prepared: number;
     sent: number;
     failed: number;
     uncertain: number;
@@ -149,6 +159,10 @@ export async function GET(req: Request) {
       process.env.WHATSAPP_CRON_POST_APPOINTMENT_FOLLOWUP_LIMIT,
       10,
     );
+    const responsibleOperationalApprovalLimit = parseEnvLimit(
+      process.env.WHATSAPP_CRON_RESPONSIBLE_OPERATIONAL_APPROVAL_LIMIT,
+      10,
+    );
     const aiQueueLimit = parseEnvLimit(process.env.WHATSAPP_CRON_AI_QUEUE_LIMIT, 10);
     const stores = await listActiveWhatsappStores();
 
@@ -205,6 +219,13 @@ export async function GET(req: Request) {
           limit: postAppointmentFollowupLimit,
         });
 
+        const responsibleOperationalApprovalResult =
+          await drainResponsibleOperationalApprovalNotifications({
+            organizationId: store.organizationId,
+            storeId: store.storeId,
+            limit: responsibleOperationalApprovalLimit,
+          });
+
         const pendingResult = await processWhatsappPendingMessages({
           organizationId: store.organizationId,
           storeId: store.storeId,
@@ -245,6 +266,7 @@ export async function GET(req: Request) {
             failed: pendingResult.failed,
           },
           postAppointmentFollowups: postAppointmentFollowupResult,
+          responsibleOperationalApprovals: responsibleOperationalApprovalResult,
           aiQueue: {
             processed: aiQueueResult.processed,
             succeeded: aiQueueResult.succeeded,
@@ -284,6 +306,22 @@ export async function GET(req: Request) {
         (total, item) => total + (item.postAppointmentFollowups?.processed || 0),
         0,
       ),
+      responsibleOperationalApprovalScanned: results.reduce(
+        (total, item) => total + (item.responsibleOperationalApprovals?.scanned || 0),
+        0,
+      ),
+      responsibleOperationalApprovalSent: results.reduce(
+        (total, item) => total + (item.responsibleOperationalApprovals?.sent || 0),
+        0,
+      ),
+      responsibleOperationalApprovalFailed: results.reduce(
+        (total, item) => total + (item.responsibleOperationalApprovals?.failed || 0),
+        0,
+      ),
+      responsibleOperationalApprovalUncertain: results.reduce(
+        (total, item) => total + (item.responsibleOperationalApprovals?.uncertain || 0),
+        0,
+      ),
       aiQueueProcessed,
       aiQueueSucceeded,
       aiQueueFailed,
@@ -292,6 +330,7 @@ export async function GET(req: Request) {
         inbox: inboxLimit,
         pending: pendingLimit,
         postAppointmentFollowups: postAppointmentFollowupLimit,
+        responsibleOperationalApprovals: responsibleOperationalApprovalLimit,
         aiQueue: aiQueueLimit,
       },
       results,
