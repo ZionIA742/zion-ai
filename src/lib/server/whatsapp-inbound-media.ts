@@ -122,15 +122,10 @@ function buildStoragePath(args: {
   organizationId: string;
   storeId: string;
   conversationId: string;
+  mediaId: string;
   fileName: string;
 }) {
-  const now = new Date();
-  const timestamp = [
-    now.getUTCFullYear(),
-    String(now.getUTCMonth() + 1).padStart(2, "0"),
-    String(now.getUTCDate()).padStart(2, "0"),
-  ].join("");
-  const random = Math.random().toString(36).slice(2, 8);
+  const stableMediaId = sanitizeFileName(args.mediaId).slice(0, 160);
   const safeFileName = sanitizeFileName(args.fileName);
 
   return [
@@ -138,7 +133,7 @@ function buildStoragePath(args: {
     args.storeId,
     "whatsapp-inbound",
     args.conversationId,
-    `${timestamp}-${random}-${safeFileName}`,
+    `${stableMediaId}-${safeFileName}`,
   ].join("/");
 }
 
@@ -310,13 +305,14 @@ export async function downloadAndStoreWhatsappInboundMedia(
     organizationId: args.organizationId,
     storeId: args.storeId,
     conversationId: args.conversationId,
+    mediaId: args.mediaId,
     fileName: originalFileName,
   });
 
   const { error } = await args.supabase.storage
     .from(STORAGE_BUCKET)
     .upload(storagePath, downloaded.bytes, {
-      upsert: false,
+      upsert: true,
       contentType: mimeType,
     });
 

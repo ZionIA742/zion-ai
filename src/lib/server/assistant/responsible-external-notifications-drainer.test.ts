@@ -109,6 +109,8 @@ const tests: TestCase[] = [
       assert.ok(p9Index > inboxIndex);
       assert.ok(approvalIndex > p9Index);
       assert.ok(pendingIndex > approvalIndex);
+      assert.match(source, /recoverStaleResponsibleWhatsappEvents/);
+      assert.match(source, /responsibleInboundRecovery/);
     },
   },
   {
@@ -262,6 +264,21 @@ const tests: TestCase[] = [
 
       assert.equal(result.uncertain, 1);
       assert.equal(result.failed, 0);
+    },
+  },
+  {
+    name: "stale processing is recovered through the canonical unlock path",
+    run: () => {
+      const source = fs.readFileSync(
+        path.join(
+          process.cwd(),
+          "src/lib/server/assistant/responsible-external-notifications-drainer.ts",
+        ),
+        "utf8",
+      );
+      assert.match(source, /unlockStuckResponsibleExternalNotificationProcessing/);
+      assert.match(source, /status.*processing/);
+      assert.match(source, /recovery\.status === "uncertain"/);
     },
   },
 ];

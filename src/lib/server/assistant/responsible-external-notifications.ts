@@ -753,13 +753,15 @@ export async function unlockStuckResponsibleExternalNotificationProcessing(args:
   const now = new Date();
   const staleThreshold = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
 
-  const { data, error } = await supabase
+  const uncertainResult = await supabase
     .from("store_responsible_external_notifications")
     .update({
-      status: "failed",
-      failed_at: now.toISOString(),
+      status: "uncertain",
       processed_at: now.toISOString(),
-      error_text: "Processamento destravado manualmente apos ficar preso.",
+      send_status: "uncertain",
+      send_finished_at: now.toISOString(),
+      uncertainty_reason: "processing_stale_after_provider_call",
+      error_text: "Processamento preso apos inicio potencial do envio externo.",
       locked_at: null,
       locked_by: null,
       updated_at: now.toISOString(),
@@ -768,6 +770,44 @@ export async function unlockStuckResponsibleExternalNotificationProcessing(args:
     .eq("organization_id", cleanText(args.organizationId))
     .eq("store_id", cleanText(args.storeId))
     .eq("status", "processing")
+    .eq("send_status", "sending")
+    .lt("locked_at", staleThreshold)
+    .select("id, status")
+    .maybeSingle();
+
+  if (uncertainResult.error) {
+    throw new Error(
+      `Falha ao destravar processamento da notificacao externa do responsavel: ${uncertainResult.error.message}`
+    );
+  }
+
+  if (uncertainResult.data?.id) {
+    return {
+      ok: true as const,
+      updated: true as const,
+      notificationId: cleanText(uncertainResult.data.id),
+      status: "uncertain",
+    };
+  }
+
+  const { data, error } = await supabase
+    .from("store_responsible_external_notifications")
+    .update({
+      status: "failed",
+      failed_at: now.toISOString(),
+      processed_at: now.toISOString(),
+      send_status: "failed",
+      send_finished_at: now.toISOString(),
+      error_text: "Processamento destravado apos ficar preso antes do envio externo.",
+      locked_at: null,
+      locked_by: null,
+      updated_at: now.toISOString(),
+    })
+    .eq("id", cleanText(args.notificationId))
+    .eq("organization_id", cleanText(args.organizationId))
+    .eq("store_id", cleanText(args.storeId))
+    .eq("status", "processing")
+    .or("send_status.is.null,send_status.eq.prepared")
     .lt("locked_at", staleThreshold)
     .select("id, status")
     .maybeSingle();

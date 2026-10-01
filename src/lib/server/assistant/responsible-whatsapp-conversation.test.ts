@@ -55,6 +55,24 @@ test("responsible WhatsApp bridge has a persisted concurrency/idempotency ledger
   assert.match(migration, /grant select, insert, update[\s\S]*?to service_role/);
 });
 
+test("responsible WhatsApp bridge persists bounded recovery and outbound uncertainty", () => {
+  const migration = readFileSync(
+    "supabase/migrations/20261001170000_p19a_responsible_whatsapp_reliability.sql",
+    "utf8",
+  );
+
+  assert.match(migration, /attempts integer not null default 0/);
+  assert.match(migration, /max_attempts integer not null default 3/);
+  assert.match(migration, /outbound_status text null/);
+  assert.match(migration, /outbound_status = 'uncertain'/);
+  assert.match(migration, /outbound_status = 'sending'/);
+  assert.match(migration, /attempts < e\.max_attempts/);
+  assert.match(migration, /processing_stale_after_provider_call/);
+  assert.match(migration, /recover_stale_store_assistant_responsible_whatsapp_events/);
+  assert.match(migration, /inbox_reopened_for_recovery/);
+  assert.match(migration, /for update skip locked/);
+});
+
 test("bridge treats sender role and message identity as database contracts", () => {
   const migration = readFileSync(
     "supabase/migrations/20260930120000_p19a_responsible_assistant_whatsapp_bridge.sql",

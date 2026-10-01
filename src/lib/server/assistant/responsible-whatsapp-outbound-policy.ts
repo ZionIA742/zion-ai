@@ -26,6 +26,7 @@ export type ResponsibleWhatsappTemplateContext = {
 };
 
 type InboundMessageRow = {
+  id?: string | null;
   created_at?: string | null;
   metadata?: Record<string, unknown> | null;
 };
@@ -47,12 +48,14 @@ export type ResponsibleWhatsappOutboundPolicy =
       mode: "free_form";
       responsible: CanonicalStoreResponsible;
       template: null;
+      lastInboundMessageId: string | null;
     }
   | {
       ok: true;
       mode: "template_required";
       responsible: CanonicalStoreResponsible;
       template: TemplatePayload;
+      lastInboundMessageId: string | null;
     }
   | {
       ok: false;
@@ -231,34 +234,38 @@ async function hasRecentValidInbound(args: {
   storeId: string;
   responsible: CanonicalStoreResponsible;
   now: Date;
-}): Promise<boolean> {
+}): Promise<{ allowed: boolean; messageId: string | null }> {
   const { data, error } = await args.supabase
     .from("store_assistant_messages")
-    .select("created_at, metadata")
+    .select("id, created_at, metadata")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("sender_role", "store_responsible")
     .eq("direction", "incoming")
     .contains("metadata", { origin: "whatsapp", responsible_id: args.responsible.id })
     .order("created_at", { ascending: false })
-    .limit(100);
+    .order("id", { ascending: false })
+    .limit(1);
 
   if (error) throw new Error(`Falha ao verificar janela WhatsApp do responsavel: ${error.message}`);
 
-  return ((data || []) as InboundMessageRow[]).some((message) => {
-    const metadata = message.metadata || {};
-    const sourcePhone = normalizeResponsibleWhatsappDestination(cleanText(metadata.from_phone));
-    const createdAt = Date.parse(cleanText(message.created_at));
-    const age = args.now.getTime() - createdAt;
-    return Boolean(
+  const message = ((data || []) as InboundMessageRow[])[0];
+  if (!message) return { allowed: false, messageId: null };
+  const metadata = message.metadata || {};
+  const sourcePhone = normalizeResponsibleWhatsappDestination(cleanText(metadata.from_phone));
+  const createdAt = Date.parse(cleanText(message.created_at));
+  const age = args.now.getTime() - createdAt;
+  return {
+    allowed: Boolean(
       sourcePhone &&
         sourcePhone === args.responsible.whatsappNumber &&
         cleanText(metadata.external_message_id) &&
         Number.isFinite(createdAt) &&
         age >= 0 &&
         age <= RESPONSIBLE_WHATSAPP_WINDOW_MS,
-    );
-  });
+    ),
+    messageId: message.id || null,
+  };
 }
 
 async function defaultLoadCustomerName(args: {
@@ -326,8 +333,8 @@ export async function resolveResponsibleWhatsappOutboundPolicy(args: {
     responsible: responsibleResult.responsible,
     now: dependencies.now ? dependencies.now() : new Date(),
   });
-  if (recentInbound) {
-    return { ok: true, mode: "free_form", responsible: responsibleResult.responsible, template: null };
+  if (recentInbound.allowed) {
+    return { ok: true, mode: "free_form", responsible: responsibleResult.responsible, template: null, lastInboundMessageId: recentInbound.messageId };
   }
 
   const templateContext = args.templateContext;
@@ -352,5 +359,5 @@ export async function resolveResponsibleWhatsappOutboundPolicy(args: {
   });
   if (!template) return { ok: false, reason: "RESPONSIBLE_WHATSAPP_TEMPLATE_CONTEXT_INVALID" };
 
-  return { ok: true, mode: "template_required", responsible: responsibleResult.responsible, template };
+  return { ok: true, mode: "template_required", responsible: responsibleResult.responsible, template, lastInboundMessageId: recentInbound.messageId };
 }

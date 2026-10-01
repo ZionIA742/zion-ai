@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   enqueueResponsibleExternalNotificationFromAssistantNotification,
   prepareResponsibleExternalNotification,
+  unlockStuckResponsibleExternalNotificationProcessing,
 } from "./responsible-external-notifications";
 import { sendResponsibleExternalNotification } from "./responsible-external-notifications-sender";
 
@@ -112,7 +113,7 @@ async function loadResponsibleOperationalApprovalCandidates(args: {
     .eq("store_id", args.storeId)
     .eq("channel", RESPONSIBLE_CHANNEL)
     .eq("notification_type", "important_alert")
-    .in("status", ["materialized", "ready_to_send", "failed"])
+    .in("status", ["materialized", "ready_to_send", "failed", "processing"])
     .is("external_message_id", null)
     .is("sent_at", null)
     .order("created_at", { ascending: true })
@@ -308,6 +309,24 @@ export async function drainResponsibleOperationalApprovalNotifications(
     let status = normalizeText(row.status);
 
     try {
+      if (status === "processing") {
+        const recovery = await unlockStuckResponsibleExternalNotificationProcessing({
+          supabase,
+          organizationId,
+          storeId,
+          notificationId: cleanText(row.id),
+        });
+        if (!recovery.ok) {
+          skipped += 1;
+          incrementReason(skippedReasons, recovery.reason);
+          continue;
+        }
+        if (recovery.status === "uncertain") {
+          uncertain += 1;
+          continue;
+        }
+        status = "failed";
+      }
       if (status === "materialized" || status === "failed") {
         const prepareResult = await prepare({
           supabase,

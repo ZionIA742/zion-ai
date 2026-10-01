@@ -48,6 +48,13 @@ type ResponsibleExternalNotificationRow = {
   processed_at: string | null;
   created_at: string | null;
   updated_at: string | null;
+  send_status?: string | null;
+  send_started_at?: string | null;
+  send_finished_at?: string | null;
+  policy_decision?: string | null;
+  policy_last_inbound_message_id?: string | null;
+  policy_template_name?: string | null;
+  uncertainty_reason?: string | null;
 };
 
 type WhatsappIntegrationRow = {
@@ -338,6 +345,9 @@ export async function sendResponsibleAssistantText(args: {
     });
     return { ok: true, externalMessageId };
   } catch (error) {
+    if (error instanceof Error && error.name === "WHATSAPP_TRANSPORT_UNCERTAIN") {
+      return { ok: false, reason: "send_uncertain" };
+    }
     return {
       ok: false,
       reason: error instanceof Error ? error.message : "RESPONSIBLE_ASSISTANT_SEND_FAILED",
@@ -485,6 +495,8 @@ async function markResponsibleExternalNotificationSent(args: {
     .from("store_responsible_external_notifications")
     .update({
       status: "sent",
+      send_status: "sent",
+      send_finished_at: now,
       external_message_id: args.externalMessageId,
       sent_at: now,
       processed_at: now,
@@ -516,6 +528,8 @@ async function markResponsibleExternalNotificationFailed(args: {
     .from("store_responsible_external_notifications")
     .update({
       status: "failed",
+      send_status: "failed",
+      send_finished_at: now,
       failed_at: now,
       processed_at: now,
       error_text: args.errorText,
@@ -544,6 +558,9 @@ async function markResponsibleExternalNotificationUncertain(args: {
     .from("store_responsible_external_notifications")
     .update({
       status: "uncertain",
+      send_status: "uncertain",
+      send_finished_at: now,
+      uncertainty_reason: args.errorText,
       processed_at: now,
       error_text: args.errorText,
       locked_at: null,
@@ -626,6 +643,21 @@ export async function sendResponsibleExternalNotification(
       organizationId,
       storeId,
     });
+    const sendStartedAt = new Date().toISOString();
+    await supabase
+      .from("store_responsible_external_notifications")
+      .update({
+        send_status: "sending",
+        send_started_at: sendStartedAt,
+        policy_decision: policy.mode,
+        policy_template_name: policy.mode === "template_required" ? policy.template.name : null,
+        policy_last_inbound_message_id: policy.lastInboundMessageId,
+        updated_at: sendStartedAt,
+      })
+      .eq("id", notificationId)
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .eq("status", "processing");
 
     const externalMessageId = policy.mode === "free_form"
       ? await sendWhatsappTextMessage({

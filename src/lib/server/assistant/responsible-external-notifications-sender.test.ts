@@ -70,6 +70,10 @@ function createFetchStub(metaResponse: MetaResponse | "reject", persistFailure =
 
     if (url.includes("/rest/v1/store_responsible_external_notifications")) {
       if (init?.method === "PATCH") {
+        const patchBody = JSON.parse(String(init.body || "{}")) as Record<string, unknown>;
+        if (patchBody.send_status === "sending") {
+          return jsonResponse([]);
+        }
         persistCount += 1;
         if (persistCount === 1) {
           return jsonResponse({ ...notification, status: "processing", attempts: 1 });

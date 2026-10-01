@@ -14,6 +14,8 @@ type ResponsibleWhatsappEvent = {
   claim_token: string | null;
   inbound_message_id?: string | null;
   assistant_message_id?: string | null;
+  attempts?: number | null;
+  outbound_status?: string | null;
 };
 
 type ResponsibleWhatsappMedia = {
@@ -68,14 +70,14 @@ async function loadOrCreateEvent(args: {
       destination: args.destination,
       status: "received",
     })
-    .select("id, status, claim_token, inbound_message_id, assistant_message_id")
+    .select("id, status, claim_token, inbound_message_id, assistant_message_id, attempts, outbound_status")
     .maybeSingle();
 
   if (!insertError && inserted) return inserted as ResponsibleWhatsappEvent;
 
   const { data: existing, error: existingError } = await args.supabase
     .from("store_assistant_responsible_whatsapp_events")
-    .select("id, status, claim_token, inbound_message_id, assistant_message_id")
+    .select("id, status, claim_token, inbound_message_id, assistant_message_id, attempts, outbound_status")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("external_message_id", args.externalMessageId)
@@ -132,6 +134,31 @@ async function updateEvent(
     .maybeSingle();
   if (error) throw new Error(error.message);
   if (!data?.id) throw new Error("RESPONSIBLE_ASSISTANT_EVENT_CLAIM_LOST");
+}
+
+export async function recoverStaleResponsibleWhatsappEvents(args: {
+  supabase?: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  limit?: number;
+}) {
+  const supabase = args.supabase || getSupabaseAdmin();
+  const { data, error } = await supabase.rpc(
+    "recover_stale_store_assistant_responsible_whatsapp_events",
+    {
+      p_organization_id: clean(args.organizationId),
+      p_store_id: clean(args.storeId),
+      p_now: new Date().toISOString(),
+      p_stale_after: "00:10:00",
+      p_limit: Math.max(1, Math.min(Number(args.limit || 20), 100)),
+    },
+  );
+  if (error) throw new Error(`Falha ao recuperar inbound stale do responsavel: ${error.message}`);
+  return (data || []) as Array<{
+    event_id: string;
+    status: "received" | "uncertain" | "failed";
+    action: string;
+  }>;
 }
 
 export async function routeResponsibleWhatsappToAssistant(args: {
@@ -331,6 +358,12 @@ export async function routeResponsibleWhatsappToAssistant(args: {
     }
 
     await updateEvent(supabase, event.id, event.claim_token!, { assistant_message_id: assistantMessage.id });
+    await updateEvent(supabase, event.id, event.claim_token!, {
+      outbound_status: "sending",
+      outbound_attempt: event.attempts || 1,
+      outbound_started_at: new Date().toISOString(),
+      outbound_error: null,
+    });
     const outbound = await sendResponsibleAssistantText({
       organizationId,
       storeId,
@@ -342,6 +375,8 @@ export async function routeResponsibleWhatsappToAssistant(args: {
 
     await updateEvent(supabase, event.id, event.claim_token!, {
       status: "sent",
+      outbound_status: "sent",
+      outbound_finished_at: new Date().toISOString(),
       external_response_id: outbound.externalMessageId,
       locked_at: null,
       locked_by: null,
@@ -355,8 +390,13 @@ export async function routeResponsibleWhatsappToAssistant(args: {
       }).catch(() => undefined);
     }
     const errorText = error instanceof Error ? error.message : String(error);
+    const uncertain = errorText === "send_uncertain";
+    const retryable = !uncertain && (Number(event.attempts || 1) < 3);
     await updateEvent(supabase, event.id, event.claim_token!, {
-      status: errorText === "send_uncertain" ? "uncertain" : "failed",
+      status: uncertain ? "uncertain" : retryable ? "received" : "failed",
+      outbound_status: uncertain ? "uncertain" : "failed",
+      outbound_finished_at: new Date().toISOString(),
+      outbound_error: errorText,
       error_text: errorText,
       locked_at: null,
       locked_by: null,
