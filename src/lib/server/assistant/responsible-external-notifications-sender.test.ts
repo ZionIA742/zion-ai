@@ -54,6 +54,15 @@ function jsonResponse(body: unknown, status = 200) {
 function createFetchStub(metaResponse: MetaResponse | "reject", persistFailure = false) {
   let persistCount = 0;
   const calls: string[] = [];
+  const recentInbound = {
+    created_at: new Date().toISOString(),
+    metadata: {
+      origin: "whatsapp",
+      responsible_id: "responsible-1",
+      from_phone: "5511999999999",
+      external_message_id: "wamid-inbound-1",
+    },
+  };
 
   const fetchStub = async (input: URL | RequestInfo, init?: RequestInit) => {
     const url = String(input);
@@ -71,6 +80,19 @@ function createFetchStub(metaResponse: MetaResponse | "reject", persistFailure =
         return jsonResponse([]);
       }
       return jsonResponse([notification]);
+    }
+
+    if (url.includes("/rest/v1/store_responsibles")) {
+      return jsonResponse([{
+        id: "responsible-1",
+        name: "Responsavel",
+        role: "primary",
+        whatsapp_number: "5511999999999",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_messages")) {
+      return jsonResponse([recentInbound]);
     }
 
     if (url.includes("/rest/v1/rpc/get_whatsapp_integration")) {

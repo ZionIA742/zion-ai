@@ -1,5 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
+import {
+  resolveResponsibleWhatsappOutboundPolicy,
+  type ResponsibleWhatsappTemplateContext,
+} from "@/lib/server/assistant/responsible-whatsapp-outbound-policy";
 
 type Json =
   | string
@@ -179,11 +183,11 @@ async function getResponsibleSendWhatsappIntegration(args: {
   };
 }
 
-async function sendWhatsappTextMessage(params: {
+async function sendWhatsappPayload(params: {
   accessToken: string;
   phoneNumberId: string;
   to: string;
-  body: string;
+  payload: Record<string, unknown>;
 }) {
   let response: Response;
   try {
@@ -195,16 +199,7 @@ async function sendWhatsappTextMessage(params: {
           Authorization: `Bearer ${params.accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          recipient_type: "individual",
-          to: params.to,
-          type: "text",
-          text: {
-            preview_url: false,
-            body: params.body,
-          },
-        }),
+        body: JSON.stringify(params.payload),
       },
     );
   } catch (error) {
@@ -223,7 +218,7 @@ async function sendWhatsappTextMessage(params: {
     }
     throw new Error(
       cleanText(payload?.error?.message) ||
-        `Falha HTTP ${response.status} ao enviar texto para WhatsApp`,
+        `Falha HTTP ${response.status} ao enviar mensagem para WhatsApp`,
     );
   }
 
@@ -239,12 +234,51 @@ async function sendWhatsappTextMessage(params: {
   const messageId = cleanText(payload?.messages?.[0]?.id);
 
   if (!messageId) {
-    const uncertain = new Error("Resposta do WhatsApp sem messages[0].id no envio de texto");
+    const uncertain = new Error("Resposta do WhatsApp sem messages[0].id no envio");
     uncertain.name = "WHATSAPP_TRANSPORT_UNCERTAIN";
     throw uncertain;
   }
 
   return messageId;
+}
+
+async function sendWhatsappTextMessage(params: {
+  accessToken: string;
+  phoneNumberId: string;
+  to: string;
+  body: string;
+}) {
+  return sendWhatsappPayload({
+    ...params,
+    payload: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: params.to,
+      type: "text",
+      text: {
+        preview_url: false,
+        body: params.body,
+      },
+    },
+  });
+}
+
+async function sendWhatsappTemplateMessage(params: {
+  accessToken: string;
+  phoneNumberId: string;
+  to: string;
+  template: Record<string, unknown>;
+}) {
+  return sendWhatsappPayload({
+    ...params,
+    payload: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: params.to,
+      type: "template",
+      template: params.template,
+    },
+  });
 }
 
 export async function sendResponsibleAssistantText(args: {
@@ -279,6 +313,18 @@ export async function sendResponsibleAssistantText(args: {
   }
 
   try {
+    const policy = await resolveResponsibleWhatsappOutboundPolicy({
+      supabase,
+      organizationId,
+      storeId,
+      responsibleId: args.responsibleId,
+      destination,
+    });
+    if (!policy.ok) return { ok: false, reason: policy.reason };
+    if (policy.mode !== "free_form") {
+      return { ok: false, reason: "RESPONSIBLE_WHATSAPP_TEMPLATE_CONTEXT_REQUIRED" };
+    }
+
     const integration = await getResponsibleSendWhatsappIntegration({
       supabase,
       organizationId,
@@ -557,18 +603,43 @@ export async function sendResponsibleExternalNotification(
 
   let acceptedExternalMessageId: string | null = null;
   try {
+    const policy = await resolveResponsibleWhatsappOutboundPolicy({
+      supabase,
+      organizationId,
+      storeId,
+      responsibleId: cleanText(claimedNotification.responsible_id),
+      destination: cleanText(claimedNotification.destination),
+      templateContext: {
+        notificationType: claimedNotification.notification_type,
+        title: claimedNotification.title,
+        body: claimedNotification.body,
+        context: claimedNotification.context,
+        relatedLeadId: claimedNotification.related_lead_id,
+        relatedConversationId: claimedNotification.related_conversation_id,
+        relatedAppointmentId: claimedNotification.related_appointment_id,
+      } satisfies ResponsibleWhatsappTemplateContext,
+    });
+    if (!policy.ok) throw new Error(policy.reason);
+
     const integration = await getResponsibleSendWhatsappIntegration({
       supabase,
       organizationId,
       storeId,
     });
 
-    const externalMessageId = await sendWhatsappTextMessage({
-      accessToken: integration.accessToken,
-      phoneNumberId: integration.phoneNumberId,
-      to: cleanText(claimedNotification.destination),
-      body: cleanText(claimedNotification.rendered_message),
-    });
+    const externalMessageId = policy.mode === "free_form"
+      ? await sendWhatsappTextMessage({
+          accessToken: integration.accessToken,
+          phoneNumberId: integration.phoneNumberId,
+          to: policy.responsible.whatsappNumber,
+          body: cleanText(claimedNotification.rendered_message),
+        })
+      : await sendWhatsappTemplateMessage({
+          accessToken: integration.accessToken,
+          phoneNumberId: integration.phoneNumberId,
+          to: policy.responsible.whatsappNumber,
+          template: policy.template,
+        });
     acceptedExternalMessageId = externalMessageId;
 
     await markResponsibleExternalNotificationSent({
