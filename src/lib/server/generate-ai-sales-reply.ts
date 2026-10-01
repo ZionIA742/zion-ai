@@ -50,6 +50,7 @@ import {
   buildSalesAiOperatingWindowPromptBlock,
   type SalesAiOperatingWindowContext,
 } from "./sales-ai-operating-window";
+import { materializeCommercialOpportunityChecklistAndProgress } from "./commercial-action-readiness";
 import {
   buildSalesAiAppointmentPromptBlock,
   loadSalesAiAppointmentContext,
@@ -12766,6 +12767,23 @@ export async function generateAiSalesReply(
           ok: false,
           error: "MATERIALIZE_CANONICAL_PROFILE_FAILED",
           message: profileMaterializationResult.message,
+        };
+      }
+
+      const checklistProgressMaterializationResult =
+        await materializeCommercialOpportunityChecklistAndProgress({
+          supabase,
+          organizationId,
+          storeId: resolvedStoreId,
+          commercialOpportunityId: resolvedCommercialOpportunityId,
+          eventKeyBase: `sales_ai:${anchorMessageId}`,
+        });
+
+      if (!checklistProgressMaterializationResult.ok) {
+        return {
+          ok: false,
+          error: "MATERIALIZE_CANONICAL_CHECKLIST_PROGRESS_FAILED",
+          message: checklistProgressMaterializationResult.message,
         };
       }
     }

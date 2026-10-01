@@ -1010,6 +1010,25 @@ test("validation accepts explicit pending and confirmed measurement states", () 
     }),
     confirmedCandidate,
   );
+
+  for (const evidenceText of [
+    "As medidas ainda precisam ser conferidas.",
+    "As medidas precisam ser confirmadas.",
+    "As medidas precisam ser validadas.",
+  ]) {
+    const passivePendingCandidate = {
+      ...pendingCandidate,
+      evidenceText,
+    };
+
+    assert.deepEqual(
+      validateQualificationFactCandidate({
+        candidate: passivePendingCandidate,
+        anchorMessage: evidenceText,
+      }),
+      passivePendingCandidate,
+    );
+  }
 });
 
 test("measurements confirmation authority rejects indirect evidence", () => {

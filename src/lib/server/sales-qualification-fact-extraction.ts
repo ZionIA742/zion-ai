@@ -795,7 +795,7 @@ function parseExplicitMeasurementsConfirmationRequirement(
   }
 
   const explicitlyPending =
-    /\b(?:ainda\s+)?(?:precisa|precisam|preciso|precisamos|necessita|necessitam|necessitamos|falta|faltam|tem\s+que|deve|devem)\s+(?:confirmar|conferir|validar)\b/i.test(
+    /\b(?:ainda\s+)?(?:precisa|precisam|preciso|precisamos|necessita|necessitam|necessitamos|falta|faltam|tem\s+que|deve|devem)\s+(?:confirmar|conferir|validar|ser\s+(?:confirmada|confirmadas|confirmado|confirmados|conferida|conferidas|conferido|conferidos|validada|validadas|validado|validados))\b/i.test(
       normalized,
     ) ||
     /\b(?:pendente|pendentes)\s+de\s+(?:confirmacao|conferencia|validacao)\b/i.test(

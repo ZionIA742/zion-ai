@@ -560,6 +560,8 @@ function createGenerateAiSalesReplySupabase(args?: {
   writerResponse?: RpcMockEntry;
   identityWriterResponse?: RpcMockEntry;
   materializerResponse?: RpcMockEntry;
+  checklistMaterializerResponse?: RpcMockEntry;
+  progressMaterializerResponse?: RpcMockEntry;
   includeCurrentIntentResolution?: boolean;
   additionalCommercialOpportunities?: Row[];
   crossSellSuggestions?: Row[];
@@ -847,6 +849,32 @@ function createGenerateAiSalesReplySupabase(args?: {
         args?.materializerResponse ??
         {
           data: [createProfileMaterializationRow()],
+          error: null,
+        },
+      materialize_commercial_opportunity_checklist_by_system:
+        args?.checklistMaterializerResponse ?? {
+          data: [
+            {
+              current_checklist_version_id: "checklist-version-1",
+              outcome: "checklist_materialized",
+              changed: true,
+              replayed: false,
+              preserved: false,
+            },
+          ],
+          error: null,
+        },
+      materialize_commercial_opportunity_checklist_progress_by_system:
+        args?.progressMaterializerResponse ?? {
+          data: [
+            {
+              current_progress_version_id: "progress-version-1",
+              checklist_version_id: "checklist-version-1",
+              outcome: "progress_materialized",
+              changed: true,
+              replayed: false,
+            },
+          ],
           error: null,
         },
       accept_commercial_cross_sell_suggestion_by_system:
@@ -4640,6 +4668,136 @@ test("generateAiSalesReply fails closed when canonical profile materialization f
   assert.equal(openai.calls.length, 1);
 });
 
+test("generateAiSalesReply reconciles checklist and progress after profile even without new qualification facts", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "oi, quero continuar esta conversa",
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Posso continuar te ajudando.",
+      usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    supabase.rpcCalls.filter(
+      (call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system",
+    ).length,
+    0,
+  );
+
+  const reconciliationCalls = supabase.rpcCalls.filter((call) =>
+    [
+      "materialize_opportunity_profile_from_qualification_by_system",
+      "materialize_commercial_opportunity_checklist_by_system",
+      "materialize_commercial_opportunity_checklist_progress_by_system",
+    ].includes(call.fn),
+  );
+  assert.deepEqual(
+    reconciliationCalls.map((call) => call.fn),
+    [
+      "materialize_opportunity_profile_from_qualification_by_system",
+      "materialize_commercial_opportunity_checklist_by_system",
+      "materialize_commercial_opportunity_checklist_progress_by_system",
+    ],
+  );
+  assert.deepEqual(reconciliationCalls[1]?.payload, {
+    p_organization_id: "org-1",
+    p_store_id: "store-1",
+    p_commercial_opportunity_id: "opp-1",
+    p_materialization_event_key: "sales_ai:msg-anchor:checklist",
+  });
+  assert.deepEqual(reconciliationCalls[2]?.payload, {
+    p_organization_id: "org-1",
+    p_store_id: "store-1",
+    p_commercial_opportunity_id: "opp-1",
+    p_materialization_event_key: "sales_ai:msg-anchor:progress",
+  });
+});
+
+test("generateAiSalesReply fails closed when checklist reconciliation fails before final generation", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    checklistMaterializerResponse: {
+      data: null,
+      error: { message: "checklist exploded" },
+    },
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "MATERIALIZE_CANONICAL_CHECKLIST_PROGRESS_FAILED",
+    message: "Nao foi possivel atualizar o checklist comercial.",
+  });
+  assert.equal(
+    supabase.rpcCalls.some(
+      (call) =>
+        call.fn === "materialize_commercial_opportunity_checklist_progress_by_system",
+    ),
+    false,
+  );
+  assert.equal(openai.calls.length, 1);
+});
+
+test("generateAiSalesReply fails closed when progress reconciliation fails before final generation", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    progressMaterializerResponse: {
+      data: null,
+      error: { message: "progress exploded" },
+    },
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "MATERIALIZE_CANONICAL_CHECKLIST_PROGRESS_FAILED",
+    message: "Nao foi possivel atualizar o progresso comercial.",
+  });
+  assert.equal(openai.calls.length, 1);
+});
+
 test("sales AI loads canonical discount policy as live authority instead of legacy onboarding discount fields", async () => {
   const { readFileSync } = await import("node:fs");
 
@@ -8256,7 +8414,9 @@ test("generateAiSalesReply skips structured extraction and writer when no explic
       (call) =>
         call.fn === "write_commercial_opportunity_qualification_fact_by_system" ||
         call.fn === "read_commercial_opportunity_qualification_facts_by_system" ||
-        call.fn === "materialize_opportunity_profile_from_qualification_by_system",
+        call.fn === "materialize_opportunity_profile_from_qualification_by_system" ||
+        call.fn === "materialize_commercial_opportunity_checklist_by_system" ||
+        call.fn === "materialize_commercial_opportunity_checklist_progress_by_system",
     ),
     false,
   );
