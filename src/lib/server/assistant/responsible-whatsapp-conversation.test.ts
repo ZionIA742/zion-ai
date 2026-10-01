@@ -106,3 +106,53 @@ test("panel and WhatsApp use the same canonical message/thread contract", () => 
   assert.match(whatsapp, /responsible_id: responsibleId/);
   assert.match(whatsapp, /thread_id: thread\.threadId/);
 });
+
+test("responsible WhatsApp media is persisted in the canonical thread with private metadata", () => {
+  const bridge = readFileSync(
+    "src/lib/server/assistant/responsible-whatsapp-conversation.ts",
+    "utf8",
+  );
+
+  assert.match(bridge, /downloadAndStoreWhatsappInboundMedia/);
+  assert.match(bridge, /mediaKind: media\.mediaKind/);
+  assert.match(bridge, /conversationId: thread\.threadId/);
+  assert.match(bridge, /message_type: media\?\.mediaKind \|\| "text"/);
+  assert.match(bridge, /media_origin: "responsible"/);
+  assert.match(bridge, /storage_bucket: storedMedia\.storageBucket/);
+  assert.match(bridge, /storage_path: storedMedia\.storagePath/);
+  assert.match(bridge, /removeWhatsappInboundStoredMedia/);
+  assert.match(bridge, /if \(!inbound\)/);
+});
+
+test("responsible WhatsApp media accepts image, audio and document without fabricated text", () => {
+  const processor = readFileSync(
+    "src/lib/server/whatsapp-inbox-processor.ts",
+    "utf8",
+  );
+
+  assert.match(processor, /mediaKind: "image" as const/);
+  assert.match(processor, /mediaKind: "audio" as const/);
+  assert.match(processor, /mediaKind: "document" as const/);
+  assert.match(processor, /RESPONSIBLE_MEDIA_UNSUPPORTED_OR_MISSING/);
+  assert.match(processor, /if \(args\.extracted\.rawMessageType === "text"\)/);
+  assert.match(processor, /routeResponsibleWhatsappToAssistant\([\s\S]*?media,/);
+});
+
+test("assistant panel exposes all responsible attachment kinds through scoped signed URLs", () => {
+  const panel = readFileSync("src/app/(app)/assistant/page.tsx", "utf8");
+  const route = readFileSync(
+    "src/app/api/assistant/messages/[messageId]/signed-media-url/route.ts",
+    "utf8",
+  );
+
+  assert.match(panel, /metadata\.origin !== "whatsapp"/);
+  assert.match(panel, /kind !== "image" && kind !== "audio" && kind !== "file"/);
+  assert.match(panel, /signed-media-url/);
+  assert.match(panel, /<img/);
+  assert.match(panel, /<audio controls/);
+  assert.match(panel, /Abrir \{attachment\.fileName/);
+  assert.match(route, /\.eq\("organization_id", access\.organizationId\)/);
+  assert.match(route, /\.eq\("store_id", access\.storeId\)/);
+  assert.match(route, /createSignedUrl\(path, SIGNED_URL_EXPIRATION_SECONDS\)/);
+  assert.doesNotMatch(route, /signedUrl: signed\.signedUrl,[\s\S]*storage_path/);
+});

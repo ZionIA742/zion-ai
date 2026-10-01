@@ -409,41 +409,95 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
     return { isResponsible: false as const };
   }
 
-  const result = await recordPostTechnicalVisitResponsibleInbound({
-    organizationId: args.inbox.organization_id,
-    storeId: args.inbox.store_id,
-    responsibleId: responsible.responsible.id,
-    inboundExternalMessageId: args.extracted.messageId || args.inbox.external_event_id,
-    repliedToExternalMessageId: args.extracted.contextMessageId,
-    rawContent: args.extracted.textBody,
-    metadata: {
-      source: "meta_whatsapp_webhook",
-      event_kind: args.payload.event_kind || null,
-      message_type: args.extracted.rawMessageType,
-      context_message_id: args.extracted.contextMessageId,
-      inbox_id: args.inbox.id,
-      external_event_id: args.inbox.external_event_id,
-      media_ids: {
-        image: args.extracted.imageMediaId,
-        audio: args.extracted.audioMediaId,
-        video: args.extracted.videoMediaId,
-        document: args.extracted.documentMediaId,
-      },
-    },
-  });
-
-  if (result.handled) {
-    if (!result.responseId) {
-      throw new Error("POST_TECHNICAL_VISIT_RESPONSE_ID_MISSING");
-    }
-
-    const runtime = await runPostTechnicalVisitRuntime({
+  if (args.extracted.rawMessageType === "text") {
+    const result = await recordPostTechnicalVisitResponsibleInbound({
       organizationId: args.inbox.organization_id,
       storeId: args.inbox.store_id,
-      responseId: result.responseId,
+      responsibleId: responsible.responsible.id,
+      inboundExternalMessageId: args.extracted.messageId || args.inbox.external_event_id,
+      repliedToExternalMessageId: args.extracted.contextMessageId,
+      rawContent: args.extracted.textBody,
+      metadata: {
+        source: "meta_whatsapp_webhook",
+        event_kind: args.payload.event_kind || null,
+        message_type: args.extracted.rawMessageType,
+        context_message_id: args.extracted.contextMessageId,
+        inbox_id: args.inbox.id,
+        external_event_id: args.inbox.external_event_id,
+        media_ids: {
+          image: args.extracted.imageMediaId,
+          audio: args.extracted.audioMediaId,
+          video: args.extracted.videoMediaId,
+          document: args.extracted.documentMediaId,
+        },
+      },
     });
 
-    return { isResponsible: true as const, result, runtime };
+    if (result.handled) {
+      if (!result.responseId) {
+        throw new Error("POST_TECHNICAL_VISIT_RESPONSE_ID_MISSING");
+      }
+
+      const runtime = await runPostTechnicalVisitRuntime({
+        organizationId: args.inbox.organization_id,
+        storeId: args.inbox.store_id,
+        responseId: result.responseId,
+      });
+
+      return { isResponsible: true as const, result, runtime };
+    }
+
+    const assistantResult = await routeResponsibleWhatsappToAssistant({
+      organizationId: args.inbox.organization_id,
+      storeId: args.inbox.store_id,
+      responsibleId: responsible.responsible.id,
+      externalMessageId: args.extracted.messageId || args.inbox.external_event_id,
+      fromPhone: args.extracted.fromPhoneRaw || "",
+      phoneNumberId: args.extracted.phoneNumberId || "",
+      content: args.extracted.textBody || "",
+      messageType: args.extracted.rawMessageType || undefined,
+      metadata: {
+        source: "meta_whatsapp_webhook",
+        event_kind: args.payload.event_kind || null,
+        context_message_id: args.extracted.contextMessageId,
+        inbox_id: args.inbox.id,
+        external_event_id: args.inbox.external_event_id,
+      },
+    });
+
+    return { isResponsible: true as const, result: { ...result, ...assistantResult } };
+  }
+
+  const media =
+    args.extracted.rawMessageType === "image" && args.extracted.imageMediaId
+      ? {
+          mediaId: args.extracted.imageMediaId,
+          mediaKind: "image" as const,
+          mimeType: args.extracted.imageMimeType,
+          sha256: args.extracted.imageSha256,
+          caption: args.extracted.imageCaption,
+        }
+      : args.extracted.rawMessageType === "audio" && args.extracted.audioMediaId
+        ? {
+            mediaId: args.extracted.audioMediaId,
+            mediaKind: "audio" as const,
+            mimeType: args.extracted.audioMimeType,
+            sha256: args.extracted.audioSha256,
+            voice: args.extracted.audioVoice,
+          }
+        : args.extracted.rawMessageType === "document" && args.extracted.documentMediaId
+          ? {
+              mediaId: args.extracted.documentMediaId,
+              mediaKind: "document" as const,
+              mimeType: args.extracted.documentMimeType,
+              sha256: args.extracted.documentSha256,
+              fileName: args.extracted.documentFilename,
+              caption: args.extracted.documentCaption,
+            }
+          : null;
+
+  if (!media) {
+    throw new Error("RESPONSIBLE_MEDIA_UNSUPPORTED_OR_MISSING");
   }
 
   const assistantResult = await routeResponsibleWhatsappToAssistant({
@@ -455,6 +509,7 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
     phoneNumberId: args.extracted.phoneNumberId || "",
     content: args.extracted.textBody || "",
     messageType: args.extracted.rawMessageType || undefined,
+    media,
     metadata: {
       source: "meta_whatsapp_webhook",
       event_kind: args.payload.event_kind || null,
@@ -464,7 +519,10 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
     },
   });
 
-  return { isResponsible: true as const, result: { ...result, ...assistantResult } };
+  return {
+    isResponsible: true as const,
+    result: { correlationStatus: assistantResult.status, ...assistantResult },
+  };
 }
 
 async function listPendingInboxRows(

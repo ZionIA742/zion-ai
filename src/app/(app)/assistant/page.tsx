@@ -257,6 +257,29 @@ function formatMessageType(value: string | null | undefined) {
   return "Mensagem";
 }
 
+type AssistantAttachment = {
+  kind: "image" | "audio" | "file";
+  fileName: string | null;
+  mimeType: string | null;
+};
+
+function getAssistantAttachmentMetadata(
+  metadata: AssistantOpportunityMetadata | null,
+): AssistantAttachment | null {
+  if (!metadata || metadata.origin !== "whatsapp" || metadata.channel !== "whatsapp") {
+    return null;
+  }
+
+  const kind = String(metadata.attachment_kind || "").trim().toLowerCase();
+  if (kind !== "image" && kind !== "audio" && kind !== "file") return null;
+
+  return {
+    kind,
+    fileName: getSafeString(metadata.original_file_name) || null,
+    mimeType: getSafeString(metadata.mime_type) || null,
+  };
+}
+
 function senderLabel(message: AssistantMessage) {
   if (message.sender_role === "assistant_operational") return "Assistente";
   if (message.sender_role === "store_responsible") return "Responsável";
@@ -736,6 +759,9 @@ export default function AssistantPage() {
   const [documentActionFeedback, setDocumentActionFeedback] = useState<
     Record<string, { tone: DocumentFeedbackTone; text: string }>
   >({});
+  const [assistantMediaUrls, setAssistantMediaUrls] = useState<Record<string, string>>({});
+  const [assistantMediaLoading, setAssistantMediaLoading] = useState<Record<string, boolean>>({});
+  const [assistantMediaErrors, setAssistantMediaErrors] = useState<Record<string, string>>({});
   const [dismissedApproveActionsByMessage, setDismissedApproveActionsByMessage] = useState<
     Record<string, boolean>
   >({});
@@ -781,6 +807,39 @@ export default function AssistantPage() {
   const isCurrentAssistantScope = useCallback((scopeKey: string | null) => {
     return !!scopeKey && assistantScopeKeyRef.current === scopeKey;
   }, []);
+
+  const loadAssistantMedia = useCallback(async (messageId: string) => {
+    if (assistantMediaUrls[messageId] || assistantMediaLoading[messageId]) return;
+
+    setAssistantMediaLoading((current) => ({ ...current, [messageId]: true }));
+    setAssistantMediaErrors((current) => {
+      const next = { ...current };
+      delete next[messageId];
+      return next;
+    });
+    try {
+      const response = await fetch(
+        `/api/assistant/messages/${encodeURIComponent(messageId)}/signed-media-url`,
+        { cache: "no-store" },
+      );
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        signedUrl?: string;
+        message?: string;
+      };
+      if (!response.ok || !payload.ok || !payload.signedUrl) {
+        throw new Error(payload.message || "Nao foi possivel carregar o anexo.");
+      }
+      setAssistantMediaUrls((current) => ({ ...current, [messageId]: payload.signedUrl! }));
+    } catch (error) {
+      setAssistantMediaErrors((current) => ({
+        ...current,
+        [messageId]: error instanceof Error ? error.message : "Nao foi possivel carregar o anexo.",
+      }));
+    } finally {
+      setAssistantMediaLoading((current) => ({ ...current, [messageId]: false }));
+    }
+  }, [assistantMediaLoading, assistantMediaUrls]);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -1869,6 +1928,10 @@ export default function AssistantPage() {
                           message,
                           priorityByOpportunity,
                         });
+                        const attachment = getAssistantAttachmentMetadata(message.metadata);
+                        const mediaUrl = assistantMediaUrls[message.id];
+                        const mediaLoading = assistantMediaLoading[message.id] === true;
+                        const mediaError = assistantMediaErrors[message.id];
 
                         return (
                         <div
@@ -1907,6 +1970,43 @@ export default function AssistantPage() {
                             <div className="whitespace-pre-wrap break-words text-[14px] leading-6 text-gray-900">
                               {message.content}
                             </div>
+
+                            {attachment ? (
+                              <div className="mt-2 space-y-2">
+                                {mediaUrl ? (
+                                  attachment.kind === "image" ? (
+                                    <img
+                                      src={mediaUrl}
+                                      alt={attachment.fileName || "Imagem enviada pelo responsavel"}
+                                      className="max-h-80 max-w-full rounded-xl object-contain ring-1 ring-black/10"
+                                    />
+                                  ) : attachment.kind === "audio" ? (
+                                    <audio controls src={mediaUrl} className="max-w-full" />
+                                  ) : (
+                                    <a
+                                      href={mediaUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="inline-flex items-center rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                                    >
+                                      Abrir {attachment.fileName || "documento"}
+                                    </a>
+                                  )
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => void loadAssistantMedia(message.id)}
+                                    disabled={mediaLoading}
+                                    className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {mediaLoading ? "Carregando anexo..." : "Abrir anexo"}
+                                  </button>
+                                )}
+                                {mediaError ? (
+                                  <div className="text-xs text-red-700">{mediaError}</div>
+                                ) : null}
+                              </div>
+                            ) : null}
 
                             {(() => {
                               const contractWorkflowMetadata =

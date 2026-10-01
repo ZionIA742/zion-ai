@@ -6,6 +6,7 @@ import {
 } from "@/app/api/assistant/reply/route";
 import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
 import { sendResponsibleAssistantText } from "@/lib/server/assistant/responsible-external-notifications-sender";
+import { downloadAndStoreWhatsappInboundMedia, removeWhatsappInboundStoredMedia } from "@/lib/server/whatsapp-inbound-media";
 
 type ResponsibleWhatsappEvent = {
   id: string;
@@ -13,6 +14,16 @@ type ResponsibleWhatsappEvent = {
   claim_token: string | null;
   inbound_message_id?: string | null;
   assistant_message_id?: string | null;
+};
+
+type ResponsibleWhatsappMedia = {
+  mediaId: string;
+  mediaKind: "image" | "audio" | "document";
+  mimeType?: string | null;
+  sha256?: string | null;
+  fileName?: string | null;
+  caption?: string | null;
+  voice?: boolean | null;
 };
 
 function getSupabaseAdmin() {
@@ -134,18 +145,20 @@ export async function routeResponsibleWhatsappToAssistant(args: {
   content: string;
   messageType?: string;
   metadata?: Record<string, unknown>;
+  media?: ResponsibleWhatsappMedia | null;
 }) {
   const organizationId = clean(args.organizationId);
   const storeId = clean(args.storeId);
   const responsibleId = clean(args.responsibleId);
   const externalMessageId = clean(args.externalMessageId);
   const content = clean(args.content);
+  const media = args.media || null;
 
   if (
     !organizationId ||
     !storeId ||
     !responsibleId ||
-    !content ||
+    (!content && !media) ||
     !isValidExternalMessageId(externalMessageId)
   ) {
     throw new Error("INVALID_RESPONSIBLE_ASSISTANT_INBOUND");
@@ -177,6 +190,8 @@ export async function routeResponsibleWhatsappToAssistant(args: {
     return { handled: true, duplicate: true, status: event.status } as const;
   }
 
+  let uploadedMediaStoragePath: string | null = null;
+  let mediaMessagePersisted = false;
   try {
     const thread = await getOrCreateAssistantThread({
       supabase,
@@ -201,6 +216,27 @@ export async function routeResponsibleWhatsappToAssistant(args: {
 
     let inbound = existingInbound;
     if (!inbound) {
+      const storedMedia = media
+        ? await downloadAndStoreWhatsappInboundMedia({
+            supabase,
+            organizationId,
+            storeId,
+            conversationId: thread.threadId,
+            mediaId: media.mediaId,
+            mediaKind: media.mediaKind,
+            preferredMimeType: media.mimeType,
+            preferredFileName: media.fileName,
+            fallbackBaseName: `responsible-whatsapp-${media.mediaKind}`,
+          })
+        : null;
+      uploadedMediaStoragePath = storedMedia?.storagePath || null;
+      const attachmentKind = media?.mediaKind === "document" ? "file" : media?.mediaKind;
+      const messageContent = content || media?.caption ||
+        (media?.mediaKind === "image"
+          ? "Responsável enviou uma imagem."
+          : media?.mediaKind === "audio"
+            ? "Responsável enviou um áudio."
+            : "Responsável enviou um documento.");
       const { data: insertedInbound, error: inboundError } = await supabase
         .from("store_assistant_messages")
         .insert({
@@ -210,8 +246,8 @@ export async function routeResponsibleWhatsappToAssistant(args: {
           sender: "human",
           sender_role: "store_responsible",
           direction: "incoming",
-          message_type: args.messageType === "text" ? "text" : "text",
-          content,
+          message_type: media?.mediaKind || "text",
+          content: messageContent,
           metadata: {
             ...(args.metadata || {}),
             origin: "whatsapp",
@@ -220,6 +256,22 @@ export async function routeResponsibleWhatsappToAssistant(args: {
             external_message_id: externalMessageId,
             from_phone: args.fromPhone,
             phone_number_id: args.phoneNumberId,
+            ...(media && storedMedia
+              ? {
+                  media_origin: "responsible",
+                  attachment_kind: attachmentKind,
+                  whatsapp_media_id: media.mediaId,
+                  mime_type: storedMedia.mimeType || media.mimeType || null,
+                  sha256: media.sha256 || storedMedia.sha256 || null,
+                  original_file_name: storedMedia.originalFileName,
+                  size_bytes: storedMedia.sizeBytes,
+                  storage_bucket: storedMedia.storageBucket,
+                  storage_path: storedMedia.storagePath,
+                  downloaded_from_meta: true,
+                  ...(media.caption ? { caption: media.caption } : {}),
+                  ...(media.voice !== undefined ? { voice: media.voice } : {}),
+                }
+              : {}),
             received_at: new Date().toISOString(),
           },
         })
@@ -229,6 +281,7 @@ export async function routeResponsibleWhatsappToAssistant(args: {
         throw new Error(inboundError?.message || "ASSISTANT_INBOUND_PERSIST_FAILED");
       }
       inbound = insertedInbound;
+      mediaMessagePersisted = Boolean(storedMedia);
     }
 
     await updateEvent(supabase, event.id, event.claim_token!, {
@@ -295,6 +348,12 @@ export async function routeResponsibleWhatsappToAssistant(args: {
     });
     return { handled: true, duplicate: false, status: "sent", threadId: thread.threadId } as const;
   } catch (error) {
+    if (uploadedMediaStoragePath && !mediaMessagePersisted) {
+      await removeWhatsappInboundStoredMedia({
+        supabase,
+        storagePath: uploadedMediaStoragePath,
+      }).catch(() => undefined);
+    }
     const errorText = error instanceof Error ? error.message : String(error);
     await updateEvent(supabase, event.id, event.claim_token!, {
       status: errorText === "send_uncertain" ? "uncertain" : "failed",
