@@ -12,7 +12,7 @@ type TestCase = {
 };
 
 function createStoreResponsiblesSupabase(args: {
-  data: unknown[];
+  data: unknown[] | (() => unknown[]);
   error?: { message: string } | null;
 }) {
   const filters: Array<{ column: string; value: unknown }> = [];
@@ -29,7 +29,7 @@ function createStoreResponsiblesSupabase(args: {
       onRejected?: ((reason: unknown) => unknown) | null,
     ) {
       return Promise.resolve({
-        data: args.data,
+        data: typeof args.data === "function" ? args.data() : args.data,
         error: args.error ?? null,
       }).then(onFulfilled ?? undefined, onRejected ?? undefined);
     },
@@ -202,6 +202,127 @@ const tests: TestCase[] = [
         "5511999990000",
       );
       assert.equal(normalizeResponsibleWhatsappDestination("123"), null);
+    },
+  },
+  {
+    name: "canonical reader observes a responsible phone change without stale cache",
+    run: async () => {
+      let currentRows: unknown[] = [
+        {
+          id: "responsible-1",
+          name: "Maria",
+          role: "owner",
+          whatsapp_number: "5511999990000",
+        },
+      ];
+      const supabase = createStoreResponsiblesSupabase({
+        data: () => currentRows,
+      });
+
+      const before = await loadCanonicalActivePrimaryStoreResponsible({
+        supabase: supabase.client as never,
+        organizationId: "org-1",
+        storeId: "store-1",
+      });
+      assert.equal(before.ok, true);
+      if (!before.ok) throw new Error("expected initial responsible");
+      assert.equal(before.responsible.whatsappNumber, "5511999990000");
+
+      currentRows = [
+        {
+          id: "responsible-1",
+          name: "Maria",
+          role: "owner",
+          whatsapp_number: "5511888880000",
+        },
+      ];
+
+      const after = await loadCanonicalActivePrimaryStoreResponsible({
+        supabase: supabase.client as never,
+        organizationId: "org-1",
+        storeId: "store-1",
+      });
+      assert.equal(after.ok, true);
+      if (!after.ok) throw new Error("expected updated responsible");
+      assert.equal(after.responsible.whatsappNumber, "5511888880000");
+      assert.notEqual(after.responsible.whatsappNumber, before.responsible.whatsappNumber);
+    },
+  },
+  {
+    name: "canonical reader observes a primary responsible change",
+    run: async () => {
+      let currentRows: unknown[] = [
+        {
+          id: "responsible-old",
+          name: "Maria",
+          role: "owner",
+          whatsapp_number: "5511999990000",
+        },
+      ];
+      const supabase = createStoreResponsiblesSupabase({
+        data: () => currentRows,
+      });
+
+      await loadCanonicalActivePrimaryStoreResponsible({
+        supabase: supabase.client as never,
+        organizationId: "org-1",
+        storeId: "store-1",
+      });
+
+      currentRows = [
+        {
+          id: "responsible-new",
+          name: "Joao",
+          role: "owner",
+          whatsapp_number: "5511888880000",
+        },
+      ];
+
+      const result = await loadCanonicalActivePrimaryStoreResponsible({
+        supabase: supabase.client as never,
+        organizationId: "org-1",
+        storeId: "store-1",
+      });
+      assert.equal(result.ok, true);
+      if (!result.ok) throw new Error("expected new primary responsible");
+      assert.equal(result.responsible.id, "responsible-new");
+      assert.notEqual(result.responsible.id, "responsible-old");
+      assert.notEqual(result.responsible.whatsappNumber, "5511999990000");
+    },
+  },
+  {
+    name: "canonical reader rejects a responsible from another tenant or store",
+    run: async () => {
+      const supabase = createStoreResponsiblesSupabase({
+        data: [],
+      });
+
+      const result = await loadCanonicalActivePrimaryStoreResponsible({
+        supabase: supabase.client as never,
+        organizationId: "org-1",
+        storeId: "store-1",
+      });
+
+      assert.deepEqual(result, {
+        ok: false,
+        reason: "responsible_primary_not_configured",
+      });
+      assert.deepEqual(supabase.filters, [
+        { column: "organization_id", value: "org-1" },
+        { column: "store_id", value: "store-1" },
+        { column: "is_primary", value: true },
+        { column: "is_active", value: true },
+      ]);
+    },
+  },
+  {
+    name: "canonical reader keeps replay behavior outside the dynamic identity lookup",
+    run: () => {
+      const source = readHelperSource();
+      assert.equal(source.includes('cache: "no-store"'), true);
+      assert.equal(source.includes(".from(\"store_responsibles\")"), true);
+      assert.equal(source.includes('.eq("is_primary", true)'), true);
+      assert.equal(source.includes('.eq("is_active", true)'), true);
     },
   },
   {
