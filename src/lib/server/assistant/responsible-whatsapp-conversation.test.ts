@@ -68,3 +68,41 @@ test("bridge treats sender role and message identity as database contracts", () 
   assert.match(migration, /revoke all on table public\.store_assistant_responsible_whatsapp_events[\s\S]*?from public, anon, authenticated/);
   assert.doesNotMatch(migration, /grant .* delete .*service_role/i);
 });
+
+test("panel messages preserve canonical responsible provenance in the shared thread", () => {
+  const migration = readFileSync(
+    "supabase/migrations/20261001100000_p19a_assistant_panel_provenance.sql",
+    "utf8",
+  );
+
+  assert.match(migration, /assistant_get_or_create_primary_thread/);
+  assert.match(migration, /sender_role/);
+  assert.match(migration, /'origin', 'panel'/);
+  assert.match(migration, /'channel', 'panel'/);
+  assert.match(migration, /'responsible_id', v_responsible_id/);
+  assert.match(migration, /is_primary is true/);
+  assert.match(migration, /is_active is true/);
+  assert.match(migration, /v_responsible_count <> 1/);
+  assert.match(migration, /v_thread_organization_id is distinct from p_organization_id/);
+  assert.match(migration, /v_thread_store_id is distinct from p_store_id/);
+});
+
+test("panel and WhatsApp use the same canonical message/thread contract", () => {
+  const panel = readFileSync(
+    "src/app/(app)/assistant/page.tsx",
+    "utf8",
+  );
+  const whatsapp = readFileSync(
+    "src/lib/server/assistant/responsible-whatsapp-conversation.ts",
+    "utf8",
+  );
+
+  assert.match(panel, /assistant_get_thread_summary/);
+  assert.match(panel, /assistant_list_messages_paginated/);
+  assert.match(panel, /assistant_send_human_message/);
+  assert.match(whatsapp, /getOrCreateAssistantThread/);
+  assert.match(whatsapp, /store_assistant_messages/);
+  assert.match(whatsapp, /origin: "whatsapp"/);
+  assert.match(whatsapp, /responsible_id: responsibleId/);
+  assert.match(whatsapp, /thread_id: thread\.threadId/);
+});
