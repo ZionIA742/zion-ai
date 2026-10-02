@@ -13,7 +13,7 @@ export default function AppShellClient({
 }) {
   const pathname = usePathname();
   const isFixedFullBleedPage = pathname === "/assistant" || pathname === "/schedule";
-  const isEdgeToEdgeScrollablePage = pathname === "/crm";
+  const isEdgeToEdgeScrollablePage = pathname === "/crm" || pathname === "/dashboard";
 
   return (
     <StoreProvider>
