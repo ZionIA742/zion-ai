@@ -1749,7 +1749,7 @@ function OnboardingContent() {
   if (storeLoading) {
     return (
       <div className="min-h-screen bg-gray-100 px-4 py-6">
-        <div className="mx-auto max-w-5xl">
+        <div className="mx-auto max-w-[1100px]">
           <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
             <p className="text-sm text-gray-600">Carregando loja...</p>
           </div>
@@ -1761,7 +1761,7 @@ function OnboardingContent() {
   if (fatalError) {
     return (
       <div className="min-h-screen bg-gray-100 px-4 py-6">
-        <div className="mx-auto max-w-5xl">
+        <div className="mx-auto max-w-[1100px]">
           <div className="rounded-2xl border border-red-200 bg-red-50 p-6 shadow-sm">
             <p className="text-sm text-red-800">{fatalError}</p>
           </div>
@@ -1774,7 +1774,7 @@ function OnboardingContent() {
 
   return (
     <div className="min-h-screen bg-gray-100 px-4 py-6">
-      <div className="mx-auto max-w-5xl">
+      <div className="mx-auto max-w-[1100px]">
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
           <StepBadge step={1} currentStep={currentStep} title="Loja" onClick={() => changeStep(1)} />
           <StepBadge
