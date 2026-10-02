@@ -656,7 +656,7 @@ export default function CrmPage() {
     <div className="min-h-[calc(100vh-151px)] overflow-x-hidden bg-gray-100">
       <div className="min-h-[calc(100vh-151px)]">
         <div className="border-b border-black/5 bg-white">
-          <div className="mx-auto w-full max-w-[1320px] px-5 py-5">
+          <div className="w-full px-5 py-5">
             <div className="flex flex-col gap-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
@@ -752,7 +752,7 @@ export default function CrmPage() {
           </div>
         </div>
 
-        <div className="mx-auto w-full max-w-[1320px] px-5 py-5">
+        <div className="w-full px-5 py-5">
           {errorMsg ? (
             <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-600/20">
               <div className="font-semibold">Erro</div>

@@ -12,7 +12,8 @@ export default function AppShellClient({
   children: ReactNode;
 }) {
   const pathname = usePathname();
-  const isFullBleedPage = pathname === "/assistant" || pathname === "/schedule";
+  const isFixedFullBleedPage = pathname === "/assistant" || pathname === "/schedule";
+  const isEdgeToEdgeScrollablePage = pathname === "/crm";
 
   return (
     <StoreProvider>
@@ -24,9 +25,11 @@ export default function AppShellClient({
 
           <main
             className={
-              isFullBleedPage
+              isFixedFullBleedPage
                 ? "flex-1 min-h-0 overflow-hidden"
-                : "flex-1 p-6 overflow-auto"
+                : isEdgeToEdgeScrollablePage
+                  ? "flex-1 min-h-0 overflow-auto"
+                  : "flex-1 p-6 overflow-auto"
             }
           >
             {children}
