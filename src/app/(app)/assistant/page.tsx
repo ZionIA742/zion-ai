@@ -1749,8 +1749,8 @@ export default function AssistantPage() {
   }
 
   return (
-    <div className="h-[calc(100dvh-132px)] overflow-hidden bg-gray-100 text-sm text-gray-900">
-      <div className="mx-auto flex h-full min-h-0 max-w-[1280px] flex-col px-2 py-2 md:px-3">
+    <div className="h-full overflow-hidden bg-gray-100 text-sm text-gray-900">
+      <div className="flex h-full min-h-0 flex-col">
         {errorText ? (
           <div className="mb-2 shrink-0 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-800 ring-1 ring-red-200">
             {errorText}
@@ -1763,7 +1763,7 @@ export default function AssistantPage() {
           </div>
         ) : null}
 
-        <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/10">
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white">
           <div className="flex shrink-0 items-center justify-between gap-4 border-b border-black/10 bg-white px-4 py-3">
             <div className="flex min-w-0 items-center gap-3">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-900 text-lg font-bold text-white shadow-sm">
