@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseBrowser";
 import { useStoreContext } from "@/components/StoreProvider";
@@ -750,6 +751,7 @@ export default function AssistantPage() {
   const [newMessage, setNewMessage] = useState("");
   const [pendingAttachment, setPendingAttachment] = useState<File | null>(null);
   const [recording, setRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordingErrorText, setRecordingErrorText] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1129,6 +1131,16 @@ export default function AssistantPage() {
     window.requestAnimationFrame(() => searchInputRef.current?.focus());
   }, [searchOpen]);
 
+  useEffect(() => {
+    if (!recording) return;
+
+    const interval = window.setInterval(() => {
+      setRecordingSeconds((current) => current + 1);
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [recording]);
+
   const handleChatScroll = useCallback(() => {
     const node = chatScrollRef.current;
     if (!node) return;
@@ -1186,6 +1198,7 @@ export default function AssistantPage() {
       };
 
       recorder.start();
+      setRecordingSeconds(0);
       setRecording(true);
     } catch (error: unknown) {
       setRecordingErrorText(
@@ -1764,13 +1777,22 @@ export default function AssistantPage() {
         ) : null}
 
         <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white">
-          <div className="flex shrink-0 items-center justify-between gap-4 border-b border-black/10 bg-white px-4 py-3">
+          <div className="flex shrink-0 items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-3">
             <div className="flex min-w-0 items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-900 text-lg font-bold text-white shadow-sm">
-                Z
+              <div
+                className="relative h-10 w-10 shrink-0 overflow-hidden rounded-full bg-gray-900 ring-1 ring-black/15"
+                aria-hidden="true"
+              >
+                <Image
+                  src="/branding/zion-logo.png"
+                  alt=""
+                  width={500}
+                  height={500}
+                  className="absolute left-1/2 top-1/2 h-[64px] w-[64px] max-w-none -translate-x-1/2 -translate-y-1/2 object-contain"
+                />
               </div>
               <div className="min-w-0">
-                <div className="truncate text-base font-bold text-gray-900">Assistente da loja</div>
+                <div className="truncate text-base font-bold text-gray-950">Assistente da loja</div>
                 <div className="mt-0.5 truncate text-[12px] text-gray-500">
                   {refreshing
                     ? "Atualizando conversa..."
@@ -1794,7 +1816,7 @@ export default function AssistantPage() {
                   setSearchOpen((current) => !current);
                   if (searchOpen) setSearchText("");
                 }}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-gray-700 ring-1 ring-black/10 transition hover:bg-gray-50"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-gray-50 text-gray-700 ring-1 ring-gray-200 transition hover:bg-gray-100 hover:text-black"
                 aria-label="Buscar na conversa"
                 title="Buscar na conversa"
               >
@@ -1805,32 +1827,9 @@ export default function AssistantPage() {
               </button>
 
               <button
-                onClick={() => void loadAssistant()}
-                disabled={loading || storeLoading || !organizationId || !activeStoreId}
-                className="rounded-full bg-white px-3.5 py-2 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Recarregar
-              </button>
-            </div>
-          </div>
-
-          <div
-            className={[
-              "border-b border-black/10 bg-[#fbfbfb] px-3 py-2 md:px-4",
-              externalQueueOpen ? "flex min-h-0 flex-1 flex-col" : "shrink-0",
-            ].join(" ")}
-          >
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="truncate text-[12px] font-semibold text-gray-900">
-                  Revisões e envios
-                </div>
-              </div>
-
-              <button
                 type="button"
                 onClick={() => setExternalQueueOpen((current) => !current)}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-800 ring-1 ring-black/10 transition hover:bg-gray-50"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-gray-50 px-3.5 py-2 text-[11px] font-semibold text-gray-800 ring-1 ring-gray-200 transition hover:bg-gray-100 hover:text-black"
                 aria-expanded={externalQueueOpen}
               >
                 {externalQueueOpen
@@ -1849,15 +1848,26 @@ export default function AssistantPage() {
                   <path d="m6 9 6 6 6-6" />
                 </svg>
               </button>
-            </div>
 
-            <div
-              className={
-                externalQueueOpen
-                  ? "mt-2 min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-2xl pr-1 [scrollbar-gutter:stable]"
-                  : "hidden"
-              }
-            >
+              <button
+                onClick={() => void loadAssistant()}
+                disabled={loading || storeLoading || !organizationId || !activeStoreId}
+                className="rounded-full bg-gray-50 px-3.5 py-2 text-[11px] font-semibold text-gray-900 ring-1 ring-gray-200 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Recarregar
+              </button>
+            </div>
+          </div>
+
+          <div
+            className={
+              externalQueueOpen
+                ? "flex min-h-0 flex-1 flex-col border-b border-black/10 bg-[#fbfbfb] px-3 py-2 md:px-4"
+                : "hidden"
+            }
+          >
+
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-2xl pr-1 [scrollbar-gutter:stable]">
               <ResponsibleExternalNotificationsPanel
                 organizationId={organizationId}
                 storeId={activeStoreId}
@@ -2727,6 +2737,47 @@ export default function AssistantPage() {
               </div>
             ) : null}
 
+            {recording ? (
+              <div
+                className="mb-2 flex min-h-[58px] items-center gap-3 rounded-[22px] border border-gray-200 bg-gray-50 px-4 py-2.5"
+                aria-live="polite"
+              >
+                <div className="flex shrink-0 items-center gap-2">
+                  <span
+                    className="h-2.5 w-2.5 animate-pulse rounded-full bg-red-500"
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-[44px] text-sm font-medium tabular-nums text-gray-900">
+                    {`${String(Math.floor(recordingSeconds / 60)).padStart(2, "0")}:${String(
+                      recordingSeconds % 60
+                    ).padStart(2, "0")}`}
+                  </span>
+                </div>
+
+                <div
+                  className="flex min-w-0 flex-1 items-center justify-center gap-1 overflow-hidden"
+                  aria-hidden="true"
+                >
+                  {[12, 20, 28, 16, 24, 32, 18, 26, 14, 30, 22, 12, 28, 18, 24, 32, 16, 26].map(
+                    (height, index) => (
+                      <span
+                        key={`${height}-${index}`}
+                        className="w-1 shrink-0 animate-pulse rounded-full bg-gray-400/80"
+                        style={{
+                          height: `${height}px`,
+                          animationDelay: `${index * 55}ms`,
+                        }}
+                      />
+                    )
+                  )}
+                </div>
+
+                <span className="shrink-0 text-[11px] font-medium text-gray-500">
+                  Gravando
+                </span>
+              </div>
+            ) : null}
+
             <div className="flex items-end gap-2">
               <button
                 type="button"
@@ -2759,7 +2810,9 @@ export default function AssistantPage() {
                 onClick={() => (recording ? stopAudioRecording() : void startAudioRecording())}
                 className={[
                   "mb-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full ring-1 ring-black/10 hover:bg-gray-50",
-                  recording ? "bg-red-50 text-red-700" : "bg-white text-gray-700",
+                  recording
+                    ? "bg-red-600 text-white shadow-sm hover:bg-red-700"
+                    : "bg-white text-gray-700",
                 ].join(" ")}
                 aria-label={recording ? "Parar gravação" : "Gravar áudio"}
                 title={recording ? "Parar gravação" : "Gravar áudio"}
