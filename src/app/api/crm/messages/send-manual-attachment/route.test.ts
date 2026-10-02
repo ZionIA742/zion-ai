@@ -21,7 +21,6 @@ type QueryRecord = {
 type ConversationFixture = {
   id: string;
   organization_id: string;
-  store_id: string | null;
   lead_id: string | null;
 };
 
@@ -392,7 +391,6 @@ const tests: TestCase[] = [
         conversation: {
           id: "conversation-1",
           organization_id: "access-org",
-          store_id: "access-store",
           lead_id: "lead-1",
         },
         lead: {
@@ -437,7 +435,6 @@ const tests: TestCase[] = [
       assert.deepEqual(serviceSupabase.queries[0]?.filters, {
         id: "conversation-1",
         organization_id: "access-org",
-        store_id: "access-store",
       });
       assert.deepEqual(serviceSupabase.queries[1]?.filters, {
         id: "lead-1",
@@ -480,7 +477,6 @@ const tests: TestCase[] = [
       assert.deepEqual(serviceSupabase.queries[0]?.filters, {
         id: "conversation-1",
         organization_id: "access-org",
-        store_id: "access-store",
       });
       assert.equal(serviceSupabase.uploads.length, 0);
       assert.equal(serviceSupabase.rpcCalls.length, 0);
@@ -493,7 +489,6 @@ const tests: TestCase[] = [
         conversation: {
           id: "conversation-1",
           organization_id: "access-org",
-          store_id: "access-store",
           lead_id: "lead-1",
         },
         lead: null,
@@ -539,7 +534,6 @@ const tests: TestCase[] = [
         conversation: {
           id: "conversation-1",
           organization_id: "access-org",
-          store_id: "access-store",
           lead_id: "lead-1",
         },
         lead: {
@@ -585,7 +579,6 @@ const tests: TestCase[] = [
         conversation: {
           id: "conversation-1",
           organization_id: "access-org",
-          store_id: "access-store",
           lead_id: "lead-1",
         },
         lead: {
@@ -638,7 +631,6 @@ const tests: TestCase[] = [
           conversation: {
             id: "conversation-1",
             organization_id: "access-org",
-            store_id: "access-store",
             lead_id: "lead-1",
           },
           lead: {
@@ -682,7 +674,6 @@ const tests: TestCase[] = [
         conversation: {
           id: "conversation-1",
           organization_id: "access-org",
-          store_id: "access-store",
           lead_id: "lead-1",
         },
         lead: {
@@ -724,7 +715,6 @@ const tests: TestCase[] = [
         conversation: {
           id: "conversation-1",
           organization_id: "access-org",
-          store_id: "access-store",
           lead_id: "lead-1",
         },
         lead: {
@@ -771,7 +761,6 @@ const tests: TestCase[] = [
         conversation: {
           id: "conversation-1",
           organization_id: "access-org",
-          store_id: "access-store",
           lead_id: "lead-1",
         },
         lead: {
@@ -812,7 +801,6 @@ const tests: TestCase[] = [
         conversation: {
           id: "conversation-1",
           organization_id: "access-org",
-          store_id: "access-store",
           lead_id: "lead-1",
         },
         lead: {
@@ -867,7 +855,6 @@ const tests: TestCase[] = [
         conversation: {
           id: "conversation-1",
           organization_id: "access-org",
-          store_id: "access-store",
           lead_id: "lead-1",
         },
         lead: {
@@ -912,7 +899,6 @@ const tests: TestCase[] = [
         conversation: {
           id: "conversation-1",
           organization_id: "access-org",
-          store_id: "access-store",
           lead_id: "lead-1",
         },
         lead: {
@@ -1002,6 +988,11 @@ const tests: TestCase[] = [
       assert.equal(source.includes("details"), false);
       assert.equal(source.includes("stack"), false);
       assert.equal(source.includes("cause"), false);
+      const conversationLoader = source.slice(
+        source.indexOf("async function loadScopedConversation"),
+        source.indexOf("async function loadScopedLead"),
+      );
+      assert.equal(conversationLoader.includes("store_id"), false);
       assert.match(
         source,
         /serviceSupabase\.storage[\s\S]*?\.from\(STORAGE_BUCKET\)[\s\S]*?\.upload\(/,

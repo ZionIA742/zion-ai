@@ -15,6 +15,12 @@ import {
   clearPendingManualQuoteCreationOperation,
   getOrCreatePendingManualQuoteCreationOperation,
 } from "./quote-create-operation";
+import QuoteCatalogPrefillPicker from "./QuoteCatalogPrefillPicker";
+import {
+  isQuoteTechnicalServicesPolicyAvailable,
+  type QuoteCatalogPrefillValues,
+  type QuoteTechnicalServicesPolicy,
+} from "./quote-catalog-prefill";
 import { supabase } from "@/lib/supabaseBrowser";
 import {
   buildGoogleMapsDirectionsUrl,
@@ -1298,6 +1304,10 @@ export default function LeadPage() {
   const [isGeneratingManualQuote, setIsGeneratingManualQuote] = useState(false);
   const [quoteFormError, setQuoteFormError] = useState<string | null>(null);
   const [quoteFormSuccess, setQuoteFormSuccess] = useState<string | null>(null);
+  const [quoteTechnicalServicesPolicy, setQuoteTechnicalServicesPolicy] =
+    useState<QuoteTechnicalServicesPolicy | null>(null);
+  const [quoteTechnicalServicesConfigured, setQuoteTechnicalServicesConfigured] =
+    useState(false);
   const [quoteFormMode, setQuoteFormMode] = useState<"create" | "edit">("create");
   const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
   const [editingQuoteNumber, setEditingQuoteNumber] = useState<string | null>(null);
@@ -1509,6 +1519,12 @@ export default function LeadPage() {
   const detailsTabStorageKey = leadId
     ? `zion:crm-lead-details-tab:${leadId}`
     : null;
+  const quoteServiceOptionEnabled =
+    quoteTechnicalServicesConfigured &&
+    isQuoteTechnicalServicesPolicyAvailable(quoteTechnicalServicesPolicy);
+  const quoteHasUnavailableService =
+    quoteItems.some((item) => item.itemType === "service") &&
+    !quoteServiceOptionEnabled;
   const quoteHasTitle = quoteTitle.trim().length > 0;
   const quoteHasAtLeastOneItem = quoteItems.length > 0;
   const quoteItemsAreValid = quoteItems.every((item) => {
@@ -1519,11 +1535,16 @@ export default function LeadPage() {
     return hasName && quantity > 0 && unitPrice > 0;
   });
   const canGenerateQuotePdf =
-    quoteHasTitle && quoteHasAtLeastOneItem && quoteItemsAreValid;
+    quoteHasTitle &&
+    quoteHasAtLeastOneItem &&
+    quoteItemsAreValid &&
+    !quoteHasUnavailableService;
   const isEditingQuote = quoteFormMode === "edit";
-  const quoteValidationMessage = canGenerateQuotePdf
-    ? null
-    : "Preencha o t\u00edtulo, o nome do item, a quantidade e o pre\u00e7o para gerar o PDF.";
+  const quoteValidationMessage = quoteHasUnavailableService
+    ? "A loja não possui serviços técnicos configurados e disponíveis para este orçamento."
+    : canGenerateQuotePdf
+      ? null
+      : "Preencha o t\u00edtulo, o nome do item, a quantidade e o pre\u00e7o para gerar o PDF.";
   const quoteDraftPayload: QuoteDraftPayload = {
     isQuoteModalOpen,
     quoteTitle,
@@ -1532,6 +1553,70 @@ export default function LeadPage() {
     quoteValidityDays,
     quoteItems,
   };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const organizationId = String(lead?.organization_id || "").trim();
+    const storeId = String(lead?.store_id || "").trim();
+
+    if (!organizationId || !storeId) {
+      setQuoteTechnicalServicesPolicy(null);
+      setQuoteTechnicalServicesConfigured(false);
+      return;
+    }
+
+    void (async () => {
+      const { data, error } = await supabase.rpc(
+        "read_store_operation_execution_policies_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: storeId,
+        },
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      if (error) {
+        console.error(
+          "[LeadPage] erro ao carregar serviços técnicos para orçamento:",
+          error,
+        );
+        setQuoteTechnicalServicesPolicy(null);
+        setQuoteTechnicalServicesConfigured(false);
+        return;
+      }
+
+      const rawData = data as unknown;
+      const row = (
+        Array.isArray(rawData)
+          ? rawData[0] ?? null
+          : rawData ?? null
+      ) as
+        | {
+            technical_services_policy?: QuoteTechnicalServicesPolicy | null;
+            technical_services_configured_at?: string | null;
+          }
+        | null;
+
+      const configured = Boolean(
+        String(row?.technical_services_configured_at || "").trim(),
+      );
+
+      setQuoteTechnicalServicesConfigured(configured);
+      setQuoteTechnicalServicesPolicy(
+        configured && row?.technical_services_policy
+          ? row.technical_services_policy
+          : null,
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [lead?.organization_id, lead?.store_id]);
 
   useEffect(() => {
     if (!commercialActionsOpen) {
@@ -1747,6 +1832,24 @@ export default function LeadPage() {
           ? {
               ...item,
               [field]: value,
+            }
+          : item
+      )
+    );
+  }
+
+  function applyCatalogPrefillToQuoteItem(
+    itemId: string,
+    values: QuoteCatalogPrefillValues
+  ) {
+    setQuoteItems((current) =>
+      current.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              name: values.name,
+              description: values.description,
+              unitPriceReais: values.unitPriceReais,
             }
           : item
       )
@@ -6006,18 +6109,49 @@ export default function LeadPage() {
                                   </label>
                                   <select
                                     value={item.itemType}
-                                    onChange={(event) =>
-                                      updateQuoteItem(item.id, "itemType", event.target.value)
-                                    }
+                                    onChange={(event) => {
+                                      const nextItemType = event.target.value;
+
+                                      if (
+                                        nextItemType === "service" &&
+                                        !quoteServiceOptionEnabled
+                                      ) {
+                                        return;
+                                      }
+
+                                      updateQuoteItem(item.id, "itemType", nextItemType);
+                                    }}
                                     className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
                                   >
                                     <option value="pool_installation">
                                       {getQuoteItemTypeLabel("pool_installation")}
                                     </option>
                                     <option value="custom">{getQuoteItemTypeLabel("custom")}</option>
-                                    <option value="service">{getQuoteItemTypeLabel("service")}</option>
+                                    <option
+                                      value="service"
+                                      disabled={!quoteServiceOptionEnabled}
+                                    >
+                                      {getQuoteItemTypeLabel("service")}
+                                      {!quoteServiceOptionEnabled ? " (não disponível)" : ""}
+                                    </option>
                                   </select>
                                 </div>
+
+                                {!isEditingQuote &&
+                                lead?.organization_id &&
+                                lead?.store_id ? (
+                                  <div className="md:col-span-2">
+                                    <QuoteCatalogPrefillPicker
+                                      organizationId={lead.organization_id}
+                                      storeId={lead.store_id}
+                                      itemType={item.itemType}
+                                      technicalServicesPolicy={quoteTechnicalServicesPolicy}
+                                      onSelect={(values) =>
+                                        applyCatalogPrefillToQuoteItem(item.id, values)
+                                      }
+                                    />
+                                  </div>
+                                ) : null}
 
                                 <div>
                                   <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">

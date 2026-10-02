@@ -49,7 +49,6 @@ const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
 type ConversationRow = {
   id: string;
   organization_id: string;
-  store_id: string | null;
   lead_id: string | null;
 };
 
@@ -295,14 +294,12 @@ async function loadScopedConversation(args: {
   supabase: ServiceSupabaseClient;
   conversationId: string;
   organizationId: string;
-  storeId: string;
 }) {
   const { data, error } = await args.supabase
     .from("conversations")
-    .select("id, organization_id, store_id, lead_id")
+    .select("id, organization_id, lead_id")
     .eq("id", args.conversationId)
     .eq("organization_id", args.organizationId)
-    .eq("store_id", args.storeId)
     .maybeSingle<ConversationRow>();
 
   if (error) {
@@ -507,7 +504,6 @@ export async function handleSendManualAttachmentPost(
       supabase: serviceSupabase,
       conversationId,
       organizationId: access.organizationId,
-      storeId: access.storeId,
     });
 
     if (!conversationResult.ok) {
