@@ -13174,7 +13174,7 @@ export default function ConfiguracoesPage() {
   ]);
 
   return (
-    <div className="mx-auto w-full max-w-[1180px] space-y-4 overflow-x-hidden pb-10 pt-5">
+    <div className="w-full space-y-4 overflow-x-hidden px-5 pb-10 pt-5">
 
       {!hasValidStoreContext ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
