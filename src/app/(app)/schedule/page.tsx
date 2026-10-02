@@ -845,6 +845,20 @@ export default function SchedulePage() {
   const selectedItemRef = useRef<ScheduleItem | null>(null);
   const editModeRef = useRef(false);
   const loadRequestIdRef = useRef(0);
+  const scheduleFullscreenRef = useRef<HTMLDivElement | null>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  useEffect(() => {
+    function handleFullscreenChange() {
+      setIsExpanded(document.fullscreenElement === scheduleFullscreenRef.current);
+    }
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, []);
 
   useEffect(() => {
     selectedItemRef.current = selectedItem;
@@ -2448,10 +2462,38 @@ export default function SchedulePage() {
     }
   }
 
+  async function toggleScheduleFullscreen() {
+    const element = scheduleFullscreenRef.current;
+
+    if (!element || typeof document === "undefined") return;
+
+    try {
+      setErrorText(null);
+
+      if (document.fullscreenElement === element) {
+        await document.exitFullscreen();
+        return;
+      }
+
+      await element.requestFullscreen();
+    } catch (error: unknown) {
+      setErrorText(
+        getErrorMessage(error, "Não foi possível alterar o modo expandido.")
+      );
+    }
+  }
+
   return (
-    <div className="h-[calc(100vh-151px)] overflow-hidden bg-gray-100 text-sm">
-      <div className="mx-auto flex h-full min-h-0 max-w-[1600px] flex-col overflow-hidden px-2 py-1.5 lg:px-3">
-        <div className="mb-2 shrink-0 rounded-xl bg-white shadow-sm ring-1 ring-black/5">
+    <div
+      ref={scheduleFullscreenRef}
+      className={
+        isExpanded
+          ? "h-screen w-screen overflow-hidden bg-white text-sm"
+          : "h-full w-full overflow-hidden bg-white text-sm"
+      }
+    >
+      <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
+        <div className="shrink-0 border-b border-gray-200 bg-white">
           <div className="overflow-hidden border-b border-black/5 px-4 py-3">
             <div className="flex w-full min-w-0 items-center gap-1.5 whitespace-nowrap">
               <button
@@ -2541,6 +2583,21 @@ export default function SchedulePage() {
                 >
                   Recarregar
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => void toggleScheduleFullscreen()}
+                  className={[
+                    "rounded-lg px-3.5 py-2 text-xs font-semibold transition",
+                    isExpanded
+                      ? "bg-slate-900 text-white hover:bg-slate-800"
+                      : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50",
+                  ].join(" ")}
+                  aria-pressed={isExpanded}
+                  title={isExpanded ? "Sair do modo expandido" : "Expandir agenda"}
+                >
+                  {isExpanded ? "Sair do modo expandido" : "Expandir"}
+                </button>
               </div>
             </div>
           </div>
@@ -2580,7 +2637,7 @@ export default function SchedulePage() {
         ) : null}
 
         <div className="min-h-0 flex-1 overflow-hidden">
-          <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-black/5">
+          <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
             {loading || storeLoading ? (
               <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-gray-500">
                 Carregando agenda...
