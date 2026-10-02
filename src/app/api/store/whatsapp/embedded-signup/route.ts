@@ -22,6 +22,7 @@ type EmbeddedSignupRequestBody = {
   whatsappBusinessAccountId?: unknown;
   phoneNumberId?: unknown;
   twoStepPin?: unknown;
+  changeRequestIdempotencyKey?: unknown;
 };
 
 type MaterializedWhatsappIntegration = {
@@ -33,6 +34,16 @@ type MaterializedWhatsappIntegration = {
   phone_number_id: string;
   whatsapp_business_account_id: string;
   display_phone_number: string;
+};
+
+type MaterializedWhatsappBindingCandidate = {
+  request_id: string;
+  outcome: string;
+  status: string;
+  active_integration_id: string;
+  candidate_phone_number_id: string;
+  candidate_whatsapp_business_account_id: string;
+  candidate_display_phone_number: string;
 };
 
 type PrivilegedClient = ReturnType<typeof createClient>;
@@ -253,7 +264,11 @@ function mapWriterError(error: { message?: string | null } | null | undefined) {
     message.includes("PHONE_ALREADY_BOUND") ||
     message.includes("PHONE_CHANGE_REQUIRES_SAFE_FLOW") ||
     message.includes("WABA_MISMATCH") ||
-    message.includes("CONCURRENT_CONFLICT")
+    message.includes("CONCURRENT_CONFLICT") ||
+    message.includes("CANDIDATE_CONFLICT") ||
+    message.includes("CANDIDATE_PHONE_ALREADY_BOUND") ||
+    message.includes("ACTIVE_BINDING_AMBIGUOUS") ||
+    message.includes("ACTIVE_BINDING_CHANGED")
   ) {
     return {
       status: 409,
@@ -269,6 +284,14 @@ function mapWriterError(error: { message?: string | null } | null | undefined) {
     message:
       "A Meta autorizou o acesso, mas nao foi possivel salvar a integracao. Reinicie o Embedded Signup.",
   };
+}
+
+function isNoChangeCandidateError(error: { message?: string | null } | null | undefined) {
+  const message = cleanText(error?.message);
+  return (
+    message.includes("ZION_WHATSAPP_CHANGE_REQUIRES_ACTIVE_BINDING") ||
+    message.includes("ZION_WHATSAPP_CHANGE_NOT_REQUIRED")
+  );
 }
 
 function mapMetaError(error: MetaWhatsappEmbeddedSignupError) {
@@ -346,6 +369,62 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
 
     try {
       const privilegedClient = createClientWithPrivileges();
+      const idempotencyKey =
+        trimInputString(bodyResult.body.changeRequestIdempotencyKey) ||
+        `embedded-signup:${validated.phoneNumberId}`;
+      const candidateResult = await privilegedClient.rpc(
+        "materialize_whatsapp_binding_candidate_by_system",
+        {
+          p_organization_id: access.organizationId,
+          p_store_id: access.storeId,
+          p_source: "meta_embedded_signup",
+          p_idempotency_key: idempotencyKey,
+          p_whatsapp_business_account_id: validated.whatsappBusinessAccountId,
+          p_phone_number_id: validated.phoneNumberId,
+          p_display_phone_number: validated.displayPhoneNumber,
+          p_provenance: {
+            graph_api_version: validated.graphApiVersion,
+            meta_app_id: validated.appId,
+            validated_at: validated.validatedAt,
+          },
+        },
+      );
+
+      if (!candidateResult.error) {
+        const candidateRow = (Array.isArray(candidateResult.data)
+          ? candidateResult.data[0]
+          : candidateResult.data) as MaterializedWhatsappBindingCandidate | null;
+
+        if (!candidateRow) {
+          throw new Error("Candidate writer returned no change request.");
+        }
+
+        return createJsonResponse({
+          ok: true,
+          outcome: candidateRow.outcome,
+          changeRequest: {
+            id: candidateRow.request_id,
+            status: candidateRow.status,
+            activeIntegrationId: candidateRow.active_integration_id,
+          },
+          candidate: {
+            phoneNumberId: candidateRow.candidate_phone_number_id,
+            whatsappBusinessAccountId:
+              candidateRow.candidate_whatsapp_business_account_id,
+            displayPhoneNumber: candidateRow.candidate_display_phone_number,
+            isActive: false,
+          },
+        });
+      }
+
+      if (!isNoChangeCandidateError(candidateResult.error)) {
+        const mapped = mapWriterError(candidateResult.error);
+        return createJsonResponse(
+          { ok: false, error: mapped.error, message: mapped.message },
+          mapped.status,
+        );
+      }
+
       const { data, error } = await privilegedClient.rpc(
         "materialize_store_whatsapp_embedded_signup_by_system",
         {

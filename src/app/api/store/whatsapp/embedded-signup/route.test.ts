@@ -133,13 +133,30 @@ function createTrackedRequest(body: unknown, tracker: { reads: number }) {
 function createPrivilegedClientMock(args?: {
   rpcError?: { message: string };
   rpcData?: unknown;
+  candidateRpcError?: { message: string } | null;
+  candidateRpcData?: unknown;
 }) {
   const rpcCalls: RpcCall[] = [];
+  const candidateRpcCalls: RpcCall[] = [];
 
   return {
     rpcCalls,
+    candidateRpcCalls,
     client: {
       async rpc(name: string, rpcArgs: Record<string, unknown>) {
+        if (name === "materialize_whatsapp_binding_candidate_by_system") {
+          candidateRpcCalls.push({ name, args: { ...rpcArgs } });
+          return {
+            data: args?.candidateRpcData ?? null,
+            error:
+              args?.candidateRpcError === null
+                ? null
+                : args?.candidateRpcError ?? {
+                    message: "ZION_WHATSAPP_CHANGE_REQUIRES_ACTIVE_BINDING",
+                  },
+          };
+        }
+
         rpcCalls.push({ name, args: { ...rpcArgs } });
 
         return {
@@ -198,11 +215,15 @@ function createRouteHandler(args?: {
   validate?: () => Promise<ReturnType<typeof createSuccessfulValidation>>;
   rpcError?: { message: string };
   rpcData?: unknown;
+  candidateRpcError?: { message: string } | null;
+  candidateRpcData?: unknown;
   events?: string[];
 }) {
   const rpc = createPrivilegedClientMock({
     rpcError: args?.rpcError,
     rpcData: args?.rpcData,
+    candidateRpcError: args?.candidateRpcError,
+    candidateRpcData: args?.candidateRpcData,
   });
 
   const handler = createStoreWhatsappEmbeddedSignupPostHandler({
@@ -225,7 +246,11 @@ function createRouteHandler(args?: {
     },
   });
 
-  return { handler, rpcCalls: rpc.rpcCalls };
+  return {
+    handler,
+    rpcCalls: rpc.rpcCalls,
+    candidateRpcCalls: rpc.candidateRpcCalls,
+  };
 }
 
 const tests: TestCase[] = [
@@ -1064,6 +1089,99 @@ const tests: TestCase[] = [
       );
 
       assert.equal(fetchCalls, 0);
+    },
+  },
+  {
+    name: "existing active binding materializes a non-active candidate without secrets",
+    run: async () => {
+      const { handler, candidateRpcCalls, rpcCalls } = createRouteHandler({
+        candidateRpcError: null,
+        candidateRpcData: [
+          {
+            request_id: "change-request-1",
+            outcome: "candidate_materialized",
+            status: "candidate_received",
+            active_integration_id: "active-1471",
+            candidate_phone_number_id: "phone-0018",
+            candidate_whatsapp_business_account_id: "waba-0018",
+            candidate_display_phone_number: "+55 11 90000-0018",
+          },
+        ],
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          twoStepPin: "123456",
+          changeRequestIdempotencyKey: "change-0018",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 200);
+      assert.equal(candidateRpcCalls.length, 1);
+      assert.equal(rpcCalls.length, 0);
+      assert.equal(candidateRpcCalls[0]?.args.p_idempotency_key, "change-0018");
+      assert.equal(candidateRpcCalls[0]?.args.p_access_token, undefined);
+      assert.deepEqual(body.changeRequest, {
+        id: "change-request-1",
+        status: "candidate_received",
+        activeIntegrationId: "active-1471",
+      });
+      assert.deepEqual(body.candidate, {
+        phoneNumberId: "phone-0018",
+        whatsappBusinessAccountId: "waba-0018",
+        displayPhoneNumber: "+55 11 90000-0018",
+        isActive: false,
+      });
+      assertNoSecretLeak(body, ["auth-code", "123456", "fake-business-token"]);
+    },
+  },
+  {
+    name: "first connection falls back to the existing active writer",
+    run: async () => {
+      const { handler, candidateRpcCalls, rpcCalls } = createRouteHandler();
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          twoStepPin: "123456",
+        }),
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(candidateRpcCalls.length, 1);
+      assert.equal(rpcCalls.length, 1);
+      assert.equal(rpcCalls[0]?.name, "materialize_store_whatsapp_embedded_signup_by_system");
+    },
+  },
+  {
+    name: "conflicting candidate is returned as a safe conflict without active writer",
+    run: async () => {
+      const { handler, candidateRpcCalls, rpcCalls } = createRouteHandler({
+        candidateRpcError: {
+          message: "ZION_WHATSAPP_CHANGE_CANDIDATE_CONFLICT",
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          twoStepPin: "123456",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "WHATSAPP_EMBEDDED_SIGNUP_CONFLICT");
+      assert.equal(candidateRpcCalls.length, 1);
+      assert.equal(rpcCalls.length, 0);
     },
   },
   {
