@@ -347,7 +347,7 @@ export default function LoginPage() {
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_22%,rgba(255,255,255,0.08),transparent_34%),radial-gradient(circle_at_50%_78%,rgba(161,161,170,0.05),transparent_38%)]" />
       <div className="relative z-10 flex flex-1 items-center justify-center px-4 pt-3">
         <section className="w-full max-w-[420px] rounded-[20px] border border-white/10 bg-[#121214]/90 p-[22px] shadow-[0_24px_70px_rgba(0,0,0,0.38)] backdrop-blur-md sm:p-6">
-        <div className="mb-5 flex items-center justify-center gap-2.5">
+        <div className="mb-5 flex items-end justify-center gap-1">
           <span className="relative h-[46px] w-[46px] shrink-0 overflow-hidden" aria-hidden="true">
             <Image
               src="/branding/zion-logo.png"
@@ -363,7 +363,6 @@ export default function LoginPage() {
             className="flex items-center gap-[0.04em] text-[25px] font-semibold uppercase leading-none text-zinc-100 [font-family:var(--font-geist-sans)]"
             aria-label="ZION"
           >
-            <span className="inline-block -skew-x-[14deg] tracking-[0.01em]">Z</span>
             <span className="inline-block -skew-x-[14deg] tracking-[0.01em]">I</span>
             <span className="inline-block -skew-x-[14deg] tracking-[0.01em]">O</span>
             <span className="inline-block -skew-x-[14deg] tracking-[0.01em]">N</span>
