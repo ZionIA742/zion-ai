@@ -13,6 +13,7 @@ import {
   describeCanonicalKnownFact,
   detectCustomerCatalogDocumentRequest,
   generateAiSalesReply,
+  resolveSalesAiPriceNegotiationStrategy,
   loadCustomerCatalogDocumentsForAiBySystem,
   loadAnchoredCanonicalCommercialContext,
   loadCanonicalCommercialOpportunityStage,
@@ -33,11 +34,130 @@ import {
   selectMessagesForCurrentCommercialInference,
 } from "./generate-ai-sales-reply.js";
 
+const strategyDiscountSettings = {
+  organization_id: "org-1",
+  store_id: "store-1",
+  default_discount_percent: 5,
+  max_discount_percent: 10,
+  allow_ask_above_max_discount: false,
+  discount_autonomy_mode: "default_step_autonomous",
+  discount_special_rules: null,
+};
+
 type Row = Record<string, unknown>;
 type ResolveMessagesArgs = Parameters<typeof resolveMessagesWithCommercialContext>[0];
 type TestMessage = ResolveMessagesArgs["messages"][number];
 type TestSession = ResolveMessagesArgs["conversationSessions"][number];
 type TestLink = ResolveMessagesArgs["commercialContextLinks"][number];
+
+test("8.3 runtime strategy adapter covers the commercial scenarios", () => {
+  const base = {
+    productIdentified: true,
+    projectIdentified: true,
+    reliablePriceCents: 100000,
+    discountSettings: strategyDiscountSettings,
+    highValueDiscountSettings: null,
+  };
+
+  assert.equal(
+    resolveSalesAiPriceNegotiationStrategy({
+      ...base,
+      conversationPattern: "generic_pool_opening",
+      lastCustomerMessage: "Oi, queria saber sobre piscinas.",
+    }).kind,
+    "not_applicable",
+  );
+  assert.equal(
+    resolveSalesAiPriceNegotiationStrategy({
+      ...base,
+      conversationPattern: "price_question",
+      lastCustomerMessage: "Quanto custa a piscina X?",
+    }).kind,
+    "full_price",
+  );
+  assert.equal(
+    resolveSalesAiPriceNegotiationStrategy({
+      ...base,
+      productIdentified: false,
+      projectIdentified: false,
+      conversationPattern: "discount_question",
+      lastCustomerMessage: "Tem desconto?",
+    }).kind,
+    "qualify_before_discount",
+  );
+  assert.equal(
+    resolveSalesAiPriceNegotiationStrategy({
+      ...base,
+      materialPriceObjection: false,
+      conversationPattern: "discount_question",
+      lastCustomerMessage: "Tem desconto?",
+      priorConcessionState: "none",
+    }).kind,
+    "full_price",
+  );
+  const priceObjection = resolveSalesAiPriceNegotiationStrategy({
+    ...base,
+    conversationPattern: "discount_question",
+    lastCustomerMessage: "Achei caro.",
+    priorConcessionState: "unknown",
+  });
+  assert.equal(priceObjection.kind, "defend_value");
+  assert.equal(priceObjection.shouldStartFirstConcession, false);
+
+  const conditionedClose = resolveSalesAiPriceNegotiationStrategy({
+    ...base,
+    conversationPattern: "discount_question",
+    lastCustomerMessage: "Esta acima do meu orcamento. Se melhorar um pouco consigo fechar.",
+    priorConcessionState: "none",
+  });
+  assert.equal(conditionedClose.kind, "first_concession_candidate");
+  assert.equal(conditionedClose.shouldStartFirstConcession, true);
+
+  assert.equal(
+    resolveSalesAiPriceNegotiationStrategy({
+      ...base,
+      conversationPattern: "discount_question",
+      lastCustomerMessage: "Se fizer por R$ 900 eu fecho.",
+      priorConcessionState: "none",
+    }).kind,
+    "requires_human_or_special_policy",
+  );
+  assert.notEqual(
+    resolveSalesAiPriceNegotiationStrategy({
+      ...base,
+      conversationPattern: "discount_question",
+      lastCustomerMessage: "No Pix tem desconto?",
+      priorConcessionState: "none",
+    }).kind,
+    "first_concession_candidate",
+  );
+  assert.equal(
+    resolveSalesAiPriceNegotiationStrategy({
+      ...base,
+      conversationPattern: "discount_question",
+      lastCustomerMessage: "Venda de alto valor, posso ter uma condicao?",
+      highValueDiscountSettings: {
+        organization_id: "org-1",
+        store_id: "store-1",
+        enabled: true,
+        threshold_amount_cents: 50000,
+        discount_percent: 5,
+      },
+      priorConcessionState: "none",
+    }).kind,
+    "requires_human_or_special_policy",
+  );
+  assert.equal(
+    resolveSalesAiPriceNegotiationStrategy({
+      ...base,
+      conversationPattern: "discount_question",
+      lastCustomerMessage: "No Pix tem desconto?",
+      discountSettings: null,
+      priorConcessionState: "none",
+    }).kind,
+    "requires_human_or_special_policy",
+  );
+});
 
 class FakeQuery {
   private filters: Array<(row: Row) => boolean> = [];
@@ -553,6 +673,7 @@ function createGenerateAiSalesReplySupabase(args?: {
   brazilianMunicipalities?: Row[];
   brazilianMunicipalityError?: { message: string } | null;
   paymentSettingsReaderResponse?: RpcMockEntry;
+  strategySettingsReaderResponse?: RpcMockEntry;
   channelSettingsReaderResponse?: RpcMockEntry;
   operationExecutionPoliciesReaderResponse?: RpcMockEntry;
   customerCatalogDocumentsReaderResponse?: RpcMockEntry;
@@ -728,6 +849,11 @@ function createGenerateAiSalesReplySupabase(args?: {
       ? { brazilian_municipalities: args.brazilianMunicipalityError }
       : {},
     {
+      read_store_strategy_settings_by_system:
+        args?.strategySettingsReaderResponse ?? {
+          data: null,
+          error: null,
+        },
       read_store_payment_settings_by_system:
         args?.paymentSettingsReaderResponse ?? {
           data: args?.paymentSettings ?? [],
@@ -4818,74 +4944,16 @@ test("sales AI loads canonical discount policy as live authority instead of lega
     "Sales AI must reuse the canonical discount presentation instead of rebuilding discount policy from onboarding",
   );
 
-  const discountQueryStart = runtimeSource.indexOf(
-    '.from("store_discount_settings")',
-  );
-
   assert.equal(
-    discountQueryStart >= 0,
+    runtimeSource.includes("readStoreDiscountSettingsBySystem"),
     true,
-    "Sales AI must load store_discount_settings",
+    "Sales AI must consume the canonical scoped discount reader",
   );
-
-  if (discountQueryStart >= 0) {
-    const discountQueryBlock = runtimeSource.slice(
-      discountQueryStart,
-      discountQueryStart + 1400,
-    );
-
-    assert.equal(
-      discountQueryBlock.includes('.eq("organization_id", organizationId)'),
-      true,
-      "canonical discount settings query must be organization scoped",
-    );
-
-    assert.equal(
-      discountQueryBlock.includes('.eq("store_id", resolvedStoreId)'),
-      true,
-      "canonical discount settings query must be store scoped",
-    );
-  }
-
-  const highValueQueryStart = runtimeSource.indexOf(
-    '.from("store_high_value_discount_settings")',
-  );
-
-  assert.equal(
-    highValueQueryStart >= 0,
-    true,
-    "Sales AI must load store_high_value_discount_settings",
-  );
-
-  if (highValueQueryStart >= 0) {
-    const highValueQueryBlock = runtimeSource.slice(
-      highValueQueryStart,
-      highValueQueryStart + 1200,
-    );
-
-    assert.equal(
-      highValueQueryBlock.includes('.eq("organization_id", organizationId)'),
-      true,
-      "high-value discount settings query must be organization scoped",
-    );
-
-    assert.equal(
-      highValueQueryBlock.includes('.eq("store_id", resolvedStoreId)'),
-      true,
-      "high-value discount settings query must be store scoped",
-    );
-  }
 
   assert.equal(
     runtimeSource.includes("LOAD_DISCOUNT_SETTINGS_FAILED"),
     true,
     "failure to load canonical normal discount policy must fail closed",
-  );
-
-  assert.equal(
-    runtimeSource.includes("LOAD_HIGH_VALUE_DISCOUNT_SETTINGS_FAILED"),
-    true,
-    "failure to load canonical high-value discount policy must fail closed",
   );
 
   assert.equal(
@@ -5210,6 +5278,59 @@ test("generateAiSalesReply gives canonical discount policy precedence over confl
     false,
     "legacy discount special rule must not remain model-visible when canonical discount settings exist",
   );
+});
+
+test("generateAiSalesReply hides legacy strategy mirrors when canonical strategy exists", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Quero entender as opcoes de piscina.",
+    onboardingAnswers: [
+      {
+        question_key: "strategy_positioning",
+        answer: "LEGACY_STRATEGY_MUST_NOT_WIN",
+      },
+      {
+        question_key: "strategy_ai_priorities",
+        answer: "LEGACY_PRIORITY_MUST_NOT_WIN",
+      },
+    ],
+    strategySettingsReaderResponse: {
+      data: [
+        {
+          organization_id: "org-1",
+          store_id: "store-1",
+          strategy_positioning: "CANONICAL_STRATEGY_WINS",
+          strategy_ai_priorities: "CANONICAL_PRIORITY_WINS",
+        },
+      ],
+      error: null,
+    },
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Vou te mostrar as opcoes mais adequadas.",
+      usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalPayload = JSON.stringify(openai.calls[1] as Record<string, unknown>);
+  assert.equal(finalPayload.includes("CANONICAL_STRATEGY_WINS"), true);
+  assert.equal(finalPayload.includes("CANONICAL_PRIORITY_WINS"), true);
+  assert.equal(finalPayload.includes("LEGACY_STRATEGY_MUST_NOT_WIN"), false);
+  assert.equal(finalPayload.includes("LEGACY_PRIORITY_MUST_NOT_WIN"), false);
 });
 test("generateAiSalesReply prefers canonical commercial AI settings over legacy price answers", async () => {
   const supabase = createGenerateAiSalesReplySupabase({

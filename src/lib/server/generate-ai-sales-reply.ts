@@ -41,6 +41,18 @@ import {
   type StoreHighValueDiscountSettingsRow,
 } from "../store-discount-settings";
 import {
+  createStoreStrategySettingsInputFromSources,
+  type StoreStrategySettingsRow,
+} from "../store-strategy-settings";
+import {
+  readStoreDiscountSettingsBySystem,
+} from "./store-discount-settings-reader";
+import {
+  buildPriceNegotiationStrategyPromptBlock,
+  decideSalesAiPriceNegotiation,
+  type PriorConcessionState,
+} from "./sales-ai-price-negotiation-strategy";
+import {
   buildSalesAiBehaviorContract,
   buildSalesAiBehaviorContractPromptBlock,
   findSalesAiBehaviorContractOutputViolation,
@@ -10567,9 +10579,36 @@ const CANONICAL_RUNTIME_ONBOARDING_KEYS = new Set([
   "technical_visit_rules_summary",
 ]);
 
-function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>): string {
+const CANONICAL_STRATEGY_MIRROR_KEYS = new Set([
+  "strategy_service_exclusions",
+  "strategy_primary_focus",
+  "strategy_sell_more",
+  "strategy_common_customer",
+  "strategy_ideal_customer",
+  "strategy_ticket_range",
+  "strategy_positioning",
+  "strategy_priority_brands",
+  "strategy_non_worked_brands",
+  "strategy_top_lines",
+  "strategy_top_products",
+  "strategy_differentials",
+  "strategy_promise_limits",
+  "strategy_ai_presentation",
+  "strategy_ai_priorities",
+  "strategy_ai_never_forget",
+  "strategy_ai_store_summary",
+]);
+
+function buildOperationalOnboardingBlock(
+  onboardingMap: Record<string, string>,
+  canonicalStrategyAvailable = false,
+): string {
   const entries = Object.entries(onboardingMap)
     .filter(([key]) => !CANONICAL_RUNTIME_ONBOARDING_KEYS.has(key))
+    .filter(
+      ([key]) =>
+        !canonicalStrategyAvailable || !CANONICAL_STRATEGY_MIRROR_KEYS.has(key),
+    )
     .filter(([, value]) => hasMeaningfulValue(value))
     .slice(0, 40)
     .map(([key, value]) => `- ${key}: ${String(value).trim()}`);
@@ -10577,9 +10616,16 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
   return entries.length ? entries.join("\n") : "- Sem configuracao operacional relevante registrada.";
 }
 
-function buildRawOnboardingSummary(onboardingMap: Record<string, string>): string {
+function buildRawOnboardingSummary(
+  onboardingMap: Record<string, string>,
+  canonicalStrategyAvailable = false,
+): string {
   const entries = Object.entries(onboardingMap)
     .filter(([key]) => !CANONICAL_RUNTIME_ONBOARDING_KEYS.has(key))
+    .filter(
+      ([key]) =>
+        !canonicalStrategyAvailable || !CANONICAL_STRATEGY_MIRROR_KEYS.has(key),
+    )
     .filter(([, value]) => value != null && String(value).trim().length > 0)
     .map(([key, value]) => `- ${key}: ${String(value).trim()}`);
 
@@ -11381,6 +11427,7 @@ function buildInstructions(args: {
   conversationStatus: string | null;
   humanActive: boolean | null;
   onboardingMap: Record<string, string>;
+  canonicalStrategyAvailable?: boolean;
   behaviorContract: SalesAiBehaviorContract;
   operationSettingsInput: StoreOperationSettingsInput;
   recentHistory: string;
@@ -11426,8 +11473,14 @@ function buildInstructions(args: {
 }) {
   const storeLabel = args.storeDisplayName || args.storeName || "a loja";
   const leadLabel = args.leadName || "cliente";
-  const operationalBlock = buildOperationalOnboardingBlock(args.onboardingMap);
-  const rawOnboardingSummary = buildRawOnboardingSummary(args.onboardingMap);
+  const operationalBlock = buildOperationalOnboardingBlock(
+    args.onboardingMap,
+    args.canonicalStrategyAvailable === true,
+  );
+  const rawOnboardingSummary = buildRawOnboardingSummary(
+    args.onboardingMap,
+    args.canonicalStrategyAvailable === true,
+  );
   const hasTechnicalVisit = args.canonicalTechnicalVisitAvailability === "offered";
   const technicalVisitPricingPolicyBlock = buildTechnicalVisitPricingPolicyBlock(
     args.operationSettingsInput,
@@ -11948,6 +12001,64 @@ export function buildModelInput(messages: MessageRow[]) {
     });
 }
 
+export function resolveSalesAiPriceNegotiationStrategy(args: {
+  conversationPattern: ConversationPattern;
+  lastCustomerMessage: string;
+  productIdentified: boolean;
+  projectIdentified: boolean;
+  reliablePriceCents: number | null;
+  materialPriceObjection?: boolean;
+  priorConcessionState?: PriorConcessionState;
+  discountSettings: StoreDiscountSettingsRow | null;
+  highValueDiscountSettings: StoreHighValueDiscountSettingsRow | null;
+}) {
+  const message = normalizeText(args.lastCustomerMessage);
+  const counteroffer =
+    message.includes("contraproposta") ||
+    message.includes("contra proposta") ||
+    (message.includes("por r$") && message.includes("fecho"));
+  const conditionedClose =
+    message.includes("fechar") ||
+    message.includes("fecho") ||
+    message.includes("fecha");
+  const messageKind =
+    counteroffer
+      ? "counteroffer"
+      : args.conversationPattern === "price_question"
+        ? "price_question"
+        : args.conversationPattern === "discount_question"
+          ? conditionedClose
+            ? "conditioned_close"
+            : "price_objection"
+          : args.conversationPattern === "payment_or_closing_flow"
+            ? "payment_condition"
+            : args.conversationPattern === "generic_pool_opening"
+              ? "opening"
+              : "other";
+
+  return decideSalesAiPriceNegotiation({
+    productIdentified: args.productIdentified,
+    projectIdentified: args.projectIdentified,
+    reliablePriceCents: args.reliablePriceCents,
+    messageKind,
+    materialPriceObjection:
+      args.materialPriceObjection ?? args.conversationPattern === "discount_question",
+    closeConditionedOnImprovedPrice: conditionedClose,
+    paymentContext: message.includes("pix")
+      ? "pix"
+      : message.includes("entrada")
+        ? "entry"
+        : message.includes("parcel")
+          ? "installments"
+          : "none",
+    priorConcessionState:
+      args.priorConcessionState ??
+      (args.conversationPattern === "discount_question" ? "unknown" : "none"),
+    discountSettings: args.discountSettings,
+    highValueDiscountSettings: args.highValueDiscountSettings,
+  });
+}
+
 export async function generateAiSalesReply(
   params: GenerateAiSalesReplyParams
 ): Promise<GenerateAiSalesReplyResult> {
@@ -12211,43 +12322,21 @@ export async function generateAiSalesReply(
     }
 
     const channelSettings = channelSettingsResult.row;
-    const { data: discountSettings, error: discountSettingsError } =
-      await supabase
-        .from("store_discount_settings")
-        .select(
-          "organization_id, store_id, default_discount_percent, max_discount_percent, allow_ask_above_max_discount, discount_autonomy_mode, discount_special_rules, created_at, updated_at",
-        )
-        .eq("organization_id", organizationId)
-        .eq("store_id", resolvedStoreId)
-        .maybeSingle();
+    const discountSettingsResult = await readStoreDiscountSettingsBySystem({
+      supabase,
+      organizationId,
+      storeId: resolvedStoreId,
+    });
 
-    if (discountSettingsError) {
+    if (!discountSettingsResult.ok) {
       return {
         ok: false,
         error: "LOAD_DISCOUNT_SETTINGS_FAILED",
-        message: discountSettingsError.message,
+        message: discountSettingsResult.error,
       };
     }
-
-    const {
-      data: highValueDiscountSettings,
-      error: highValueDiscountSettingsError,
-    } = await supabase
-      .from("store_high_value_discount_settings")
-      .select(
-        "organization_id, store_id, enabled, threshold_amount_cents, discount_percent, created_at, updated_at",
-      )
-      .eq("organization_id", organizationId)
-      .eq("store_id", resolvedStoreId)
-      .maybeSingle();
-
-    if (highValueDiscountSettingsError) {
-      return {
-        ok: false,
-        error: "LOAD_HIGH_VALUE_DISCOUNT_SETTINGS_FAILED",
-        message: highValueDiscountSettingsError.message,
-      };
-    }
+    const discountSettings = discountSettingsResult.settings;
+    const highValueDiscountSettings = discountSettingsResult.highValueSettings;
     const onboardingMap: Record<string, string> = {};
 
     for (const row of (onboardingAnswers || []) as StoreAnswerRow[]) {
@@ -12257,10 +12346,39 @@ export async function generateAiSalesReply(
       }
     }
 
+    const { data: strategySettingsRows, error: strategySettingsError } =
+      await supabase.rpc("read_store_strategy_settings_by_system", {
+        p_organization_id: organizationId,
+        p_store_id: resolvedStoreId,
+      });
+
+    if (strategySettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_STRATEGY_SETTINGS_FAILED",
+        message: strategySettingsError.message,
+      };
+    }
+
+    const strategySettingsResult = normalizeSystemReaderRow(strategySettingsRows);
+    if (strategySettingsResult.errorMessage) {
+      return {
+        ok: false,
+        error: "LOAD_STRATEGY_SETTINGS_FAILED",
+        message: strategySettingsResult.errorMessage,
+      };
+    }
+
     const canonicalDiscountSettings =
       (discountSettings ?? null) as StoreDiscountSettingsRow | null;
     const canonicalHighValueDiscountSettings =
       (highValueDiscountSettings ?? null) as StoreHighValueDiscountSettingsRow | null;
+    const canonicalStrategySettings =
+      (strategySettingsResult.row ?? null) as StoreStrategySettingsRow | null;
+    const canonicalStrategySettingsInput = createStoreStrategySettingsInputFromSources({
+      answers: onboardingMap,
+      settings: canonicalStrategySettings,
+    });
     const canonicalCommercialAiSettings =
       (commercialAiSettings ?? null) as StoreCommercialAiSettingsRow | null;
     const canonicalPaymentSettings =
@@ -13414,9 +13532,40 @@ export async function generateAiSalesReply(
         commercialMessageIntentResolution,
       );
     const commercialObjectiveBlock = buildCommercialObjectiveBlock(commercialObjective);
+    const priceNegotiationStrategy = resolveSalesAiPriceNegotiationStrategy({
+      conversationPattern: conversationPatternForRuntime,
+      lastCustomerMessage,
+      productIdentified: Boolean(bestNamedPoolMatch || scoredCatalogItems.length > 0),
+      projectIdentified:
+        conversationFacts.needKnown ||
+        conversationFacts.sizeKnown ||
+        conversationFacts.locationKnown ||
+        conversationFacts.installationInterestKnown,
+      reliablePriceCents:
+        bestNamedPoolMatch?.pool.price != null &&
+        Number.isFinite(bestNamedPoolMatch.pool.price)
+          ? Math.round(bestNamedPoolMatch.pool.price * 100)
+          : null,
+      priorConcessionState:
+        conversationPatternForRuntime === "discount_question" ? "unknown" : "none",
+      discountSettings: canonicalDiscountSettings,
+      highValueDiscountSettings: canonicalHighValueDiscountSettings,
+    });
+    const canonicalStrategyContextBlock = [
+      "FONTE CANONICA DA ESTRATEGIA DA LOJA",
+      `- origem: ${canonicalStrategySettings ? "store_strategy_settings" : "nao configurada"}`,
+      `- posicionamento canonico: ${canonicalStrategySettingsInput.strategyPositioning || "nao configurado"}`,
+      `- prioridades canonicas: ${canonicalStrategySettingsInput.strategyAiPriorities || "nao configuradas"}`,
+      "- esta camada nao decide desconto, margem, concessao ou ordem de negociacao.",
+    ].join("\n");
+    const priceNegotiationStrategyBlock = [
+      buildPriceNegotiationStrategyPromptBlock(priceNegotiationStrategy),
+      canonicalStrategyContextBlock,
+    ].join("\n\n");
     const commercialObjectiveBlockWithIntentResolution = [
       commercialIntentResolutionInstructionBlock,
       commercialObjectiveBlock,
+      priceNegotiationStrategyBlock,
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -13538,6 +13687,7 @@ export async function generateAiSalesReply(
       conversationStatus: conversation.status,
       humanActive: conversation.is_human_active,
       onboardingMap,
+      canonicalStrategyAvailable: Boolean(canonicalStrategySettings),
       behaviorContract: salesAiBehaviorContract,
       operationSettingsInput,
       recentHistory,
