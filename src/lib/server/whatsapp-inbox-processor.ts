@@ -115,6 +115,7 @@ type MetaDocumentPayload = {
 };
 
 type MetaMessagePayload = {
+  [key: string]: unknown;
   id?: unknown;
   from?: unknown;
   type?: unknown;
@@ -359,12 +360,37 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
   const contextNode = isRecord(message?.context) ? message?.context : null;
   const phoneNumberId = asTrimmedString(payload.phone_number_id);
   const contactName = extractContactName(payload);
+  const normalizedDisplayPhone = normalizePhone(
+    asTrimmedString(payload.display_phone_number) || "",
+  );
+  const normalizedFromPhone = fromPhoneRaw ? normalizePhone(fromPhoneRaw) : null;
+  const messageRecord = message as Record<string, unknown> | null;
+  const isGroupMessage = Boolean(
+    messageRecord &&
+      (typeof messageRecord.group_id === "string" ||
+        typeof messageRecord.groupId === "string" ||
+        messageRecord.is_group === true ||
+        messageRecord.isGroup === true ||
+        messageRecord.chat_type === "group"),
+  );
+  const isSelfOriginated = Boolean(
+    payload.event_kind === "smb_message_echoes" ||
+      messageRecord?.from_me === true ||
+      messageRecord?.fromMe === true ||
+      messageRecord?.is_from_me === true ||
+      messageRecord?.origin === "business_app" ||
+      (normalizedFromPhone &&
+        normalizedDisplayPhone &&
+        normalizedFromPhone === normalizedDisplayPhone),
+  );
 
   return {
     messageId,
     contextMessageId: asTrimmedString(contextNode?.id),
     fromPhoneRaw,
     fromPhoneNormalized: fromPhoneRaw ? normalizePhone(fromPhoneRaw) : null,
+    isGroupMessage,
+    isSelfOriginated,
     rawMessageType,
     textBody,
     imageMediaId: asTrimmedString(imageNode?.id),
@@ -1611,6 +1637,19 @@ async function processSingleInboxRow(
       external_event_id: inbox.external_event_id,
       status: "skipped",
       detail,
+    };
+  }
+
+  if (extracted.isGroupMessage || extracted.isSelfOriginated) {
+    await markInboxProcessed(supabase, inbox.id);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "skipped",
+      detail: extracted.isGroupMessage
+        ? "group_message_not_supported"
+        : "self_originated_or_echo_not_ai_input",
+      ai_status: "skipped_not_text",
     };
   }
 

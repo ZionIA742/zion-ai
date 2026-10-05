@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   dispatchAiSalesReplyForConversation,
   bootstrapCommercialContextBeforeInsert,
+  extractIncomingMessage,
   processWhatsappInbox,
   resolveWhatsappInboundThreadBySystem,
 } from "./whatsapp-inbox-processor.js";
@@ -768,4 +769,46 @@ test("processor no longer uses latest/first lead or conversation resolution help
   assert.equal(source.includes("async function findConversation("), false);
   assert.equal(source.includes("async function findOrCreateConversation("), false);
   assert.equal(source.includes("resolve_whatsapp_inbound_thread_by_system"), true);
+});
+
+test("processor marks self-originated and group messages as non-AI inputs", () => {
+  const selfMessage = extractIncomingMessage({
+    source: "meta_whatsapp_webhook",
+    event_kind: "message",
+    phone_number_id: "phone-1",
+    display_phone_number: "+55 11 90000-0000",
+    message: {
+      id: "self-1",
+      from: "5511900000000",
+      type: "text",
+      text: { body: "enviado pela loja" },
+    },
+  });
+  const echoMessage = extractIncomingMessage({
+    source: "meta_whatsapp_webhook",
+    event_kind: "smb_message_echoes",
+    phone_number_id: "phone-1",
+    message: {
+      id: "echo-1",
+      from: "5511999999999",
+      type: "text",
+      text: { body: "echo" },
+    },
+  });
+  const groupMessage = extractIncomingMessage({
+    source: "meta_whatsapp_webhook",
+    event_kind: "message",
+    phone_number_id: "phone-1",
+    message: {
+      id: "group-1",
+      from: "5511999999999",
+      group_id: "group-identity",
+      type: "text",
+      text: { body: "grupo" },
+    },
+  });
+
+  assert.equal(selfMessage.isSelfOriginated, true);
+  assert.equal(echoMessage.isSelfOriginated, true);
+  assert.equal(groupMessage.isGroupMessage, true);
 });

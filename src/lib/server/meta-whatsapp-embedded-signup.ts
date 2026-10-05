@@ -7,14 +7,20 @@ export type MetaWhatsappEmbeddedSignupConfig = {
 export type MetaWhatsappEmbeddedSignupValidationInput = {
   code: string;
   whatsappBusinessAccountId: string;
-  phoneNumberId: string;
+  phoneNumberId?: string;
+  connectionMode?: MetaWhatsappEmbeddedSignupConnectionMode;
   twoStepPin: string;
 };
+
+export type MetaWhatsappEmbeddedSignupConnectionMode =
+  | "standard"
+  | "business_app_coexistence";
 
 export type MetaWhatsappEmbeddedSignupValidationResult = {
   accessToken: string;
   whatsappBusinessAccountId: string;
   phoneNumberId: string;
+  connectionMode: MetaWhatsappEmbeddedSignupConnectionMode;
   displayPhoneNumber: string;
   graphApiVersion: string;
   appId: string;
@@ -24,7 +30,8 @@ export type MetaWhatsappEmbeddedSignupValidationResult = {
 export type MetaWhatsappBindingValidationInput = {
   code: string;
   whatsappBusinessAccountId: string;
-  phoneNumberId: string;
+  phoneNumberId?: string;
+  connectionMode?: MetaWhatsappEmbeddedSignupConnectionMode;
 };
 
 export type MetaWhatsappEmbeddedSignupDeps = {
@@ -311,6 +318,63 @@ async function registerPhoneNumber(params: {
   );
 }
 
+export async function registerMetaWhatsappEmbeddedSignup(
+  validated: MetaWhatsappEmbeddedSignupValidationResult,
+  twoStepPin: string,
+  options?: {
+    config?: MetaWhatsappEmbeddedSignupConfig;
+    deps?: Partial<MetaWhatsappEmbeddedSignupDeps>;
+  },
+): Promise<void> {
+  if (
+    validated.connectionMode !== "business_app_coexistence" &&
+    !/^[0-9]{6}$/.test(twoStepPin)
+  ) {
+    throw new MetaWhatsappEmbeddedSignupError(
+      "META_EMBEDDED_SIGNUP_INPUT_INVALID",
+      "Payload do Embedded Signup incompleto.",
+      400,
+    );
+  }
+
+  const deps: MetaWhatsappEmbeddedSignupDeps = {
+    fetch: options?.deps?.fetch ?? fetch,
+    createAbortController:
+      options?.deps?.createAbortController ?? createDefaultAbortController,
+    now: options?.deps?.now ?? (() => new Date()),
+    timeoutMs: options?.deps?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  };
+
+  const subscribeResponse = await subscribeWabaApps({
+    graphApiVersion: validated.graphApiVersion,
+    whatsappBusinessAccountId: validated.whatsappBusinessAccountId,
+    accessToken: validated.accessToken,
+    deps,
+  });
+
+  requireMetaOk(
+    subscribeResponse,
+    "META_SUBSCRIBED_APPS_FAILED",
+    "Nao foi possivel ativar os webhooks da Meta. Reinicie o Embedded Signup.",
+  );
+
+  if (validated.connectionMode === "business_app_coexistence") return;
+
+  const registerResponse = await registerPhoneNumber({
+    graphApiVersion: validated.graphApiVersion,
+    phoneNumberId: validated.phoneNumberId,
+    twoStepPin,
+    accessToken: validated.accessToken,
+    deps,
+  });
+
+  requireMetaOk(
+    registerResponse,
+    "META_PHONE_REGISTER_FAILED",
+    "Nao foi possivel registrar o telefone na Meta. Reinicie o Embedded Signup.",
+  );
+}
+
 function findPhoneInList(body: MetaJson | null, phoneNumberId: string) {
   const rows = Array.isArray(body?.data) ? body?.data : [];
   return rows.find((row) => {
@@ -341,7 +405,12 @@ export async function exchangeAndValidateMetaWhatsappBinding(
   const code = cleanText(input.code);
   const expectedWabaId = normalizeMetaId(input.whatsappBusinessAccountId);
   const expectedPhoneId = normalizeMetaId(input.phoneNumberId);
-  if (!code || !expectedWabaId || !expectedPhoneId) {
+  const connectionMode = input.connectionMode ?? "standard";
+  if (
+    !code ||
+    !expectedWabaId ||
+    (connectionMode === "standard" && !expectedPhoneId)
+  ) {
     throw new MetaWhatsappEmbeddedSignupError(
       "META_EMBEDDED_SIGNUP_INPUT_INVALID",
       "Payload do Embedded Signup incompleto.",
@@ -394,18 +463,27 @@ export async function exchangeAndValidateMetaWhatsappBinding(
     "Nao foi possivel confirmar a relacao entre telefone e WABA na Meta.",
   );
 
-  const listedPhone = findPhoneInList(phoneListResponse.body, expectedPhoneId);
+  const phoneRows = Array.isArray(phoneListResponse.body?.data)
+    ? phoneListResponse.body.data
+    : [];
+  const listedPhone = expectedPhoneId
+    ? findPhoneInList(phoneListResponse.body, expectedPhoneId)
+    : connectionMode === "business_app_coexistence" && phoneRows.length === 1
+      ? (phoneRows[0] as Record<string, unknown>)
+      : undefined;
   if (!listedPhone) {
     throw new MetaWhatsappEmbeddedSignupError(
-      "META_PHONE_WABA_MISMATCH",
-      "O telefone validado nao pertence a conta WhatsApp Business informada.",
+      expectedPhoneId ? "META_PHONE_WABA_MISMATCH" : "META_PHONE_DISCOVERY_AMBIGUOUS",
+      expectedPhoneId
+        ? "O telefone validado nao pertence a conta WhatsApp Business informada."
+        : "A Meta retornou mais de um telefone e o Embedded Signup nao identificou qual deve ser conectado.",
       422,
     );
   }
 
   const listedPhoneId =
     typeof listedPhone.id === "string" ? normalizeMetaId(listedPhone.id) : "";
-  if (listedPhoneId !== expectedPhoneId) {
+  if (!listedPhoneId || (expectedPhoneId && listedPhoneId !== expectedPhoneId)) {
     throw new MetaWhatsappEmbeddedSignupError(
       "META_PHONE_WABA_MISMATCH",
       "O telefone validado nao pertence a conta WhatsApp Business informada.",
@@ -429,6 +507,7 @@ export async function exchangeAndValidateMetaWhatsappBinding(
     accessToken,
     whatsappBusinessAccountId: confirmedWabaId,
     phoneNumberId: listedPhoneId,
+    connectionMode,
     displayPhoneNumber,
     graphApiVersion: config.graphApiVersion,
     appId: config.appId,
@@ -457,45 +536,12 @@ export async function exchangeAndValidateMetaWhatsappEmbeddedSignup(
       code: input.code,
       whatsappBusinessAccountId: input.whatsappBusinessAccountId,
       phoneNumberId: input.phoneNumberId,
+      connectionMode: input.connectionMode,
     },
     options,
   );
 
-  const config = options?.config ?? getMetaWhatsappEmbeddedSignupConfig();
-  const deps: MetaWhatsappEmbeddedSignupDeps = {
-    fetch: options?.deps?.fetch ?? fetch,
-    createAbortController:
-      options?.deps?.createAbortController ?? createDefaultAbortController,
-    now: options?.deps?.now ?? (() => new Date()),
-    timeoutMs: options?.deps?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-  };
-
-  const subscribeResponse = await subscribeWabaApps({
-    graphApiVersion: config.graphApiVersion,
-    whatsappBusinessAccountId: validated.whatsappBusinessAccountId,
-    accessToken: validated.accessToken,
-    deps,
-  });
-
-  requireMetaOk(
-    subscribeResponse,
-    "META_SUBSCRIBED_APPS_FAILED",
-    "Nao foi possivel ativar os webhooks da Meta. Reinicie o Embedded Signup.",
-  );
-
-  const registerResponse = await registerPhoneNumber({
-    graphApiVersion: config.graphApiVersion,
-    phoneNumberId: validated.phoneNumberId,
-    twoStepPin,
-    accessToken: validated.accessToken,
-    deps,
-  });
-
-  requireMetaOk(
-    registerResponse,
-    "META_PHONE_REGISTER_FAILED",
-    "Nao foi possivel registrar o telefone na Meta. Reinicie o Embedded Signup.",
-  );
+  await registerMetaWhatsappEmbeddedSignup(validated, twoStepPin, options);
 
   return validated;
 }

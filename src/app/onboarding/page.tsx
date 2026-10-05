@@ -95,6 +95,8 @@ type FacebookSdk = {
       override_default_response_type: true;
       extras: {
         version: "v4";
+        featureType: "whatsapp_business_app_onboarding";
+        sessionInfoVersion: "3";
       };
     },
   ) => void;
@@ -102,7 +104,8 @@ type FacebookSdk = {
 
 type MetaEmbeddedSignupSession = {
   whatsappBusinessAccountId: string;
-  phoneNumberId: string;
+  phoneNumberId?: string;
+  connectionMode: "standard" | "business_app_coexistence";
 };
 
 declare global {
@@ -137,10 +140,6 @@ function normalizeMetaIdentifier(value: unknown) {
   if (typeof value !== "string") return "";
   const normalized = value.trim();
   return isValidMetaIdentifier(normalized) ? normalized : "";
-}
-
-function isValidTwoStepPin(value: string) {
-  return /^[0-9]{6}$/.test(value);
 }
 
 function isAllowedMetaEmbeddedSignupOrigin(origin: string) {
@@ -178,7 +177,13 @@ function extractMetaEmbeddedSignupSession(event: MessageEvent): MetaEmbeddedSign
   if (!payload || payload.type !== META_EMBEDDED_SIGNUP_MESSAGE_TYPE) return null;
 
   const eventName = cleanText(payload.event).toUpperCase();
-  if (eventName !== "FINISH") return null;
+  const connectionMode =
+    eventName === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"
+      ? "business_app_coexistence"
+      : eventName === "FINISH"
+        ? "standard"
+        : null;
+  if (!connectionMode) return null;
 
   const payloadData =
     payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
@@ -192,13 +197,16 @@ function extractMetaEmbeddedSignupSession(event: MessageEvent): MetaEmbeddedSign
     normalizeMetaIdentifier(payload.waba_id);
   const phoneNumberId =
     normalizeMetaIdentifier(payloadData.phone_number_id) ||
-    normalizeMetaIdentifier(payload.phone_number_id);
+    normalizeMetaIdentifier(payloadData.phoneNumberId) ||
+    normalizeMetaIdentifier((payload as Record<string, unknown>).phone_number_id);
 
-  if (!whatsappBusinessAccountId || !phoneNumberId) return null;
+  if (!whatsappBusinessAccountId) return null;
+  if (connectionMode === "standard" && !phoneNumberId) return null;
 
   return {
     whatsappBusinessAccountId,
-    phoneNumberId,
+    ...(phoneNumberId ? { phoneNumberId } : {}),
+    connectionMode,
   };
 }
 
@@ -343,6 +351,10 @@ function isWhatsappStatusConnected(status: StoreWhatsappStatusApiResponse | null
 function mapEmbeddedSignupError(error: unknown) {
   const code = error instanceof Error ? error.message : "";
 
+  if (code.startsWith("EMBEDDED_SIGNUP_SCENARIO:")) {
+    return code.split(":").slice(2).join(":") || EMBEDDED_SIGNUP_GENERIC_ERROR_MESSAGE;
+  }
+
   switch (code) {
     case "EMBEDDED_SIGNUP_BACKEND_REJECTED":
       return EMBEDDED_SIGNUP_REJECTED_MESSAGE;
@@ -353,6 +365,15 @@ function mapEmbeddedSignupError(error: unknown) {
     default:
       return EMBEDDED_SIGNUP_GENERIC_ERROR_MESSAGE;
   }
+}
+
+function readEmbeddedSignupScenarioMessage(result: {
+  message?: string;
+  connectionScenario?: string;
+} | null) {
+  const scenario = cleanText(result?.connectionScenario);
+  const message = cleanText(result?.message);
+  return scenario && message ? `EMBEDDED_SIGNUP_SCENARIO:${scenario}:${message}` : null;
 }
 
 const STORE_SERVICE_OPTIONS: Option[] = [
@@ -756,7 +777,6 @@ function OnboardingContent() {
   const [whatsappStatus, setWhatsappStatus] = useState<StoreWhatsappStatusApiResponse | null>(null);
   const [whatsappStatusLoading, setWhatsappStatusLoading] = useState(false);
   const [whatsappStatusError, setWhatsappStatusError] = useState<string | null>(null);
-  const [embeddedSignupPin, setEmbeddedSignupPin] = useState("");
   const [embeddedSignupCode, setEmbeddedSignupCode] = useState("");
   const [embeddedSignupSession, setEmbeddedSignupSession] =
     useState<MetaEmbeddedSignupSession | null>(null);
@@ -1357,7 +1377,6 @@ function OnboardingContent() {
 
   const clearEmbeddedSignupSensitiveState = useCallback(() => {
     setEmbeddedSignupCode("");
-    setEmbeddedSignupPin("");
   }, []);
 
   useEffect(() => {
@@ -1533,11 +1552,6 @@ function OnboardingContent() {
     setEmbeddedSignupSession(null);
     setEmbeddedSignupCode("");
 
-    if (!isValidTwoStepPin(embeddedSignupPin)) {
-      setEmbeddedSignupError("Informe um PIN numerico de exatamente 6 digitos.");
-      return;
-    }
-
     if (!metaEmbeddedSignupConfig.appId || !metaEmbeddedSignupConfig.configId) {
       setEmbeddedSignupError("Configuracao publica da Meta ausente no frontend.");
       return;
@@ -1578,6 +1592,8 @@ function OnboardingContent() {
           override_default_response_type: true,
           extras: {
             version: "v4",
+            featureType: "whatsapp_business_app_onboarding",
+            sessionInfoVersion: "3",
           },
         },
       );
@@ -1611,7 +1627,6 @@ function OnboardingContent() {
 
   useEffect(() => {
     if (!embeddedSignupCode || !embeddedSignupSession) return;
-    if (!isValidTwoStepPin(embeddedSignupPin)) return;
     if (embeddedSignupSubmittingRef.current) return;
 
     embeddedSignupSubmittingRef.current = true;
@@ -1630,17 +1645,28 @@ function OnboardingContent() {
           body: JSON.stringify({
             code: embeddedSignupCode,
             whatsappBusinessAccountId: embeddedSignupSession.whatsappBusinessAccountId,
-            phoneNumberId: embeddedSignupSession.phoneNumberId,
-            twoStepPin: embeddedSignupPin,
+            ...(embeddedSignupSession.phoneNumberId
+              ? { phoneNumberId: embeddedSignupSession.phoneNumberId }
+              : {}),
+            connectionMode: embeddedSignupSession.connectionMode,
           }),
         });
 
         const result = (await response.json().catch(() => null)) as
-          | { ok?: boolean; message?: string; error?: string }
+          | {
+              ok?: boolean;
+              message?: string;
+              error?: string;
+              connectionScenario?: string;
+              connectionMode?: "standard" | "business_app_coexistence";
+            }
           | null;
 
         if (!response.ok || result?.ok !== true) {
-          throw new Error("EMBEDDED_SIGNUP_BACKEND_REJECTED");
+          const scenarioMessage = readEmbeddedSignupScenarioMessage(result);
+          throw new Error(
+            scenarioMessage || "EMBEDDED_SIGNUP_BACKEND_REJECTED",
+          );
         }
 
         if (!embeddedSignupMountedRef.current) return;
@@ -1660,7 +1686,11 @@ function OnboardingContent() {
           throw new Error("ONBOARDING_READINESS_NOT_CONFIRMED");
         }
         if (!embeddedSignupMountedRef.current) return;
-        setEmbeddedSignupMessage("WhatsApp conectado pela Meta.");
+        setEmbeddedSignupMessage(
+          result?.connectionMode === "business_app_coexistence"
+            ? "WhatsApp conectado ao ZION. Voce pode continuar usando o WhatsApp Business no celular normalmente."
+            : "WhatsApp conectado pela Meta.",
+        );
       } catch (error) {
         if (!embeddedSignupMountedRef.current) return;
 
@@ -1688,7 +1718,6 @@ function OnboardingContent() {
   }, [
     clearEmbeddedSignupSensitiveState,
     embeddedSignupCode,
-    embeddedSignupPin,
     embeddedSignupSession,
     fetchWhatsappStatus,
     refreshActivationReadinessAfterEmbeddedSignup,
@@ -2048,35 +2077,12 @@ function OnboardingContent() {
 
                 {!whatsappStatusConnected ? (
                   <div className="mt-4 space-y-4 rounded-xl border border-amber-200 bg-white p-4">
-                    <div>
-                      <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                        PIN de verificacao em duas etapas
-                      </label>
-                      <input
-                        type="password"
-                        inputMode="numeric"
-                        autoComplete="one-time-code"
-                        value={embeddedSignupPin}
-                        onChange={(event) => {
-                          if (embeddedSignupAttemptRef.current || embeddedSignupSubmittingRef.current) return;
-                          const digits = event.target.value.replace(/[^\d]/g, "").slice(0, 6);
-                          setEmbeddedSignupPin(digits);
-                          setEmbeddedSignupError(null);
-                        }}
-                        disabled={embeddedSignupLoading || embeddedSignupSubmitting}
-                        className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                        placeholder="6 digitos"
-                        aria-label="PIN de verificacao em duas etapas do WhatsApp"
-                      />
-                    </div>
-
                     <button
                       type="button"
                       onClick={startMetaEmbeddedSignup}
                       disabled={
                         embeddedSignupLoading ||
-                        embeddedSignupSubmitting ||
-                        !isValidTwoStepPin(embeddedSignupPin)
+                        embeddedSignupSubmitting
                       }
                       className="w-full rounded-xl bg-black px-5 py-2.5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40 md:w-auto"
                     >

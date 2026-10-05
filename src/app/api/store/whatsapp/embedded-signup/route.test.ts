@@ -8,11 +8,16 @@ import {
 import {
   exchangeAndValidateMetaWhatsappEmbeddedSignup,
   MetaWhatsappEmbeddedSignupError,
+  type MetaWhatsappEmbeddedSignupValidationResult,
 } from "@/lib/server/meta-whatsapp-embedded-signup";
 import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";
+
+process.env.ZION_WHATSAPP_PIN_ENCRYPTION_KEY_V1 = Buffer.alloc(32, 7).toString(
+  "base64",
+);
 
 type TestCase = {
   name: string;
@@ -133,15 +138,18 @@ function createTrackedRequest(body: unknown, tracker: { reads: number }) {
 function createPrivilegedClientMock(args?: {
   rpcError?: { message: string };
   rpcData?: unknown;
+  pendingRpcError?: { message: string };
   candidateRpcError?: { message: string } | null;
   candidateRpcData?: unknown;
 }) {
   const rpcCalls: RpcCall[] = [];
   const candidateRpcCalls: RpcCall[] = [];
+  const secretRpcCalls: RpcCall[] = [];
 
   return {
     rpcCalls,
     candidateRpcCalls,
+      secretRpcCalls,
     client: {
       async rpc(name: string, rpcArgs: Record<string, unknown>) {
         if (name === "materialize_whatsapp_binding_candidate_by_system") {
@@ -154,6 +162,30 @@ function createPrivilegedClientMock(args?: {
                 : args?.candidateRpcError ?? {
                     message: "ZION_WHATSAPP_CHANGE_REQUIRES_ACTIVE_BINDING",
                   },
+          };
+        }
+
+        if (name === "create_whatsapp_phone_security_secret_pending_by_system") {
+          secretRpcCalls.push({ name, args: { ...rpcArgs } });
+          return {
+            data: [{ secret_id: "secret-1", status: "pending", outcome: "created" }],
+            error: args?.pendingRpcError ?? null,
+          };
+        }
+
+        if (name === "invalidate_whatsapp_phone_security_secret_by_system") {
+          secretRpcCalls.push({ name, args: { ...rpcArgs } });
+          return {
+            data: [{ secret_id: "secret-1", status: "invalidated", outcome: "invalidated" }],
+            error: null,
+          };
+        }
+
+        if (name === "activate_whatsapp_phone_security_secret_by_system") {
+          secretRpcCalls.push({ name, args: { ...rpcArgs } });
+          return {
+            data: [{ secret_id: "secret-1", status: "active", outcome: "activated" }],
+            error: null,
           };
         }
 
@@ -182,7 +214,9 @@ function createPrivilegedClientMock(args?: {
   };
 }
 
-function createSuccessfulValidation(overrides?: Record<string, unknown>) {
+function createSuccessfulValidation(
+  overrides?: Partial<MetaWhatsappEmbeddedSignupValidationResult>,
+): MetaWhatsappEmbeddedSignupValidationResult {
   return {
     accessToken: "fake-business-token",
     whatsappBusinessAccountId: "meta-waba",
@@ -191,6 +225,7 @@ function createSuccessfulValidation(overrides?: Record<string, unknown>) {
     graphApiVersion: "v99.0",
     appId: "fake-app-id",
     validatedAt: "2026-09-25T12:00:00.000Z",
+    connectionMode: "standard",
     ...overrides,
   };
 }
@@ -215,13 +250,17 @@ function createRouteHandler(args?: {
   validate?: () => Promise<ReturnType<typeof createSuccessfulValidation>>;
   rpcError?: { message: string };
   rpcData?: unknown;
+  pendingRpcError?: { message: string };
   candidateRpcError?: { message: string } | null;
   candidateRpcData?: unknown;
   events?: string[];
+  register?: (validated: ReturnType<typeof createSuccessfulValidation>, pin: string) => Promise<void>;
+  readActiveBinding?: () => Promise<{ ok: true; hasActiveBinding: boolean }>;
 }) {
   const rpc = createPrivilegedClientMock({
     rpcError: args?.rpcError,
     rpcData: args?.rpcData,
+    pendingRpcError: args?.pendingRpcError,
     candidateRpcError: args?.candidateRpcError,
     candidateRpcData: args?.candidateRpcData,
   });
@@ -237,19 +276,25 @@ function createRouteHandler(args?: {
       assert.equal(input.code, "auth-code");
       assert.equal(input.whatsappBusinessAccountId, "claimed-waba");
       assert.equal(input.phoneNumberId, "claimed-phone");
-      assert.equal(input.twoStepPin, "123456");
       return createSuccessfulValidation();
     },
     createPrivilegedClient: () => {
       args?.events?.push("rpc-client");
       return rpc.client as never;
     },
+    registerEmbeddedSignup: async (validated, pin) => {
+      if (args?.register) {
+        await args.register(validated, pin);
+      }
+    },
+    readActiveBinding: args?.readActiveBinding,
   });
 
   return {
     handler,
     rpcCalls: rpc.rpcCalls,
     candidateRpcCalls: rpc.candidateRpcCalls,
+    secretRpcCalls: rpc.secretRpcCalls,
   };
 }
 
@@ -301,7 +346,6 @@ const tests: TestCase[] = [
         createJsonRequest({
           whatsappBusinessAccountId: "waba",
           phoneNumberId: "phone",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -321,7 +365,6 @@ const tests: TestCase[] = [
         createJsonRequest({
           code: "auth-code",
           phoneNumberId: "phone",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -339,7 +382,6 @@ const tests: TestCase[] = [
         createJsonRequest({
           code: "auth-code",
           whatsappBusinessAccountId: "waba",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -349,64 +391,30 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "missing PIN returns 400",
+    name: "client supplied PIN is rejected before Meta validation",
     run: async () => {
-      const { handler, rpcCalls } = createRouteHandler();
+      let validationCalls = 0;
+      const { handler, rpcCalls } = createRouteHandler({
+        validate: async () => {
+          validationCalls += 1;
+          return createSuccessfulValidation();
+        },
+      });
 
       const response = await handler(
         createJsonRequest({
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
+          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
 
       assert.equal(response.status, 400);
-      assert.equal(body.error, "INVALID_TWO_STEP_PIN");
+      assert.equal(body.error, "CLIENT_TWO_STEP_PIN_FORBIDDEN");
+      assert.equal(validationCalls, 0);
       assert.equal(rpcCalls.length, 0);
-    },
-  },
-  {
-    name: "non-string PIN returns 400",
-    run: async () => {
-      const { handler, rpcCalls } = createRouteHandler();
-
-      const response = await handler(
-        createJsonRequest({
-          code: "auth-code",
-          whatsappBusinessAccountId: "claimed-waba",
-          phoneNumberId: "claimed-phone",
-          twoStepPin: 123456,
-        }),
-      );
-      const body = await parseBody(response);
-
-      assert.equal(response.status, 400);
-      assert.equal(body.error, "INVALID_TWO_STEP_PIN");
-      assert.equal(rpcCalls.length, 0);
-    },
-  },
-  {
-    name: "PIN must be exactly six numeric characters",
-    run: async () => {
-      for (const twoStepPin of ["12345", "1234567", "12345a"]) {
-        const { handler, rpcCalls } = createRouteHandler();
-
-        const response = await handler(
-          createJsonRequest({
-            code: "auth-code",
-            whatsappBusinessAccountId: "claimed-waba",
-            phoneNumberId: "claimed-phone",
-            twoStepPin,
-          }),
-        );
-        const body = await parseBody(response);
-
-        assert.equal(response.status, 400);
-        assert.equal(body.error, "INVALID_TWO_STEP_PIN");
-        assert.equal(rpcCalls.length, 0);
-      }
     },
   },
   {
@@ -417,19 +425,16 @@ const tests: TestCase[] = [
           code: { value: "auth-code" },
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         },
         {
           code: "auth-code",
           whatsappBusinessAccountId: { value: "claimed-waba" },
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         },
         {
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: { value: "claimed-phone" },
-          twoStepPin: "123456",
         },
       ]) {
         const { handler, rpcCalls } = createRouteHandler();
@@ -457,7 +462,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
           extra: "x".repeat(9 * 1024),
         }),
       );
@@ -488,7 +492,6 @@ const tests: TestCase[] = [
           code: secretCode,
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -518,7 +521,6 @@ const tests: TestCase[] = [
           code,
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
           appSecret,
         }),
       );
@@ -546,7 +548,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -574,7 +575,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -602,7 +602,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -630,7 +629,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -659,7 +657,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -685,7 +682,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
           displayPhoneNumber: "+55 11 90000-0000",
         }),
       );
@@ -720,19 +716,18 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         }),
       );
 
       assert.equal(response.status, 200);
       assert.deepEqual(events, [
+        "rpc-client",
         "validate",
         "exchange",
         "waba",
         "phone_numbers",
         "subscribed_apps",
         "register",
-        "rpc-client",
       ]);
     },
   },
@@ -751,7 +746,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
           organizationId: "payload-org",
           storeId: "payload-store",
           accessToken: "payload-token",
@@ -784,7 +778,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -803,7 +796,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -819,6 +811,152 @@ const tests: TestCase[] = [
       assert.equal(integration.phoneNumberId, "meta-phone");
       assert.equal(integration.whatsappBusinessAccountId, "meta-waba");
       assertNoSecretLeak(body, ["fake-business-token", "123456"]);
+    },
+  },
+  {
+    name: "first connection generates a server PIN, persists pending before register, then activates after materialization",
+    run: async () => {
+      let registeredPin = "";
+      const { handler, secretRpcCalls } = createRouteHandler({
+        register: async (_validated, pin) => {
+          registeredPin = pin;
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 200);
+      assert.match(registeredPin, /^\d{6}$/);
+      assert.deepEqual(
+        secretRpcCalls.map((call) => call.name),
+        [
+          "create_whatsapp_phone_security_secret_pending_by_system",
+          "activate_whatsapp_phone_security_secret_by_system",
+        ],
+      );
+      assert.equal(secretRpcCalls[0]?.args.p_key_version, 1);
+      assert.notEqual(secretRpcCalls[0]?.args.p_ciphertext, registeredPin);
+      assertNoSecretLeak(body, [registeredPin]);
+    },
+  },
+  {
+    name: "pending persistence failure blocks Meta register",
+    run: async () => {
+      let registerCalls = 0;
+      const { handler, rpcCalls, secretRpcCalls } = createRouteHandler({
+        pendingRpcError: { message: "PENDING_WRITE_FAILED" },
+        register: async () => {
+          registerCalls += 1;
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+        }),
+      );
+
+      assert.equal(response.status, 500);
+      assert.equal(registerCalls, 0);
+      assert.equal(rpcCalls.length, 0);
+      assert.equal(secretRpcCalls.length, 1);
+    },
+  },
+  {
+    name: "Meta register failure invalidates the pending secret",
+    run: async () => {
+      const { handler, rpcCalls, secretRpcCalls } = createRouteHandler({
+        register: async () => {
+          throw new MetaWhatsappEmbeddedSignupError(
+            "META_PHONE_REGISTER_FAILED",
+            "Nao foi possivel registrar o telefone na Meta.",
+            422,
+          );
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 422);
+      assert.equal(body.error, "META_PHONE_REGISTER_FAILED");
+      assert.equal(rpcCalls.length, 0);
+      assert.deepEqual(secretRpcCalls.map((call) => call.name), [
+        "create_whatsapp_phone_security_secret_pending_by_system",
+        "invalidate_whatsapp_phone_security_secret_by_system",
+      ]);
+    },
+  },
+  {
+    name: "post-register materialization failure does not activate the pending secret",
+    run: async () => {
+      const { handler, rpcCalls, secretRpcCalls } = createRouteHandler({
+        rpcError: { message: "MATERIALIZATION_FAILED" },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+        }),
+      );
+
+      assert.equal(response.status, 500);
+      assert.equal(rpcCalls.length, 1);
+      assert.deepEqual(secretRpcCalls.map((call) => call.name), [
+        "create_whatsapp_phone_security_secret_pending_by_system",
+      ]);
+    },
+  },
+  {
+    name: "existing candidate path does not generate or persist a first-connection PIN",
+    run: async () => {
+      let registerCalls = 0;
+      const { handler, secretRpcCalls } = createRouteHandler({
+        candidateRpcError: null,
+        candidateRpcData: [
+          {
+            request_id: "change-request-1",
+            outcome: "candidate_materialized",
+            status: "candidate_received",
+            active_integration_id: "active-1",
+            candidate_phone_number_id: "claimed-phone",
+            candidate_whatsapp_business_account_id: "claimed-waba",
+            candidate_display_phone_number: "+55 11 90000-0000",
+          },
+        ],
+        register: async () => {
+          registerCalls += 1;
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+        }),
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(registerCalls, 0);
+      assert.equal(secretRpcCalls.length, 0);
     },
   },
   {
@@ -1092,6 +1230,33 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "active Zion binding blocks a second onboarding connection before Meta",
+    run: async () => {
+      let validationCalls = 0;
+      const { handler, candidateRpcCalls } = createRouteHandler({
+        readActiveBinding: async () => ({ ok: true, hasActiveBinding: true }),
+        validate: async () => {
+          validationCalls += 1;
+          return createSuccessfulValidation();
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.connectionScenario, "existing_zion_binding");
+      assert.equal(validationCalls, 0);
+      assert.equal(candidateRpcCalls.length, 0);
+    },
+  },
+  {
     name: "existing active binding materializes a non-active candidate without secrets",
     run: async () => {
       const { handler, candidateRpcCalls, rpcCalls } = createRouteHandler({
@@ -1114,7 +1279,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
           changeRequestIdempotencyKey: "change-0018",
         }),
       );
@@ -1149,7 +1313,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         }),
       );
 
@@ -1173,7 +1336,6 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "claimed-waba",
           phoneNumberId: "claimed-phone",
-          twoStepPin: "123456",
         }),
       );
       const body = await parseBody(response);
@@ -1182,6 +1344,38 @@ const tests: TestCase[] = [
       assert.equal(body.error, "WHATSAPP_EMBEDDED_SIGNUP_CONFLICT");
       assert.equal(candidateRpcCalls.length, 1);
       assert.equal(rpcCalls.length, 0);
+    },
+  },
+  {
+    name: "coexistence materializes without standard registration or PIN secret",
+    run: async () => {
+      let registrationBoundaryCalls = 0;
+      const { handler, rpcCalls, secretRpcCalls } = createRouteHandler({
+        validate: async () =>
+          createSuccessfulValidation({
+            connectionMode: "business_app_coexistence",
+            phoneNumberId: "coexistence-phone",
+          }),
+        register: async () => {
+          registrationBoundaryCalls += 1;
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          connectionMode: "business_app_coexistence",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 200);
+      assert.equal(body.connectionMode, "business_app_coexistence");
+      assert.equal(body.connectionScenario, "business_app_meta_flow");
+      assert.equal(registrationBoundaryCalls, 1);
+      assert.equal(secretRpcCalls.length, 0);
+      assert.equal(rpcCalls.some((call) => call.name === "materialize_store_whatsapp_embedded_signup_by_system"), true);
     },
   },
   {

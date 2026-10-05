@@ -27,6 +27,7 @@ const validateFreshToken = async ({
   graphApiVersion: "v99.0",
   appId: "app-test",
   validatedAt: "2026-10-02T10:00:00.000Z",
+  connectionMode: "standard" as const,
 });
 
 function createWhatsappBindingChangeRouteHandler(

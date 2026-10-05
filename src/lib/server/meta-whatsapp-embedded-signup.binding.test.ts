@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
   exchangeAndValidateMetaWhatsappBinding,
+  registerMetaWhatsappEmbeddedSignup,
   MetaWhatsappEmbeddedSignupError,
 } from "./meta-whatsapp-embedded-signup";
 
@@ -85,4 +86,54 @@ test("fresh-token helper rejects a phone outside the candidate WABA", async () =
       error instanceof MetaWhatsappEmbeddedSignupError &&
       error.code === "META_PHONE_WABA_MISMATCH",
   );
+});
+
+test("coexistence discovers the sole WABA phone and skips standard registration", async () => {
+  const urls: string[] = [];
+  const validated = await exchangeAndValidateMetaWhatsappBinding(
+    {
+      code: "coexistence-code",
+      whatsappBusinessAccountId: "waba-coexistence",
+      connectionMode: "business_app_coexistence",
+    },
+    {
+      config: {
+        graphApiVersion: "v99.0",
+        appId: "app-test",
+        appSecret: "secret-test",
+      },
+      deps: depsFor(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        urls.push(url);
+        if (url.includes("/oauth/access_token")) {
+          return Response.json({ access_token: "coexistence-token" });
+        }
+        if (url.endsWith("/waba-coexistence?fields=id")) {
+          return Response.json({ id: "waba-coexistence" });
+        }
+        if (url.includes("/waba-coexistence/phone_numbers")) {
+          return Response.json({
+            data: [{ id: "phone-coexistence", display_phone_number: "+5511888888888" }],
+          });
+        }
+        if (url.includes("/subscribed_apps")) return Response.json({ success: true });
+        return new Response(JSON.stringify({}), { status: 500 });
+      }),
+    },
+  );
+
+  assert.equal(validated.connectionMode, "business_app_coexistence");
+  assert.equal(validated.phoneNumberId, "phone-coexistence");
+
+  await registerMetaWhatsappEmbeddedSignup(validated, "", {
+    deps: depsFor(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes("/subscribed_apps")) return Response.json({ success: true });
+      if (url.includes("/register")) return Response.json({ success: true });
+      return new Response(JSON.stringify({}), { status: 500 });
+    }),
+  });
+
+  assert.equal(urls.some((url) => url.includes("/register")), false);
 });

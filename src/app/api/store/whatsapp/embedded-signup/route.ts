@@ -8,11 +8,26 @@ import {
 } from "@/lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 import {
-  exchangeAndValidateMetaWhatsappEmbeddedSignup,
+  exchangeAndValidateMetaWhatsappBinding,
+  registerMetaWhatsappEmbeddedSignup,
   MetaWhatsappEmbeddedSignupError,
-  type MetaWhatsappEmbeddedSignupValidationInput,
+  type MetaWhatsappEmbeddedSignupConnectionMode,
+  type MetaWhatsappBindingValidationInput,
   type MetaWhatsappEmbeddedSignupValidationResult,
 } from "@/lib/server/meta-whatsapp-embedded-signup";
+import {
+  encryptWhatsappTwoStepPin,
+  generateWhatsappTwoStepPin,
+} from "@/lib/server/whatsapp-two-step-pin-crypto";
+import {
+  activateWhatsappTwoStepPinSecret,
+  createPendingWhatsappTwoStepPinSecret,
+  invalidateWhatsappTwoStepPinSecret,
+} from "@/lib/server/whatsapp-two-step-pin-secrets";
+import {
+  classifyWhatsappConnectionScenario,
+  type WhatsappConnectionScenarioResult,
+} from "@/lib/server/whatsapp-connection-scenario-router";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +36,7 @@ type EmbeddedSignupRequestBody = {
   code?: unknown;
   whatsappBusinessAccountId?: unknown;
   phoneNumberId?: unknown;
-  twoStepPin?: unknown;
+  connectionMode?: unknown;
   changeRequestIdempotencyKey?: unknown;
 };
 
@@ -55,8 +70,16 @@ type EmbeddedSignupRouteDeps = {
   }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
   createPrivilegedClient: () => PrivilegedClient;
   validateEmbeddedSignup: (
-    input: MetaWhatsappEmbeddedSignupValidationInput,
+    input: MetaWhatsappBindingValidationInput,
   ) => Promise<MetaWhatsappEmbeddedSignupValidationResult>;
+  registerEmbeddedSignup: (
+    validated: MetaWhatsappEmbeddedSignupValidationResult,
+    twoStepPin: string,
+  ) => Promise<void>;
+  readActiveBinding?: (client: PrivilegedClient, access: StoreApiAccessGranted) => Promise<{
+    ok: true;
+    hasActiveBinding: boolean;
+  } | { ok: false; error: string }>;
 };
 
 const MAX_PAYLOAD_BYTES = 8 * 1024;
@@ -174,6 +197,7 @@ function validatePayload(body: EmbeddedSignupRequestBody) {
   const code = trimInputString(body.code);
   const whatsappBusinessAccountId = trimInputString(body.whatsappBusinessAccountId);
   const phoneNumberId = trimInputString(body.phoneNumberId);
+  const connectionMode = trimInputString(body.connectionMode) || "standard";
 
   if (!code) {
     return {
@@ -203,7 +227,24 @@ function validatePayload(body: EmbeddedSignupRequestBody) {
     };
   }
 
-  if (!phoneNumberId) {
+  if (
+    connectionMode !== "standard" &&
+    connectionMode !== "business_app_coexistence"
+  ) {
+    return {
+      ok: false as const,
+      response: createJsonResponse(
+        {
+          ok: false,
+          error: "INVALID_CONNECTION_MODE",
+          message: "Modo de conexao do Embedded Signup invalido.",
+        },
+        400,
+      ),
+    };
+  }
+
+  if (connectionMode === "standard" && !phoneNumberId) {
     return {
       ok: false as const,
       response: createJsonResponse(
@@ -217,29 +258,14 @@ function validatePayload(body: EmbeddedSignupRequestBody) {
     };
   }
 
-  if (!isString(body.twoStepPin)) {
+  if (Object.prototype.hasOwnProperty.call(body, "twoStepPin")) {
     return {
       ok: false as const,
       response: createJsonResponse(
         {
           ok: false,
-          error: "INVALID_TWO_STEP_PIN",
-          message: "PIN de duas etapas invalido.",
-        },
-        400,
-      ),
-    };
-  }
-
-  const twoStepPin = body.twoStepPin;
-  if (!/^[0-9]{6}$/.test(twoStepPin)) {
-    return {
-      ok: false as const,
-      response: createJsonResponse(
-        {
-          ok: false,
-          error: "INVALID_TWO_STEP_PIN",
-          message: "PIN de duas etapas invalido.",
+          error: "CLIENT_TWO_STEP_PIN_FORBIDDEN",
+          message: "O PIN de duas etapas e gerenciado pelo servidor.",
         },
         400,
       ),
@@ -251,8 +277,8 @@ function validatePayload(body: EmbeddedSignupRequestBody) {
     input: {
       code,
       whatsappBusinessAccountId,
-      phoneNumberId,
-      twoStepPin,
+      ...(phoneNumberId ? { phoneNumberId } : {}),
+      connectionMode: connectionMode as MetaWhatsappEmbeddedSignupConnectionMode,
     },
   };
 }
@@ -295,14 +321,67 @@ function isNoChangeCandidateError(error: { message?: string | null } | null | un
 }
 
 function mapMetaError(error: MetaWhatsappEmbeddedSignupError) {
+  const scenario = classifyWhatsappConnectionScenario({
+    metaErrorCode: error.code,
+    metaErrorMessage: error.message,
+  });
+
   return {
     status: error.httpStatus,
     body: {
       ok: false,
       error: error.code,
-      message: error.message,
+      message: scenarioMessage(scenario),
+      connectionScenario: scenario.scenario,
+      canRetry: scenario.canRetry,
+      requiresUserAction: scenario.requiresUserAction,
     },
   };
+}
+
+function scenarioMessage(scenario: WhatsappConnectionScenarioResult) {
+  switch (scenario.userMessageKey) {
+    case "whatsapp.connection.existing_zion_binding":
+      return "O WhatsApp desta loja ja esta conectado ao ZION.";
+    case "whatsapp.connection.number_change_required":
+      return "Para trocar o numero, use o fluxo seguro de troca de WhatsApp da loja.";
+    case "whatsapp.connection.business_app_meta_flow":
+      return "A Meta indicou que este numero exige um fluxo do WhatsApp Business. Siga a orientacao exibida pela Meta.";
+    case "whatsapp.connection.personal_whatsapp_guidance_required":
+      return "Este numero ainda usa o WhatsApp comum. Primeiro, transfira-o para o WhatsApp Business.";
+    case "whatsapp.connection.external_bsp_migration_required":
+      return "Este numero ja esta conectado a outro provedor de WhatsApp Business e precisa ser migrado antes.";
+    case "whatsapp.connection.recoverable_error":
+      return "A Meta esta temporariamente indisponivel. Tente novamente.";
+    case "whatsapp.connection.unknown_meta_state":
+      return "A Meta retornou um estado que o ZION nao conseguiu identificar. Fale com o suporte.";
+    case "whatsapp.connection.blocking_error":
+      return "A Meta bloqueou esta conexao. Verifique a configuracao da conta ou fale com o suporte.";
+    default:
+      return "Nao foi possivel concluir a conexao com a Meta. Reinicie o Embedded Signup.";
+  }
+}
+
+async function defaultReadActiveBinding(
+  client: PrivilegedClient,
+  access: StoreApiAccessGranted,
+) {
+  if (typeof (client as unknown as { from?: unknown }).from !== "function") {
+    return { ok: true as const, hasActiveBinding: false };
+  }
+
+  const { data, error } = await client
+    .from("external_integrations")
+    .select("id")
+    .eq("organization_id", access.organizationId)
+    .eq("store_id", access.storeId)
+    .eq("provider", "whatsapp")
+    .eq("is_active", true)
+    .eq("status", "active")
+    .limit(2);
+
+  if (error) return { ok: false as const, error: error.message };
+  return { ok: true as const, hasActiveBinding: (data || []).length > 0 };
 }
 
 function sanitizeUnexpectedError(error: unknown) {
@@ -324,7 +403,11 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
   const createClientWithPrivileges =
     deps.createPrivilegedClient ?? createPrivilegedClient;
   const validateEmbeddedSignup =
-    deps.validateEmbeddedSignup ?? exchangeAndValidateMetaWhatsappEmbeddedSignup;
+    deps.validateEmbeddedSignup ?? exchangeAndValidateMetaWhatsappBinding;
+  const registerEmbeddedSignup =
+    deps.registerEmbeddedSignup ?? registerMetaWhatsappEmbeddedSignup;
+  const readActiveBinding: NonNullable<EmbeddedSignupRouteDeps["readActiveBinding"]> =
+    deps.readActiveBinding ?? defaultReadActiveBinding;
 
   return async function POST(request: Request) {
     const access = await resolveAccess({
@@ -343,6 +426,42 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
     const payloadResult = validatePayload(bodyResult.body);
     if (!payloadResult.ok) {
       return payloadResult.response;
+    }
+
+    const privilegedClient = createClientWithPrivileges();
+    const activeBindingResult = await readActiveBinding(
+      privilegedClient as Parameters<typeof readActiveBinding>[0],
+      access,
+    );
+    if (!activeBindingResult.ok) {
+      return createJsonResponse(
+        {
+          ok: false,
+          error: "WHATSAPP_CONNECTION_STATE_UNAVAILABLE",
+          message: "Nao foi possivel confirmar o estado atual do WhatsApp da loja.",
+          connectionScenario: "unknown_meta_state",
+          canRetry: true,
+          requiresUserAction: true,
+        },
+        503,
+      );
+    }
+
+    const preflightScenario = classifyWhatsappConnectionScenario({
+      hasActiveZionBinding: activeBindingResult.hasActiveBinding,
+    });
+    if (preflightScenario.scenario === "existing_zion_binding") {
+      return createJsonResponse(
+        {
+          ok: false,
+          error: "WHATSAPP_EXISTING_ZION_BINDING",
+          message: scenarioMessage(preflightScenario),
+          connectionScenario: preflightScenario.scenario,
+          canRetry: false,
+          requiresUserAction: false,
+        },
+        409,
+      );
     }
 
     let validated: MetaWhatsappEmbeddedSignupValidationResult;
@@ -368,7 +487,6 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
     }
 
     try {
-      const privilegedClient = createClientWithPrivileges();
       const idempotencyKey =
         trimInputString(bodyResult.body.changeRequestIdempotencyKey) ||
         `embedded-signup:${validated.phoneNumberId}`;
@@ -402,6 +520,12 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
         return createJsonResponse({
           ok: true,
           outcome: candidateRow.outcome,
+          connectionScenario: "zion_number_change_required",
+          canRetry: false,
+          requiresUserAction: true,
+          message: scenarioMessage(
+            classifyWhatsappConnectionScenario({ hasExistingChangeRequest: true }),
+          ),
           changeRequest: {
             id: candidateRow.request_id,
             status: candidateRow.status,
@@ -424,6 +548,43 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
           mapped.status,
         );
       }
+
+      const usesStandardPhoneRegistration =
+        (validated.connectionMode ?? "standard") === "standard";
+      let pin = usesStandardPhoneRegistration ? generateWhatsappTwoStepPin() : "";
+      const pendingSecret = usesStandardPhoneRegistration
+        ? await createPendingWhatsappTwoStepPinSecret({
+            supabase: privilegedClient,
+            organizationId: access.organizationId,
+            storeId: access.storeId,
+            phoneNumberId: validated.phoneNumberId,
+            material: encryptWhatsappTwoStepPin(pin),
+          })
+        : null;
+
+      try {
+        await registerEmbeddedSignup(validated, pin);
+      } catch (error) {
+        if (pendingSecret) {
+          try {
+            await invalidateWhatsappTwoStepPinSecret({
+              supabase: privilegedClient,
+              organizationId: access.organizationId,
+              storeId: access.storeId,
+              secretId: pendingSecret.secretId,
+            });
+          } catch {
+            // Keep the original Meta failure as the public outcome.
+          }
+        }
+        pin = "";
+        if (error instanceof MetaWhatsappEmbeddedSignupError) {
+          const mapped = mapMetaError(error);
+          return createJsonResponse(mapped.body, mapped.status);
+        }
+        throw error;
+      }
+      pin = "";
 
       const { data, error } = await privilegedClient.rpc(
         "materialize_store_whatsapp_embedded_signup_by_system",
@@ -459,9 +620,26 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
 
       const integration = row as MaterializedWhatsappIntegration;
 
+      if (pendingSecret) {
+        await activateWhatsappTwoStepPinSecret({
+          supabase: privilegedClient,
+          organizationId: access.organizationId,
+          storeId: access.storeId,
+          phoneNumberId: integration.phone_number_id,
+          externalIntegrationId: integration.integration_id,
+        });
+      }
+
       return createJsonResponse({
         ok: true,
         outcome: integration.outcome,
+        connectionScenario:
+          (validated.connectionMode ?? "standard") === "business_app_coexistence"
+            ? "business_app_meta_flow"
+            : "standard_first_connection",
+        connectionMode: validated.connectionMode ?? "standard",
+        canRetry: false,
+        requiresUserAction: false,
         integration: {
           id: integration.integration_id,
           provider: integration.provider,

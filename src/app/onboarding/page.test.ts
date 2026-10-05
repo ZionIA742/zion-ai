@@ -10,7 +10,7 @@ type TestCase = {
 const pagePath = join(process.cwd(), "src/app/onboarding/page.tsx");
 
 function readPageSource() {
-  return readFileSync(pagePath, "utf8");
+  return readFileSync(pagePath, "utf8").replace(/\r\n/g, "\n");
 }
 
 function getFunctionBlock(source: string, signature: string, nextSignature: string) {
@@ -65,7 +65,7 @@ function getStartMetaSignupBlock(source: string) {
   return getFunctionBlock(
     source,
     "  async function startMetaEmbeddedSignup() {",
-    "  useEffect(() => {\n    if (!embeddedSignupCode) return;",
+    "  useEffect(() => {",
   );
 }
 
@@ -283,7 +283,8 @@ const tests: TestCase[] = [
         parserBlock.includes("payload.type !== META_EMBEDDED_SIGNUP_MESSAGE_TYPE"),
         true,
       );
-      assert.equal(parserBlock.includes('eventName !== "FINISH"'), true);
+      assert.equal(parserBlock.includes('eventName === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"'), true);
+      assert.equal(parserBlock.includes('eventName === "FINISH"'), true);
       assert.equal(source.includes('"WA_EMBEDDED_SIGNUP"'), true);
     },
   },
@@ -297,7 +298,8 @@ const tests: TestCase[] = [
       assert.equal(parserBlock.includes("normalizeMetaIdentifier(payloadData.waba_id)"), true);
       assert.equal(parserBlock.includes("normalizeMetaIdentifier(payloadData.phone_number_id)"), true);
       assert.equal(parserBlock.includes("whatsappBusinessAccountId,"), true);
-      assert.equal(parserBlock.includes("phoneNumberId,"), true);
+      assert.equal(parserBlock.includes("phoneNumberId ?"), true);
+      assert.equal(parserBlock.includes('connectionMode,'), true);
       assert.equal(parserBlock.includes("display_phone_number"), false);
     },
   },
@@ -312,24 +314,26 @@ const tests: TestCase[] = [
       assert.equal(block.includes('response_type: "code"'), true);
       assert.equal(block.includes("override_default_response_type: true"), true);
       assert.equal(block.includes('version: "v4"'), true);
+      assert.equal(block.includes('featureType: "whatsapp_business_app_onboarding"'), true);
+      assert.equal(block.includes('sessionInfoVersion: "3"'), true);
       assert.equal(block.includes("typeof response.authResponse?.code === \"string\""), true);
       assert.equal(block.includes("setEmbeddedSignupCode(code);"), true);
       assert.equal(block.includes("accessToken"), false);
     },
   },
   {
-    name: "Meta Embedded Signup PIN must be exactly six digits",
+    name: "Meta Embedded Signup has no client PIN UI or local state",
     run: () => {
       const source = readPageSource();
 
-      assert.equal(source.includes("function isValidTwoStepPin(value: string)"), true);
-      assert.equal(source.includes("/^[0-9]{6}$/.test(value)"), true);
-      assert.equal(source.includes("event.target.value.replace(/[^\\d]/g, \"\").slice(0, 6)"), true);
-      assert.equal(source.includes("!isValidTwoStepPin(embeddedSignupPin)"), true);
+      assert.equal(source.includes("embeddedSignupPin"), false);
+      assert.equal(source.includes("PIN de verificacao em duas etapas"), false);
+      assert.equal(source.includes("placeholder=\"6 digitos\""), false);
+      assert.equal(source.includes("isValidTwoStepPin"), false);
     },
   },
   {
-    name: "Meta Embedded Signup POST sends only code WABA phone and PIN",
+    name: "Meta Embedded Signup POST sends only code WABA and phone",
     run: () => {
       const source = readPageSource();
       const block = getEmbeddedSignupSubmitBlock(source);
@@ -341,7 +345,7 @@ const tests: TestCase[] = [
       assert.equal(payloadBlock.includes("code: embeddedSignupCode"), true);
       assert.equal(payloadBlock.includes("whatsappBusinessAccountId:"), true);
       assert.equal(payloadBlock.includes("phoneNumberId:"), true);
-      assert.equal(payloadBlock.includes("twoStepPin: embeddedSignupPin"), true);
+      assert.equal(payloadBlock.includes("twoStepPin"), false);
       assert.equal(payloadBlock.includes("displayPhoneNumber"), false);
       assert.equal(payloadBlock.includes("token"), false);
     },
@@ -395,16 +399,17 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "Embedded Signup PIN is immutable while the attempt is in progress",
+    name: "Embedded Signup button depends only on request state",
     run: () => {
       const source = readPageSource();
-      const inputStart = source.indexOf("value={embeddedSignupPin}");
-      const inputEnd = source.indexOf("aria-label=\"PIN de verificacao", inputStart);
-      const inputBlock = source.slice(inputStart, inputEnd);
+      const buttonStart = source.indexOf("onClick={startMetaEmbeddedSignup}");
+      const buttonEnd = source.indexOf("className=", buttonStart);
+      const buttonBlock = source.slice(buttonStart, buttonEnd);
 
-      assert.equal(inputStart > -1, true);
-      assert.equal(inputBlock.includes("disabled={embeddedSignupLoading || embeddedSignupSubmitting}"), true);
-      assert.equal(inputBlock.includes("embeddedSignupAttemptRef.current || embeddedSignupSubmittingRef.current"), true);
+      assert.equal(buttonStart > -1, true);
+      assert.equal(buttonBlock.includes("embeddedSignupLoading"), true);
+      assert.equal(buttonBlock.includes("embeddedSignupSubmitting"), true);
+      assert.equal(buttonBlock.includes("embeddedSignupPin"), false);
     },
   },
   {
@@ -416,7 +421,7 @@ const tests: TestCase[] = [
       assert.equal(source.includes("access_token"), false);
       assert.equal(source.includes("META_WHATSAPP_ACCESS_TOKEN"), false);
       assert.equal(source.includes("sessionStorage"), false);
-      assert.equal(source.includes("embeddedSignupPin") && source.includes("localStorage.setItem"), true);
+      assert.equal(source.includes("embeddedSignupPin"), false);
       assert.equal(/localStorage\.setItem\([^)]*embeddedSignup(Pin|Code)/.test(source), false);
       assert.equal(/window\.location[^;]*(embeddedSignupPin|embeddedSignupCode|twoStepPin|code)/.test(source), false);
     },
@@ -463,7 +468,7 @@ const tests: TestCase[] = [
         readinessIndex,
       );
       const finalMessageIndex = block.indexOf(
-        'setEmbeddedSignupMessage("WhatsApp conectado pela Meta.");',
+        "setEmbeddedSignupMessage(\n          result?.connectionMode",
         readinessGuardIndex,
       );
 
@@ -474,7 +479,7 @@ const tests: TestCase[] = [
       assert.equal(readinessGuardIndex > readinessIndex, true);
       assert.equal(finalMessageIndex > readinessGuardIndex, true);
       assert.equal(
-        block.indexOf('setEmbeddedSignupMessage("WhatsApp conectado pela Meta.");', postSuccessIndex) >
+        block.indexOf('"WhatsApp conectado pela Meta."', postSuccessIndex) >
           readinessGuardIndex,
         true,
       );
@@ -500,7 +505,7 @@ const tests: TestCase[] = [
         readinessGuardIndex,
       );
       const finalMessageIndex = block.indexOf(
-        'setEmbeddedSignupMessage("WhatsApp conectado pela Meta.");',
+        '"WhatsApp conectado pela Meta."',
       );
 
       assert.equal(statusThrowIndex > statusGuardIndex, true);

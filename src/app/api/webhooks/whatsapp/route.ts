@@ -61,7 +61,15 @@ type IntegrationRow = {
 };
 
 type ExtractedEvent = {
-  eventKind: "message" | "status" | "change";
+  eventKind:
+    | "message"
+    | "status"
+    | "change"
+    | "message_echo"
+    | "history"
+    | "smb_app_state_sync"
+    | "account_update"
+    | "group_message";
   externalEventId: string;
   phoneNumberId: string;
   entryId: string | null;
@@ -193,7 +201,25 @@ function buildGenericChangeExternalEventId(args: {
   return `change:${args.entryId || "unknown"}:${args.changeField || "unknown"}:${args.phoneNumberId}:${rawHash}`;
 }
 
-function extractEventsFromPayload(payload: unknown): ExtractedEvent[] {
+function isGroupMessage(message: Record<string, unknown>) {
+  return (
+    typeof message.group_id === "string" ||
+    typeof message.groupId === "string" ||
+    message.is_group === true ||
+    message.isGroup === true ||
+    message.chat_type === "group"
+  );
+}
+
+function isCoexistenceControlField(field: string | null) {
+  return (
+    field === "history" ||
+    field === "smb_app_state_sync" ||
+    field === "account_update"
+  );
+}
+
+export function extractEventsFromPayload(payload: unknown): ExtractedEvent[] {
   if (!isRecord(payload)) {
     return [];
   }
@@ -220,15 +246,25 @@ function extractEventsFromPayload(payload: unknown): ExtractedEvent[] {
       }
 
       const messages = Array.isArray(rawValue.messages) ? rawValue.messages : [];
+      const echoMessages = Array.isArray(rawValue.smb_message_echoes)
+        ? rawValue.smb_message_echoes
+        : [];
       const statuses = Array.isArray(rawValue.statuses) ? rawValue.statuses : [];
 
-      for (const message of messages) {
+      for (const message of [...messages, ...echoMessages]) {
         if (!isRecord(message)) continue;
         const messageId = asTrimmedString(message.id);
         if (!messageId) continue;
 
+        const eventKind: ExtractedEvent["eventKind"] =
+          changeField === "smb_message_echoes"
+            ? "message_echo"
+            : isGroupMessage(message)
+              ? "group_message"
+              : "message";
+
         events.push({
-          eventKind: "message",
+          eventKind,
           externalEventId: `message:${messageId}`,
           phoneNumberId,
           entryId,
@@ -262,9 +298,11 @@ function extractEventsFromPayload(payload: unknown): ExtractedEvent[] {
         });
       }
 
-      if (messages.length === 0 && statuses.length === 0) {
+      if (messages.length === 0 && echoMessages.length === 0 && statuses.length === 0) {
         events.push({
-          eventKind: "change",
+          eventKind: isCoexistenceControlField(changeField)
+            ? (changeField as "history" | "smb_app_state_sync" | "account_update")
+            : "change",
           externalEventId: buildGenericChangeExternalEventId({
             entryId,
             changeField,
@@ -441,6 +479,13 @@ export async function POST(request: Request) {
         payload: payloadToStore,
       });
 
+      if (
+        event.eventKind !== "message" &&
+        event.eventKind !== "status"
+      ) {
+        continue;
+      }
+
       if (!integration) {
         unresolved += 1;
         continue;
@@ -475,7 +520,7 @@ export async function POST(request: Request) {
       duplicates,
       unresolved,
     });
-  } catch (error) {
+  } catch {
     console.error("[webhooks/whatsapp] Erro inesperado ao receber webhook.");
 
     return buildJsonResponse(
