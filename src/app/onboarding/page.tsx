@@ -84,6 +84,7 @@ type FacebookLoginResponse = {
 type FacebookSdk = {
   init: (options: {
     appId: string;
+    version: string;
     cookie?: boolean;
     xfbml?: boolean;
   }) => void;
@@ -117,6 +118,7 @@ declare global {
 
 const FACEBOOK_SDK_SCRIPT_ID = "facebook-jssdk";
 const FACEBOOK_SDK_SRC = "https://connect.facebook.net/pt_BR/sdk.js";
+const DEFAULT_FACEBOOK_GRAPH_API_VERSION = "v23.0";
 const META_EMBEDDED_SIGNUP_MESSAGE_TYPE = "WA_EMBEDDED_SIGNUP";
 const META_EMBEDDED_SIGNUP_ALLOWED_ORIGINS = new Set([
   "https://www.facebook.com",
@@ -124,6 +126,15 @@ const META_EMBEDDED_SIGNUP_ALLOWED_ORIGINS = new Set([
   "https://business.facebook.com",
 ]);
 let facebookSdkLoadPromise: Promise<void> | null = null;
+
+function getFacebookGraphApiVersion() {
+  const configuredVersion = cleanText(process.env.NEXT_PUBLIC_WHATSAPP_GRAPH_API_VERSION);
+  return /^v\d+\.\d+$/.test(configuredVersion)
+    ? configuredVersion
+    : DEFAULT_FACEBOOK_GRAPH_API_VERSION;
+}
+
+const FACEBOOK_GRAPH_API_VERSION = getFacebookGraphApiVersion();
 
 function getMetaEmbeddedSignupConfig() {
   return {
@@ -230,7 +241,12 @@ function ensureFacebookSdkLoaded(appId: string) {
   }
 
   if (window.FB) {
-    window.FB.init({ appId, cookie: true, xfbml: false });
+    window.FB.init({
+      appId,
+      version: FACEBOOK_GRAPH_API_VERSION,
+      cookie: true,
+      xfbml: false,
+    });
     return Promise.resolve();
   }
 
@@ -269,7 +285,12 @@ function ensureFacebookSdkLoaded(appId: string) {
 
       if (settled) return;
       try {
-        window.FB.init({ appId, cookie: true, xfbml: false });
+        window.FB.init({
+          appId,
+          version: FACEBOOK_GRAPH_API_VERSION,
+          cookie: true,
+          xfbml: false,
+        });
         settled = true;
         cleanup();
         resolve();

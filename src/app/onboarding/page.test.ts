@@ -322,6 +322,26 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "Facebook SDK init uses a valid Graph API version distinct from Embedded Signup v4",
+    run: () => {
+      const source = readPageSource();
+      const initCalls = source.match(/window\.FB\.init\(\{[\s\S]*?\}\);/g) || [];
+
+      assert.equal(initCalls.length, 2);
+      assert.equal(source.includes("NEXT_PUBLIC_WHATSAPP_GRAPH_API_VERSION"), true);
+      assert.equal(source.includes("const FACEBOOK_GRAPH_API_VERSION"), true);
+      assert.equal(source.includes("/^v\\d+\\.\\d+$/.test(configuredVersion)"), true);
+      assert.equal(initCalls.every((call) => call.includes("version: FACEBOOK_GRAPH_API_VERSION")), true);
+      assert.equal(initCalls.some((call) => call.includes('"v4"')), false);
+
+      const loginBlock = getStartMetaSignupBlock(source);
+      assert.equal(loginBlock.includes("config_id: metaEmbeddedSignupConfig.configId"), true);
+      assert.equal(loginBlock.includes('version: "v4"'), true);
+      assert.equal(loginBlock.includes('featureType: "whatsapp_business_app_onboarding"'), true);
+      assert.equal(loginBlock.includes('sessionInfoVersion: "3"'), true);
+    },
+  },
+  {
     name: "Meta Embedded Signup has no client PIN UI or local state",
     run: () => {
       const source = readPageSource();
