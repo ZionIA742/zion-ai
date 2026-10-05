@@ -85,6 +85,270 @@ type PriorityRow = {
   priority_rank: number | null;
   reason_codes: string[] | null;
 };
+type CommercialPriorityBand = "urgent" | "high" | "normal" | "low";
+
+type CrmOpportunityContextRow = {
+  commercial_opportunity_id: string;
+  conversation_id: string | null;
+};
+
+type PriorityFlameVisual = {
+  label: string;
+  description: string;
+  buttonClass: string;
+  iconClass: string;
+};
+
+const PRIORITY_FLAME_VISUALS: Record<
+  CommercialPriorityBand,
+  PriorityFlameVisual
+> = {
+  urgent: {
+    label: "Muito alta",
+    description: "Este lead precisa de atenção imediata. Há sinais fortes de prioridade na negociação.",
+    buttonClass:
+      "bg-red-50 text-red-600 ring-red-200 hover:bg-red-100",
+    iconClass: "text-red-600",
+  },
+  high: {
+    label: "Alta",
+    description: "Este lead merece atenção agora. Há sinais importantes para continuar a negociação.",
+    buttonClass:
+      "bg-orange-50 text-orange-500 ring-orange-200 hover:bg-orange-100",
+    iconClass: "text-orange-500",
+  },
+  normal: {
+    label: "Média",
+    description: "Este lead está em acompanhamento. A negociação continua ativa, mas sem grande urgência.",
+    buttonClass:
+      "bg-amber-50 text-amber-400 ring-amber-200 hover:bg-amber-100",
+    iconClass: "text-amber-400",
+  },
+  low: {
+    label: "Baixa",
+    description: "Este lead está com baixa prioridade no momento. Não há sinais importantes que exijam atenção agora.",
+    buttonClass:
+      "bg-sky-50 text-sky-400 ring-sky-200 hover:bg-sky-100",
+    iconClass: "text-sky-400",
+  },
+};
+
+const PRIORITY_FLAME_ORDER: CommercialPriorityBand[] = [
+  "urgent",
+  "high",
+  "normal",
+  "low",
+];
+
+function normalizePriorityFlameBand(
+  value: string | null | undefined
+): CommercialPriorityBand | null {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (
+    normalized === "urgent" ||
+    normalized === "high" ||
+    normalized === "normal" ||
+    normalized === "low"
+  ) {
+    return normalized;
+  }
+
+  return null;
+}
+
+function InboxPriorityFlameIcon({
+  className = "h-4 w-4",
+}: {
+  className?: string;
+}) {
+  return (
+    <svg
+      viewBox="0 0 24 26"
+      aria-hidden="true"
+      data-priority-flame-icon="second-row-second"
+      className={className}
+    >
+      <path
+        fill="currentColor"
+        d="M12 1.35c2.25 3.55 2.15 6.4.25 9.3 3.05-1.35 5.25-4.15 5.7-7.25 3.25 4.35 5.05 8.15 5.05 11.95C23 21.15 18.35 25 12.3 25 6.25 25 1.55 21.15 1.55 15.35c0-4.55 2.5-8.3 7.25-11.55-.5 3.85.35 6.75 2.65 8.65-.45-4.15-.1-8.05.55-11.1Z"
+      />
+      <path
+        fill="white"
+        d="M12.35 14.55c2.25 2.15 3.4 4 3.4 5.55 0 2.25-1.5 3.95-3.55 3.95-2.1 0-3.65-1.7-3.65-3.95 0-1.55 1.2-3.45 3.8-5.55Z"
+      />
+    </svg>
+  );
+}
+
+function PriorityFlame({
+  priorityBand,
+}: {
+  priorityBand: string | null | undefined;
+}) {
+  const band = normalizePriorityFlameBand(priorityBand);
+  const visual = band ? PRIORITY_FLAME_VISUALS[band] : null;
+
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!open || !visual) {
+      return;
+    }
+
+    function updatePosition() {
+      const rect = buttonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const viewportPadding = 12;
+      const width = Math.min(320, window.innerWidth - viewportPadding * 2);
+      const estimatedHeight = 300;
+
+      const left = Math.min(
+        Math.max(viewportPadding, rect.left),
+        Math.max(
+          viewportPadding,
+          window.innerWidth - width - viewportPadding
+        )
+      );
+
+      const openAbove =
+        rect.bottom + 8 + estimatedHeight >
+        window.innerHeight - viewportPadding;
+
+      const top = openAbove
+        ? Math.max(viewportPadding, rect.top - estimatedHeight - 8)
+        : rect.bottom + 8;
+
+      setPosition({
+        top,
+        left,
+        width,
+      });
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (buttonRef.current?.contains(target)) {
+        return;
+      }
+
+      if (popoverRef.current?.contains(target)) {
+        return;
+      }
+
+      setOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    }
+
+    updatePosition();
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open, visual]);
+
+  if (!visual) {
+    return null;
+  }
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-label={`Temperatura do lead: ${visual.label}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={`Temperatura do lead: ${visual.label}`}
+        onClick={() => setOpen((current) => !current)}
+        className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full ring-1 transition ${visual.buttonClass}`}
+      >
+        <InboxPriorityFlameIcon className="h-[18px] w-[18px]" />
+      </button>
+
+      {open && position ? (
+        <div
+          ref={popoverRef}
+          role="dialog"
+          aria-label="Temperatura do lead"
+          className="fixed z-[120] rounded-2xl bg-white p-4 text-left shadow-xl ring-1 ring-black/10"
+          style={{
+            top: position.top,
+            left: position.left,
+            width: position.width,
+          }}
+        >
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-400">
+            Temperatura do lead
+          </div>
+
+          <div className="mt-1 text-sm font-bold text-gray-950">
+            Atual: {visual.label}
+          </div>
+
+          <p className="mt-1 text-xs leading-5 text-gray-500">
+            A cor da chama mostra o nível de atenção que este lead precisa no momento.
+          </p>
+
+          <div className="mt-3 space-y-2">
+            {PRIORITY_FLAME_ORDER.map((itemBand) => {
+              const item = PRIORITY_FLAME_VISUALS[itemBand];
+
+              return (
+                <div
+                  key={itemBand}
+                  className="flex items-start gap-3 rounded-xl bg-gray-50 px-3 py-2.5"
+                >
+                  <span
+                    className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white ring-1 ring-black/5 ${item.iconClass}`}
+                  >
+                    <InboxPriorityFlameIcon className="h-[18px] w-[18px]" />
+                  </span>
+
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-gray-900">
+                      {item.label}
+                    </div>
+                    <div className="mt-0.5 text-[11px] leading-4 text-gray-500">
+                      {item.description}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
 
 type FollowupTotals = {
   all: number;
@@ -285,6 +549,8 @@ export default function InboxPage() {
   const [followupTotals, setFollowupTotals] = useState<FollowupTotals>(EMPTY_FOLLOWUP_TOTALS);
   const [followupHasLoadedSuccessfully, setFollowupHasLoadedSuccessfully] = useState(false);
   const [priorityByOpportunity, setPriorityByOpportunity] = useState<Record<string, PriorityRow>>({});
+  const [opportunityIdByConversation, setOpportunityIdByConversation] =
+    useState<Record<string, string>>({});
   const [storeRouteOriginAddress, setStoreRouteOriginAddress] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -304,6 +570,8 @@ export default function InboxPage() {
   const restoredSectionRef = useRef(false);
   const restoredScrollRef = useRef(false);
   const loadInboxRequestSeqRef = useRef(0);
+  const opportunityContextScopeKeyRef = useRef("");
+  const opportunityContextRequestSeqRef = useRef(0);
 
   const canLoadInbox = useMemo(() => {
     return !storeLoading && !!organizationId;
@@ -427,6 +695,125 @@ export default function InboxPage() {
     setPriorityByOpportunity(nextMap);
   }, [organizationId, activeStoreId]);
 
+  const loadInboxOpportunityContext = useCallback(
+    async (inboxRows: InboxRow[]) => {
+      if (!organizationId) {
+        opportunityContextScopeKeyRef.current = "";
+        opportunityContextRequestSeqRef.current += 1;
+        setOpportunityIdByConversation({});
+        return;
+      }
+
+      const conversationIds = [
+        ...new Set(
+          inboxRows
+            .map((row) => String(row.conversation_id || "").trim())
+            .filter(Boolean)
+        ),
+      ].sort();
+
+      if (conversationIds.length === 0) {
+        opportunityContextScopeKeyRef.current = "";
+        opportunityContextRequestSeqRef.current += 1;
+        setOpportunityIdByConversation({});
+        return;
+      }
+
+      const scopeKey = [
+        organizationId,
+        activeStoreId || "*",
+        conversationIds.join(","),
+      ].join(":");
+
+      if (opportunityContextScopeKeyRef.current === scopeKey) {
+        return;
+      }
+
+      opportunityContextScopeKeyRef.current = scopeKey;
+
+      const requestSeq =
+        opportunityContextRequestSeqRef.current + 1;
+
+      opportunityContextRequestSeqRef.current = requestSeq;
+
+      const { data, error } = await supabase.rpc(
+        "panel_list_crm_opportunity_cards_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId ?? null,
+          p_limit: 500,
+          p_offset: 0,
+        }
+      );
+
+      if (
+        requestSeq !== opportunityContextRequestSeqRef.current ||
+        opportunityContextScopeKeyRef.current !== scopeKey
+      ) {
+        return;
+      }
+
+      if (error) {
+        console.warn(
+          "[InboxPage] panel_list_crm_opportunity_cards_scoped priority context error:",
+          error
+        );
+
+        setOpportunityIdByConversation({});
+        return;
+      }
+
+      const requestedConversationIds =
+        new Set(conversationIds);
+
+      const opportunityIdsByConversation =
+        new Map<string, Set<string>>();
+
+      for (const row of (data || []) as CrmOpportunityContextRow[]) {
+        const conversationId = String(
+          row.conversation_id || ""
+        ).trim();
+
+        const opportunityId = String(
+          row.commercial_opportunity_id || ""
+        ).trim();
+
+        if (
+          !conversationId ||
+          !opportunityId ||
+          !requestedConversationIds.has(conversationId)
+        ) {
+          continue;
+        }
+
+        const current =
+          opportunityIdsByConversation.get(conversationId) ||
+          new Set<string>();
+
+        current.add(opportunityId);
+
+        opportunityIdsByConversation.set(
+          conversationId,
+          current
+        );
+      }
+
+      const nextMap: Record<string, string> = {};
+
+      for (const conversationId of conversationIds) {
+        const opportunityIds =
+          opportunityIdsByConversation.get(conversationId);
+
+        if (opportunityIds?.size === 1) {
+          nextMap[conversationId] =
+            [...opportunityIds][0];
+        }
+      }
+
+      setOpportunityIdByConversation(nextMap);
+    },
+    [organizationId, activeStoreId]
+  );
   const loadStoreRouteOriginAddress = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
       setStoreRouteOriginAddress(null);
@@ -608,6 +995,7 @@ export default function InboxPage() {
       await Promise.all([
         loadFollowupCandidates(),
         loadCommercialPriority(),
+        loadInboxOpportunityContext(inboxRows),
         loadStoreRouteOriginAddress(),
       ]);
 
@@ -628,6 +1016,7 @@ export default function InboxPage() {
       loadCommercialHandoffIndicators,
       loadFollowupCandidates,
       loadCommercialPriority,
+      loadInboxOpportunityContext,
       loadStoreRouteOriginAddress,
     ]
   );
@@ -989,6 +1378,11 @@ export default function InboxPage() {
                   const pending = isPendingReply(row);
                   const handoffIndicator = commercialHandoffByConversation[row.conversation_id];
                   const handoffLabel = getCommercialHandoffBadgeLabel(handoffIndicator);
+                  const messageOpportunityId =
+                    opportunityIdByConversation[row.conversation_id] || null;
+                  const messagePriority = messageOpportunityId
+                    ? priorityByOpportunity[messageOpportunityId]
+                    : null;
                   const routeUrl = buildGoogleMapsDirectionsUrl({
                     origin: storeRouteOriginAddress,
                     destination: handoffIndicator?.routeAddressText,
@@ -1018,6 +1412,9 @@ export default function InboxPage() {
                               ) : (
                                 <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-800 ring-1 ring-emerald-200">Respondido</span>
                               )}
+                              <PriorityFlame
+                                priorityBand={messagePriority?.priority_band}
+                              />
                               {handoffLabel ? (
                                 <span className="rounded-full bg-orange-50 px-2.5 py-1 text-[11px] font-semibold text-orange-800 ring-1 ring-orange-200">{handoffLabel}</span>
                               ) : null}
@@ -1142,6 +1539,9 @@ export default function InboxPage() {
                                   Prioridade {priority.priority_band}
                                 </span>
                               ) : null}
+                              <PriorityFlame
+                                priorityBand={priority?.priority_band}
+                              />
                             </div>
 
                             <div className="mt-1 text-xs text-gray-500">{row.lead_phone || "Sem telefone"} • {row.opportunity_stage || "etapa não informada"}</div>

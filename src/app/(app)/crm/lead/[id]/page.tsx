@@ -1,6 +1,6 @@
 "use client";
 
-import { KeyboardEvent, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, KeyboardEvent, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { getCanonicalCrmStage } from "@/config/crm";
 import {
@@ -173,6 +173,108 @@ type OpportunitySummary = {
   updatedAt: string | null;
 };
 
+type CommercialPriorityBand = "urgent" | "high" | "normal" | "low";
+
+type CommercialOpportunityPriorityRow = {
+  commercial_opportunity_id: string;
+  priority_band: string | null;
+  priority_rank: number | null;
+  reason_codes: string[] | null;
+};
+
+type CommercialPriorityVisual = {
+  label: string;
+  description: string;
+  buttonClass: string;
+  iconClass: string;
+};
+
+const COMMERCIAL_PRIORITY_VISUALS: Record<
+  CommercialPriorityBand,
+  CommercialPriorityVisual
+> = {
+  urgent: {
+    label: "Muito alta",
+    description: "Este lead precisa de atenção imediata. Há sinais fortes de prioridade na negociação.",
+    buttonClass:
+      "bg-red-50 text-red-600 ring-red-200 hover:bg-red-100",
+    iconClass: "text-red-600",
+  },
+  high: {
+    label: "Alta",
+    description:
+      "Este lead merece atenção agora. Há sinais importantes para continuar a negociação.",
+    buttonClass:
+      "bg-orange-50 text-orange-500 ring-orange-200 hover:bg-orange-100",
+    iconClass: "text-orange-500",
+  },
+  normal: {
+    label: "Média",
+    description:
+      "Este lead está em acompanhamento. A negociação continua ativa, mas sem grande urgência.",
+    buttonClass:
+      "bg-amber-50 text-amber-400 ring-amber-200 hover:bg-amber-100",
+    iconClass: "text-amber-400",
+  },
+  low: {
+    label: "Baixa",
+    description: "Este lead está com baixa prioridade no momento. Não há sinais importantes que exijam atenção agora.",
+    buttonClass:
+      "bg-sky-50 text-sky-400 ring-sky-200 hover:bg-sky-100",
+    iconClass: "text-sky-400",
+  },
+};
+
+const COMMERCIAL_PRIORITY_ORDER: CommercialPriorityBand[] = [
+  "urgent",
+  "high",
+  "normal",
+  "low",
+];
+
+function normalizeCommercialPriorityBand(
+  value: string | null | undefined
+): CommercialPriorityBand | null {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (
+    normalized === "urgent" ||
+    normalized === "high" ||
+    normalized === "normal" ||
+    normalized === "low"
+  ) {
+    return normalized;
+  }
+
+  return null;
+}
+
+function getCommercialPriorityVisual(
+  value: string | null | undefined
+): CommercialPriorityVisual | null {
+  const band = normalizeCommercialPriorityBand(value);
+  return band ? COMMERCIAL_PRIORITY_VISUALS[band] : null;
+}
+
+function PriorityFlameIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 26"
+      aria-hidden="true"
+      data-priority-flame-icon="second-row-second"
+      className={className}
+    >
+      <path
+        fill="currentColor"
+        d="M12 1.35c2.25 3.55 2.15 6.4.25 9.3 3.05-1.35 5.25-4.15 5.7-7.25 3.25 4.35 5.05 8.15 5.05 11.95C23 21.15 18.35 25 12.3 25 6.25 25 1.55 21.15 1.55 15.35c0-4.55 2.5-8.3 7.25-11.55-.5 3.85.35 6.75 2.65 8.65-.45-4.15-.1-8.05.55-11.1Z"
+      />
+      <path
+        fill="white"
+        d="M12.35 14.55c2.25 2.15 3.4 4 3.4 5.55 0 2.25-1.5 3.95-3.55 3.95-2.1 0-3.65-1.7-3.65-3.95 0-1.55 1.2-3.45 3.8-5.55Z"
+      />
+    </svg>
+  );
+}
 type ConcludeOpportunityResponse = {
   ok: boolean;
   commercialOpportunityId?: string;
@@ -1239,6 +1341,8 @@ export default function LeadPage() {
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const commercialActionsRef = useRef<HTMLDivElement | null>(null);
+  const priorityPopoverRef = useRef<HTMLDivElement | null>(null);
+  const priorityRequestSeqRef = useRef(0);
   const hasScrolledMessagesInitiallyRef = useRef(false);
   const hasRestoredQuoteDraftRef = useRef(false);
   const latestQuoteDraftRef = useRef<QuoteDraftPayload | null>(null);
@@ -1260,6 +1364,9 @@ export default function LeadPage() {
     useState<StoreGeneralAddressLike | null>(null);
   const [opportunities, setOpportunities] = useState<OpportunitySummary[]>([]);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(null);
+  const [selectedOpportunityPriority, setSelectedOpportunityPriority] =
+    useState<CommercialOpportunityPriorityRow | null>(null);
+  const [priorityPopoverOpen, setPriorityPopoverOpen] = useState(false);
   const [requiresOpportunitySelection, setRequiresOpportunitySelection] = useState(false);
   const [newMessage, setNewMessage] = useState("");
   const [simulatedCustomerMessage, setSimulatedCustomerMessage] = useState("");
@@ -1377,6 +1484,96 @@ export default function LeadPage() {
     : !selectedRouteDestinationAddress
       ? "Endereco do cliente ainda nao disponivel."
       : null;
+  const loadSelectedOpportunityPriority = useCallback(async () => {
+    const organizationId = String(lead?.organization_id || "").trim();
+    const storeId = String(lead?.store_id || "").trim();
+    const opportunityId = String(selectedOpportunityId || "").trim();
+
+    const requestSeq = priorityRequestSeqRef.current + 1;
+    priorityRequestSeqRef.current = requestSeq;
+
+    if (!organizationId || !storeId || !opportunityId) {
+      setSelectedOpportunityPriority(null);
+      return;
+    }
+
+    const { data, error } = await supabase.rpc(
+      "panel_list_commercial_opportunity_priority_scoped",
+      {
+        p_organization_id: organizationId,
+        p_store_id: storeId,
+        p_limit: 200,
+        p_offset: 0,
+        p_as_of: null,
+      }
+    );
+
+    if (priorityRequestSeqRef.current !== requestSeq) {
+      return;
+    }
+
+    if (error) {
+      console.warn(
+        "[LeadPage] panel_list_commercial_opportunity_priority_scoped error:",
+        error
+      );
+      setSelectedOpportunityPriority(null);
+      return;
+    }
+
+    const priority =
+      ((data || []) as CommercialOpportunityPriorityRow[]).find(
+        (row) =>
+          String(row.commercial_opportunity_id || "").trim() === opportunityId
+      ) || null;
+
+    setSelectedOpportunityPriority(priority);
+  }, [lead?.organization_id, lead?.store_id, selectedOpportunityId]);
+
+  useEffect(() => {
+    void loadSelectedOpportunityPriority();
+  }, [
+    loadSelectedOpportunityPriority,
+    messages,
+    commercialTasks,
+    appointments,
+  ]);
+
+  useEffect(() => {
+    setPriorityPopoverOpen(false);
+  }, [selectedOpportunityId]);
+
+  useEffect(() => {
+    if (!priorityPopoverOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+
+      if (
+        target instanceof Node &&
+        priorityPopoverRef.current &&
+        !priorityPopoverRef.current.contains(target)
+      ) {
+        setPriorityPopoverOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setPriorityPopoverOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [priorityPopoverOpen]);
   const selectedOpportunity =
     opportunities.find((opportunity) => opportunity.id === selectedOpportunityId) || null;
   const leadDetailsScopeKey = `${leadId}:${requestedConversationId || ""}:${
@@ -1407,6 +1604,9 @@ export default function LeadPage() {
   const selectedOpportunityStageLabel = selectedOpportunity
     ? formatOpportunityStage(selectedOpportunity.stage)
     : "Nenhuma oportunidade selecionada";
+  const selectedPriorityVisual = getCommercialPriorityVisual(
+    selectedOpportunityPriority?.priority_band
+  );
   const needSummaryDisplay = getQualificationFactDisplay(
     qualificationFacts,
     "need_summary"
@@ -4648,6 +4848,73 @@ export default function LeadPage() {
                   <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
                     {selectedOpportunityStageLabel}
                   </span>
+
+                  {selectedPriorityVisual ? (
+                    <div ref={priorityPopoverRef} className="relative">
+                      <button
+                        type="button"
+                        aria-label={`Prioridade comercial: ${selectedPriorityVisual.label}`}
+                        aria-haspopup="dialog"
+                        aria-expanded={priorityPopoverOpen}
+                        title={`Prioridade comercial: ${selectedPriorityVisual.label}`}
+                        onClick={() => {
+                          void loadSelectedOpportunityPriority();
+                          setPriorityPopoverOpen((current) => !current);
+                        }}
+                        className={`inline-flex h-8 w-8 items-center justify-center rounded-full ring-1 transition ${selectedPriorityVisual.buttonClass}`}
+                      >
+                        <PriorityFlameIcon className="h-[19px] w-[19px]" />
+                      </button>
+
+                      {priorityPopoverOpen ? (
+                        <div
+                          role="dialog"
+                          aria-label="Prioridade comercial do lead"
+                          className="absolute left-0 top-full z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] rounded-2xl bg-white p-4 text-left shadow-xl ring-1 ring-black/10"
+                        >
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-400">
+                            Temperatura do lead
+                          </div>
+
+                          <div className="mt-1 text-sm font-bold text-gray-950">
+                            Atual: {selectedPriorityVisual.label}
+                          </div>
+
+                          <p className="mt-1 text-xs leading-5 text-gray-500">
+                            A cor da chama mostra o nível de atenção que este lead precisa no momento.
+                          </p>
+
+                          <div className="mt-3 space-y-2">
+                            {COMMERCIAL_PRIORITY_ORDER.map((band) => {
+                              const visual = COMMERCIAL_PRIORITY_VISUALS[band];
+
+                              return (
+                                <div
+                                  key={band}
+                                  className="flex items-start gap-3 rounded-xl bg-gray-50 px-3 py-2.5"
+                                >
+                                  <span
+                                    className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white ring-1 ring-black/5 ${visual.iconClass}`}
+                                  >
+                                    <PriorityFlameIcon className="h-[19px] w-[19px]" />
+                                  </span>
+
+                                  <div className="min-w-0">
+                                    <div className="text-xs font-bold text-gray-900">
+                                      {visual.label}
+                                    </div>
+                                    <div className="mt-0.5 text-[11px] leading-4 text-gray-500">
+                                      {visual.description}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
