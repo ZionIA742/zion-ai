@@ -40,6 +40,7 @@ import {
   type StoreDiscountSettingsRow,
   type StoreHighValueDiscountSettingsRow,
 } from "../store-discount-settings";
+import { readStoreDiscountSettingsBySystem } from "./store-discount-settings-reader";
 import {
   buildSalesAiBehaviorContract,
   buildSalesAiBehaviorContractPromptBlock,
@@ -12212,14 +12213,11 @@ export async function generateAiSalesReply(
 
     const channelSettings = channelSettingsResult.row;
     const { data: discountSettings, error: discountSettingsError } =
-      await supabase
-        .from("store_discount_settings")
-        .select(
-          "organization_id, store_id, default_discount_percent, max_discount_percent, allow_ask_above_max_discount, discount_autonomy_mode, discount_special_rules, created_at, updated_at",
-        )
-        .eq("organization_id", organizationId)
-        .eq("store_id", resolvedStoreId)
-        .maybeSingle();
+      await readStoreDiscountSettingsBySystem({
+        supabase,
+        organizationId,
+        storeId: resolvedStoreId,
+      });
 
     if (discountSettingsError) {
       return {
