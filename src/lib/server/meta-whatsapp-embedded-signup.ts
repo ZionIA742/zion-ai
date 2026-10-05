@@ -21,6 +21,12 @@ export type MetaWhatsappEmbeddedSignupValidationResult = {
   validatedAt: string;
 };
 
+export type MetaWhatsappBindingValidationInput = {
+  code: string;
+  whatsappBusinessAccountId: string;
+  phoneNumberId: string;
+};
+
 export type MetaWhatsappEmbeddedSignupDeps = {
   fetch: typeof fetch;
   createAbortController: () => AbortController;
@@ -314,8 +320,8 @@ function findPhoneInList(body: MetaJson | null, phoneNumberId: string) {
   }) as Record<string, unknown> | undefined;
 }
 
-export async function exchangeAndValidateMetaWhatsappEmbeddedSignup(
-  input: MetaWhatsappEmbeddedSignupValidationInput,
+export async function exchangeAndValidateMetaWhatsappBinding(
+  input: MetaWhatsappBindingValidationInput,
   options?: {
     config?: MetaWhatsappEmbeddedSignupConfig;
     deps?: Partial<MetaWhatsappEmbeddedSignupDeps>;
@@ -335,9 +341,7 @@ export async function exchangeAndValidateMetaWhatsappEmbeddedSignup(
   const code = cleanText(input.code);
   const expectedWabaId = normalizeMetaId(input.whatsappBusinessAccountId);
   const expectedPhoneId = normalizeMetaId(input.phoneNumberId);
-  const twoStepPin = input.twoStepPin;
-
-  if (!code || !expectedWabaId || !expectedPhoneId || !/^[0-9]{6}$/.test(twoStepPin)) {
+  if (!code || !expectedWabaId || !expectedPhoneId) {
     throw new MetaWhatsappEmbeddedSignupError(
       "META_EMBEDDED_SIGNUP_INPUT_INVALID",
       "Payload do Embedded Signup incompleto.",
@@ -421,10 +425,55 @@ export async function exchangeAndValidateMetaWhatsappEmbeddedSignup(
     );
   }
 
+  return {
+    accessToken,
+    whatsappBusinessAccountId: confirmedWabaId,
+    phoneNumberId: listedPhoneId,
+    displayPhoneNumber,
+    graphApiVersion: config.graphApiVersion,
+    appId: config.appId,
+    validatedAt: deps.now().toISOString(),
+  };
+}
+
+export async function exchangeAndValidateMetaWhatsappEmbeddedSignup(
+  input: MetaWhatsappEmbeddedSignupValidationInput,
+  options?: {
+    config?: MetaWhatsappEmbeddedSignupConfig;
+    deps?: Partial<MetaWhatsappEmbeddedSignupDeps>;
+  },
+): Promise<MetaWhatsappEmbeddedSignupValidationResult> {
+  const twoStepPin = input.twoStepPin;
+  if (!/^[0-9]{6}$/.test(twoStepPin)) {
+    throw new MetaWhatsappEmbeddedSignupError(
+      "META_EMBEDDED_SIGNUP_INPUT_INVALID",
+      "Payload do Embedded Signup incompleto.",
+      400,
+    );
+  }
+
+  const validated = await exchangeAndValidateMetaWhatsappBinding(
+    {
+      code: input.code,
+      whatsappBusinessAccountId: input.whatsappBusinessAccountId,
+      phoneNumberId: input.phoneNumberId,
+    },
+    options,
+  );
+
+  const config = options?.config ?? getMetaWhatsappEmbeddedSignupConfig();
+  const deps: MetaWhatsappEmbeddedSignupDeps = {
+    fetch: options?.deps?.fetch ?? fetch,
+    createAbortController:
+      options?.deps?.createAbortController ?? createDefaultAbortController,
+    now: options?.deps?.now ?? (() => new Date()),
+    timeoutMs: options?.deps?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  };
+
   const subscribeResponse = await subscribeWabaApps({
     graphApiVersion: config.graphApiVersion,
-    whatsappBusinessAccountId: confirmedWabaId,
-    accessToken,
+    whatsappBusinessAccountId: validated.whatsappBusinessAccountId,
+    accessToken: validated.accessToken,
     deps,
   });
 
@@ -436,9 +485,9 @@ export async function exchangeAndValidateMetaWhatsappEmbeddedSignup(
 
   const registerResponse = await registerPhoneNumber({
     graphApiVersion: config.graphApiVersion,
-    phoneNumberId: listedPhoneId,
+    phoneNumberId: validated.phoneNumberId,
     twoStepPin,
-    accessToken,
+    accessToken: validated.accessToken,
     deps,
   });
 
@@ -448,13 +497,5 @@ export async function exchangeAndValidateMetaWhatsappEmbeddedSignup(
     "Nao foi possivel registrar o telefone na Meta. Reinicie o Embedded Signup.",
   );
 
-  return {
-    accessToken,
-    whatsappBusinessAccountId: confirmedWabaId,
-    phoneNumberId: listedPhoneId,
-    displayPhoneNumber,
-    graphApiVersion: config.graphApiVersion,
-    appId: config.appId,
-    validatedAt: deps.now().toISOString(),
-  };
+  return validated;
 }
