@@ -114,6 +114,51 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "candidate query applies operational approval allowlist before limit",
+    run: () => {
+      const source = fs.readFileSync(
+        path.join(
+          process.cwd(),
+          "src/lib/server/assistant/responsible-external-notifications-drainer.ts",
+        ),
+        "utf8",
+      );
+
+      const loaderStart = source.indexOf(
+        "async function loadResponsibleOperationalApprovalCandidates",
+      );
+      const loaderEnd = source.indexOf(
+        "function incrementReason",
+        loaderStart,
+      );
+
+      assert.ok(loaderStart >= 0);
+      assert.ok(loaderEnd > loaderStart);
+
+      const loaderBlock = source.slice(loaderStart, loaderEnd);
+      const contextFilterIndex = loaderBlock.indexOf(
+        '.contains("context", {',
+      );
+      const limitIndex = loaderBlock.indexOf(".limit(args.limit)");
+
+      assert.ok(contextFilterIndex >= 0);
+      assert.ok(limitIndex > contextFilterIndex);
+      assert.match(
+        loaderBlock,
+        /source:\s*OPERATIONAL_APPROVAL_SOURCE/,
+      );
+      assert.match(
+        loaderBlock,
+        /reason:\s*OPERATIONAL_APPROVAL_REASON/,
+      );
+      assert.match(
+        loaderBlock,
+        /classification:\s*OPERATIONAL_APPROVAL_CLASSIFICATION/,
+      );
+      assert.match(loaderBlock, /suggested_available:\s*true/);
+    },
+  },
+  {
     name: "allowlist requires exact operational approval provenance",
     run: () => {
       assert.equal(

@@ -114,6 +114,12 @@ async function loadResponsibleOperationalApprovalCandidates(args: {
     .eq("channel", RESPONSIBLE_CHANNEL)
     .eq("notification_type", "important_alert")
     .in("status", ["materialized", "ready_to_send", "failed", "processing"])
+    .contains("context", {
+      source: OPERATIONAL_APPROVAL_SOURCE,
+      reason: OPERATIONAL_APPROVAL_REASON,
+      classification: OPERATIONAL_APPROVAL_CLASSIFICATION,
+      suggested_available: true,
+    })
     .is("external_message_id", null)
     .is("sent_at", null)
     .order("created_at", { ascending: true })
