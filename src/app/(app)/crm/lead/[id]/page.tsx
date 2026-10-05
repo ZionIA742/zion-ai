@@ -1560,7 +1560,7 @@ export default function LeadPage() {
       }
     }
 
-    function handleKeyDown(event: KeyboardEvent) {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
         setPriorityPopoverOpen(false);
       }
