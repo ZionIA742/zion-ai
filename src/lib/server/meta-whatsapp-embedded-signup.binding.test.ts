@@ -137,3 +137,54 @@ test("coexistence discovers the sole WABA phone and skips standard registration"
 
   assert.equal(urls.some((url) => url.includes("/register")), false);
 });
+
+test("Meta error evidence is preserved safely without retaining raw payload", async () => {
+  await assert.rejects(
+    registerMetaWhatsappEmbeddedSignup(
+      {
+        accessToken: "token-sentinel",
+        whatsappBusinessAccountId: "waba-sentinel",
+        phoneNumberId: "phone-sentinel",
+        connectionMode: "standard",
+        displayPhoneNumber: "+5511999999999",
+        graphApiVersion: "v99.0",
+        appId: "app-sentinel",
+        validatedAt: "2026-10-02T12:00:00.000Z",
+      },
+      "123456",
+      {
+        deps: depsFor(async (input: RequestInfo | URL) => {
+          const url = String(input);
+          if (url.includes("/subscribed_apps")) {
+            return Response.json(
+              {
+                error: {
+                  code: 190,
+                  error_subcode: 123456,
+                  type: "OAuthException",
+                  message: "raw-meta-message-sentinel",
+                },
+              },
+              { status: 400 },
+            );
+          }
+          return Response.json({ success: true });
+        }),
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof MetaWhatsappEmbeddedSignupError);
+      assert.equal(error.code, "META_SUBSCRIBED_APPS_FAILED");
+      assert.deepEqual(error.evidence, {
+        httpStatus: 400,
+        metaCode: "190",
+        metaSubcode: "123456",
+        metaType: "OAuthException",
+        operation: "subscribe_waba_apps",
+        normalizedCode: "META_SUBSCRIBED_APPS_FAILED",
+      });
+      assert.equal(error.message.includes("raw-meta-message-sentinel"), false);
+      return true;
+    },
+  );
+});

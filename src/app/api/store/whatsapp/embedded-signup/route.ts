@@ -324,6 +324,14 @@ function mapMetaError(error: MetaWhatsappEmbeddedSignupError) {
   const scenario = classifyWhatsappConnectionScenario({
     metaErrorCode: error.code,
     metaErrorMessage: error.message,
+    metaErrorEvidence: {
+      httpStatus: error.evidence.httpStatus,
+      metaCode: error.evidence.metaCode,
+      metaSubcode: error.evidence.metaSubcode,
+      metaType: error.evidence.metaType,
+      operation: error.evidence.operation,
+      normalizedCode: error.evidence.normalizedCode,
+    },
   });
 
   return {
@@ -348,13 +356,13 @@ function scenarioMessage(scenario: WhatsappConnectionScenarioResult) {
     case "whatsapp.connection.business_app_meta_flow":
       return "A Meta indicou que este numero exige um fluxo do WhatsApp Business. Siga a orientacao exibida pela Meta.";
     case "whatsapp.connection.personal_whatsapp_guidance_required":
-      return "Este numero ainda usa o WhatsApp comum. Primeiro, transfira-o para o WhatsApp Business.";
+      return "Este numero ainda usa o WhatsApp comum. Voce pode continuar usando o mesmo numero, mas primeiro precisa transferi-lo para o WhatsApp Business.";
     case "whatsapp.connection.external_bsp_migration_required":
-      return "Este numero ja esta conectado a outro provedor de WhatsApp Business e precisa ser migrado antes.";
+      return "Este numero ja esta conectado a outro provedor de WhatsApp Business. Precisamos migrar essa conexao antes de conecta-lo ao ZION. Voce pode continuar usando o mesmo numero.";
     case "whatsapp.connection.recoverable_error":
       return "A Meta esta temporariamente indisponivel. Tente novamente.";
     case "whatsapp.connection.unknown_meta_state":
-      return "A Meta retornou um estado que o ZION nao conseguiu identificar. Fale com o suporte.";
+      return "Nao conseguimos concluir a conexao deste numero. Tente novamente ou entre em contato com o suporte do ZION.";
     case "whatsapp.connection.blocking_error":
       return "A Meta bloqueou esta conexao. Verifique a configuracao da conta ou fale com o suporte.";
     default:

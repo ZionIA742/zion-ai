@@ -53,3 +53,33 @@ test("unknown, recoverable, and explicit error evidence remain distinct", () => 
     "blocking_error",
   );
 });
+
+test("ambiguous personal and provider wording remains fail-closed", () => {
+  for (const metaErrorMessage of [
+    "messenger",
+    "already in use",
+    "provider",
+    "cloud api",
+  ]) {
+    assert.equal(
+      classifyWhatsappConnectionScenario({ metaErrorMessage }).scenario,
+      "unknown_meta_state",
+      metaErrorMessage,
+    );
+  }
+
+  assert.equal(
+    classifyWhatsappConnectionScenario({
+      metaErrorCode: "META_PHONE_REGISTER_FAILED",
+      metaErrorEvidence: {
+        httpStatus: 400,
+        metaCode: "E_GENERIC",
+        metaSubcode: "E_GENERIC_SUBCODE",
+        metaType: "OAuthException",
+        operation: "register_phone_number",
+        normalizedCode: "META_PHONE_REGISTER_FAILED",
+      },
+    }).scenario,
+    "unknown_meta_state",
+  );
+});

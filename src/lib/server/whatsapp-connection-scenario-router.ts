@@ -23,6 +23,15 @@ export type WhatsappConnectionScenarioResult = {
   requiresExternalMigration: boolean;
 };
 
+export type WhatsappConnectionMetaErrorEvidence = {
+  httpStatus?: number;
+  metaCode?: string | null;
+  metaSubcode?: string | null;
+  metaType?: string | null;
+  operation?: string | null;
+  normalizedCode?: string | null;
+};
+
 export type WhatsappConnectionScenarioEvidence = {
   hasActiveZionBinding?: boolean;
   hasExistingChangeRequest?: boolean;
@@ -33,6 +42,7 @@ export type WhatsappConnectionScenarioEvidence = {
   metaBusinessAppDetected?: boolean;
   metaPersonalWhatsappDetected?: boolean;
   metaExternalBspDetected?: boolean;
+  metaErrorEvidence?: WhatsappConnectionMetaErrorEvidence;
 };
 
 function clean(value: unknown) {
@@ -128,24 +138,6 @@ export function classifyWhatsappConnectionScenario(
         userMessageKey: "whatsapp.connection.business_app_meta_flow",
         requiresUserAction: true,
         requiresBusinessApp: true,
-      });
-    }
-
-    if (/messenger|personal.?whatsapp|consumer.?whatsapp/.test(text)) {
-      return result("personal_whatsapp_guidance_required", {
-        severity: "warning",
-        userMessageKey: "whatsapp.connection.personal_whatsapp_guidance_required",
-        requiresUserAction: true,
-        requiresBusinessApp: true,
-      });
-    }
-
-    if (/bsp|provider|cloud.?api|already.?registered|already.?in.?use/.test(text)) {
-      return result("external_bsp_migration_required", {
-        severity: "warning",
-        userMessageKey: "whatsapp.connection.external_bsp_migration_required",
-        requiresUserAction: true,
-        requiresExternalMigration: true,
       });
     }
 

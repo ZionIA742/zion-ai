@@ -531,6 +531,46 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "ambiguous Meta evidence remains unknown and never reaches the client",
+    run: async () => {
+      const { handler } = createRouteHandler({
+        validate: async () =>
+          new Promise<never>((_, reject) => {
+            reject(
+              new MetaWhatsappEmbeddedSignupError(
+                "META_PHONE_REGISTER_FAILED",
+                "already in use by provider cloud api",
+                422,
+                {
+                  httpStatus: 400,
+                  metaCode: "190",
+                  metaSubcode: "123456",
+                  metaType: "OAuthException",
+                  operation: "register_phone_number",
+                },
+              ),
+            );
+          }),
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(body.connectionScenario, "unknown_meta_state");
+      assert.equal(body.message.includes("already in use"), false);
+      assert.equal(body.metaCode, undefined);
+      assert.equal(body.metaSubcode, undefined);
+      assert.equal(body.metaType, undefined);
+      assert.equal(body.metaErrorEvidence, undefined);
+    },
+  },
+  {
     name: "phone validation failure does not call writer",
     run: async () => {
       const { handler, rpcCalls } = createRouteHandler({
@@ -1408,6 +1448,11 @@ const tests: TestCase[] = [
       assert.equal(helperSource.includes("META_WHATSAPP_ACCESS_TOKEN"), false);
       assert.equal(routeSource.includes("1454892709860372"), false);
       assert.equal(helperSource.includes("1454892709860372"), false);
+      assert.equal(routeSource.includes("Voce pode continuar usando o mesmo numero"), true);
+      assert.equal(routeSource.includes("metaErrorEvidence"), true);
+      assert.equal(routeSource.includes("metaSubcode"), true);
+      assert.equal(routeSource.includes("metaType"), true);
+      assert.equal(routeSource.includes("raw-meta-message"), false);
     },
   },
   {

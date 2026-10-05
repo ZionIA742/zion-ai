@@ -43,15 +43,38 @@ export type MetaWhatsappEmbeddedSignupDeps = {
 
 type MetaJson = Record<string, unknown>;
 
+export type MetaWhatsappErrorEvidence = {
+  httpStatus: number;
+  metaCode: string | null;
+  metaSubcode: string | null;
+  metaType: string | null;
+  operation: string;
+  normalizedCode: string;
+};
+
 export class MetaWhatsappEmbeddedSignupError extends Error {
   readonly code: string;
   readonly httpStatus: number;
+  readonly evidence: MetaWhatsappErrorEvidence;
 
-  constructor(code: string, message: string, httpStatus: number) {
+  constructor(
+    code: string,
+    message: string,
+    httpStatus: number,
+    evidence?: Partial<MetaWhatsappErrorEvidence>,
+  ) {
     super(message);
     this.name = "MetaWhatsappEmbeddedSignupError";
     this.code = code;
     this.httpStatus = httpStatus;
+    this.evidence = {
+      httpStatus: evidence?.httpStatus ?? httpStatus,
+      metaCode: evidence?.metaCode ?? null,
+      metaSubcode: evidence?.metaSubcode ?? null,
+      metaType: evidence?.metaType ?? null,
+      operation: evidence?.operation ?? "unknown",
+      normalizedCode: evidence?.normalizedCode ?? code,
+    };
   }
 }
 
@@ -113,6 +136,7 @@ async function fetchJsonWithTimeout(
   url: string,
   init: RequestInit,
   deps: MetaWhatsappEmbeddedSignupDeps,
+  operation: string,
 ) {
   const controller = deps.createAbortController();
   const timeout = setTimeout(() => controller.abort(), deps.timeoutMs);
@@ -141,6 +165,7 @@ async function fetchJsonWithTimeout(
         "META_REQUEST_TIMEOUT",
         "A Meta nao respondeu a tempo.",
         502,
+        { operation },
       );
     }
 
@@ -148,6 +173,7 @@ async function fetchJsonWithTimeout(
       "META_REQUEST_FAILED",
       "Falha ao comunicar com a Meta.",
       502,
+      { operation },
     );
   } finally {
     clearTimeout(timeout);
@@ -158,14 +184,33 @@ function requireMetaOk(
   response: { ok: boolean; status: number; body: MetaJson | null },
   code: string,
   message: string,
+  operation: string,
 ) {
   if (response.ok) return;
+
+  const metaError =
+    response.body?.error &&
+    typeof response.body.error === "object" &&
+    !Array.isArray(response.body.error)
+      ? (response.body.error as Record<string, unknown>)
+      : null;
+  const safeMetaValue = (value: unknown) =>
+    typeof value === "string" || typeof value === "number" ? String(value) : null;
+  const evidence = {
+    httpStatus: response.status,
+    metaCode: safeMetaValue(metaError?.code),
+    metaSubcode: safeMetaValue(metaError?.error_subcode),
+    metaType: safeMetaValue(metaError?.type),
+    operation,
+    normalizedCode: code,
+  } satisfies MetaWhatsappErrorEvidence;
 
   if (response.status === 400 || response.status === 401 || response.status === 403) {
     throw new MetaWhatsappEmbeddedSignupError(
       code,
       message,
       code === "META_CODE_EXCHANGE_FAILED" ? 400 : 422,
+      evidence,
     );
   }
 
@@ -173,6 +218,7 @@ function requireMetaOk(
     "META_UNAVAILABLE",
     "A Meta nao conseguiu concluir a validacao agora.",
     502,
+    { ...evidence, normalizedCode: "META_UNAVAILABLE" },
   );
 }
 
@@ -197,12 +243,14 @@ async function exchangeCodeForAccessToken(params: {
       body,
     },
     params.deps,
+    "exchange_code",
   );
 
   requireMetaOk(
     response,
     "META_CODE_EXCHANGE_FAILED",
     "Nao foi possivel trocar o codigo de autorizacao da Meta.",
+    "exchange_code",
   );
 
   const accessToken =
@@ -240,6 +288,7 @@ async function getMetaObject(params: {
       },
     },
     params.deps,
+    "get_waba",
   );
 }
 
@@ -267,6 +316,7 @@ async function listWabaPhoneNumbers(params: {
       },
     },
     params.deps,
+    "list_phone_numbers",
   );
 }
 
@@ -288,6 +338,7 @@ async function subscribeWabaApps(params: {
       },
     },
     params.deps,
+    "subscribe_waba_apps",
   );
 }
 
@@ -315,6 +366,7 @@ async function registerPhoneNumber(params: {
       }),
     },
     params.deps,
+    "register_phone_number",
   );
 }
 
@@ -356,6 +408,7 @@ export async function registerMetaWhatsappEmbeddedSignup(
     subscribeResponse,
     "META_SUBSCRIBED_APPS_FAILED",
     "Nao foi possivel ativar os webhooks da Meta. Reinicie o Embedded Signup.",
+    "subscribe_waba_apps",
   );
 
   if (validated.connectionMode === "business_app_coexistence") return;
@@ -372,6 +425,7 @@ export async function registerMetaWhatsappEmbeddedSignup(
     registerResponse,
     "META_PHONE_REGISTER_FAILED",
     "Nao foi possivel registrar o telefone na Meta. Reinicie o Embedded Signup.",
+    "register_phone_number",
   );
 }
 
@@ -436,6 +490,7 @@ export async function exchangeAndValidateMetaWhatsappBinding(
     wabaResponse,
     "META_WABA_VALIDATION_FAILED",
     "Nao foi possivel validar a conta WhatsApp Business na Meta.",
+    "get_waba",
   );
 
   const confirmedWabaId =
@@ -461,6 +516,7 @@ export async function exchangeAndValidateMetaWhatsappBinding(
     phoneListResponse,
     "META_PHONE_WABA_VALIDATION_FAILED",
     "Nao foi possivel confirmar a relacao entre telefone e WABA na Meta.",
+    "list_phone_numbers",
   );
 
   const phoneRows = Array.isArray(phoneListResponse.body?.data)
