@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { StoreProvider } from "../../components/StoreProvider";
 import AppHeader from "@/components/layout/AppHeader";
@@ -15,12 +15,56 @@ export default function AppShellClient({
   const isFixedFullBleedPage = pathname === "/assistant" || pathname === "/schedule";
   const isEdgeToEdgeScrollablePage = pathname === "/crm" || pathname === "/dashboard" || pathname === "/configuracoes";
 
+  const [isSidebarCollapsed, setIsSidebarCollapsed] =
+    useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const storedValue =
+      window.localStorage.getItem(
+        "zion_sidebar_collapsed"
+      );
+
+    if (storedValue !== "true") {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setIsSidebarCollapsed(true);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, []);
+
+  function handleSidebarToggle() {
+    setIsSidebarCollapsed((current) => {
+      const next = !current;
+
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(
+          "zion_sidebar_collapsed",
+          String(next)
+        );
+      }
+
+      return next;
+    });
+  }
+
   return (
     <StoreProvider>
-      <div className="flex h-screen bg-gray-100">
-        <Sidebar />
+      <div className="flex h-screen bg-gray-50">
+        <Sidebar
+          collapsed={isSidebarCollapsed}
+          onToggle={handleSidebarToggle}
+        />
 
-        <div className="flex-1 flex flex-col">
+        <div className="flex min-w-0 flex-1 flex-col">
           <AppHeader />
 
           <main
