@@ -4,7 +4,10 @@ import { buildStoreOperationalHealthInputs } from "./operational-health-source-a
 const NOW = new Date("2026-10-06T18:00:00.000Z");
 
 const thresholds = {
-  genericQueueStaleMs: 10 * 60 * 1000,
+  whatsappInboundStaleMs: 10 * 60 * 1000,
+  whatsappOutboundStaleMs: 10 * 60 * 1000,
+  aiRunQueueStaleMs: 10 * 60 * 1000,
+  assistantPendingStaleMs: 10 * 60 * 1000,
   assistantProcessingStaleMs: 10 * 60 * 1000,
   responsibleProcessingStaleMs: 10 * 60 * 1000,
   firstPostAppointmentFollowupDelayMs: 10 * 60 * 1000,
@@ -19,7 +22,6 @@ const emptySources = (overrides = {}) => ({
   aiRunQueueRows: [],
   assistantOperationalQueueRows: [],
   responsibleNotificationRows: [],
-  internalNotificationRows: [],
   appointmentRows: [],
   postAppointmentFollowupRows: [],
   ...overrides,
@@ -317,21 +319,6 @@ tests.push(() => {
 tests.push(() => {
   const input = store(build({
     sources: {
-      internalNotificationRows: [{
-        store_id: "store-1",
-        status: "pending",
-        available_at: "2026-10-06T17:40:00.000Z",
-        created_at: "2026-10-06T17:39:00.000Z",
-      }],
-    },
-  }));
-
-  assert.equal(input.assistant.staleInternalNotifications, 1);
-});
-
-tests.push(() => {
-  const input = store(build({
-    sources: {
       appointmentRows: [
         {
           store_id: "store-1",
@@ -414,7 +401,6 @@ tests.push(() => {
       whatsappOutboundRows: null,
       assistantOperationalQueueRows: null,
       responsibleNotificationRows: null,
-      internalNotificationRows: null,
       appointmentRows: null,
       postAppointmentFollowupRows: null,
     },
@@ -424,7 +410,6 @@ tests.push(() => {
   assert.equal(input.whatsapp.failedOutboundMessages, null);
   assert.equal(input.assistant.failedTasks, null);
   assert.equal(input.assistant.failedResponsibleNotifications, null);
-  assert.equal(input.assistant.staleInternalNotifications, null);
   assert.equal(input.operations.overdueAppointments, null);
   assert.equal(input.operations.overduePostAppointmentFollowups, null);
 });
@@ -436,7 +421,7 @@ tests.push(() => {
       now: NOW,
       thresholds: {
         ...thresholds,
-        genericQueueStaleMs: -1,
+        aiRunQueueStaleMs: -1,
       },
       sources: emptySources(),
     }),

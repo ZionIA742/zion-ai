@@ -20,6 +20,16 @@ import {
   resolveStoreIntegrity,
   type StoreIntegrity,
 } from "./store-integrity-resolution";
+import {
+  buildStoreOperationalHealthInputs,
+  type AppointmentHealthRow,
+  type AssistantOperationalQueueHealthRow,
+  type OperationalHealthSourceThresholds,
+  type PostAppointmentFollowupHealthRow,
+  type ResponsibleNotificationHealthRow,
+  type WhatsappOutboundHealthRow,
+} from "./operational-health-source-adapter";
+import { resolveStoreOperationalHealth } from "./operational-health-resolution";
 
 type StoreRow = {
   id: string;
@@ -257,6 +267,33 @@ type StoreOverviewMetrics = {
   pendingWhatsappEvents: number;
   whatsappErrors: number;
 };
+
+const ZION_ADMIN_OPERATIONAL_HEALTH_THRESHOLDS: OperationalHealthSourceThresholds = {
+  // Monitoring tolerances for due work. These are ZION-ADM thresholds,
+  // not claims about provider or worker liveness.
+  whatsappInboundStaleMs: 10 * 60 * 1000,
+  whatsappOutboundStaleMs: 10 * 60 * 1000,
+  aiRunQueueStaleMs: 10 * 60 * 1000,
+  assistantPendingStaleMs: 10 * 60 * 1000,
+  assistantProcessingStaleMs: 15 * 60 * 1000,
+  responsibleProcessingStaleMs: 10 * 60 * 1000,
+  firstPostAppointmentFollowupDelayMs: 10 * 60 * 1000,
+  subsequentPostAppointmentFollowupDelayMs: 30 * 60 * 1000,
+  maxPostAppointmentPrompts: 3,
+};
+
+function getRequiredOperationalHealthInput(
+  inputs: ReturnType<typeof buildStoreOperationalHealthInputs>,
+  storeId: string,
+) {
+  const input = inputs.get(storeId);
+
+  if (!input) {
+    throw new Error("Operational health input unavailable for operational store.");
+  }
+
+  return input;
+}
 
 function getServiceSupabaseClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -1263,6 +1300,85 @@ async function loadAiRunRows(
   );
 }
 
+async function loadWhatsappOutboundHealthRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{ rows: WhatsappOutboundHealthRow[]; error: string | null }> {
+  return loadAllOverviewRows<WhatsappOutboundHealthRow>((from, to) =>
+    supabase
+      .from("messages")
+      .select(
+        "store_id, outbound_delivery_state, outbound_claimed_at, outbound_attempt_started_at, created_at",
+      )
+      .eq("direction", "outgoing")
+      .is("deleted_at", null)
+      .contains("metadata", {
+        send_external: true,
+        external_channel: "whatsapp",
+      })
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
+}
+
+async function loadAssistantOperationalHealthRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{
+  rows: AssistantOperationalQueueHealthRow[];
+  error: string | null;
+}> {
+  return loadAllOverviewRows<AssistantOperationalQueueHealthRow>((from, to) =>
+    supabase
+      .from("store_assistant_operational_task_queue")
+      .select("store_id, status, available_at, locked_at, created_at")
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
+}
+
+async function loadResponsibleNotificationHealthRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{
+  rows: ResponsibleNotificationHealthRow[];
+  error: string | null;
+}> {
+  return loadAllOverviewRows<ResponsibleNotificationHealthRow>((from, to) =>
+    supabase
+      .from("store_responsible_external_notifications")
+      .select("store_id, status, locked_at")
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
+}
+
+async function loadAppointmentHealthRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{ rows: AppointmentHealthRow[]; error: string | null }> {
+  return loadAllOverviewRows<AppointmentHealthRow>((from, to) =>
+    supabase
+      .from("store_appointments")
+      .select("store_id, status, scheduled_end")
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
+}
+
+async function loadPostAppointmentFollowupHealthRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{
+  rows: PostAppointmentFollowupHealthRow[];
+  error: string | null;
+}> {
+  return loadAllOverviewRows<PostAppointmentFollowupHealthRow>((from, to) =>
+    supabase
+      .from("schedule_post_appointment_followups")
+      .select(
+        "store_id, scheduled_end, prompt_count, last_prompted_at, resolved_at",
+      )
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
+}
+
 async function loadStoreOwnerData(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
   stores: StoreRow[],
@@ -1579,6 +1695,11 @@ export async function GET() {
       aiRunQueueIssueRows,
       salesActionQueueIssueRows,
       whatsappIssueRows,
+      whatsappOutboundHealthRows,
+      assistantOperationalHealthRows,
+      responsibleNotificationHealthRows,
+      appointmentHealthRows,
+      postAppointmentFollowupHealthRows,
       onboardingConfigRows,
       responsibleConfigRows,
       scheduleSettingsConfigRows,
@@ -1632,6 +1753,11 @@ export async function GET() {
       loadAiRunQueueIssueRows(serviceSupabase),
       loadSalesActionQueueIssueRows(serviceSupabase),
       loadWhatsappInboxIssueRows(serviceSupabase),
+      loadWhatsappOutboundHealthRows(serviceSupabase),
+      loadAssistantOperationalHealthRows(serviceSupabase),
+      loadResponsibleNotificationHealthRows(serviceSupabase),
+      loadAppointmentHealthRows(serviceSupabase),
+      loadPostAppointmentFollowupHealthRows(serviceSupabase),
       loadStoreOnboardingConfigRows(serviceSupabase),
       loadStoreBooleanConfigRows(serviceSupabase, "store_responsibles"),
       loadStoreBooleanConfigRows(serviceSupabase, "store_schedule_settings"),
@@ -1674,6 +1800,43 @@ export async function GET() {
     const operationalStoreIds = new Set(
       operationalStores.map((store) => store.id),
     );
+
+    const operationalHealthInputsByStoreId =
+      buildStoreOperationalHealthInputs({
+        storeIds: operationalStores.map((store) => store.id),
+        now: new Date(),
+        thresholds: ZION_ADMIN_OPERATIONAL_HEALTH_THRESHOLDS,
+        sources: {
+          whatsappInboxRows:
+            whatsappIssueRows.error == null ? whatsappIssueRows.rows : null,
+          whatsappOutboundRows:
+            whatsappOutboundHealthRows.error == null
+              ? whatsappOutboundHealthRows.rows
+              : null,
+          aiRunRows: aiRunRows.error == null ? aiRunRows.rows : null,
+          aiRunQueueRows:
+            aiRunQueueIssueRows.error == null
+              ? aiRunQueueIssueRows.rows
+              : null,
+          assistantOperationalQueueRows:
+            assistantOperationalHealthRows.error == null
+              ? assistantOperationalHealthRows.rows
+              : null,
+          responsibleNotificationRows:
+            responsibleNotificationHealthRows.error == null
+              ? responsibleNotificationHealthRows.rows
+              : null,
+
+          appointmentRows:
+            appointmentHealthRows.error == null
+              ? appointmentHealthRows.rows
+              : null,
+          postAppointmentFollowupRows:
+            postAppointmentFollowupHealthRows.error == null
+              ? postAppointmentFollowupHealthRows.rows
+              : null,
+        },
+      });
 
     const accountAccessByStoreId = await loadStoreAccountAccessSnapshots(
       serviceSupabase,
@@ -1906,6 +2069,12 @@ export async function GET() {
       const canonicalSubscription =
         canonicalSubscriptionByOrganizationId.get(store.organization_id) ?? null;
       const metrics = metricsByStore.get(store.id) ?? createEmptyStoreMetrics();
+      const operationalHealth = resolveStoreOperationalHealth(
+        getRequiredOperationalHealthInput(
+          operationalHealthInputsByStoreId,
+          store.id,
+        ),
+      );
 
       const totalOperationalIssues =
         metrics.configurationIssues +
@@ -1989,6 +2158,7 @@ export async function GET() {
             ownerProfiles: null,
             subscriptions: null,
           }),
+        operationalHealth,
 
         configurationIssues: metrics.configurationIssues,
         pendingAiRuns: metrics.pendingAiRuns,

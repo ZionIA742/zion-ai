@@ -4,7 +4,10 @@ import type {
 } from "./operational-health-resolution";
 
 export type OperationalHealthSourceThresholds = {
-  genericQueueStaleMs: number;
+  whatsappInboundStaleMs: number;
+  whatsappOutboundStaleMs: number;
+  aiRunQueueStaleMs: number;
+  assistantPendingStaleMs: number;
   assistantProcessingStaleMs: number;
   responsibleProcessingStaleMs: number;
   firstPostAppointmentFollowupDelayMs: number;
@@ -54,12 +57,6 @@ export type ResponsibleNotificationHealthRow = {
   locked_at: string | null;
 };
 
-export type InternalNotificationHealthRow = {
-  store_id: string | null;
-  status: string | null;
-  available_at: string | null;
-  created_at: string | null;
-};
 
 export type AppointmentHealthRow = {
   store_id: string | null;
@@ -82,7 +79,6 @@ export type OperationalHealthSources = {
   aiRunQueueRows: AiRunQueueHealthRow[] | null;
   assistantOperationalQueueRows: AssistantOperationalQueueHealthRow[] | null;
   responsibleNotificationRows: ResponsibleNotificationHealthRow[] | null;
-  internalNotificationRows: InternalNotificationHealthRow[] | null;
   appointmentRows: AppointmentHealthRow[] | null;
   postAppointmentFollowupRows: PostAppointmentFollowupHealthRow[] | null;
 };
@@ -115,7 +111,22 @@ function validateThreshold(value: number, label: string) {
 }
 
 function validateThresholds(thresholds: OperationalHealthSourceThresholds) {
-  validateThreshold(thresholds.genericQueueStaleMs, "genericQueueStaleMs");
+  validateThreshold(
+    thresholds.whatsappInboundStaleMs,
+    "whatsappInboundStaleMs",
+  );
+  validateThreshold(
+    thresholds.whatsappOutboundStaleMs,
+    "whatsappOutboundStaleMs",
+  );
+  validateThreshold(
+    thresholds.aiRunQueueStaleMs,
+    "aiRunQueueStaleMs",
+  );
+  validateThreshold(
+    thresholds.assistantPendingStaleMs,
+    "assistantPendingStaleMs",
+  );
   validateThreshold(
     thresholds.assistantProcessingStaleMs,
     "assistantProcessingStaleMs",
@@ -158,7 +169,6 @@ function createEmptyInput(): StoreOperationalHealthInput {
       failedResponsibleNotifications: 0,
       uncertainResponsibleNotifications: 0,
       staleResponsibleNotifications: 0,
-      staleInternalNotifications: 0,
     },
     operations: {
       overdueAppointments: 0,
@@ -262,7 +272,7 @@ function applyWhatsappInbox(args: {
     return;
   }
 
-  const staleCutoff = args.nowMs - args.thresholds.genericQueueStaleMs;
+  const staleCutoff = args.nowMs - args.thresholds.whatsappInboundStaleMs;
 
   for (const row of args.rows) {
     const input = getInput(args.inputs, row.store_id);
@@ -302,7 +312,7 @@ function applyWhatsappOutbound(args: {
     return;
   }
 
-  const staleCutoff = args.nowMs - args.thresholds.genericQueueStaleMs;
+  const staleCutoff = args.nowMs - args.thresholds.whatsappOutboundStaleMs;
 
   for (const row of args.rows) {
     const input = getInput(args.inputs, row.store_id);
@@ -420,7 +430,7 @@ function applyAiRunQueue(args: {
     return;
   }
 
-  const staleCutoff = args.nowMs - args.thresholds.genericQueueStaleMs;
+  const staleCutoff = args.nowMs - args.thresholds.aiRunQueueStaleMs;
 
   for (const row of args.rows) {
     const input = getInput(args.inputs, row.store_id);
@@ -453,7 +463,7 @@ function applyAssistantOperationalQueue(args: {
 
   const processingCutoff =
     args.nowMs - args.thresholds.assistantProcessingStaleMs;
-  const pendingCutoff = args.nowMs - args.thresholds.genericQueueStaleMs;
+  const pendingCutoff = args.nowMs - args.thresholds.assistantPendingStaleMs;
 
   for (const row of args.rows) {
     const input = getInput(args.inputs, row.store_id);
@@ -533,38 +543,6 @@ function applyResponsibleNotifications(args: {
       } else if (stale) {
         increment(input, "assistant", "staleResponsibleNotifications");
       }
-    }
-  }
-}
-
-function applyInternalNotifications(args: {
-  inputs: Map<string, StoreOperationalHealthInput>;
-  rows: InternalNotificationHealthRow[] | null;
-  nowMs: number;
-  thresholds: OperationalHealthSourceThresholds;
-}) {
-  if (args.rows === null) {
-    markAllStoresUnknown(args.inputs, "assistant", [
-      "staleInternalNotifications",
-    ]);
-    return;
-  }
-
-  const staleCutoff = args.nowMs - args.thresholds.genericQueueStaleMs;
-
-  for (const row of args.rows) {
-    const input = getInput(args.inputs, row.store_id);
-    if (!input || normalizeStatus(row.status) !== "pending") {
-      continue;
-    }
-
-    const anchor = row.available_at || row.created_at;
-    const stale = isAtOrBefore(anchor, staleCutoff);
-
-    if (stale === null) {
-      markUnknown(input, "assistant", "staleInternalNotifications");
-    } else if (stale) {
-      increment(input, "assistant", "staleInternalNotifications");
     }
   }
 }
@@ -753,12 +731,6 @@ export function buildStoreOperationalHealthInputs(args: {
     thresholds: args.thresholds,
   });
 
-  applyInternalNotifications({
-    inputs,
-    rows: args.sources.internalNotificationRows,
-    nowMs,
-    thresholds: args.thresholds,
-  });
 
   applyAppointments({
     inputs,

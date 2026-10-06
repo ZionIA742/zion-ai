@@ -114,6 +114,70 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "store payload includes canonical operational health",
+    run: () => {
+      const source = readSource(routePath);
+
+      const requiredTokens = [
+        "buildStoreOperationalHealthInputs(",
+        "resolveStoreOperationalHealth(",
+        "operationalHealthInputsByStoreId",
+        "operationalHealth,",
+        "assistantProcessingStaleMs: 15 * 60 * 1000",
+        '.from("store_assistant_operational_task_queue")',
+        '.from("store_responsible_external_notifications")',
+        '.from("schedule_post_appointment_followups")',
+        "outbound_delivery_state",
+        "scheduled_end",
+        "prompt_count",
+        "last_prompted_at",
+      ];
+
+      for (const token of requiredTokens) {
+        assert.equal(
+          source.includes(token),
+          true,
+          `missing operational health token: ${token}`,
+        );
+      }
+
+      assert.equal(countOccurrences(source, '.from("ai_runs")'), 1);
+      assert.equal(
+        countOccurrences(source, '.from("channel_whatsapp_inbox")'),
+        1,
+      );
+    },
+  },
+  {
+    name: "operational health source failures fail closed independently",
+    run: () => {
+      const source = readSource(routePath);
+
+      const requiredTokens = [
+        "whatsappIssueRows.error == null ? whatsappIssueRows.rows : null",
+        "whatsappOutboundHealthRows.error == null",
+        "aiRunRows.error == null ? aiRunRows.rows : null",
+        "aiRunQueueIssueRows.error == null",
+        "assistantOperationalHealthRows.error == null",
+        "responsibleNotificationHealthRows.error == null",
+        "appointmentHealthRows.error == null",
+        "postAppointmentFollowupHealthRows.error == null",
+      ];
+
+      for (const token of requiredTokens) {
+        assert.equal(
+          source.includes(token),
+          true,
+          `missing fail-closed source token: ${token}`,
+        );
+      }
+
+      assert.equal(source.includes("metrics.configurationIssues +"), true);
+      assert.equal(source.includes("metrics.pendingAiRuns +"), true);
+      assert.equal(source.includes("metrics.pendingWhatsappEvents +"), true);
+    },
+  },
+  {
     name: "store payload includes account access snapshot",
     run: () => {
       const source = readSource(routePath);

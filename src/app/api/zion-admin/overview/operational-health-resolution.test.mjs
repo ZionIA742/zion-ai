@@ -22,7 +22,6 @@ const base = (overrides = {}) => ({
     failedResponsibleNotifications: 0,
     uncertainResponsibleNotifications: 0,
     staleResponsibleNotifications: 0,
-    staleInternalNotifications: 0,
     ...(overrides.assistant || {}),
   },
   operations: {
@@ -48,7 +47,7 @@ const tests = [
   ["responsible notification failed", base({ assistant: { failedResponsibleNotifications: 1 } }), "broken"],
   ["responsible notification uncertain", base({ assistant: { uncertainResponsibleNotifications: 1 } }), "broken"],
   ["responsible notification stale processing", base({ assistant: { staleResponsibleNotifications: 1 } }), "broken"],
-  ["internal notification stale", base({ assistant: { staleInternalNotifications: 1 } }), "warning"],
+
   ["appointment overdue", base({ operations: { overdueAppointments: 1 } }), "warning"],
   ["post appointment followup overdue", base({ operations: { overduePostAppointmentFollowups: 1 } }), "warning"],
   ["unknown whatsapp source", base({ whatsapp: { inboundErrors: null } }), "unknown"],
@@ -130,7 +129,7 @@ for (const [name, input, expectedState] of tests) {
     base({
       assistant: {
         failedTasks: 1,
-        staleInternalNotifications: null,
+        staleResponsibleNotifications: null,
       },
     }),
   );

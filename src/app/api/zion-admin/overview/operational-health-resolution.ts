@@ -22,7 +22,6 @@ export type StoreOperationalHealthIssueCode =
   | "responsible_notification_failed"
   | "responsible_notification_uncertain"
   | "responsible_notification_stale_processing"
-  | "internal_notification_stale"
   | "appointment_overdue"
   | "post_appointment_followup_overdue";
 
@@ -60,7 +59,6 @@ export type StoreOperationalHealthInput = {
     failedResponsibleNotifications: MetricCount;
     uncertainResponsibleNotifications: MetricCount;
     staleResponsibleNotifications: MetricCount;
-    staleInternalNotifications: MetricCount;
   };
   operations: {
     overdueAppointments: MetricCount;
@@ -269,13 +267,6 @@ export function resolveStoreOperationalHealth(
     scope: "assistant",
   });
 
-  pushCountIssue({
-    issues: assistantIssues,
-    count: input.assistant.staleInternalNotifications,
-    code: "internal_notification_stale",
-    severity: "warning",
-    scope: "assistant",
-  });
 
   pushCountIssue({
     issues: operationsIssues,
@@ -317,7 +308,6 @@ export function resolveStoreOperationalHealth(
     input.assistant.failedResponsibleNotifications,
     input.assistant.uncertainResponsibleNotifications,
     input.assistant.staleResponsibleNotifications,
-    input.assistant.staleInternalNotifications,
   ].some(isUnavailableCount);
 
   const operationsUnavailable = [
