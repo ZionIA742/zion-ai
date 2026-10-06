@@ -129,7 +129,69 @@ const tests: TestCase[] = [
       assert.equal(source.includes("accountAccess"), true);
     },
   },
-];
+  {
+    name: "canonical operational health is surfaced without replacing legacy pending UI",
+    run: () => {
+      const source = readSource();
+
+      for (const token of [
+        "operationalHealth?: StoreOperationalHealth | null",
+        "Saúde operacional",
+        "Saúde:",
+        "WhatsApp",
+        "Assistente",
+        "Operação",
+        "Sem atividade de IA",
+        "Não foi possível verificar",
+        "Conectividade ao vivo do WhatsApp",
+        "Heartbeat dos workers",
+        "não afirma que",
+        "whatsapp_outbound_stale",
+        "assistant_task_stale_pending",
+        "responsible_notification_stale_processing",
+        "post_appointment_followup_overdue",
+      ]) {
+        assert.equal(
+          source.includes(token),
+          true,
+          `missing operational health UI token: ${token}`,
+        );
+      }
+
+      assert.equal(
+        source.includes(
+          'const operationalHealthState = store.operationalHealth?.state ?? "unknown";',
+        ),
+        true,
+      );
+
+      assert.equal(
+        source.includes(
+          'operationalHealth?.whatsapp?.liveConnectivity === "unverified"',
+        ),
+        true,
+      );
+
+      assert.equal(
+        source.includes(
+          "operationalHealth?.observability?.workerHeartbeatAvailable === false",
+        ),
+        true,
+      );
+
+      assert.equal(
+        source.includes("getOperationalSummary(store)"),
+        true,
+        "legacy pending UI must remain available during 4.3-A",
+      );
+
+      assert.equal(
+        source.includes("Sem pendências operacionais críticas"),
+        true,
+        "legacy pending copy must not be removed in 4.3-A",
+      );
+    },
+  },];
 
 async function run() {
   for (const test of tests) {

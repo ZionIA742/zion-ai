@@ -33,6 +33,43 @@ export type StoreIntegrity = {
   subscription: { state: "single" | "missing" | "multiple" | "unknown"; status: string | null };
 };
 
+export type StoreOperationalHealthState =
+  | "healthy"
+  | "warning"
+  | "broken"
+  | "unknown";
+
+export type StoreAiOperationalHealthState =
+  | StoreOperationalHealthState
+  | "idle";
+
+export type StoreOperationalHealthIssue = {
+  code: string;
+  severity: "warning" | "error";
+  scope: "whatsapp" | "ai" | "assistant" | "schedule" | "followup";
+  count: number;
+};
+
+export type StoreOperationalHealth = {
+  state: StoreOperationalHealthState;
+  issues: StoreOperationalHealthIssue[];
+  whatsapp: {
+    state: StoreOperationalHealthState;
+    liveConnectivity: "unverified";
+  };
+  ai: {
+    state: StoreAiOperationalHealthState;
+  };
+  assistant: {
+    state: StoreOperationalHealthState;
+  };
+  operations: {
+    state: StoreOperationalHealthState;
+  };
+  observability: {
+    workerHeartbeatAvailable: false;
+  };
+};
 const STORE_INTEGRITY_STATE_LABELS: Record<StoreIntegrityState, string> = {
   healthy: "Saudável", warning: "Atenção", broken: "Problema", unknown: "Não verificada",
 };
@@ -184,6 +221,7 @@ export type ZionAdminStore = {
   subscriptionStatus: string;
   createdAt: string | null;
   integrity?: StoreIntegrity | null;
+  operationalHealth?: StoreOperationalHealth | null;
   totalLeads?: number | null;
   totalMessages?: number | null;
   totalSalesAiMessages?: number | null;
@@ -656,6 +694,93 @@ function isStoreCanceledOrInactive(store: ZionAdminStore) {
   return !isStoreActive(store);
 }
 
+const STORE_OPERATIONAL_HEALTH_STATE_LABELS: Record<
+  StoreOperationalHealthState,
+  string
+> = {
+  healthy: "Saudável",
+  warning: "Atenção",
+  broken: "Problema",
+  unknown: "Não foi possível verificar",
+};
+
+const STORE_AI_OPERATIONAL_HEALTH_STATE_LABELS: Record<
+  StoreAiOperationalHealthState,
+  string
+> = {
+  ...STORE_OPERATIONAL_HEALTH_STATE_LABELS,
+  idle: "Sem atividade de IA",
+};
+
+const STORE_OPERATIONAL_HEALTH_ISSUE_LABELS: Record<string, string> = {
+  whatsapp_inbound_stale: "Entrada do WhatsApp aguardando processamento além do esperado",
+  whatsapp_inbound_error: "Erro no processamento de entrada do WhatsApp",
+  whatsapp_outbound_failed: "Falha no envio de mensagem pelo WhatsApp",
+  whatsapp_outbound_uncertain: "Envio pelo WhatsApp com resultado incerto",
+  whatsapp_outbound_stale: "Envio do WhatsApp aguardando ou processando além do esperado",
+  ai_latest_run_failed: "Última execução da IA falhou",
+  ai_run_queue_stale: "Execução da IA aguardando além do esperado",
+  assistant_task_failed: "Tarefa da Assistente falhou",
+  assistant_task_stale_processing: "Tarefa da Assistente presa em processamento",
+  assistant_task_stale_pending: "Tarefa da Assistente aguardando além do esperado",
+  responsible_notification_failed: "Notificação ao responsável falhou",
+  responsible_notification_uncertain: "Notificação ao responsável com resultado incerto",
+  responsible_notification_stale_processing:
+    "Notificação ao responsável presa em processamento",
+  appointment_overdue: "Compromisso permaneceu aberto após o horário previsto",
+  post_appointment_followup_overdue:
+    "Acompanhamento pós-compromisso está atrasado",
+};
+
+export function getStoreOperationalHealthStateLabel(
+  health: StoreOperationalHealth | null | undefined,
+) {
+  return STORE_OPERATIONAL_HEALTH_STATE_LABELS[health?.state ?? "unknown"];
+}
+
+function getStoreAiOperationalHealthStateLabel(
+  health: StoreOperationalHealth | null | undefined,
+) {
+  return STORE_AI_OPERATIONAL_HEALTH_STATE_LABELS[
+    health?.ai?.state ?? "unknown"
+  ];
+}
+
+export function getStoreOperationalHealthIssueLabels(
+  health: StoreOperationalHealth | null | undefined,
+) {
+  return (health?.issues ?? []).map((issue) => {
+    const baseLabel =
+      STORE_OPERATIONAL_HEALTH_ISSUE_LABELS[issue.code] ??
+      `Ocorrência operacional não reconhecida: ${issue.code}`;
+
+    return issue.count > 1
+      ? `${baseLabel} (${issue.count})`
+      : baseLabel;
+  });
+}
+
+function getOperationalHealthStateClassName(
+  state: StoreOperationalHealthState | StoreAiOperationalHealthState,
+) {
+  if (state === "broken") {
+    return "border-red-500/30 bg-red-500/10 text-red-100";
+  }
+
+  if (state === "warning") {
+    return "border-amber-500/30 bg-amber-500/10 text-amber-100";
+  }
+
+  if (state === "healthy") {
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-100";
+  }
+
+  if (state === "idle") {
+    return "border-white/10 bg-zinc-900 text-zinc-300";
+  }
+
+  return "border-white/10 bg-zinc-900 text-zinc-400";
+}
 function getInactiveReason(store: ZionAdminStore) {
   const normalized = normalizeStatus(store.subscriptionStatus);
 
@@ -919,6 +1044,7 @@ function StoreRowCard({
   const successfulRuns = numberValue(store.successfulAiRuns);
   const integrityState = store.integrity?.state ?? "unknown";
   const integrityIssues = getStoreIntegrityIssueLabels(store.integrity);
+  const operationalHealthState = store.operationalHealth?.state ?? "unknown";
 
   return (
     <button
@@ -947,6 +1073,14 @@ function StoreRowCard({
             ) : null}
             <span className="rounded-full border border-white/10 bg-zinc-950/60 px-2 py-0.5 text-[10px] text-zinc-400">
               Integridade: {getStoreIntegrityStateLabel(store.integrity)}
+            </span>
+            <span
+              className={[
+                "rounded-full border px-2 py-0.5 text-[10px]",
+                getOperationalHealthStateClassName(operationalHealthState),
+              ].join(" ")}
+            >
+              Saúde: {getStoreOperationalHealthStateLabel(store.operationalHealth)}
             </span>
           </div>
           <div className="mt-0.5 truncate text-xs text-zinc-400">
@@ -1388,6 +1522,10 @@ function StoreDetailsDrawer({
     !canManageAccounts || !storeAction || storeState.busyStoreId === store.id;
   const integrityState = store.integrity?.state ?? "unknown";
   const integrityIssueLabels = getStoreIntegrityIssueLabels(store.integrity);
+  const operationalHealth = store.operationalHealth ?? null;
+  const operationalHealthState = operationalHealth?.state ?? "unknown";
+  const operationalHealthIssueLabels =
+    getStoreOperationalHealthIssueLabels(operationalHealth);
 
   return (
     <DrawerShell
@@ -1448,6 +1586,88 @@ function StoreDetailsDrawer({
                 {integrityIssueLabels.map((issue) => <li key={issue}>• {issue}</li>)}
               </ul>
             ) : null}
+          </div>
+        </section>
+        <section>
+          <h4 className="text-sm font-semibold text-zinc-200">
+            Saúde operacional
+          </h4>
+
+          <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-zinc-100">
+                {getStoreOperationalHealthStateLabel(operationalHealth)}
+              </div>
+
+              <span
+                className={[
+                  "rounded-full border px-2.5 py-1 text-[10px] font-semibold",
+                  getOperationalHealthStateClassName(operationalHealthState),
+                ].join(" ")}
+              >
+                Estado geral
+              </span>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <DetailItem
+                label="WhatsApp"
+                value={STORE_OPERATIONAL_HEALTH_STATE_LABELS[
+                  operationalHealth?.whatsapp?.state ?? "unknown"
+                ]}
+              />
+              <DetailItem
+                label="IA"
+                value={getStoreAiOperationalHealthStateLabel(operationalHealth)}
+              />
+              <DetailItem
+                label="Assistente"
+                value={STORE_OPERATIONAL_HEALTH_STATE_LABELS[
+                  operationalHealth?.assistant?.state ?? "unknown"
+                ]}
+              />
+              <DetailItem
+                label="Operação"
+                value={STORE_OPERATIONAL_HEALTH_STATE_LABELS[
+                  operationalHealth?.operations?.state ?? "unknown"
+                ]}
+              />
+            </div>
+
+            {operationalHealthState === "healthy" ? (
+              <p className="mt-3 text-xs leading-5 text-zinc-500">
+                Nenhum problema operacional persistido foi detectado nas fontes monitoradas.
+              </p>
+            ) : operationalHealthState === "unknown" ? (
+              <p className="mt-3 text-xs leading-5 text-amber-200">
+                Não foi possível verificar completamente a saúde operacional desta loja.
+              </p>
+            ) : operationalHealthIssueLabels.length > 0 ? (
+              <ul className="mt-3 space-y-1 text-xs leading-5 text-zinc-400">
+                {operationalHealthIssueLabels.map((issue) => (
+                  <li key={issue}>• {issue}</li>
+                ))}
+              </ul>
+            ) : null}
+
+            <div className="mt-3 rounded-xl border border-white/10 bg-zinc-950/35 p-3 text-[11px] leading-5 text-zinc-500">
+              <div>
+                Conectividade ao vivo do WhatsApp:{" "}
+                {operationalHealth?.whatsapp?.liveConnectivity === "unverified"
+                  ? "não verificada"
+                  : "não informada"}
+              </div>
+              <div>
+                Heartbeat dos workers:{" "}
+                {operationalHealth?.observability?.workerHeartbeatAvailable === false
+                  ? "não disponível"
+                  : "não informado"}
+              </div>
+              <div className="mt-1">
+                Este painel identifica problemas pelos registros persistidos e não afirma que
+                serviços externos ou workers estejam online em tempo real.
+              </div>
+            </div>
           </div>
         </section>
         <section>
