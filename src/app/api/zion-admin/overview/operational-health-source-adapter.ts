@@ -278,12 +278,12 @@ function applyWhatsappInbox(args: {
     const input = getInput(args.inputs, row.store_id);
     if (!input) continue;
 
-    if (isErroredText(row.processing_error)) {
-      increment(input, "whatsapp", "inboundErrors");
+    if (row.processed_at) {
       continue;
     }
 
-    if (row.processed_at) {
+    if (isErroredText(row.processing_error)) {
+      increment(input, "whatsapp", "inboundErrors");
       continue;
     }
 

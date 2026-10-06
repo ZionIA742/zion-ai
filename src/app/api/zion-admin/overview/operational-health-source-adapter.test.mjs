@@ -114,6 +114,22 @@ tests.push(() => {
 tests.push(() => {
   const input = store(build({
     sources: {
+      whatsappInboxRows: [{
+        store_id: "store-1",
+        received_at: "2026-10-06T17:00:00.000Z",
+        processed_at: "2026-10-06T17:01:00.000Z",
+        processing_error: "historical provider failure",
+      }],
+    },
+  }));
+
+  assert.equal(input.whatsapp.inboundErrors, 0);
+  assert.equal(input.whatsapp.staleInboundEvents, 0);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
       whatsappOutboundRows: [
         {
           store_id: "store-1",
@@ -212,6 +228,21 @@ tests.push(() => {
       aiRunRows: [{
         store_id: "store-1",
         status: "running",
+        error: null,
+        created_at: "2026-10-06T17:30:00.000Z",
+      }],
+    },
+  }));
+
+  assert.equal(input.ai.latestRunState, "unknown");
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      aiRunRows: [{
+        store_id: "store-1",
+        status: "queued",
         error: null,
         created_at: "2026-10-06T17:30:00.000Z",
       }],
