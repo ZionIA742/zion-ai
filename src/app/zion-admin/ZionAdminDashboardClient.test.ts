@@ -90,6 +90,45 @@ const tests: TestCase[] = [
       assert.equal(source.includes("Acesso ativo"), true);
     },
   },
+  {
+    name: "canonical integrity labels and fail-closed fallback are exposed",
+    run: () => {
+      const source = readSource();
+
+      for (const label of [
+        "Saudável",
+        "Atenção",
+        "Problema",
+        "Não verificada",
+        "Loja sem proprietário",
+        "Mais de um proprietário encontrado",
+        "Proprietário inativo",
+        "Perfil do proprietário ausente",
+        "Assinatura não encontrada",
+        "Mais de uma assinatura encontrada",
+        "Organização não encontrada",
+      ]) {
+        assert.equal(source.includes(label), true, `missing integrity label: ${label}`);
+      }
+
+      assert.equal(source.includes('integrity?.state ?? "unknown"'), true);
+      assert.equal(source.includes("Integridade estrutural"), true);
+      assert.equal(source.includes("Sem pendências operacionais críticas"), true);
+      assert.equal(source.includes("getStoreIntegritySummary(stores, integrityOrphanStores)"), true);
+      assert.equal(source.includes("integrityOrphanStores.slice(0, 3)"), true);
+      assert.equal(source.includes("sem usuario vinculado"), false);
+      assert.equal(source.includes("não entram nas listas nem nos contadores normais"), false);
+      assert.equal(
+        source.includes("fora da lista operacional e dos indicadores operacionais") &&
+          source.includes("consideradas no resumo de integridade"),
+        true,
+      );
+      assert.equal(source.includes("Revisar:"), false);
+      assert.equal(source.includes("e mais ${integrityOrphanStores.length - 3} estrutura(s)."), true);
+      assert.equal(source.includes("subscriptionStatus"), true);
+      assert.equal(source.includes("accountAccess"), true);
+    },
+  },
 ];
 
 async function run() {

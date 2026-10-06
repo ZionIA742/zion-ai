@@ -20,6 +20,43 @@ type OverviewPanelKey =
   | "appointments"
   | "assistant";
 
+export type StoreIntegrityState = "healthy" | "warning" | "broken" | "unknown";
+export type StoreIntegrityIssueCode =
+  | "organization_missing" | "owner_missing" | "owner_ambiguous"
+  | "owner_inactive" | "owner_profile_missing" | "subscription_missing"
+  | "subscription_multiple";
+export type StoreIntegrity = {
+  state: StoreIntegrityState;
+  issues: Array<{ code: StoreIntegrityIssueCode; severity: "warning" | "error"; scope: "store" | "organization" | "owner" | "subscription" }>;
+  organization: { state: "present" | "missing" | "unknown" };
+  owner: { state: "valid" | "missing" | "inactive" | "ambiguous" | "unknown"; count: number | null };
+  subscription: { state: "single" | "missing" | "multiple" | "unknown"; status: string | null };
+};
+
+const STORE_INTEGRITY_STATE_LABELS: Record<StoreIntegrityState, string> = {
+  healthy: "Saudável", warning: "Atenção", broken: "Problema", unknown: "Não verificada",
+};
+const STORE_INTEGRITY_ISSUE_LABELS: Record<StoreIntegrityIssueCode, string> = {
+  organization_missing: "Organização não encontrada", owner_missing: "Loja sem proprietário",
+  owner_ambiguous: "Mais de um proprietário encontrado", owner_inactive: "Proprietário inativo",
+  owner_profile_missing: "Perfil do proprietário ausente", subscription_missing: "Assinatura não encontrada",
+  subscription_multiple: "Mais de uma assinatura encontrada",
+};
+export function getStoreIntegrityStateLabel(integrity: StoreIntegrity | null | undefined) {
+  return STORE_INTEGRITY_STATE_LABELS[integrity?.state ?? "unknown"];
+}
+export function getStoreIntegrityIssueLabels(integrity: StoreIntegrity | null | undefined) {
+  return (integrity?.issues ?? []).map((issue) => STORE_INTEGRITY_ISSUE_LABELS[issue.code]);
+}
+export function getStoreIntegritySummary(
+  stores: Array<{ integrity?: StoreIntegrity | null }>,
+  orphanStores: Array<{ integrity?: StoreIntegrity | null }>,
+) {
+  const summary: Record<StoreIntegrityState, number> = { broken: 0, warning: 0, unknown: 0, healthy: 0 };
+  for (const store of [...stores, ...orphanStores]) summary[store.integrity?.state ?? "unknown"] += 1;
+  return summary;
+}
+
 export type ZionAdminOverview = {
   admin: {
     role: string;
@@ -82,6 +119,7 @@ export type ZionAdminOverview = {
       organizationId: string;
       organizationName: string;
       createdAt: string | null;
+      integrity?: StoreIntegrity | null;
     }>;
   };
   stores: ZionAdminStore[];
@@ -145,6 +183,7 @@ export type ZionAdminStore = {
   organizationName: string;
   subscriptionStatus: string;
   createdAt: string | null;
+  integrity?: StoreIntegrity | null;
   totalLeads?: number | null;
   totalMessages?: number | null;
   totalSalesAiMessages?: number | null;
@@ -658,8 +697,8 @@ function getOperationalSummary(store: ZionAdminStore) {
   if (total <= 0) {
     return {
       total,
-      label: "Sem pendências críticas",
-      details: "Nenhuma pendência crítica encontrada nas filas monitoradas.",
+      label: "Sem pendências operacionais críticas",
+      details: "Nenhuma pendência operacional crítica encontrada nas filas monitoradas.",
     };
   }
 
@@ -722,7 +761,7 @@ function PendingIssueRootCauseList({ store }: { store: ZionAdminStore }) {
         <div className="mt-3 space-y-2">
           {operationalDetails.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">
-              Nenhuma pendência crítica encontrada nas filas monitoradas.
+              Nenhuma pendência operacional crítica encontrada nas filas monitoradas.
             </div>
           ) : (
             operationalDetails.map((item) => (
@@ -878,6 +917,8 @@ function StoreRowCard({
   const operational = getOperationalSummary(store);
   const aiRuns = numberValue(store.totalAiRuns);
   const successfulRuns = numberValue(store.successfulAiRuns);
+  const integrityState = store.integrity?.state ?? "unknown";
+  const integrityIssues = getStoreIntegrityIssueLabels(store.integrity);
 
   return (
     <button
@@ -904,6 +945,9 @@ function StoreRowCard({
                 Acesso bloqueado
               </span>
             ) : null}
+            <span className="rounded-full border border-white/10 bg-zinc-950/60 px-2 py-0.5 text-[10px] text-zinc-400">
+              Integridade: {getStoreIntegrityStateLabel(store.integrity)}
+            </span>
           </div>
           <div className="mt-0.5 truncate text-xs text-zinc-400">
             {store.organizationName}
@@ -912,6 +956,12 @@ function StoreRowCard({
           {inactive ? (
             <div className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-500">
               {getInactiveReason(store)}
+            </div>
+          ) : null}
+          {integrityState !== "healthy" ? (
+            <div className="mt-1 truncate text-[11px] text-amber-200/80">
+              {integrityIssues[0] || "Verificação estrutural incompleta"}
+              {integrityIssues.length > 1 ? ` (+${integrityIssues.length - 1})` : ""}
             </div>
           ) : null}
         </div>
@@ -1336,6 +1386,8 @@ function StoreDetailsDrawer({
     accessState.busyMembershipId === accountAccess.membershipId;
   const storeActionDisabled =
     !canManageAccounts || !storeAction || storeState.busyStoreId === store.id;
+  const integrityState = store.integrity?.state ?? "unknown";
+  const integrityIssueLabels = getStoreIntegrityIssueLabels(store.integrity);
 
   return (
     <DrawerShell
@@ -1381,6 +1433,23 @@ function StoreDetailsDrawer({
       </div>
 
       <div className="space-y-4">
+        <section>
+          <h4 className="text-sm font-semibold text-zinc-200">Integridade estrutural</h4>
+          <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+            <div className="text-sm font-semibold text-zinc-100">
+              {getStoreIntegrityStateLabel(store.integrity)}
+            </div>
+            {integrityState === "healthy" ? (
+              <p className="mt-1 text-xs leading-5 text-zinc-500">Nenhum problema estrutural detectado.</p>
+            ) : integrityState === "unknown" ? (
+              <p className="mt-1 text-xs leading-5 text-amber-200">Não foi possível verificar completamente a integridade desta loja.</p>
+            ) : integrityIssueLabels.length > 0 ? (
+              <ul className="mt-2 space-y-1 text-xs leading-5 text-zinc-400">
+                {integrityIssueLabels.map((issue) => <li key={issue}>• {issue}</li>)}
+              </ul>
+            ) : null}
+          </div>
+        </section>
         <section>
           <h3 className="text-sm font-semibold text-zinc-200">Gestão da loja</h3>
           <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -3094,9 +3163,7 @@ export default function ZionAdminDashboardClient({
   const inactiveStores = stores.filter(isStoreCanceledOrInactive);
   const integrityOrphanStores = data?.integrity?.orphanStores ?? [];
   const orphanStoresCount = data?.integrity?.orphanStoresCount ?? 0;
-  const visibleOrphanStoreNames = integrityOrphanStores
-    .slice(0, 10)
-    .map((store) => store.name);
+  const integritySummary = getStoreIntegritySummary(stores, integrityOrphanStores);
 
   const countErrors = data?.countErrors ?? {};
   const hasCountErrors = Object.values(countErrors).some(Boolean);
@@ -3405,20 +3472,30 @@ export default function ZionAdminDashboardClient({
         {orphanStoresCount > 0 ? (
           <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
             <div className="font-semibold">
-              {orphanStoresCount} estrutura(s) sem usuario vinculado
+              {orphanStoresCount} estrutura(s) fora da lista operacional
             </div>
             <div className="mt-1 text-xs text-amber-100/80">
-              Estas estruturas nao entram nas listas nem nos contadores normais do Zion-ADM.
-              {visibleOrphanStoreNames.length > 0
-                ? ` Revisar: ${visibleOrphanStoreNames.join(", ")}${
-                    orphanStoresCount > visibleOrphanStoreNames.length
-                      ? ` e mais ${orphanStoresCount - visibleOrphanStoreNames.length}`
-                      : ""
-                  }.`
+              Estas estruturas ficam fora da lista operacional e dos indicadores operacionais,
+              mas são consideradas no resumo de integridade.
+              {integrityOrphanStores.slice(0, 3).map((store) => (
+                <div key={store.id}>
+                  {store.name}: {getStoreIntegrityStateLabel(store.integrity)}
+                  {getStoreIntegrityIssueLabels(store.integrity).length > 0
+                    ? ` — ${getStoreIntegrityIssueLabels(store.integrity).join(", ")}`
+                    : ""}
+                </div>
+              ))}
+              {integrityOrphanStores.length > 3
+                ? ` e mais ${integrityOrphanStores.length - 3} estrutura(s).`
                 : ""}
             </div>
           </div>
         ) : null}
+
+        <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-3 text-xs text-zinc-400">
+          <span className="font-semibold text-zinc-200">Integridade estrutural:</span>{" "}
+          {integritySummary.broken} problema(s) · {integritySummary.warning} atenção · {integritySummary.unknown} não verificada(s) · {integritySummary.healthy} saudável(eis)
+        </div>
 
         <section>
           <div className="mb-3 flex flex-col gap-1 md:flex-row md:items-end md:justify-between">
