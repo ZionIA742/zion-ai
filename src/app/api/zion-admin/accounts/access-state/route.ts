@@ -5,7 +5,8 @@ import { handleAccessStateMutation } from "./route-handler";
 
 export async function POST(request: Request) {
   return handleAccessStateMutation(request, {
-    resolveAccess: resolveZionAdminApiAccess,
+    resolveAccess: () =>
+      resolveZionAdminApiAccess({ requiredCapability: "manage_accounts" }),
     createServiceSupabase: createServiceSupabaseClient,
     writeAuditEvent: writeZionAdminAuditEvent,
   });

@@ -18,7 +18,8 @@ import { handleResendFirstAccess } from "./route-handler";
 
 export async function POST(request: Request) {
   return handleResendFirstAccess(request, {
-    resolveAccess: resolveZionAdminApiAccess,
+    resolveAccess: () =>
+      resolveZionAdminApiAccess({ requiredCapability: "manage_accounts" }),
     createServiceSupabase: createServiceSupabaseClient,
     createAttemptId: createFirstAccessAttemptId,
     createInviteMetadataPatch: createFirstAccessInviteMetadataPatch,

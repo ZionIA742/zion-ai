@@ -59,6 +59,9 @@ function createDeps(
     onResolveAccess?: (args: { requestedDomain: string; supabase: unknown }) => void;
     createSupabaseThrows?: boolean;
     resolveAccessThrows?: boolean;
+    role?: unknown;
+    roleError?: unknown;
+    missingRole?: boolean;
   },
 ): ResolveZionAdminApiAccessDeps {
   const supabase = {
@@ -69,6 +72,31 @@ function createDeps(
           error: null,
         };
       },
+    },
+    from(table: string) {
+      assert.equal(table, "zion_internal_admins");
+      return {
+        select() {
+          return {
+            eq() {
+              return {
+                eq() {
+                  return {
+                    async maybeSingle() {
+                      return {
+                        data: hooks?.missingRole
+                          ? null
+                          : { role: hooks?.role ?? "admin" },
+                        error: hooks?.roleError ?? null,
+                      };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+      };
     },
   };
 
@@ -187,10 +215,70 @@ const tests: TestCase[] = [
       assert.equal(result.resolution.organizationId, null);
       assert.equal(result.resolution.storeId, null);
       assert.equal(result.resolution.commercialAccess, "unknown");
+      assert.equal(result.resolution.role, "admin");
+      assert.deepEqual(result.resolution.capabilities, ["manage_accounts"]);
       assert.equal(result.supabase, resolvedSupabase);
       assert.equal(createCount, 1);
       assert.equal(resolveCount, 1);
       assert.equal(resolvedDomain, "zion_admin");
+    },
+  },
+  {
+    name: "canonical owner admin and super_admin roles receive expected access",
+    run: async () => {
+      for (const role of ["owner", "admin", "super_admin"] as const) {
+        const result = await resolveZionAdminApiAccess({
+          ...createDeps(createAllowedResolution(), { role }),
+          requiredCapability: "manage_accounts",
+        });
+        assert.equal(result.ok, true, role);
+        if (!result.ok) throw new Error("expected canonical role access");
+        assert.equal(result.resolution.role, role);
+        assert.deepEqual(result.resolution.capabilities, ["manage_accounts"]);
+      }
+    },
+  },
+  {
+    name: "role lookup error fails closed as technical 503",
+    run: async () => {
+      const result = await resolveZionAdminApiAccess(
+        createDeps(createAllowedResolution(), { roleError: new Error("db unavailable") }),
+      );
+      assert.equal(result.ok, false);
+      if (result.ok) throw new Error("expected technical denial");
+      assert.equal(result.httpStatus, 503);
+      assert.equal(result.payload.status, "access_resolution_unavailable");
+      assert.equal(result.payload.reasonCode, "zion_admin_lookup_unavailable");
+    },
+  },
+  {
+    name: "missing role row fails closed for overview and mutation",
+    run: async () => {
+      for (const input of [
+        createDeps(createAllowedResolution(), { missingRole: true }),
+        { ...createDeps(createAllowedResolution(), { missingRole: true }), requiredCapability: "manage_accounts" as const },
+      ]) {
+        const result = await resolveZionAdminApiAccess(input);
+        assert.equal(result.ok, false);
+        if (result.ok) throw new Error("expected role denial");
+        assert.equal(result.httpStatus, 403);
+        assert.equal(result.payload.reasonCode, "zion_admin_capability_denied");
+      }
+    },
+  },
+  {
+    name: "unknown role fails closed for overview and mutation",
+    run: async () => {
+      for (const input of [
+        createDeps(createAllowedResolution(), { role: "viewer" }),
+        { ...createDeps(createAllowedResolution(), { role: "viewer" }), requiredCapability: "manage_accounts" as const },
+      ]) {
+        const result = await resolveZionAdminApiAccess(input);
+        assert.equal(result.ok, false);
+        if (result.ok) throw new Error("expected invalid role denial");
+        assert.equal(result.httpStatus, 403);
+        assert.equal(result.payload.reasonCode, "zion_admin_capability_denied");
+      }
     },
   },
   {
@@ -677,13 +765,11 @@ const tests: TestCase[] = [
 
       const forbiddenPatterns = [
         /getSession\s*\(/,
-        /auth\.admin/,
         /user_metadata/,
         /app_metadata/,
         /service_role/i,
         /SUPABASE_SERVICE_ROLE_KEY/,
-        /zion_internal_admins/,
-        /\.from\s*\(/,
+        /auth\.admin/,
         /\.rpc\s*\(/,
         /profiles/,
         /memberships/,

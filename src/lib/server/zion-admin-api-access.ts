@@ -7,6 +7,16 @@ import { resolveAccessForRequest } from "./account-access-resolver";
 
 type ZionAdminDeniedHttpStatus = 401 | 403 | 409 | 503;
 
+export type ZionAdminCapability = "manage_accounts";
+
+type ZionAdminRole = "owner" | "admin" | "super_admin";
+
+const ZION_ADMIN_MANAGEMENT_ROLES = new Set<ZionAdminRole>([
+  "owner",
+  "admin",
+  "super_admin",
+]);
+
 type ZionAdminDeniedPayload = {
   ok: false;
   error: string;
@@ -47,6 +57,8 @@ export type ZionAdminApiGrantedResolution = Pick<
   organizationId: null;
   storeId: null;
   commercialAccess: "unknown";
+  role: ZionAdminRole;
+  capabilities: readonly ZionAdminCapability[];
 };
 
 export type ZionAdminApiAccessGranted = {
@@ -97,6 +109,7 @@ function createSafeTechnicalResolution(
 function createGrantedResolution(
   resolution: AccessResolution & { status: "zion_admin_allowed" },
   sessionUserId: string,
+  role: ZionAdminRole,
 ): ZionAdminApiGrantedResolution {
   return {
     domain: "zion_admin",
@@ -111,7 +124,58 @@ function createGrantedResolution(
     commercialAccess: "unknown",
     reasonCode: resolution.reasonCode,
     message: resolution.message,
+    role,
+    capabilities: ZION_ADMIN_MANAGEMENT_ROLES.has(role)
+      ? ["manage_accounts"]
+      : [],
   };
+}
+
+type ZionAdminRoleLookupFailureKind = "technical" | "invalid";
+
+class ZionAdminRoleLookupError extends Error {
+  readonly kind: ZionAdminRoleLookupFailureKind;
+
+  constructor(kind: ZionAdminRoleLookupFailureKind, message: string) {
+    super(message);
+    this.kind = kind;
+  }
+}
+
+function normalizeZionAdminRole(value: unknown): ZionAdminRole | null {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return ZION_ADMIN_MANAGEMENT_ROLES.has(normalized as ZionAdminRole)
+    ? (normalized as ZionAdminRole)
+    : null;
+}
+
+async function lookupZionAdminRole(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  sessionUserId: string,
+): Promise<ZionAdminRole> {
+  const { data, error } = await supabase
+    .from("zion_internal_admins")
+    .select("role")
+    .eq("user_id", sessionUserId)
+    .eq("is_active", true)
+    .maybeSingle<{ role?: unknown }>();
+
+  if (error || !data) {
+    throw new ZionAdminRoleLookupError(
+      error ? "technical" : "invalid",
+      error ? "active zion admin role lookup failed" : "active zion admin role row missing",
+    );
+  }
+
+  const role = normalizeZionAdminRole(data.role);
+  if (!role) {
+    throw new ZionAdminRoleLookupError(
+      "invalid",
+      "active zion admin role is not canonical",
+    );
+  }
+
+  return role;
 }
 
 function mapDeniedHttpStatus(
@@ -204,9 +268,39 @@ function createDeniedResult(
   };
 }
 
+function createRoleDeniedResult(
+  grantedResolution: Pick<ZionAdminApiGrantedResolution, "safeHtmlDestination">,
+): ZionAdminApiAccessDenied {
+  const deniedResolution: ZionAdminDeniedResolution = {
+    domain: "zion_admin",
+    status: "cross_domain_forbidden",
+    sessionUserId: null,
+    safeHtmlDestination: grantedResolution.safeHtmlDestination,
+    apiDecision: "deny_403",
+    organizationResolution: "none",
+    storeResolution: "none",
+    organizationId: null,
+    storeId: null,
+    commercialAccess: "unknown",
+    reasonCode: "zion_admin_capability_denied",
+    message: "Sua conta nao possui uma role Zion-ADM autorizada para esta operacao.",
+  };
+
+  return {
+    ok: false,
+    resolution: deniedResolution,
+    httpStatus: 403,
+    payload: buildDeniedPayload(deniedResolution),
+  };
+}
+
 export async function resolveZionAdminApiAccess(
-  deps?: Partial<ResolveZionAdminApiAccessDeps>,
+  input?: Partial<ResolveZionAdminApiAccessDeps> & {
+    requiredCapability?: ZionAdminCapability;
+    deps?: Partial<ResolveZionAdminApiAccessDeps>;
+  },
 ): Promise<ZionAdminApiAccessResult> {
+  const deps = input?.deps ?? input;
   const createSupabase = deps?.createSupabase ?? createSupabaseServerClient;
   const resolveAccess = deps?.resolveAccess ?? resolveAccessForRequest;
 
@@ -258,10 +352,33 @@ export async function resolveZionAdminApiAccess(
   const grantedSourceResolution = resolution as AccessResolution & {
     status: "zion_admin_allowed";
   };
+  let role: ZionAdminRole;
+  try {
+    role = await lookupZionAdminRole(supabase, sessionUserId);
+  } catch (error) {
+    if (error instanceof ZionAdminRoleLookupError && error.kind === "invalid") {
+      return createRoleDeniedResult({
+        safeHtmlDestination: grantedSourceResolution.safeHtmlDestination,
+      });
+    }
+
+    return createDeniedResult(
+      createSafeTechnicalResolution("zion_admin_lookup_unavailable"),
+    );
+  }
+
   const grantedResolution = createGrantedResolution(
     grantedSourceResolution,
     sessionUserId,
+    role,
   );
+
+  if (
+    input?.requiredCapability &&
+    !grantedResolution.capabilities.includes(input.requiredCapability)
+  ) {
+    return createRoleDeniedResult(grantedResolution);
+  }
 
   return {
     ok: true,

@@ -1154,7 +1154,9 @@ Object.assign(globalThis as Record<string, unknown>, {
 });
 
 export async function POST(request: Request) {
-  const access = await resolveZionAdminApiAccess();
+  const access = await resolveZionAdminApiAccess({
+    requiredCapability: "manage_accounts",
+  });
 
   if (!access.ok) {
     return createZionAdminApiDeniedResponse(access);

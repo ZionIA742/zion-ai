@@ -80,11 +80,33 @@ const tests: TestCase[] = [
       const routeSource = readSource(routePath);
       const consumerSource = readSource(consumerPath);
 
-      assert.equal(routeSource.includes("const access = await resolveZionAdminApiAccess()"), true);
+      assert.equal(
+        routeSource.includes(
+          'const access = await resolveZionAdminApiAccess({\n    requiredCapability: "manage_accounts",\n  });',
+        ),
+        true,
+      );
       assert.equal(routeSource.includes("return createZionAdminApiDeniedResponse(access)"), true);
       assert.equal(routeSource.includes("const body = await request.json().catch(() => null)"), true);
       assert.equal(routeSource.includes("serviceSupabase: createServiceSupabaseClient(),"), true);
       assert.equal(consumerSource.includes("/api/zion-admin/accounts/create"), true);
+    },
+  },
+  {
+    name: "all mutation routes require the canonical management capability",
+    run: () => {
+      const routePaths = [
+        join(process.cwd(), "src/app/api/zion-admin/accounts/create/route.ts"),
+        join(process.cwd(), "src/app/api/zion-admin/accounts/resend-first-access/route.ts"),
+        join(process.cwd(), "src/app/api/zion-admin/accounts/access-state/route.ts"),
+        join(process.cwd(), "src/app/api/zion-admin/stores/subscription-state/route.ts"),
+      ];
+
+      for (const path of routePaths) {
+        const source = readSource(path);
+        assert.equal(source.includes('requiredCapability: "manage_accounts"'), true, path);
+        assert.equal(source.includes("request.json"), path.includes("create"));
+      }
     },
   },
 ];

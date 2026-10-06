@@ -77,6 +77,7 @@ export type AccessReasonCode =
   | "anonymous"
   | "account_blocked"
   | "zion_admin_allowed"
+  | "zion_admin_capability_denied"
   | "store_user_cannot_access_zion_admin"
   | "zion_admin_cannot_access_store_area"
   | "first_access_required"
