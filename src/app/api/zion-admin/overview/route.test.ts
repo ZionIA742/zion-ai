@@ -2,10 +2,17 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import {
+  loadAllOverviewRows,
+  loadAllOverviewRowsByChunks,
+  OVERVIEW_IN_CHUNK_SIZE,
+  OVERVIEW_LOAD_ERROR,
+  OVERVIEW_MAX_PAGES,
+} from "./overview-pagination";
 
 type TestCase = {
   name: string;
-  run: () => void;
+  run: () => void | Promise<void>;
 };
 
 const routePath = join(fileURLToPath(new URL(".", import.meta.url)), "route.ts");
@@ -155,11 +162,182 @@ const tests: TestCase[] = [
       assert.equal(source.includes("/api/zion-admin/overview"), true);
     },
   },
+  {
+    name: "overview pagination aggregates every page and preserves deterministic ranges",
+    run: async () => {
+      const requestedRanges: Array<[number, number]> = [];
+      const allRows = Array.from({ length: 501 }, (_, index) => index);
+      const result = await loadAllOverviewRows<number>(async (from, to) => {
+        requestedRanges.push([from, to]);
+        return { data: allRows.slice(from, to + 1), error: null };
+      });
+
+      assert.deepEqual(result.rows, allRows);
+      assert.equal(result.error, null);
+      assert.deepEqual(requestedRanges, [[0, 499], [500, 999]]);
+    },
+  },
+  {
+    name: "overview pagination stops on a partial final page",
+    run: async () => {
+      let calls = 0;
+      const result = await loadAllOverviewRows<number>(async () => {
+        calls += 1;
+        return { data: [1], error: null };
+      }, 2);
+
+      assert.deepEqual(result, { rows: [1], error: null });
+      assert.equal(calls, 1);
+    },
+  },
+  {
+    name: "intermediate page errors do not become a partial successful list",
+    run: async () => {
+      const result = await loadAllOverviewRows<number>(async (from) => {
+        if (from === 0) {
+          return { data: [1, 2], error: null };
+        }
+
+        return { data: null, error: new Error("page unavailable") };
+      }, 2);
+
+      assert.deepEqual(result.rows, []);
+       assert.equal(result.error, OVERVIEW_LOAD_ERROR);
+    },
+  },
+  {
+    name: "chunked overview lists deduplicate ids and aggregate pages",
+    run: async () => {
+      const requestedValues: string[] = [];
+      const result = await loadAllOverviewRowsByChunks<number>({
+        values: ["a", "b", "a", "c"],
+        chunkSize: 2,
+        loadPage: async (values, from, to) => {
+          requestedValues.push(...values);
+          const pageRows = values.map((value) => value.charCodeAt(0)).slice(from, to + 1);
+          return { data: pageRows, error: null };
+        },
+      });
+
+      assert.deepEqual(requestedValues, ["a", "b", "c"]);
+      assert.deepEqual(result.rows, [97, 98, 99]);
+      assert.equal(result.error, null);
+    },
+  },
+  {
+    name: "chunk failure discards rows from earlier chunks",
+    run: async () => {
+      let calls = 0;
+      const result = await loadAllOverviewRowsByChunks<number>({
+        values: ["a", "b", "c"],
+        chunkSize: 2,
+        loadPage: async (values) => {
+          calls += 1;
+          return values[0] === "c"
+            ? { data: null, error: new Error("chunk unavailable") }
+            : { data: [1], error: null };
+        },
+      });
+
+      assert.equal(calls, 2);
+      assert.deepEqual(result, { rows: [], error: OVERVIEW_LOAD_ERROR });
+    },
+  },
+  {
+    name: "overview pagination fails closed at the operational page guard",
+    run: async () => {
+      let calls = 0;
+      const result = await loadAllOverviewRows<number>(async () => {
+        calls += 1;
+        return { data: [1], error: null };
+      }, 1);
+
+      assert.equal(calls, OVERVIEW_MAX_PAGES);
+      assert.deepEqual(result, { rows: [], error: OVERVIEW_LOAD_ERROR });
+    },
+  },
+  {
+    name: "empty successful page remains a real zero",
+    run: async () => {
+      const result = await loadAllOverviewRows<number>(async () => ({
+        data: [],
+        error: null,
+      }));
+
+      assert.deepEqual(result, { rows: [], error: null });
+    },
+  },
+  {
+    name: "count-only queries and intentional recent-detail limits remain explicit",
+    run: () => {
+      const source = readSource(routePath);
+
+      assert.equal(source.includes('select("id", { count: "exact", head: true })'), true);
+      assert.equal(source.includes(".slice(0, 50)"), true);
+      assert.equal(source.includes(".slice(0, 20)"), true);
+      assert.equal(source.includes(".limit(100)"), false);
+      assert.equal(source.includes(".limit(200)"), false);
+      assert.equal(source.includes(".limit(500)"), false);
+    },
+  },
+  {
+    name: "unbounded overview in filters use the chunk helper",
+    run: () => {
+      const source = readSource(routePath);
+      assert.equal(source.includes("loadAllOverviewRowsByChunks<OwnerMembershipRow>"), true);
+      assert.equal(source.includes("loadAllOverviewRowsByChunks<ProfileAccessRow>"), true);
+      assert.equal(source.includes("loadAllOverviewRowsByChunks<{ organization_id: string | null }>"), true);
+      assert.equal(source.includes(".in(\"organization_id\", organizationIds)"), false);
+      assert.equal(source.includes(".in(\"user_id\", ownerUserIds)"), false);
+      assert.equal(source.includes(".in(\"organization_id\", storeOrganizationIds)"), false);
+      assert.equal(OVERVIEW_IN_CHUNK_SIZE, 100);
+    },
+  },
+  {
+    name: "organizations stores and subscriptions remain fully paginated",
+    run: () => {
+      const source = readFileSync(routePath, "utf8");
+      const required = [
+        'loadAllOverviewRows<OrganizationRow>((from, to)',
+        'loadAllOverviewRows<SubscriptionRow>((from, to)',
+        'loadAllOverviewRows<StoreRow>((from, to)',
+        '.from("organizations")',
+        '.from("subscriptions")',
+        '.from("stores")',
+      ];
+
+      for (const token of required) {
+        assert.equal(source.includes(token), true, `missing pagination contract: ${token}`);
+      }
+    },
+  },
+  {
+    name: "overview paginated ordering has stable tie breakers",
+    run: () => {
+      const source = readSource(routePath);
+      const required = [
+        '.from("store_onboarding")',
+        '.order("store_id", { ascending: true })',
+        'loadStoreBooleanConfigRows(serviceSupabase, "store_responsibles")',
+        'loadStoreBooleanConfigRows(serviceSupabase, "store_schedule_settings")',
+        'loadStoreBooleanConfigRows(serviceSupabase, "store_discount_settings")',
+        'loadStoreAuthConfigRows(serviceSupabase)',
+        'if (table === "store_responsibles")',
+        '.order("id", { ascending: true })',
+        '.from("profiles")',
+        '.order("user_id", { ascending: true })',
+      ];
+
+      for (const token of required) {
+        assert.equal(source.includes(token), true, `missing deterministic ordering evidence: ${token}`);
+      }
+    },
+  },
 ];
 
 async function run() {
   for (const test of tests) {
-    test.run();
+    await test.run();
   }
 
   console.log(`zion-admin-overview-route: ${tests.length} tests passed`);

@@ -10,6 +10,11 @@ import {
   getAuthAdminUserById,
   maskEmail,
 } from "@/lib/server/zion-account-provisioning";
+import {
+  loadAllOverviewRowsByChunks,
+  loadAllOverviewRows,
+  OVERVIEW_LOAD_ERROR,
+} from "./overview-pagination";
 import { resolveCanonicalOwnerMembership } from "./store-account-access-resolution";
 
 type StoreRow = {
@@ -258,8 +263,6 @@ function getServiceSupabaseClient() {
     },
   });
 }
-
-const OVERVIEW_LOAD_ERROR = "Falha tecnica ao carregar dados complementares do overview.";
 
 async function getExactCount(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
@@ -986,39 +989,34 @@ async function loadStoreIdRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
   table: string,
 ): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
-  const { data, error } = await supabase.from(table).select("store_id");
-
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  return {
-    rows: (data ?? []) as StoreMetricRow[],
-    error: null,
-  };
+  return loadAllOverviewRows<StoreMetricRow>((from, to) =>
+    supabase
+      .from(table)
+      .select("store_id")
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
 }
 
 async function loadConversationStoreRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
-  const { data: conversations, error: conversationsError } = await supabase
-    .from("conversations")
-    .select("lead_id, organization_id");
-
-  if (conversationsError) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  const conversationRows = (conversations ?? []) as Array<{
+  const conversationsResult = await loadAllOverviewRows<{
     lead_id: string | null;
     organization_id: string | null;
-  }>;
+  }>((from, to) =>
+    supabase
+      .from("conversations")
+      .select("lead_id, organization_id")
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
+
+  if (conversationsResult.error) {
+    return { rows: [], error: conversationsResult.error };
+  }
+
+  const conversationRows = conversationsResult.rows;
 
   if (
     conversationRows.some(
@@ -1046,16 +1044,20 @@ async function loadConversationStoreRows(
     };
   }
 
-  const { data: leads, error: leadsError } = await supabase
-    .from("leads")
-    .select("id, organization_id, store_id")
-    .in("id", leadIds);
+  const leadsResult = await loadAllOverviewRows<{
+    id: string;
+    organization_id: string | null;
+    store_id: string | null;
+  }>((from, to) =>
+    supabase
+      .from("leads")
+      .select("id, organization_id, store_id")
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
 
-  if (leadsError) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
+  if (leadsResult.error) {
+    return { rows: [], error: leadsResult.error };
   }
 
   const leadsById = new Map<
@@ -1067,11 +1069,7 @@ async function loadConversationStoreRows(
     }
   >();
 
-  for (const lead of (leads ?? []) as Array<{
-    id: string;
-    organization_id: string | null;
-    store_id: string | null;
-  }>) {
+  for (const lead of leadsResult.rows) {
     leadsById.set(lead.id, lead);
   }
 
@@ -1107,235 +1105,152 @@ async function loadConversationStoreRows(
 async function loadActiveMessageRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from("messages")
-    .select("store_id")
-    .is("deleted_at", null);
-
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  return {
-    rows: (data ?? []) as StoreMetricRow[],
-    error: null,
-  };
+  return loadAllOverviewRows<StoreMetricRow>((from, to) =>
+    supabase
+      .from("messages")
+      .select("store_id")
+      .is("deleted_at", null)
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
 }
 
 async function loadSalesAiMessageRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from("messages")
-    .select("store_id")
-    .eq("sender", "ai")
-    .eq("direction", "outgoing")
-    .is("deleted_at", null);
-
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  return {
-    rows: (data ?? []) as StoreMetricRow[],
-    error: null,
-  };
+  return loadAllOverviewRows<StoreMetricRow>((from, to) =>
+    supabase
+      .from("messages")
+      .select("store_id")
+      .eq("sender", "ai")
+      .eq("direction", "outgoing")
+      .is("deleted_at", null)
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
 }
 
 async function loadStoreOnboardingConfigRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: StoreOnboardingConfigRow[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from("store_onboarding")
-    .select("store_id, organization_id, status, completed_at, updated_at");
-
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  return {
-    rows: (data ?? []) as StoreOnboardingConfigRow[],
-    error: null,
-  };
+  return loadAllOverviewRows<StoreOnboardingConfigRow>((from, to) =>
+    supabase
+      .from("store_onboarding")
+      .select("store_id, organization_id, status, completed_at, updated_at")
+      .order("store_id", { ascending: true })
+      .range(from, to),
+  );
 }
 
 async function loadStoreBooleanConfigRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
   table: string,
 ): Promise<{ rows: StoreBooleanConfigRow[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from(table)
-    .select("store_id, organization_id");
+  return loadAllOverviewRows<StoreBooleanConfigRow>((from, to) => {
+    const query = supabase
+      .from(table)
+      .select("store_id, organization_id")
+      .order("store_id", { ascending: true });
 
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
+    if (table === "store_responsibles") {
+      query.order("id", { ascending: true });
+    }
 
-  return {
-    rows: (data ?? []) as StoreBooleanConfigRow[],
-    error: null,
-  };
+    return query.range(from, to);
+  });
 }
 
 async function loadStoreAuthConfigRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: StoreAuthConfigRow[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from("store_auth_settings")
-    .select("store_id, organization_id, is_active");
-
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  return {
-    rows: (data ?? []) as StoreAuthConfigRow[],
-    error: null,
-  };
+  return loadAllOverviewRows<StoreAuthConfigRow>((from, to) =>
+    supabase
+      .from("store_auth_settings")
+      .select("store_id, organization_id, is_active")
+      .order("store_id", { ascending: true })
+      .range(from, to),
+  );
 }
 
 async function loadStoreCatalogConfigRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: StoreCatalogConfigRow[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from("store_catalog_items")
-    .select("store_id, organization_id, is_active");
-
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  return {
-    rows: (data ?? []) as StoreCatalogConfigRow[],
-    error: null,
-  };
+  return loadAllOverviewRows<StoreCatalogConfigRow>((from, to) =>
+    supabase
+      .from("store_catalog_items")
+      .select("store_id, organization_id, is_active")
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
 }
 
 async function loadQueueRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
   table: string,
 ): Promise<{ rows: QueueMetricRow[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from(table)
-    .select("store_id, processed_at, processing_error");
-
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  return {
-    rows: (data ?? []) as QueueMetricRow[],
-    error: null,
-  };
+  return loadAllOverviewRows<QueueMetricRow>((from, to) =>
+    supabase
+      .from(table)
+      .select("store_id, processed_at, processing_error")
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
 }
 
 async function loadAiRunQueueIssueRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: AiRunQueueIssueRow[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from("ai_run_queue")
-    .select(
-      "id, store_id, lead_id, conversation_id, queue_key, input, enqueued_at, processed_at, processing_error",
-    );
-
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  return {
-    rows: (data ?? []) as AiRunQueueIssueRow[],
-    error: null,
-  };
+  return loadAllOverviewRows<AiRunQueueIssueRow>((from, to) =>
+    supabase
+      .from("ai_run_queue")
+      .select(
+        "id, store_id, lead_id, conversation_id, queue_key, input, enqueued_at, processed_at, processing_error",
+      )
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
 }
 
 async function loadSalesActionQueueIssueRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: SalesActionQueueIssueRow[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from("ai_sales_action_queue")
-    .select(
-      "id, store_id, conversation_id, ai_run_id, next_action, action_key, payload, enqueued_at, processed_at, processing_error",
-    );
-
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  return {
-    rows: (data ?? []) as SalesActionQueueIssueRow[],
-    error: null,
-  };
+  return loadAllOverviewRows<SalesActionQueueIssueRow>((from, to) =>
+    supabase
+      .from("ai_sales_action_queue")
+      .select(
+        "id, store_id, conversation_id, ai_run_id, next_action, action_key, payload, enqueued_at, processed_at, processing_error",
+      )
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
 }
 
 async function loadWhatsappInboxIssueRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: WhatsappInboxIssueRow[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from("channel_whatsapp_inbox")
-    .select(
-      "id, store_id, provider, external_event_id, payload, received_at, processed_at, processing_error",
-    );
-
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  return {
-    rows: (data ?? []) as WhatsappInboxIssueRow[],
-    error: null,
-  };
+  return loadAllOverviewRows<WhatsappInboxIssueRow>((from, to) =>
+    supabase
+      .from("channel_whatsapp_inbox")
+      .select(
+        "id, store_id, provider, external_event_id, payload, received_at, processed_at, processing_error",
+      )
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
 }
 
 async function loadAiRunRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: AiRunRow[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from("ai_runs")
-    .select(
-      "id, store_id, conversation_id, lead_id, model, status, error, input, output, tokens_prompt, tokens_completion, cost_usd, created_at, finished_at",
-    );
-
-  if (error) {
-    return {
-      rows: [],
-      error: OVERVIEW_LOAD_ERROR,
-    };
-  }
-
-  return {
-    rows: (data ?? []) as AiRunRow[],
-    error: null,
-  };
+  return loadAllOverviewRows<AiRunRow>((from, to) =>
+    supabase
+      .from("ai_runs")
+      .select(
+        "id, store_id, conversation_id, lead_id, model, status, error, input, output, tokens_prompt, tokens_completion, cost_usd, created_at, finished_at",
+      )
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
 }
 
 async function loadStoreAccountAccessSnapshots(
@@ -1357,19 +1272,25 @@ async function loadStoreAccountAccessSnapshots(
     return new Map<string, StoreAccountAccessSnapshot>();
   }
 
-  const { data: memberships, error: membershipsError } = await supabase
-    .from("memberships")
-    .select("id, organization_id, user_id, role, is_active, created_at")
-    .in("organization_id", organizationIds)
-    .order("created_at", { ascending: true });
+  const membershipsResult = await loadAllOverviewRowsByChunks<OwnerMembershipRow>({
+    values: organizationIds,
+    loadPage: (values, from, to) =>
+      supabase
+        .from("memberships")
+        .select("id, organization_id, user_id, role, is_active, created_at")
+        .in("organization_id", values)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+  });
 
-  if (membershipsError) {
-    throw membershipsError;
+  if (membershipsResult.error) {
+    throw new Error(membershipsResult.error);
   }
 
   const membershipsByOrganizationId = new Map<string, OwnerMembershipRow[]>();
 
-  for (const membership of (memberships ?? []) as OwnerMembershipRow[]) {
+  for (const membership of membershipsResult.rows) {
     if (normalizeRole(membership.role) !== "owner") {
       continue;
     }
@@ -1388,21 +1309,26 @@ async function loadStoreAccountAccessSnapshots(
         .filter(Boolean),
     ),
   );
-  const { data: profiles, error: profilesError } =
+  const profilesResult =
     ownerUserIds.length > 0
-      ? await supabase
-          .from("profiles")
-          .select("user_id, is_blocked")
-          .in("user_id", ownerUserIds)
-      : { data: [], error: null };
+      ? await loadAllOverviewRowsByChunks<ProfileAccessRow>({
+          values: ownerUserIds,
+          loadPage: (values, from, to) => supabase
+            .from("profiles")
+            .select("user_id, is_blocked")
+            .in("user_id", values)
+            .order("user_id", { ascending: true })
+            .range(from, to),
+        })
+      : { rows: [], error: null };
 
-  if (profilesError) {
-    throw profilesError;
+  if (profilesResult.error) {
+    throw new Error(profilesResult.error);
   }
 
   const profilesByUserId = new Map<string, ProfileAccessRow>();
 
-  for (const profile of (profiles ?? []) as ProfileAccessRow[]) {
+  for (const profile of profilesResult.rows) {
     profilesByUserId.set(profile.user_id, profile);
   }
 
@@ -1569,21 +1495,30 @@ export async function GET() {
       getExactCount(serviceSupabase, "store_appointments"),
       getExactCount(serviceSupabase, "store_assistant_threads"),
       getExactCount(serviceSupabase, "store_assistant_messages"),
-      serviceSupabase
-        .from("organizations")
-        .select("id, name, created_at")
-        .order("created_at", { ascending: false })
-        .limit(100),
-      serviceSupabase
-        .from("subscriptions")
-        .select("id, organization_id, status, created_at")
-        .order("created_at", { ascending: false })
-        .limit(500),
-      serviceSupabase
-        .from("stores")
-        .select("id, organization_id, name, created_at")
-        .order("created_at", { ascending: false })
-        .limit(200),
+      loadAllOverviewRows<OrganizationRow>((from, to) =>
+        serviceSupabase
+          .from("organizations")
+          .select("id, name, created_at")
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: true })
+          .range(from, to),
+      ),
+      loadAllOverviewRows<SubscriptionRow>((from, to) =>
+        serviceSupabase
+          .from("subscriptions")
+          .select("id, organization_id, status, created_at")
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: true })
+          .range(from, to),
+      ),
+      loadAllOverviewRows<StoreRow>((from, to) =>
+        serviceSupabase
+          .from("stores")
+          .select("id, organization_id, name, created_at")
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: true })
+          .range(from, to),
+      ),
       loadStoreIdRows(serviceSupabase, "leads"),
       loadConversationStoreRows(serviceSupabase),
       loadActiveMessageRows(serviceSupabase),
@@ -1621,32 +1556,37 @@ export async function GET() {
       );
     }
 
-    const organizations = (organizationsResult.data ?? []) as OrganizationRow[];
-    const subscriptions = (subscriptionsResult.data ?? []) as SubscriptionRow[];
-    const stores = (storesResult.data ?? []) as StoreRow[];
+    const organizations = organizationsResult.rows;
+    const subscriptions = subscriptionsResult.rows;
+    const stores = storesResult.rows;
     const periodBoundaries = getPeriodBoundaries();
 
     const storeOrganizationIds = Array.from(
       new Set(stores.map((store) => store.organization_id).filter(Boolean)),
     );
 
-    const { data: membershipOrganizationRows, error: membershipOrganizationsError } =
+    const membershipOrganizationsResult =
       storeOrganizationIds.length > 0
-        ? await serviceSupabase
-            .from("memberships")
-            .select("organization_id")
-            .in("organization_id", storeOrganizationIds)
-        : { data: [], error: null };
+        ? await loadAllOverviewRowsByChunks<{ organization_id: string | null }>({
+            values: storeOrganizationIds,
+            loadPage: (values, from, to) =>
+              serviceSupabase
+                .from("memberships")
+                .select("organization_id")
+                .in("organization_id", values)
+                .order("organization_id", { ascending: true })
+                .order("id", { ascending: true })
+                .range(from, to),
+          })
+        : { rows: [], error: null };
 
-    if (membershipOrganizationsError) {
-      throw membershipOrganizationsError;
+    if (membershipOrganizationsResult.error) {
+      throw new Error(membershipOrganizationsResult.error);
     }
 
     const organizationIdsWithMemberships = new Set(
       (
-        (membershipOrganizationRows ?? []) as Array<{
-          organization_id: string | null;
-        }>
+        membershipOrganizationsResult.rows
       )
         .map((row) => String(row.organization_id || "").trim())
         .filter(Boolean),
