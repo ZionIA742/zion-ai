@@ -13,12 +13,15 @@ export type StoreOperationalHealthIssueCode =
   | "whatsapp_inbound_error"
   | "whatsapp_outbound_failed"
   | "whatsapp_outbound_uncertain"
+  | "whatsapp_outbound_stale"
   | "ai_latest_run_failed"
   | "ai_run_queue_stale"
   | "assistant_task_failed"
   | "assistant_task_stale_processing"
+  | "assistant_task_stale_pending"
   | "responsible_notification_failed"
   | "responsible_notification_uncertain"
+  | "responsible_notification_stale_processing"
   | "internal_notification_stale"
   | "appointment_overdue"
   | "post_appointment_followup_overdue";
@@ -44,6 +47,7 @@ export type StoreOperationalHealthInput = {
     inboundErrors: MetricCount;
     failedOutboundMessages: MetricCount;
     uncertainOutboundMessages: MetricCount;
+    staleOutboundMessages: MetricCount;
   };
   ai: {
     latestRunState: AiLatestRunState;
@@ -52,8 +56,10 @@ export type StoreOperationalHealthInput = {
   assistant: {
     failedTasks: MetricCount;
     staleProcessingTasks: MetricCount;
+    stalePendingTasks: MetricCount;
     failedResponsibleNotifications: MetricCount;
     uncertainResponsibleNotifications: MetricCount;
+    staleResponsibleNotifications: MetricCount;
     staleInternalNotifications: MetricCount;
   };
   operations: {
@@ -190,6 +196,14 @@ export function resolveStoreOperationalHealth(
     scope: "whatsapp",
   });
 
+  pushCountIssue({
+    issues: whatsappIssues,
+    count: input.whatsapp.staleOutboundMessages,
+    code: "whatsapp_outbound_stale",
+    severity: "error",
+    scope: "whatsapp",
+  });
+
   if (input.ai.latestRunState === "failed") {
     aiIssues.push({
       code: "ai_latest_run_failed",
@@ -225,6 +239,14 @@ export function resolveStoreOperationalHealth(
 
   pushCountIssue({
     issues: assistantIssues,
+    count: input.assistant.stalePendingTasks,
+    code: "assistant_task_stale_pending",
+    severity: "warning",
+    scope: "assistant",
+  });
+
+  pushCountIssue({
+    issues: assistantIssues,
     count: input.assistant.failedResponsibleNotifications,
     code: "responsible_notification_failed",
     severity: "error",
@@ -235,6 +257,14 @@ export function resolveStoreOperationalHealth(
     issues: assistantIssues,
     count: input.assistant.uncertainResponsibleNotifications,
     code: "responsible_notification_uncertain",
+    severity: "error",
+    scope: "assistant",
+  });
+
+  pushCountIssue({
+    issues: assistantIssues,
+    count: input.assistant.staleResponsibleNotifications,
+    code: "responsible_notification_stale_processing",
     severity: "error",
     scope: "assistant",
   });
@@ -268,6 +298,7 @@ export function resolveStoreOperationalHealth(
     input.whatsapp.inboundErrors,
     input.whatsapp.failedOutboundMessages,
     input.whatsapp.uncertainOutboundMessages,
+    input.whatsapp.staleOutboundMessages,
   ].some(isUnavailableCount);
 
   const aiLatestRunStateKnown = isKnownAiLatestRunState(
@@ -282,8 +313,10 @@ export function resolveStoreOperationalHealth(
   const assistantUnavailable = [
     input.assistant.failedTasks,
     input.assistant.staleProcessingTasks,
+    input.assistant.stalePendingTasks,
     input.assistant.failedResponsibleNotifications,
     input.assistant.uncertainResponsibleNotifications,
+    input.assistant.staleResponsibleNotifications,
     input.assistant.staleInternalNotifications,
   ].some(isUnavailableCount);
 
