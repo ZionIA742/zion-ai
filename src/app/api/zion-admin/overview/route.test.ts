@@ -134,6 +134,57 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "store payload includes canonical integrity without removing legacy orphan shape",
+    run: () => {
+      const source = readSource(routePath);
+
+      for (const token of [
+        "resolveStoreIntegrity(",
+        "integrityByOrganizationId",
+        "integrity:",
+        "orphanStoresCount:",
+        "orphanStores:",
+      ]) {
+        assert.equal(source.includes(token), true, `missing integrity contract token: ${token}`);
+      }
+    },
+  },
+  {
+    name: "integrity is resolved from all stores while account access remains operational-only",
+    run: () => {
+      const source = readSource(routePath);
+
+      const allStoresLoad = source.indexOf("loadStoreOwnerData(serviceSupabase, stores)");
+      const accountAccessLoad = source.indexOf("loadStoreAccountAccessSnapshots(");
+      const operationalStoresReference = source.indexOf("operationalStores,");
+      const orphanSummaryIntegrity = source.indexOf("const orphanStoreSummaries = orphanStores.map");
+      const orphanIntegrityField = source.indexOf("integrityByOrganizationId.get(store.organization_id)");
+
+      assert.notEqual(allStoresLoad, -1);
+      assert.notEqual(accountAccessLoad, -1);
+      assert.notEqual(operationalStoresReference, -1);
+      assert.notEqual(orphanSummaryIntegrity, -1);
+      assert.equal(orphanIntegrityField > orphanSummaryIntegrity, true);
+      assert.equal(source.includes("stores: storesList"), true);
+    },
+  },
+  {
+    name: "single membership load preserves any-membership orphan semantics and owner filtering",
+    run: () => {
+      const source = readSource(routePath);
+      const membershipQueries = source.match(/\.from\("memberships"\)/g) ?? [];
+      const ownerDataSource = source.slice(
+        source.indexOf("async function loadStoreOwnerData"),
+        source.indexOf("async function loadStoreAccountAccessSnapshots"),
+      );
+
+      assert.equal(membershipQueries.length, 1);
+      assert.equal(ownerDataSource.includes("organizationIdsWithMemberships.add(organizationId)"), true);
+      assert.equal(ownerDataSource.includes('normalizeRole(membership.role) !== "owner"'), true);
+      assert.equal(source.includes("ownerData.organizationIdsWithMemberships"), true);
+    },
+  },
+  {
     name: "legacy invalid-account snapshots mark first-access history as unavailable",
     run: () => {
       const source = readSource(routePath);
@@ -286,7 +337,6 @@ const tests: TestCase[] = [
       const source = readSource(routePath);
       assert.equal(source.includes("loadAllOverviewRowsByChunks<OwnerMembershipRow>"), true);
       assert.equal(source.includes("loadAllOverviewRowsByChunks<ProfileAccessRow>"), true);
-      assert.equal(source.includes("loadAllOverviewRowsByChunks<{ organization_id: string | null }>"), true);
       assert.equal(source.includes(".in(\"organization_id\", organizationIds)"), false);
       assert.equal(source.includes(".in(\"user_id\", ownerUserIds)"), false);
       assert.equal(source.includes(".in(\"organization_id\", storeOrganizationIds)"), false);

@@ -16,6 +16,10 @@ import {
   OVERVIEW_LOAD_ERROR,
 } from "./overview-pagination";
 import { resolveCanonicalOwnerMembership } from "./store-account-access-resolution";
+import {
+  resolveStoreIntegrity,
+  type StoreIntegrity,
+} from "./store-integrity-resolution";
 
 type StoreRow = {
   id: string;
@@ -165,6 +169,12 @@ type OwnerMembershipRow = {
 type ProfileAccessRow = {
   user_id: string;
   is_blocked: boolean | null;
+};
+
+type StoreOwnerData = {
+  membershipsByOrganizationId: Map<string, OwnerMembershipRow[]>;
+  profilesByUserId: Map<string, ProfileAccessRow>;
+  organizationIdsWithMemberships: Set<string>;
 };
 
 type StoreAccountAccessSnapshot = {
@@ -1253,23 +1263,20 @@ async function loadAiRunRows(
   );
 }
 
-async function loadStoreAccountAccessSnapshots(
+async function loadStoreOwnerData(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
   stores: StoreRow[],
-) {
+): Promise<StoreOwnerData> {
   const organizationIds = Array.from(
     new Set(stores.map((store) => store.organization_id).filter(Boolean)),
   );
-  const storeByOrganizationId = new Map<string, StoreRow[]>();
-
-  for (const store of stores) {
-    const current = storeByOrganizationId.get(store.organization_id) ?? [];
-    current.push(store);
-    storeByOrganizationId.set(store.organization_id, current);
-  }
 
   if (organizationIds.length === 0) {
-    return new Map<string, StoreAccountAccessSnapshot>();
+    return {
+      membershipsByOrganizationId: new Map<string, OwnerMembershipRow[]>(),
+      profilesByUserId: new Map<string, ProfileAccessRow>(),
+      organizationIdsWithMemberships: new Set<string>(),
+    };
   }
 
   const membershipsResult = await loadAllOverviewRowsByChunks<OwnerMembershipRow>({
@@ -1289,8 +1296,14 @@ async function loadStoreAccountAccessSnapshots(
   }
 
   const membershipsByOrganizationId = new Map<string, OwnerMembershipRow[]>();
+  const organizationIdsWithMemberships = new Set<string>();
 
   for (const membership of membershipsResult.rows) {
+    const organizationId = String(membership.organization_id || "").trim();
+    if (organizationId) {
+      organizationIdsWithMemberships.add(organizationId);
+    }
+
     if (normalizeRole(membership.role) !== "owner") {
       continue;
     }
@@ -1300,7 +1313,6 @@ async function loadStoreAccountAccessSnapshots(
     membershipsByOrganizationId.set(membership.organization_id, current);
   }
 
-  const authUsersById = new Map<string, Awaited<ReturnType<typeof getAuthAdminUserById>>>();
   const ownerUserIds = Array.from(
     new Set(
       Array.from(membershipsByOrganizationId.values())
@@ -1332,6 +1344,41 @@ async function loadStoreAccountAccessSnapshots(
     profilesByUserId.set(profile.user_id, profile);
   }
 
+  return {
+    membershipsByOrganizationId,
+    profilesByUserId,
+    organizationIdsWithMemberships,
+  };
+}
+
+async function loadStoreAccountAccessSnapshots(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+  stores: StoreRow[],
+  ownerData: StoreOwnerData,
+) {
+  const storeByOrganizationId = new Map<string, StoreRow[]>();
+
+  for (const store of stores) {
+    const current = storeByOrganizationId.get(store.organization_id) ?? [];
+    current.push(store);
+    storeByOrganizationId.set(store.organization_id, current);
+  }
+
+  const authUsersById = new Map<string, Awaited<ReturnType<typeof getAuthAdminUserById>>>();
+  const ownerUserIds = Array.from(
+    new Set(
+      Array.from(storeByOrganizationId.keys())
+        .flatMap(
+          (organizationId) =>
+            ownerData.membershipsByOrganizationId.get(organizationId) ?? [],
+        )
+        .map((membership) => membership.user_id)
+        .filter(Boolean),
+    ),
+  );
+
+  const profilesByUserId = ownerData.profilesByUserId;
+
   await Promise.all(
     ownerUserIds.map(async (userId) => {
       const authUser = await getAuthAdminUserById(supabase, userId);
@@ -1342,7 +1389,8 @@ async function loadStoreAccountAccessSnapshots(
   const snapshots = new Map<string, StoreAccountAccessSnapshot>();
 
   for (const [organizationId, orgStores] of storeByOrganizationId.entries()) {
-    const ownerMemberships = membershipsByOrganizationId.get(organizationId) ?? [];
+    const ownerMemberships =
+      ownerData.membershipsByOrganizationId.get(organizationId) ?? [];
 
     const canonicalOwner = resolveCanonicalOwnerMembership({
       ownerMemberships,
@@ -1442,6 +1490,57 @@ async function loadStoreAccountAccessSnapshots(
   }
 
   return snapshots;
+}
+
+function buildStoreIntegrityByOrganizationId(args: {
+  stores: StoreRow[];
+  organizations: OrganizationRow[];
+  ownerData: StoreOwnerData;
+  subscriptions: SubscriptionRow[] | null;
+}) {
+  const organizationIdsWithRows = new Set(
+    args.organizations.map((organization) => organization.id),
+  );
+  const subscriptionsByOrganizationId = new Map<string, SubscriptionRow[]>();
+
+  for (const subscription of args.subscriptions ?? []) {
+    const organizationId = String(subscription.organization_id || "").trim();
+    if (!organizationId) continue;
+
+    const current = subscriptionsByOrganizationId.get(organizationId) ?? [];
+    current.push(subscription);
+    subscriptionsByOrganizationId.set(organizationId, current);
+  }
+
+  const integrityByOrganizationId = new Map<string, StoreIntegrity>();
+  const organizationIds = new Set(
+    args.stores.map((store) => store.organization_id).filter(Boolean),
+  );
+
+  for (const organizationId of organizationIds) {
+    const ownerMemberships =
+      args.ownerData.membershipsByOrganizationId.get(organizationId) ?? [];
+    const ownerProfiles = ownerMemberships
+      .map((membership) => args.ownerData.profilesByUserId.get(membership.user_id))
+      .filter((profile): profile is ProfileAccessRow => Boolean(profile))
+      .map((profile) => ({ user_id: profile.user_id }));
+
+    integrityByOrganizationId.set(
+      organizationId,
+      resolveStoreIntegrity({
+        organizationState: organizationIdsWithRows.has(organizationId)
+          ? "present"
+          : "missing",
+        ownerMemberships,
+        ownerProfiles,
+        subscriptions: args.subscriptions
+          ? subscriptionsByOrganizationId.get(organizationId) ?? []
+          : null,
+      }),
+    );
+  }
+
+  return integrityByOrganizationId;
 }
 
 export async function GET() {
@@ -1561,36 +1660,8 @@ export async function GET() {
     const stores = storesResult.rows;
     const periodBoundaries = getPeriodBoundaries();
 
-    const storeOrganizationIds = Array.from(
-      new Set(stores.map((store) => store.organization_id).filter(Boolean)),
-    );
-
-    const membershipOrganizationsResult =
-      storeOrganizationIds.length > 0
-        ? await loadAllOverviewRowsByChunks<{ organization_id: string | null }>({
-            values: storeOrganizationIds,
-            loadPage: (values, from, to) =>
-              serviceSupabase
-                .from("memberships")
-                .select("organization_id")
-                .in("organization_id", values)
-                .order("organization_id", { ascending: true })
-                .order("id", { ascending: true })
-                .range(from, to),
-          })
-        : { rows: [], error: null };
-
-    if (membershipOrganizationsResult.error) {
-      throw new Error(membershipOrganizationsResult.error);
-    }
-
-    const organizationIdsWithMemberships = new Set(
-      (
-        membershipOrganizationsResult.rows
-      )
-        .map((row) => String(row.organization_id || "").trim())
-        .filter(Boolean),
-    );
+    const ownerData = await loadStoreOwnerData(serviceSupabase, stores);
+    const organizationIdsWithMemberships = ownerData.organizationIdsWithMemberships;
 
     const operationalStores = stores.filter((store) =>
       organizationIdsWithMemberships.has(store.organization_id),
@@ -1607,7 +1678,14 @@ export async function GET() {
     const accountAccessByStoreId = await loadStoreAccountAccessSnapshots(
       serviceSupabase,
       operationalStores,
+      ownerData,
     );
+    const integrityByOrganizationId = buildStoreIntegrityByOrganizationId({
+      stores,
+      organizations,
+      ownerData,
+      subscriptions: subscriptionsError == null ? subscriptions : null,
+    });
 
     const organizationMap = new Map<string, OrganizationRow>();
 
@@ -1806,6 +1884,14 @@ export async function GET() {
         organizationId: store.organization_id,
         organizationName: organization?.name ?? "Organizacao nao encontrada",
         createdAt: store.created_at,
+        integrity:
+          integrityByOrganizationId.get(store.organization_id) ??
+          resolveStoreIntegrity({
+            organizationState: organization ? "present" : "unknown",
+            ownerMemberships: null,
+            ownerProfiles: null,
+            subscriptions: null,
+          }),
       };
     });
 
@@ -1895,6 +1981,14 @@ export async function GET() {
             firstAccessHistoryStatus: "available",
             cooldownRemainingMs: 0,
           },
+        integrity:
+          integrityByOrganizationId.get(store.organization_id) ??
+          resolveStoreIntegrity({
+            organizationState: organization ? "present" : "unknown",
+            ownerMemberships: null,
+            ownerProfiles: null,
+            subscriptions: null,
+          }),
 
         configurationIssues: metrics.configurationIssues,
         pendingAiRuns: metrics.pendingAiRuns,
