@@ -150,6 +150,19 @@ export function formatStorePaymentCurrencyInput(value: string) {
   return value.replace(/[^\d]/g, "");
 }
 
+export function formatStorePaymentCurrencyDecimalInput(value: string) {
+  const cleaned = value.replace(/[^\d,]/g, "");
+  const [integerPart, ...fractionParts] = cleaned.split(",");
+  const fraction = fractionParts.join("").slice(0, 2);
+  return fractionParts.length > 0 ? `${integerPart},${fraction}` : integerPart;
+}
+
+export function parseStorePaymentCurrencyDecimalInputToCents(value: string) {
+  const parsed = Number(cleanText(value).replace(",", "."));
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.round(parsed * 100);
+}
+
 export function formatStorePaymentPercentInput(value: string) {
   return value.replace(/[^\d.,]/g, "");
 }

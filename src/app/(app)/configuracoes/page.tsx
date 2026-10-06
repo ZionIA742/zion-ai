@@ -15,12 +15,14 @@ import {
   createStorePaymentPresentationFromSources,
   createStorePaymentSettingsInputFromSources,
   formatStorePaymentCurrencyInput,
+  formatStorePaymentCurrencyDecimalInput,
   formatStorePaymentInstallmentsInput,
   formatStorePaymentPercentInput,
   getStorePaymentLegacyConditionTagLabel,
   normalizeStorePaymentSettingsInput,
   type StorePaymentLegacyConditionTag,
   type StorePaymentSettingsRow,
+  STORE_PAYMENT_METHOD_VALUES,
 } from "@/lib/store-payment-settings";
 import {
   normalizeMonthlySalesGoalInput,
@@ -38,6 +40,15 @@ import {
   type StoreDiscountSettingsRow,
   type StoreHighValueDiscountSettingsRow,
 } from "@/lib/store-discount-settings";
+import {
+  createDefaultStoreDiscountCounterpartPolicyInput,
+  createStoreDiscountCounterpartPolicyInputFromSources,
+  normalizeStoreDiscountCounterpartPolicyInput,
+  normalizeStoreDiscountCounterpartPolicyRow,
+  validateHigherDownPaymentAgainstPaymentSettings,
+  type StoreDiscountCounterpartPolicyInput,
+  type StoreDiscountCounterpartPolicyRow,
+} from "@/lib/store-discount-counterpart-policy";
 import {
   createStoreChannelSettingsInputFromSources,
   normalizeStoreChannelSettingsInput,
@@ -1926,6 +1937,8 @@ const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
   { value: "transferencia", label: "Transferência" },
   { value: "financiamento", label: "Financiamento" },
 ];
+
+const DISCOUNT_COUNTERPART_PAYMENT_OPTIONS: Option[] = PAYMENT_METHOD_MAIN_OPTIONS;
 
 const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
   { value: "so_apos_entender_objetivo", label: "Só depois de entender o que o cliente quer" },
@@ -4285,6 +4298,8 @@ export default function ConfiguracoesPage() {
   const [discountDraft, setDiscountDraft] = useState<DiscountDraftState>(
     createDiscountDraftFromAnswers({}, null, null),
   );
+  const [discountCounterpartPolicy, setDiscountCounterpartPolicy] = useState<StoreDiscountCounterpartPolicyRow | null>(null);
+  const [discountCounterpartDraft, setDiscountCounterpartDraft] = useState<StoreDiscountCounterpartPolicyInput>(createDefaultStoreDiscountCounterpartPolicyInput());
   const [isChannelsEditing, setIsChannelsEditing] = useState(false);
   const [showChannelsAdvanced, setShowChannelsAdvanced] = useState(false);
   const [channelDraft, setChannelDraft] = useState<ChannelDraftState>(
@@ -4948,6 +4963,7 @@ export default function ConfiguracoesPage() {
         commercialAiSettingsResult,
         discountSettingsResult,
         highValueDiscountSettingsResult,
+        discountCounterpartPolicyResult,
         catalogSettingsResult,
         settingsExperiencePoliciesResult,
         primaryResponsibleResponse,
@@ -5034,6 +5050,12 @@ export default function ConfiguracoesPage() {
           .eq("store_id", activeStoreId)
           .maybeSingle(),
         supabase
+          .rpc("read_store_discount_counterpart_policy_scoped", {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+          })
+          .maybeSingle(),
+        supabase
           .rpc("read_store_catalog_settings_multi_scoped", {
             p_organization_id: organizationId,
             p_store_id: activeStoreId,
@@ -5069,6 +5091,7 @@ export default function ConfiguracoesPage() {
       if (commercialAiSettingsResult.error) throw commercialAiSettingsResult.error;
       if (discountSettingsResult.error) throw discountSettingsResult.error;
       if (highValueDiscountSettingsResult.error) throw highValueDiscountSettingsResult.error;
+      if (discountCounterpartPolicyResult.error) throw discountCounterpartPolicyResult.error;
       if (catalogSettingsResult.error) throw catalogSettingsResult.error;
       if (settingsExperiencePoliciesResult.error) throw settingsExperiencePoliciesResult.error;
 
@@ -5309,6 +5332,12 @@ export default function ConfiguracoesPage() {
       setDiscountSettings((discountSettingsResult.data ?? null) as StoreDiscountSettingsRow | null);
       setHighValueDiscountSettings(
         (highValueDiscountSettingsResult.data ?? null) as StoreHighValueDiscountSettingsRow | null,
+      );
+      const nextDiscountCounterpartPolicy =
+        (discountCounterpartPolicyResult.data ?? null) as StoreDiscountCounterpartPolicyRow | null;
+      setDiscountCounterpartPolicy(nextDiscountCounterpartPolicy);
+      setDiscountCounterpartDraft(
+        createStoreDiscountCounterpartPolicyInputFromSources(nextDiscountCounterpartPolicy),
       );
       setSettingsExperiencePolicies(
         (settingsExperiencePoliciesResult.data ?? null) as StoreSettingsExperiencePoliciesRow | null,
@@ -6877,38 +6906,77 @@ export default function ConfiguracoesPage() {
     highValueDiscountSettings,
     savedCommercialExperience.high_value_requires_human,
   ]);
+  const counterpartDownPaymentBaseline = useMemo(() => {
+    const mode = cleanText(paymentSettings?.down_payment_mode);
+    const valueType = cleanText(paymentSettings?.down_payment_value_type);
+    if (mode === "none") return { kind: "none" as const };
+    if (valueType === "case_by_case") return { kind: "invalid" as const };
+    if (["optional", "required"].includes(mode) && valueType === "percent") {
+      const value = Number(paymentSettings?.down_payment_percent);
+      if (Number.isFinite(value) && value > 0 && value <= 100) {
+        return { kind: "percent" as const, value };
+      }
+    }
+    if (["optional", "required"].includes(mode) && valueType === "fixed") {
+      const value = Number(paymentSettings?.down_payment_amount_cents);
+      if (Number.isInteger(value) && value > 0) {
+        return { kind: "fixed" as const, value };
+      }
+    }
+    return { kind: "invalid" as const };
+  }, [paymentSettings]);
+
   const discountItems = useMemo(() => {
     const autonomyLabel =
       discountPresentation.autonomyMode === "within_policy_autonomous"
-        ? "Pode confirmar descontos dentro do limite"
+        ? "Pode negociar dentro do limite"
         : discountPresentation.autonomyMode === "default_step_autonomous"
           ? "Pode negociar aos poucos dentro do limite"
           : "Sempre precisa de aprovação humana";
+    const highValueLabel = discountPresentation.highValueEnabled
+      ? `${discountPresentation.highValueDiscountPercent == null ? "Não definido" : `${discountPresentation.highValueDiscountPercent}%`} • ${savedCommercialExperience.high_value_requires_human === "Sim" ? "exige aprovação" : savedCommercialExperience.high_value_requires_human === "Não" ? "sem aprovação adicional" : "aprovação não definida"}`
+      : "Não se aplica";
+    const counterpartParts: string[] = [];
+    const normalizedCounterpart = discountCounterpartPolicy
+      ? normalizeStoreDiscountCounterpartPolicyRow(discountCounterpartPolicy)
+      : null;
+    const higherDownPaymentValidation = normalizedCounterpart
+      ? validateHigherDownPaymentAgainstPaymentSettings({
+          policy: normalizedCounterpart,
+          paymentSettings,
+        })
+      : { ok: true as const };
+    if (discountCounterpartPolicy?.enabled !== true) {
+      counterpartParts.push("Desativadas");
+    } else {
+      const methods = (discountCounterpartPolicy.allowed_payment_methods ?? [])
+        .map((method) => DISCOUNT_COUNTERPART_PAYMENT_OPTIONS.find((option) => option.value === method)?.label ?? null)
+        .filter((label): label is string => Boolean(label));
+      counterpartParts.push(...methods);
+      if (discountCounterpartPolicy.higher_down_payment_enabled && higherDownPaymentValidation.ok) {
+        counterpartParts.push(
+          discountCounterpartPolicy.higher_down_payment_minimum_type === "percent"
+            ? `entrada ≥ ${discountCounterpartPolicy.higher_down_payment_minimum_percent}%`
+            : discountCounterpartPolicy.higher_down_payment_minimum_amount_cents != null
+              ? `entrada ≥ R$ ${(discountCounterpartPolicy.higher_down_payment_minimum_amount_cents / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`
+              : "entrada maior",
+        );
+      } else if (discountCounterpartPolicy.higher_down_payment_enabled) {
+        counterpartParts.push("entrada precisa ser ajustada");
+      }
+      if (discountCounterpartPolicy.fewer_installments_enabled && discountCounterpartPolicy.fewer_installments_max_count != null) {
+        counterpartParts.push(`até ${discountCounterpartPolicy.fewer_installments_max_count}x`);
+      }
+      if (counterpartParts.length === 0) counterpartParts.push("Nenhuma configurada");
+    }
     return buildBulletRows([
-      {
-        label: "Desconto inicial para negociar",
-        value: discountPresentation.defaultDiscountPercent == null ? "Não definido" : `${discountPresentation.defaultDiscountPercent}%`,
-      },
-      {
-        label: "Maior desconto da negociação normal",
-        value: discountPresentation.maxDiscountPercent == null ? "Não definido" : `${discountPresentation.maxDiscountPercent}%`,
-      },
-      { label: "A IA pode confirmar sozinha", value: autonomyLabel },
-      { label: "Pode consultar acima do limite", value: discountPresentation.allowAskAboveMaxDiscount ? "Sim" : "Não" },
-      {
-        label: "Regra para vendas de valor alto",
-        value: discountPresentation.highValueEnabled
-          ? `A partir do valor configurado${discountPresentation.highValueDiscountPercent == null ? "" : ` • desconto ${discountPresentation.highValueDiscountPercent}%`}`
-          : "Não usa regra diferente",
-      },
-      {
-        label: "Aprovação em venda de valor alto",
-        value: discountPresentation.highValueEnabled
-          ? savedCommercialExperience.high_value_requires_human || "Não definido"
-          : "Não se aplica",
-      },
+      { label: "Desconto inicial", value: discountPresentation.defaultDiscountPercent == null ? "Não definido" : `${discountPresentation.defaultDiscountPercent}%` },
+      { label: "Limite normal", value: discountPresentation.maxDiscountPercent == null ? "Não definido" : `${discountPresentation.maxDiscountPercent}%` },
+      { label: "Autonomia da IA", value: autonomyLabel },
+      { label: "Venda de valor alto", value: highValueLabel },
+      { label: "Contrapartidas", value: counterpartParts.join(" • ") },
     ]);
-  }, [discountPresentation, savedCommercialExperience.high_value_requires_human]);
+  }, [discountCounterpartPolicy, discountPresentation, paymentSettings, savedCommercialExperience.high_value_requires_human]);
 
   const channelsOverviewMetrics = useMemo(() => {
     const integrationStatus =
@@ -10837,8 +10905,67 @@ export default function ConfiguracoesPage() {
         highValueDiscountSettings,
       ),
     );
+    setDiscountCounterpartDraft(
+      createStoreDiscountCounterpartPolicyInputFromSources(
+        discountCounterpartPolicy,
+      ),
+    );
     setIsDiscountEditing(false);
-  }, [answers, discountSettings, highValueDiscountSettings]);
+  }, [answers, discountSettings, highValueDiscountSettings, discountCounterpartPolicy]);
+
+  const persistDiscountCounterpartPolicy = useCallback(async () => {
+    if (!organizationId || !activeStoreId) return;
+    const normalized = normalizeStoreDiscountCounterpartPolicyInput(discountCounterpartDraft);
+    if (!normalized.ok) {
+      setErrorText(normalized.error);
+      setSuccessText(null);
+      throw new Error(normalized.error);
+    }
+    const higherDownPaymentValidation = validateHigherDownPaymentAgainstPaymentSettings({
+      policy: normalized.value,
+      paymentSettings,
+    });
+    if (!higherDownPaymentValidation.ok) {
+      setErrorText(higherDownPaymentValidation.error);
+      setSuccessText(null);
+      throw new Error(higherDownPaymentValidation.error);
+    }
+    if (
+      normalized.value.fewerInstallmentsEnabled &&
+      paymentSettings?.installments_enabled === true &&
+      paymentSettings.max_installments != null &&
+      (normalized.value.fewerInstallmentsMaxCount ?? 0) >= paymentSettings.max_installments
+    ) {
+      setErrorText("A contrapartida deve ter menos parcelas que o limite normal da loja.");
+      setSuccessText(null);
+      throw new Error("A contrapartida deve ter menos parcelas que o limite normal da loja.");
+    }
+    try {
+      const { data, error } = await supabase.rpc("upsert_store_discount_counterpart_policy_scoped", {
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_enabled: normalized.value.enabled,
+        p_allowed_payment_methods: normalized.value.allowedPaymentMethods,
+        p_higher_down_payment_enabled: normalized.value.higherDownPaymentEnabled,
+        p_higher_down_payment_minimum_type: normalized.value.higherDownPaymentMinimumType,
+        p_higher_down_payment_minimum_percent: normalized.value.higherDownPaymentMinimumPercent,
+        p_higher_down_payment_minimum_amount_cents: normalized.value.higherDownPaymentMinimumAmountCents,
+        p_fewer_installments_enabled: normalized.value.fewerInstallmentsEnabled,
+        p_fewer_installments_max_count: normalized.value.fewerInstallmentsMaxCount,
+      });
+      if (error) throw error;
+      const saved = (Array.isArray(data) ? data[0] : data) as StoreDiscountCounterpartPolicyRow | null;
+      setDiscountCounterpartPolicy(saved);
+      setDiscountCounterpartDraft(
+        createStoreDiscountCounterpartPolicyInputFromSources(saved),
+      );
+      return saved;
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Não foi possível salvar as contrapartidas.");
+      setSuccessText(null);
+      throw error;
+    }
+  }, [activeStoreId, discountCounterpartDraft, organizationId, paymentSettings]);
 
   const handleDiscountEditSave = useCallback(async () => {
     if (!organizationId || !activeStoreId) return;
@@ -10966,6 +11093,8 @@ export default function ConfiguracoesPage() {
           "O writer canônico não retornou as configurações de desconto salvas.",
         );
       }
+
+      await persistDiscountCounterpartPolicy();
 
       let refreshedExperiencePolicies =
         settingsExperiencePolicies;
@@ -11096,6 +11225,7 @@ export default function ConfiguracoesPage() {
     commercialExperienceDraft,
     discountDraft,
     organizationId,
+    persistDiscountCounterpartPolicy,
     settingsExperiencePolicies,
     strategySettings,
     strategySettingsInput,
@@ -14074,6 +14204,10 @@ export default function ConfiguracoesPage() {
             actions={isDiscountEditing ? <><button type="button" onClick={() => void handleDiscountEditSave()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { handleDiscountEditCancel(); setCommercialExperienceDraft(savedCommercialExperience); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setCommercialExperienceDraft(savedCommercialExperience); setIsDiscountEditing(true); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
             {isDiscountEditing ? <div className="space-y-5"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA está autorizada a negociar dando algum tipo de desconto?</div><ChoiceButtonGroup value={(Number.parseFloat(String(discountDraft.max_discount_percent || "0").replace(",", ".")) > 0 || Number.parseFloat(String(discountDraft.default_discount_percent || "0").replace(",", ".")) > 0) ? "Sim" : "Não"} onChange={handleDiscountNegotiationEnabledChange} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{(Number.parseFloat(String(discountDraft.max_discount_percent || "0").replace(",", ".")) > 0 || Number.parseFloat(String(discountDraft.default_discount_percent || "0").replace(",", ".")) > 0) ? <div className="space-y-5"><div className="grid items-start gap-4 md:grid-cols-2"><label className="flex h-full flex-col"><span className="min-h-8 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual desconto inicial a IA pode oferecer? (%)</span><input value={discountDraft.default_discount_percent} onChange={(e) => handleDiscountDraftChange("default_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /><span className="mt-1.5 block text-xs leading-5 text-gray-500">A IA só usa esse percentual quando houver motivo real para negociar; ele não é oferecido automaticamente.</span></label><label className="flex h-full flex-col"><span className="min-h-8 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual é o limite máximo de desconto? (%)</span><input value={discountDraft.max_discount_percent} onChange={(e) => handleDiscountDraftChange("max_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /><span className="mt-1.5 block text-xs leading-5 text-gray-500">Acima deste limite, a IA não confirma um desconto usando a regra normal da loja.</span></label></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dentro desse limite, a IA pode confirmar descontos sozinha?</div><ChoiceButtonGroup value={discountDraft.discount_autonomy_mode} onChange={(value) => handleDiscountDraftChange("discount_autonomy_mode", value)} options={[{ value: "within_policy_autonomous", label: "Sim, dentro do limite permitido" }, { value: "default_step_autonomous", label: "Sim, mas deve negociar aos poucos" }, { value: "approval_required", label: "Não. Sempre precisa de aprovação" }]} /></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se o cliente pedir mais desconto do que o limite, a IA pode consultar uma pessoa da loja?</div><ChoiceButtonGroup value={discountDraft.allow_ask_above_max_discount ? "Sim" : "Não"} onChange={(value) => handleDiscountDraftChange("allow_ask_above_max_discount", value === "Sim")} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /><p className="mt-2 text-xs leading-5 text-gray-500">Se marcar “Não”, a IA informa que não pode confirmar um desconto acima do limite e continua a venda normalmente dentro das condições permitidas. Isso não encerra a negociação.</p></div><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Vendas de valor alto têm uma regra de desconto diferente?</div><ChoiceButtonGroup value={discountDraft.high_value_enabled ? "Sim" : "Não"} onChange={(value) => handleDiscountDraftChange("high_value_enabled", value === "Sim")} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{discountDraft.high_value_enabled ? <div className="rounded-2xl border border-gray-200 p-4"><div className="grid gap-3 md:grid-cols-2"><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A partir de qual valor uma venda é considerada de valor alto? (R$)</span><input value={discountDraft.high_value_threshold_amount} onChange={(e) => handleDiscountDraftChange("high_value_threshold_amount", formatStoreDiscountMoneyInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label><label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual desconto pode ser usado nessas vendas? (%)</span><input value={discountDraft.high_value_discount_percent} onChange={(e) => handleDiscountDraftChange("high_value_discount_percent", formatStoreDiscountPercentInput(e.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label></div><div className="mt-4"><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Esse desconto precisa de aprovação humana?</div><ChoiceButtonGroup value={commercialExperienceDraft.high_value_requires_human} onChange={(value) => updateCommercialExperienceDraft("high_value_requires_human", value)} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não, pode seguir a regra acima" }]} /></div></div> : null}</div> : <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3 text-xs leading-5 text-sky-950">Com esta opção desligada, a IA não negocia usando desconto. Se um cliente insistir, o caso segue para análise humana.</div>}</div> : <SummaryList items={discountItems} />}
+          <div className="mt-6 border-t border-gray-200 pt-5">
+            <div><div className="text-sm font-semibold text-gray-950">Contrapartidas de negociação</div><p className="mt-1 text-xs leading-5 text-gray-500">Defina quais condições a IA pode pedir em troca de uma condição comercial melhor.</p></div>
+            {isDiscountEditing ? <div className="space-y-4"><div><div className="mb-2 text-sm font-semibold text-gray-950">A IA pode pedir alguma condição em troca de uma condição comercial melhor?</div><ChoiceButtonGroup value={discountCounterpartDraft.enabled ? "Sim" : "Não"} onChange={(value) => setDiscountCounterpartDraft((current) => ({ ...current, enabled: value === "Sim" }))} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} /></div>{discountCounterpartDraft.enabled ? <><div><div className="mb-2 text-sm font-semibold text-gray-950">Quais formas de pagamento a IA pode pedir como contrapartida?</div><p className="mb-2 text-xs leading-5 text-gray-500">Selecione somente as formas que a IA pode pedir em troca de uma condição comercial melhor.</p><MultiSelectBoxGroup values={discountCounterpartDraft.allowedPaymentMethods} onToggle={(value) => setDiscountCounterpartDraft((current) => ({ ...current, allowedPaymentMethods: current.allowedPaymentMethods.includes(value) ? current.allowedPaymentMethods.filter((item) => item !== value) : [...current.allowedPaymentMethods, value] }))} options={DISCOUNT_COUNTERPART_PAYMENT_OPTIONS.filter((option) => (commercialDraft.accepted_payment_methods ?? []).includes(option.value)).map((option) => ({ value: option.value, label: option.label }))} /></div><div><div className="mb-2 text-sm font-semibold text-gray-950">A IA pode pedir uma entrada maior em troca de uma condição melhor?</div><ChoiceButtonGroup value={discountCounterpartDraft.higherDownPaymentEnabled ? "Sim" : "Não"} onChange={(value) => setDiscountCounterpartDraft((current) => ({ ...current, higherDownPaymentEnabled: value === "Sim" }))} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />{discountCounterpartDraft.higherDownPaymentEnabled ? <div className="mt-3 space-y-3"><div className="text-sm text-gray-700">Qual e a entrada minima necessaria para essa condicao?</div>{counterpartDownPaymentBaseline.kind === "percent" ? <p className="text-xs leading-5 text-gray-500">Entrada normal da loja: {counterpartDownPaymentBaseline.value}%. Para ser uma contrapartida, a entrada deve ser maior que {counterpartDownPaymentBaseline.value}%.</p> : counterpartDownPaymentBaseline.kind === "fixed" ? <p className="text-xs leading-5 text-gray-500">Entrada normal da loja: R$ {(counterpartDownPaymentBaseline.value / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}. Para ser uma contrapartida, a entrada deve ser maior que R$ {(counterpartDownPaymentBaseline.value / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}.</p> : counterpartDownPaymentBaseline.kind === "none" ? null : <p className="text-xs leading-5 text-red-700">A entrada normal da loja precisa estar definida como percentual ou valor fixo antes de usar esta contrapartida.</p>}{counterpartDownPaymentBaseline.kind === "none" ? <ChoiceButtonGroup value={discountCounterpartDraft.higherDownPaymentMinimumType} onChange={(value) => setDiscountCounterpartDraft((current) => ({ ...current, higherDownPaymentMinimumType: value }))} options={[{ value: "percent", label: "Percentual" }, { value: "fixed", label: "Valor em R$" }]} /> : null}{counterpartDownPaymentBaseline.kind !== "invalid" ? <input value={counterpartDownPaymentBaseline.kind === "fixed" || (counterpartDownPaymentBaseline.kind === "none" && discountCounterpartDraft.higherDownPaymentMinimumType === "fixed") ? discountCounterpartDraft.higherDownPaymentMinimumAmount : discountCounterpartDraft.higherDownPaymentMinimumPercent} onChange={(event) => setDiscountCounterpartDraft((current) => (counterpartDownPaymentBaseline.kind === "fixed" || (counterpartDownPaymentBaseline.kind === "none" && current.higherDownPaymentMinimumType === "fixed") ? ({ ...current, higherDownPaymentMinimumAmount: formatStorePaymentCurrencyDecimalInput(event.target.value) }) : ({ ...current, higherDownPaymentMinimumPercent: formatStorePaymentPercentInput(event.target.value) })))} placeholder={counterpartDownPaymentBaseline.kind === "fixed" || (counterpartDownPaymentBaseline.kind === "none" && discountCounterpartDraft.higherDownPaymentMinimumType === "fixed") ? "Entrada minima (R$)" : "Entrada minima (%)"} className="rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /> : null}</div> : null}</div><div><div className="mb-2 text-sm font-semibold text-gray-950">A IA pode pedir menos parcelas em troca de uma condição melhor?</div><ChoiceButtonGroup value={discountCounterpartDraft.fewerInstallmentsEnabled ? "Sim" : "Não"} onChange={(value) => setDiscountCounterpartDraft((current) => ({ ...current, fewerInstallmentsEnabled: value === "Sim" }))} options={[{ value: "Sim", label: "Sim" }, { value: "Não", label: "Não" }]} />{discountCounterpartDraft.fewerInstallmentsEnabled ? <><div className="mt-3 text-sm text-gray-700">Qual é o número máximo de parcelas para essa condição?</div><input inputMode="numeric" value={discountCounterpartDraft.fewerInstallmentsMaxCount} onChange={(event) => setDiscountCounterpartDraft((current) => ({ ...current, fewerInstallmentsMaxCount: event.target.value.replace(/\D/g, "") }))} placeholder="Ex.: 3" className="mt-2 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" />{paymentSettings?.max_installments != null ? <p className="mt-1 text-xs text-gray-500">Hoje a loja permite até {paymentSettings.max_installments}x.</p> : null}</> : null}</div></> : null}</div> : null}
+          </div>
           </SectionBlock>
 
           <SectionBlock

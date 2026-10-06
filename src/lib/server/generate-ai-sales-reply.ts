@@ -48,6 +48,9 @@ import {
   readStoreDiscountSettingsBySystem,
 } from "./store-discount-settings-reader";
 import {
+  readStoreDiscountCounterpartPolicyBySystem,
+} from "./store-discount-counterpart-policy-reader";
+import {
   buildPriceNegotiationStrategyPromptBlock,
   decideSalesAiPriceNegotiation,
   type PriorConcessionState,
@@ -12337,6 +12340,18 @@ export async function generateAiSalesReply(
     }
     const discountSettings = discountSettingsResult.settings;
     const highValueDiscountSettings = discountSettingsResult.highValueSettings;
+    const counterpartPolicyResult = await readStoreDiscountCounterpartPolicyBySystem({
+      supabase,
+      organizationId,
+      storeId: resolvedStoreId,
+    });
+    if (!counterpartPolicyResult.ok) {
+      return {
+        ok: false,
+        error: "LOAD_DISCOUNT_COUNTERPART_POLICY_FAILED",
+        message: counterpartPolicyResult.error,
+      };
+    }
     const onboardingMap: Record<string, string> = {};
 
     for (const row of (onboardingAnswers || []) as StoreAnswerRow[]) {
@@ -12391,6 +12406,7 @@ export async function generateAiSalesReply(
       paymentSettings: canonicalPaymentSettings,
       discountSettings: canonicalDiscountSettings,
       highValueDiscountSettings: canonicalHighValueDiscountSettings,
+      counterpartPolicy: counterpartPolicyResult.policy,
     });
     const salesAiBehaviorContractBlock =
       buildSalesAiBehaviorContractPromptBlock(salesAiBehaviorContract);

@@ -8,6 +8,10 @@ import type {
   StoreDiscountSettingsRow,
   StoreHighValueDiscountSettingsRow,
 } from "../store-discount-settings";
+import {
+  normalizeStoreDiscountCounterpartPolicyRow,
+  type StoreDiscountCounterpartPolicyRow,
+} from "../store-discount-counterpart-policy";
 
 export type SalesAiBehaviorState =
   | "allowed"
@@ -57,6 +61,19 @@ export type SalesAiBehaviorContract = {
       highValueEnabled: boolean | null;
       highValueThresholdAmountCents: number | null;
       highValueDiscountPercent: number | null;
+    };
+    counterparts: {
+      paymentMethods: Record<StorePaymentMethod, SalesAiBehaviorDecision>;
+      higherDownPayment: SalesAiBehaviorDecision;
+      fewerInstallments: SalesAiBehaviorDecision;
+      canonical: {
+        enabled: boolean | null;
+        allowedPaymentMethods: StorePaymentMethod[] | null;
+        higherDownPaymentMinimumType: string | null;
+        higherDownPaymentMinimumPercent: number | null;
+        higherDownPaymentMinimumAmountCents: number | null;
+        fewerInstallmentsMaxCount: number | null;
+      };
     };
   };
 };
@@ -277,10 +294,81 @@ function resolveHighValueBehavior(
   );
 }
 
+function resolveCounterparts(args: {
+  policy: StoreDiscountCounterpartPolicyRow | null;
+  paymentSettings: StorePaymentSettingsRow | null;
+  paymentMethods: Record<StorePaymentMethod, SalesAiBehaviorDecision>;
+  pixKeyDisclosure: SalesAiBehaviorDecision;
+}) {
+  const unconfigured = decision("unconfigured", "DISCOUNT_COUNTERPART_POLICY_UNCONFIGURED");
+  const forbidden = (reasonCode: string) => decision("forbidden", reasonCode);
+  const policy = args.policy ? normalizeStoreDiscountCounterpartPolicyRow(args.policy) : null;
+  const methods = Object.fromEntries(
+    STORE_PAYMENT_METHOD_VALUES.map((method) => [method, unconfigured]),
+  ) as Record<StorePaymentMethod, SalesAiBehaviorDecision>;
+  if (policy?.enabled) {
+    const allowed = new Set(policy.allowedPaymentMethods);
+    for (const method of STORE_PAYMENT_METHOD_VALUES) {
+      const operational = args.paymentMethods[method].state === "allowed" &&
+        (method !== "pix" || args.pixKeyDisclosure.state === "allowed");
+      methods[method] = allowed.has(method) && operational
+        ? decision("allowed", "DISCOUNT_COUNTERPART_PAYMENT_METHOD_ALLOWED")
+        : forbidden(allowed.has(method) ? "DISCOUNT_COUNTERPART_PAYMENT_METHOD_NOT_OPERATIONAL" : "DISCOUNT_COUNTERPART_PAYMENT_METHOD_NOT_ALLOWED");
+    }
+  } else if (policy) {
+    for (const method of STORE_PAYMENT_METHOD_VALUES) methods[method] = forbidden("DISCOUNT_COUNTERPART_POLICY_DISABLED");
+  }
+
+  let higher = policy?.enabled && policy.higherDownPaymentEnabled
+    ? unconfigured
+    : policy ? forbidden("DISCOUNT_COUNTERPART_HIGHER_DOWN_PAYMENT_DISABLED") : unconfigured;
+  const standardType = String(args.paymentSettings?.down_payment_value_type ?? "").trim();
+  const standardMode = String(args.paymentSettings?.down_payment_mode ?? "").trim();
+  if (policy?.enabled && policy.higherDownPaymentEnabled) {
+    const comparable = standardMode === "none"
+      ? true
+      : standardMode === "optional" || standardMode === "required"
+        ? policy.higherDownPaymentMinimumType === standardType
+        : false;
+    const exceeds = policy.higherDownPaymentMinimumType === "percent"
+      ? (args.paymentSettings?.down_payment_percent ?? 0) < (policy.higherDownPaymentMinimumPercent ?? 0)
+      : (args.paymentSettings?.down_payment_amount_cents ?? 0) < (policy.higherDownPaymentMinimumAmountCents ?? 0);
+    higher = comparable && exceeds
+      ? decision("allowed", "DISCOUNT_COUNTERPART_HIGHER_DOWN_PAYMENT_ALLOWED")
+      : forbidden("DISCOUNT_COUNTERPART_HIGHER_DOWN_PAYMENT_NOT_OBJECTIVELY_HIGHER");
+  }
+
+  let fewer = policy?.enabled && policy.fewerInstallmentsEnabled
+    ? unconfigured
+    : policy ? forbidden("DISCOUNT_COUNTERPART_FEWER_INSTALLMENTS_DISABLED") : unconfigured;
+  if (policy?.enabled && policy.fewerInstallmentsEnabled) {
+    const normalMax = args.paymentSettings?.installments_enabled === true
+      ? args.paymentSettings.max_installments
+      : null;
+    fewer = normalMax != null && policy.fewerInstallmentsMaxCount != null && policy.fewerInstallmentsMaxCount < normalMax
+      ? decision("allowed", "DISCOUNT_COUNTERPART_FEWER_INSTALLMENTS_ALLOWED")
+      : forbidden("DISCOUNT_COUNTERPART_FEWER_INSTALLMENTS_NOT_LOWER_THAN_NORMAL");
+  }
+  return {
+    paymentMethods: methods,
+    higherDownPayment: higher,
+    fewerInstallments: fewer,
+    canonical: {
+      enabled: args.policy?.enabled ?? null,
+      allowedPaymentMethods: policy?.allowedPaymentMethods ?? null,
+      higherDownPaymentMinimumType: policy?.higherDownPaymentMinimumType ?? null,
+      higherDownPaymentMinimumPercent: policy?.higherDownPaymentMinimumPercent ?? null,
+      higherDownPaymentMinimumAmountCents: policy?.higherDownPaymentMinimumAmountCents ?? null,
+      fewerInstallmentsMaxCount: policy?.fewerInstallmentsMaxCount ?? null,
+    },
+  };
+}
+
 export function buildSalesAiBehaviorContract(args: {
   paymentSettings: StorePaymentSettingsRow | null;
   discountSettings: StoreDiscountSettingsRow | null;
   highValueDiscountSettings: StoreHighValueDiscountSettingsRow | null;
+  counterpartPolicy?: StoreDiscountCounterpartPolicyRow | null;
 }): SalesAiBehaviorContract {
   const paymentSettings = args.paymentSettings;
   const paymentMethods = resolvePaymentMethods(paymentSettings);
@@ -376,6 +464,12 @@ export function buildSalesAiBehaviorContract(args: {
 
   const discountBehavior = resolveDiscountBehavior(args.discountSettings);
   const highValue = resolveHighValueBehavior(args.highValueDiscountSettings);
+  const counterparts = resolveCounterparts({
+    policy: args.counterpartPolicy ?? null,
+    paymentSettings,
+    paymentMethods: paymentMethods.methods,
+    pixKeyDisclosure,
+  });
 
   return {
     payment: {
@@ -429,12 +523,14 @@ export function buildSalesAiBehaviorContract(args: {
         highValueDiscountPercent:
           args.highValueDiscountSettings?.discount_percent ?? null,
       },
+      counterparts,
     },
   };
 }
 
 export type SalesAiBehaviorContractOutputViolation =
   | "INSTALLMENTS_NOT_ALLOWED_CLAIM"
+  | "COUNTERPART_DIMENSIONS_FUSED"
   | "DISCOUNT_APPROVAL_BYPASSED"
   | "PIX_KEY_DISCLOSURE_NOT_ALLOWED";
 
@@ -478,6 +574,18 @@ export function findSalesAiBehaviorContractOutputViolation(args: {
     ) {
       return "INSTALLMENTS_NOT_ALLOWED_CLAIM";
     }
+  }
+
+  const fusedCounterpartCondition =
+    /\b(?:pix|boleto|dinheiro|cartao|cartão|transferencia|transferência|financiamento)\b\s+(?:(?:com|em)\s+)?(?:parcelad[oa]|parcelamento|ate\s+\d+\s*x)\b/.test(
+      text,
+    ) ||
+    /\b(?:parcelad[oa]|parcelamento|ate\s+\d+\s*x)\b\s+(?:no|via|com)\s+\b(?:pix|boleto|dinheiro|cartao|cartão|transferencia|transferência|financiamento)\b/.test(
+      text,
+    );
+
+  if (fusedCounterpartCondition) {
+    return "COUNTERPART_DIMENSIONS_FUSED";
   }
 
   if (
@@ -532,6 +640,8 @@ export function buildSalesAiBehaviorContractPromptBlock(
     "- allowed: pode afirmar ou oferecer somente dentro dos limites canonicos descritos",
     "- forbidden: condicao indisponivel; nao ofereca, nao prometa e nao transforme em simples pedido de confirmacao",
     "- human_approval_required: nao conceda sozinho; quando comercialmente adequado, ofereca consulta/aprovacao humana de forma explicita",
+    "- human_approval_required nao significa que um handoff ou task foi criado; sem evidencia operacional explicita desta execucao, nao diga que vai encaminhar, que ja encaminhou ou que vai retornar depois",
+    "- para depender do responsavel sem prometer uma acao externa, diga: essa condicao precisa de confirmacao do responsavel antes de eu confirmar qualquer desconto",
     "- unconfigured: nao existe autoridade suficiente para compromisso automatico; nao presuma permissao",
     "- false e proibicao real quando a authority canonica usa booleano; nunca converta false em talvez",
     "- none representa ausencia de regra configurada; nunca converta none em permissao",
@@ -588,6 +698,31 @@ export function buildSalesAiBehaviorContractPromptBlock(
     `- discount.high_value_percent: ${contract.discount.canonical.highValueDiscountPercent ?? "not_configured"}`,
     `- discount.special_rules: ${contract.discount.canonical.specialRules ?? "not_configured"}`,
     "- regras especiais podem restringir ou contextualizar a politica, mas texto livre nao amplia sozinho uma permissao marcada como forbidden, human_approval_required ou unconfigured",
+    ...STORE_PAYMENT_METHOD_VALUES.map((method) =>
+      formatBehaviorDecisionLine(
+        `discount.counterpart.payment_method.${method}`,
+        contract.discount.counterparts.paymentMethods[method],
+      ),
+    ),
+    formatBehaviorDecisionLine(
+      "discount.counterpart.higher_down_payment",
+      contract.discount.counterparts.higherDownPayment,
+    ),
+    formatBehaviorDecisionLine(
+      "discount.counterpart.fewer_installments",
+      contract.discount.counterparts.fewerInstallments,
+    ),
+    `- discount.counterpart.minimum_down_payment_type: ${contract.discount.counterparts.canonical.higherDownPaymentMinimumType ?? "not_configured"}`,
+    `- discount.counterpart.minimum_down_payment_percent: ${contract.discount.counterparts.canonical.higherDownPaymentMinimumPercent ?? "not_configured"}`,
+    `- discount.counterpart.minimum_down_payment_amount_cents: ${contract.discount.counterparts.canonical.higherDownPaymentMinimumAmountCents ?? "not_configured"}`,
+    `- discount.counterpart.fewer_installments_max_count: ${contract.discount.counterparts.canonical.fewerInstallmentsMaxCount ?? "not_configured"}`,
+    "- contrapartidas apenas autorizam condições objetivamente configuradas; não decidem percentual de desconto, preço, margem, concessão ou mutação de quote",
+    "- cada contrapartida e uma condicao independente: metodo de pagamento, entrada maior e menos parcelas nao podem ser fundidos em uma unica condicao",
+    "- autorizar um metodo de pagamento nao autoriza combina-lo com parcelamento; autorizar menos parcelas nao define qual metodo de pagamento sera parcelado",
+    "- nao existe autoridade canonica cruzada entre metodo e parcelamento nesta policy; nunca diga que Pix, boleto, dinheiro, cartao ou outro metodo e parcelado/em ate Xx sem configuracao cruzada explicita",
+    "- quando varias contrapartidas forem validas, mencione-as separadamente, por exemplo: entrada de 30%, pagamento via Pix e, quando houver parcelamento, reducao para ate 3x",
+    "- contrapartida valida com aprovacao humana: informe que pode considerar as condicoes, mas que a melhoria ainda depende de confirmacao; nao prometa encaminhamento ou retorno futuro sem handoff real materializado",
+    "- nao infira economia, taxa, custo ou vantagem financeira a partir de metodo de pagamento, entrada ou quantidade de parcelas",
     "- nunca revele ao cliente teto interno, reasonCode ou nomes internos deste contrato",
   ].join("\n");
 }
