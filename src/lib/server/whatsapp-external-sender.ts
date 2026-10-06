@@ -116,11 +116,17 @@ type WhatsappExternalSendGateResult =
     }
   | {
       ok: true;
-      decision: "blocked";
+      decision: "blocked" | "template_required";
       reason: string;
       message_id?: string | null;
       conversation_id?: string | null;
     };
+
+type Whatsapp24hWindowPreflightResult = {
+  ok: true;
+  decision: "send" | "blocked" | "template_required";
+  reason: string;
+};
 
 type MarkSentResult = {
   message_id?: string | null;
@@ -178,9 +184,10 @@ export type ProcessWhatsappPendingMessagesResult = {
   failed: number;
   retryable: number;
   uncertain: number;
+  templateRequired: number;
   results: Array<{
     messageId: string;
-    status: "sent" | "failed" | "retryable" | "uncertain" | "skipped";
+    status: "sent" | "failed" | "retryable" | "uncertain" | "template_required" | "skipped";
     detail: string;
     whatsappMessageId?: string | null;
   }>;
@@ -212,6 +219,10 @@ type ProcessDeps = {
     supabase: SupabaseClient,
     message: MessageScope,
   ) => Promise<WhatsappExternalSendGateResult>;
+  readCustomerWhatsapp24hWindow: (
+    supabase: SupabaseClient,
+    message: MessageScope,
+  ) => Promise<Whatsapp24hWindowPreflightResult>;
   markMessageRetryableFailure: (
     supabase: SupabaseClient,
     message: MessageScope,
@@ -502,7 +513,7 @@ async function validateOrCancelWhatsappExternalSend(
   message: MessageScope,
 ): Promise<WhatsappExternalSendGateResult> {
   const { data, error } = await supabase.rpc(
-    "validate_or_cancel_whatsapp_external_send_v2_by_system",
+    "validate_or_cancel_whatsapp_external_send_v3_by_system",
     {
       p_organization_id: message.organizationId,
       p_store_id: message.storeId,
@@ -537,14 +548,14 @@ async function validateOrCancelWhatsappExternalSend(
     };
   }
 
-  if (decision === "blocked") {
+  if (decision === "blocked" || decision === "template_required") {
     const reason = normalizeText(result.reason);
     if (!reason) {
       throw new Error(`Gate final de envio WhatsApp bloqueou sem motivo para message ${message.id}`);
     }
     return {
       ok: true,
-      decision: "blocked",
+      decision,
       reason,
       message_id: normalizeText(result.message_id) || null,
       conversation_id: normalizeText(result.conversation_id) || null,
@@ -552,6 +563,41 @@ async function validateOrCancelWhatsappExternalSend(
   }
 
   throw new Error(`Gate final de envio WhatsApp retornou decisao invalida para message ${message.id}`);
+}
+
+async function readCustomerWhatsapp24hWindow(
+  supabase: SupabaseClient,
+  message: MessageScope,
+): Promise<Whatsapp24hWindowPreflightResult> {
+  const { data, error } = await supabase.rpc("read_customer_whatsapp_24h_window_by_system", {
+    p_organization_id: message.organizationId,
+    p_store_id: message.storeId,
+    p_message_id: message.id,
+  });
+
+  if (error) {
+    throw new Error(`Erro no preflight da janela WhatsApp da mensagem ${message.id}: ${error.message}`);
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error(`Preflight da janela WhatsApp retornou contrato invalido para message ${message.id}`);
+  }
+
+  const result = data as Record<string, unknown>;
+  const decision = normalizeText(result.decision);
+  const reason = normalizeText(result.reason);
+  if (
+    result.ok !== true ||
+    !["send", "blocked", "template_required"].includes(decision) ||
+    !reason
+  ) {
+    throw new Error(`Preflight da janela WhatsApp retornou decisao invalida para message ${message.id}`);
+  }
+
+  return {
+    ok: true,
+    decision: decision as Whatsapp24hWindowPreflightResult["decision"],
+    reason,
+  };
 }
 
 async function getPendingExternalMessages(
@@ -1041,6 +1087,8 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
     releaseClaimedMessage: deps?.releaseClaimedMessage ?? releaseClaimedMessage,
     validateOrCancelWhatsappExternalSend:
       deps?.validateOrCancelWhatsappExternalSend ?? validateOrCancelWhatsappExternalSend,
+    readCustomerWhatsapp24hWindow:
+      deps?.readCustomerWhatsapp24hWindow ?? readCustomerWhatsapp24hWindow,
     markMessageRetryableFailure: deps?.markMessageRetryableFailure ?? markMessageRetryableFailure,
     markMessageFailed: deps?.markMessageFailed ?? markMessageFailed,
     markMessageUncertain: deps?.markMessageUncertain ?? markMessageUncertain,
@@ -1065,6 +1113,7 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
     let failed = 0;
     let retryable = 0;
     let uncertain = 0;
+    let templateRequired = 0;
 
     // Reconciliation is deliberately independent of the Meta integration/token.
     try {
@@ -1126,6 +1175,38 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
       let attemptStarted = false;
       let providerMessageId: string | null = null;
       try {
+        const preflightResult = await resolvedDeps.readCustomerWhatsapp24hWindow(
+          supabase,
+          message,
+        );
+
+        if (preflightResult.decision !== "send") {
+          const preflightGateResult = await resolvedDeps.validateOrCancelWhatsappExternalSend(
+            supabase,
+            message,
+          );
+
+          if (preflightGateResult.decision === "template_required") {
+            templateRequired += 1;
+            results.push({
+              messageId: message.id,
+              status: "template_required",
+              detail: `ZION_EXTERNAL_SEND_TEMPLATE_REQUIRED:${preflightGateResult.reason}`,
+            });
+            continue;
+          }
+
+          if (preflightGateResult.decision === "blocked") {
+            failed += 1;
+            results.push({
+              messageId: message.id,
+              status: "failed",
+              detail: `ZION_EXTERNAL_SEND_BLOCKED:${preflightGateResult.reason}`,
+            });
+            continue;
+          }
+        }
+
         const preparedMessage = await resolvedDeps.preparePendingMessageForSend(supabase, message);
         integration ??= await resolvedDeps.getWhatsappIntegration(
           supabase,
@@ -1137,6 +1218,16 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
           supabase,
           message,
         );
+
+        if (gateResult.decision === "template_required") {
+          templateRequired += 1;
+          results.push({
+            messageId: message.id,
+            status: "template_required",
+            detail: `ZION_EXTERNAL_SEND_TEMPLATE_REQUIRED:${gateResult.reason}`,
+          });
+          continue;
+        }
 
         if (gateResult.decision === "blocked") {
           failed += 1;
@@ -1235,6 +1326,7 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
       failed,
       retryable,
       uncertain,
+      templateRequired,
       results,
     };
   };

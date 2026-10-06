@@ -48,9 +48,18 @@ function createHarness(overrides?: {
   pending?: Array<Record<string, unknown>>;
   claimResults?: boolean[];
   prepareImpl?: () => Promise<Record<string, unknown>>;
+  preflightImpl?: () => Promise<{
+    ok: true;
+    decision: "send" | "blocked" | "template_required";
+    reason: string;
+  }>;
   sendImpl?: () => Promise<string>;
   markSentImpl?: () => Promise<void>;
-  gateImpl?: () => Promise<{ ok: true; decision: "send" | "blocked"; reason: string }>;
+  gateImpl?: () => Promise<{
+    ok: true;
+    decision: "send" | "blocked" | "template_required";
+    reason: string;
+  }>;
   finalizeImpl?: () => Promise<{
     commercialOpportunityId: string;
     salesQuoteId: string;
@@ -61,6 +70,7 @@ function createHarness(overrides?: {
 }) {
   const calls = {
     integration: 0,
+    preflight: [] as string[],
     gate: [] as string[],
     order: [] as string[],
     claim: [] as string[],
@@ -110,6 +120,16 @@ function createHarness(overrides?: {
       calls.order.push("FINAL SQL GATE");
       if (overrides?.gateImpl) return overrides.gateImpl() as never;
       return { ok: true, decision: "send", reason: "authorized" };
+    },
+    readCustomerWhatsapp24hWindow: async (_supabase, message) => {
+      calls.preflight.push(message.id);
+      calls.order.push("PREFLIGHT 24H");
+      if (overrides?.preflightImpl) return overrides.preflightImpl();
+      return {
+        ok: true,
+        decision: "send" as const,
+        reason: "P19A_CUSTOMER_WHATSAPP_24H_WINDOW_OPEN",
+      };
     },
     markMessageRetryableFailure: async (_supabase, message, errorText) => {
       calls.retryable.push({ messageId: message.id, errorText });
@@ -186,6 +206,7 @@ const tests: TestCase[] = [
       assert.equal(harness.calls.integration, 1);
       assert.deepEqual(harness.calls.order, [
         "CLAIM",
+        "PREFLIGHT 24H",
         "PREPARE",
         "STRICT INTEGRATION",
         "FINAL SQL GATE",
@@ -304,9 +325,42 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "template_required preserves the outbound without preparing media or posting",
+    run: async () => {
+      const harness = createHarness({
+        preflightImpl: async () => ({
+          ok: true,
+          decision: "template_required",
+          reason: "P19A_CUSTOMER_WHATSAPP_24H_WINDOW_CLOSED",
+        }),
+        gateImpl: async () => ({
+          ok: true,
+          decision: "template_required",
+          reason: "P19A_CUSTOMER_WHATSAPP_24H_WINDOW_CLOSED",
+        }),
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.order, ["CLAIM", "PREFLIGHT 24H", "FINAL SQL GATE"]);
+      assert.equal(harness.calls.prepared.length, 0);
+      assert.equal(harness.calls.integration, 0);
+      assert.equal(harness.calls.send.length, 0);
+      assert.equal(harness.calls.release.length, 0);
+      assert.equal(harness.calls.uncertain.length, 0);
+      assert.equal(result.templateRequired, 1);
+      assert.equal(result.results.at(-1)?.status, "template_required");
+    },
+  },
+  {
     name: "gate blocked decision does not POST, release, mark attempt, or mark failed again",
     run: async () => {
       const harness = createHarness({
+        preflightImpl: async () => ({
+          ok: true,
+          decision: "blocked",
+          reason: "commercial_opportunity_opted_out",
+        }),
         gateImpl: async () => ({
           ok: true,
           decision: "blocked",
@@ -318,8 +372,7 @@ const tests: TestCase[] = [
 
       assert.deepEqual(harness.calls.order, [
         "CLAIM",
-        "PREPARE",
-        "STRICT INTEGRATION",
+        "PREFLIGHT 24H",
         "FINAL SQL GATE",
       ]);
       assert.deepEqual(harness.calls.send, []);
@@ -347,6 +400,7 @@ const tests: TestCase[] = [
 
       assert.deepEqual(harness.calls.order, [
         "CLAIM",
+        "PREFLIGHT 24H",
         "PREPARE",
         "STRICT INTEGRATION",
         "FINAL SQL GATE",
@@ -359,7 +413,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "integration failure before gate does not POST and releases claim",
+    name: "integration failure before final window gate does not POST and releases claim",
     run: async () => {
       const harness = createHarness({
         integrationImpl: async () => {
@@ -371,6 +425,7 @@ const tests: TestCase[] = [
 
       assert.deepEqual(harness.calls.order, [
         "CLAIM",
+        "PREFLIGHT 24H",
         "PREPARE",
         "STRICT INTEGRATION",
       ]);
@@ -399,6 +454,7 @@ const tests: TestCase[] = [
 
       assert.deepEqual(harness.calls.order, [
         "CLAIM",
+        "PREFLIGHT 24H",
         "PREPARE",
         "STRICT INTEGRATION",
         "FINAL SQL GATE",
@@ -489,16 +545,16 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "production sender uses quote-aware final WhatsApp gate v2",
+    name: "production sender uses the P19-A window gate before quote-aware v2",
     run: () => {
       const source = readFileSync(senderPath, "utf8");
 
       assert.equal(
         source.includes(
-          '"validate_or_cancel_whatsapp_external_send_v2_by_system"',
+          '"validate_or_cancel_whatsapp_external_send_v3_by_system"',
         ),
         true,
-        "production sender must call the quote-aware final gate v2",
+        "production sender must call the P19-A window gate",
       );
 
       assert.equal(
