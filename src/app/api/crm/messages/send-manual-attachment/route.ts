@@ -63,7 +63,7 @@ type ExternalIntegrationRow = {
 };
 
 type AttachmentKind = "image" | "audio" | "video" | "file";
-type MessageType = "image" | "audio" | "video" | "text";
+type MessageType = "image" | "audio" | "video" | "document";
 
 type ServiceSupabaseClient = ReturnType<typeof createServiceSupabaseClient>;
 
@@ -123,7 +123,7 @@ function getAttachmentKindFromMimeType(value: string | null | undefined) {
 }
 
 function getMessageTypeFromAttachmentKind(attachmentKind: AttachmentKind): MessageType {
-  return attachmentKind === "file" ? "text" : attachmentKind;
+  return attachmentKind === "file" ? "document" : attachmentKind;
 }
 
 function extractFileExtension(fileName: string | null | undefined) {
@@ -541,7 +541,7 @@ export async function handleSendManualAttachmentPost(
     });
 
     const isWhatsappReal =
-      attachmentKind === "image"
+      attachmentKind === "image" || attachmentKind === "file"
         ? await deps.isRealWhatsappConversation({
             supabase: serviceSupabase,
             organizationId: access.organizationId,
@@ -550,7 +550,7 @@ export async function handleSendManualAttachmentPost(
           })
         : false;
 
-    const mediaUrl = attachmentKind === "file" ? null : storagePath;
+    const mediaUrl = storagePath;
 
     const uploadResult = await serviceSupabase.storage
       .from(STORAGE_BUCKET)
@@ -578,7 +578,8 @@ export async function handleSendManualAttachmentPost(
             source: "panel",
             channel: "whatsapp",
             external_channel: "whatsapp",
-            outbound_origin: "crm_manual_image",
+            outbound_origin:
+              attachmentKind === "file" ? "crm_manual_document" : "crm_manual_image",
             whatsapp_detected_from_conversation: true,
           }
         : {}),
