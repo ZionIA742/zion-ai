@@ -67,6 +67,21 @@ function createHarness(overrides?: {
   } | null>;
   reconcileResults?: Array<{ messageId: string; detail: string }>;
   integrationImpl?: () => Promise<{ accessToken: string; phoneNumberId: string }>;
+  templateCandidates?: Array<{
+    message: Record<string, unknown>;
+    templateAction: "followup_offer" | "followup_visit";
+  }>;
+  templateClaimImpl?: () => Promise<{
+    claimed: boolean;
+    reason: string;
+    templateAction: "followup_offer" | "followup_visit" | null;
+  }>;
+  templateGateImpl?: () => Promise<{
+    ok: true;
+    decision: "send" | "blocked";
+    reason: string;
+  }>;
+  templateSendImpl?: () => Promise<string>;
 }) {
   const calls = {
     integration: 0,
@@ -74,6 +89,11 @@ function createHarness(overrides?: {
     gate: [] as string[],
     order: [] as string[],
     claim: [] as string[],
+    templateRead: 0,
+    templateClaim: [] as Array<{ messageId: string; templateAction: string }>,
+    templateRelease: [] as Array<{ messageId: string; errorText: string | null }>,
+    templateGate: [] as Array<{ messageId: string; templateAction: string }>,
+    templateSend: [] as Array<{ messageId: string; templateAction: string }>,
     release: [] as Array<{ messageId: string; org: string; store: string; errorText: string | null }>,
     attemptStarted: [] as string[],
     retryable: [] as Array<{ messageId: string; errorText: string }>,
@@ -102,6 +122,39 @@ function createHarness(overrides?: {
       return { accessToken: "token", phoneNumberId: "phone-number-id" };
     },
     getPendingExternalMessages: async () => pending as never,
+    getTemplateRequiredCanonicalFollowups: async () => {
+      calls.templateRead += 1;
+      return (overrides?.templateCandidates ?? []) as never;
+    },
+    claimTemplateRequiredCanonicalFollowup: async (_supabase, candidate) => {
+      calls.templateClaim.push({
+        messageId: candidate.message.id,
+        templateAction: candidate.templateAction,
+      });
+      calls.order.push("TEMPLATE CLAIM");
+      if (overrides?.templateClaimImpl) return overrides.templateClaimImpl() as never;
+      return {
+        claimed: true,
+        reason: "claimed",
+        templateAction: candidate.templateAction,
+      };
+    },
+    releaseTemplateClaimedMessage: async (_supabase, message, errorText) => {
+      calls.templateRelease.push({ messageId: message.id, errorText });
+      calls.order.push("TEMPLATE RELEASE");
+    },
+    validateOrCancelWhatsappTemplateFollowupSend: async (_supabase, message, templateAction) => {
+      calls.templateGate.push({ messageId: message.id, templateAction });
+      calls.order.push("TEMPLATE FINAL SQL GATE");
+      if (overrides?.templateGateImpl) return overrides.templateGateImpl() as never;
+      return { ok: true, decision: "send" as const, reason: "authorized" as const };
+    },
+    sendCanonicalFollowupTemplate: async (_integration, message, templateAction) => {
+      calls.templateSend.push({ messageId: message.id, templateAction });
+      calls.order.push("POST META TEMPLATE");
+      if (overrides?.templateSendImpl) return overrides.templateSendImpl();
+      return "wamid-template-1";
+    },
     claimMessageForExternalSend: async (_supabase, message) => {
       calls.claim.push(message.id);
       calls.order.push("CLAIM");
@@ -542,6 +595,200 @@ const tests: TestCase[] = [
       const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
       assert.equal(harness.calls.send.length, 1);
       assert.equal(result.sent, 1);
+    },
+  },
+  {
+    name: "customer offer follow-up uses the canonical template path and never free-form POST",
+    run: async () => {
+      const message = createMessage({
+        id: "template-offer-1",
+        outboundDeliveryState: "template_required",
+        metadata: {
+          external_channel: "whatsapp",
+          send_external: true,
+          outbound_kind: "canonical_followup",
+          outbound_origin: "canonical_followup",
+        },
+      });
+      const harness = createHarness({
+        pending: [],
+        templateCandidates: [{ message, templateAction: "followup_offer" }],
+      });
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+      assert.deepEqual(harness.calls.order, [
+        "TEMPLATE CLAIM",
+        "STRICT INTEGRATION",
+        "TEMPLATE FINAL SQL GATE",
+        "POST META TEMPLATE",
+      ]);
+      assert.deepEqual(harness.calls.templateSend, [
+        { messageId: "template-offer-1", templateAction: "followup_offer" },
+      ]);
+      assert.deepEqual(harness.calls.send, []);
+      assert.deepEqual(harness.calls.markSent, [
+        { messageId: "template-offer-1", externalMessageId: "wamid-template-1" },
+      ]);
+      assert.equal(result.sent, 1);
+      assert.equal(result.processed, 1);
+    },
+  },
+  {
+    name: "customer visit follow-up preserves the canonical visit template action",
+    run: async () => {
+      const message = createMessage({
+        id: "template-visit-1",
+        outboundDeliveryState: "template_required",
+        metadata: {
+          external_channel: "whatsapp",
+          send_external: true,
+          outbound_kind: "canonical_followup",
+          outbound_origin: "canonical_followup",
+        },
+      });
+      const harness = createHarness({
+        pending: [],
+        templateCandidates: [{ message, templateAction: "followup_visit" }],
+      });
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+      assert.deepEqual(harness.calls.templateGate, [
+        { messageId: "template-visit-1", templateAction: "followup_visit" },
+      ]);
+      assert.deepEqual(harness.calls.templateSend, [
+        { messageId: "template-visit-1", templateAction: "followup_visit" },
+      ]);
+      assert.equal(result.sent, 1);
+    },
+  },
+  {
+    name: "template claim lost skips without POST",
+    run: async () => {
+      const message = createMessage({
+        id: "template-claim-lost-1",
+        outboundDeliveryState: "template_required",
+        metadata: {
+          external_channel: "whatsapp",
+          send_external: true,
+          outbound_kind: "canonical_followup",
+          outbound_origin: "canonical_followup",
+        },
+      });
+      const harness = createHarness({
+        pending: [],
+        templateCandidates: [{ message, templateAction: "followup_offer" }],
+        templateClaimImpl: async () => ({
+          claimed: false,
+          reason: "already_claimed",
+          templateAction: null,
+        }),
+      });
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.templateSend, []);
+      assert.deepEqual(harness.calls.templateGate, []);
+      assert.equal(result.sent, 0);
+      assert.equal(result.results.at(-1)?.status, "skipped");
+      assert.match(String(result.results.at(-1)?.detail || ""), /already_claimed/);
+    },
+  },
+  {
+    name: "template final gate blocked prevents POST",
+    run: async () => {
+      const message = createMessage({
+        id: "template-blocked-1",
+        outboundDeliveryState: "template_required",
+        metadata: {
+          external_channel: "whatsapp",
+          send_external: true,
+          outbound_kind: "canonical_followup",
+          outbound_origin: "canonical_followup",
+        },
+      });
+      const harness = createHarness({
+        pending: [],
+        templateCandidates: [{ message, templateAction: "followup_offer" }],
+        templateGateImpl: async () => ({
+          ok: true,
+          decision: "blocked",
+          reason: "followup_no_longer_authorized",
+        }),
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.templateSend, []);
+      assert.deepEqual(harness.calls.uncertain, []);
+      assert.equal(result.failed, 1);
+      assert.equal(result.sent, 0);
+      assert.equal(result.results.at(-1)?.status, "failed");
+      assert.match(
+        String(result.results.at(-1)?.detail || ""),
+        /followup_no_longer_authorized/,
+      );
+    },
+  },
+  {
+    name: "template pre-POST integration failure releases claim and remains retryable",
+    run: async () => {
+      const message = createMessage({
+        id: "template-prepost-1",
+        outboundDeliveryState: "template_required",
+        metadata: {
+          external_channel: "whatsapp",
+          send_external: true,
+          outbound_kind: "canonical_followup",
+          outbound_origin: "canonical_followup",
+        },
+      });
+      const harness = createHarness({
+        pending: [],
+        templateCandidates: [{ message, templateAction: "followup_offer" }],
+        integrationImpl: async () => {
+          throw new Error("integration unavailable");
+        },
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.templateSend, []);
+      assert.deepEqual(harness.calls.templateGate, []);
+      assert.deepEqual(harness.calls.templateRelease, [
+        { messageId: "template-prepost-1", errorText: "integration unavailable" },
+      ]);
+      assert.equal(result.retryable, 1);
+      assert.equal(result.uncertain, 0);
+      assert.equal(result.results.at(-1)?.status, "retryable");
+    },
+  },
+  {
+    name: "template failure after final gate becomes uncertain and is never released for blind retry",
+    run: async () => {
+      const message = createMessage({
+        id: "template-postgate-1",
+        outboundDeliveryState: "template_required",
+        metadata: {
+          external_channel: "whatsapp",
+          send_external: true,
+          outbound_kind: "canonical_followup",
+          outbound_origin: "canonical_followup",
+        },
+      });
+      const harness = createHarness({
+        pending: [],
+        templateCandidates: [{ message, templateAction: "followup_offer" }],
+        templateSendImpl: async () => {
+          throw new Error("Meta 503");
+        },
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.templateRelease, []);
+      assert.deepEqual(harness.calls.uncertain, [
+        { messageId: "template-postgate-1", errorText: "Meta 503", providerMessageId: null },
+      ]);
+      assert.equal(result.retryable, 0);
+      assert.equal(result.uncertain, 1);
+      assert.equal(result.results.at(-1)?.status, "uncertain");
     },
   },
   {

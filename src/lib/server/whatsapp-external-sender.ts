@@ -44,6 +44,7 @@ type PendingExternalMessageRow = {
   mobile?: string | null;
   mobile_phone?: string | null;
   lead_mobile?: string | null;
+  template_action?: string | null;
 };
 
 type PendingExternalMessage = {
@@ -66,6 +67,19 @@ type PendingExternalMessage = {
   outboundProviderAcceptedAt: string | null;
   outboundCommercialFinalizedAt: string | null;
   outboundCommercialErrorText: string | null;
+};
+
+type CanonicalFollowupTemplateAction = "followup_offer" | "followup_visit";
+
+type TemplateRequiredCanonicalFollowup = {
+  message: PendingExternalMessage;
+  templateAction: CanonicalFollowupTemplateAction;
+};
+
+type TemplateFollowupClaimResult = {
+  claimed: boolean;
+  reason: string;
+  templateAction: CanonicalFollowupTemplateAction | null;
 };
 
 type MessageScope = Pick<
@@ -127,6 +141,23 @@ type Whatsapp24hWindowPreflightResult = {
   decision: "send" | "blocked" | "template_required";
   reason: string;
 };
+
+type WhatsappTemplateFollowupGateResult =
+  | {
+      ok: true;
+      decision: "send";
+      reason: "authorized";
+      message_id?: string | null;
+      conversation_id?: string | null;
+      outbound_kind?: string | null;
+    }
+  | {
+      ok: true;
+      decision: "blocked";
+      reason: string;
+      message_id?: string | null;
+      conversation_id?: string | null;
+    };
 
 type MarkSentResult = {
   message_id?: string | null;
@@ -206,6 +237,31 @@ type ProcessDeps = {
     storeId: string,
     limit: number,
   ) => Promise<PendingExternalMessage[]>;
+  getTemplateRequiredCanonicalFollowups: (
+    supabase: SupabaseClient,
+    organizationId: string,
+    storeId: string,
+    limit: number,
+  ) => Promise<TemplateRequiredCanonicalFollowup[]>;
+  claimTemplateRequiredCanonicalFollowup: (
+    supabase: SupabaseClient,
+    candidate: TemplateRequiredCanonicalFollowup,
+  ) => Promise<TemplateFollowupClaimResult>;
+  releaseTemplateClaimedMessage: (
+    supabase: SupabaseClient,
+    message: MessageScope,
+    errorText: string | null,
+  ) => Promise<void>;
+  validateOrCancelWhatsappTemplateFollowupSend: (
+    supabase: SupabaseClient,
+    message: MessageScope,
+    templateAction: CanonicalFollowupTemplateAction,
+  ) => Promise<WhatsappTemplateFollowupGateResult>;
+  sendCanonicalFollowupTemplate: (
+    integration: WhatsappIntegration,
+    message: PendingExternalMessage,
+    templateAction: CanonicalFollowupTemplateAction,
+  ) => Promise<string>;
   claimMessageForExternalSend: (
     supabase: SupabaseClient,
     message: PendingExternalMessage,
@@ -314,7 +370,7 @@ function coerceBoolean(value: unknown): boolean | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   if (["true", "1", "yes", "sim"].includes(normalized)) return true;
-  if (["false", "0", "no", "nao", "não"].includes(normalized)) return false;
+  if (["false", "0", "no", "nao", "nÃ£o"].includes(normalized)) return false;
   return null;
 }
 
@@ -617,6 +673,200 @@ async function getPendingExternalMessages(
   return rows.map(normalizePendingMessage);
 }
 
+function normalizeCanonicalFollowupTemplateAction(
+  value: unknown,
+): CanonicalFollowupTemplateAction | null {
+  const normalized = normalizeText(value);
+  if (normalized === "followup_offer" || normalized === "followup_visit") {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeTemplateRequiredCanonicalFollowup(
+  row: PendingExternalMessageRow,
+): TemplateRequiredCanonicalFollowup {
+  const message = normalizePendingMessage(row);
+  const templateAction = normalizeCanonicalFollowupTemplateAction(row.template_action);
+
+  if (
+    message.outboundDeliveryState !== "template_required" &&
+    message.outboundDeliveryState !== "processing"
+  ) {
+    throw new Error(
+      `Mensagem ${message.id} retornada pelo reader de template em estado nao recuperavel: ${message.outboundDeliveryState}.`,
+    );
+  }
+  if (!templateAction) {
+    throw new Error(
+      `Mensagem ${message.id} retornada pelo reader de template sem template_action canonica.`,
+    );
+  }
+
+  return { message, templateAction };
+}
+
+async function getTemplateRequiredCanonicalFollowups(
+  supabase: SupabaseClient,
+  organizationId: string,
+  storeId: string,
+  limit: number,
+): Promise<TemplateRequiredCanonicalFollowup[]> {
+  const { data, error } = await supabase.rpc(
+    "get_template_required_canonical_followups_by_system",
+    {
+      p_organization_id: organizationId,
+      p_store_id: storeId,
+      p_limit: Math.max(1, Math.min(limit, 100)),
+      p_processing_lease_seconds: PROCESSING_LEASE_SECONDS,
+    },
+  );
+
+  if (error) {
+    throw new Error(`Erro ao buscar follow-ups que exigem template: ${error.message}`);
+  }
+
+  const rows = Array.isArray(data) ? (data as PendingExternalMessageRow[]) : [];
+  return rows.map(normalizeTemplateRequiredCanonicalFollowup);
+}
+
+async function claimTemplateRequiredCanonicalFollowup(
+  supabase: SupabaseClient,
+  candidate: TemplateRequiredCanonicalFollowup,
+): Promise<TemplateFollowupClaimResult> {
+  const { message } = candidate;
+  const { data, error } = await supabase.rpc(
+    "claim_template_required_canonical_followup_by_system",
+    {
+      p_organization_id: message.organizationId,
+      p_store_id: message.storeId,
+      p_message_id: message.id,
+      p_processing_lease_seconds: PROCESSING_LEASE_SECONDS,
+    },
+  );
+
+  if (error) {
+    throw new Error(`Falha ao claimar template da mensagem ${message.id}: ${error.message}`);
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error(`Claim de template retornou contrato invalido para message ${message.id}`);
+  }
+
+  const result = data as Record<string, unknown>;
+  if (result.ok !== true) {
+    throw new Error(`Claim de template recusou contrato ok para message ${message.id}`);
+  }
+
+  const claimed = result.claimed === true;
+  const reason = normalizeText(result.reason);
+  if (!reason) {
+    throw new Error(`Claim de template retornou reason invalido para message ${message.id}`);
+  }
+
+  if (!claimed) {
+    return { claimed: false, reason, templateAction: null };
+  }
+
+  const templateAction = normalizeCanonicalFollowupTemplateAction(result.template_action);
+  if (!templateAction) {
+    throw new Error(`Claim de template retornou template_action invalida para message ${message.id}`);
+  }
+
+  return { claimed: true, reason, templateAction };
+}
+
+async function releaseTemplateClaimedMessage(
+  supabase: SupabaseClient,
+  message: MessageScope,
+  errorText: string | null,
+) {
+  const { data, error } = await supabase
+    .from("messages")
+    .update({
+      outbound_delivery_state: "template_required",
+      outbound_claimed_at: null,
+      outbound_claimed_by: null,
+      outbound_uncertain_at: null,
+      outbound_error_text: errorText,
+    })
+    .eq("id", message.id)
+    .eq("organization_id", message.organizationId)
+    .eq("store_id", message.storeId)
+    .eq("outbound_delivery_state", "processing")
+    .is("outbound_attempt_started_at", null)
+    .is("external_message_id", null)
+    .is("deleted_at", null)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao liberar claim de template da mensagem ${message.id}: ${error.message}`);
+  }
+  if (!(data as TransitionResultRow | null)?.id) {
+    throw new Error(`Claim de template da mensagem ${message.id} nao pÃ´de voltar para template_required.`);
+  }
+}
+
+async function validateOrCancelWhatsappTemplateFollowupSend(
+  supabase: SupabaseClient,
+  message: MessageScope,
+  templateAction: CanonicalFollowupTemplateAction,
+): Promise<WhatsappTemplateFollowupGateResult> {
+  const { data, error } = await supabase.rpc(
+    "validate_or_cancel_whatsapp_template_followup_send_by_system",
+    {
+      p_organization_id: message.organizationId,
+      p_store_id: message.storeId,
+      p_message_id: message.id,
+      p_expected_template_action: templateAction,
+    },
+  );
+
+  if (error) {
+    throw new Error(`Erro no gate final de template WhatsApp da mensagem ${message.id}: ${error.message}`);
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error(`Gate final de template retornou contrato invalido para message ${message.id}`);
+  }
+
+  const result = data as Record<string, unknown>;
+  if (result.ok !== true) {
+    throw new Error(`Gate final de template recusou contrato ok para message ${message.id}`);
+  }
+
+  const decision = normalizeText(result.decision);
+  const reason = normalizeText(result.reason);
+
+  if (decision === "send") {
+    if (reason !== "authorized") {
+      throw new Error(`Gate final de template autorizou com motivo invalido para message ${message.id}`);
+    }
+    return {
+      ok: true,
+      decision: "send",
+      reason: "authorized",
+      message_id: normalizeText(result.message_id) || null,
+      conversation_id: normalizeText(result.conversation_id) || null,
+      outbound_kind: normalizeText(result.outbound_kind) || null,
+    };
+  }
+
+  if (decision === "blocked") {
+    if (!reason) {
+      throw new Error(`Gate final de template bloqueou sem motivo para message ${message.id}`);
+    }
+    return {
+      ok: true,
+      decision: "blocked",
+      reason,
+      message_id: normalizeText(result.message_id) || null,
+      conversation_id: normalizeText(result.conversation_id) || null,
+    };
+  }
+
+  throw new Error(`Gate final de template retornou decisao invalida para message ${message.id}`);
+}
+
 async function claimMessageForExternalSend(
   supabase: SupabaseClient,
   message: PendingExternalMessage,
@@ -866,6 +1116,38 @@ async function sendWhatsappTextMessage(params: WhatsappIntegration & { to: strin
   });
 }
 
+const CUSTOMER_FOLLOWUP_TEMPLATE_NAMES: Record<
+  CanonicalFollowupTemplateAction,
+  string
+> = {
+  followup_offer: "zion_followup_proposta",
+  followup_visit: "zion_followup_visita",
+};
+
+async function sendCanonicalFollowupTemplate(
+  integration: WhatsappIntegration,
+  message: PendingExternalMessage,
+  templateAction: CanonicalFollowupTemplateAction,
+) {
+  const templateName = CUSTOMER_FOLLOWUP_TEMPLATE_NAMES[templateAction];
+
+  return postWhatsappMessage({
+    accessToken: integration.accessToken,
+    phoneNumberId: integration.phoneNumberId,
+    label: `template ${templateName}`,
+    body: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: message.phone,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: "pt_BR" },
+      },
+    },
+  });
+}
+
 async function sendWhatsappImageMessage(
   params: WhatsappIntegration & { to: string; imageUrl: string; caption: string },
 ) {
@@ -1083,6 +1365,17 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
     createSupabaseAdmin: deps?.createSupabaseAdmin ?? getSupabaseAdmin,
     getWhatsappIntegration: deps?.getWhatsappIntegration ?? getWhatsappIntegration,
     getPendingExternalMessages: deps?.getPendingExternalMessages ?? getPendingExternalMessages,
+    getTemplateRequiredCanonicalFollowups:
+      deps?.getTemplateRequiredCanonicalFollowups ?? getTemplateRequiredCanonicalFollowups,
+    claimTemplateRequiredCanonicalFollowup:
+      deps?.claimTemplateRequiredCanonicalFollowup ?? claimTemplateRequiredCanonicalFollowup,
+    releaseTemplateClaimedMessage:
+      deps?.releaseTemplateClaimedMessage ?? releaseTemplateClaimedMessage,
+    validateOrCancelWhatsappTemplateFollowupSend:
+      deps?.validateOrCancelWhatsappTemplateFollowupSend ??
+      validateOrCancelWhatsappTemplateFollowupSend,
+    sendCanonicalFollowupTemplate:
+      deps?.sendCanonicalFollowupTemplate ?? sendCanonicalFollowupTemplate,
     claimMessageForExternalSend: deps?.claimMessageForExternalSend ?? claimMessageForExternalSend,
     releaseClaimedMessage: deps?.releaseClaimedMessage ?? releaseClaimedMessage,
     validateOrCancelWhatsappExternalSend:
@@ -1134,14 +1427,206 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
       });
     }
 
-    const pending = await resolvedDeps.getPendingExternalMessages(
-      supabase,
-      input.organizationId,
-      input.storeId,
-      limit,
-    );
-    const selected = pending.slice(0, limit);
+    const templateCandidates =
+      await resolvedDeps.getTemplateRequiredCanonicalFollowups(
+        supabase,
+        input.organizationId,
+        input.storeId,
+        limit,
+      );
+    const selectedTemplates = templateCandidates.slice(0, limit);
+    const remainingLimit = Math.max(0, limit - selectedTemplates.length);
+
+    const pending =
+      remainingLimit > 0
+        ? await resolvedDeps.getPendingExternalMessages(
+            supabase,
+            input.organizationId,
+            input.storeId,
+            remainingLimit,
+          )
+        : [];
+    const selected = pending.slice(0, remainingLimit);
     let integration: WhatsappIntegration | null = null;
+
+    for (const candidate of selectedTemplates) {
+      const { message } = candidate;
+
+      if (
+        message.organizationId !== input.organizationId ||
+        message.storeId !== input.storeId
+      ) {
+        results.push({
+          messageId: message.id,
+          status: "skipped",
+          detail: "Template recusado por divergencia de organization/store no worker.",
+        });
+        continue;
+      }
+
+      const eligibilityFailure = getWhatsappEligibilityFailure(message);
+      if (eligibilityFailure) {
+        results.push({
+          messageId: message.id,
+          status: "skipped",
+          detail: eligibilityFailure,
+        });
+        continue;
+      }
+
+      let claimResult: TemplateFollowupClaimResult;
+      try {
+        claimResult = await resolvedDeps.claimTemplateRequiredCanonicalFollowup(
+          supabase,
+          candidate,
+        );
+      } catch (error) {
+        const detail =
+          error instanceof Error
+            ? error.message
+            : "Erro desconhecido ao claimar template";
+        retryable += 1;
+        results.push({
+          messageId: message.id,
+          status: "retryable",
+          detail,
+        });
+        continue;
+      }
+
+      if (!claimResult.claimed || !claimResult.templateAction) {
+        results.push({
+          messageId: message.id,
+          status: "skipped",
+          detail: `Template nao claimado: ${claimResult.reason}`,
+        });
+        continue;
+      }
+
+      const templateAction = claimResult.templateAction;
+      let attemptStarted = false;
+      let providerMessageId: string | null = null;
+
+      try {
+        integration ??= await resolvedDeps.getWhatsappIntegration(
+          supabase,
+          input.organizationId,
+          input.storeId,
+        );
+
+        const gateResult =
+          await resolvedDeps.validateOrCancelWhatsappTemplateFollowupSend(
+            supabase,
+            message,
+            templateAction,
+          );
+
+        if (gateResult.decision === "blocked") {
+          failed += 1;
+          results.push({
+            messageId: message.id,
+            status: "failed",
+            detail: `ZION_EXTERNAL_TEMPLATE_SEND_BLOCKED:${gateResult.reason}`,
+          });
+          continue;
+        }
+
+        // P9 v2 persisted processing -> uncertain immediately before the POST.
+        // A crash after this point is never blindly retried.
+        attemptStarted = true;
+
+        providerMessageId = await resolvedDeps.sendCanonicalFollowupTemplate(
+          integration,
+          message,
+          templateAction,
+        );
+
+        await resolvedDeps.markMessageExternalSent(
+          supabase,
+          message,
+          providerMessageId,
+        );
+
+        sent += 1;
+        results.push({
+          messageId: message.id,
+          status: "sent",
+          detail: `Enviado com sucesso como template ${CUSTOMER_FOLLOWUP_TEMPLATE_NAMES[templateAction]}`,
+          whatsappMessageId: providerMessageId,
+        });
+      } catch (error) {
+        const detail =
+          error instanceof Error
+            ? error.message
+            : "Erro desconhecido no envio de template";
+
+        if (!attemptStarted) {
+          try {
+            await resolvedDeps.releaseTemplateClaimedMessage(
+              supabase,
+              message,
+              detail,
+            );
+            retryable += 1;
+            results.push({
+              messageId: message.id,
+              status: "retryable",
+              detail,
+            });
+          } catch (releaseError) {
+            const releaseDetail =
+              releaseError instanceof Error
+                ? releaseError.message
+                : String(releaseError);
+            console.error(
+              "[whatsapp-external-sender] falha ao liberar claim de template pre-POST",
+              {
+                messageId: message.id,
+                organizationId: message.organizationId,
+                storeId: message.storeId,
+                detail,
+                releaseDetail,
+              },
+            );
+            retryable += 1;
+            results.push({
+              messageId: message.id,
+              status: "retryable",
+              detail: `${detail}; falha ao liberar claim: ${releaseDetail}`,
+            });
+          }
+          continue;
+        }
+
+        if (providerMessageId) {
+          console.error(
+            "[whatsapp-external-sender] template provider retornou id, mas a persistencia local falhou",
+            {
+              messageId: message.id,
+              organizationId: message.organizationId,
+              storeId: message.storeId,
+              providerMessageId,
+              detail,
+            },
+          );
+        }
+
+        await resolvedDeps.markMessageUncertain(
+          supabase,
+          message,
+          detail,
+          providerMessageId,
+        );
+
+        uncertain += 1;
+        results.push({
+          messageId: message.id,
+          status: "uncertain",
+          detail,
+          whatsappMessageId: providerMessageId,
+        });
+      }
+    }
 
     for (const message of selected) {
       if (
@@ -1321,7 +1806,7 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
 
     return {
       ok: true,
-      processed: selected.length,
+      processed: selectedTemplates.length + selected.length,
       sent,
       failed,
       retryable,
