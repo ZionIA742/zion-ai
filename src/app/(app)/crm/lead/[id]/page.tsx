@@ -571,6 +571,13 @@ type PendingCustomerAttachment = {
   previewUrl?: string | null;
 };
 
+const MANUAL_MEDIA_ACCEPT =
+  "image/jpeg,image/png,image/webp,image/jpg,video/mp4,video/webm,video/quicktime";
+const MANUAL_DOCUMENT_ACCEPT =
+  "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation";
+const MANUAL_AUDIO_ACCEPT =
+  "audio/mpeg,audio/mp4,audio/ogg,audio/webm,audio/wav,audio/x-wav";
+
 type QuoteFormItem = {
   id: string;
   // TODO Bloco 3: mapear "pool_installation" para um tipo aceito pela API
@@ -883,6 +890,25 @@ function PaperclipComposerIcon() {
       strokeLinejoin="round"
     >
       <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.82l8.48-8.49" />
+    </svg>
+  );
+}
+
+function CatalogComposerIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m4 7 8-4 8 4-8 4-8-4Z" />
+      <path d="m4 12 8 4 8-4" />
+      <path d="m4 17 8 4 8-4" />
     </svg>
   );
 }
@@ -1337,6 +1363,8 @@ export default function LeadPage() {
   const requestedOpportunityId =
     String(searchParams.get("opportunityId") || "").trim() || null;
   const documentInputRef = useRef<HTMLInputElement | null>(null);
+  const mediaInputRef = useRef<HTMLInputElement | null>(null);
+  const audioInputRef = useRef<HTMLInputElement | null>(null);
   const customerAttachmentInputRef = useRef<HTMLInputElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -1375,6 +1403,7 @@ export default function LeadPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [simulatingCustomer, setSimulatingCustomer] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [catalogPlaceholderOpen, setCatalogPlaceholderOpen] = useState(false);
   const [uploadingCustomerAttachment, setUploadingCustomerAttachment] = useState(false);
   const [uploadingManualAttachment, setUploadingManualAttachment] = useState(false);
   const [recordingAudio, setRecordingAudio] = useState(false);
@@ -4064,6 +4093,13 @@ export default function LeadPage() {
     });
   }
 
+  function openCatalogPlaceholder() {
+    setAttachmentMenuOpen(false);
+    setCatalogPlaceholderOpen(true);
+    setErrorText(null);
+    setStatusText(null);
+  }
+
   function inferManualAttachmentKind(file: File): "document" | "media" | "audio" {
     const mimeType = String(file.type || "").toLowerCase();
 
@@ -4076,7 +4112,7 @@ export default function LeadPage() {
   function prepareManualAttachment(file: File, kind: "document" | "media" | "audio") {
     const mimeType = String(file.type || "").trim();
     const previewUrl =
-      kind === "media" && mimeType.startsWith("image/")
+      kind === "media" && (mimeType.startsWith("image/") || mimeType.startsWith("video/"))
         ? URL.createObjectURL(file)
         : null;
 
@@ -7006,26 +7042,62 @@ export default function LeadPage() {
               <div ref={messagesEndRef} aria-hidden="true" />
             </div>
 
-            <div className="border-t border-gray-100 bg-white px-4 py-3 lg:px-5">
+            <div className="relative border-t border-gray-100 bg-white px-4 py-3 lg:px-5">
               <input
                 ref={documentInputRef}
                 type="file"
-                accept="image/jpeg,image/png,image/webp,image/jpg,video/mp4,video/webm,video/quicktime,audio/mpeg,audio/mp4,audio/ogg,audio/webm,audio/wav,audio/x-wav,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                onChange={(event) => handleManualAttachmentInputChange(event)}
+                accept={MANUAL_DOCUMENT_ACCEPT}
+                onChange={(event) => handleManualAttachmentInputChange(event, "document")}
+                className="hidden"
+              />
+              <input
+                ref={mediaInputRef}
+                type="file"
+                accept={MANUAL_MEDIA_ACCEPT}
+                onChange={(event) => handleManualAttachmentInputChange(event, "media")}
+                className="hidden"
+              />
+              <input
+                ref={audioInputRef}
+                type="file"
+                accept={MANUAL_AUDIO_ACCEPT}
+                onChange={(event) => handleManualAttachmentInputChange(event, "audio")}
                 className="hidden"
               />
               {manualPendingAttachment ? (
                 <div className="mb-3 rounded-2xl bg-gray-50 p-3 ring-1 ring-black/5">
                   <div className="flex flex-wrap items-center gap-3">
-                    {manualPendingAttachment.previewUrl ? (
+                    {manualPendingAttachment.kind === "media" &&
+                    manualPendingAttachment.previewUrl &&
+                    manualPendingAttachment.mimeType.startsWith("image/") ? (
                       <img
                         src={manualPendingAttachment.previewUrl}
                         alt={manualPendingAttachment.fileName}
                         className="h-16 w-16 rounded-xl object-cover ring-1 ring-black/10"
                       />
+                    ) : manualPendingAttachment.kind === "media" &&
+                      manualPendingAttachment.previewUrl &&
+                      manualPendingAttachment.mimeType.startsWith("video/") ? (
+                      <video
+                        src={manualPendingAttachment.previewUrl}
+                        muted
+                        playsInline
+                        preload="metadata"
+                        aria-label={`Preview de ${manualPendingAttachment.fileName}`}
+                        className="h-16 w-16 rounded-xl object-cover ring-1 ring-black/10"
+                      />
                     ) : (
-                      <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-white text-xs font-bold text-gray-500 ring-1 ring-black/10">
-                        ANEXO
+                      <div className="flex h-16 w-16 flex-col items-center justify-center rounded-xl bg-white text-[10px] font-bold uppercase text-gray-500 ring-1 ring-black/10">
+                        <span>
+                          {manualPendingAttachment.kind === "audio"
+                            ? "ÁUDIO"
+                            : manualPendingAttachment.kind === "document"
+                              ? "DOC"
+                              : "VÍDEO"}
+                        </span>
+                        <span className="mt-1 text-[9px] font-medium normal-case">
+                          {manualPendingAttachment.mimeType.split("/")[1] || "arquivo"}
+                        </span>
                       </div>
                     )}
 
@@ -7034,6 +7106,14 @@ export default function LeadPage() {
                         {manualPendingAttachment.fileName}
                       </div>
                       <div className="mt-1 break-words text-xs text-gray-500">
+                        {manualPendingAttachment.kind === "audio"
+                          ? "Áudio"
+                          : manualPendingAttachment.kind === "document"
+                            ? "Documento"
+                            : manualPendingAttachment.mimeType.startsWith("video/")
+                              ? "Vídeo"
+                              : "Foto"}
+                        {" • "}
                         {formatFileSize(manualPendingAttachment.size)}
                         {manualPendingAttachment.mimeType
                           ? ` • ${manualPendingAttachment.mimeType}`
@@ -7053,10 +7133,35 @@ export default function LeadPage() {
                 </div>
               ) : null}
 
+              {catalogPlaceholderOpen ? (
+                <div className="mb-3 rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-gray-700 ring-1 ring-black/10">
+                      <CatalogComposerIcon />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-gray-900">
+                        Produto do catálogo
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-gray-600">
+                        A seleção de produtos será disponibilizada em uma próxima etapa. Nenhum produto foi selecionado ou enviado.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCatalogPlaceholderOpen(false)}
+                      className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                    >
+                      Fechar
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => documentInputRef.current?.click()}
+                  onClick={() => setAttachmentMenuOpen((current) => !current)}
                   disabled={!conversation || working || uploadingManualAttachment}
                   className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                   aria-label="Anexar arquivo"
@@ -7064,6 +7169,49 @@ export default function LeadPage() {
                 >
                   <PaperclipComposerIcon />
                 </button>
+
+                {attachmentMenuOpen ? (
+                  <div className="absolute bottom-full left-0 z-20 mb-2 flex w-56 flex-col gap-1 rounded-2xl border border-gray-200 bg-white p-2 shadow-lg ring-1 ring-black/5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttachmentMenuOpen(false);
+                        mediaInputRef.current?.click();
+                      }}
+                      className="rounded-xl px-3 py-2 text-left text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                    >
+                      Foto/Vídeo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttachmentMenuOpen(false);
+                        documentInputRef.current?.click();
+                      }}
+                      className="rounded-xl px-3 py-2 text-left text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                    >
+                      Documento
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttachmentMenuOpen(false);
+                        audioInputRef.current?.click();
+                      }}
+                      className="rounded-xl px-3 py-2 text-left text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                    >
+                      Áudio
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openCatalogPlaceholder}
+                      className="flex items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                    >
+                      <CatalogComposerIcon />
+                      Produto do catálogo
+                    </button>
+                  </div>
+                ) : null}
 
                 <input
                   value={newMessage}
