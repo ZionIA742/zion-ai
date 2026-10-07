@@ -213,6 +213,40 @@ type TokenUsageBreakdown = {
   unclassifiedTokens?: number | string | null;
 };
 
+export type StoreSettingsReadinessState =
+  | "ready"
+  | "attention"
+  | "blocked"
+  | "unknown";
+
+export type StoreSettingsReadinessFamily =
+  | "operation"
+  | "payment"
+  | "discount"
+  | "channel"
+  | "commercial_ai"
+  | "strategy";
+
+export type StoreSettingsReadinessFamilyIssue = {
+  code: string;
+  message: string;
+};
+
+export type StoreSettingsReadiness = {
+  overall: StoreSettingsReadinessState;
+  counts: Record<StoreSettingsReadinessState, number>;
+  families: Array<{
+    family: StoreSettingsReadinessFamily;
+    state: StoreSettingsReadinessState;
+    issues: StoreSettingsReadinessFamilyIssue[];
+  }>;
+  issues: Array<
+    StoreSettingsReadinessFamilyIssue & {
+      family: StoreSettingsReadinessFamily;
+      state: Exclude<StoreSettingsReadinessState, "ready">;
+    }
+  >;
+};
 export type ZionAdminStore = {
   id: string;
   name: string;
@@ -222,6 +256,7 @@ export type ZionAdminStore = {
   createdAt: string | null;
   integrity?: StoreIntegrity | null;
   operationalHealth?: StoreOperationalHealth | null;
+  settingsReadiness?: StoreSettingsReadiness | null;
   totalLeads?: number | null;
   totalMessages?: number | null;
   totalSalesAiMessages?: number | null;
@@ -1028,6 +1063,64 @@ function OverviewButton({
   );
 }
 
+const STORE_SETTINGS_READINESS_STATE_LABELS: Record<
+  StoreSettingsReadinessState,
+  string
+> = {
+  ready: "Pronta",
+  attention: "Atenção",
+  blocked: "Bloqueada",
+  unknown: "Não verificada",
+};
+
+const STORE_SETTINGS_READINESS_FAMILY_LABELS: Record<
+  StoreSettingsReadinessFamily,
+  string
+> = {
+  operation: "Operação",
+  payment: "Pagamento",
+  discount: "Desconto",
+  channel: "Canal",
+  commercial_ai: "IA comercial",
+  strategy: "Estratégia",
+};
+
+const STORE_SETTINGS_READINESS_FAMILIES: StoreSettingsReadinessFamily[] = [
+  "operation",
+  "payment",
+  "discount",
+  "channel",
+  "commercial_ai",
+  "strategy",
+];
+
+function getSettingsReadinessStateClassName(
+  state: StoreSettingsReadinessState,
+) {
+  if (state === "ready") {
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+  }
+
+  if (state === "attention") {
+    return "border-amber-500/30 bg-amber-500/10 text-amber-200";
+  }
+
+  if (state === "blocked") {
+    return "border-red-500/30 bg-red-500/10 text-red-200";
+  }
+
+  return "border-white/10 bg-zinc-950/60 text-zinc-400";
+}
+
+function getSettingsReadinessFamilyState(
+  readiness: StoreSettingsReadiness | null | undefined,
+  family: StoreSettingsReadinessFamily,
+): StoreSettingsReadinessState {
+  return (
+    readiness?.families.find((item) => item.family === family)?.state ??
+    "unknown"
+  );
+}
 function StoreRowCard({
   store,
   selected,
@@ -1045,6 +1138,7 @@ function StoreRowCard({
   const integrityState = store.integrity?.state ?? "unknown";
   const integrityIssues = getStoreIntegrityIssueLabels(store.integrity);
   const operationalHealthState = store.operationalHealth?.state ?? "unknown";
+  const settingsReadinessState = store.settingsReadiness?.overall ?? "unknown";
 
   return (
     <button
@@ -1081,6 +1175,14 @@ function StoreRowCard({
               ].join(" ")}
             >
               Saúde: {getStoreOperationalHealthStateLabel(store.operationalHealth)}
+            </span>
+            <span
+              className={[
+                "rounded-full border px-2 py-0.5 text-[10px]",
+                getSettingsReadinessStateClassName(settingsReadinessState),
+              ].join(" ")}
+            >
+              Configuração: {STORE_SETTINGS_READINESS_STATE_LABELS[settingsReadinessState]}
             </span>
           </div>
           <div className="mt-0.5 truncate text-xs text-zinc-400">
@@ -1526,6 +1628,10 @@ function StoreDetailsDrawer({
   const operationalHealthState = operationalHealth?.state ?? "unknown";
   const operationalHealthIssueLabels =
     getStoreOperationalHealthIssueLabels(operationalHealth);
+  const settingsReadiness = store.settingsReadiness ?? null;
+  const settingsReadinessState =
+    settingsReadiness?.overall ?? "unknown";
+  const settingsReadinessIssues = settingsReadiness?.issues ?? [];
 
   return (
     <DrawerShell
@@ -1584,6 +1690,65 @@ function StoreDetailsDrawer({
             ) : integrityIssueLabels.length > 0 ? (
               <ul className="mt-2 space-y-1 text-xs leading-5 text-zinc-400">
                 {integrityIssueLabels.map((issue) => <li key={issue}>• {issue}</li>)}
+              </ul>
+            ) : null}
+          </div>
+        </section>
+        <section>
+          <h4 className="text-sm font-semibold text-zinc-200">
+            Prontidão das configurações
+          </h4>
+
+          <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-zinc-100">
+                {STORE_SETTINGS_READINESS_STATE_LABELS[settingsReadinessState]}
+              </div>
+
+              <span
+                className={[
+                  "rounded-full border px-2.5 py-1 text-[10px] font-semibold",
+                  getSettingsReadinessStateClassName(settingsReadinessState),
+                ].join(" ")}
+              >
+                Estado geral
+              </span>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {STORE_SETTINGS_READINESS_FAMILIES.map((family) => {
+                const familyState = getSettingsReadinessFamilyState(
+                  settingsReadiness,
+                  family,
+                );
+
+                return (
+                  <DetailItem
+                    key={family}
+                    label={STORE_SETTINGS_READINESS_FAMILY_LABELS[family]}
+                    value={STORE_SETTINGS_READINESS_STATE_LABELS[familyState]}
+                  />
+                );
+              })}
+            </div>
+
+            {settingsReadinessState === "ready" ? (
+              <p className="mt-3 text-xs leading-5 text-zinc-500">
+                As seis famílias de configuração estão prontas.
+              </p>
+            ) : settingsReadinessState === "unknown" &&
+              settingsReadinessIssues.length === 0 ? (
+              <p className="mt-3 text-xs leading-5 text-amber-200">
+                Não foi possível verificar completamente as configurações desta loja.
+              </p>
+            ) : settingsReadinessIssues.length > 0 ? (
+              <ul className="mt-3 space-y-1 text-xs leading-5 text-zinc-400">
+                {settingsReadinessIssues.map((issue) => (
+                  <li key={`${issue.family}:${issue.code}`}>
+                    • {STORE_SETTINGS_READINESS_FAMILY_LABELS[issue.family]}:{" "}
+                    {issue.message}
+                  </li>
+                ))}
               </ul>
             ) : null}
           </div>
