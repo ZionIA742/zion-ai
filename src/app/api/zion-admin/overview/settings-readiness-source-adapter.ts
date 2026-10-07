@@ -152,16 +152,19 @@ function explicitBoolean(value: unknown): value is boolean {
 function adaptOperation(
   source: StoreSettingsReadinessSources["operation"],
 ): StoreSettingsReadinessFamilyInput {
-  const sourceErrors: string[] = [];
+  const settingsSource = source.settings;
+  const executionPoliciesSource = source.executionPolicies;
 
-  if (!source.settings.ok) sourceErrors.push(source.settings.error);
-  if (!source.executionPolicies.ok) sourceErrors.push(source.executionPolicies.error);
+  if (!settingsSource.ok || !executionPoliciesSource.ok) {
+    const sourceErrors = [
+      ...(!settingsSource.ok ? [settingsSource.error] : []),
+      ...(!executionPoliciesSource.ok ? [executionPoliciesSource.error] : []),
+    ];
 
-  if (sourceErrors.length > 0) {
     return unknown("operation", sourceErrors);
   }
 
-  if (!source.settings.data) {
+  if (!settingsSource.data) {
     return blocked(
       issue(
         "operation_settings_not_configured",
@@ -170,7 +173,7 @@ function adaptOperation(
     );
   }
 
-  if (!source.executionPolicies.data) {
+  if (!executionPoliciesSource.data) {
     return blocked(
       issue(
         "operation_execution_policies_not_configured",
@@ -179,8 +182,8 @@ function adaptOperation(
     );
   }
 
-  const settings = source.settings.data;
-  const policies = source.executionPolicies.data;
+  const settings = settingsSource.data;
+  const policies = executionPoliciesSource.data;
   const issues: StoreSettingsReadinessIssue[] = [];
 
   if (!explicitBoolean(settings.offers_installation)) {
