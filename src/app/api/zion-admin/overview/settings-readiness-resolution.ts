@@ -89,10 +89,13 @@ export function resolveStoreSettingsReadiness(
         return [];
       }
 
+      const state: Exclude<StoreSettingsReadinessState, "ready"> =
+        family.state;
+
       return family.issues.map((issue) => ({
         ...issue,
         family: family.family,
-        state: family.state,
+        state,
       }));
     },
   );
