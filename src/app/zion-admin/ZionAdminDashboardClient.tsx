@@ -3819,7 +3819,7 @@ export default function ZionAdminDashboardClient({
             <OverviewButton
               label="Pendências"
               value={formatNumber(data?.totals.totalOperationalIssues)}
-              helper={`${formatNumber(data?.totals.aiRunQueueErrors)} IA · ${formatNumber(data?.totals.whatsappErrors)} WhatsApp · ${formatNumber(data?.totals.configurationIssues)} configuração`}
+              helper="Filas e pendências operacionais; configuração é acompanhada separadamente"
               active={selectedOverview === "pending"}
               onClick={() =>
                 setSelectedOverview((current) =>

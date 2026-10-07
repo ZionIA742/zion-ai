@@ -149,7 +149,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "store payload includes settings readiness without changing operational totals",
+    name: "store payload keeps readiness and configuration separate from operational totals",
     run: () => {
       const source = readSource(routePath);
 
@@ -191,7 +191,15 @@ const tests: TestCase[] = [
         );
       }
 
-      assert.equal(source.includes("metrics.configurationIssues +"), true);
+      const operationalTotalBlock =
+        source.match(
+          /const totalOperationalIssues\s*=\s*([\s\S]*?);/,
+        )?.[1] ?? "";
+
+      assert.equal(
+        operationalTotalBlock.includes("metrics.configurationIssues"),
+        false,
+      );
       assert.equal(source.includes("metrics.pendingAiRuns +"), true);
       assert.equal(source.includes("metrics.pendingWhatsappEvents +"), true);
     },

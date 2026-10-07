@@ -2093,7 +2093,6 @@ export async function GET() {
       );
 
       const totalOperationalIssues =
-        metrics.configurationIssues +
         metrics.pendingAiRuns +
         metrics.aiRunQueueErrors +
         metrics.pendingSalesActions +
