@@ -895,3 +895,75 @@ test("contract usage policy normalizes hidden fields and uses canonical complete
     "summary must distinguish explicit Não from not configured",
   );
 });
+
+test("digital contract readiness requires a valid scoped active store version", () => {
+  const digitalUsageBlock = blockBetween(
+    "function usesDigitalContractUsage(",
+    "function isValidStoreContractActiveVersion(",
+  );
+  assert.equal(
+    digitalUsageBlock.includes('draft.enabled === "Sim"'),
+    true,
+    "digital readiness must require explicit contract usage",
+  );
+  assert.equal(
+    digitalUsageBlock.includes('draft.formats.includes("digital")'),
+    true,
+    "digital readiness must require the digital format",
+  );
+
+  const activeVersionBlock = blockBetween(
+    "function isValidStoreContractActiveVersion(",
+    "function buildCommercialExperiencePolicyPatch(",
+  );
+  for (const requiredCheck of [
+    'template.status?.trim().toLowerCase() === "active"',
+    "template.active_version_id === activeVersion.id",
+    "activeVersion.template_id === template.id",
+    "activeVersion.organization_id === organizationId",
+    "activeVersion.store_id === storeId",
+    'activeVersion.status?.trim().toLowerCase() === "active"',
+  ]) {
+    assert.equal(
+      activeVersionBlock.includes(requiredCheck),
+      true,
+      `active contract validation must include ${requiredCheck}`,
+    );
+  }
+
+  const cardBlock = blockBetween(
+    'title="Contrato padrão da loja"',
+    '<div className="space-y-4">',
+  );
+  assert.equal(cardBlock.includes("tone={storeContractCardTone}"), true);
+  assert.equal(cardBlock.includes("status={storeContractCardStatus}"), true);
+  const presentationBlock = blockBetween(
+    "const storeContractCardTone =",
+    "const storeName =",
+  );
+  assert.equal(
+    presentationBlock.includes("hasValidStoreContractActiveVersion"),
+    true,
+    "a versão ativa válida deve manter o estado positivo",
+  );
+  assert.equal(
+    /:\s*usesDigitalContract\s*\?\s*"red"/.test(presentationBlock),
+    true,
+    "a ausência do contrato digital exigido deve ser vermelha",
+  );
+  assert.equal(
+    presentationBlock.includes('savedContractExperience.enabled === "Não"'),
+    true,
+    "contrato desabilitado deve manter o estado não aplicável",
+  );
+  assert.equal(
+    presentationBlock.includes(': "yellow"'),
+    true,
+    "contrato não digital não deve ficar vermelho por ausência de template",
+  );
+  assert.equal(
+    /usesDigitalContract\s*\?\s*"red"/.test(pageSource),
+    true,
+    "missing required digital contract must use the existing red tone",
+  );
+});

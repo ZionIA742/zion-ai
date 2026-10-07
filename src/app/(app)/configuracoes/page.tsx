@@ -1449,6 +1449,38 @@ function isContractUsagePolicyComplete(
 
   return true;
 }
+
+function usesDigitalContractUsage(policy: Record<string, unknown>): boolean {
+  const draft = mergePolicyFields(
+    createEmptyContractExperienceDraft(),
+    policy,
+    CONTRACT_EXPERIENCE_KEYS,
+  );
+
+  return draft.enabled === "Sim" && draft.formats.includes("digital");
+}
+
+function isValidStoreContractActiveVersion(args: {
+  template: StoreContractTemplateRow | null;
+  activeVersion: StoreContractTemplateVersionRow | null;
+  organizationId: string | null;
+  storeId: string | null;
+}) {
+  const { template, activeVersion, organizationId, storeId } = args;
+  if (!template || !activeVersion) return false;
+
+  return (
+    template.organization_id === organizationId &&
+    template.store_id === storeId &&
+    template.status?.trim().toLowerCase() === "active" &&
+    template.active_version_id === activeVersion.id &&
+    activeVersion.template_id === template.id &&
+    activeVersion.organization_id === organizationId &&
+    activeVersion.store_id === storeId &&
+    activeVersion.status?.trim().toLowerCase() === "active"
+  );
+}
+
 function buildCommercialExperiencePolicyPatch(
   target: string,
   draft: CommercialExperienceDraftState,
@@ -4391,6 +4423,29 @@ export default function ConfiguracoesPage() {
     useState(false);
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
+  const usesDigitalContract = usesDigitalContractUsage(
+    readRecord(settingsExperiencePolicies?.contract_usage_policy),
+  );
+  const hasValidStoreContractActiveVersion = isValidStoreContractActiveVersion({
+    template: storeContractTemplate,
+    activeVersion: storeContractActiveVersion,
+    organizationId,
+    storeId: activeStoreId,
+  });
+  const storeContractCardTone = hasValidStoreContractActiveVersion
+    ? "blue"
+    : usesDigitalContract
+      ? "red"
+      : savedContractExperience.enabled === "Não"
+        ? "blue"
+        : "yellow";
+  const storeContractCardStatus = hasValidStoreContractActiveVersion
+    ? "Versão ativa"
+    : usesDigitalContract
+      ? "Precisa de contrato digital"
+      : savedContractExperience.enabled === "Não"
+        ? "Não aplicável"
+        : "Precisa de atenção";
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
   const loadedCanonicalPrimaryResponsible = hasLoadedCanonicalPrimaryResponsible
     ? canonicalPrimaryResponsible
@@ -14920,8 +14975,8 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Contrato padrão da loja"
             description="Envie, revise e aprove o contrato base oficial da loja. O ZION mantém uma única versão ativa por vez e preserva as versões anteriores no histórico."
-            tone={storeContractActiveVersion ? "blue" : savedContractExperience.enabled === "Não" ? "blue" : "yellow"}
-            status={storeContractActiveVersion ? "Versão ativa" : savedContractExperience.enabled === "Não" ? "Não aplicável" : "Precisa de atenção"}
+            tone={storeContractCardTone}
+            status={storeContractCardStatus}
             actions={<button type="button" onClick={() => setIsContractsEditing((current) => !current)} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">{isContractsEditing ? "Fechar" : "Gerenciar contrato"}</button>}
           >
             <div className="space-y-4">
