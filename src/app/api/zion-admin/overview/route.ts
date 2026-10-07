@@ -30,6 +30,10 @@ import {
   type WhatsappOutboundHealthRow,
 } from "./operational-health-source-adapter";
 import { resolveStoreOperationalHealth } from "./operational-health-resolution";
+import {
+  loadStoreSettingsReadiness,
+  type SettingsReadinessOverviewClient,
+} from "./settings-readiness-overview";
 
 type StoreRow = {
   id: string;
@@ -1838,6 +1842,18 @@ export async function GET() {
         },
       });
 
+    const settingsReadinessEntries = await Promise.all(
+      operationalStores.map(async (store) => [
+        store.id,
+        await loadStoreSettingsReadiness({
+          supabase: serviceSupabase as unknown as SettingsReadinessOverviewClient,
+          organizationId: store.organization_id,
+          storeId: store.id,
+        }),
+      ] as const),
+    );
+    const settingsReadinessByStoreId = new Map(settingsReadinessEntries);
+
     const accountAccessByStoreId = await loadStoreAccountAccessSnapshots(
       serviceSupabase,
       operationalStores,
@@ -2159,6 +2175,8 @@ export async function GET() {
             subscriptions: null,
           }),
         operationalHealth,
+        settingsReadiness:
+          settingsReadinessByStoreId.get(store.id) ?? null,
 
         configurationIssues: metrics.configurationIssues,
         pendingAiRuns: metrics.pendingAiRuns,
