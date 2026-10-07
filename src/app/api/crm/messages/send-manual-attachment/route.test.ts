@@ -7,6 +7,8 @@ import type {
   StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";
 
+process.env.SUPABASE_SERVICE_ROLE_KEY ||= "test-service-role-key";
+
 type TestCase = {
   name: string;
   run: () => Promise<void> | void;
@@ -241,7 +243,7 @@ function createServiceSupabaseMock(args?: {
     },
     async rpc(name: string, params: Record<string, unknown>) {
       rpcCalls.push({ name, params });
-      args?.events?.push("insert_message");
+      args?.events?.push("finalize_manual_attachment_message");
       if (args?.insertThrows) {
         throw new Error("insert exploded");
       }
@@ -610,6 +612,7 @@ const tests: TestCase[] = [
       assert.equal(response.status, 200);
       assert.equal(body.messageType, "image");
       assert.equal(body.attachmentKind, "image");
+      assert.equal(serviceSupabase.rpcCalls[0]?.name, "finalize_manual_attachment_message");
       assert.equal(serviceSupabase.rpcCalls[0]?.params.p_media_url, serviceSupabase.uploads[0]?.path);
       assert.equal(
         (serviceSupabase.rpcCalls[0]?.params.p_metadata as Record<string, unknown>).send_external,
@@ -759,7 +762,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "insert_message error executes exact cleanup",
+    name: "finalize RPC error preserves the uploaded object",
     run: async () => {
       const serviceSupabase = createServiceSupabaseMock({
         conversation: {
@@ -798,14 +801,11 @@ const tests: TestCase[] = [
       const body = (await response.json()) as Record<string, unknown>;
       assert.equal(response.status, 500);
       assert.equal(body.error, "INSERT_MANUAL_ATTACHMENT_FAILED");
-      assert.deepEqual(serviceSupabase.removals[0], {
-        bucket: "zion-store-files",
-        paths: [serviceSupabase.uploads[0]?.path],
-      });
+      assert.equal(serviceSupabase.removals.length, 0);
     },
   },
   {
-    name: "throw during insert_message also executes cleanup",
+    name: "ambiguous finalize RPC throw preserves the uploaded object",
     run: async () => {
       const serviceSupabase = createServiceSupabaseMock({
         conversation: {
@@ -841,11 +841,11 @@ const tests: TestCase[] = [
       const body = (await response.json()) as Record<string, unknown>;
       assert.equal(response.status, 500);
       assert.equal(body.error, "INSERT_MANUAL_ATTACHMENT_FAILED");
-      assert.equal(serviceSupabase.removals.length, 1);
+      assert.equal(serviceSupabase.removals.length, 0);
     },
   },
   {
-    name: "cleanup failure does not leak or replace the primary error",
+    name: "cleanup is not attempted after an ambiguous finalize failure",
     run: async () => {
       const serviceSupabase = createServiceSupabaseMock({
         conversation: {
@@ -892,7 +892,7 @@ const tests: TestCase[] = [
         assert.equal(response.status, 500);
         assert.equal(body.error, "INSERT_MANUAL_ATTACHMENT_FAILED");
         assert.equal(String(body.message).includes("cleanup"), false);
-        assert.equal(consoleCalls.length > 0, true);
+        assert.equal(consoleCalls.length, 0);
       } finally {
         console.error = originalConsoleError;
       }
@@ -1021,7 +1021,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "route source uses canonical store gate and removes legacy auth",
+    name: "route source uses canonical store gate and finalize materializer",
     run: () => {
       const source = readFileSync(join(__dirname, "route.ts"), "utf8");
 
@@ -1034,41 +1034,16 @@ const tests: TestCase[] = [
       assert.equal(source.includes('formData.get("organizationId")'), false);
       assert.equal(source.includes('formData.get("storeId")'), false);
       assert.equal(source.includes("requestedStoreId"), false);
-      assert.equal(source.includes("error.message"), false);
-      assert.equal(source.includes("details"), false);
-      assert.equal(source.includes("stack"), false);
-      assert.equal(source.includes("cause"), false);
-      const conversationLoader = source.slice(
-        source.indexOf("async function loadScopedConversation"),
-        source.indexOf("async function loadScopedLead"),
-      );
-      assert.equal(conversationLoader.includes("store_id"), false);
-      assert.match(
-        source,
-        /serviceSupabase\.storage[\s\S]*?\.from\(STORAGE_BUCKET\)[\s\S]*?\.upload\(/,
-      );
-
-      const gateIndex = source.indexOf("const access = await deps.resolveStoreAccess");
-      const deniedIndex = source.indexOf("return createStoreApiDeniedResponse(access)");
-      const formDataIndex = source.indexOf("formData = await request.formData()");
-      const serviceRoleIndex = source.indexOf("serviceSupabase = deps.createServiceSupabaseClient()");
-      const conversationQueryIndex = source.indexOf("const conversationResult = await loadScopedConversation");
-      const fileReadIndex = source.indexOf("const fileBytes = await deps.readFileBytes");
-      const uploadIndex = source.indexOf("const uploadResult = await serviceSupabase.storage");
-
-      assert.notEqual(gateIndex, -1);
-      assert.notEqual(deniedIndex, -1);
-      assert.notEqual(formDataIndex, -1);
-      assert.notEqual(serviceRoleIndex, -1);
-      assert.notEqual(conversationQueryIndex, -1);
-      assert.notEqual(fileReadIndex, -1);
-      assert.notEqual(uploadIndex, -1);
-      assert.equal(gateIndex < deniedIndex, true);
-      assert.equal(deniedIndex < formDataIndex, true);
-      assert.equal(formDataIndex < serviceRoleIndex, true);
-      assert.equal(serviceRoleIndex < conversationQueryIndex, true);
-      assert.equal(conversationQueryIndex < fileReadIndex, true);
-      assert.equal(fileReadIndex < uploadIndex, true);
+      assert.equal(source.includes("String(error)"), false);
+      assert.equal(source.includes("error.stack"), false);
+      assert.equal(source.includes("loadManualAttachmentScope"), true);
+      assert.equal(source.includes("buildManualAttachmentPath"), true);
+      assert.equal(source.includes("materializeManualAttachmentMessage"), true);
+      assert.equal(source.includes("finalize_manual_attachment_message"), false);
+      assert.equal(source.includes("insert_message"), false);
+      assert.equal(source.includes("upsert: false"), true);
+      assert.equal(source.includes("cleanupUploadedFile"), false);
+      assert.equal(source.includes("cleanupManualAttachment"), false);
     },
   },
 ];

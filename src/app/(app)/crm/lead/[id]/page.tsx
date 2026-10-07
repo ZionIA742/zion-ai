@@ -3675,31 +3675,49 @@ export default function LeadPage() {
     setUploadingManualAttachment(true);
 
     try {
-      const formData = new FormData();
-      formData.append("organizationId", lead.organization_id);
-
-      if (lead.store_id) {
-        formData.append("storeId", lead.store_id);
-      }
-
-      formData.append("conversationId", conversation.id);
-      formData.append("file", file);
-
-      const response = await fetch("/api/crm/messages/send-manual-attachment", {
+      const response = await fetch("/api/crm/messages/send-manual-attachment/authorize", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: conversation.id,
+          fileName: file.name,
+          mimeType: file.type,
+          sizeBytes: file.size,
+        }),
       });
 
       const result = (await response.json().catch(() => null)) as {
         ok?: boolean;
         error?: string;
         message?: string;
+        bucket?: string;
+        path?: string;
+        token?: string;
+        authorizationToken?: string;
       } | null;
 
       if (!response.ok || !result?.ok) {
         throw new Error(
           result?.message || result?.error || "Nao foi possivel enviar o anexo."
         );
+      }
+
+      if (!result.bucket || !result.path || !result.token || !result.authorizationToken) {
+        throw new Error("Resposta de upload incompleta.");
+      }
+      const upload = await supabase.storage
+        .from(result.bucket)
+        .uploadToSignedUrl(result.path, result.token, file, { contentType: file.type });
+      if (upload.error) throw new Error(upload.error.message || "Nao foi possivel carregar o anexo.");
+
+      const finalize = await fetch("/api/crm/messages/send-manual-attachment/finalize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ authorizationToken: result.authorizationToken, path: result.path }),
+      });
+      const finalized = (await finalize.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!finalize.ok || !finalized?.ok) {
+        throw new Error(finalized?.error || "Nao foi possivel finalizar o anexo.");
       }
 
       return true;
