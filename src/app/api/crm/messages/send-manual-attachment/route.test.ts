@@ -615,6 +615,10 @@ const tests: TestCase[] = [
         (serviceSupabase.rpcCalls[0]?.params.p_metadata as Record<string, unknown>).send_external,
         true,
       );
+      assert.equal(
+        (serviceSupabase.rpcCalls[0]?.params.p_metadata as Record<string, unknown>).outbound_origin,
+        "crm_manual_image",
+      );
     },
   },
   {
@@ -623,7 +627,6 @@ const tests: TestCase[] = [
       const cases = [
         ["clip.mp3", "audio/mpeg", "audio", "audio"],
         ["clip.mp4", "video/mp4", "video", "video"],
-        ["doc.pdf", "application/pdf", "text", "file"],
       ] as const;
 
       for (const [name, type, expectedMessageType, expectedAttachmentKind] of cases) {
@@ -665,6 +668,53 @@ const tests: TestCase[] = [
         assert.equal(body.attachmentKind, expectedAttachmentKind);
         assert.equal(metadata.send_external, false);
       }
+    },
+  },
+  {
+    name: "document whatsapp preserves canonical external contract",
+    run: async () => {
+      const serviceSupabase = createServiceSupabaseMock({
+        conversation: {
+          id: "conversation-1",
+          organization_id: "access-org",
+          lead_id: "lead-1",
+        },
+        lead: {
+          id: "lead-1",
+          organization_id: "access-org",
+          store_id: "access-store",
+        },
+      });
+
+      const response = await handleSendManualAttachmentPost(
+        createRequest({
+          tracker: { reads: 0 },
+          formDataFactory: () =>
+            createFormData({
+              conversationId: "conversation-1",
+              file: createFile("doc.pdf", "application/pdf", "pdf"),
+            }),
+        }),
+        {
+          resolveStoreAccess: async () =>
+            createGrantedAccess({ sessionUserId: "user-1" }),
+          createServiceSupabaseClient: () => serviceSupabase as never,
+          isRealWhatsappConversation: async () => true,
+          readFileBytes: async () => Buffer.from("pdf"),
+        },
+      );
+
+      const body = (await response.json()) as Record<string, unknown>;
+      const params = serviceSupabase.rpcCalls[0]?.params;
+      const metadata = params?.p_metadata as Record<string, unknown>;
+      assert.equal(response.status, 200);
+      assert.equal(body.messageType, "document");
+      assert.equal(body.attachmentKind, "file");
+      assert.equal(params?.p_message_type, "document");
+      assert.equal(params?.p_media_url, serviceSupabase.uploads[0]?.path);
+      assert.equal(metadata.storage_path, serviceSupabase.uploads[0]?.path);
+      assert.equal(metadata.send_external, true);
+      assert.equal(metadata.outbound_origin, "crm_manual_document");
     },
   },
   {
