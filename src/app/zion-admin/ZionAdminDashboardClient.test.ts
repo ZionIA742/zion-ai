@@ -191,7 +191,46 @@ const tests: TestCase[] = [
         "legacy pending copy must not be removed in 4.3-A",
       );
     },
-  },];
+  },
+  {
+    name: "overview reconciles the initial server snapshot with one fresh client request",
+    run: () => {
+      const source = readSource();
+
+      for (const token of [
+        "useEffect",
+        "useState<ZionAdminOverview | null>(initialData)",
+        "useState<string | null>(initialError)",
+        'fetch("/api/zion-admin/overview"',
+        'credentials: "include"',
+        'cache: "no-store"',
+        "setData(nextData)",
+        "setOverviewError(null)",
+        "setSelectedStore((current) =>",
+        "controller.abort()",
+        "{overviewError ? (",
+      ]) {
+        assert.equal(
+          source.includes(token),
+          true,
+          `missing client overview reconciliation token: ${token}`,
+        );
+      }
+
+      assert.equal(
+        source.includes("const data = initialData;"),
+        false,
+        "dashboard must not remain permanently pinned to the initial server snapshot",
+      );
+
+      assert.equal(
+        source.includes("setInterval("),
+        false,
+        "this step must not introduce polling",
+      );
+    },
+  },
+];
 
 async function run() {
   for (const test of tests) {

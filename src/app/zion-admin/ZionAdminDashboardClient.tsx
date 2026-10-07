@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   getFirstAccessControlState,
@@ -3376,8 +3376,75 @@ export default function ZionAdminDashboardClient({
   const [storeBusyId, setStoreBusyId] = useState<string | null>(null);
   const [storeActionError, setStoreActionError] = useState<string | null>(null);
   const [storeActionSuccess, setStoreActionSuccess] = useState<string | null>(null);
+  const [data, setData] = useState<ZionAdminOverview | null>(initialData);
+  const [overviewError, setOverviewError] = useState<string | null>(initialError);
 
-  const data = initialData;
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+
+    setData(initialData);
+    setOverviewError(initialError);
+
+    async function refreshOverview() {
+      try {
+        const response = await fetch("/api/zion-admin/overview", {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+          signal: controller.signal,
+        });
+
+        const payload = await response.json().catch(() => null);
+
+        if (!response.ok || !payload || !Array.isArray(payload.stores)) {
+          throw new Error(
+            payload?.error || "Não foi possível atualizar os dados internos do ZION.",
+          );
+        }
+
+        if (!active) {
+          return;
+        }
+
+        const nextData = payload as ZionAdminOverview;
+
+        setData(nextData);
+        setOverviewError(null);
+
+        setSelectedStore((current) => {
+          if (!current) {
+            return null;
+          }
+
+          return nextData.stores.find((store) => store.id === current.id) ?? null;
+        });
+      } catch (error) {
+        if (!active || controller.signal.aborted) {
+          return;
+        }
+
+        console.error(
+          "[ZionAdminDashboardClient] overview refresh error:",
+          error,
+        );
+
+        setOverviewError(
+          error instanceof Error
+            ? error.message
+            : "Não foi possível atualizar os dados internos do ZION.",
+        );
+      }
+    }
+
+    void refreshOverview();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [initialData, initialError]);
+
   const stores = data?.stores ?? [];
   const activeStores = stores.filter(isStoreActive);
   const inactiveStores = stores.filter(isStoreCanceledOrInactive);
@@ -3676,9 +3743,9 @@ export default function ZionAdminDashboardClient({
           </div>
         </header>
 
-        {initialError ? (
+        {overviewError ? (
           <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-100">
-            {initialError}
+            {overviewError}
           </div>
         ) : null}
 
