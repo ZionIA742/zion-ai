@@ -7,7 +7,11 @@ import {
   buildContractSnapshotV2,
   computeContractContentFingerprint,
 } from "@/lib/server/sales-contracts/canonical-contract-renderer";
-import { resolveAuthorizedExistingContract, ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
+import {
+  ContractAccessError,
+  resolveExistingContractForAuthorizedStoreScope,
+  type ContractAuthorizedStoreScope,
+} from "@/lib/server/sales-contracts/contract-auth";
 import { registerContractBusinessEvent } from "@/lib/server/sales-contracts/contract-events";
 import { storeContractPdfFile } from "@/lib/server/sales-contracts/contract-storage";
 import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/document-review-messages";
@@ -18,6 +22,13 @@ import {
   reconcileSupersededContractVersion,
 } from "@/lib/server/sales-contracts/contract-versioning";
 import { resolveContractTemplateTerms } from "@/lib/server/sales-contracts/contract-template-terms";
+import {
+  resolveStoreApiAccess,
+  type ResolveStoreApiAccessDeps,
+  type StoreApiAccessDenied,
+  type StoreApiAccessGranted,
+} from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,7 +53,11 @@ type GenerateContractPdfDeps = {
   markContractPendingReview: typeof markContractPendingReview;
   pushAssistantDocumentReviewMessage: typeof pushAssistantDocumentReviewMessage;
   registerContractBusinessEvent: typeof registerContractBusinessEvent;
-  resolveAuthorizedExistingContract: typeof resolveAuthorizedExistingContract;
+  resolveAccess: (params: {
+    requirement: "active";
+    deps?: Partial<ResolveStoreApiAccessDeps>;
+  }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+  resolveContract: typeof resolveExistingContractForAuthorizedStoreScope;
   resolveContractTemplateTerms: typeof resolveContractTemplateTerms;
   reconcileSupersededContractVersion: typeof reconcileSupersededContractVersion;
   storeContractPdfFile: typeof storeContractPdfFile;
@@ -56,7 +71,8 @@ const defaultGenerateContractPdfDeps: GenerateContractPdfDeps = {
   markContractPendingReview,
   pushAssistantDocumentReviewMessage,
   registerContractBusinessEvent,
-  resolveAuthorizedExistingContract,
+  resolveAccess: resolveStoreApiAccess,
+  resolveContract: resolveExistingContractForAuthorizedStoreScope,
   resolveContractTemplateTerms,
   reconcileSupersededContractVersion,
   storeContractPdfFile,
@@ -214,7 +230,8 @@ function normalizeQuoteSnapshotItems(items: unknown): ContractQuoteSnapshotItem[
 }
 
 async function loadContractQuoteSnapshotItems(
-  scope: Awaited<ReturnType<typeof resolveAuthorizedExistingContract>>,
+  scope: Awaited<ReturnType<typeof resolveExistingContractForAuthorizedStoreScope>>,
+  canonicalScope: { organizationId: string; storeId: string },
 ) {
   const quoteId = normalizeOptionalText(scope.contract.quote_id);
   const quoteVersionId = normalizeOptionalText(scope.contract.quote_version_id);
@@ -240,8 +257,8 @@ async function loadContractQuoteSnapshotItems(
     .select("id, quote_id, organization_id, store_id, status, sent_at, quote_snapshot")
     .eq("id", quoteVersionId)
     .eq("quote_id", quoteId)
-    .eq("organization_id", scope.organizationId)
-    .eq("store_id", scope.store.id)
+    .eq("organization_id", canonicalScope.organizationId)
+    .eq("store_id", canonicalScope.storeId)
     .maybeSingle();
 
   if (quoteVersionError) {
@@ -261,8 +278,8 @@ async function loadContractQuoteSnapshotItems(
   if (
     quoteVersion.id !== quoteVersionId ||
     quoteVersion.quote_id !== quoteId ||
-    quoteVersion.organization_id !== scope.organizationId ||
-    quoteVersion.store_id !== scope.store.id
+    quoteVersion.organization_id !== canonicalScope.organizationId ||
+    quoteVersion.store_id !== canonicalScope.storeId
   ) {
     throw new ContractAccessError(
       409,
@@ -342,9 +359,8 @@ export function createGenerateContractPdfPostHandler(
   const registerBusinessEvent =
     deps.registerContractBusinessEvent ??
     defaultGenerateContractPdfDeps.registerContractBusinessEvent;
-  const resolveContract =
-    deps.resolveAuthorizedExistingContract ??
-    defaultGenerateContractPdfDeps.resolveAuthorizedExistingContract;
+  const resolveAccess = deps.resolveAccess ?? defaultGenerateContractPdfDeps.resolveAccess;
+  const resolveContract = deps.resolveContract ?? defaultGenerateContractPdfDeps.resolveContract;
   const resolveTemplateTerms =
     deps.resolveContractTemplateTerms ??
     defaultGenerateContractPdfDeps.resolveContractTemplateTerms;
@@ -359,8 +375,10 @@ export function createGenerateContractPdfPostHandler(
     context: { params: Promise<{ contractId: string }> }
   ) {
   let scope:
-    | Awaited<ReturnType<typeof resolveAuthorizedExistingContract>>
+    | Awaited<ReturnType<typeof resolveExistingContractForAuthorizedStoreScope>>
     | null = null;
+  let canonicalOrganizationId: string | null = null;
+  let canonicalStoreId: string | null = null;
   let authorityState: "unconfirmed" | "committed_new" | "committed_replay" =
     "unconfirmed";
   let storeFileToRollback:
@@ -372,9 +390,33 @@ export function createGenerateContractPdfPostHandler(
     | null = null;
 
   try {
+    const access = await resolveAccess({ requirement: "active" });
+    if (!access.ok) return createStoreApiDeniedResponse(access);
+    canonicalOrganizationId = access.organizationId;
+    canonicalStoreId = access.storeId;
+
     const { contractId: rawContractId } = await context.params;
     const contractId = String(rawContractId || "").trim();
-    scope = await resolveContract(contractId);
+    const authorizedScope: ContractAuthorizedStoreScope = {
+      organizationId: access.organizationId,
+      storeId: access.storeId,
+      sessionUserId: access.sessionUserId,
+    };
+    scope = await resolveContract(contractId, authorizedScope);
+
+    if (
+      scope.organizationId !== access.organizationId ||
+      scope.store.id !== access.storeId ||
+      scope.store.organization_id !== access.organizationId ||
+      scope.contract.organization_id !== access.organizationId ||
+      scope.contract.store_id !== access.storeId
+    ) {
+      throw new ContractAccessError(
+        403,
+        "CONTRACT_SCOPE_MISMATCH",
+        "O contrato retornado esta fora do escopo canonico autorizado.",
+      );
+    }
 
     const normalizedStatus = String(scope.contract.status || "").trim().toLowerCase();
     const sentAt = normalizeOptionalText(scope.contract.sent_at);
@@ -396,7 +438,10 @@ export function createGenerateContractPdfPostHandler(
       );
     }
 
-    const { quoteSnapshot, items } = await loadContractQuoteSnapshotItems(scope);
+    const { quoteSnapshot, items } = await loadContractQuoteSnapshotItems(scope, {
+      organizationId: access.organizationId,
+      storeId: access.storeId,
+    });
     const operationId = resolveOperationId(
       request.headers.get("x-zion-contract-operation-id"),
     );
@@ -411,8 +456,8 @@ export function createGenerateContractPdfPostHandler(
 
     const templateTerms = await resolveTemplateTerms({
       supabase: scope.supabase,
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
     });
 
     if (
@@ -430,17 +475,17 @@ export function createGenerateContractPdfPostHandler(
     }
 
     const brandVisualPolicy = await loadStoreBrandVisualPolicy({
-      supabase: scope.sessionSupabase,
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
+      supabase: access.supabase,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
     });
 
     const storeLogo =
       !brandVisualPolicy.configured || brandVisualPolicy.useLogoOnContracts === true
         ? await loadStoreLogoForContractPdf({
             supabase: scope.supabase,
-            organizationId: scope.organizationId,
-            storeId: scope.store.id,
+            organizationId: access.organizationId,
+            storeId: access.storeId,
           })
         : null;
 
@@ -462,8 +507,8 @@ export function createGenerateContractPdfPostHandler(
     });
     const contentFingerprint = computeContractContentFingerprint(rendererInput);
     const requestFingerprint = buildRequestFingerprint({
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
       contractId: scope.contract.id,
       rendererInput,
       contentFingerprint,
@@ -479,8 +524,8 @@ export function createGenerateContractPdfPostHandler(
 
     const storedFile = await storeContractPdfFile({
       supabase: scope.supabase,
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
       contractId: scope.contract.id,
       contractNumber: scope.contract.contract_number,
       contentFingerprint,
@@ -495,8 +540,8 @@ export function createGenerateContractPdfPostHandler(
 
     const canonicalResult = await createCanonicalVersion({
       supabase: scope.supabase,
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
       contractId: scope.contract.id,
       operationKey,
       requestFingerprint,
@@ -525,8 +570,8 @@ export function createGenerateContractPdfPostHandler(
           .from("store_files")
           .delete()
           .eq("id", storedFile.storeFileId)
-          .eq("organization_id", scope.organizationId)
-          .eq("store_id", scope.store.id);
+          .eq("organization_id", access.organizationId)
+          .eq("store_id", access.storeId);
       } catch {
         // best effort: the canonical replay artifact remains authoritative
       }
@@ -535,15 +580,15 @@ export function createGenerateContractPdfPostHandler(
 
     await reconcilePreviousVersion({
       supabase: scope.supabase,
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
       contractId: scope.contract.id,
       versionNumber: version.version_number,
     });
     await markContractPendingReview({
       supabase: scope.supabase,
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
       contractId: scope.contract.id,
       expectedCurrentVersionId: version.id,
     });
@@ -551,13 +596,13 @@ export function createGenerateContractPdfPostHandler(
     if (!canonicalResult.replayed && version.version_number === 1) {
       await registerBusinessEvent({
         supabase: scope.supabase,
-        organizationId: scope.organizationId,
-        storeId: scope.store.id,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
         eventKey: "contrato_gerado",
         actorType: "human",
         leadId: scope.lead?.id || scope.contract.lead_id || null,
         conversationId: scope.conversation?.id || scope.contract.conversation_id || null,
-        actorUserId: scope.userId,
+        actorUserId: access.sessionUserId,
         eventPayload: {
           contract_id: scope.contract.id,
           contract_number: scope.contract.contract_number,
@@ -571,8 +616,8 @@ export function createGenerateContractPdfPostHandler(
     try {
       await pushDocumentReviewMessage({
         supabase: scope.supabase,
-        organizationId: scope.organizationId,
-        storeId: scope.store.id,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
         documentType: "contract",
         documentId: scope.contract.id,
         documentVersionId: version.id,
@@ -622,8 +667,8 @@ export function createGenerateContractPdfPostHandler(
           .from("store_files")
           .delete()
           .eq("id", storeFileToRollback.storeFileId)
-          .eq("organization_id", scope.organizationId)
-          .eq("store_id", scope.store.id);
+          .eq("organization_id", canonicalOrganizationId)
+          .eq("store_id", canonicalStoreId);
       } catch {
         // best effort
       }

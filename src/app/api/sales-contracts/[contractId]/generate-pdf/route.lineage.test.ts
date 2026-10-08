@@ -343,21 +343,32 @@ function resetState(args?: Parameters<typeof createScope>[0]) {
   };
 }
 
-async function callRoute(args?: { headers?: Record<string, string> }) {
+async function callRoute(args?: {
+  headers?: Record<string, string>;
+  resolveAccess?: (params: { requirement: "active" }) => Promise<unknown>;
+  resolveContract?: (contractId: string, scope: Record<string, unknown>) => Promise<unknown>;
+}) {
+  const accessSupabase = { kind: "session-supabase" };
   const handler = createGenerateContractPdfPostHandler({
     buildContractPdf: async (input: Record<string, unknown>) => {
       state.pdfInputs.push(input);
       return new Uint8Array([37, 80, 68, 70]);
     },
-    loadStoreBrandVisualPolicy: async () => ({
+    loadStoreBrandVisualPolicy: async (input) => {
+      state.calls.push({ table: "brand_visual_policy", operation: "call", payload: input as unknown as Record<string, unknown> });
+      return {
       configured: false,
       useLogoOnContracts: null,
       useLogoOnQuotes: null,
       primaryColor: null,
       secondaryColor: null,
       documentFooter: null,
-    }),
-    loadStoreLogoForContractPdf: async () => null,
+      };
+    },
+    loadStoreLogoForContractPdf: async (input) => {
+      state.calls.push({ table: "store_logo", operation: "call", payload: input as unknown as Record<string, unknown> });
+      return null;
+    },
     pushAssistantDocumentReviewMessage: async () => ({
       ok: true,
       deduped: false,
@@ -367,8 +378,18 @@ async function callRoute(args?: { headers?: Record<string, string> }) {
     registerContractBusinessEvent: async (input) => {
       state.calls.push({ table: "business_event", operation: "rpc", payload: input });
     },
-    resolveAuthorizedExistingContract: async () => state.scope,
-    resolveContractTemplateTerms: async () => ({
+    resolveAccess: (args?.resolveAccess ?? (async () => ({
+      ok: true as const,
+      supabase: accessSupabase as never,
+      sessionUserId: "user-1",
+      organizationId: "org-1",
+      storeId: "store-1",
+      resolution: {} as never,
+    }))) as never,
+    resolveContract: (args?.resolveContract ?? (async () => state.scope)) as never,
+    resolveContractTemplateTerms: async (input) => {
+      state.calls.push({ table: "template_terms", operation: "call", payload: input as unknown as Record<string, unknown> });
+      return {
       contractTemplateUsed: true,
       templateId: "template-1",
       templateVersionId: "template-version-1",
@@ -385,7 +406,8 @@ async function callRoute(args?: { headers?: Record<string, string> }) {
       }],
       snapshotGeneratedAt: "2026-09-24T12:00:00.000Z",
       warning: null,
-    }),
+      };
+    },
     storeContractPdfFile: async (input: Record<string, unknown>) => {
       state.storedFiles.push(input);
       return {
@@ -427,7 +449,91 @@ function assertNoMutableQuoteItemsQuery() {
   );
 }
 
+function assertNoGenerationSideEffects() {
+  assert.equal(state.pdfInputs.length, 0);
+  assert.equal(state.storedFiles.length, 0);
+  assert.equal(state.calls.some((call) => call.table === "sales_quote_versions"), false);
+  assert.equal(state.calls.some((call) => call.table === "create_sales_contract_version_by_system"), false);
+  assert.equal(state.calls.some((call) => call.table === "business_event"), false);
+}
+
 const tests: TestCase[] = [
+  {
+    name: "denied canonical access stops before contract and generation work",
+    run: async () => {
+      resetState();
+      let contractResolverCalls = 0;
+      const { response, body } = await callRoute({
+        resolveAccess: async (params) => {
+          assert.deepEqual(params, { requirement: "active" });
+          return {
+            ok: false as const,
+            httpStatus: 401 as const,
+            payload: {
+              ok: false as const,
+              error: "STORE_API_UNAUTHENTICATED",
+              message: "Nao autenticado.",
+              status: "anonymous" as const,
+              reasonCode: "anonymous" as const,
+            },
+            resolution: {} as never,
+          };
+        },
+        resolveContract: async () => {
+          contractResolverCalls += 1;
+          throw new Error("must not resolve contract");
+        },
+      });
+
+      assert.equal(response.status, 401);
+      assert.equal(body.error, "STORE_API_UNAUTHENTICATED");
+      assert.equal(contractResolverCalls, 0);
+      assert.equal(state.calls.length, 0);
+      assertNoGenerationSideEffects();
+    },
+  },
+  {
+    name: "canonical resolver receives requested id and access scope",
+    run: async () => {
+      resetState();
+      let receivedContractId = "";
+      let receivedScope: Record<string, unknown> | null = null;
+      const { response } = await callRoute({
+        resolveContract: async (contractId, scope) => {
+          receivedContractId = contractId;
+          receivedScope = scope;
+          return state.scope;
+        },
+      });
+      assert.equal(response.status, 200);
+      assert.equal(receivedContractId, "contract-1");
+      assert.deepEqual(receivedScope, {
+        organizationId: "org-1",
+        storeId: "store-1",
+        sessionUserId: "user-1",
+      });
+    },
+  },
+  {
+    name: "foreign scope defense fails closed before quote and generation side effects",
+    run: async () => {
+      const mismatches: Array<(scope: ReturnType<typeof createScope>) => void> = [
+        (scope) => { scope.organizationId = "org-2"; },
+        (scope) => { scope.store.id = "store-2"; },
+        (scope) => { scope.store.organization_id = "org-2"; },
+        (scope) => { scope.contract.organization_id = "org-2"; },
+        (scope) => { scope.contract.store_id = "store-2"; },
+      ];
+      for (const mutate of mismatches) {
+        resetState();
+        mutate(state.scope);
+        const { response, body } = await callRoute();
+        assert.equal(response.status, 403);
+        assert.equal(body.error, "CONTRACT_SCOPE_MISMATCH");
+        assertNoGenerationSideEffects();
+      }
+    },
+  },
   {
     name: "uses exact immutable quote version snapshot items for PDF and persisted contract snapshot",
     run: async () => {
@@ -476,6 +582,20 @@ const tests: TestCase[] = [
       assert.equal(snapshot?.schema, "zion.sales_contract_snapshot.v2");
       assert.equal(typeof snapshot?.content_fingerprint, "string");
       assert.equal(state.storedFiles.length, 1);
+      assert.equal(
+        (state.calls.find((call) => call.table === "brand_visual_policy")?.payload as Record<string, unknown>)?.supabase === state.scope.supabase,
+        false,
+      );
+      assert.equal(
+        (state.calls.find((call) => call.table === "template_terms")?.payload as Record<string, unknown>)?.supabase,
+        state.scope.supabase,
+      );
+      assert.equal(
+        (state.storedFiles[0] as Record<string, unknown>).supabase,
+        state.scope.supabase,
+      );
+      assert.equal((state.storedFiles[0] as Record<string, unknown>).organizationId, "org-1");
+      assert.equal((state.storedFiles[0] as Record<string, unknown>).storeId, "store-1");
       const rpcCall = state.calls.find(
         (call) => call.table === "create_sales_contract_version_by_system" && call.operation === "rpc",
       );
@@ -672,6 +792,18 @@ const tests: TestCase[] = [
       assert.equal(routeSource.includes("createContractVersion"), false);
       assert.equal(routeSource.includes("setContractCurrentVersion"), false);
       assert.equal(routeSource.includes('.from("sales_contract_versions").delete'), false);
+      assert.match(routeSource, /resolveStoreApiAccess/);
+      assert.match(routeSource, /requirement: "active"/);
+      assert.match(routeSource, /createStoreApiDeniedResponse/);
+      assert.match(routeSource, /resolveExistingContractForAuthorizedStoreScope/);
+      assert.doesNotMatch(routeSource, /resolveAuthorizedExistingContract/);
+      assert.doesNotMatch(routeSource, /scope\.sessionSupabase/);
+      assert.match(routeSource, /access\.supabase/);
+      assert.match(routeSource, /createCanonicalVersion/);
+      assert.match(routeSource, /reconcilePreviousVersion/);
+      assert.match(routeSource, /markContractPendingReview/);
+      assert.match(routeSource, /storeContractPdfFile/);
+      assert.match(routeSource, /contrato_gerado/);
       assert.equal(versioningSource.includes("getNextContractVersionNumber"), false);
       assert.equal(versioningSource.includes("createContractVersion"), false);
       assert.equal(versioningSource.includes("setContractCurrentVersion"), false);

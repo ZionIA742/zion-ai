@@ -26,23 +26,32 @@ assert.equal(
   "contract route must load canonical brand visual policy"
 );
 
-assert.equal(
-  source.includes("supabase: scope.sessionSupabase,"),
-  true,
-  "contract route must use authenticated session client for canonical reader"
+assert.match(
+  source,
+  /loadStoreBrandVisualPolicy\(\{\s*supabase: access\.supabase,\s*organizationId: access\.organizationId,\s*storeId: access\.storeId,/m,
+  "contract route must use the authenticated access client and canonical tenant ids for brand policy"
 );
 
-assert.equal(
-  source.includes("organizationId: scope.organizationId,"),
-  true,
-  "contract route must preserve organization scope"
+assert.doesNotMatch(
+  source,
+  /scope\.sessionSupabase/,
+  "contract route must not use the removed sessionSupabase scope client"
 );
 
-assert.equal(
-  source.includes("storeId: scope.store.id,"),
-  true,
-  "contract route must preserve store scope"
+assert.match(
+  source,
+  /loadStoreLogoForContractPdf\(\{\s*supabase: scope\.supabase,\s*organizationId: access\.organizationId,\s*storeId: access\.storeId,/m,
+  "contract route must keep the server/domain client for logo loading with canonical tenant ids"
 );
+
+assert.match(source, /resolveStoreApiAccess/);
+assert.match(source, /requirement: "active"/);
+assert.match(source, /resolveExistingContractForAuthorizedStoreScope/);
+assert.match(source, /access\.supabase/);
+assert.match(source, /access\.organizationId/);
+assert.match(source, /access\.storeId/);
+assert.match(source, /scope\.supabase/);
+assert.doesNotMatch(source, /resolveAuthorizedExistingContract/);
 
 assert.equal(
   source.includes(
@@ -73,7 +82,7 @@ const logoIndex = source.indexOf(
 );
 
 const pdfIndex = source.indexOf(
-  "const pdfBytes = await buildContractPdf({",
+  "const pdfBytes = await buildContractPdf(",
   logoIndex
 );
 
