@@ -7,6 +7,60 @@ const routePath = join(process.cwd(), "src/app/api/crm/lead-details/[id]/route.t
 
 const source = readFileSync(routePath, "utf8");
 
+assert.equal(
+  source.includes("resolveStoreApiAccess"),
+  true,
+  "lead detail must use the canonical StoreApiAccess resolver"
+);
+assert.equal(
+  source.includes('createStoreApiDeniedResponse(access)'),
+  true,
+  "lead detail must use the canonical denied response"
+);
+assert.equal(
+  source.includes('requirement: "active"'),
+  true,
+  "lead detail must require active store access"
+);
+assert.equal(
+  source.includes('.from("memberships")'),
+  false,
+  "lead detail must not maintain a parallel membership authority"
+);
+assert.equal(
+  source.includes(".auth.getUser()"),
+  false,
+  "lead detail must not resolve authentication independently"
+);
+assert.equal(
+  source.includes("MembershipRow") || source.includes("FORBIDDEN_ORGANIZATION"),
+  false,
+  "legacy membership authority must be removed"
+);
+assert.equal(
+  source.includes("leadOrganizationId !== access.organizationId") &&
+    source.includes("leadData.organization_id !== access.organizationId"),
+  true,
+  "lead organization must be checked against canonical access"
+);
+assert.equal(
+  source.includes("leadStoreId !== access.storeId") &&
+    source.includes("leadData.store_id !== access.storeId"),
+  true,
+  "lead store must be checked against canonical access"
+);
+assert.equal(
+  source.includes("leadStoreId || null"),
+  true,
+  "null lead store must remain allowed in the legacy context flow"
+);
+assert.equal(
+  source.indexOf("const access = await resolveStoreApiAccess") <
+    source.indexOf("const supabase = createClient(supabaseUrl"),
+  true,
+  "canonical access must precede service-role detailed reads"
+);
+
 const taskSelectStart = source.indexOf('.from("store_assistant_operational_tasks")');
 const taskSelectEnd = source.indexOf("const { data: commercialTasksData", taskSelectStart);
 const taskBlock = source.slice(taskSelectStart, taskSelectEnd);

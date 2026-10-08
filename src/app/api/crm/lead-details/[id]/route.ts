@@ -1,7 +1,8 @@
 // src/app/api/crm/lead-details/[id]/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { createSupabaseServerClient } from "@/lib/supabaseServer";
+import { resolveStoreApiAccess } from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 import {
   resolveLeadConversationOpportunityContext,
   type LeadConversationContextRow,
@@ -17,15 +18,6 @@ type LeadRow = {
   name: string | null;
   phone: string | null;
   state: string;
-};
-
-type MembershipRow = {
-  organization_id: string;
-};
-
-type StoreRow = {
-  id: string;
-  organization_id: string;
 };
 
 type ConversationRow = {
@@ -175,22 +167,15 @@ export async function GET(request: Request) {
       );
     }
 
-    const sessionSupabase = await createSupabaseServerClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await sessionSupabase.auth.getUser();
+    const access = await resolveStoreApiAccess({
+      requirement: "active",
+    });
 
-    if (authError || !user) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "UNAUTHENTICATED",
-          message: "Usuario nao autenticado.",
-        },
-        { status: 401 }
-      );
+    if (!access.ok) {
+      return createStoreApiDeniedResponse(access);
     }
+
+    const sessionSupabase = access.supabase;
 
     const { data: scopedLead, error: scopedLeadError } = await sessionSupabase
       .from("leads")
@@ -223,7 +208,11 @@ export async function GET(request: Request) {
     const leadOrganizationId = String(scopedLead.organization_id || "").trim();
     const leadStoreId = String(scopedLead.store_id || "").trim();
 
-    if (!leadOrganizationId) {
+    if (
+      !leadOrganizationId ||
+      leadOrganizationId !== access.organizationId ||
+      (leadStoreId && leadStoreId !== access.storeId)
+    ) {
       return NextResponse.json(
         {
           ok: false,
@@ -232,66 +221,6 @@ export async function GET(request: Request) {
         },
         { status: 403 }
       );
-    }
-
-    const { data: membership, error: membershipError } = await sessionSupabase
-      .from("memberships")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .eq("organization_id", leadOrganizationId)
-      .maybeSingle<MembershipRow>();
-
-    if (membershipError) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "LOAD_MEMBERSHIP_FAILED",
-          message: membershipError.message,
-        },
-        { status: 500 }
-      );
-    }
-
-    if (!membership) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "FORBIDDEN_ORGANIZATION",
-          message: "Voce nao pode acessar leads desta organizacao.",
-        },
-        { status: 403 }
-      );
-    }
-
-    if (leadStoreId) {
-      const { data: store, error: storeError } = await sessionSupabase
-        .from("stores")
-        .select("id, organization_id")
-        .eq("id", leadStoreId)
-        .eq("organization_id", leadOrganizationId)
-        .maybeSingle<StoreRow>();
-
-      if (storeError) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "LOAD_STORE_FAILED",
-            message: storeError.message,
-          },
-          { status: 500 }
-        );
-      }
-
-      if (!store) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "FORBIDDEN_STORE",
-            message: "A loja vinculada ao lead nao pertence a esta organizacao.",
-          },
-          { status: 403 }
-        );
-      }
     }
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -315,6 +244,7 @@ export async function GET(request: Request) {
       .from("leads")
       .select("id, organization_id, store_id, name, phone, state")
       .eq("id", leadId)
+      .eq("organization_id", access.organizationId)
       .maybeSingle<LeadRow>();
 
     if (leadError) {
@@ -336,6 +266,20 @@ export async function GET(request: Request) {
           message: "Lead não encontrado.",
         },
         { status: 404 }
+      );
+    }
+
+    if (
+      leadData.organization_id !== access.organizationId ||
+      (leadData.store_id && leadData.store_id !== access.storeId)
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "FORBIDDEN_LEAD_SCOPE",
+          message: "O lead informado nao pertence ao escopo ativo da loja.",
+        },
+        { status: 403 }
       );
     }
 
