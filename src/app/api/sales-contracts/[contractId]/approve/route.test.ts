@@ -5,7 +5,7 @@ import { createApproveContractPostHandler } from "./route";
 
 type Row = Record<string, unknown>;
 
-function createSupabaseMock() {
+function createSupabaseMock(overrides: { sales_contracts?: Row[]; sales_contract_versions?: Row[] } = {}) {
   const calls: Array<{ table: string; operation: string; filters: Row[] }> = [];
   const tables: Record<string, Row[]> = {
     sales_contracts: [
@@ -33,6 +33,8 @@ function createSupabaseMock() {
       },
     ],
   };
+  if (overrides.sales_contracts) tables.sales_contracts = overrides.sales_contracts;
+  if (overrides.sales_contract_versions) tables.sales_contract_versions = overrides.sales_contract_versions;
 
   return {
     calls,
@@ -110,18 +112,55 @@ function authorityResult(overrides: Row = {}) {
   };
 }
 
+function grantedAccess(supabase: unknown) {
+  return {
+    ok: true as const,
+    supabase: supabase as never,
+    sessionUserId: "user-1",
+    organizationId: "org-1",
+    storeId: "store-1",
+    resolution: {} as never,
+  };
+}
+
+function deniedAccess() {
+  return {
+    ok: false as const,
+    httpStatus: 401 as const,
+    payload: {
+      ok: false as const,
+      error: "STORE_API_UNAUTHENTICATED" as const,
+      message: "Nao autenticado.",
+      status: "anonymous" as const,
+      reasonCode: "anonymous" as const,
+    },
+    resolution: {} as never,
+  };
+}
+
 async function callRoute(args: {
   scope?: Row;
   authority?: Row;
   authorityError?: Error;
   eventError?: Error;
-  resolveAccess?: () => Promise<unknown>;
+  resolveAccess?: (params: { requirement: "active" }) => Promise<unknown>;
+  resolveScope?: (scope: Row) => Row;
+  durableContract?: Row;
+  durableVersion?: Row;
 }) {
-  const supabase = createSupabaseMock();
+  const supabase = createSupabaseMock({
+    sales_contracts: args.durableContract ? [args.durableContract] : undefined,
+    sales_contract_versions: args.durableVersion ? [args.durableVersion] : undefined,
+  });
   const eventCalls: Row[] = [];
   const rpcCalls: Row[] = [];
   const handler = createApproveContractPostHandler({
-    resolveContractScope: async () => (args.scope || baseScope(supabase)) as never,
+    resolveAccess: (args.resolveAccess ?? (async () => grantedAccess(supabase))) as never,
+    resolveContract: (async (_contractId: string, authorizedScope: Row) => {
+      const resolved = args.resolveScope?.(args.scope || baseScope(supabase)) || args.scope || baseScope(supabase);
+      (resolved as Row).authorizedScope = authorizedScope;
+      return resolved;
+    }) as never,
     approveContract: async (input) => {
       rpcCalls.push(input as unknown as Row);
       if (args.authorityError) throw args.authorityError;
@@ -145,6 +184,51 @@ async function callRoute(args: {
 }
 
 const tests: Array<{ name: string; run: () => Promise<void> | void }> = [
+  {
+    name: "denied canonical access returns before resolver authority rereads or event",
+    run: async () => {
+      const supabase = createSupabaseMock();
+      let resolveCalls = 0;
+      let authorityCalls = 0;
+      let eventCalls = 0;
+      const handler = createApproveContractPostHandler({
+        resolveAccess: (async (params: { requirement: "active" }) => {
+          assert.deepEqual(params, { requirement: "active" });
+          return deniedAccess();
+        }) as never,
+        resolveContract: (async () => { resolveCalls += 1; throw new Error("must not resolve"); }) as never,
+        approveContract: (async () => { authorityCalls += 1; throw new Error("must not approve"); }) as never,
+        registerContractBusinessEvent: (async () => { eventCalls += 1; }) as never,
+      });
+      const response = await handler(new Request("https://example.test"), { params: Promise.resolve({ contractId: "contract-1" }) });
+      const body = (await response.json()) as Row;
+      assert.equal(response.status, 401);
+      assert.equal(body.error, "STORE_API_UNAUTHENTICATED");
+      assert.equal(resolveCalls, 0);
+      assert.equal(authorityCalls, 0);
+      assert.equal(eventCalls, 0);
+      assert.equal(supabase.calls.length, 0);
+    },
+  },
+  {
+    name: "canonical resolver receives access organization store and session user",
+    run: async () => {
+      const supabase = createSupabaseMock();
+      let received: Row | undefined;
+      const handler = createApproveContractPostHandler({
+        resolveAccess: (async () => grantedAccess(supabase)) as never,
+        resolveContract: (async (_contractId: string, authorizedScope: Row) => {
+          received = authorizedScope;
+          return baseScope(supabase);
+        }) as never,
+        approveContract: (async () => authorityResult()) as never,
+        registerContractBusinessEvent: (async () => undefined) as never,
+      });
+      const response = await handler(new Request("https://example.test"), { params: Promise.resolve({ contractId: "contract-1" }) });
+      assert.equal(response.status, 200);
+      assert.deepEqual(received, { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" });
+    },
+  },
   {
     name: "happy path calls atomic approval with canonical scope and no direct updates",
     run: async () => {
@@ -238,7 +322,8 @@ const tests: Array<{ name: string; run: () => Promise<void> | void }> = [
       const supabase = createSupabaseMock();
       let rpcCalls = 0;
       const handler = createApproveContractPostHandler({
-        resolveContractScope: async () => ({
+        resolveAccess: (async () => grantedAccess(supabase)) as never,
+        resolveContract: async () => ({
           ...baseScope(supabase),
           contract: { ...baseScope(supabase).contract, current_version_id: "version-2" },
         }) as never,
@@ -257,6 +342,48 @@ const tests: Array<{ name: string; run: () => Promise<void> | void }> = [
     },
   },
   {
+    name: "foreign organization and store scope are rejected before RPC",
+    run: async () => {
+      const cases: Row[] = [
+        { organizationId: "org-2" },
+        { store: { id: "store-2", organization_id: "org-1", name: "Other" } },
+        { store: { id: "store-1", organization_id: "org-2", name: "Other" } },
+        { contract: { ...baseScope(createSupabaseMock()).contract, organization_id: "org-2" } },
+        { contract: { ...baseScope(createSupabaseMock()).contract, store_id: "store-2" } },
+      ];
+      for (const change of cases) {
+        const result = await callRoute({
+          resolveScope: (original) => ({ ...original, ...change }),
+          authority: authorityResult(),
+          authorityError: undefined,
+        });
+        assert.equal(result.response.status, 403);
+        assert.equal(result.body.error, "CONTRACT_SCOPE_MISMATCH");
+        assert.equal(result.rpcCalls.length, 0);
+      }
+    },
+  },
+  {
+    name: "foreign current version lineage is rejected before RPC",
+    run: async () => {
+      for (const currentVersion of [
+        { contract_id: "contract-2" },
+        { organization_id: "org-2" },
+        { store_id: "store-2" },
+      ]) {
+        const result = await callRoute({
+          resolveScope: (original) => ({
+            ...original,
+            currentVersion: { ...(original.currentVersion as Row), ...currentVersion },
+          }),
+        });
+        assert.equal(result.response.status, 403);
+        assert.equal(result.body.error, "CONTRACT_SCOPE_MISMATCH");
+        assert.equal(result.rpcCalls.length, 0);
+      }
+    },
+  },
+  {
     name: "PDF gate remains enforced",
     run: async () => {
       const result = await callRoute({
@@ -271,6 +398,26 @@ const tests: Array<{ name: string; run: () => Promise<void> | void }> = [
     },
   },
   {
+    name: "durable returned contract or version scope mismatch fails closed before event",
+    run: async () => {
+      const contractMismatch = await callRoute({
+        durableContract: {
+          id: "contract-1", organization_id: "org-2", store_id: "store-1", current_version_id: "version-1", status: "approved", approved_at: "2026-10-08T14:00:00.000Z", approved_by: "user-1",
+        },
+      });
+      assert.equal(contractMismatch.response.status, 500);
+      assert.equal(contractMismatch.eventCalls.length, 0);
+
+      const versionMismatch = await callRoute({
+        durableVersion: {
+          id: "version-1", contract_id: "contract-2", organization_id: "org-1", store_id: "store-1", status: "approved", approved_at: "2026-10-08T14:00:00.000Z",
+        },
+      });
+      assert.equal(versionMismatch.response.status, 500);
+      assert.equal(versionMismatch.eventCalls.length, 0);
+    },
+  },
+  {
     name: "source contract removes direct updates and keeps customer sign untouched",
     run: () => {
       const routeSource = readFileSync(
@@ -278,6 +425,11 @@ const tests: Array<{ name: string; run: () => Promise<void> | void }> = [
         "utf8",
       );
       assert.match(routeSource, /approve_sales_contract_by_user_atomic/);
+      assert.match(routeSource, /resolveStoreApiAccess/);
+      assert.match(routeSource, /requirement: "active"/);
+      assert.match(routeSource, /createStoreApiDeniedResponse/);
+      assert.match(routeSource, /resolveExistingContractForAuthorizedStoreScope/);
+      assert.equal(routeSource.includes("resolveAuthorizedExistingContract"), false);
       assert.equal(routeSource.includes('.from("sales_contracts").update'), false);
       assert.equal(routeSource.includes('.from("sales_contract_versions").update'), false);
       assert.match(routeSource, /registerContractBusinessEvent/);

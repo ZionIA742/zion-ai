@@ -2,10 +2,18 @@ import { NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   ContractAccessError,
-  resolveAuthorizedExistingContract,
+  resolveExistingContractForAuthorizedStoreScope,
+  type ContractAuthorizedStoreScope,
 } from "@/lib/server/sales-contracts/contract-auth";
 import { registerContractBusinessEvent } from "@/lib/server/sales-contracts/contract-events";
 import type { SalesContractVersion } from "@/lib/server/sales-contracts/types";
+import {
+  resolveStoreApiAccess,
+  type ResolveStoreApiAccessDeps,
+  type StoreApiAccessDenied,
+  type StoreApiAccessGranted,
+} from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,15 +36,12 @@ type ContractApprovalAuthorityResult = {
 };
 
 type ApproveContractRouteDeps = {
-  resolveContractScope?: typeof resolveAuthorizedExistingContract;
-  approveContract?: (args: {
-    supabase: SupabaseClient;
-    organizationId: string;
-    storeId: string;
-    contractId: string;
-    expectedContractVersionId: string;
-    actorUserId: string;
-  }) => Promise<ContractApprovalAuthorityResult>;
+  resolveAccess?: (params: {
+    requirement: "active";
+    deps?: Partial<ResolveStoreApiAccessDeps>;
+  }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+  resolveContract?: typeof resolveExistingContractForAuthorizedStoreScope;
+  approveContract?: typeof approveContractByUserAtomic;
   registerContractBusinessEvent?: typeof registerContractBusinessEvent;
 };
 
@@ -154,7 +159,9 @@ async function approveContractByUserAtomic(args: {
 }
 
 export function createApproveContractPostHandler(deps: ApproveContractRouteDeps = {}) {
-  const resolveContractScope = deps.resolveContractScope ?? resolveAuthorizedExistingContract;
+  const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
+  const resolveContract =
+    deps.resolveContract ?? resolveExistingContractForAuthorizedStoreScope;
   const approveContract = deps.approveContract ?? approveContractByUserAtomic;
   const recordBusinessEvent =
     deps.registerContractBusinessEvent ?? registerContractBusinessEvent;
@@ -163,10 +170,32 @@ export function createApproveContractPostHandler(deps: ApproveContractRouteDeps 
     _request: Request,
     context: { params: Promise<{ contractId: string }> },
   ) {
+    const access = await resolveAccess({ requirement: "active" });
+    if (!access.ok) return createStoreApiDeniedResponse(access);
+
     try {
       const { contractId: rawContractId } = await context.params;
       const contractId = String(rawContractId || "").trim();
-      const scope = await resolveContractScope(contractId);
+      const authorizedScope: ContractAuthorizedStoreScope = {
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        sessionUserId: access.sessionUserId,
+      };
+      const scope = await resolveContract(contractId, authorizedScope);
+
+      if (
+        scope.organizationId !== access.organizationId ||
+        scope.store.id !== access.storeId ||
+        scope.store.organization_id !== access.organizationId ||
+        scope.contract.organization_id !== access.organizationId ||
+        scope.contract.store_id !== access.storeId
+      ) {
+        throw new ContractAccessError(
+          403,
+          "CONTRACT_SCOPE_MISMATCH",
+          "O contrato retornado esta fora do escopo canonico autorizado.",
+        );
+      }
       const normalizedContractStatus = String(scope.contract.status || "").trim().toLowerCase();
 
       if (BLOCKED_CONTRACT_STATUSES.has(normalizedContractStatus)) {
@@ -210,6 +239,18 @@ export function createApproveContractPostHandler(deps: ApproveContractRouteDeps 
         );
       }
 
+      if (
+        scope.currentVersion.contract_id !== scope.contract.id ||
+        scope.currentVersion.organization_id !== access.organizationId ||
+        scope.currentVersion.store_id !== access.storeId
+      ) {
+        throw new ContractAccessError(
+          403,
+          "CONTRACT_SCOPE_MISMATCH",
+          "A versao atual do contrato esta fora do escopo canonico autorizado.",
+        );
+      }
+
       const currentVersionStatus = String(scope.currentVersion.status || "").trim().toLowerCase();
       if (!APPROVABLE_VERSION_STATUSES.has(currentVersionStatus)) {
         throw new ContractAccessError(
@@ -231,21 +272,27 @@ export function createApproveContractPostHandler(deps: ApproveContractRouteDeps 
 
       const authority = await approveContract({
         supabase: scope.supabase,
-        organizationId: scope.organizationId,
-        storeId: scope.store.id,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
         contractId: scope.contract.id,
         expectedContractVersionId: scope.currentVersion.id,
-        actorUserId: scope.userId,
+        actorUserId: access.sessionUserId,
       });
 
       const { data: durableContract, error: durableContractError } = await scope.supabase
         .from("sales_contracts")
         .select("*")
         .eq("id", scope.contract.id)
-        .eq("organization_id", scope.organizationId)
-        .eq("store_id", scope.store.id)
+        .eq("organization_id", access.organizationId)
+        .eq("store_id", access.storeId)
         .maybeSingle();
-      if (durableContractError || !durableContract?.id) {
+      if (
+        durableContractError ||
+        !durableContract?.id ||
+        durableContract.id !== scope.contract.id ||
+        durableContract.organization_id !== access.organizationId ||
+        durableContract.store_id !== access.storeId
+      ) {
         throw new Error(
           durableContractError?.message || "Falha ao reler o contrato aprovado.",
         );
@@ -256,10 +303,17 @@ export function createApproveContractPostHandler(deps: ApproveContractRouteDeps 
         .select("*")
         .eq("id", authority.contract_version_id)
         .eq("contract_id", durableContract.id)
-        .eq("organization_id", scope.organizationId)
-        .eq("store_id", scope.store.id)
+        .eq("organization_id", access.organizationId)
+        .eq("store_id", access.storeId)
         .maybeSingle();
-      if (durableVersionError || !durableVersion?.id) {
+      if (
+        durableVersionError ||
+        !durableVersion?.id ||
+        durableVersion.id !== authority.contract_version_id ||
+        durableVersion.contract_id !== durableContract.id ||
+        durableVersion.organization_id !== access.organizationId ||
+        durableVersion.store_id !== access.storeId
+      ) {
         throw new Error(
           durableVersionError?.message || "Falha ao reler a versao aprovada.",
         );
@@ -270,8 +324,8 @@ export function createApproveContractPostHandler(deps: ApproveContractRouteDeps 
         durableContract.current_version_id !== authority.contract_version_id ||
         durableVersion.status !== "approved" ||
         durableVersion.contract_id !== durableContract.id ||
-        durableVersion.organization_id !== scope.organizationId ||
-        durableVersion.store_id !== scope.store.id ||
+        durableVersion.organization_id !== access.organizationId ||
+        durableVersion.store_id !== access.storeId ||
         String(durableContract.approved_at || "") !== authority.approved_at ||
         String(durableVersion.approved_at || "") !== authority.approved_at ||
         String(durableContract.approved_by || "") !== authority.approved_by
@@ -284,13 +338,13 @@ export function createApproveContractPostHandler(deps: ApproveContractRouteDeps 
         try {
           await recordBusinessEvent({
             supabase: scope.supabase,
-            organizationId: scope.organizationId,
-            storeId: scope.store.id,
+            organizationId: access.organizationId,
+            storeId: access.storeId,
             eventKey: APPROVE_EVENT_TYPE,
             actorType: "human",
             leadId: scope.lead?.id || scope.contract.lead_id || null,
             conversationId: scope.conversation?.id || scope.contract.conversation_id || null,
-            actorUserId: scope.userId,
+            actorUserId: access.sessionUserId,
             eventPayload: {
               contract_id: durableContract.id,
               contract_number: durableContract.contract_number,
