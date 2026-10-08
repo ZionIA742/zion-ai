@@ -56,7 +56,7 @@ type PendingExternalMessage = {
   phone: string;
   content: string;
   rawMessageType: string;
-  messageType: "text" | "image" | "document";
+  messageType: "text" | "image" | "audio" | "video" | "document";
   mediaUrl: string | null;
   metadata: Record<string, unknown>;
   externalMessageId: string | null;
@@ -196,6 +196,17 @@ type PreparedWhatsappTransportMessage =
       to: string;
       documentUrl: string;
       filename: string;
+      caption: string;
+    }
+  | {
+      mode: "audio";
+      to: string;
+      audioUrl: string;
+    }
+  | {
+      mode: "video";
+      to: string;
+      videoUrl: string;
       caption: string;
     };
 
@@ -451,8 +462,16 @@ function normalizePendingMessage(row: PendingExternalMessageRow): PendingExterna
   }
 
   const rawType = String(row.message_type || "text").toLowerCase();
-  const messageType: "text" | "image" | "document" =
-    rawType === "image" ? "image" : rawType === "document" ? "document" : "text";
+  const messageType: "text" | "image" | "audio" | "video" | "document" =
+    rawType === "image"
+      ? "image"
+      : rawType === "audio"
+        ? "audio"
+        : rawType === "video"
+          ? "video"
+          : rawType === "document"
+            ? "document"
+            : "text";
   const content = String(row.content || "").trim();
   const mediaUrl = row.media_url?.trim() || null;
   const metadata = normalizeMetadata(row.metadata);
@@ -460,7 +479,13 @@ function normalizePendingMessage(row: PendingExternalMessageRow): PendingExterna
   if (messageType === "text" && !content) {
     throw new Error(`Mensagem ${messageId} do tipo text sem conteudo`);
   }
-  if ((messageType === "image" || messageType === "document") && (!mediaUrl || !content)) {
+  if (
+    (messageType === "image" ||
+      messageType === "audio" ||
+      messageType === "video" ||
+      messageType === "document") &&
+    (!mediaUrl || !content)
+  ) {
     throw new Error(`Mensagem ${messageId} do tipo ${messageType} sem media_url ou conteudo`);
   }
 
@@ -522,7 +547,7 @@ function shouldSkipExternalSend(metadata: Record<string, unknown>): string | nul
 function getWhatsappEligibilityFailure(message: PendingExternalMessage): string | null {
   const skipReason = shouldSkipExternalSend(message.metadata);
   if (skipReason) return skipReason;
-  if (!["text", "image", "document"].includes(message.rawMessageType)) {
+  if (!["text", "image", "audio", "video", "document"].includes(message.rawMessageType)) {
     return `Tipo de mensagem nao suportado pelo sender WhatsApp: ${message.rawMessageType}`;
   }
   if (readMetadataText(message.metadata, "external_channel")?.toLowerCase() !== "whatsapp") {
@@ -1191,6 +1216,40 @@ async function sendWhatsappDocumentMessage(
   });
 }
 
+async function sendWhatsappAudioMessage(
+  params: WhatsappIntegration & { to: string; audioUrl: string },
+) {
+  return postWhatsappMessage({
+    accessToken: params.accessToken,
+    phoneNumberId: params.phoneNumberId,
+    label: "audio",
+    body: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: params.to,
+      type: "audio",
+      audio: { link: params.audioUrl },
+    },
+  });
+}
+
+async function sendWhatsappVideoMessage(
+  params: WhatsappIntegration & { to: string; videoUrl: string; caption: string },
+) {
+  return postWhatsappMessage({
+    accessToken: params.accessToken,
+    phoneNumberId: params.phoneNumberId,
+    label: "video",
+    body: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: params.to,
+      type: "video",
+      video: { link: params.videoUrl, caption: params.caption },
+    },
+  });
+}
+
 async function resolveMediaOutboundUrl(args: {
   supabase: SupabaseClient;
   message: PendingExternalMessage;
@@ -1214,7 +1273,7 @@ async function resolveMediaOutboundUrl(args: {
   return data.signedUrl;
 }
 
-async function preparePendingMessageForSend(
+export async function preparePendingMessageForSend(
   supabase: SupabaseClient,
   message: PendingExternalMessage,
 ): Promise<PreparedWhatsappTransportMessage> {
@@ -1243,10 +1302,25 @@ async function preparePendingMessageForSend(
       caption: message.content,
     };
   }
+  if (message.messageType === "audio") {
+    return {
+      mode: "audio",
+      to: message.phone,
+      audioUrl: await resolveMediaOutboundUrl({ supabase, message }),
+    };
+  }
+  if (message.messageType === "video") {
+    return {
+      mode: "video",
+      to: message.phone,
+      videoUrl: await resolveMediaOutboundUrl({ supabase, message }),
+      caption: message.content,
+    };
+  }
   return { mode: "text", to: message.phone, body: message.content };
 }
 
-async function sendSinglePendingMessage(
+export async function sendSinglePendingMessage(
   integration: WhatsappIntegration,
   preparedMessage: PreparedWhatsappTransportMessage,
 ) {
@@ -1255,6 +1329,12 @@ async function sendSinglePendingMessage(
   }
   if (preparedMessage.mode === "document") {
     return sendWhatsappDocumentMessage({ ...integration, ...preparedMessage });
+  }
+  if (preparedMessage.mode === "audio") {
+    return sendWhatsappAudioMessage({ ...integration, ...preparedMessage });
+  }
+  if (preparedMessage.mode === "video") {
+    return sendWhatsappVideoMessage({ ...integration, ...preparedMessage });
   }
   return sendWhatsappTextMessage({ ...integration, ...preparedMessage });
 }

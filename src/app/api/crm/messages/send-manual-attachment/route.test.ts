@@ -625,7 +625,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "audio video and document remain internal",
+    name: "audio and video whatsapp use canonical external contracts",
     run: async () => {
       const cases = [
         ["clip.mp3", "audio/mpeg", "audio", "audio"],
@@ -669,7 +669,9 @@ const tests: TestCase[] = [
         assert.equal(response.status, 200);
         assert.equal(body.messageType, expectedMessageType);
         assert.equal(body.attachmentKind, expectedAttachmentKind);
-        assert.equal(metadata.send_external, false);
+        assert.equal(metadata.send_external, true);
+        assert.equal(metadata.external_channel, "whatsapp");
+        assert.equal(metadata.outbound_origin, `crm_manual_${expectedMessageType}`);
       }
     },
   },

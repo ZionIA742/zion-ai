@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
   createProcessWhatsappPendingMessages,
   isRetryableWhatsappHttpStatus,
+  preparePendingMessageForSend,
+  sendSinglePendingMessage,
 } from "./whatsapp-external-sender";
 
 type TestCase = { name: string; run: () => Promise<void> | void };
@@ -270,6 +272,132 @@ const tests: TestCase[] = [
         { messageId: "message-1", externalMessageId: "wamid-1" },
       ]);
       assert.match(String(result.results.at(-1)?.detail || ""), /finalizacao comercial concluida/);
+    },
+  },
+  {
+    name: "audio and video resolve private media and use Meta media payloads",
+    run: async () => {
+      const originalFetch = globalThis.fetch;
+      const payloads: Array<Record<string, unknown>> = [];
+      globalThis.fetch = async (_input, init) => {
+        payloads.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ messages: [{ id: `wamid-${payloads.length}` }] }),
+        } as Response;
+      };
+
+      try {
+        for (const messageType of ["audio", "video"] as const) {
+          const message = createMessage({
+            id: `message-${messageType}`,
+            messageType,
+            rawMessageType: messageType,
+            content: messageType === "video" ? "Legenda canônica" : "Áudio manual",
+            mediaUrl: `org-1/store-1/manual-attachments/conv-1/${messageType}.bin`,
+            metadata: {
+              external_channel: "whatsapp",
+              send_external: true,
+              outbound_origin: `crm_manual_${messageType}`,
+              storage_bucket: "zion-store-files",
+              storage_path: `org-1/store-1/manual-attachments/conv-1/${messageType}.bin`,
+            },
+          });
+          const prepared = await preparePendingMessageForSend(
+            {
+              storage: {
+                from: () => ({
+                  createSignedUrl: async (path: string) => ({
+                    data: { signedUrl: `https://signed.example/${path}` },
+                    error: null,
+                  }),
+                }),
+              },
+            } as never,
+            message as never,
+          );
+
+          if (messageType === "audio") {
+            assert.deepEqual(prepared, {
+              mode: "audio",
+              to: "5511999999999",
+              audioUrl: "https://signed.example/org-1/store-1/manual-attachments/conv-1/audio.bin",
+            });
+          } else {
+            assert.deepEqual(prepared, {
+              mode: "video",
+              to: "5511999999999",
+              videoUrl: "https://signed.example/org-1/store-1/manual-attachments/conv-1/video.bin",
+              caption: "Legenda canônica",
+            });
+          }
+
+          await sendSinglePendingMessage(
+            { accessToken: "token", phoneNumberId: "phone-number-id" },
+            prepared,
+          );
+        }
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+
+      assert.deepEqual(payloads, [
+        {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: "5511999999999",
+          type: "audio",
+          audio: { link: "https://signed.example/org-1/store-1/manual-attachments/conv-1/audio.bin" },
+        },
+        {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: "5511999999999",
+          type: "video",
+          video: {
+            link: "https://signed.example/org-1/store-1/manual-attachments/conv-1/video.bin",
+            caption: "Legenda canônica",
+          },
+        },
+      ]);
+    },
+  },
+  {
+    name: "audio uses the 24h gate before the Meta POST",
+    run: async () => {
+      const harness = createHarness({
+        pending: [
+          createMessage({
+            messageType: "audio",
+            rawMessageType: "audio",
+            mediaUrl: "org-1/store-1/manual-attachments/conv-1/audio.mp3",
+            metadata: {
+              external_channel: "whatsapp",
+              send_external: true,
+              outbound_origin: "crm_manual_audio",
+              storage_bucket: "zion-store-files",
+              storage_path: "org-1/store-1/manual-attachments/conv-1/audio.mp3",
+            },
+          }),
+        ],
+        prepareImpl: async () => ({
+          mode: "audio",
+          to: "5511999999999",
+          audioUrl: "https://signed.example/audio.mp3",
+        }),
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+      assert.equal(result.sent, 1);
+      assert.deepEqual(harness.calls.order, [
+        "CLAIM",
+        "PREFLIGHT 24H",
+        "PREPARE",
+        "STRICT INTEGRATION",
+        "FINAL SQL GATE",
+        "POST META",
+      ]);
     },
   },
   {
