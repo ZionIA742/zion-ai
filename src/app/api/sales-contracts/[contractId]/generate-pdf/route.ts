@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { loadStoreBrandVisualPolicy } from "@/lib/server/store-brand-visual-policy";
 import { buildContractPdf, loadStoreLogoForContractPdf } from "@/lib/server/sales-contracts/build-contract-pdf";
@@ -11,11 +12,10 @@ import { registerContractBusinessEvent } from "@/lib/server/sales-contracts/cont
 import { storeContractPdfFile } from "@/lib/server/sales-contracts/contract-storage";
 import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/document-review-messages";
 import {
-  createContractVersion,
   type ContractQuoteSnapshotItem,
-  getNextContractVersionNumber,
-  markContractVersionStatus,
-  setContractCurrentVersion,
+  createSalesContractVersionBySystem,
+  markContractPendingReview,
+  reconcileSupersededContractVersion,
 } from "@/lib/server/sales-contracts/contract-versioning";
 import { resolveContractTemplateTerms } from "@/lib/server/sales-contracts/contract-template-terms";
 
@@ -36,31 +36,29 @@ const PDF_REGENERATION_BLOCKED_MESSAGE =
 
 type GenerateContractPdfDeps = {
   buildContractPdf: typeof buildContractPdf;
-  createContractVersion: typeof createContractVersion;
-  getNextContractVersionNumber: typeof getNextContractVersionNumber;
+  createSalesContractVersionBySystem: typeof createSalesContractVersionBySystem;
   loadStoreBrandVisualPolicy: typeof loadStoreBrandVisualPolicy;
   loadStoreLogoForContractPdf: typeof loadStoreLogoForContractPdf;
-  markContractVersionStatus: typeof markContractVersionStatus;
+  markContractPendingReview: typeof markContractPendingReview;
   pushAssistantDocumentReviewMessage: typeof pushAssistantDocumentReviewMessage;
   registerContractBusinessEvent: typeof registerContractBusinessEvent;
   resolveAuthorizedExistingContract: typeof resolveAuthorizedExistingContract;
   resolveContractTemplateTerms: typeof resolveContractTemplateTerms;
-  setContractCurrentVersion: typeof setContractCurrentVersion;
+  reconcileSupersededContractVersion: typeof reconcileSupersededContractVersion;
   storeContractPdfFile: typeof storeContractPdfFile;
 };
 
 const defaultGenerateContractPdfDeps: GenerateContractPdfDeps = {
   buildContractPdf,
-  createContractVersion,
-  getNextContractVersionNumber,
+  createSalesContractVersionBySystem,
   loadStoreBrandVisualPolicy,
   loadStoreLogoForContractPdf,
-  markContractVersionStatus,
+  markContractPendingReview,
   pushAssistantDocumentReviewMessage,
   registerContractBusinessEvent,
   resolveAuthorizedExistingContract,
   resolveContractTemplateTerms,
-  setContractCurrentVersion,
+  reconcileSupersededContractVersion,
   storeContractPdfFile,
 };
 
@@ -90,6 +88,61 @@ function buildErrorResponse(error: unknown) {
 function normalizeOptionalText(value: unknown) {
   const normalized = String(value ?? "").trim();
   return normalized || null;
+}
+
+function resolveOperationId(headerValue: string | null) {
+  const operationId = String(headerValue || "").trim();
+  if (!operationId) return randomUUID();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operationId)) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_OPERATION_ID_INVALID",
+      "O identificador da operacao de geracao do contrato e invalido.",
+    );
+  }
+  return operationId.toLowerCase();
+}
+
+function buildRequestFingerprint(args: {
+  organizationId: string;
+  storeId: string;
+  contractId: string;
+  rendererInput: ReturnType<typeof buildCanonicalContractRendererInput>;
+  contentFingerprint: string;
+}) {
+  const orderedRequest = [
+    "zion.contract-pdf.request.v1",
+    args.organizationId,
+    args.storeId,
+    args.contractId,
+    args.rendererInput.identity.quoteId,
+    args.rendererInput.identity.quoteVersionId,
+    args.rendererInput.templateAuthority.templateId,
+    args.rendererInput.templateAuthority.templateVersionId,
+    args.contentFingerprint,
+  ];
+  return createHash("sha256")
+    .update(JSON.stringify(orderedRequest))
+    .digest("hex");
+}
+
+function buildDurableStoreFile(version: Awaited<ReturnType<typeof createSalesContractVersionBySystem>>["version"]) {
+  if (
+    !version.store_file_id ||
+    !version.storage_bucket ||
+    !version.storage_path ||
+    !version.original_filename ||
+    version.size_bytes == null
+  ) {
+    throw new Error("A versao canonica nao possui identidade completa de storage.");
+  }
+  return {
+    storeFileId: version.store_file_id,
+    storageBucket: version.storage_bucket,
+    storagePath: version.storage_path,
+    originalFilename: version.original_filename,
+    sizeBytes: version.size_bytes,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -271,20 +324,18 @@ export function createGenerateContractPdfPostHandler(
 ) {
   const buildContractPdf =
     deps.buildContractPdf ?? defaultGenerateContractPdfDeps.buildContractPdf;
-  const createContractVersion =
-    deps.createContractVersion ?? defaultGenerateContractPdfDeps.createContractVersion;
-  const getNextVersionNumber =
-    deps.getNextContractVersionNumber ??
-    defaultGenerateContractPdfDeps.getNextContractVersionNumber;
+  const createCanonicalVersion =
+    deps.createSalesContractVersionBySystem ??
+    defaultGenerateContractPdfDeps.createSalesContractVersionBySystem;
   const loadStoreBrandVisualPolicy =
     deps.loadStoreBrandVisualPolicy ??
     defaultGenerateContractPdfDeps.loadStoreBrandVisualPolicy;
   const loadStoreLogoForContractPdf =
     deps.loadStoreLogoForContractPdf ??
     defaultGenerateContractPdfDeps.loadStoreLogoForContractPdf;
-  const markContractVersionStatus =
-    deps.markContractVersionStatus ??
-    defaultGenerateContractPdfDeps.markContractVersionStatus;
+  const markContractPendingReview =
+    deps.markContractPendingReview ??
+    defaultGenerateContractPdfDeps.markContractPendingReview;
   const pushDocumentReviewMessage =
     deps.pushAssistantDocumentReviewMessage ??
     defaultGenerateContractPdfDeps.pushAssistantDocumentReviewMessage;
@@ -297,20 +348,21 @@ export function createGenerateContractPdfPostHandler(
   const resolveTemplateTerms =
     deps.resolveContractTemplateTerms ??
     defaultGenerateContractPdfDeps.resolveContractTemplateTerms;
-  const setContractCurrentVersion =
-    deps.setContractCurrentVersion ??
-    defaultGenerateContractPdfDeps.setContractCurrentVersion;
+  const reconcilePreviousVersion =
+    deps.reconcileSupersededContractVersion ??
+    defaultGenerateContractPdfDeps.reconcileSupersededContractVersion;
   const storeContractPdfFile =
     deps.storeContractPdfFile ?? defaultGenerateContractPdfDeps.storeContractPdfFile;
 
   return async function POST(
-    _request: Request,
+    request: Request,
     context: { params: Promise<{ contractId: string }> }
   ) {
   let scope:
     | Awaited<ReturnType<typeof resolveAuthorizedExistingContract>>
     | null = null;
-  let versionIdToRollback: string | null = null;
+  let authorityState: "unconfirmed" | "committed_new" | "committed_replay" =
+    "unconfirmed";
   let storeFileToRollback:
     | {
         storeFileId: string;
@@ -345,11 +397,17 @@ export function createGenerateContractPdfPostHandler(
     }
 
     const { quoteSnapshot, items } = await loadContractQuoteSnapshotItems(scope);
-
-    const versionNumber = await getNextVersionNumber({
-      supabase: scope.supabase,
-      contractId: scope.contract.id,
-    });
+    const operationId = resolveOperationId(
+      request.headers.get("x-zion-contract-operation-id"),
+    );
+    const operationKey = `p9:contract-pdf:${scope.contract.id}:${operationId}`;
+    if (operationKey.length > 200) {
+      throw new ContractAccessError(
+        409,
+        "CONTRACT_OPERATION_KEY_INVALID",
+        "A chave da operacao de geracao do contrato e invalida.",
+      );
+    }
 
     const templateTerms = await resolveTemplateTerms({
       supabase: scope.supabase,
@@ -403,8 +461,16 @@ export function createGenerateContractPdfPostHandler(
       logo: storeLogo,
     });
     const contentFingerprint = computeContractContentFingerprint(rendererInput);
+    const requestFingerprint = buildRequestFingerprint({
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      contractId: scope.contract.id,
+      rendererInput,
+      contentFingerprint,
+    });
 
     const pdfBytes = await buildContractPdf(rendererInput);
+    const pdfSha256 = createHash("sha256").update(pdfBytes).digest("hex");
     const snapshot = buildContractSnapshotV2({
       input: rendererInput,
       contentFingerprint,
@@ -417,7 +483,7 @@ export function createGenerateContractPdfPostHandler(
       storeId: scope.store.id,
       contractId: scope.contract.id,
       contractNumber: scope.contract.contract_number,
-      versionNumber,
+      contentFingerprint,
       pdfBytes,
     });
 
@@ -427,37 +493,62 @@ export function createGenerateContractPdfPostHandler(
       storagePath: storedFile.storagePath,
     };
 
-    const version = await createContractVersion({
+    const canonicalResult = await createCanonicalVersion({
       supabase: scope.supabase,
-      contract: scope.contract,
-      versionNumber,
-      status: "generated",
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      contractId: scope.contract.id,
+      operationKey,
+      requestFingerprint,
+      contentFingerprint,
       storeFileId: storedFile.storeFileId,
       storageBucket: storedFile.storageBucket,
       storagePath: storedFile.storagePath,
       originalFilename: storedFile.originalFilename,
+      mimeType: "application/pdf",
       sizeBytes: storedFile.sizeBytes,
-      contractSnapshot: snapshot,
+      pdfSha256,
+      contractSnapshot: snapshot as Record<string, unknown>,
+      onAuthorityResolved: ({ replayed }) => {
+        authorityState = replayed ? "committed_replay" : "committed_new";
+      },
     });
+    const version = canonicalResult.version;
+    const durableStoreFile = buildDurableStoreFile(version);
 
-    versionIdToRollback = version.id;
-
-    if (scope.currentVersion?.id) {
-      await markContractVersionStatus({
-        supabase: scope.supabase,
-        versionId: scope.currentVersion.id,
-        status: "superseded",
-      });
+    if (canonicalResult.replayed) {
+      try {
+        await scope.supabase.storage
+          .from(storedFile.storageBucket)
+          .remove([storedFile.storagePath]);
+        await scope.supabase
+          .from("store_files")
+          .delete()
+          .eq("id", storedFile.storeFileId)
+          .eq("organization_id", scope.organizationId)
+          .eq("store_id", scope.store.id);
+      } catch {
+        // best effort: the canonical replay artifact remains authoritative
+      }
     }
+    storeFileToRollback = null;
 
-    await setContractCurrentVersion({
+    await reconcilePreviousVersion({
       supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
       contractId: scope.contract.id,
-      versionId: version.id,
-      status: "pending_review",
+      versionNumber: version.version_number,
+    });
+    await markContractPendingReview({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      contractId: scope.contract.id,
+      expectedCurrentVersionId: version.id,
     });
 
-    if (versionNumber === 1) {
+    if (!canonicalResult.replayed && version.version_number === 1) {
       await registerBusinessEvent({
         supabase: scope.supabase,
         organizationId: scope.organizationId,
@@ -495,11 +586,11 @@ export function createGenerateContractPdfPostHandler(
           scope.conversation?.id || scope.contract.conversation_id || null,
         customerName: scope.contract.customer_name || scope.lead?.name || null,
         customerPhone: scope.contract.customer_phone || scope.lead?.phone || null,
-        originalFileName: storedFile.originalFilename,
+        originalFileName: durableStoreFile.originalFilename,
         fileKind: "sales_contract_pdf",
         mimeType: "application/pdf",
-        storageBucket: storedFile.storageBucket,
-        storagePath: storedFile.storagePath,
+        storageBucket: durableStoreFile.storageBucket,
+        storagePath: durableStoreFile.storagePath,
       });
     } catch (assistantMessageError) {
       console.warn(
@@ -516,26 +607,23 @@ export function createGenerateContractPdfPostHandler(
         status: "pending_review",
       },
       version,
-      storeFile: storedFile,
+      storeFile: durableStoreFile,
     });
   } catch (error) {
-    if (scope && versionIdToRollback) {
-      try {
-        await scope.supabase
-          .from("sales_contract_versions")
-          .delete()
-          .eq("id", versionIdToRollback);
-      } catch {
-        // best effort
-      }
-    }
+    const shouldRollbackTemporaryArtifact =
+      authorityState === "unconfirmed" || authorityState === "committed_replay";
 
-    if (scope && storeFileToRollback) {
+    if (scope && storeFileToRollback && shouldRollbackTemporaryArtifact) {
       try {
         await scope.supabase.storage
           .from(storeFileToRollback.storageBucket)
           .remove([storeFileToRollback.storagePath]);
-        await scope.supabase.from("store_files").delete().eq("id", storeFileToRollback.storeFileId);
+        await scope.supabase
+          .from("store_files")
+          .delete()
+          .eq("id", storeFileToRollback.storeFileId)
+          .eq("organization_id", scope.organizationId)
+          .eq("store_id", scope.store.id);
       } catch {
         // best effort
       }

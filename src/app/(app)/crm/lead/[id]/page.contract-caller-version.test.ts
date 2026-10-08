@@ -270,9 +270,23 @@ function runSourceAssertions() {
   assert.notEqual(sameScopeGuardIndex, -1);
   assert.notEqual(clearOnErrorIndex, -1);
   assert.ok(clearOnErrorIndex > sameScopeGuardIndex);
+
+  const generateStart = pageSource.indexOf("async function generateContractPdf(");
+  const generateEnd = pageSource.indexOf("async function openGeneratedContractPdf", generateStart);
+  assert.notEqual(generateStart, -1);
+  assert.notEqual(generateEnd, -1);
+  const generateSource = pageSource.slice(generateStart, generateEnd);
+  assert.match(generateSource, /crypto\.randomUUID\(\)/);
+  assert.match(generateSource, /x-zion-contract-operation-id/);
 }
 
-await runBehaviorTests();
-runSourceAssertions();
+async function main() {
+  await runBehaviorTests();
+  runSourceAssertions();
+  console.log("ok - crm contract caller uses current commercial proposal quote version");
+}
 
-console.log("ok - crm contract caller uses current commercial proposal quote version");
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

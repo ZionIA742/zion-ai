@@ -3070,11 +3070,15 @@ export default function LeadPage() {
     setContractActionSuccess(null);
 
     try {
+      const operationId = crypto.randomUUID();
       const response = await fetch(
         `/api/sales-contracts/${encodeURIComponent(safeContractId)}/generate-pdf`,
         {
           method: "POST",
           cache: "no-store",
+          headers: {
+            "x-zion-contract-operation-id": operationId,
+          },
         }
       );
       const result =

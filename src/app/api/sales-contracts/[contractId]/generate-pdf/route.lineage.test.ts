@@ -1,4 +1,7 @@
 import { strict as assert } from "node:assert";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createGenerateContractPdfPostHandler } from "./route";
 
 type TestCase = {
@@ -71,7 +74,15 @@ function createQuoteVersionRow(overrides?: Record<string, unknown>) {
 function createSupabaseMock(args: {
   quoteVersionRow: Record<string, unknown> | null;
   calls: SupabaseCall[];
+  writer?: {
+    versionNumber?: number;
+    replayed?: boolean;
+    error?: { message: string } | null;
+    durableReadError?: { message: string } | null;
+    workflowError?: { message: string } | null;
+  };
 }) {
+  const writer = args.writer || {};
   function makeThenable(result: { data: unknown; error: unknown }) {
     return {
       then(resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) {
@@ -82,11 +93,29 @@ function createSupabaseMock(args: {
 
   return {
     storage: {
-      from() {
+      from(bucket: string) {
         return {
-          remove: async () => ({ data: null, error: null }),
+          remove: async (paths: string[]) => {
+            args.calls.push({ table: `storage:${bucket}`, operation: "remove", payload: { paths } });
+            return { data: null, error: null };
+          },
         };
       },
+    },
+    rpc(name: string, payload: Record<string, unknown>) {
+      args.calls.push({ table: name, operation: "rpc", payload });
+      return Promise.resolve({
+        data: writer.error ? null : [{
+          id: "contract-version-1",
+          contract_id: payload.p_contract_id,
+          organization_id: payload.p_organization_id,
+          store_id: payload.p_store_id,
+          version_number: writer.versionNumber || 1,
+          status: "generated",
+          replayed: writer.replayed === true,
+        }],
+        error: writer.error || null,
+      });
     },
     from(table: string) {
       if (table === "sales_quote_items") {
@@ -101,6 +130,8 @@ function createSupabaseMock(args: {
             const builder = {
               eq(column: string, value: unknown) {
                 filters.push({ column, value });
+                const call = args.calls[args.calls.length - 1];
+                if (call) call.filters = [...filters];
                 return builder;
               },
               maybeSingle: async () => {
@@ -136,30 +167,35 @@ function createSupabaseMock(args: {
                 });
                 return makeThenable({ data: [], error: null });
               },
-            };
-            return selectBuilder;
-          },
-          insert(payload: Record<string, unknown>) {
-            args.calls.push({
-              table,
-              operation: "insert",
-              payload,
-            });
-            return {
-              select() {
+              maybeSingle: async () => {
+                args.calls.push({ table, operation: "maybeSingle", filters: [...filters] });
                 return {
-                  maybeSingle: async () => ({
-                    data: {
-                      id: "contract-version-1",
-                      contract_id: "contract-1",
-                      version_number: payload.version_number,
-                      contract_snapshot: payload.contract_snapshot,
-                    },
-                    error: null,
-                  }),
+                  data: {
+                    id: "contract-version-1",
+                    contract_id: "contract-1",
+                    organization_id: "org-1",
+                    store_id: "store-1",
+                    version_number: writer.versionNumber || 1,
+                    status: "generated",
+                    store_file_id: writer.replayed ? "store-file-durable" : "store-file-1",
+                    storage_bucket: "contracts",
+                    storage_path: writer.replayed
+                      ? "contracts/durable-contract-1.pdf"
+                      : "contracts/contract-1.pdf",
+                    original_filename: writer.replayed
+                      ? "durable-contract-1.pdf"
+                      : "contract-1.pdf",
+                    mime_type: "application/pdf",
+                    size_bytes: 4,
+                    contract_snapshot:
+                      args.calls.find((call) => call.table === "create_sales_contract_version_by_system")
+                        ?.payload?.p_contract_snapshot || null,
+                  },
+                  error: writer.durableReadError || null,
                 };
               },
             };
+            return selectBuilder;
           },
           update(payload: Record<string, unknown>) {
             args.calls.push({
@@ -167,18 +203,17 @@ function createSupabaseMock(args: {
               operation: "update",
               payload,
             });
-            return {
-              eq() {
-                return makeThenable({ data: null, error: null });
+            const builder = {
+              eq(column: string, value: unknown) {
+                filters.push({ column, value });
+                const call = args.calls[args.calls.length - 1];
+                if (call) call.filters = [...filters];
+                return builder;
               },
+              select() { return builder; },
+              maybeSingle: async () => ({ data: { id: "contract-version-previous" }, error: null }),
             };
-          },
-          delete() {
-            return {
-              eq() {
-                return makeThenable({ data: null, error: null });
-              },
-            };
+            return builder;
           },
         };
       }
@@ -191,18 +226,29 @@ function createSupabaseMock(args: {
               operation: "update",
               payload,
             });
-            return {
-              eq() {
-                return makeThenable({ data: null, error: null });
+            const builder = {
+              eq(column: string, value: unknown) {
+                filters.push({ column, value });
+                const call = args.calls[args.calls.length - 1];
+                if (call) call.filters = [...filters];
+                return builder;
               },
+              select() { return builder; },
+              maybeSingle: async () => ({
+                data: writer.workflowError ? null : { id: "contract-1" },
+                error: writer.workflowError || null,
+              }),
             };
+            return builder;
           },
           delete() {
-            return {
+            const builder = {
               eq() {
-                return makeThenable({ data: null, error: null });
+                args.calls.push({ table, operation: "delete" });
+                return builder;
               },
             };
+            return builder;
           },
         };
       }
@@ -215,6 +261,13 @@ function createSupabaseMock(args: {
 function createScope(overrides?: {
   contract?: Record<string, unknown>;
   quoteVersionRow?: Record<string, unknown> | null;
+  writer?: {
+    versionNumber?: number;
+    replayed?: boolean;
+    error?: { message: string } | null;
+    durableReadError?: { message: string } | null;
+    workflowError?: { message: string } | null;
+  };
 }) {
   const calls: SupabaseCall[] = [];
   const quoteVersionRow =
@@ -225,6 +278,7 @@ function createScope(overrides?: {
   const supabase = createSupabaseMock({
     quoteVersionRow,
     calls,
+    writer: overrides?.writer,
   });
 
   const contract = {
@@ -289,7 +343,7 @@ function resetState(args?: Parameters<typeof createScope>[0]) {
   };
 }
 
-async function callRoute() {
+async function callRoute(args?: { headers?: Record<string, string> }) {
   const handler = createGenerateContractPdfPostHandler({
     buildContractPdf: async (input: Record<string, unknown>) => {
       state.pdfInputs.push(input);
@@ -310,7 +364,9 @@ async function callRoute() {
       threadId: "thread-1",
       messageId: "message-1",
     }),
-    registerContractBusinessEvent: async () => {},
+    registerContractBusinessEvent: async (input) => {
+      state.calls.push({ table: "business_event", operation: "rpc", payload: input });
+    },
     resolveAuthorizedExistingContract: async () => state.scope,
     resolveContractTemplateTerms: async () => ({
       contractTemplateUsed: true,
@@ -343,7 +399,7 @@ async function callRoute() {
   });
 
   const response = await handler(
-    new Request("https://example.test", { method: "POST" }),
+    new Request("https://example.test", { method: "POST", headers: args?.headers }),
     { params: Promise.resolve({ contractId: "contract-1" }) },
   );
   const body = await response.json();
@@ -352,9 +408,9 @@ async function callRoute() {
 
 function insertedContractSnapshot() {
   const insert = state.calls.find(
-    (call) => call.table === "sales_contract_versions" && call.operation === "insert",
+    (call) => call.table === "create_sales_contract_version_by_system" && call.operation === "rpc",
   );
-  return insert?.payload?.contract_snapshot as Record<string, unknown> | undefined;
+  return insert?.payload?.p_contract_snapshot as Record<string, unknown> | undefined;
 }
 
 function quoteVersionRead() {
@@ -420,6 +476,205 @@ const tests: TestCase[] = [
       assert.equal(snapshot?.schema, "zion.sales_contract_snapshot.v2");
       assert.equal(typeof snapshot?.content_fingerprint, "string");
       assert.equal(state.storedFiles.length, 1);
+      const rpcCall = state.calls.find(
+        (call) => call.table === "create_sales_contract_version_by_system" && call.operation === "rpc",
+      );
+      assert.ok(rpcCall);
+      assert.match(String(rpcCall.payload?.p_operation_key), /^p9:contract-pdf:contract-1:/);
+      assert.match(String(rpcCall.payload?.p_request_fingerprint), /^[0-9a-f]{64}$/);
+      assert.match(String(rpcCall.payload?.p_content_fingerprint), /^[0-9a-f]{64}$/);
+      assert.equal(
+        rpcCall.payload?.p_pdf_sha256,
+        createHash("sha256").update(new Uint8Array([37, 80, 68, 70])).digest("hex"),
+      );
+      assert.equal(
+        state.calls.some((call) => call.table === "sales_contract_versions" && call.operation === "insert"),
+        false,
+      );
+      assert.equal(
+        state.calls.some((call) => call.table === "sales_contract_versions" && call.operation === "delete"),
+        false,
+      );
+      assert.equal(
+        state.calls.some((call) => call.table === "business_event"),
+        true,
+      );
+      const pending = state.calls.find(
+        (call) => call.table === "sales_contracts" && call.operation === "update",
+      );
+      assert.deepEqual(pending?.filters, [
+        { column: "id", value: "contract-1" },
+        { column: "organization_id", value: "org-1" },
+        { column: "store_id", value: "store-1" },
+        { column: "current_version_id", value: "contract-version-1" },
+      ]);
+    },
+  },
+  {
+    name: "request fingerprint is deterministic while operation keys remain per action",
+    run: async () => {
+      resetState();
+      await callRoute({
+        headers: { "x-zion-contract-operation-id": "11111111-1111-4111-8111-111111111111" },
+      });
+      const first = state.calls.find((call) => call.table === "create_sales_contract_version_by_system")?.payload;
+      resetState();
+      await callRoute({
+        headers: { "x-zion-contract-operation-id": "22222222-2222-4222-8222-222222222222" },
+      });
+      const second = state.calls.find((call) => call.table === "create_sales_contract_version_by_system")?.payload;
+      assert.equal(first?.p_request_fingerprint, second?.p_request_fingerprint);
+      assert.notEqual(first?.p_operation_key, second?.p_operation_key);
+    },
+  },
+  {
+    name: "replayed RPC cleans only the temporary artifact and responds with durable storage",
+    run: async () => {
+      resetState({ writer: { versionNumber: 2, replayed: true } });
+      const { response, body } = await callRoute();
+      assert.equal(response.status, 200);
+      assert.equal(body.storeFile.storagePath, "contracts/durable-contract-1.pdf");
+      assert.equal(
+        state.calls.some(
+          (call) => call.table === "storage:contracts" && call.operation === "remove",
+        ),
+        true,
+      );
+      assert.equal(state.calls.some((call) => call.table === "store_files" && call.operation === "delete"), true);
+      assert.equal(state.calls.some((call) => call.table === "business_event"), false);
+      assert.equal(state.calls.some((call) => call.table === "sales_contract_versions" && call.operation === "delete"), false);
+      const superseded = state.calls.find(
+        (call) => call.table === "sales_contract_versions" && call.operation === "update",
+      );
+      assert.deepEqual(superseded?.filters, [
+        { column: "organization_id", value: "org-1" },
+        { column: "store_id", value: "store-1" },
+        { column: "contract_id", value: "contract-1" },
+        { column: "version_number", value: 1 },
+      ]);
+    },
+  },
+  {
+    name: "new authority commit survives durable version read failure",
+    run: async () => {
+      resetState({
+        writer: {
+          replayed: false,
+          durableReadError: { message: "durable version read failed" },
+        },
+      });
+
+      const { response } = await callRoute();
+
+      assert.equal(response.status, 500);
+      assert.equal(
+        state.calls.some(
+          (call) => call.table === "storage:contracts" && call.operation === "remove",
+        ),
+        false,
+      );
+      assert.equal(
+        state.calls.some((call) => call.table === "store_files" && call.operation === "delete"),
+        false,
+      );
+      assert.equal(
+        state.calls.some((call) => call.table === "sales_contract_versions" && call.operation === "delete"),
+        false,
+      );
+    },
+  },
+  {
+    name: "replayed authority commit removes only the new temporary artifact after durable read failure",
+    run: async () => {
+      resetState({
+        writer: {
+          replayed: true,
+          durableReadError: { message: "durable version read failed" },
+        },
+      });
+
+      const { response } = await callRoute();
+
+      assert.equal(response.status, 500);
+      assert.equal(
+        state.calls.some(
+          (call) => call.table === "storage:contracts" && call.operation === "remove",
+        ),
+        true,
+      );
+      assert.equal(
+        state.calls.some((call) => call.table === "store_files" && call.operation === "delete"),
+        true,
+      );
+      assert.equal(
+        state.calls.some((call) => call.table === "sales_contract_versions" && call.operation === "delete"),
+        false,
+      );
+    },
+  },
+  {
+    name: "workflow failure after new authority commit preserves durable artifact and version",
+    run: async () => {
+      resetState({
+        writer: {
+          replayed: false,
+          workflowError: { message: "pending review update failed" },
+        },
+      });
+
+      const { response } = await callRoute();
+
+      assert.equal(response.status, 500);
+      assert.equal(
+        state.calls.some(
+          (call) => call.table === "storage:contracts" && call.operation === "remove",
+        ),
+        false,
+      );
+      assert.equal(
+        state.calls.some((call) => call.table === "store_files" && call.operation === "delete"),
+        false,
+      );
+      assert.equal(
+        state.calls.some((call) => call.table === "sales_contract_versions" && call.operation === "delete"),
+        false,
+      );
+    },
+  },
+  {
+    name: "RPC failure cleans the temporary artifact without deleting a contract version",
+    run: async () => {
+      resetState({ writer: { error: { message: "writer failed" } } });
+      const { response } = await callRoute();
+      assert.equal(response.status, 500);
+      assert.equal(
+        state.calls.some(
+          (call) => call.table === "storage:contracts" && call.operation === "remove",
+        ),
+        true,
+      );
+      assert.equal(state.calls.some((call) => call.table === "store_files" && call.operation === "delete"), true);
+      assert.equal(state.calls.some((call) => call.table === "sales_contract_versions" && call.operation === "delete"), false);
+    },
+  },
+  {
+    name: "generation source has no legacy version or direct version-row authority",
+    run: () => {
+      const routeSource = readFileSync(
+        join(process.cwd(), "src/app/api/sales-contracts/[contractId]/generate-pdf/route.ts"),
+        "utf8",
+      );
+      const versioningSource = readFileSync(
+        join(process.cwd(), "src/lib/server/sales-contracts/contract-versioning.ts"),
+        "utf8",
+      );
+      assert.equal(routeSource.includes("getNextContractVersionNumber"), false);
+      assert.equal(routeSource.includes("createContractVersion"), false);
+      assert.equal(routeSource.includes("setContractCurrentVersion"), false);
+      assert.equal(routeSource.includes('.from("sales_contract_versions").delete'), false);
+      assert.equal(versioningSource.includes("getNextContractVersionNumber"), false);
+      assert.equal(versioningSource.includes("createContractVersion"), false);
+      assert.equal(versioningSource.includes("setContractCurrentVersion"), false);
     },
   },
   {

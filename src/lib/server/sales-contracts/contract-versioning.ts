@@ -86,102 +86,153 @@ export function buildContractSnapshot(args: {
   } satisfies ContractSnapshot;
 }
 
-export async function getNextContractVersionNumber(args: {
+export type CanonicalContractVersionWriterArgs = {
   supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
   contractId: string;
-}) {
-  const { data, error } = await args.supabase
-    .from("sales_contract_versions")
-    .select("version_number")
-    .eq("contract_id", args.contractId)
-    .order("version_number", { ascending: false })
-    .limit(1);
-
-  if (error) {
-    throw new Error(`Falha ao carregar versoes do contrato: ${error.message}`);
-  }
-
-  const currentVersion =
-    Array.isArray(data) && data[0]?.version_number ? Number(data[0].version_number) : 0;
-
-  return Math.max(1, currentVersion + 1);
-}
-
-export async function createContractVersion(args: {
-  supabase: SupabaseClient;
-  contract: SalesContract;
-  versionNumber: number;
-  status: string;
+  operationKey: string;
+  requestFingerprint: string;
+  contentFingerprint: string;
   storeFileId: string;
   storageBucket: string;
   storagePath: string;
   originalFilename: string;
+  mimeType: string;
   sizeBytes: number;
+  pdfSha256: string;
   contractSnapshot: Record<string, unknown>;
-}) {
-  const { data, error } = await args.supabase
-    .from("sales_contract_versions")
-    .insert({
-      contract_id: args.contract.id,
-      organization_id: args.contract.organization_id,
-      store_id: args.contract.store_id,
-      version_number: args.versionNumber,
-      status: args.status,
-      store_file_id: args.storeFileId,
-      storage_bucket: args.storageBucket,
-      storage_path: args.storagePath,
-      original_filename: args.originalFilename,
-      mime_type: "application/pdf",
-      size_bytes: args.sizeBytes,
-      contract_snapshot: args.contractSnapshot,
-    })
-    .select("*")
-    .maybeSingle();
+  onAuthorityResolved?: (result: { versionId: string; replayed: boolean }) => void;
+};
 
-  if (error || !data?.id) {
-    throw new Error(error?.message || "Falha ao criar sales_contract_versions.");
+export async function createSalesContractVersionBySystem(
+  args: CanonicalContractVersionWriterArgs,
+) {
+  const { data, error } = await args.supabase.rpc(
+    "create_sales_contract_version_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_contract_id: args.contractId,
+      p_operation_key: args.operationKey,
+      p_request_fingerprint: args.requestFingerprint,
+      p_content_fingerprint: args.contentFingerprint,
+      p_store_file_id: args.storeFileId,
+      p_storage_bucket: args.storageBucket,
+      p_storage_path: args.storagePath,
+      p_original_filename: args.originalFilename,
+      p_mime_type: args.mimeType,
+      p_size_bytes: args.sizeBytes,
+      p_pdf_sha256: args.pdfSha256,
+      p_contract_snapshot: args.contractSnapshot,
+    },
+  );
+
+  if (error) {
+    throw new Error(`Falha ao criar versao canonica do contrato: ${error.message}`);
   }
 
-  return data as SalesContractVersion;
+  const writerRow = Array.isArray(data) ? data[0] : data;
+  if (
+    !writerRow ||
+    typeof writerRow.id !== "string" ||
+    writerRow.contract_id !== args.contractId ||
+    writerRow.organization_id !== args.organizationId ||
+    writerRow.store_id !== args.storeId ||
+    !Number.isInteger(Number(writerRow.version_number)) ||
+    Number(writerRow.version_number) < 1 ||
+    typeof writerRow.status !== "string" ||
+    typeof writerRow.replayed !== "boolean"
+  ) {
+    throw new Error("A autoridade canonica retornou uma versao invalida.");
+  }
+
+  args.onAuthorityResolved?.({
+    versionId: writerRow.id,
+    replayed: writerRow.replayed,
+  });
+
+  const { data: version, error: versionError } = await args.supabase
+    .from("sales_contract_versions")
+    .select("*")
+    .eq("id", writerRow.id)
+    .eq("contract_id", args.contractId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (versionError || !version?.id) {
+    throw new Error(
+      versionError?.message ||
+        "A versao retornada pela autoridade canonica nao esta disponivel.",
+    );
+  }
+
+  if (
+    version.id !== writerRow.id ||
+    version.contract_id !== args.contractId ||
+    version.organization_id !== args.organizationId ||
+    version.store_id !== args.storeId ||
+    Number(version.version_number) !== Number(writerRow.version_number)
+  ) {
+    throw new Error("A versao duravel retornada nao corresponde ao resultado da autoridade.");
+  }
+
+  return {
+    version: version as SalesContractVersion,
+    replayed: writerRow.replayed,
+  };
 }
 
-export async function markContractVersionStatus(args: {
+export async function reconcileSupersededContractVersion(args: {
   supabase: SupabaseClient;
-  versionId: string;
-  status: string;
+  organizationId: string;
+  storeId: string;
+  contractId: string;
+  versionNumber: number | null;
 }) {
-  const { error } = await args.supabase
+  const versionNumber = Number(args.versionNumber);
+  if (!Number.isInteger(versionNumber) || versionNumber <= 1) return;
+
+  const { data, error } = await args.supabase
     .from("sales_contract_versions")
-    .update({
-      status: args.status,
-    })
-    .eq("id", args.versionId);
+    .update({ status: "superseded" })
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("contract_id", args.contractId)
+    .eq("version_number", versionNumber - 1)
+    .select("id")
+    .maybeSingle();
 
   if (error) {
     throw new Error(`Falha ao atualizar status da versao do contrato: ${error.message}`);
   }
+  if (!data?.id) {
+    throw new Error("A versao anterior esperada nao foi encontrada para superseded.");
+  }
 }
 
-export async function setContractCurrentVersion(args: {
+export async function markContractPendingReview(args: {
   supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
   contractId: string;
-  versionId: string;
-  status?: string | null;
+  expectedCurrentVersionId: string;
 }) {
-  const payload: Record<string, unknown> = {
-    current_version_id: args.versionId,
-  };
-
-  if (args.status) {
-    payload.status = args.status;
-  }
-
-  const { error } = await args.supabase
+  const { data, error } = await args.supabase
     .from("sales_contracts")
-    .update(payload)
-    .eq("id", args.contractId);
+    .update({ status: "pending_review" })
+    .eq("id", args.contractId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("current_version_id", args.expectedCurrentVersionId)
+    .select("id")
+    .maybeSingle();
 
   if (error) {
-    throw new Error(`Falha ao atualizar sales_contracts.current_version_id: ${error.message}`);
+    throw new Error(`Falha ao atualizar status do contrato: ${error.message}`);
+  }
+  if (!data?.id) {
+    throw new Error("O contrato mudou de versao durante a reconciliacao.");
   }
 }

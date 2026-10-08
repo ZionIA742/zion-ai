@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 const STORAGE_BUCKET = "zion-store-files";
 
 function sanitizeFilePart(value: string) {
@@ -14,7 +16,7 @@ function buildContractStoragePath(args: {
   organizationId: string;
   storeId: string;
   contractId: string;
-  versionNumber: number;
+  contentFingerprint: string;
 }) {
   const now = new Date();
   const dateKey = [
@@ -22,23 +24,29 @@ function buildContractStoragePath(args: {
     String(now.getUTCMonth() + 1).padStart(2, "0"),
     String(now.getUTCDate()).padStart(2, "0"),
   ].join("");
-  const random = Math.random().toString(36).slice(2, 8);
+  const random = randomUUID().replace(/-/g, "").slice(0, 12);
+  const fingerprint = sanitizeFilePart(args.contentFingerprint).slice(0, 12);
 
   return [
     args.organizationId,
     args.storeId,
     "sales-contracts",
     args.contractId,
-    `${dateKey}-v${String(args.versionNumber).padStart(4, "0")}-${random}.pdf`,
+    `${dateKey}-${fingerprint || "content"}-${random}.pdf`,
   ].join("/");
 }
 
-function buildPdfFileName(contractNumber: string | null | undefined, contractId: string, versionNumber: number) {
+function buildPdfFileName(
+  contractNumber: string | null | undefined,
+  contractId: string,
+  contentFingerprint: string,
+) {
   const base =
     sanitizeFilePart(contractNumber || "") ||
     `contrato-${sanitizeFilePart(String(contractId || "").slice(0, 8) || "sem-numero")}`;
 
-  return `${base}-v${String(versionNumber).padStart(4, "0")}.pdf`;
+  const fingerprint = sanitizeFilePart(contentFingerprint).slice(0, 12) || "content";
+  return `${base}-${fingerprint}.pdf`;
 }
 
 export async function storeContractPdfFile(args: {
@@ -47,14 +55,14 @@ export async function storeContractPdfFile(args: {
   storeId: string;
   contractId: string;
   contractNumber: string | null;
-  versionNumber: number;
+  contentFingerprint: string;
   pdfBytes: Uint8Array;
 }) {
   const storagePath = buildContractStoragePath(args);
   const originalFilename = buildPdfFileName(
     args.contractNumber,
     args.contractId,
-    args.versionNumber
+    args.contentFingerprint,
   );
 
   const { error: uploadError } = await args.supabase.storage
@@ -85,6 +93,11 @@ export async function storeContractPdfFile(args: {
     .maybeSingle();
 
   if (fileError || !fileRow?.id) {
+    try {
+      await args.supabase.storage.from(STORAGE_BUCKET).remove([storagePath]);
+    } catch {
+      // best effort cleanup of the object that has no durable store_file row
+    }
     throw new Error(fileError?.message || "Falha ao registrar o PDF do contrato em store_files.");
   }
 
