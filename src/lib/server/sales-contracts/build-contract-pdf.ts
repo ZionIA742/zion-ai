@@ -3,39 +3,13 @@ import {
   StandardFonts,
   rgb,
   type PDFFont,
-  type PDFImage,
   type PDFPage,
 } from "pdf-lib";
-import type { ContractPdfItem } from "./types";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { CanonicalContractRendererInput } from "./canonical-contract-renderer";
 import { resolveStoreBrandPdfTheme } from "@/lib/server/store-brand-pdf-theme";
 
-export type BuildContractPdfInput = {
-  storeName: string | null;
-  storeLogo?: {
-    bytes: Uint8Array;
-    mimeType: string;
-  } | null;
-  brandVisual?: {
-    primaryColor?: string | null;
-    secondaryColor?: string | null;
-    documentFooter?: string | null;
-  } | null;
-  contractNumber: string | null;
-  quoteNumber?: string | null;
-  title?: string | null;
-  customerName: string | null;
-  customerPhone: string | null;
-  createdAt: string | null;
-  validUntil: string | null;
-  items: ContractPdfItem[];
-  subtotalCents: number;
-  discountCents: number;
-  totalCents: number;
-  paymentTerms: string | null;
-  deliveryTerms: string | null;
-  warrantyTerms: string | null;
-  contractTerms: string | null;
-};
+export type BuildContractPdfInput = CanonicalContractRendererInput;
 
 type Cursor = {
   page: PDFPage;
@@ -170,7 +144,7 @@ function applySectionSpacing(cursor: Cursor, pdfDoc: PDFDocument, spacingBefore 
     return cursor;
   }
 
-  let nextCursor = ensureSpace(
+  const nextCursor = ensureSpace(
     cursor,
     pdfDoc,
     spacingBefore + SECTION_TITLE_HEIGHT + PARAGRAPH_LINE_HEIGHT * MIN_LINES_AFTER_SECTION_TITLE
@@ -241,7 +215,10 @@ function drawParagraph(args: {
   return cursor;
 }
 
-async function embedStoreLogo(pdfDoc: PDFDocument, storeLogo: BuildContractPdfInput["storeLogo"]) {
+async function embedStoreLogo(
+  pdfDoc: PDFDocument,
+  storeLogo: { bytes: Uint8Array; mimeType: string } | null,
+) {
   if (!storeLogo?.bytes?.length) {
     return null;
   }
@@ -397,7 +374,7 @@ function scaleLogoDimensions(args: { width: number; height: number }) {
 }
 
 export async function loadStoreLogoForContractPdf(args: {
-  supabase: any;
+  supabase: SupabaseClient;
   organizationId: string;
   storeId: string;
 }) {
@@ -449,20 +426,26 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-  const embeddedLogo = await embedStoreLogo(pdfDoc, input.storeLogo || null);
-  const brandPdfTheme = resolveStoreBrandPdfTheme(input.brandVisual || {});
+  const logo = input.branding.logo
+    ? {
+        bytes: Uint8Array.from(Buffer.from(input.branding.logo.dataBase64, "base64")),
+        mimeType: input.branding.logo.mimeType,
+      }
+    : null;
+  const embeddedLogo = await embedStoreLogo(pdfDoc, logo);
+  const brandPdfTheme = resolveStoreBrandPdfTheme(input.branding);
   const accentColor = brandPdfTheme.accentColor ?? COLOR_ACCENT;
   const accentTextColor = brandPdfTheme.accentTextColor ?? COLOR_ACCENT;
   const panelColor = brandPdfTheme.secondaryPanelColor ?? COLOR_PANEL;
 
   let cursor = addPage(pdfDoc);
-  const storeName = toDisplayText(input.storeName, "Loja");
-  const contractNumber = toDisplayText(input.contractNumber, "Nao informado");
-  const quoteNumber = toDisplayText(input.quoteNumber, "Nao informado");
-  const customerName = toDisplayText(input.customerName);
-  const customerPhone = toDisplayText(input.customerPhone);
+  const storeName = toDisplayText(input.store.name, "Loja");
+  const contractNumber = toDisplayText(input.identity.contractNumber, "Nao informado");
+  const quoteNumber = toDisplayText(input.identity.quoteNumber, "Nao informado");
+  const customerName = toDisplayText(input.customer.name);
+  const customerPhone = toDisplayText(input.customer.phone);
   const title = toDisplayText(
-    input.title,
+    input.identity.title,
     "CONTRATO DE COMPRA E VENDA / PRESTACAO DE SERVICO"
   );
 
@@ -579,7 +562,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
   drawKeyValue({
     page: cursor.page,
     label: "Validade",
-    value: formatDate(input.validUntil),
+    value: formatDate(input.identity.validUntil),
     x: PAGE_MARGIN + 180,
     y: cursor.y - 39,
     labelFont: boldFont,
@@ -607,18 +590,18 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     input.items.length > 0
       ? input.items.flatMap((item, index) => {
           const name = toDisplayText(item.name, "Item nao informado");
-          const description = toDisplayText(item.description, "A definir pela loja");
+          const description = toDisplayText(item.description, "Item sem descricao");
           return [
             `${index + 1}. ${name}`,
             `Qtd.: ${Number(item.quantity || 0) || 0} | Unit.: ${formatCurrency(
-              item.unit_price_cents
-            )} | Desc.: ${formatCurrency(item.discount_cents)} | Total: ${formatCurrency(
-              item.total_cents
+              item.unitPriceCents
+            )} | Desc.: ${formatCurrency(item.discountCents)} | Total: ${formatCurrency(
+              item.totalCents
             )}`,
             description,
           ];
         })
-      : ["Itens principais nao informados. A definir pela loja."];
+      : ["Itens principais nao informados."];
 
   cursor = drawSectionBox({
     cursor,
@@ -636,9 +619,9 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     pdfDoc,
     title: "VALORES",
     lines: [
-      `Subtotal: ${formatCurrency(input.subtotalCents)}`,
-      `Desconto: ${formatCurrency(input.discountCents)}`,
-      `Total: ${formatCurrency(input.totalCents)}`,
+      `Subtotal: ${formatCurrency(input.values.subtotalCents)}`,
+      `Desconto: ${formatCurrency(input.values.discountCents)}`,
+      `Total: ${formatCurrency(input.values.totalCents)}`,
     ],
     font,
     boldFont,
@@ -646,47 +629,50 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     accentTextColor,
   });
 
-  cursor = drawParagraph({
-    cursor,
-    pdfDoc,
-    title: "CONDICOES DE PAGAMENTO",
-    text: toDisplayText(input.paymentTerms, "A definir pela loja"),
-    font,
-    boldFont,
-    accentTextColor,
-    spacingBefore: 14,
-  });
+  if (input.commercialTerms.payment) {
+    cursor = drawParagraph({
+      cursor,
+      pdfDoc,
+      title: "CONDICOES DE PAGAMENTO",
+      text: input.commercialTerms.payment,
+      font,
+      boldFont,
+      accentTextColor,
+      spacingBefore: 14,
+    });
+  }
 
-  cursor = drawParagraph({
-    cursor,
-    pdfDoc,
-    title: "ENTREGA / INSTALACAO",
-    text: toDisplayText(input.deliveryTerms, "A definir pela loja"),
-    font,
-    boldFont,
-    accentTextColor,
-    spacingBefore: 14,
-  });
+  if (input.commercialTerms.delivery) {
+    cursor = drawParagraph({
+      cursor,
+      pdfDoc,
+      title: "ENTREGA / INSTALACAO",
+      text: input.commercialTerms.delivery,
+      font,
+      boldFont,
+      accentTextColor,
+      spacingBefore: 14,
+    });
+  }
 
-  cursor = drawParagraph({
-    cursor,
-    pdfDoc,
-    title: "GARANTIA",
-    text: toDisplayText(input.warrantyTerms, "A definir pela loja"),
-    font,
-    boldFont,
-    accentTextColor,
-    spacingBefore: 14,
-  });
+  if (input.commercialTerms.warranty) {
+    cursor = drawParagraph({
+      cursor,
+      pdfDoc,
+      title: "GARANTIA",
+      text: input.commercialTerms.warranty,
+      font,
+      boldFont,
+      accentTextColor,
+      spacingBefore: 14,
+    });
+  }
 
   cursor = drawParagraph({
     cursor,
     pdfDoc,
     title: "CLAUSULAS E TERMOS",
-    text: toDisplayText(
-      input.contractTerms,
-      "Contrato sujeito a validacao final e uso conforme regras da loja."
-    ),
+    text: input.templateAuthority.clauses,
     font,
     boldFont,
     preserveLineBreaks: true,
@@ -694,18 +680,18 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     spacingBefore: 14,
   });
 
-  cursor = drawParagraph({
-    cursor,
-    pdfDoc,
-    title: "VALIDADE",
-    text: input.validUntil
-      ? `Este contrato permanece em analise ate ${formatDate(input.validUntil)}.`
-      : "Prazo de validade nao informado.",
-    font,
-    boldFont,
-    accentTextColor,
-    spacingBefore: 16,
-  });
+  if (input.identity.validUntil) {
+    cursor = drawParagraph({
+      cursor,
+      pdfDoc,
+      title: "VALIDADE",
+      text: `Este contrato permanece em analise ate ${formatDate(input.identity.validUntil)}.`,
+      font,
+      boldFont,
+      accentTextColor,
+      spacingBefore: 16,
+    });
+  }
 
   cursor = drawFooterBox({
     cursor,

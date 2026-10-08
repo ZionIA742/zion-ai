@@ -37,6 +37,7 @@ export type SalesContract = {
   conversation_id: string | null;
   quote_id: string | null;
   quote_version_id: string | null;
+  commercial_opportunity_id?: string | null;
   current_version_id: string | null;
   contract_number: string | null;
   title: string | null;

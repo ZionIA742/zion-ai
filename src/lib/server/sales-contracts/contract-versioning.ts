@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { QuoteLeadRow, QuoteStoreRow } from "@/lib/server/sales-quotes/types";
 import type { ContractSnapshot, SalesContract, SalesContractVersion } from "./types";
 import type { ContractTemplateTermsResolution } from "./contract-template-terms";
@@ -86,7 +87,7 @@ export function buildContractSnapshot(args: {
 }
 
 export async function getNextContractVersionNumber(args: {
-  supabase: any;
+  supabase: SupabaseClient;
   contractId: string;
 }) {
   const { data, error } = await args.supabase
@@ -107,7 +108,7 @@ export async function getNextContractVersionNumber(args: {
 }
 
 export async function createContractVersion(args: {
-  supabase: any;
+  supabase: SupabaseClient;
   contract: SalesContract;
   versionNumber: number;
   status: string;
@@ -116,7 +117,7 @@ export async function createContractVersion(args: {
   storagePath: string;
   originalFilename: string;
   sizeBytes: number;
-  contractSnapshot: ContractSnapshot;
+  contractSnapshot: Record<string, unknown>;
 }) {
   const { data, error } = await args.supabase
     .from("sales_contract_versions")
@@ -145,7 +146,7 @@ export async function createContractVersion(args: {
 }
 
 export async function markContractVersionStatus(args: {
-  supabase: any;
+  supabase: SupabaseClient;
   versionId: string;
   status: string;
 }) {
@@ -162,7 +163,7 @@ export async function markContractVersionStatus(args: {
 }
 
 export async function setContractCurrentVersion(args: {
-  supabase: any;
+  supabase: SupabaseClient;
   contractId: string;
   versionId: string;
   status?: string | null;

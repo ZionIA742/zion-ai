@@ -1,12 +1,16 @@
 import { NextResponse } from "next/server";
 import { loadStoreBrandVisualPolicy } from "@/lib/server/store-brand-visual-policy";
 import { buildContractPdf, loadStoreLogoForContractPdf } from "@/lib/server/sales-contracts/build-contract-pdf";
+import {
+  buildCanonicalContractRendererInput,
+  buildContractSnapshotV2,
+  computeContractContentFingerprint,
+} from "@/lib/server/sales-contracts/canonical-contract-renderer";
 import { resolveAuthorizedExistingContract, ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
 import { registerContractBusinessEvent } from "@/lib/server/sales-contracts/contract-events";
 import { storeContractPdfFile } from "@/lib/server/sales-contracts/contract-storage";
 import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/document-review-messages";
 import {
-  buildContractSnapshot,
   createContractVersion,
   type ContractQuoteSnapshotItem,
   getNextContractVersionNumber,
@@ -32,7 +36,6 @@ const PDF_REGENERATION_BLOCKED_MESSAGE =
 
 type GenerateContractPdfDeps = {
   buildContractPdf: typeof buildContractPdf;
-  buildContractSnapshot: typeof buildContractSnapshot;
   createContractVersion: typeof createContractVersion;
   getNextContractVersionNumber: typeof getNextContractVersionNumber;
   loadStoreBrandVisualPolicy: typeof loadStoreBrandVisualPolicy;
@@ -48,7 +51,6 @@ type GenerateContractPdfDeps = {
 
 const defaultGenerateContractPdfDeps: GenerateContractPdfDeps = {
   buildContractPdf,
-  buildContractSnapshot,
   createContractVersion,
   getNextContractVersionNumber,
   loadStoreBrandVisualPolicy,
@@ -258,7 +260,10 @@ async function loadContractQuoteSnapshotItems(
     );
   }
 
-  return normalizeQuoteSnapshotItems(quoteSnapshot.items);
+  return {
+    quoteSnapshot,
+    items: normalizeQuoteSnapshotItems(quoteSnapshot.items),
+  };
 }
 
 export function createGenerateContractPdfPostHandler(
@@ -266,8 +271,6 @@ export function createGenerateContractPdfPostHandler(
 ) {
   const buildContractPdf =
     deps.buildContractPdf ?? defaultGenerateContractPdfDeps.buildContractPdf;
-  const buildContractSnapshot =
-    deps.buildContractSnapshot ?? defaultGenerateContractPdfDeps.buildContractSnapshot;
   const createContractVersion =
     deps.createContractVersion ?? defaultGenerateContractPdfDeps.createContractVersion;
   const getNextVersionNumber =
@@ -341,7 +344,7 @@ export function createGenerateContractPdfPostHandler(
       );
     }
 
-    const items = await loadContractQuoteSnapshotItems(scope);
+    const { quoteSnapshot, items } = await loadContractQuoteSnapshotItems(scope);
 
     const versionNumber = await getNextVersionNumber({
       supabase: scope.supabase,
@@ -354,29 +357,19 @@ export function createGenerateContractPdfPostHandler(
       storeId: scope.store.id,
     });
 
-    if (templateTerms.warning) {
-      console.warn(
-        "[sales-contracts/generate-pdf] usando fallback de termos do contrato:",
-        templateTerms.warning
+    if (
+      !templateTerms.contractTemplateUsed ||
+      !templateTerms.templateId ||
+      !templateTerms.templateVersionId ||
+      !templateTerms.generatedContractTerms
+    ) {
+      throw new ContractAccessError(
+        409,
+        "CONTRACT_TEMPLATE_AUTHORITY_REQUIRED",
+        templateTerms.warning ||
+          "Template ativo e regras finais sao obrigatorios para gerar uma versao canonica do contrato."
       );
     }
-
-    const resolvedContractTerms =
-      normalizeOptionalText(templateTerms.generatedContractTerms) ||
-      normalizeOptionalText(scope.contract.contract_terms) ||
-      "A definir pela loja.";
-
-    const snapshot = buildContractSnapshot({
-      contract: scope.contract,
-      store: scope.store,
-      lead: scope.lead,
-      items,
-      templateTerms: {
-        ...templateTerms,
-        generatedContractTerms:
-          normalizeOptionalText(templateTerms.generatedContractTerms) || null,
-      },
-    });
 
     const brandVisualPolicy = await loadStoreBrandVisualPolicy({
       supabase: scope.sessionSupabase,
@@ -393,9 +386,13 @@ export function createGenerateContractPdfPostHandler(
           })
         : null;
 
-    const pdfBytes = await buildContractPdf({
-      storeName: scope.store.name,
-      storeLogo,
+    const rendererInput = buildCanonicalContractRendererInput({
+      contract: scope.contract,
+      store: scope.store,
+      lead: scope.lead,
+      quoteSnapshot,
+      items,
+      templateTerms,
       brandVisual: brandVisualPolicy.configured
         ? {
             primaryColor: brandVisualPolicy.primaryColor,
@@ -403,31 +400,15 @@ export function createGenerateContractPdfPostHandler(
             documentFooter: brandVisualPolicy.documentFooter,
           }
         : null,
-      contractNumber: scope.contract.contract_number,
-      quoteNumber:
-        scope.contract.metadata && typeof scope.contract.metadata === "object"
-          ? String(scope.contract.metadata.quote_number || "").trim() || null
-          : null,
-      title: scope.contract.title,
-      customerName: scope.contract.customer_name || scope.lead?.name || null,
-      customerPhone: scope.contract.customer_phone || scope.lead?.phone || null,
-      createdAt: scope.contract.created_at,
-      validUntil: scope.contract.valid_until,
-      items: items.map((item) => ({
-        name: item.name,
-        description: item.description,
-        quantity: item.quantity,
-        unit_price_cents: item.unitPriceCents,
-        discount_cents: item.discountCents,
-        total_cents: item.totalCents,
-      })),
-      subtotalCents: Number(scope.contract.subtotal_cents || 0),
-      discountCents: Number(scope.contract.discount_cents || 0),
-      totalCents: Number(scope.contract.total_cents || 0),
-      paymentTerms: scope.contract.payment_terms,
-      deliveryTerms: scope.contract.delivery_terms,
-      warrantyTerms: scope.contract.warranty_terms,
-      contractTerms: resolvedContractTerms,
+      logo: storeLogo,
+    });
+    const contentFingerprint = computeContractContentFingerprint(rendererInput);
+
+    const pdfBytes = await buildContractPdf(rendererInput);
+    const snapshot = buildContractSnapshotV2({
+      input: rendererInput,
+      contentFingerprint,
+      materializedAt: new Date().toISOString(),
     });
 
     const storedFile = await storeContractPdfFile({

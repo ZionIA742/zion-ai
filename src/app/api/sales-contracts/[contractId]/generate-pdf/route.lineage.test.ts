@@ -33,6 +33,18 @@ function createQuoteVersionRow(overrides?: Record<string, unknown>) {
     quote_snapshot: {
       quote: {
         id: "quote-1",
+        quoteNumber: "ORC-1",
+        title: "Contrato da quote",
+        customerName: "Cliente da quote",
+        customerPhone: "5511888888888",
+        currency: "BRL",
+        paymentTerms: "Pix pela quote",
+        deliveryTerms: "Entrega pela quote",
+        warrantyTerms: "Garantia pela quote",
+        validUntil: "2026-10-24",
+        subtotalCents: 86415,
+        discountCents: 345,
+        totalCents: 86070,
       },
       items: [
         {
@@ -254,6 +266,7 @@ function createScope(overrides?: {
   return {
     user: { id: "user-1" },
     userId: "user-1",
+    organizationIds: ["org-1"],
     supabase,
     sessionSupabase: supabase,
     organizationId: "org-1",
@@ -285,21 +298,35 @@ async function callRoute() {
     loadStoreBrandVisualPolicy: async () => ({
       configured: false,
       useLogoOnContracts: null,
+      useLogoOnQuotes: null,
       primaryColor: null,
       secondaryColor: null,
       documentFooter: null,
     }),
     loadStoreLogoForContractPdf: async () => null,
-    pushAssistantDocumentReviewMessage: async () => {},
+    pushAssistantDocumentReviewMessage: async () => ({
+      ok: true,
+      deduped: false,
+      threadId: "thread-1",
+      messageId: "message-1",
+    }),
     registerContractBusinessEvent: async () => {},
     resolveAuthorizedExistingContract: async () => state.scope,
     resolveContractTemplateTerms: async () => ({
-      contractTemplateUsed: false,
-      templateId: null,
-      templateVersionId: null,
-      templateVersionNumber: null,
-      generatedContractTerms: null,
-      rulesUsed: [],
+      contractTemplateUsed: true,
+      templateId: "template-1",
+      templateVersionId: "template-version-1",
+      templateVersionNumber: 1,
+      generatedContractTerms: "CLAUSULAS DA AUTHORITY DO TEMPLATE",
+      rulesUsed: [{
+        rule_id: "rule-1",
+        rule_key: "pagamento",
+        rule_group: "pagamento",
+        label: "Pagamento",
+        value_text: "CLAUSULAS DA AUTHORITY DO TEMPLATE",
+        review_status: "approved",
+        sort_order: 1,
+      }],
       snapshotGeneratedAt: "2026-09-24T12:00:00.000Z",
       warning: null,
     }),
@@ -367,17 +394,6 @@ const tests: TestCase[] = [
       );
 
       assert.deepEqual((state.pdfInputs[0]?.items as unknown[])[0], {
-        name: "ITEM IMUTAVEL V1",
-        description: "Snapshot v1",
-        quantity: 7,
-        unit_price_cents: 12345,
-        discount_cents: 345,
-        total_cents: 86070,
-      });
-
-      const snapshot = insertedContractSnapshot();
-      const snapshotItem = (snapshot?.items as Array<Record<string, unknown>>)[0];
-      assert.deepEqual(snapshotItem, {
         id: "snapshot-item-v1",
         name: "ITEM IMUTAVEL V1",
         description: "Snapshot v1",
@@ -389,6 +405,20 @@ const tests: TestCase[] = [
           marker: "snapshot-only-v1",
         },
       });
+
+      const snapshot = insertedContractSnapshot();
+      const rendererInput = snapshot?.renderer_input as Record<string, unknown>;
+      const snapshotItem = (rendererInput.items as Array<Record<string, unknown>>)[0];
+      assert.deepEqual(
+        snapshotItem,
+        (state.pdfInputs[0]?.items as Array<Record<string, unknown>> | undefined)?.[0],
+      );
+      assert.equal(
+        (rendererInput.templateAuthority as Record<string, unknown>).clauses,
+        "CLAUSULAS DA AUTHORITY DO TEMPLATE",
+      );
+      assert.equal(snapshot?.schema, "zion.sales_contract_snapshot.v2");
+      assert.equal(typeof snapshot?.content_fingerprint, "string");
       assert.equal(state.storedFiles.length, 1);
     },
   },

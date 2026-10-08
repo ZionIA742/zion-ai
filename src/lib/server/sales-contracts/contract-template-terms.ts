@@ -1,3 +1,5 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 type StoreContractTemplateRow = {
   id: string;
   organization_id: string;
@@ -591,7 +593,7 @@ export function formatContractRulesIntoSections(rulesUsed: ContractTemplateRuleU
 }
 
 export async function resolveContractTemplateTerms(args: {
-  supabase: any;
+  supabase: SupabaseClient;
   organizationId: string;
   storeId: string;
 }) {
@@ -612,7 +614,13 @@ export async function resolveContractTemplateTerms(args: {
     const template = (templateData ?? null) as StoreContractTemplateRow | null;
     const activeVersionId = cleanText(template?.active_version_id);
 
-    if (!template?.id || !activeVersionId) {
+    if (
+      !template?.id ||
+      !activeVersionId ||
+      template.organization_id !== args.organizationId ||
+      template.store_id !== args.storeId ||
+      String(template.status || "").trim().toLowerCase() !== "active"
+    ) {
       return {
         contractTemplateUsed: false,
         templateId: template?.id || null,
@@ -641,7 +649,13 @@ export async function resolveContractTemplateTerms(args: {
     }
 
     const version = (versionData ?? null) as StoreContractTemplateVersionRow | null;
-    if (!version?.id) {
+    if (
+      !version?.id ||
+      String(version.status || "").trim().toLowerCase() !== "active" ||
+      version.template_id !== template.id ||
+      version.organization_id !== args.organizationId ||
+      version.store_id !== args.storeId
+    ) {
       return {
         contractTemplateUsed: false,
         templateId: template.id,
@@ -719,7 +733,7 @@ export async function resolveContractTemplateTerms(args: {
         generatedContractTerms: null,
         rulesUsed: [],
         snapshotGeneratedAt,
-        warning: null,
+        warning: "Template ativo ou versao ativa nao esta em estado final autorizado.",
       } satisfies ContractTemplateTermsResolution;
     }
 
@@ -734,10 +748,7 @@ export async function resolveContractTemplateTerms(args: {
       warning: null,
     } satisfies ContractTemplateTermsResolution;
   } catch (error) {
-    console.warn(
-      "[sales-contracts/contract-template-terms] fallback para termos atuais do contrato:",
-      error
-    );
+    console.warn("[sales-contracts/contract-template-terms] autoridade de template indisponivel:", error);
 
     return {
       contractTemplateUsed: false,
