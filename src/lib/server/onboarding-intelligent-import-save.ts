@@ -1,5 +1,4 @@
 import { createClient } from "@supabase/supabase-js";
-import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import {
   INTELLIGENT_IMPORT_PRICE_STATUS_VALUES,
   INTELLIGENT_IMPORT_STOCK_STATUS_VALUES,
@@ -29,16 +28,6 @@ import {
   normalizeImportDedupSku,
   normalizeImportDedupText,
 } from "@/lib/onboarding-import-dedup-identity";
-
-type MembershipRow = {
-  organization_id: string;
-};
-
-type AuthorizedStoreRow = {
-  id: string;
-  name: string;
-  organization_id: string;
-};
 
 type ExistingCatalogItemRow = {
   id: string;
@@ -140,103 +129,6 @@ export class IntelligentImportSaveAccessError extends Error {
     this.status = status;
     this.code = code;
   }
-}
-
-function uniqueOrganizationIds(rows: MembershipRow[]) {
-  return Array.from(
-    new Set(rows.map((row) => String(row.organization_id || "").trim()).filter(Boolean))
-  );
-}
-
-async function authenticateIntelligentImportSaveRequest() {
-  const sessionSupabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await sessionSupabase.auth.getUser();
-
-  if (authError || !user) {
-    throw new IntelligentImportSaveAccessError(401, "UNAUTHENTICATED", "Usuario nao autenticado.");
-  }
-
-  const { data: memberships, error: membershipError } = await sessionSupabase
-    .from("memberships")
-    .select("organization_id")
-    .eq("user_id", user.id);
-
-  if (membershipError) {
-    throw new IntelligentImportSaveAccessError(
-      500,
-      "LOAD_MEMBERSHIPS_FAILED",
-      membershipError.message
-    );
-  }
-
-  const organizationIds = uniqueOrganizationIds((memberships ?? []) as MembershipRow[]);
-  if (organizationIds.length === 0) {
-    throw new IntelligentImportSaveAccessError(
-      403,
-      "NO_ORGANIZATION_ACCESS",
-      "Usuario sem acesso a organizacoes."
-    );
-  }
-
-  return {
-    organizationIds,
-    sessionSupabase,
-    user,
-  };
-}
-
-async function loadAuthorizedStore(args: {
-  organizationIds: string[];
-  requestOrganizationId: string;
-  requestStoreId: string;
-  supabase: any;
-}) {
-  const requestStoreId = String(args.requestStoreId || "").trim();
-  const requestOrganizationId = String(args.requestOrganizationId || "").trim();
-
-  if (!requestOrganizationId) {
-    throw new IntelligentImportSaveAccessError(
-      400,
-      "INVALID_ORGANIZATION_ID",
-      "organizationId obrigatorio."
-    );
-  }
-
-  if (!requestStoreId) {
-    throw new IntelligentImportSaveAccessError(400, "INVALID_STORE_ID", "storeId obrigatorio.");
-  }
-
-  const { data: store, error: storeError } = await args.supabase
-    .from("stores")
-    .select("id, organization_id, name")
-    .eq("id", requestStoreId)
-    .in("organization_id", args.organizationIds)
-    .maybeSingle();
-
-  if (storeError) {
-    throw new IntelligentImportSaveAccessError(500, "LOAD_STORE_FAILED", storeError.message);
-  }
-
-  if (!store) {
-    throw new IntelligentImportSaveAccessError(
-      403,
-      "STORE_FORBIDDEN",
-      "Loja nao encontrada ou fora do escopo do usuario."
-    );
-  }
-
-  if (String(store.organization_id || "").trim() !== requestOrganizationId) {
-    throw new IntelligentImportSaveAccessError(
-      403,
-      "ORGANIZATION_STORE_MISMATCH",
-      "A organizacao informada nao corresponde a loja selecionada."
-    );
-  }
-
-  return store as AuthorizedStoreRow;
 }
 
 function normalizeDestination(value: string | null | undefined): IntelligentImportReviewedDestination | null {
@@ -3591,16 +3483,25 @@ async function cancelDiscardedDocxMediaAssets(args: {
   };
 }
 
+export type IntelligentImportSaveAuthorizedScope = {
+  organizationId: string;
+  storeId: string;
+};
+
 export async function saveApprovedIntelligentImportItems(
-  request: IntelligentImportSaveApprovedRequest
+  request: IntelligentImportSaveApprovedRequest,
+  authorizedScope: IntelligentImportSaveAuthorizedScope,
 ): Promise<IntelligentImportSaveApprovedResponse> {
-  const auth = await authenticateIntelligentImportSaveRequest();
-  const store = await loadAuthorizedStore({
-    organizationIds: auth.organizationIds,
-    requestOrganizationId: request.organizationId,
-    requestStoreId: request.storeId,
-    supabase: auth.sessionSupabase,
-  });
+  const organizationId = String(authorizedScope.organizationId || "").trim();
+  const storeId = String(authorizedScope.storeId || "").trim();
+  if (!organizationId || !storeId) {
+    throw new IntelligentImportSaveAccessError(
+      500,
+      "INVALID_AUTHORIZED_SCOPE",
+      "O escopo autorizado da loja e invalido.",
+    );
+  }
+
   const supabase = createServiceSupabaseClient();
 
   if (!Array.isArray(request.items)) {
@@ -3609,8 +3510,8 @@ export async function saveApprovedIntelligentImportItems(
 
   const importFileValidation = await validateImportedFiles({
     importedFileIds: Array.isArray(request.importedFileIds) ? request.importedFileIds : [],
-    organizationId: store.organization_id,
-    storeId: store.id,
+    organizationId,
+    storeId,
     supabase,
   });
   if (importFileValidation.receivedImportedFileIds.length === 0) {
@@ -3644,17 +3545,17 @@ export async function saveApprovedIntelligentImportItems(
     return response;
   }
   const stagedMediaValidation = await validateStagedMediaAssets({
-    organizationId: store.organization_id,
+    organizationId,
     selectedMediaRefs: Array.isArray(request.selectedMediaRefs) ? request.selectedMediaRefs : [],
-    storeId: store.id,
+    storeId,
     supabase,
   });
   const structuredReviewAuditValidation = await validateStructuredReviewAudit({
-    organizationId: store.organization_id,
+    organizationId,
     importFileValidation,
     request,
     selectedMediaRefs: Array.isArray(request.selectedMediaRefs) ? request.selectedMediaRefs : [],
-    storeId: store.id,
+    storeId,
     supabase,
   });
   if (!structuredReviewAuditValidation.ok) {
@@ -3691,8 +3592,8 @@ export async function saveApprovedIntelligentImportItems(
   const globalReviewConfirmation = structuredReviewAudit.globalReviewConfirmation;
 
   const existingReferences = await loadDuplicateReferenceData({
-    organizationId: store.organization_id,
-    storeId: store.id,
+    organizationId,
+    storeId,
     supabase,
   });
 
@@ -3842,8 +3743,8 @@ export async function saveApprovedIntelligentImportItems(
   const savedItems: IntelligentImportSaveApprovedResultItem[] = [];
   for (const validationItem of validatedItems) {
     const persistedId = await insertValidatedItem({
-      organizationId: store.organization_id,
-      storeId: store.id,
+      organizationId,
+      storeId,
       supabase,
       validationItem,
     });
@@ -3857,27 +3758,27 @@ export async function saveApprovedIntelligentImportItems(
 
   await createImportFileLinks({
     items: savedItems,
-    organizationId: store.organization_id,
-    storeId: store.id,
+    organizationId,
+    storeId,
     supabase,
     plan: importFileLinkPlan,
   });
   const photoSaveResult =
     photoPlan.plannedFinalPhotos.length > 0
       ? await promotePlannedImportPhotos({
-          organizationId: store.organization_id,
+          organizationId,
           photoPlan,
           savedItems,
           stagedMediaValidation,
-          storeId: store.id,
+          storeId,
           supabase,
         })
       : undefined;
   const discardedDocxMediaCleanup = await cancelDiscardedDocxMediaAssets({
     docxCanonicalStagedAssetsById: structuredReviewAudit.docxCanonicalStagedAssetsById,
     docxMediaReview: structuredReviewAudit.docxMediaReview,
-    organizationId: store.organization_id,
-    storeId: store.id,
+    organizationId,
+    storeId,
     supabase,
   });
 
