@@ -120,6 +120,13 @@ type MetaDocumentPayload = {
   caption?: unknown;
 };
 
+type MetaLocationPayload = {
+  latitude?: unknown;
+  longitude?: unknown;
+  name?: unknown;
+  address?: unknown;
+};
+
 type MetaMessagePayload = {
   [key: string]: unknown;
   id?: unknown;
@@ -130,6 +137,8 @@ type MetaMessagePayload = {
   audio?: MetaAudioPayload | null;
   video?: MetaVideoPayload | null;
   document?: MetaDocumentPayload | null;
+  location?: MetaLocationPayload | null;
+  contacts?: unknown;
   context?: {
     id?: unknown;
   } | null;
@@ -364,6 +373,8 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
   const audioNode = isRecord(message?.audio) ? message?.audio : null;
   const videoNode = isRecord(message?.video) ? message?.video : null;
   const documentNode = isRecord(message?.document) ? message?.document : null;
+  const locationNode = isRecord(message?.location) ? message?.location : null;
+  const contactsPayload = message?.contacts;
   const contextNode = isRecord(message?.context) ? message?.context : null;
   const phoneNumberId = asTrimmedString(payload.phone_number_id);
   const contactName = extractContactName(payload);
@@ -417,11 +428,107 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
     documentSha256: asTrimmedString(documentNode?.sha256),
     documentFilename: asTrimmedString(documentNode?.filename),
     documentCaption: asTrimmedString(documentNode?.caption),
+    locationLatitude: locationNode?.latitude,
+    locationLongitude: locationNode?.longitude,
+    locationName: asTrimmedString(locationNode?.name),
+    locationAddress: asTrimmedString(locationNode?.address),
+    contactsPayload,
     phoneNumberId,
     whatsappBusinessAccountId: asTrimmedString(payload.whatsapp_business_account_id),
     displayPhoneNumber: asTrimmedString(payload.display_phone_number),
     contactName,
   };
+}
+
+type CanonicalLocation = {
+  latitude: number;
+  longitude: number;
+  name?: string;
+  address?: string;
+};
+
+function parseCanonicalLocation(extracted: ReturnType<typeof extractIncomingMessage>): CanonicalLocation {
+  const latitude = extracted.locationLatitude;
+  const longitude = extracted.locationLongitude;
+  if (
+    typeof latitude !== "number" ||
+    !Number.isFinite(latitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    typeof longitude !== "number" ||
+    !Number.isFinite(longitude) ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    throw new Error("malformed_location_coordinates");
+  }
+
+  return {
+    latitude,
+    longitude,
+    ...(extracted.locationName ? { name: extracted.locationName } : {}),
+    ...(extracted.locationAddress ? { address: extracted.locationAddress } : {}),
+  };
+}
+
+type CanonicalContact = {
+  name?: string;
+  phones?: string[];
+  emails?: string[];
+};
+
+function parseCanonicalContacts(extracted: ReturnType<typeof extractIncomingMessage>): CanonicalContact[] {
+  if (!Array.isArray(extracted.contactsPayload) || extracted.contactsPayload.length === 0) {
+    throw new Error("malformed_contacts_payload");
+  }
+
+  const contacts: CanonicalContact[] = [];
+  for (const candidate of extracted.contactsPayload) {
+    if (!isRecord(candidate)) continue;
+    const nameNode = isRecord(candidate.name) ? candidate.name : null;
+    const name =
+      asTrimmedString(nameNode?.formatted_name) ||
+      asTrimmedString(nameNode?.first_name) ||
+      asTrimmedString(candidate.display_name) ||
+      asTrimmedString(candidate.name);
+    const phones = Array.isArray(candidate.phones)
+      ? candidate.phones
+          .map((phone) => (isRecord(phone) ? asTrimmedString(phone.phone) : asTrimmedString(phone)) || null)
+          .filter((phone): phone is string => Boolean(phone))
+      : [];
+    const emails = Array.isArray(candidate.emails)
+      ? candidate.emails
+          .map((email) => (isRecord(email) ? asTrimmedString(email.email) : asTrimmedString(email)) || null)
+          .filter((email): email is string => Boolean(email))
+      : [];
+    if (name || phones.length > 0 || emails.length > 0) {
+      contacts.push({
+        ...(name ? { name } : {}),
+        ...(phones.length > 0 ? { phones } : {}),
+        ...(emails.length > 0 ? { emails } : {}),
+      });
+    }
+  }
+  if (contacts.length === 0) throw new Error("malformed_contacts_payload");
+  return contacts;
+}
+
+function buildLocationContent(location: CanonicalLocation) {
+  const labels = [location.name, location.address].filter(Boolean);
+  const suffix = labels.length > 0 ? ` ${labels.join(" - ")}` : "";
+  return `Cliente compartilhou uma localizacao:${suffix} (${location.latitude}, ${location.longitude}).`;
+}
+
+function buildContactsContent(contacts: CanonicalContact[]) {
+  const rendered = contacts.map((contact) => {
+    const details = [
+      contact.name,
+      ...(contact.phones || []).map((phone) => `telefone ${phone}`),
+      ...(contact.emails || []).map((email) => `email ${email}`),
+    ].filter(Boolean);
+    return details.join(", ");
+  });
+  return `Cliente compartilhou contatos: ${rendered.join("; ")}.`;
 }
 
 async function handleResponsibleInboundBeforeCustomerThread(args: {
@@ -1210,6 +1317,7 @@ function buildMediaClassificationMetadata(args: {
   mimeType: string | null;
   fileName: string | null;
   content: string | null;
+  contextMessageId?: string | null;
 }) {
   const classification = classifyIncomingMediaMessage({
     messageType: args.messageType,
@@ -1229,6 +1337,7 @@ function buildMediaClassificationMetadata(args: {
     media_requires_ai_analysis: classification.requiresAiAnalysis,
     media_requires_human_review: classification.requiresHumanReview,
     media_classified_by: "classifyIncomingMediaMessage",
+    ...(args.contextMessageId ? { context_message_id: args.contextMessageId } : {}),
   } satisfies Record<string, unknown>;
 }
 
@@ -1821,24 +1930,6 @@ async function processSingleInboxRow(
     };
   }
 
-  if (
-    extracted.rawMessageType !== "text" &&
-    extracted.rawMessageType !== "image" &&
-    extracted.rawMessageType !== "audio" &&
-    extracted.rawMessageType !== "video" &&
-    extracted.rawMessageType !== "document"
-  ) {
-    const detail = `unsupported_message_type: ${extracted.rawMessageType}`;
-    await markInboxError(supabase, inbox.id, detail);
-    return {
-      inbox_id: inbox.id,
-      external_event_id: inbox.external_event_id,
-      status: "skipped",
-      detail,
-      ai_status: "skipped_not_text",
-    };
-  }
-
   if (extracted.rawMessageType === "text" && !extracted.textBody) {
     const detail = "missing_text_body";
     await markInboxError(supabase, inbox.id, detail);
@@ -1858,6 +1949,60 @@ async function processSingleInboxRow(
       external_event_id: inbox.external_event_id,
       status: "skipped",
       detail,
+    };
+  }
+
+  let canonicalLocation: CanonicalLocation | null = null;
+  let canonicalContacts: CanonicalContact[] | null = null;
+  try {
+    if (extracted.rawMessageType === "location") {
+      canonicalLocation = parseCanonicalLocation(extracted);
+    } else if (extracted.rawMessageType === "contacts") {
+      canonicalContacts = parseCanonicalContacts(extracted);
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "malformed_known_message";
+    await markInboxError(supabase, inbox.id, detail);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "failed",
+      detail,
+      ai_status: "failed",
+    };
+  }
+
+  const supportedMessageType =
+    extracted.rawMessageType === "text" ||
+    extracted.rawMessageType === "image" ||
+    extracted.rawMessageType === "audio" ||
+    extracted.rawMessageType === "video" ||
+    extracted.rawMessageType === "document" ||
+    extracted.rawMessageType === "location" ||
+    extracted.rawMessageType === "contacts" ||
+    extracted.rawMessageType === "reaction" ||
+    extracted.rawMessageType === "sticker";
+
+  if (!supportedMessageType) {
+    const detail = `unsupported_message_type: ${extracted.rawMessageType}`;
+    await markInboxProcessed(supabase, inbox.id);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "skipped",
+      detail,
+      ai_status: "skipped_not_text",
+    };
+  }
+
+  if (extracted.rawMessageType === "reaction" || extracted.rawMessageType === "sticker") {
+    await markInboxProcessed(supabase, inbox.id);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "skipped",
+      detail: `${extracted.rawMessageType}_not_supported_inbound_pilot`,
+      ai_status: "skipped_not_text",
     };
   }
 
@@ -2009,6 +2154,7 @@ async function processSingleInboxRow(
         mimeType: storedMedia.mimeType || extracted.imageMimeType,
         fileName: storedMedia.originalFileName,
         content: extracted.imageCaption,
+        contextMessageId: extracted.contextMessageId,
       });
 
       inserted = await insertIncomingImageMessage({
@@ -2053,6 +2199,7 @@ async function processSingleInboxRow(
         mimeType: storedMedia.mimeType || extracted.audioMimeType,
         fileName: storedMedia.originalFileName,
         content: null,
+        contextMessageId: extracted.contextMessageId,
       });
 
       inserted = await insertIncomingAudioMessage({
@@ -2097,6 +2244,7 @@ async function processSingleInboxRow(
         mimeType: storedMedia.mimeType || extracted.videoMimeType,
         fileName: storedMedia.originalFileName,
         content: extracted.videoCaption,
+        contextMessageId: extracted.contextMessageId,
       });
 
       inserted = await insertIncomingVideoMessage({
@@ -2142,6 +2290,7 @@ async function processSingleInboxRow(
         mimeType: storedMedia.mimeType || extracted.documentMimeType,
         fileName: extracted.documentFilename || storedMedia.originalFileName,
         content: extracted.documentCaption,
+        contextMessageId: extracted.contextMessageId,
       });
 
       inserted = await insertIncomingDocumentMessage({
@@ -2165,6 +2314,50 @@ async function processSingleInboxRow(
         sizeBytes: storedMedia.sizeBytes,
         classificationMetadata,
       });
+    } else if (extracted.rawMessageType === "location") {
+      const locationContent = buildLocationContent(canonicalLocation as CanonicalLocation);
+      inserted = await insertIncomingMessage({
+        supabase,
+        conversationId: conversation.id,
+        inbox,
+        messageId: resolvedMessageId,
+        textBody: locationContent,
+        fromPhone: resolvedFromPhone,
+        phoneNumberId: resolvedPhoneNumberId,
+        contactName: extracted.contactName,
+        rawMessageType: "location",
+        whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
+        displayPhoneNumber: extracted.displayPhoneNumber,
+        messageType: "text",
+        content: locationContent,
+        metadata: {
+          whatsapp_special_type: "location",
+          location: canonicalLocation,
+          ...(extracted.contextMessageId ? { context_message_id: extracted.contextMessageId } : {}),
+        },
+      });
+    } else if (extracted.rawMessageType === "contacts") {
+      const contactsContent = buildContactsContent(canonicalContacts as CanonicalContact[]);
+      inserted = await insertIncomingMessage({
+        supabase,
+        conversationId: conversation.id,
+        inbox,
+        messageId: resolvedMessageId,
+        textBody: contactsContent,
+        fromPhone: resolvedFromPhone,
+        phoneNumberId: resolvedPhoneNumberId,
+        contactName: extracted.contactName,
+        rawMessageType: "contacts",
+        whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
+        displayPhoneNumber: extracted.displayPhoneNumber,
+        messageType: "text",
+        content: contactsContent,
+        metadata: {
+          whatsapp_special_type: "contacts",
+          contacts: canonicalContacts,
+          ...(extracted.contextMessageId ? { context_message_id: extracted.contextMessageId } : {}),
+        },
+      });
     } else {
       inserted = await insertIncomingMessage({
         supabase,
@@ -2178,6 +2371,9 @@ async function processSingleInboxRow(
         rawMessageType: extracted.rawMessageType,
         whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
         displayPhoneNumber: extracted.displayPhoneNumber,
+        metadata: extracted.contextMessageId
+          ? { context_message_id: extracted.contextMessageId }
+          : undefined,
       });
     }
 
@@ -2246,6 +2442,10 @@ async function processSingleInboxRow(
                 ? "Cliente enviou um video."
                 : extracted.rawMessageType === "document"
                   ? `Cliente enviou o arquivo ${extracted.documentFilename || "anexo"}.`
+                  : extracted.rawMessageType === "location"
+                    ? buildLocationContent(canonicalLocation as CanonicalLocation)
+                    : extracted.rawMessageType === "contacts"
+                      ? buildContactsContent(canonicalContacts as CanonicalContact[])
                   : ""),
         runAiFlow,
       });

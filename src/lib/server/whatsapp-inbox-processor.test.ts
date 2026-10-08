@@ -60,6 +60,96 @@ async function processResponsibleTerminalScenario(args: {
   }
 }
 
+async function processInboundSpecialScenario(args: {
+  type: "text" | "location" | "contacts" | "reaction" | "sticker" | "unsupported";
+  contextMessageId?: string;
+  malformed?: boolean;
+}) {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+  process.env.OPENAI_API_KEY = "openai-test";
+  const previousFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method: string; body: string }> = [];
+  let inboxReads = 0;
+  let messageReads = 0;
+  let insertedPayload: Record<string, unknown> | null = null;
+  const persisted = {
+    id: "message-special-1",
+    conversation_id: "conversation-1",
+    lead_id: "lead-1",
+    store_id: "store-1",
+    external_message_id: "external-special-1",
+    message_type: args.type === "text" ? "text" : args.type === "location" || args.type === "contacts" ? "text" : null,
+    content: "materialized inbound",
+  };
+  const message: Record<string, unknown> = {
+    id: "external-special-1",
+    from: "5511999999999",
+    type: args.type,
+    ...(args.type === "text" ? { text: { body: "Ola" } } : {}),
+    ...(args.type === "location"
+      ? { location: args.malformed ? { latitude: 999, longitude: 10 } : { latitude: -23.561, longitude: -46.656, name: "Casa", address: "Rua A" } }
+      : {}),
+    ...(args.type === "contacts"
+      ? { contacts: args.malformed ? [{}] : [{ name: { formatted_name: "Maria" }, phones: [{ phone: "+5511999999999" }], emails: [{ email: "maria@example.com" }] }] }
+      : {}),
+  };
+  if (args.contextMessageId) message.context = { id: args.contextMessageId };
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    const body = typeof init?.body === "string" ? init.body : "";
+    calls.push({ url, method, body });
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "GET") {
+      inboxReads += 1;
+      return inboxReads === 1
+        ? jsonFetchResponse([{
+            id: "inbox-special-1", organization_id: "org-1", store_id: "store-1", provider: "whatsapp", external_event_id: "event-special-1",
+            payload: { source: "meta_whatsapp_webhook", event_kind: "message", phone_number_id: "phone-1", message },
+            received_at: "2026-10-08T12:00:00.000Z", processed_at: null, processing_error: null,
+          }])
+        : jsonFetchResponse([]);
+    }
+    if (url.includes("/rest/v1/messages") && method === "GET") {
+      messageReads += 1;
+      return messageReads === 1 ? jsonFetchResponse([]) : jsonFetchResponse([{ ...persisted, metadata: insertedPayload?.p_metadata || {} }]);
+    }
+    if (url.includes("/rest/v1/store_responsibles") && method === "GET") return jsonFetchResponse([]);
+    if (url.includes("/rest/v1/rpc/resolve_whatsapp_inbound_thread_by_system")) return jsonFetchResponse([{ lead_id: "lead-1", conversation_id: "conversation-1", normalized_whatsapp_identity: "5511999999999", thread_state: "existing_active_thread" }]);
+    if (url.includes("/rest/v1/rpc/bootstrap_first_commercial_context_for_inbound_by_system")) return jsonFetchResponse([{ customer_id: "customer-1", customer_channel_identity_id: "identity-1", customer_store_link_id: "store-link-1", lead_customer_link_id: "lead-link-1", commercial_opportunity_id: "opportunity-1", bootstrap_state: "existing_active_commercial_context" }]);
+    if (url.includes("/rest/v1/rpc/insert_message")) {
+      insertedPayload = JSON.parse(body) as Record<string, unknown>;
+      return jsonFetchResponse([{ ...persisted }]);
+    }
+    if (url.includes("/rest/v1/conversations") && method === "GET") return jsonFetchResponse([{ id: "conversation-1", organization_id: "org-1", lead_id: "lead-1", status: "active", is_human_active: false }]);
+    if (url.includes("/rest/v1/conversation_ai_window_state") && method === "GET") return jsonFetchResponse([]);
+    if (url.includes("/rest/v1/store_assistant_operational_tasks") && method === "GET") return jsonFetchResponse([]);
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") return jsonFetchResponse([]);
+    if (url.includes("api.openai.com/v1/responses") && method === "POST") throw new Error("runAiFlow injection should avoid OpenAI");
+    throw new Error(`unexpected special fetch: ${method} ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const aiCalls: string[] = [];
+    const aiMessages: string[] = [];
+    const result = await processWhatsappInbox({
+      organizationId: "org-1",
+      storeId: "store-1",
+      limit: 1,
+      runAiFlow: async () => {
+        aiCalls.push("sales-ai");
+        calls.push({ url: "event:sales-ai", method: "CALL", body: "" });
+        aiMessages.push(String(insertedPayload?.p_content || ""));
+        return { ok: true, aiText: "ok", context: {}, usage: null, persisted: true, messageId: "ai-1" };
+      },
+    });
+    return { result, calls, insertedPayload, aiCalls, aiMessages };
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+}
+
 test("responsible primary inbound is recorded before the customer thread path", async () => {
   process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
@@ -813,10 +903,118 @@ test("processor marks self-originated and group messages as non-AI inputs", () =
   assert.equal(groupMessage.isGroupMessage, true);
 });
 
+test("extractIncomingMessage preserves context id for customer inbound messages", () => {
+  const extracted = extractIncomingMessage({
+    source: "meta_whatsapp_webhook",
+    event_kind: "message",
+    phone_number_id: "phone-1",
+    message: {
+      id: "context-1",
+      from: "5511999999999",
+      type: "text",
+      text: { body: "resposta" },
+      context: { id: "quoted-message-1" },
+    },
+  });
+  assert.equal(extracted.contextMessageId, "quoted-message-1");
+});
+
+test("text inbound persists context metadata and dispatches Sales AI after insert", async () => {
+  const { result, calls, insertedPayload, aiCalls, aiMessages } = await processInboundSpecialScenario({ type: "text", contextMessageId: "quoted-text-1" });
+  assert.equal(result.succeeded, 1);
+  assert.equal(aiCalls.length, 1);
+  assert.equal(aiMessages[0], "Ola");
+  assert.ok(insertedPayload);
+  const textPayload = insertedPayload as Record<string, unknown>;
+  assert.equal((textPayload.p_metadata as Record<string, unknown>).context_message_id, "quoted-text-1");
+  assert.equal(calls.findIndex((call) => call.url.includes("/rpc/insert_message")) < calls.findIndex((call) => call.url === "event:sales-ai"), true);
+});
+
+test("media inbound preserves context metadata at insert", async () => {
+  const { result, calls } = await processCustomerMediaScenario({ type: "image", contextMessageId: "quoted-image-1" });
+  assert.equal(result.succeeded, 1);
+  const imageInsert = calls.find((call) => call.url.includes("/rpc/insert_message"));
+  assert.ok(imageInsert);
+  assert.equal((JSON.parse(imageInsert.body) as Record<string, unknown>).p_metadata && ((JSON.parse(imageInsert.body) as Record<string, unknown>).p_metadata as Record<string, unknown>).context_message_id, "quoted-image-1");
+});
+
+test("valid location becomes text with structured metadata and calls Sales AI after insert", async () => {
+  const { result, calls, insertedPayload, aiCalls, aiMessages } = await processInboundSpecialScenario({ type: "location", contextMessageId: "quoted-location-1" });
+  assert.equal(result.succeeded, 1);
+  assert.equal(aiCalls.length, 1);
+  assert.match(aiMessages[0] || "", /Casa/);
+  assert.match(aiMessages[0] || "", /-23\.561/);
+  assert.equal(calls.findIndex((call) => call.url.includes("/rpc/insert_message")) < calls.findIndex((call) => call.url === "event:sales-ai"), true);
+  assert.ok(insertedPayload);
+  const locationPayload = insertedPayload as Record<string, unknown>;
+  assert.equal(locationPayload.p_message_type, "text");
+  assert.equal(locationPayload.p_media_url, null);
+  const metadata = locationPayload.p_metadata as Record<string, unknown>;
+  assert.equal(metadata.whatsapp_special_type, "location");
+  assert.deepEqual(metadata.location, { latitude: -23.561, longitude: -46.656, name: "Casa", address: "Rua A" });
+  assert.equal(metadata.context_message_id, "quoted-location-1");
+});
+
+test("malformed location fails closed without invented coordinates or Sales AI", async () => {
+  const { result, calls, insertedPayload, aiCalls } = await processInboundSpecialScenario({ type: "location", malformed: true });
+  assert.equal(result.failed, 1);
+  assert.equal(insertedPayload, null);
+  assert.equal(aiCalls.length, 0);
+  assert.equal(calls.some((call) => call.url.includes("/rpc/insert_message")), false);
+  const patch = calls.find((call) => call.method === "PATCH");
+  assert.ok(patch);
+  assert.match(String((JSON.parse(patch.body) as Record<string, unknown>).processing_error), /malformed_location_coordinates/);
+});
+
+test("valid contacts become text with sanitized metadata and call Sales AI after insert", async () => {
+  const { result, calls, insertedPayload, aiCalls, aiMessages } = await processInboundSpecialScenario({ type: "contacts", contextMessageId: "quoted-contacts-1" });
+  assert.equal(result.succeeded, 1);
+  assert.equal(aiCalls.length, 1);
+  assert.match(aiMessages[0] || "", /Maria/);
+  assert.match(aiMessages[0] || "", /maria@example.com/);
+  assert.equal(calls.findIndex((call) => call.url.includes("/rpc/insert_message")) < calls.findIndex((call) => call.url === "event:sales-ai"), true);
+  assert.ok(insertedPayload);
+  const contactsPayload = insertedPayload as Record<string, unknown>;
+  assert.equal(contactsPayload.p_message_type, "text");
+  assert.equal(contactsPayload.p_media_url, null);
+  const metadata = contactsPayload.p_metadata as Record<string, unknown>;
+  assert.equal(metadata.whatsapp_special_type, "contacts");
+  assert.deepEqual(metadata.contacts, [{ name: "Maria", phones: ["+5511999999999"], emails: ["maria@example.com"] }]);
+  assert.equal(metadata.context_message_id, "quoted-contacts-1");
+});
+
+test("malformed contacts fail closed without inventing a contact", async () => {
+  const { result, calls, insertedPayload, aiCalls } = await processInboundSpecialScenario({ type: "contacts", malformed: true });
+  assert.equal(result.failed, 1);
+  assert.equal(insertedPayload, null);
+  assert.equal(aiCalls.length, 0);
+  assert.equal(calls.some((call) => call.url.includes("/rpc/insert_message")), false);
+  const patch = calls.find((call) => call.method === "PATCH");
+  assert.ok(patch);
+  assert.match(String((JSON.parse(patch.body) as Record<string, unknown>).processing_error), /malformed_contacts_payload/);
+});
+
+test("reaction, sticker and unknown unsupported messages are terminal skips", async () => {
+  for (const type of ["reaction", "sticker", "unsupported"] as const) {
+    const { result, calls, insertedPayload, aiCalls } = await processInboundSpecialScenario({ type });
+    assert.equal(result.skipped, 1, type);
+    assert.equal(result.results[0]?.ai_status, "skipped_not_text");
+    assert.equal(insertedPayload, null);
+    assert.equal(aiCalls.length, 0);
+    assert.equal(calls.some((call) => call.url.includes("/rpc/insert_message")), false);
+    const patch = calls.find((call) => call.method === "PATCH");
+    assert.ok(patch);
+    const patchBody = JSON.parse(patch.body) as Record<string, unknown>;
+    assert.equal(patchBody.processing_error, null);
+    assert.equal(typeof patchBody.processed_at, "string");
+  }
+});
+
 async function processCustomerMediaScenario(args: {
   type: "image" | "audio" | "video" | "document";
   caption?: string;
   filename?: string;
+  contextMessageId?: string;
   existingMessage?: Record<string, unknown> | null;
   transcriptionFailure?: boolean;
   visualFailure?: boolean;
@@ -885,6 +1083,7 @@ async function processCustomerMediaScenario(args: {
                   caption: args.caption,
                   filename: args.filename,
                 },
+                ...(args.contextMessageId ? { context: { id: args.contextMessageId } } : {}),
               },
             },
             received_at: "2026-10-08T12:00:00.000Z",
