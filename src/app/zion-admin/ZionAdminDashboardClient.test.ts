@@ -230,6 +230,63 @@ const tests: TestCase[] = [
       );
     },
   },
+  {
+    name: "canonical account identity is typed and surfaced separately from access",
+    run: () => {
+      const source = readSource();
+
+      for (const token of [
+        'export type StoreAccountIdentityState = "valid" | "broken"',
+        '"owner_missing"',
+        '"owner_ambiguous"',
+        '"auth_user_missing"',
+        '"owner_profile_missing"',
+        "accountIdentity?: StoreAccountIdentity | null",
+        'valid: "Válida"',
+        'broken: "Problema"',
+        '"Não verificada"',
+        '"Conta proprietária não encontrada"',
+        '"Mais de uma conta proprietária encontrada"',
+        '"Usuário de autenticação ausente"',
+        '"Perfil da conta proprietária ausente"',
+        "Identidade da conta",
+        "Conta proprietária",
+        "Usuário de autenticação",
+        'label="Perfil"',
+        "accountIdentityIssueLabels",
+        "accountIdentity.state === \"broken\"",
+        "accountIdentity.state === \"broken\" && accountIdentityIssueLabels.length === 0",
+        "A identidade canônica da conta apresenta um problema sem detalhes disponíveis.",
+        "Valida o vínculo entre a conta proprietária",
+        "Não foi possível verificar a identidade canônica desta conta.",
+        "Os vínculos canônicos da conta estão consistentes.",
+      ]) {
+        assert.equal(source.includes(token), true, `missing account identity UI token: ${token}`);
+      }
+
+      const validStateIndex = source.indexOf('accountIdentity.state === "valid" ?');
+      const consistencyMessageIndex = source.indexOf(
+        "Os vínculos canônicos da conta estão consistentes.",
+      );
+      assert.notEqual(validStateIndex, -1);
+      assert.equal(validStateIndex < consistencyMessageIndex, true);
+      const brokenFallbackIndex = source.indexOf(
+        'accountIdentity.state === "broken" && accountIdentityIssueLabels.length === 0',
+      );
+      const brokenFallbackSource = source.slice(brokenFallbackIndex, consistencyMessageIndex);
+      assert.equal(brokenFallbackSource.includes("Os vínculos canônicos da conta estão consistentes."), false);
+
+      assert.equal(source.includes("accountAccess?: StoreAccountAccess | null"), true);
+      assert.equal(source.includes("getAccountAccessStatusHelp"), true);
+      assert.equal(source.includes("onToggleAccountAccess"), true);
+      assert.equal(source.includes("Primeiro acesso"), true);
+      assert.equal(source.includes("Integridade estrutural"), true);
+      assert.equal(source.includes("Prontidão das configurações"), true);
+      assert.equal(source.includes("Saúde operacional"), true);
+      assert.equal(source.includes("membershipId"), true);
+      assert.equal(source.includes("userId"), true);
+    },
+  },
 ];
 
 async function run() {

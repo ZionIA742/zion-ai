@@ -33,6 +33,30 @@ export type StoreIntegrity = {
   subscription: { state: "single" | "missing" | "multiple" | "unknown"; status: string | null };
 };
 
+export type StoreAccountIdentityState = "valid" | "broken";
+export type StoreAccountIdentityIssueCode =
+  | "owner_missing"
+  | "owner_ambiguous"
+  | "auth_user_missing"
+  | "owner_profile_missing";
+export type StoreAccountIdentity = {
+  state: StoreAccountIdentityState;
+  issues: Array<{ code: StoreAccountIdentityIssueCode }>;
+  owner: {
+    state: "resolved" | "missing" | "ambiguous";
+    membershipId: string | null;
+    userId: string | null;
+  };
+  authUser: {
+    state: "present" | "missing" | "unresolved";
+    userId: string | null;
+  };
+  profile: {
+    state: "present" | "missing" | "unresolved";
+    userId: string | null;
+  };
+};
+
 export type StoreOperationalHealthState =
   | "healthy"
   | "warning"
@@ -79,6 +103,52 @@ const STORE_INTEGRITY_ISSUE_LABELS: Record<StoreIntegrityIssueCode, string> = {
   owner_profile_missing: "Perfil do proprietário ausente", subscription_missing: "Assinatura não encontrada",
   subscription_multiple: "Mais de uma assinatura encontrada",
 };
+const STORE_ACCOUNT_IDENTITY_STATE_LABELS: Record<StoreAccountIdentityState, string> = {
+  valid: "Válida",
+  broken: "Problema",
+};
+const STORE_ACCOUNT_IDENTITY_ISSUE_LABELS: Record<StoreAccountIdentityIssueCode, string> = {
+  owner_missing: "Conta proprietária não encontrada",
+  owner_ambiguous: "Mais de uma conta proprietária encontrada",
+  auth_user_missing: "Usuário de autenticação ausente",
+  owner_profile_missing: "Perfil da conta proprietária ausente",
+};
+const STORE_ACCOUNT_IDENTITY_OWNER_STATE_LABELS: Record<StoreAccountIdentity["owner"]["state"], string> = {
+  resolved: "Resolvido",
+  missing: "Ausente",
+  ambiguous: "Ambíguo",
+};
+const STORE_ACCOUNT_IDENTITY_COMPONENT_STATE_LABELS: Record<StoreAccountIdentity["authUser"]["state"], string> = {
+  present: "Presente",
+  missing: "Ausente",
+  unresolved: "Não resolvido",
+};
+export function getStoreAccountIdentityStateLabel(
+  identity: StoreAccountIdentity | null | undefined,
+) {
+  return identity
+    ? STORE_ACCOUNT_IDENTITY_STATE_LABELS[identity.state]
+    : "Não verificada";
+}
+export function getStoreAccountIdentityIssueLabels(
+  identity: StoreAccountIdentity | null | undefined,
+) {
+  return (identity?.issues ?? []).map(
+    (issue) => STORE_ACCOUNT_IDENTITY_ISSUE_LABELS[issue.code],
+  );
+}
+export function getStoreAccountIdentityOwnerStateLabel(
+  identity: StoreAccountIdentity | null | undefined,
+) {
+  return identity
+    ? STORE_ACCOUNT_IDENTITY_OWNER_STATE_LABELS[identity.owner.state]
+    : "Não verificada";
+}
+export function getStoreAccountIdentityComponentStateLabel(
+  state: StoreAccountIdentity["authUser"]["state"] | undefined,
+) {
+  return state ? STORE_ACCOUNT_IDENTITY_COMPONENT_STATE_LABELS[state] : "Não verificada";
+}
 export function getStoreIntegrityStateLabel(integrity: StoreIntegrity | null | undefined) {
   return STORE_INTEGRITY_STATE_LABELS[integrity?.state ?? "unknown"];
 }
@@ -302,6 +372,7 @@ export type ZionAdminStore = {
   recentAiSuccesses?: AiRunEvent[];
   pendingIssueDetails?: PendingIssueDetail[];
   accountAccess?: StoreAccountAccess | null;
+  accountIdentity?: StoreAccountIdentity | null;
 };
 
 type AccountAccessHistoryStatus = "available" | "unavailable";
@@ -1599,6 +1670,8 @@ function StoreDetailsDrawer({
   const successfulRuns = numberValue(store.successfulAiRuns);
   const failedRuns = numberValue(store.failedAiRuns);
   const accountAccess = store.accountAccess ?? null;
+  const accountIdentity = store.accountIdentity ?? null;
+  const accountIdentityIssueLabels = getStoreAccountIdentityIssueLabels(accountIdentity);
   const firstAccessControl = getFirstAccessControlState({
     accountAccess,
     canManageAccounts,
@@ -1900,6 +1973,50 @@ function StoreDetailsDrawer({
                 <p className="mt-1 text-xs leading-5 text-zinc-500">
                   Gerencie o acesso do responsável à loja.
                 </p>
+              </div>
+
+              <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.025] p-3">
+                <div className="text-sm font-semibold text-zinc-200">Identidade da conta</div>
+                <p className="mt-1 text-xs leading-5 text-zinc-500">
+                  Valida o vínculo entre a conta proprietária, o usuário de autenticação e o perfil.
+                </p>
+                <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  <DetailItem
+                    label="Identidade"
+                    value={getStoreAccountIdentityStateLabel(accountIdentity)}
+                  />
+                  <DetailItem
+                    label="Conta proprietária"
+                    value={getStoreAccountIdentityOwnerStateLabel(accountIdentity)}
+                  />
+                  <DetailItem
+                    label="Usuário de autenticação"
+                    value={getStoreAccountIdentityComponentStateLabel(accountIdentity?.authUser.state)}
+                  />
+                  <DetailItem
+                    label="Perfil"
+                    value={getStoreAccountIdentityComponentStateLabel(accountIdentity?.profile.state)}
+                  />
+                </div>
+                {!accountIdentity ? (
+                  <p className="mt-3 text-xs leading-5 text-amber-200">
+                    Não foi possível verificar a identidade canônica desta conta.
+                  </p>
+                ) : accountIdentity.state === "broken" && accountIdentityIssueLabels.length > 0 ? (
+                  <ul className="mt-3 space-y-1 text-xs leading-5 text-red-200">
+                    {accountIdentityIssueLabels.map((label) => (
+                      <li key={label}>• {label}</li>
+                    ))}
+                  </ul>
+                ) : accountIdentity.state === "broken" && accountIdentityIssueLabels.length === 0 ? (
+                  <p className="mt-3 text-xs leading-5 text-red-200">
+                    A identidade canônica da conta apresenta um problema sem detalhes disponíveis.
+                  </p>
+                ) : accountIdentity.state === "valid" ? (
+                  <p className="mt-3 text-xs leading-5 text-emerald-200">
+                    Os vínculos canônicos da conta estão consistentes.
+                  </p>
+                ) : null}
               </div>
 
               <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
