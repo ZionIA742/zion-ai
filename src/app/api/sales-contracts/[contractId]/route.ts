@@ -1,5 +1,16 @@
 import { NextResponse } from "next/server";
-import { ContractAccessError, resolveAuthorizedExistingContract } from "@/lib/server/sales-contracts/contract-auth";
+import {
+  ContractAccessError,
+  resolveExistingContractForAuthorizedStoreScope,
+  type ContractAuthorizedStoreScope,
+} from "@/lib/server/sales-contracts/contract-auth";
+import {
+  resolveStoreApiAccess,
+  type ResolveStoreApiAccessDeps,
+  type StoreApiAccessDenied,
+  type StoreApiAccessGranted,
+} from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +32,7 @@ function buildErrorResponse(error: unknown) {
         error: error.code,
         message: error.message,
       },
-      error.status
+      error.status,
     );
   }
 
@@ -32,42 +43,82 @@ function buildErrorResponse(error: unknown) {
       message:
         error instanceof Error ? error.message : "Erro inesperado ao carregar contrato.",
     },
-    500
+    500,
   );
 }
 
-export async function GET(
-  _request: Request,
-  context: { params: Promise<{ contractId: string }> }
+type SalesContractDetailGetDeps = {
+  resolveAccess: (params: {
+    requirement: "active";
+    deps?: Partial<ResolveStoreApiAccessDeps>;
+  }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+  resolveContract: typeof resolveExistingContractForAuthorizedStoreScope;
+};
+
+export function createSalesContractDetailGetHandler(
+  deps: Partial<SalesContractDetailGetDeps> = {},
 ) {
-  try {
-    const { contractId: rawContractId } = await context.params;
-    const contractId = String(rawContractId || "").trim();
-    const scope = await resolveAuthorizedExistingContract(contractId);
+  const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
+  const resolveContract =
+    deps.resolveContract ?? resolveExistingContractForAuthorizedStoreScope;
 
-    const { data: signatures, error: signaturesError } = await scope.supabase
-      .from("sales_contract_signatures")
-      .select("*")
-      .eq("contract_id", scope.contract.id)
-      .eq("organization_id", scope.organizationId)
-      .eq("store_id", scope.store.id)
-      .order("created_at", { ascending: true });
+  return async function GET(
+    _request: Request,
+    context: { params: Promise<{ contractId: string }> },
+  ) {
+    const access = await resolveAccess({ requirement: "active" });
+    if (!access.ok) return createStoreApiDeniedResponse(access);
 
-    if (signaturesError) {
-      throw new ContractAccessError(
-        500,
-        "LOAD_CONTRACT_SIGNATURES_FAILED",
-        signaturesError.message
-      );
+    try {
+      const { contractId: rawContractId } = await context.params;
+      const contractId = String(rawContractId || "").trim();
+      const authorizedScope: ContractAuthorizedStoreScope = {
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        sessionUserId: access.sessionUserId,
+      };
+      const scope = await resolveContract(contractId, authorizedScope);
+
+      if (
+        scope.organizationId !== access.organizationId ||
+        scope.store.id !== access.storeId ||
+        scope.store.organization_id !== access.organizationId ||
+        scope.contract.organization_id !== access.organizationId ||
+        scope.contract.store_id !== access.storeId
+      ) {
+        throw new ContractAccessError(
+          403,
+          "CONTRACT_SCOPE_MISMATCH",
+          "O contrato retornado esta fora do escopo canonico autorizado.",
+        );
+      }
+
+      const { data: signatures, error: signaturesError } = await scope.supabase
+        .from("sales_contract_signatures")
+        .select("*")
+        .eq("contract_id", scope.contract.id)
+        .eq("organization_id", access.organizationId)
+        .eq("store_id", access.storeId)
+        .order("created_at", { ascending: true });
+
+      if (signaturesError) {
+        throw new ContractAccessError(
+          500,
+          "LOAD_CONTRACT_SIGNATURES_FAILED",
+          signaturesError.message,
+        );
+      }
+
+      return buildJsonResponse({
+        ok: true,
+        contract: scope.contract,
+        current_version: scope.currentVersion,
+        signatures: signatures || [],
+      });
+    } catch (error) {
+      return buildErrorResponse(error);
     }
-
-    return buildJsonResponse({
-      ok: true,
-      contract: scope.contract,
-      current_version: scope.currentVersion,
-      signatures: signatures || [],
-    });
-  } catch (error) {
-    return buildErrorResponse(error);
-  }
+  };
 }
+
+export const GET = createSalesContractDetailGetHandler();

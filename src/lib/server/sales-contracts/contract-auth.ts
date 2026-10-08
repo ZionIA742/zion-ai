@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import type {
   QuoteConversationRow,
@@ -397,6 +398,155 @@ export async function resolveAuthorizedExistingContract(contractId: string) {
     ...auth,
     userId: auth.user.id,
     organizationId: contract.organization_id,
+    store,
+    conversation,
+    lead,
+    contract: contract as SalesContract,
+    currentVersion,
+  };
+}
+
+export type ContractAuthorizedStoreScope = {
+  organizationId: string;
+  storeId: string;
+  sessionUserId: string;
+};
+
+export type ResolveExistingContractForAuthorizedStoreScopeDeps = {
+  createServiceSupabaseClient: () => SupabaseClient;
+};
+
+export async function resolveExistingContractForAuthorizedStoreScope(
+  contractId: string,
+  authorizedScope: ContractAuthorizedStoreScope,
+  deps: ResolveExistingContractForAuthorizedStoreScopeDeps = {
+    createServiceSupabaseClient,
+  },
+) {
+  const organizationId = String(authorizedScope?.organizationId || "").trim();
+  const storeId = String(authorizedScope?.storeId || "").trim();
+  const sessionUserId = String(authorizedScope?.sessionUserId || "").trim();
+
+  if (!organizationId || !storeId || !sessionUserId) {
+    throw new ContractAccessError(
+      500,
+      "INVALID_AUTHORIZED_CONTRACT_SCOPE",
+      "O escopo canonico autorizado do contrato e invalido.",
+    );
+  }
+
+  const safeContractId = String(contractId || "").trim();
+  if (!safeContractId) {
+    throw new ContractAccessError(
+      400,
+      "INVALID_CONTRACT_ID",
+      "Contract ID nao informado.",
+    );
+  }
+
+  const supabase = deps.createServiceSupabaseClient();
+  const { data: contract, error: contractError } = await supabase
+    .from("sales_contracts")
+    .select("*")
+    .eq("id", safeContractId)
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .maybeSingle();
+
+  if (contractError) {
+    throw new ContractAccessError(500, "LOAD_CONTRACT_FAILED", contractError.message);
+  }
+
+  if (!contract) {
+    throw new ContractAccessError(404, "CONTRACT_NOT_FOUND", "Contrato nao encontrado.");
+  }
+
+  const { data: store, error: storeError } = await supabase
+    .from("stores")
+    .select("id, organization_id, name, created_at")
+    .eq("id", storeId)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (storeError) {
+    throw new ContractAccessError(500, "LOAD_STORE_FAILED", storeError.message);
+  }
+
+  if (!store) {
+    throw new ContractAccessError(403, "STORE_SCOPE_INVALID", "Loja fora do escopo canonico.");
+  }
+
+  const { data: conversation, error: conversationError } = await supabase
+    .from("conversations")
+    .select("id, organization_id, lead_id, status, is_human_active")
+    .eq("id", contract.conversation_id)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (conversationError) {
+    throw new ContractAccessError(
+      500,
+      "LOAD_CONVERSATION_FAILED",
+      conversationError.message,
+    );
+  }
+
+  if (!conversation) {
+    throw new ContractAccessError(
+      404,
+      "CONVERSATION_NOT_FOUND",
+      "Conversa nao encontrada para a organizacao informada.",
+    );
+  }
+
+  const { data: lead, error: leadError } = await supabase
+    .from("leads")
+    .select("id, organization_id, store_id, name, phone")
+    .eq("id", contract.lead_id)
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .maybeSingle();
+
+  if (leadError) {
+    throw new ContractAccessError(500, "LOAD_LEAD_FAILED", leadError.message);
+  }
+
+  if (!lead) {
+    throw new ContractAccessError(
+      404,
+      "LEAD_NOT_FOUND",
+      "Lead nao encontrada para a organizacao e loja informadas.",
+    );
+  }
+
+  let currentVersion: SalesContractVersion | null = null;
+  const currentVersionId = String(contract.current_version_id || "").trim();
+
+  if (currentVersionId) {
+    const { data: version, error: versionError } = await supabase
+      .from("sales_contract_versions")
+      .select("*")
+      .eq("id", currentVersionId)
+      .eq("contract_id", contract.id)
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .maybeSingle();
+
+    if (versionError) {
+      throw new ContractAccessError(
+        500,
+        "LOAD_CONTRACT_VERSION_FAILED",
+        versionError.message,
+      );
+    }
+
+    currentVersion = (version ?? null) as SalesContractVersion | null;
+  }
+
+  return {
+    supabase,
+    userId: sessionUserId,
+    organizationId,
     store,
     conversation,
     lead,
