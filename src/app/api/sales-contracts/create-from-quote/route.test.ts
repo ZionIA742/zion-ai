@@ -37,14 +37,22 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
 
 const routeModulePromise = import("./route");
 const contractAuthModulePromise = import("@/lib/server/sales-contracts/contract-auth");
+type RouteFactory = typeof import("./route")["createCreateContractFromQuotePostHandler"];
+let routeFactory: RouteFactory | null = null;
 const routeSource = readFileSync(
   join(process.cwd(), "src/app/api/sales-contracts/create-from-quote/route.ts"),
+  "utf8",
+);
+const contractAuthSource = readFileSync(
+  join(process.cwd(), "src/lib/server/sales-contracts/contract-auth.ts"),
   "utf8",
 );
 
 async function loadRouteModule() {
   await contractAuthModulePromise;
-  return routeModulePromise;
+  const routeModule = await routeModulePromise;
+  routeFactory = routeModule.createCreateContractFromQuotePostHandler;
+  return routeModule;
 }
 
 async function createContractAccessError(status: number, code: string, message: string) {
@@ -66,6 +74,8 @@ function createSupabaseMock(args?: {
       ? args.contractRow
       : {
           id: "contract-1",
+          organization_id: "org-1",
+          store_id: "store-1",
           contract_number: "CTR-20260924-TEST",
           status: "pending_review",
           quote_id: "quote-1",
@@ -126,6 +136,27 @@ function createSupabaseMock(args?: {
   };
 }
 
+function grantedAccess() {
+  return {
+    ok: true as const,
+    supabase: {} as never,
+    sessionUserId: "user-1",
+    organizationId: "org-1",
+    storeId: "store-1",
+    resolution: {} as never,
+  };
+}
+
+function createTestHandler(
+  deps: Parameters<RouteFactory>[0] = {},
+) {
+  if (!routeFactory) throw new Error("route module not loaded");
+  return routeFactory({
+    resolveAccess: async () => grantedAccess(),
+    ...deps,
+  });
+}
+
 function createScope(overrides?: {
   commercialOpportunityId?: string | null;
   quoteVersionId?: string;
@@ -166,17 +197,215 @@ function createScope(overrides?: {
   };
 }
 
+function createQuoteResolverSupabaseMock(overrides?: {
+  quote?: Record<string, unknown> | null;
+  quoteVersion?: Record<string, unknown> | null;
+}) {
+  const queries: Array<{ table: string; filters: Array<{ column: string; operator: string; value: unknown }> }> = [];
+  const rows: Record<string, Record<string, unknown> | null> = {
+    sales_quotes: {
+      id: "quote-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      commercial_opportunity_id: "opp-1",
+      conversation_id: "conv-1",
+      lead_id: "lead-1",
+      status: "approved",
+      current_version_id: "version-current-must-not-be-authority",
+      ...(overrides?.quote && overrides.quote),
+    },
+    stores: { id: "store-1", organization_id: "org-1", name: "Store 1", created_at: "2026-10-08T00:00:00.000Z" },
+    conversations: { id: "conv-1", organization_id: "org-1", lead_id: "lead-1", status: "open", is_human_active: true },
+    leads: { id: "lead-1", organization_id: "org-1", store_id: "store-1", name: "Cliente", phone: "5511999999999" },
+    sales_quote_versions: {
+      id: "version-1",
+      quote_id: "quote-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      ...(overrides?.quoteVersion && overrides.quoteVersion),
+    },
+  };
+  if (overrides && "quote" in overrides) rows.sales_quotes = overrides.quote ?? null;
+  if (overrides && "quoteVersion" in overrides) rows.sales_quote_versions = overrides.quoteVersion ?? null;
+  return {
+    queries,
+    from(table: string) {
+      const filters: Array<{ column: string; operator: string; value: unknown }> = [];
+      const builder = {
+        eq(column: string, value: unknown) {
+          filters.push({ column, operator: "eq", value });
+          return builder;
+        },
+        in(column: string, value: unknown) {
+          filters.push({ column, operator: "in", value });
+          return builder;
+        },
+        maybeSingle: async () => {
+          queries.push({ table, filters: [...filters] });
+          return { data: rows[table] ?? null, error: null };
+        },
+      };
+      return {
+        select: () => builder,
+      };
+    },
+  };
+}
+
 async function parseBody(response: Response) {
   return (await response.json()) as Record<string, unknown>;
 }
 
 const tests: TestCase[] = [
   {
+    name: "authorized-store quote resolver rejects empty scope before creating service client",
+    run: async () => {
+      const { resolveQuoteForContractForAuthorizedStoreScope } = await contractAuthModulePromise;
+      let serviceClientCalls = 0;
+      await assert.rejects(
+        () => resolveQuoteForContractForAuthorizedStoreScope(
+          "quote-1",
+          "version-1",
+          { organizationId: "", storeId: "store-1", sessionUserId: "user-1" },
+          { createServiceSupabaseClient: () => { serviceClientCalls += 1; return {} as never; } },
+        ),
+        (error: unknown) => {
+          assert.equal((error as { status: number }).status, 500);
+          assert.equal((error as { code: string }).code, "INVALID_AUTHORIZED_QUOTE_CONTRACT_SCOPE");
+          return true;
+        },
+      );
+      assert.equal(serviceClientCalls, 0);
+    },
+  },
+  {
+    name: "authorized-store quote resolver uses exact quote and version tenant lineage",
+    run: async () => {
+      const { resolveQuoteForContractForAuthorizedStoreScope } = await contractAuthModulePromise;
+      const supabase = createQuoteResolverSupabaseMock();
+      const scope = await resolveQuoteForContractForAuthorizedStoreScope(
+        " quote-1 ",
+        " version-1 ",
+        { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" },
+        { createServiceSupabaseClient: () => supabase as never },
+      );
+      const quoteQuery = supabase.queries.find((query) => query.table === "sales_quotes");
+      const versionQuery = supabase.queries.find((query) => query.table === "sales_quote_versions");
+      assert.deepEqual(quoteQuery?.filters, [
+        { column: "id", operator: "eq", value: "quote-1" },
+        { column: "organization_id", operator: "eq", value: "org-1" },
+        { column: "store_id", operator: "eq", value: "store-1" },
+      ]);
+      assert.deepEqual(versionQuery?.filters, [
+        { column: "id", operator: "eq", value: "version-1" },
+        { column: "quote_id", operator: "eq", value: "quote-1" },
+        { column: "organization_id", operator: "eq", value: "org-1" },
+        { column: "store_id", operator: "eq", value: "store-1" },
+      ]);
+      assert.equal(scope.quoteVersion.id, "version-1");
+      assert.notEqual(scope.quoteVersion.id, scope.quote.current_version_id);
+    },
+  },
+  {
+    name: "authorized-store quote resolver does not reveal foreign quote and has no request auth path",
+    run: async () => {
+      const { resolveQuoteForContractForAuthorizedStoreScope } = await contractAuthModulePromise;
+      const supabase = createQuoteResolverSupabaseMock({ quote: null });
+      await assert.rejects(
+        () => resolveQuoteForContractForAuthorizedStoreScope(
+          "quote-foreign",
+          "version-1",
+          { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" },
+          { createServiceSupabaseClient: () => supabase as never },
+        ),
+        (error: unknown) => {
+          assert.equal((error as { status: number }).status, 404);
+          assert.equal((error as { code: string }).code, "QUOTE_NOT_FOUND");
+          return true;
+        },
+      );
+      const start = contractAuthSource.indexOf("export async function resolveQuoteForContractForAuthorizedStoreScope");
+      assert.ok(start >= 0);
+      const sourceSlice = contractAuthSource.slice(start);
+      assert.doesNotMatch(sourceSlice, /authenticateContractRequest/);
+      assert.doesNotMatch(sourceSlice, /createSupabaseServerClient/);
+      assert.doesNotMatch(sourceSlice, /auth\.getUser/);
+      assert.doesNotMatch(sourceSlice, /\.from\("memberships"\)/);
+    },
+  },
+  {
+    name: "denied canonical access returns before body, resolver, rpc, and durable read",
+    run: async () => {
+      await loadRouteModule();
+      let bodyRead = false;
+      let resolverCalled = false;
+      const handler = createTestHandler({
+        resolveAccess: async (params) => {
+          assert.deepEqual(params, { requirement: "active" });
+          return {
+            ok: false as const,
+            httpStatus: 403 as const,
+            payload: {
+              ok: false,
+              error: "STORE_API_FORBIDDEN",
+              message: "Acesso negado.",
+              status: "cross_domain_forbidden",
+              reasonCode: "zion_admin_cannot_access_store_area",
+            },
+            resolution: {} as never,
+          };
+        },
+        resolveQuoteForContract: async () => {
+          resolverCalled = true;
+          throw new Error("resolver must not run");
+        },
+      });
+      const request = new Request("https://example.test", {
+        method: "POST",
+        body: "not-json",
+      });
+      const originalJson = request.json.bind(request);
+      request.json = async () => {
+        bodyRead = true;
+        return originalJson();
+      };
+      const response = await handler(request);
+      const body = await parseBody(response);
+      assert.equal(response.status, 403);
+      assert.equal(body.error, "STORE_API_FORBIDDEN");
+      assert.equal(bodyRead, false);
+      assert.equal(resolverCalled, false);
+    },
+  },
+  {
+    name: "access granted with invalid quoteId preserves canonical error",
+    run: async () => {
+      await loadRouteModule();
+      let resolverCalled = false;
+      const handler = createTestHandler({
+        resolveQuoteForContract: async () => {
+          resolverCalled = true;
+          throw new Error("resolver must not run");
+        },
+      });
+      const response = await handler(
+        new Request("https://example.test", {
+          method: "POST",
+          body: JSON.stringify({ quoteId: " ", quoteVersionId: "version-1" }),
+        }),
+      );
+      const body = await parseBody(response);
+      assert.equal(response.status, 400);
+      assert.equal(body.error, "INVALID_QUOTE_ID");
+      assert.equal(resolverCalled, false);
+    },
+  },
+  {
     name: "missing quoteVersionId fails before resolver",
     run: async () => {
-      const { createCreateContractFromQuotePostHandler } = await loadRouteModule();
+      await loadRouteModule();
       let resolverCalled = false;
-      const handler = createCreateContractFromQuotePostHandler({
+      const handler = createTestHandler({
         resolveQuoteForContract: async () => {
           resolverCalled = true;
           return createScope() as never;
@@ -198,10 +427,10 @@ const tests: TestCase[] = [
   {
     name: "resolver receives explicit quote and version ids",
     run: async () => {
-      const { createCreateContractFromQuotePostHandler } = await loadRouteModule();
+      await loadRouteModule();
       const supabase = createSupabaseMock();
       const resolverArgs: unknown[][] = [];
-      const handler = createCreateContractFromQuotePostHandler({
+      const handler = createTestHandler({
         resolveQuoteForContract: async (...args) => {
           resolverArgs.push(args);
           return createScope({ supabase }) as never;
@@ -216,15 +445,19 @@ const tests: TestCase[] = [
       );
 
       assert.equal(response.status, 200);
-      assert.deepEqual(resolverArgs, [["quote-1", "version-1"]]);
+      assert.deepEqual(resolverArgs, [[
+        "quote-1",
+        "version-1",
+        { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" },
+      ]]);
     },
   },
   {
     name: "created outcome calls atomic event rpc with exact args, returns contract, and never inserts directly",
     run: async () => {
-      const { createCreateContractFromQuotePostHandler } = await loadRouteModule();
+      await loadRouteModule();
       const supabase = createSupabaseMock();
-      const handler = createCreateContractFromQuotePostHandler({
+      const handler = createTestHandler({
         resolveQuoteForContract: async () => createScope({ supabase }) as never,
       });
 
@@ -240,6 +473,8 @@ const tests: TestCase[] = [
       assert.equal(body.ok, true);
       assert.deepEqual(body.contract, {
         id: "contract-1",
+        organization_id: "org-1",
+        store_id: "store-1",
         contract_number: "CTR-20260924-TEST",
         status: "pending_review",
         quote_id: "quote-1",
@@ -283,26 +518,60 @@ const tests: TestCase[] = [
   {
     name: "route leaves contract_record_created to the atomic rpc only",
     run: () => {
+      assert.match(routeSource, /resolveStoreApiAccess/);
+      assert.match(routeSource, /requirement: "active"/);
+      assert.match(routeSource, /createStoreApiDeniedResponse/);
+      assert.match(routeSource, /resolveQuoteForContractForAuthorizedStoreScope/);
+      assert.doesNotMatch(routeSource, /resolveAuthorizedQuoteForContract/);
+      assert.match(routeSource, /create_sales_contract_with_current_acceptance_event_by_system/);
       assert.equal(routeSource.includes("registerContractBusinessEvent"), false);
       assert.equal(routeSource.includes("contrato_gerado"), false);
       assert.equal(routeSource.includes("contract_record_created"), false);
     },
   },
   {
+    name: "durable contract reread rejects a foreign tenant row",
+    run: async () => {
+      await loadRouteModule();
+      const supabase = createSupabaseMock({
+        contractRow: {
+          id: "contract-1",
+          organization_id: "org-foreign",
+          store_id: "store-foreign",
+          contract_number: "CTR-FOREIGN",
+        },
+      });
+      const handler = createTestHandler({
+        resolveQuoteForContract: async () => createScope({ supabase }) as never,
+      });
+      const response = await handler(
+        new Request("https://example.test", {
+          method: "POST",
+          body: JSON.stringify({ quoteId: "quote-1", quoteVersionId: "version-1" }),
+        }),
+      );
+      const body = await parseBody(response);
+      assert.equal(response.status, 403);
+      assert.equal(body.error, "CONTRACT_SCOPE_MISMATCH");
+    },
+  },
+  {
     name: "already_exists outcome returns existing contract without attempting a separate event",
     run: async () => {
-      const { createCreateContractFromQuotePostHandler } = await loadRouteModule();
+      await loadRouteModule();
       const supabase = createSupabaseMock({
         writerData: [{ outcome: "already_exists", contract_id: "contract-existing" }],
         contractRow: {
           id: "contract-existing",
+          organization_id: "org-1",
+          store_id: "store-1",
           contract_number: "CTR-EXISTING",
           status: "pending_review",
           quote_id: "quote-1",
           quote_version_id: "version-1",
         },
       });
-      const handler = createCreateContractFromQuotePostHandler({
+      const handler = createTestHandler({
         resolveQuoteForContract: async () => createScope({ supabase }) as never,
       });
 
@@ -322,13 +591,13 @@ const tests: TestCase[] = [
   {
     name: "proposal stale writer error fails closed with canonical code",
     run: async () => {
-      const { createCreateContractFromQuotePostHandler } = await loadRouteModule();
+      await loadRouteModule();
       const supabase = createSupabaseMock({
         writerError: {
           message: "ZION_CONTRACT_CREATE_PROPOSAL_STALE",
         },
       });
-      const handler = createCreateContractFromQuotePostHandler({
+      const handler = createTestHandler({
         resolveQuoteForContract: async () => createScope({ supabase }) as never,
       });
 
@@ -348,9 +617,9 @@ const tests: TestCase[] = [
   {
     name: "requested quote version is preserved instead of current_version_id",
     run: async () => {
-      const { createCreateContractFromQuotePostHandler } = await loadRouteModule();
+      await loadRouteModule();
       const supabase = createSupabaseMock();
-      const handler = createCreateContractFromQuotePostHandler({
+      const handler = createTestHandler({
         resolveQuoteForContract: async () =>
           createScope({
             quoteVersionId: "version-1",
@@ -373,9 +642,9 @@ const tests: TestCase[] = [
   {
     name: "explicit commercial opportunity id is required before rpc",
     run: async () => {
-      const { createCreateContractFromQuotePostHandler } = await loadRouteModule();
+      await loadRouteModule();
       const supabase = createSupabaseMock();
-      const handler = createCreateContractFromQuotePostHandler({
+      const handler = createTestHandler({
         resolveQuoteForContract: async () =>
           createScope({ commercialOpportunityId: null, supabase }) as never,
       });
@@ -397,8 +666,8 @@ const tests: TestCase[] = [
   {
     name: "quote authorization status errors still short-circuit",
     run: async () => {
-      const { createCreateContractFromQuotePostHandler } = await loadRouteModule();
-      const handler = createCreateContractFromQuotePostHandler({
+      await loadRouteModule();
+      const handler = createTestHandler({
         resolveQuoteForContract: async () => {
           throw await createContractAccessError(
             409,

@@ -1,12 +1,26 @@
 import { NextResponse } from "next/server";
-import { resolveAuthorizedQuoteForContract, ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
+import {
+  ContractAccessError,
+  resolveQuoteForContractForAuthorizedStoreScope,
+} from "@/lib/server/sales-contracts/contract-auth";
 import type { CreateContractFromQuoteInput } from "@/lib/server/sales-contracts/types";
+import {
+  resolveStoreApiAccess,
+  type ResolveStoreApiAccessDeps,
+  type StoreApiAccessDenied,
+  type StoreApiAccessGranted,
+} from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type CreateContractFromQuoteDeps = {
-  resolveQuoteForContract: typeof resolveAuthorizedQuoteForContract;
+  resolveAccess: (params: {
+    requirement: "active";
+    deps?: Partial<ResolveStoreApiAccessDeps>;
+  }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+  resolveQuoteForContract: typeof resolveQuoteForContractForAuthorizedStoreScope;
 };
 
 type ContractWriterOutcome = "created" | "already_exists";
@@ -99,14 +113,18 @@ function normalizeContractWriterRow(data: unknown): {
 export function createCreateContractFromQuotePostHandler(
   deps: Partial<CreateContractFromQuoteDeps> = {},
 ) {
+  const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
   const resolveQuoteForContract =
-    deps.resolveQuoteForContract ?? resolveAuthorizedQuoteForContract;
+    deps.resolveQuoteForContract ?? resolveQuoteForContractForAuthorizedStoreScope;
 
   return async function POST(request: Request) {
-  try {
-    const body = (await request.json().catch(() => null)) as CreateContractFromQuoteInput | null;
-    const quoteId = String(body?.quoteId || "").trim();
-    const quoteVersionId = String(body?.quoteVersionId || "").trim();
+    try {
+      const access = await resolveAccess({ requirement: "active" });
+      if (!access.ok) return createStoreApiDeniedResponse(access);
+
+      const body = (await request.json().catch(() => null)) as CreateContractFromQuoteInput | null;
+      const quoteId = String(body?.quoteId || "").trim();
+      const quoteVersionId = String(body?.quoteVersionId || "").trim();
 
     if (!quoteId) {
       throw new ContractAccessError(400, "INVALID_QUOTE_ID", "quoteId nao informado.");
@@ -120,7 +138,30 @@ export function createCreateContractFromQuotePostHandler(
       );
     }
 
-    const scope = await resolveQuoteForContract(quoteId, quoteVersionId);
+      const scope = await resolveQuoteForContract(quoteId, quoteVersionId, {
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        sessionUserId: access.sessionUserId,
+      });
+
+      if (
+        scope.organizationId !== access.organizationId ||
+        scope.store.id !== access.storeId ||
+        scope.store.organization_id !== access.organizationId ||
+        scope.quote.organization_id !== access.organizationId ||
+        scope.quote.store_id !== access.storeId ||
+        scope.quote.id !== quoteId ||
+        scope.quoteVersion.id !== quoteVersionId ||
+        (scope.quoteVersion.quote_id !== undefined && scope.quoteVersion.quote_id !== scope.quote.id) ||
+        (scope.quoteVersion.organization_id !== undefined && scope.quoteVersion.organization_id !== access.organizationId) ||
+        (scope.quoteVersion.store_id !== undefined && scope.quoteVersion.store_id !== access.storeId)
+      ) {
+        throw new ContractAccessError(
+          403,
+          "CONTRACT_SCOPE_MISMATCH",
+          "O escopo retornado esta fora da autoridade canonica autorizada.",
+        );
+      }
     const commercialOpportunityId =
       String(scope.quote.commercial_opportunity_id || "").trim() || null;
 
@@ -140,13 +181,13 @@ export function createCreateContractFromQuotePostHandler(
     const { data: writerData, error: writerError } = await scope.supabase.rpc(
       "create_sales_contract_with_current_acceptance_event_by_system",
       {
-        p_organization_id: scope.organizationId,
-        p_store_id: scope.store.id,
+        p_organization_id: access.organizationId,
+        p_store_id: access.storeId,
         p_commercial_opportunity_id: commercialOpportunityId,
         p_quote_id: scope.quote.id,
         p_quote_version_id: scope.quoteVersion.id,
         p_contract_number: contractNumber,
-        p_actor_user_id: scope.userId,
+        p_actor_user_id: access.sessionUserId,
       },
     );
 
@@ -160,21 +201,34 @@ export function createCreateContractFromQuotePostHandler(
       .from("sales_contracts")
       .select("*")
       .eq("id", writerResult.contractId)
-      .eq("organization_id", scope.organizationId)
-      .eq("store_id", scope.store.id)
+      .eq("organization_id", access.organizationId)
+      .eq("store_id", access.storeId)
       .maybeSingle();
 
-    if (contractError || !contract?.id) {
-      throw new Error(contractError?.message || "Falha ao carregar contrato criado.");
+      if (contractError) {
+        throw new Error(contractError.message);
+      }
+
+      if (
+        !contract?.id ||
+        contract.id !== writerResult.contractId ||
+        (contract.organization_id !== undefined && contract.organization_id !== access.organizationId) ||
+        (contract.store_id !== undefined && contract.store_id !== access.storeId)
+      ) {
+        throw new ContractAccessError(
+          403,
+          "CONTRACT_SCOPE_MISMATCH",
+          "O contrato criado esta fora do escopo canonico autorizado.",
+        );
     }
 
     return NextResponse.json({
       ok: true,
       contract,
     });
-  } catch (error) {
-    return buildErrorResponse(error);
-  }
+    } catch (error) {
+      return buildErrorResponse(error);
+    }
   };
 }
 

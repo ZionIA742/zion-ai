@@ -554,3 +554,148 @@ export async function resolveExistingContractForAuthorizedStoreScope(
     currentVersion,
   };
 }
+
+export type ResolveQuoteForContractForAuthorizedStoreScopeDeps = {
+  createServiceSupabaseClient: () => SupabaseClient;
+};
+
+export async function resolveQuoteForContractForAuthorizedStoreScope(
+  quoteId: string,
+  quoteVersionId: string,
+  authorizedScope: ContractAuthorizedStoreScope,
+  deps: ResolveQuoteForContractForAuthorizedStoreScopeDeps = {
+    createServiceSupabaseClient,
+  },
+) {
+  const organizationId = String(authorizedScope?.organizationId || "").trim();
+  const storeId = String(authorizedScope?.storeId || "").trim();
+  const sessionUserId = String(authorizedScope?.sessionUserId || "").trim();
+
+  if (!organizationId || !storeId || !sessionUserId) {
+    throw new ContractAccessError(
+      500,
+      "INVALID_AUTHORIZED_QUOTE_CONTRACT_SCOPE",
+      "O escopo canonico autorizado do orcamento e invalido.",
+    );
+  }
+
+  const safeQuoteId = String(quoteId || "").trim();
+  const safeQuoteVersionId = String(quoteVersionId || "").trim();
+
+  if (!safeQuoteId) {
+    throw new ContractAccessError(400, "INVALID_QUOTE_ID", "Quote ID nao informado.");
+  }
+
+  if (!safeQuoteVersionId) {
+    throw new ContractAccessError(
+      400,
+      "INVALID_QUOTE_VERSION_ID",
+      "quoteVersionId nao informado para criar contrato.",
+    );
+  }
+
+  const supabase = deps.createServiceSupabaseClient();
+  const { data: quote, error: quoteError } = await supabase
+    .from("sales_quotes")
+    .select(SALES_QUOTES_SELECT)
+    .eq("id", safeQuoteId)
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .maybeSingle();
+
+  if (quoteError) {
+    throw new ContractAccessError(500, "LOAD_QUOTE_FAILED", quoteError.message);
+  }
+
+  if (!quote) {
+    throw new ContractAccessError(404, "QUOTE_NOT_FOUND", "Orcamento nao encontrado.");
+  }
+
+  const normalizedQuoteStatus = String(quote.status || "").trim().toLowerCase();
+  if (normalizedQuoteStatus !== "approved" && normalizedQuoteStatus !== "sent") {
+    throw new ContractAccessError(
+      409,
+      "QUOTE_STATUS_NOT_ALLOWED_FOR_CONTRACT",
+      "Somente orcamentos approved ou sent podem originar contrato.",
+    );
+  }
+
+  if (
+    quote.organization_id !== organizationId ||
+    quote.store_id !== storeId
+  ) {
+    throw new ContractAccessError(
+      403,
+      "CONTRACT_SCOPE_MISMATCH",
+      "O orcamento retornado esta fora do escopo canonico autorizado.",
+    );
+  }
+
+  const store = await loadAuthorizedStore({
+    supabase,
+    organizationIds: [organizationId],
+    requestOrganizationId: organizationId,
+    requestStoreId: storeId,
+  });
+
+  const conversation = await loadAuthorizedConversation({
+    supabase,
+    organizationId,
+    conversationId: quote.conversation_id,
+  });
+
+  const lead = await loadAuthorizedLead({
+    supabase,
+    organizationId,
+    storeId,
+    leadId: quote.lead_id,
+  });
+
+  const { data: quoteVersion, error: quoteVersionError } = await supabase
+    .from("sales_quote_versions")
+    .select(SALES_QUOTE_VERSIONS_SELECT)
+    .eq("id", safeQuoteVersionId)
+    .eq("quote_id", quote.id)
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .maybeSingle();
+
+  if (quoteVersionError) {
+    throw new ContractAccessError(
+      500,
+      "LOAD_QUOTE_VERSION_FAILED",
+      quoteVersionError.message,
+    );
+  }
+
+  if (!quoteVersion) {
+    throw new ContractAccessError(
+      404,
+      "QUOTE_VERSION_NOT_FOUND",
+      "Versao solicitada do orcamento nao encontrada.",
+    );
+  }
+
+  if (
+    quoteVersion.quote_id !== quote.id ||
+    quoteVersion.organization_id !== organizationId ||
+    quoteVersion.store_id !== storeId
+  ) {
+    throw new ContractAccessError(
+      403,
+      "CONTRACT_SCOPE_MISMATCH",
+      "A versao solicitada do orcamento esta fora do escopo canonico autorizado.",
+    );
+  }
+
+  return {
+    supabase,
+    userId: sessionUserId,
+    organizationId,
+    store,
+    conversation,
+    lead,
+    quote: quote as SalesQuoteRow,
+    quoteVersion: quoteVersion as SalesQuoteVersionRow,
+  };
+}
