@@ -46,7 +46,7 @@ function authorization(messageType: "image" | "document" | "audio" | "video" = "
 
 function createSupabase(args: { rpcError?: boolean; removeCalls: string[] }) {
   const storage = {
-    info: async () => ({ data: { size: 12, mimetype: "image/png", metadata: {} }, error: null }),
+    info: async () => ({ data: { size: 12, contentType: "image/png", metadata: {} }, error: null }),
     remove: async (paths: string[]) => { args.removeCalls.push(...paths); return { data: null, error: null }; },
   };
   const query = (table: string) => {

@@ -62,7 +62,7 @@ export async function handleManualAttachmentFinalizePost(
     if (objectInfo.error || !objectInfo.data) return errorResponse(404, "attachment_object_not_found");
     const objectSize = Number(objectInfo.data.size);
     const objectMime = normalizeManualAttachmentMimeType(
-      objectInfo.data.mimetype ?? objectInfo.data.metadata?.mimetype ?? objectInfo.data.metadata?.contentType,
+      objectInfo.data.contentType ?? objectInfo.data.metadata?.mimetype ?? objectInfo.data.metadata?.contentType,
     );
     if (!Number.isInteger(objectSize) || objectSize <= 0 || objectSize > MANUAL_ATTACHMENT_MAX_FILE_SIZE_BYTES || objectSize !== authorization.sizeBytes) {
       return errorResponse(400, "attachment_size_mismatch");
