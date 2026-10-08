@@ -187,9 +187,9 @@ export function buildCanonicalContractRendererInput(
   };
 }
 
-function fingerprintableInput(input: CanonicalContractRendererInput): unknown {
+function fingerprintableInput(input: unknown): unknown {
   if (Array.isArray(input)) {
-    return input.map((value) => fingerprintableInput(value as CanonicalContractRendererInput));
+    return input.map((value) => fingerprintableInput(value));
   }
 
   if (input && typeof input === "object") {
@@ -199,7 +199,7 @@ function fingerprintableInput(input: CanonicalContractRendererInput): unknown {
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([key, value]) => [
           key,
-          fingerprintableInput(value as CanonicalContractRendererInput),
+          fingerprintableInput(value),
         ]),
     );
   }
