@@ -812,3 +812,373 @@ test("processor marks self-originated and group messages as non-AI inputs", () =
   assert.equal(echoMessage.isSelfOriginated, true);
   assert.equal(groupMessage.isGroupMessage, true);
 });
+
+async function processCustomerMediaScenario(args: {
+  type: "image" | "audio" | "video" | "document";
+  caption?: string;
+  filename?: string;
+  existingMessage?: Record<string, unknown> | null;
+  transcriptionFailure?: boolean;
+  visualFailure?: boolean;
+  metadataUpdateReturnsNoRows?: boolean;
+}) {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+  process.env.META_WHATSAPP_ACCESS_TOKEN = "meta-test";
+  process.env.OPENAI_API_KEY = "openai-test";
+
+  const previousFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method: string; body: string }> = [];
+  let messageReads = 0;
+  let inboxReads = 0;
+  let insertedMetadata: Record<string, unknown> | null = null;
+  const persistedMessage = args.existingMessage || {
+    id: "message-media-1",
+    conversation_id: "conversation-1",
+    lead_id: "lead-1",
+    store_id: "store-1",
+    external_message_id: "external-media-1",
+    message_type: args.type,
+    content: args.caption || `Cliente enviou uma ${args.type}.`,
+    metadata: {
+      media_origin: "customer",
+      storage_bucket: "zion-store-files",
+      storage_path: "org-1/store-1/whatsapp-inbound/conversation-1/media.bin",
+      original_file_name: args.filename || `media.${args.type === "audio" ? "webm" : "bin"}`,
+      mime_type:
+        args.type === "audio"
+          ? "audio/webm"
+          : args.type === "image"
+            ? "image/jpeg"
+            : args.type === "video"
+              ? "video/mp4"
+              : "application/pdf",
+    },
+  };
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    const body = typeof init?.body === "string" ? init.body : "";
+    calls.push({ url, method, body });
+
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "GET") {
+      inboxReads += 1;
+      return inboxReads === 1
+        ? jsonFetchResponse([{
+            id: "inbox-media-1",
+            organization_id: "org-1",
+            store_id: "store-1",
+            provider: "whatsapp",
+            external_event_id: "event-media-1",
+            payload: {
+              source: "meta_whatsapp_webhook",
+              event_kind: "message",
+              phone_number_id: "phone-1",
+              message: {
+                id: "external-media-1",
+                from: "5511999999999",
+                type: args.type,
+                [args.type]: {
+                  id: "meta-media-1",
+                  mime_type: persistedMessage.metadata?.mime_type,
+                  caption: args.caption,
+                  filename: args.filename,
+                },
+              },
+            },
+            received_at: "2026-10-08T12:00:00.000Z",
+            processed_at: null,
+            processing_error: null,
+          }])
+        : jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/messages") && method === "GET") {
+      messageReads += 1;
+      if (args.existingMessage) return jsonFetchResponse([args.existingMessage]);
+      return messageReads === 1 ? jsonFetchResponse([]) : jsonFetchResponse([{
+        ...persistedMessage,
+        metadata: insertedMetadata || persistedMessage.metadata,
+      }]);
+    }
+
+    if (url.includes("/rest/v1/store_responsibles") && method === "GET") {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/rpc/resolve_whatsapp_inbound_thread_by_system")) {
+      return jsonFetchResponse([{
+        lead_id: "lead-1",
+        conversation_id: "conversation-1",
+        normalized_whatsapp_identity: "5511999999999",
+        thread_state: "existing_active_thread",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/rpc/bootstrap_first_commercial_context_for_inbound_by_system")) {
+      return jsonFetchResponse([{
+        customer_id: "customer-1",
+        customer_channel_identity_id: "identity-1",
+        customer_store_link_id: "store-link-1",
+        lead_customer_link_id: "lead-link-1",
+        commercial_opportunity_id: "opportunity-1",
+        bootstrap_state: "existing_active_commercial_context",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/rpc/insert_message")) {
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      insertedMetadata = parsed.p_metadata as Record<string, unknown>;
+      if (parsed.p_message_type === "document") {
+        assert.equal(parsed.p_media_url, insertedMetadata.storage_path);
+        assert.equal(typeof parsed.p_media_url, "string");
+        assert.notEqual(parsed.p_media_url, "");
+        assert.equal(insertedMetadata.attachment_kind, "file");
+      }
+      return jsonFetchResponse([{
+        id: "message-media-1",
+        conversation_id: "conversation-1",
+        lead_id: "lead-1",
+        store_id: "store-1",
+        external_message_id: "external-media-1",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/conversations") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "conversation-1",
+        organization_id: "org-1",
+        lead_id: "lead-1",
+        status: "active",
+        is_human_active: false,
+      }]);
+    }
+
+    if (url.includes("/rest/v1/conversation_ai_window_state") && method === "GET") {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_operational_tasks") && method === "GET") {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/messages") && method === "PATCH") {
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      const metadata = parsed.metadata as Record<string, unknown> | undefined;
+      if (metadata?.audio_transcript || metadata?.location_photo_analysis) {
+        calls.push({ url: "event:metadata_update", method: "PATCH", body });
+      }
+      return args.metadataUpdateReturnsNoRows
+        ? jsonFetchResponse(null)
+        : jsonFetchResponse({ id: "message-media-1" });
+    }
+
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("graph.facebook.com") && method === "GET") {
+      return jsonFetchResponse({
+        url: "https://media.test/object",
+        mime_type: persistedMessage.metadata?.mime_type,
+        sha256: "sha-media",
+      });
+    }
+
+    if (url === "https://media.test/object" && method === "GET") {
+      return new Response(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { "content-type": String(persistedMessage.metadata?.mime_type) },
+      });
+    }
+
+    if (url.includes("/storage/v1/object/") && method === "GET") {
+      return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+    }
+
+    if (url.includes("api.openai.com/v1/audio/transcriptions") && method === "POST") {
+      return args.transcriptionFailure
+        ? jsonFetchResponse({ error: { message: "transcription failed" } }, 500)
+        : jsonFetchResponse({ text: "Cliente quer instalar uma piscina." });
+    }
+
+    if (url.includes("api.openai.com/v1/responses") && method === "POST") {
+      return args.visualFailure
+        ? jsonFetchResponse({ error: { message: "visual failed" } }, 500)
+        : jsonFetchResponse({
+            output_text: JSON.stringify({
+              summary: "O local aparenta ter espaco para avaliacao.",
+              space_size_signal: "medium",
+              environment_type: "outdoor",
+              access_constraints: [],
+              ground_context: [],
+              confidence: "medium",
+              needs_measurements_confirmation: true,
+              safe_commercial_hints: ["confirmar medidas"],
+            }),
+          });
+    }
+
+    if (url.includes("/storage/v1/object/") && method !== "GET") {
+      return jsonFetchResponse({});
+    }
+
+    throw new Error(`unexpected media fetch: ${method} ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const aiCalls: string[] = [];
+    const result = await processWhatsappInbox({
+      organizationId: "org-1",
+      storeId: "store-1",
+      limit: 1,
+      runAiFlow: async () => {
+        aiCalls.push("sales-ai");
+        calls.push({ url: "event:sales-ai", method: "CALL", body: "" });
+        return { ok: true, aiText: "ok", context: {}, usage: null, persisted: true, messageId: "ai-1" };
+      },
+    });
+    return { result, calls, aiCalls };
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+}
+
+test("customer audio follows insert, transcription metadata, then Sales AI", async () => {
+  const { result, calls, aiCalls } = await processCustomerMediaScenario({ type: "audio" });
+  assert.equal(result.failed, 0);
+  assert.deepEqual(aiCalls, ["sales-ai"]);
+  const metadataIndex = calls.findIndex(
+    (call) => call.method === "PATCH" && call.body.includes("audio_transcript"),
+  );
+  const aiIndex = calls.findIndex((call) => call.url === "event:sales-ai");
+  assert.equal(metadataIndex >= 0, true);
+  assert.equal(aiIndex > metadataIndex, true);
+  const insertIndex = calls.findIndex((call) => call.url.includes("/rpc/insert_message"));
+  assert.equal(insertIndex < metadataIndex, true);
+  const metadataPatch = calls[metadataIndex];
+  assert.match(metadataPatch.body, /audio_transcript/);
+  assert.match(metadataPatch.body, /transcription_status/);
+  assert.match(metadataPatch.url, /organization_id=eq\.org-1/);
+  assert.match(metadataPatch.url, /store_id=eq\.store-1/);
+  assert.match(metadataPatch.url, /conversation_id=eq\.conversation-1/);
+});
+
+test("already transcribed audio retry avoids transcription and duplicate insert", async () => {
+  const existing = {
+    id: "message-media-1",
+    conversation_id: "conversation-1",
+    lead_id: "lead-1",
+    store_id: "store-1",
+    external_message_id: "external-media-1",
+    message_type: "audio",
+    content: "Cliente enviou um audio.",
+    metadata: {
+      storage_bucket: "zion-store-files",
+      storage_path: "org-1/store-1/audio.webm",
+      original_file_name: "audio.webm",
+      mime_type: "audio/webm",
+      audio_transcript: "ja transcrito",
+      transcription_status: "succeeded",
+    },
+  };
+  const { result, calls, aiCalls } = await processCustomerMediaScenario({ type: "audio", existingMessage: existing });
+  assert.equal(result.failed, 0);
+  assert.equal(calls.some((call) => call.url.includes("/rpc/insert_message")), false);
+  assert.equal(calls.some((call) => call.url.includes("/v1/audio/transcriptions")), false);
+  assert.deepEqual(aiCalls, ["sales-ai"]);
+});
+
+test("metadata update with zero rows remains retryable and does not dispatch Sales AI", async () => {
+  const { result, calls, aiCalls } = await processCustomerMediaScenario({
+    type: "audio",
+    metadataUpdateReturnsNoRows: true,
+  });
+  assert.equal(result.failed, 1);
+  assert.deepEqual(aiCalls, []);
+  assert.equal(
+    calls.some((call) => call.method === "PATCH" && call.body.includes('"processed_at"')),
+    false,
+  );
+});
+
+test("audio transcription failure stays retryable and does not dispatch Sales AI", async () => {
+  const { result, calls, aiCalls } = await processCustomerMediaScenario({ type: "audio", transcriptionFailure: true });
+  assert.equal(result.failed, 1);
+  assert.deepEqual(aiCalls, []);
+  assert.equal(calls.some((call) => call.method === "PATCH" && call.body.includes('"processed_at"')), false);
+  assert.equal(calls.some((call) => call.method === "PATCH" && call.body.includes("transcription_error")), true);
+});
+
+test("customer location photo follows classification, analysis metadata, then Sales AI", async () => {
+  const { result, calls, aiCalls } = await processCustomerMediaScenario({ type: "image", caption: "foto do local" });
+  assert.equal(result.failed, 0);
+  assert.deepEqual(aiCalls, ["sales-ai"]);
+  assert.equal(calls.some((call) => call.url.includes("/v1/responses")), true);
+  const insertCall = calls.find((call) => call.url.includes("/rpc/insert_message"));
+  assert.ok(insertCall);
+  assert.match(insertCall.body, /customer_location_photo/);
+  const metadataCall = calls.find((call) => call.url === "event:metadata_update");
+  assert.ok(metadataCall);
+  assert.match(metadataCall.body, /location_photo_analysis/);
+});
+
+test("already analyzed location photo retry avoids visual analysis", async () => {
+  const existing = {
+    id: "message-media-1",
+    conversation_id: "conversation-1",
+    lead_id: "lead-1",
+    store_id: "store-1",
+    external_message_id: "external-media-1",
+    message_type: "image",
+    content: "foto do local",
+    metadata: {
+      storage_bucket: "zion-store-files",
+      storage_path: "org-1/store-1/location.jpg",
+      original_file_name: "location.jpg",
+      mime_type: "image/jpeg",
+      media_purpose_normalized: "customer_location_photo",
+      location_photo_analysis: { summary: "ja analisada" },
+      visual_analysis_status: "succeeded",
+    },
+  };
+  const { result, calls, aiCalls } = await processCustomerMediaScenario({ type: "image", caption: "foto do local", existingMessage: existing });
+  assert.equal(result.failed, 0);
+  assert.equal(calls.some((call) => call.url.includes("/v1/responses")), false);
+  assert.equal(calls.some((call) => call.url.includes("/rpc/insert_message")), false);
+  assert.deepEqual(aiCalls, ["sales-ai"]);
+});
+
+test("visual analysis failure stays retryable", async () => {
+  const { result, calls, aiCalls } = await processCustomerMediaScenario({ type: "image", caption: "foto do local", visualFailure: true });
+  assert.equal(result.failed, 1);
+  assert.deepEqual(aiCalls, []);
+  assert.equal(calls.some((call) => call.method === "PATCH" && call.body.includes('"processed_at"')), false);
+});
+
+test("non-location image does not invent visual analysis", async () => {
+  const { result, calls, aiCalls } = await processCustomerMediaScenario({ type: "image", caption: "essa piscina" });
+  assert.equal(result.failed, 0);
+  assert.deepEqual(aiCalls, ["sales-ai"]);
+  assert.equal(calls.some((call) => call.url.includes("/v1/responses")), false);
+});
+
+test("video remains video and document remains document with file attachment kind", async () => {
+  const video = await processCustomerMediaScenario({ type: "video", caption: "video da area" });
+  assert.equal(video.result.failed, 0);
+  const videoInsert = video.calls.find((call) => call.url.includes("/rpc/insert_message"));
+  assert.ok(videoInsert);
+  assert.match(videoInsert.body, /"p_message_type":"video"/);
+  assert.doesNotMatch(videoInsert.body, /"p_message_type":"text"/);
+
+  const document = await processCustomerMediaScenario({ type: "document", filename: "comprovante.pdf" });
+  assert.equal(document.result.failed, 0);
+  const documentInsert = document.calls.find((call) => call.url.includes("/rpc/insert_message"));
+  assert.ok(documentInsert);
+  const documentPayload = JSON.parse(documentInsert.body) as Record<string, unknown>;
+  const documentMetadata = documentPayload.p_metadata as Record<string, unknown>;
+  assert.equal(documentPayload.p_message_type, "document");
+  assert.equal(documentPayload.p_media_url, documentMetadata.storage_path);
+  assert.equal(documentMetadata.attachment_kind, "file");
+});

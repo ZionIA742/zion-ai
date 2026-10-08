@@ -15,6 +15,9 @@ import {
   loadCanonicalActivePrimaryStoreResponsible,
   normalizeResponsibleWhatsappDestination,
 } from "@/lib/server/store-responsibles";
+import { classifyIncomingMediaMessage } from "@/lib/server/media-classification";
+import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
+import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
 
 type Json =
   | string
@@ -67,6 +70,9 @@ type MessageRow = {
   lead_id: string | null;
   store_id: string | null;
   external_message_id: string | null;
+  message_type?: string | null;
+  content?: string | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 type StatusMessageRow = {
@@ -221,6 +227,7 @@ export type ProcessWhatsappInboxInput = {
   organizationId: string;
   storeId: string;
   limit?: number;
+  runAiFlow?: typeof generateAndSaveAiSalesReply;
 };
 
 type ProcessorStatus = "succeeded" | "failed" | "skipped";
@@ -833,12 +840,17 @@ async function markInboxError(
 
 async function findExistingMessageByExternalId(
   supabase: SupabaseClient,
+  organizationId: string,
+  storeId: string,
   externalMessageId: string,
 ) {
   const { data, error } = await supabase
     .from("messages")
-    .select("id, conversation_id, lead_id, store_id, external_message_id")
+    .select("id, conversation_id, lead_id, store_id, external_message_id, message_type, content, metadata")
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
     .eq("external_message_id", externalMessageId)
+    .is("deleted_at", null)
     .limit(1)
     .maybeSingle();
 
@@ -928,7 +940,7 @@ async function insertIncomingMessage(args: {
   rawMessageType: string;
   whatsappBusinessAccountId: string | null;
   displayPhoneNumber: string | null;
-  messageType?: "text" | "image" | "audio" | "video";
+  messageType?: "text" | "image" | "audio" | "video" | "document";
   content?: string;
   mediaUrl?: string | null;
   metadata?: Record<string, unknown>;
@@ -993,6 +1005,7 @@ async function insertIncomingImageMessage(args: {
   storagePath: string;
   originalFileName: string;
   sizeBytes: number;
+  classificationMetadata?: Record<string, unknown>;
 }) {
   return insertIncomingMessage({
     supabase: args.supabase,
@@ -1021,6 +1034,7 @@ async function insertIncomingImageMessage(args: {
       original_file_name: args.originalFileName,
       size_bytes: args.sizeBytes,
       downloaded_from_meta: true,
+      ...(args.classificationMetadata || {}),
     },
   });
 }
@@ -1043,6 +1057,7 @@ async function insertIncomingAudioMessage(args: {
   storagePath: string;
   originalFileName: string;
   sizeBytes: number;
+  classificationMetadata?: Record<string, unknown>;
 }) {
   return insertIncomingMessage({
     supabase: args.supabase,
@@ -1072,6 +1087,7 @@ async function insertIncomingAudioMessage(args: {
       downloaded_from_meta: true,
       voice: args.isVoiceMessage,
       is_voice_message: args.isVoiceMessage,
+      ...(args.classificationMetadata || {}),
     },
   });
 }
@@ -1094,6 +1110,7 @@ async function insertIncomingVideoMessage(args: {
   storagePath: string;
   originalFileName: string;
   sizeBytes: number;
+  classificationMetadata?: Record<string, unknown>;
 }) {
   const content = args.caption || "Cliente enviou um video.";
 
@@ -1124,6 +1141,7 @@ async function insertIncomingVideoMessage(args: {
       original_file_name: args.originalFileName,
       size_bytes: args.sizeBytes,
       downloaded_from_meta: true,
+      ...(args.classificationMetadata || {}),
     },
   });
 }
@@ -1147,6 +1165,7 @@ async function insertIncomingDocumentMessage(args: {
   storagePath: string;
   originalFileName: string;
   sizeBytes: number;
+  classificationMetadata?: Record<string, unknown>;
 }) {
   const content =
     args.caption ||
@@ -1166,9 +1185,9 @@ async function insertIncomingDocumentMessage(args: {
     rawMessageType: "document",
     whatsappBusinessAccountId: args.whatsappBusinessAccountId,
     displayPhoneNumber: args.displayPhoneNumber,
-    messageType: "text",
+    messageType: "document",
     content,
-    mediaUrl: null,
+    mediaUrl: args.storagePath,
     metadata: {
       media_origin: "customer",
       attachment_kind: "file",
@@ -1181,8 +1200,209 @@ async function insertIncomingDocumentMessage(args: {
       original_file_name: args.originalFileName,
       size_bytes: args.sizeBytes,
       downloaded_from_meta: true,
+      ...(args.classificationMetadata || {}),
     },
   });
+}
+
+function buildMediaClassificationMetadata(args: {
+  messageType: string;
+  mimeType: string | null;
+  fileName: string | null;
+  content: string | null;
+}) {
+  const classification = classifyIncomingMediaMessage({
+    messageType: args.messageType,
+    mimeType: args.mimeType,
+    fileName: args.fileName,
+    content: args.content,
+    sender: "user",
+    direction: "incoming",
+    sourceChannel: "whatsapp",
+  });
+
+  return {
+    media_purpose: classification.mediaPurpose,
+    media_purpose_normalized: classification.mediaPurpose,
+    media_classification_confidence: classification.confidence,
+    media_classification_reason: classification.reason,
+    media_requires_ai_analysis: classification.requiresAiAnalysis,
+    media_requires_human_review: classification.requiresHumanReview,
+    media_classified_by: "classifyIncomingMediaMessage",
+  } satisfies Record<string, unknown>;
+}
+
+function isCustomerMediaMessageType(
+  value: string | null | undefined,
+): value is "image" | "audio" | "video" | "document" {
+  return value === "image" || value === "audio" || value === "video" || value === "document";
+}
+
+async function updateCustomerMediaMetadata(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  messageId: string;
+  metadata: Record<string, unknown>;
+}) {
+  const { data, error } = await args.supabase
+    .from("messages")
+    .update({ metadata: args.metadata })
+    .eq("id", args.messageId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .is("deleted_at", null)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao atualizar inteligencia da media: ${error.message}`);
+  }
+  if (!data?.id || data.id !== args.messageId) {
+    throw new Error(
+      "Falha ao atualizar inteligencia da media: nenhuma linha correspondente foi atualizada.",
+    );
+  }
+}
+
+async function processCustomerMediaIntelligence(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  message: MessageRow;
+  messageType: "image" | "audio" | "video" | "document";
+  mimeType: string | null;
+  fileName: string | null;
+  content: string | null;
+}) {
+  const currentMetadata = getMessageMetadata(args.message.metadata);
+  const classificationMetadata = buildMediaClassificationMetadata({
+    messageType: args.messageType,
+    mimeType: args.mimeType,
+    fileName: args.fileName,
+    content: args.content,
+  });
+  let metadata: Record<string, unknown> = { ...currentMetadata, ...classificationMetadata };
+  if (args.messageType === "audio" && !asTrimmedString(metadata.audio_transcript)) {
+    metadata.transcription_status = "pending";
+  }
+  if (
+    args.messageType === "image" &&
+    metadata.media_purpose_normalized === "customer_location_photo" &&
+    !isRecord(metadata.location_photo_analysis)
+  ) {
+    metadata.visual_analysis_status = "pending";
+  }
+  const bucket = asTrimmedString(metadata.storage_bucket);
+  const storagePath = asTrimmedString(metadata.storage_path);
+
+  if (!bucket || !storagePath) {
+    throw new Error("media_storage_identity_missing");
+  }
+
+  if (args.messageType === "audio") {
+    const existingTranscript = asTrimmedString(metadata.audio_transcript);
+    if (
+      existingTranscript &&
+      String(metadata.transcription_status || "").trim().toLowerCase() === "succeeded"
+    ) {
+      metadata = {
+        ...metadata,
+        transcription_status: "succeeded",
+      };
+    } else {
+      const transcription = await transcribeCustomerAudioFromStorage({
+        supabase: args.supabase,
+        bucket,
+        storagePath,
+        fileName: asTrimmedString(metadata.original_file_name) || "customer-audio.webm",
+        mimeType: args.mimeType,
+      });
+      if (!transcription.ok) {
+        await updateCustomerMediaMetadata({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          conversationId: args.conversationId,
+          messageId: args.message.id,
+          metadata: {
+            ...metadata,
+            transcription_status: "failed",
+            transcription_provider: transcription.provider,
+            transcription_model: transcription.model,
+            transcription_error: transcription.error,
+          },
+        });
+        throw new Error(`customer_audio_transcription_failed: ${transcription.error}`);
+      }
+      metadata = {
+        ...metadata,
+        audio_transcript: transcription.transcript,
+        transcription_status: "succeeded",
+        transcription_provider: transcription.provider,
+        transcription_model: transcription.model,
+        transcription_error: null,
+        transcription_completed_at: new Date().toISOString(),
+      };
+    }
+  }
+
+  if (
+    args.messageType === "image" &&
+    metadata.media_purpose_normalized === "customer_location_photo"
+  ) {
+    const existingAnalysis =
+      isRecord(metadata.location_photo_analysis) &&
+      String(metadata.visual_analysis_status || "").trim().toLowerCase() === "succeeded";
+    if (!existingAnalysis) {
+      const analysis = await analyzeCustomerLocationPhotoFromStorage({
+        supabase: args.supabase,
+        bucket,
+        storagePath,
+        fileName: asTrimmedString(metadata.original_file_name) || "customer-image.jpg",
+        mimeType: args.mimeType,
+      });
+      if (!analysis.ok) {
+        await updateCustomerMediaMetadata({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          conversationId: args.conversationId,
+          messageId: args.message.id,
+          metadata: {
+            ...metadata,
+            visual_analysis_status: "failed",
+            visual_analysis_provider: analysis.provider,
+            visual_analysis_model: analysis.model,
+            visual_analysis_error: analysis.error,
+          },
+        });
+        throw new Error(`customer_location_photo_analysis_failed: ${analysis.error}`);
+      }
+      metadata = {
+        ...metadata,
+        location_photo_analysis: analysis.analysis,
+        visual_analysis_status: "succeeded",
+        visual_analysis_provider: analysis.provider,
+        visual_analysis_model: analysis.model,
+        visual_analysis_error: null,
+        visual_analysis_completed_at: new Date().toISOString(),
+      };
+    }
+  }
+
+  await updateCustomerMediaMetadata({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    messageId: args.message.id,
+    metadata,
+  });
+  return metadata;
 }
 
 async function loadConversationAutomationState(args: {
@@ -1521,6 +1741,7 @@ async function processStatusInboxRow(
 async function processSingleInboxRow(
   supabase: SupabaseClient,
   inbox: InboxRow,
+  runAiFlow?: typeof generateAndSaveAiSalesReply,
 ): Promise<ProcessorResultItem> {
   const payload = isRecord(inbox.payload)
     ? (inbox.payload as StoredInboxPayload)
@@ -1659,10 +1880,59 @@ async function processSingleInboxRow(
 
   const existingMessage = await findExistingMessageByExternalId(
     supabase,
+    inbox.organization_id,
+    inbox.store_id,
     resolvedMessageId,
   );
 
   if (existingMessage?.id) {
+    const existingMessageType = String(
+      existingMessage.message_type || extracted.rawMessageType || "",
+    ).trim();
+    if (isCustomerMediaMessageType(existingMessageType)) {
+      await processCustomerMediaIntelligence({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        conversationId: existingMessage.conversation_id,
+        message: existingMessage,
+        messageType: existingMessageType,
+        mimeType:
+          extracted.imageMimeType ||
+          extracted.audioMimeType ||
+          extracted.videoMimeType ||
+          extracted.documentMimeType,
+        fileName: extracted.documentFilename,
+        content:
+          extracted.imageCaption ||
+          extracted.videoCaption ||
+          extracted.documentCaption ||
+          existingMessage.content ||
+          null,
+      });
+
+      const mediaAiResult = await dispatchAiSalesReplyForConversation({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        conversationId: existingMessage.conversation_id,
+        messageId: existingMessage.id,
+        customerMessage: existingMessage.content || "Cliente enviou uma midia.",
+        runAiFlow,
+      });
+      await markInboxProcessed(supabase, inbox.id);
+      return {
+        inbox_id: inbox.id,
+        external_event_id: inbox.external_event_id,
+        status: "succeeded",
+        detail: "duplicate_media_intelligence_reused",
+        message_id: existingMessage.id,
+        lead_id: existingMessage.lead_id,
+        conversation_id: existingMessage.conversation_id,
+        ...mediaAiResult,
+      };
+    }
+
     await markInboxProcessed(supabase, inbox.id);
     return {
       inbox_id: inbox.id,
@@ -1734,6 +2004,12 @@ async function processSingleInboxRow(
       });
 
       uploadedMediaStoragePath = storedMedia.storagePath;
+      const classificationMetadata = buildMediaClassificationMetadata({
+        messageType: "image",
+        mimeType: storedMedia.mimeType || extracted.imageMimeType,
+        fileName: storedMedia.originalFileName,
+        content: extracted.imageCaption,
+      });
 
       inserted = await insertIncomingImageMessage({
         supabase,
@@ -1753,6 +2029,7 @@ async function processSingleInboxRow(
         storagePath: storedMedia.storagePath,
         originalFileName: storedMedia.originalFileName,
         sizeBytes: storedMedia.sizeBytes,
+        classificationMetadata,
       });
     } else if (extracted.rawMessageType === "audio") {
       if (!extracted.audioMediaId) {
@@ -1771,6 +2048,12 @@ async function processSingleInboxRow(
       });
 
       uploadedMediaStoragePath = storedMedia.storagePath;
+      const classificationMetadata = buildMediaClassificationMetadata({
+        messageType: "audio",
+        mimeType: storedMedia.mimeType || extracted.audioMimeType,
+        fileName: storedMedia.originalFileName,
+        content: null,
+      });
 
       inserted = await insertIncomingAudioMessage({
         supabase,
@@ -1790,6 +2073,7 @@ async function processSingleInboxRow(
         storagePath: storedMedia.storagePath,
         originalFileName: storedMedia.originalFileName,
         sizeBytes: storedMedia.sizeBytes,
+        classificationMetadata,
       });
     } else if (extracted.rawMessageType === "video") {
       if (!extracted.videoMediaId) {
@@ -1808,6 +2092,12 @@ async function processSingleInboxRow(
       });
 
       uploadedMediaStoragePath = storedMedia.storagePath;
+      const classificationMetadata = buildMediaClassificationMetadata({
+        messageType: "video",
+        mimeType: storedMedia.mimeType || extracted.videoMimeType,
+        fileName: storedMedia.originalFileName,
+        content: extracted.videoCaption,
+      });
 
       inserted = await insertIncomingVideoMessage({
         supabase,
@@ -1827,6 +2117,7 @@ async function processSingleInboxRow(
         storagePath: storedMedia.storagePath,
         originalFileName: storedMedia.originalFileName,
         sizeBytes: storedMedia.sizeBytes,
+        classificationMetadata,
       });
     } else if (extracted.rawMessageType === "document") {
       if (!extracted.documentMediaId) {
@@ -1846,6 +2137,12 @@ async function processSingleInboxRow(
       });
 
       uploadedMediaStoragePath = storedMedia.storagePath;
+      const classificationMetadata = buildMediaClassificationMetadata({
+        messageType: "document",
+        mimeType: storedMedia.mimeType || extracted.documentMimeType,
+        fileName: extracted.documentFilename || storedMedia.originalFileName,
+        content: extracted.documentCaption,
+      });
 
       inserted = await insertIncomingDocumentMessage({
         supabase,
@@ -1866,6 +2163,7 @@ async function processSingleInboxRow(
         storagePath: storedMedia.storagePath,
         originalFileName: storedMedia.originalFileName,
         sizeBytes: storedMedia.sizeBytes,
+        classificationMetadata,
       });
     } else {
       inserted = await insertIncomingMessage({
@@ -1883,24 +2181,41 @@ async function processSingleInboxRow(
       });
     }
 
-    await markInboxProcessed(supabase, inbox.id);
-
-    if (
-      extracted.rawMessageType === "image" ||
-      extracted.rawMessageType === "audio" ||
-      extracted.rawMessageType === "video" ||
-      extracted.rawMessageType === "document"
-    ) {
-      return {
-        inbox_id: inbox.id,
-        external_event_id: inbox.external_event_id,
-        status: "succeeded",
-        message_id: inserted.id || null,
-        lead_id: lead.id,
-        conversation_id: conversation.id,
-        detail: `${extracted.rawMessageType}_saved_in_crm`,
-      };
+    uploadedMediaStoragePath = null;
+    const persistedMessage = await findExistingMessageByExternalId(
+      supabase,
+      inbox.organization_id,
+      inbox.store_id,
+      resolvedMessageId,
+    );
+    if (!persistedMessage?.id) {
+      throw new Error("persisted_inbound_message_not_found");
     }
+
+    if (isCustomerMediaMessageType(extracted.rawMessageType)) {
+      await processCustomerMediaIntelligence({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        conversationId: conversation.id,
+        message: persistedMessage,
+        messageType: extracted.rawMessageType,
+        mimeType:
+          extracted.imageMimeType ||
+          extracted.audioMimeType ||
+          extracted.videoMimeType ||
+          extracted.documentMimeType,
+        fileName: extracted.documentFilename,
+        content:
+          extracted.imageCaption ||
+          extracted.videoCaption ||
+          extracted.documentCaption ||
+          persistedMessage.content ||
+          null,
+      });
+    }
+
+    await markInboxProcessed(supabase, inbox.id);
 
     let aiDispatchResult: Pick<
       ProcessorResultItem,
@@ -1918,7 +2233,21 @@ async function processSingleInboxRow(
         storeId: inbox.store_id,
         conversationId: conversation.id,
         messageId: inserted.id || null,
-        customerMessage: extracted.textBody || "",
+        customerMessage:
+          extracted.textBody ||
+          extracted.imageCaption ||
+          extracted.videoCaption ||
+          extracted.documentCaption ||
+          (extracted.rawMessageType === "audio"
+            ? "Cliente enviou um audio."
+            : extracted.rawMessageType === "image"
+              ? "Cliente enviou uma imagem."
+              : extracted.rawMessageType === "video"
+                ? "Cliente enviou um video."
+                : extracted.rawMessageType === "document"
+                  ? `Cliente enviou o arquivo ${extracted.documentFilename || "anexo"}.`
+                  : ""),
+        runAiFlow,
       });
     } catch (aiError) {
       aiDispatchResult = {
@@ -1943,6 +2272,8 @@ async function processSingleInboxRow(
     ) {
       const duplicate = await findExistingMessageByExternalId(
         supabase,
+        inbox.organization_id,
+        inbox.store_id,
         resolvedMessageId,
       );
 
@@ -2016,7 +2347,7 @@ export async function processWhatsappInbox(
 
   for (const inbox of inboxRows) {
     try {
-      const result = await processSingleInboxRow(supabase, inbox);
+      const result = await processSingleInboxRow(supabase, inbox, input.runAiFlow);
       results.push(result);
 
       if (result.status === "succeeded") succeeded += 1;
