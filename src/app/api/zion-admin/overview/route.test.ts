@@ -9,6 +9,7 @@ import {
   OVERVIEW_LOAD_ERROR,
   OVERVIEW_MAX_PAGES,
 } from "./overview-pagination";
+import { resolveStoreAccountIdentity } from "./store-account-identity-resolution";
 
 type TestCase = {
   name: string;
@@ -225,6 +226,65 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "store payload exposes account identity separately from account access",
+    run: () => {
+      const source = readSource(routePath);
+      const storesListSource = source.slice(source.indexOf("const storesList = operationalStores.map"));
+
+      assert.equal(storesListSource.includes("accountIdentity:"), true);
+      assert.equal(storesListSource.includes("accountAccess:"), true);
+      assert.equal(source.includes("resolveStoreAccountIdentity"), true);
+    },
+  },
+  {
+    name: "account identity and account access share one auth loader and canonical owner data",
+    run: () => {
+      const source = readSource(routePath);
+      const accountAccessSource = source.slice(
+        source.indexOf("async function loadStoreAccountAccessSnapshots"),
+        source.indexOf("function buildStoreIntegrityByOrganizationId"),
+      );
+      const identitySource = source.slice(
+        source.indexOf("function buildStoreAccountIdentityByStoreId"),
+        source.indexOf("async function loadStoreAccountAccessSnapshots"),
+      );
+
+      assert.equal(countOccurrences(source, "getAuthAdminUserById("), 1);
+      assert.equal(accountAccessSource.includes("getAuthAdminUserById("), false);
+      assert.equal(source.includes("loadStoreOwnerAuthUsers("), true);
+      assert.equal(identitySource.includes("ownerData.membershipsByOrganizationId"), true);
+      assert.equal(identitySource.includes("ownerData.profilesByUserId"), true);
+      assert.equal(identitySource.includes("authUsersById.get(userId)"), true);
+      assert.equal(identitySource.includes("email"), false);
+      assert.equal(identitySource.includes("name"), false);
+      assert.equal(source.includes('.from("memberships")'), true);
+      assert.equal(countOccurrences(source, '.from("memberships")'), 1);
+    },
+  },
+  {
+    name: "account identity projection preserves IDs and never selects an ambiguous owner",
+    run: () => {
+      const result = resolveStoreAccountIdentity({
+        ownerMemberships: [
+          { id: "membership-a", user_id: "user-a" },
+          { id: "membership-b", user_id: "user-b" },
+        ],
+        authUsers: [{ id: "user-a" }, { id: "user-b" }],
+        ownerProfiles: [{ user_id: "user-a" }, { user_id: "user-b" }],
+      });
+
+      assert.equal(result.state, "broken");
+      assert.deepEqual(result.issues, [{ code: "owner_ambiguous" }]);
+      assert.deepEqual(result.owner, {
+        state: "ambiguous",
+        membershipId: null,
+        userId: null,
+      });
+      assert.deepEqual(result.authUser, { state: "unresolved", userId: null });
+      assert.deepEqual(result.profile, { state: "unresolved", userId: null });
+    },
+  },
+  {
     name: "store payload includes canonical integrity without removing legacy orphan shape",
     run: () => {
       const source = readSource(routePath);
@@ -257,6 +317,22 @@ const tests: TestCase[] = [
       assert.notEqual(orphanSummaryIntegrity, -1);
       assert.equal(orphanIntegrityField > orphanSummaryIntegrity, true);
       assert.equal(source.includes("stores: storesList"), true);
+    },
+  },
+  {
+    name: "account identity remains operational-only and does not enter orphan stores",
+    run: () => {
+      const source = readSource(routePath);
+      const orphanSource = source.slice(
+        source.indexOf("const orphanStoreSummaries = orphanStores.map"),
+        source.indexOf("const operationalOrganizationCount"),
+      );
+
+      assert.equal(orphanSource.includes("accountIdentity"), false);
+      assert.equal(source.includes("settingsReadiness:"), true);
+      assert.equal(source.includes("operationalHealth,"), true);
+      assert.equal(source.includes("integrity:"), true);
+      assert.equal(source.includes("accountAccess:"), true);
     },
   },
   {

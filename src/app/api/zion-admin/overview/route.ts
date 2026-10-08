@@ -16,6 +16,7 @@ import {
   OVERVIEW_LOAD_ERROR,
 } from "./overview-pagination";
 import { resolveCanonicalOwnerMembership } from "./store-account-access-resolution";
+import { resolveStoreAccountIdentity } from "./store-account-identity-resolution";
 import {
   resolveStoreIntegrity,
   type StoreIntegrity,
@@ -1471,10 +1472,75 @@ async function loadStoreOwnerData(
   };
 }
 
-async function loadStoreAccountAccessSnapshots(
+type AuthAdminUser = Awaited<ReturnType<typeof getAuthAdminUserById>>;
+type AuthUsersById = Map<string, AuthAdminUser>;
+
+async function loadStoreOwnerAuthUsers(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
   stores: StoreRow[],
   ownerData: StoreOwnerData,
+): Promise<AuthUsersById> {
+  const ownerUserIds = Array.from(
+    new Set(
+      stores
+        .flatMap(
+          (store) =>
+            ownerData.membershipsByOrganizationId.get(store.organization_id) ?? [],
+        )
+        .map((membership) => membership.user_id)
+        .filter(Boolean),
+    ),
+  );
+  const authUsersById: AuthUsersById = new Map();
+
+  await Promise.all(
+    ownerUserIds.map(async (userId) => {
+      authUsersById.set(userId, await getAuthAdminUserById(supabase, userId));
+    }),
+  );
+
+  return authUsersById;
+}
+
+function buildStoreAccountIdentityByStoreId(args: {
+  stores: StoreRow[];
+  ownerData: StoreOwnerData;
+  authUsersById: AuthUsersById;
+}) {
+  const accountIdentityByStoreId = new Map<string, ReturnType<typeof resolveStoreAccountIdentity>>();
+
+  for (const store of args.stores) {
+    const ownerMemberships =
+      args.ownerData.membershipsByOrganizationId.get(store.organization_id) ?? [];
+    const ownerUserIds = Array.from(
+      new Set(ownerMemberships.map((membership) => membership.user_id)),
+    );
+    const authUsers = ownerUserIds
+      .map((userId) => args.authUsersById.get(userId))
+      .filter((authUser): authUser is NonNullable<AuthAdminUser> => Boolean(authUser))
+      .map((authUser) => ({ id: authUser.id }));
+    const ownerProfiles = ownerUserIds
+      .map((userId) => args.ownerData.profilesByUserId.get(userId))
+      .filter((profile): profile is ProfileAccessRow => Boolean(profile))
+      .map((profile) => ({ user_id: profile.user_id }));
+
+    accountIdentityByStoreId.set(
+      store.id,
+      resolveStoreAccountIdentity({
+        ownerMemberships,
+        authUsers,
+        ownerProfiles,
+      }),
+    );
+  }
+
+  return accountIdentityByStoreId;
+}
+
+async function loadStoreAccountAccessSnapshots(
+  stores: StoreRow[],
+  ownerData: StoreOwnerData,
+  authUsersById: AuthUsersById,
 ) {
   const storeByOrganizationId = new Map<string, StoreRow[]>();
 
@@ -1484,27 +1550,7 @@ async function loadStoreAccountAccessSnapshots(
     storeByOrganizationId.set(store.organization_id, current);
   }
 
-  const authUsersById = new Map<string, Awaited<ReturnType<typeof getAuthAdminUserById>>>();
-  const ownerUserIds = Array.from(
-    new Set(
-      Array.from(storeByOrganizationId.keys())
-        .flatMap(
-          (organizationId) =>
-            ownerData.membershipsByOrganizationId.get(organizationId) ?? [],
-        )
-        .map((membership) => membership.user_id)
-        .filter(Boolean),
-    ),
-  );
-
   const profilesByUserId = ownerData.profilesByUserId;
-
-  await Promise.all(
-    ownerUserIds.map(async (userId) => {
-      const authUser = await getAuthAdminUserById(supabase, userId);
-      authUsersById.set(userId, authUser);
-    }),
-  );
 
   const snapshots = new Map<string, StoreAccountAccessSnapshot>();
 
@@ -1801,6 +1847,17 @@ export async function GET() {
       (store) => !organizationIdsWithMemberships.has(store.organization_id),
     );
 
+    const authUsersById = await loadStoreOwnerAuthUsers(
+      serviceSupabase,
+      operationalStores,
+      ownerData,
+    );
+    const accountIdentityByStoreId = buildStoreAccountIdentityByStoreId({
+      stores: operationalStores,
+      ownerData,
+      authUsersById,
+    });
+
     const operationalStoreIds = new Set(
       operationalStores.map((store) => store.id),
     );
@@ -1855,9 +1912,9 @@ export async function GET() {
     const settingsReadinessByStoreId = new Map(settingsReadinessEntries);
 
     const accountAccessByStoreId = await loadStoreAccountAccessSnapshots(
-      serviceSupabase,
       operationalStores,
       ownerData,
+      authUsersById,
     );
     const integrityByOrganizationId = buildStoreIntegrityByOrganizationId({
       stores,
@@ -2165,6 +2222,13 @@ export async function GET() {
             firstAccessHistoryStatus: "available",
             cooldownRemainingMs: 0,
           },
+        accountIdentity:
+          accountIdentityByStoreId.get(store.id) ??
+          resolveStoreAccountIdentity({
+            ownerMemberships: [],
+            authUsers: [],
+            ownerProfiles: [],
+          }),
         integrity:
           integrityByOrganizationId.get(store.organization_id) ??
           resolveStoreIntegrity({
