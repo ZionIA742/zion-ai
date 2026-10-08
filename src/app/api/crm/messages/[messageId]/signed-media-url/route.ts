@@ -12,6 +12,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const STORAGE_BUCKET = "zion-store-files";
+const POOL_PHOTOS_BUCKET = "pool-photos";
+const STORE_CATALOG_PHOTOS_BUCKET = "store-catalog-photos";
 const SIGNED_URL_EXPIRATION_SECONDS = 60;
 
 type MessageRow = {
@@ -165,7 +167,7 @@ export function createSignedMediaUrlGetHandler(
           {
             ok: false,
             error: "LOAD_MESSAGE_FAILED",
-            message: messageError.message,
+            message: "Nao foi possivel carregar a mensagem.",
           },
           500,
         );
@@ -198,6 +200,8 @@ export function createSignedMediaUrlGetHandler(
           : "");
       const isLegacyCustomerLocationPhoto =
         messageType === "image" && mediaPurpose === "customer_location_photo";
+      const isCatalogProductPhoto =
+        messageType === "image" && mediaPurpose === "catalog_product_photo";
       const isSupportedPrivateAttachment =
         attachmentKind === "image" ||
         attachmentKind === "audio" ||
@@ -208,9 +212,9 @@ export function createSignedMediaUrlGetHandler(
         messageType === "video";
 
       if (
-        storageBucket !== STORAGE_BUCKET ||
+        (!isCatalogProductPhoto && storageBucket !== STORAGE_BUCKET) ||
         !storagePath ||
-        (!isLegacyCustomerLocationPhoto && !isSupportedPrivateAttachment)
+        (!isLegacyCustomerLocationPhoto && !isCatalogProductPhoto && !isSupportedPrivateAttachment)
       ) {
         return buildJsonResponse(
           {
@@ -248,7 +252,7 @@ export function createSignedMediaUrlGetHandler(
           {
             ok: false,
             error: "LOAD_CONVERSATION_FAILED",
-            message: conversationError.message,
+            message: "Nao foi possivel validar a conversa.",
           },
           500,
         );
@@ -265,7 +269,21 @@ export function createSignedMediaUrlGetHandler(
         );
       }
 
-      const leadId = String(message.lead_id || conversation.lead_id || "").trim();
+      const conversationLeadId = String(conversation.lead_id || "").trim();
+      const messageLeadId = String(message.lead_id || "").trim();
+
+      if (!conversationLeadId || (messageLeadId && messageLeadId !== conversationLeadId)) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "LEAD_RELATION_INCONSISTENT",
+            message: "Os vinculos de lead da mensagem estao inconsistentes para visualizacao segura.",
+          },
+          403,
+        );
+      }
+
+      const leadId = conversationLeadId;
 
       if (!leadId) {
         return buildJsonResponse(
@@ -291,7 +309,7 @@ export function createSignedMediaUrlGetHandler(
           {
             ok: false,
             error: "LOAD_LEAD_FAILED",
-            message: leadError.message,
+            message: "Nao foi possivel validar o lead.",
           },
           500,
         );
@@ -332,6 +350,89 @@ export function createSignedMediaUrlGetHandler(
         );
       }
 
+      if (isCatalogProductPhoto) {
+        if (storageBucket !== POOL_PHOTOS_BUCKET && storageBucket !== STORE_CATALOG_PHOTOS_BUCKET) {
+          return buildJsonResponse(
+            { ok: false, error: "INVALID_MEDIA_MESSAGE", message: "A lineage da foto de catalogo nao e valida." },
+            422,
+          );
+        }
+
+        const targetType = String(metadata?.target_type || "").trim().toLowerCase();
+        if (storageBucket === POOL_PHOTOS_BUCKET) {
+          const poolId = String(metadata?.pool_id || "").trim();
+          const photoId = String(metadata?.catalog_photo_id || "").trim();
+          if (targetType !== "pool" || !poolId || !photoId) {
+            return buildJsonResponse({ ok: false, error: "INVALID_MEDIA_MESSAGE", message: "A lineage da piscina nao e valida." }, 422);
+          }
+          const { data: pool, error: poolError } = await supabase
+            .from("pools")
+            .select("id, organization_id, store_id")
+            .eq("id", poolId)
+            .eq("organization_id", organizationId)
+            .eq("store_id", storeId)
+            .maybeSingle();
+          if (poolError) return buildJsonResponse({ ok: false, error: "LOAD_CATALOG_SOURCE_FAILED", message: "Nao foi possivel validar a origem do catalogo." }, 500);
+          if (
+            !pool ||
+            pool.id !== poolId ||
+            pool.organization_id !== organizationId ||
+            pool.store_id !== storeId
+          ) return buildJsonResponse({ ok: false, error: "CATALOG_SOURCE_NOT_FOUND", message: "Piscina do catalogo nao encontrada." }, 403);
+          let photoQuery = supabase
+            .from("pool_photos")
+            .select("id, pool_id, organization_id, store_id, storage_path")
+            .eq("pool_id", poolId)
+            .eq("organization_id", organizationId)
+            .eq("store_id", storeId)
+            .eq("storage_path", storagePath);
+          photoQuery = photoQuery.eq("id", photoId);
+          const { data: photo, error: photoError } = await photoQuery.maybeSingle();
+          if (photoError) return buildJsonResponse({ ok: false, error: "LOAD_CATALOG_PHOTO_FAILED", message: "Nao foi possivel validar a foto do catalogo." }, 500);
+          if (
+            !photo ||
+            photo.id !== photoId ||
+            photo.pool_id !== poolId ||
+            photo.organization_id !== organizationId ||
+            photo.store_id !== storeId ||
+            photo.storage_path !== storagePath
+          ) {
+            return buildJsonResponse({ ok: false, error: "CATALOG_PHOTO_LINEAGE_MISMATCH", message: "A foto da piscina nao pertence ao escopo canonico." }, 403);
+          }
+        } else {
+          const itemId = String(metadata?.catalog_item_id || "").trim();
+          const photoId = String(metadata?.catalog_photo_id || "").trim();
+          if (targetType !== "catalog_item" || !itemId || !photoId) {
+            return buildJsonResponse({ ok: false, error: "INVALID_MEDIA_MESSAGE", message: "A lineage do produto do catalogo nao e valida." }, 422);
+          }
+          const { data: item, error: itemError } = await supabase
+            .from("store_catalog_items")
+            .select("id, organization_id, store_id")
+            .eq("id", itemId)
+            .eq("organization_id", organizationId)
+            .eq("store_id", storeId)
+            .maybeSingle();
+          if (itemError) return buildJsonResponse({ ok: false, error: "LOAD_CATALOG_SOURCE_FAILED", message: "Nao foi possivel validar a origem do catalogo." }, 500);
+          if (
+            !item ||
+            item.id !== itemId ||
+            item.organization_id !== organizationId ||
+            item.store_id !== storeId
+          ) return buildJsonResponse({ ok: false, error: "CATALOG_SOURCE_NOT_FOUND", message: "Produto do catalogo nao encontrado." }, 403);
+          const { data: photo, error: photoError } = await supabase
+            .from("store_catalog_item_photos")
+            .select("id, catalog_item_id, storage_path")
+            .eq("id", photoId)
+            .eq("catalog_item_id", itemId)
+            .eq("storage_path", storagePath)
+            .maybeSingle();
+          if (photoError) return buildJsonResponse({ ok: false, error: "LOAD_CATALOG_PHOTO_FAILED", message: "Nao foi possivel validar a foto do catalogo." }, 500);
+          if (!photo || photo.id !== photoId || photo.catalog_item_id !== itemId || photo.storage_path !== storagePath) {
+            return buildJsonResponse({ ok: false, error: "CATALOG_PHOTO_LINEAGE_MISMATCH", message: "A foto do produto nao pertence ao escopo canonico." }, 403);
+          }
+        }
+      }
+
       if (
         (messageStoreId && messageStoreId !== storeId) ||
         !leadStoreId ||
@@ -348,7 +449,7 @@ export function createSignedMediaUrlGetHandler(
       }
 
       const expectedPathPrefix = `${organizationId}/${storeId}/`;
-      if (!storagePath.startsWith(expectedPathPrefix)) {
+      if (!isCatalogProductPhoto && !storagePath.startsWith(expectedPathPrefix)) {
         return buildJsonResponse(
           {
             ok: false,
@@ -360,7 +461,7 @@ export function createSignedMediaUrlGetHandler(
       }
 
       const { data: signedData, error: signedError } = await supabase.storage
-        .from(STORAGE_BUCKET)
+        .from(storageBucket)
         .createSignedUrl(storagePath, SIGNED_URL_EXPIRATION_SECONDS);
 
       if (signedError || !signedData?.signedUrl) {
@@ -369,7 +470,6 @@ export function createSignedMediaUrlGetHandler(
             ok: false,
             error: "SIGNED_URL_GENERATION_FAILED",
             message:
-              signedError?.message ||
               "Nao foi possivel gerar o link temporario deste anexo.",
           },
           500,
@@ -384,13 +484,12 @@ export function createSignedMediaUrlGetHandler(
         fileName,
         expiresInSeconds: SIGNED_URL_EXPIRATION_SECONDS,
       });
-    } catch (error: any) {
+    } catch {
       return buildJsonResponse(
         {
           ok: false,
           error: "UNEXPECTED_ERROR",
-          message:
-            error?.message || "Erro inesperado ao gerar a visualizacao segura do anexo.",
+          message: "Nao foi possivel gerar a visualizacao segura do anexo.",
         },
         500,
       );

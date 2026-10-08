@@ -137,6 +137,13 @@ function createQueryBuilder(
       filters.push({ column, value });
       return this;
     },
+    in(column: string, value: unknown[]) {
+      filters.push({ column, value });
+      return this;
+    },
+    order() {
+      return this;
+    },
     async maybeSingle() {
       calls.push({
         table,
@@ -153,6 +160,10 @@ function createPrivilegedClientMock(args?: {
   messages?: QueryResponse[];
   conversations?: QueryResponse[];
   leads?: QueryResponse[];
+  pools?: QueryResponse[];
+  poolPhotos?: QueryResponse[];
+  catalogItems?: QueryResponse[];
+  catalogPhotos?: QueryResponse[];
   signedUrl?: string | null;
   signedUrlError?: { message: string } | null;
 }) {
@@ -162,6 +173,10 @@ function createPrivilegedClientMock(args?: {
     messages: [...(args?.messages ?? [])],
     conversations: [...(args?.conversations ?? [])],
     leads: [...(args?.leads ?? [])],
+    pools: [...(args?.pools ?? [])],
+    pool_photos: [...(args?.poolPhotos ?? [])],
+    store_catalog_items: [...(args?.catalogItems ?? [])],
+    store_catalog_item_photos: [...(args?.catalogPhotos ?? [])],
   };
 
   return {
@@ -181,6 +196,11 @@ function createPrivilegedClientMock(args?: {
           if (table === "leads") {
             return createQueryBuilder(queryCalls, table, columns, queues.leads);
           }
+
+          if (table === "pools") return createQueryBuilder(queryCalls, table, columns, queues.pools);
+          if (table === "pool_photos") return createQueryBuilder(queryCalls, table, columns, queues.pool_photos);
+          if (table === "store_catalog_items") return createQueryBuilder(queryCalls, table, columns, queues.store_catalog_items);
+          if (table === "store_catalog_item_photos") return createQueryBuilder(queryCalls, table, columns, queues.store_catalog_item_photos);
 
           throw new Error(`Unexpected table ${table}`);
         },
@@ -217,6 +237,203 @@ async function parseBody(response: Response) {
 }
 
 const tests: TestCase[] = [
+  {
+    name: "valid private pool catalog photo is revalidated by canonical lineage",
+    run: async () => {
+      const { createSignedMediaUrlGetHandler } = await loadRouteModule();
+      const client = createPrivilegedClientMock({
+        messages: [{ data: { id: "message-1", organization_id: "access-org", store_id: "access-store", conversation_id: "conversation-1", lead_id: "lead-1", message_type: "image", media_url: "pool-path/photo.jpg", metadata: { storage_bucket: "pool-photos", storage_path: "pool-path/photo.jpg", media_purpose: "catalog_product_photo", target_type: "pool", pool_id: "pool-1", catalog_photo_id: "pool-photo-1", attachment_kind: "image" } }, error: null }],
+        conversations: [{ data: { id: "conversation-1", organization_id: "access-org", lead_id: "lead-1" }, error: null }],
+        leads: [{ data: { id: "lead-1", organization_id: "access-org", store_id: "access-store" }, error: null }],
+        pools: [{ data: { id: "pool-1", organization_id: "access-org", store_id: "access-store" }, error: null }],
+        poolPhotos: [{ data: { id: "pool-photo-1", pool_id: "pool-1", organization_id: "access-org", store_id: "access-store", storage_path: "pool-path/photo.jpg" }, error: null }],
+        signedUrl: "https://signed.example.test/pool.jpg",
+      });
+      const handler = createSignedMediaUrlGetHandler({ resolveAccess: async () => createGrantedAccess(), createPrivilegedClient: () => client as never });
+      const response = await handler(buildRequest(), buildContext());
+      const body = await parseBody(response);
+      assert.equal(response.status, 200);
+      assert.equal(body.signedUrl, "https://signed.example.test/pool.jpg");
+      assert.deepEqual(client.queryCalls.find((call) => call.table === "pools")?.filters, [
+        { column: "id", value: "pool-1" },
+        { column: "organization_id", value: "access-org" },
+        { column: "store_id", value: "access-store" },
+      ]);
+      assert.deepEqual(client.queryCalls.find((call) => call.table === "pool_photos")?.filters, [
+        { column: "pool_id", value: "pool-1" },
+        { column: "organization_id", value: "access-org" },
+        { column: "store_id", value: "access-store" },
+        { column: "storage_path", value: "pool-path/photo.jpg" },
+        { column: "id", value: "pool-photo-1" },
+      ]);
+      assert.deepEqual(client.storageCalls, [{ bucket: "pool-photos", path: "pool-path/photo.jpg", expiresIn: 60 }]);
+    },
+  },
+  {
+    name: "valid private catalog item photo is revalidated by parent and child lineage",
+    run: async () => {
+      const { createSignedMediaUrlGetHandler } = await loadRouteModule();
+      const client = createPrivilegedClientMock({
+        messages: [{ data: { id: "message-1", organization_id: "access-org", store_id: "access-store", conversation_id: "conversation-1", lead_id: "lead-1", message_type: "image", media_url: "catalog-path/photo.jpg", metadata: { storage_bucket: "store-catalog-photos", storage_path: "catalog-path/photo.jpg", media_purpose: "catalog_product_photo", target_type: "catalog_item", catalog_item_id: "item-1", catalog_photo_id: "item-photo-1", attachment_kind: "image" } }, error: null }],
+        conversations: [{ data: { id: "conversation-1", organization_id: "access-org", lead_id: "lead-1" }, error: null }],
+        leads: [{ data: { id: "lead-1", organization_id: "access-org", store_id: "access-store" }, error: null }],
+        catalogItems: [{ data: { id: "item-1", organization_id: "access-org", store_id: "access-store" }, error: null }],
+        catalogPhotos: [{ data: { id: "item-photo-1", catalog_item_id: "item-1", storage_path: "catalog-path/photo.jpg" }, error: null }],
+        signedUrl: "https://signed.example.test/catalog.jpg",
+      });
+      const handler = createSignedMediaUrlGetHandler({ resolveAccess: async () => createGrantedAccess(), createPrivilegedClient: () => client as never });
+      const response = await handler(buildRequest(), buildContext());
+      const body = await parseBody(response);
+      assert.equal(response.status, 200);
+      assert.equal(body.signedUrl, "https://signed.example.test/catalog.jpg");
+      assert.deepEqual(client.queryCalls.find((call) => call.table === "store_catalog_items")?.filters, [
+        { column: "id", value: "item-1" },
+        { column: "organization_id", value: "access-org" },
+        { column: "store_id", value: "access-store" },
+      ]);
+      assert.deepEqual(client.queryCalls.find((call) => call.table === "store_catalog_item_photos")?.filters, [
+        { column: "id", value: "item-photo-1" },
+        { column: "catalog_item_id", value: "item-1" },
+        { column: "storage_path", value: "catalog-path/photo.jpg" },
+      ]);
+      assert.deepEqual(client.storageCalls, [{ bucket: "store-catalog-photos", path: "catalog-path/photo.jpg", expiresIn: 60 }]);
+    },
+  },
+  {
+    name: "catalog lineage mismatch and arbitrary bucket never create signed url",
+    run: async () => {
+      const { createSignedMediaUrlGetHandler } = await loadRouteModule();
+      for (const metadata of [
+        { storage_bucket: "pool-photos", storage_path: "x.jpg", media_purpose: "catalog_product_photo", target_type: "pool", pool_id: "pool-1", catalog_photo_id: "photo-1" },
+        { storage_bucket: "store-catalog-photos", storage_path: "x.jpg", media_purpose: "wrong", target_type: "catalog_item", catalog_item_id: "item-1", catalog_photo_id: "photo-1" },
+        { storage_bucket: "arbitrary", storage_path: "x.jpg", media_purpose: "catalog_product_photo", target_type: "pool", pool_id: "pool-1" },
+      ]) {
+        const client = createPrivilegedClientMock({
+          messages: [{ data: { id: "message-1", organization_id: "access-org", store_id: "access-store", conversation_id: "conversation-1", lead_id: "lead-1", message_type: "image", media_url: "x.jpg", metadata }, error: null }],
+          conversations: [{ data: { id: "conversation-1", organization_id: "access-org", lead_id: "lead-1" }, error: null }],
+          leads: [{ data: { id: "lead-1", organization_id: "access-org", store_id: "access-store" }, error: null }],
+          pools: [{ data: null, error: null }],
+        });
+        const handler = createSignedMediaUrlGetHandler({ resolveAccess: async () => createGrantedAccess(), createPrivilegedClient: () => client as never });
+        const response = await handler(buildRequest(), buildContext());
+        assert.notEqual(response.status, 200);
+        assert.equal(client.storageCalls.length, 0);
+      }
+    },
+  },
+  {
+    name: "message lead mismatch is denied before catalog lineage or storage",
+    run: async () => {
+      const { createSignedMediaUrlGetHandler } = await loadRouteModule();
+      const client = createPrivilegedClientMock({
+        messages: [{ data: { id: "message-1", organization_id: "access-org", store_id: "access-store", conversation_id: "conversation-1", lead_id: "other-lead", message_type: "image", media_url: "access-org/access-store/lead-1/photo.jpg", metadata: { storage_bucket: "zion-store-files", storage_path: "access-org/access-store/lead-1/photo.jpg", attachment_kind: "image" } }, error: null }],
+        conversations: [{ data: { id: "conversation-1", organization_id: "access-org", lead_id: "lead-1" }, error: null }],
+      });
+      const handler = createSignedMediaUrlGetHandler({ resolveAccess: async () => createGrantedAccess(), createPrivilegedClient: () => client as never });
+      const response = await handler(buildRequest(), buildContext());
+      assert.equal(response.status, 403);
+      assert.equal((await parseBody(response)).error, "LEAD_RELATION_INCONSISTENT");
+      assert.equal(client.queryCalls.some((call) => call.table === "leads"), false);
+      assert.equal(client.storageCalls.length, 0);
+    },
+  },
+  {
+    name: "null message lead uses the canonical conversation lead",
+    run: async () => {
+      const { createSignedMediaUrlGetHandler } = await loadRouteModule();
+      const client = createPrivilegedClientMock({
+        messages: [{ data: { id: "message-1", organization_id: "access-org", store_id: "access-store", conversation_id: "conversation-1", lead_id: null, message_type: "image", media_url: "access-org/access-store/lead-1/photo.jpg", metadata: { storage_bucket: "zion-store-files", storage_path: "access-org/access-store/lead-1/photo.jpg", attachment_kind: "image" } }, error: null }],
+        conversations: [{ data: { id: "conversation-1", organization_id: "access-org", lead_id: "lead-1" }, error: null }],
+        leads: [{ data: { id: "lead-1", organization_id: "access-org", store_id: "access-store" }, error: null }],
+        signedUrl: "https://signed.example.test/legacy.jpg",
+      });
+      const handler = createSignedMediaUrlGetHandler({ resolveAccess: async () => createGrantedAccess(), createPrivilegedClient: () => client as never });
+      const response = await handler(buildRequest(), buildContext());
+      assert.equal(response.status, 200);
+      assert.equal((await parseBody(response)).signedUrl, "https://signed.example.test/legacy.jpg");
+      assert.deepEqual(client.queryCalls.find((call) => call.table === "leads")?.filters, [
+        { column: "id", value: "lead-1" },
+        { column: "organization_id", value: "access-org" },
+        { column: "store_id", value: "access-store" },
+      ]);
+    },
+  },
+  {
+    name: "every invalid catalog lineage fails closed before storage signing",
+    run: async () => {
+      const { createSignedMediaUrlGetHandler } = await loadRouteModule();
+      const cases = [
+        {
+          bucket: "pool-photos",
+          metadata: { storage_bucket: "pool-photos", storage_path: "pool/photo.jpg", media_purpose: "catalog_product_photo", target_type: "pool", pool_id: "pool-1", catalog_photo_id: "pool-photo-1" },
+          pools: { id: "pool-1", organization_id: "other-org", store_id: "access-store" },
+          poolPhotos: { id: "pool-photo-1", pool_id: "pool-1", organization_id: "access-org", store_id: "access-store", storage_path: "pool/photo.jpg" },
+        },
+        {
+          bucket: "pool-photos",
+          metadata: { storage_bucket: "pool-photos", storage_path: "pool/photo.jpg", media_purpose: "catalog_product_photo", target_type: "pool", pool_id: "pool-1", catalog_photo_id: "wrong-photo" },
+          pools: { id: "pool-1", organization_id: "access-org", store_id: "access-store" },
+          poolPhotos: { id: "pool-photo-1", pool_id: "pool-1", organization_id: "access-org", store_id: "access-store", storage_path: "pool/photo.jpg" },
+        },
+        {
+          bucket: "pool-photos",
+          metadata: { storage_bucket: "pool-photos", storage_path: "pool/wrong.jpg", media_purpose: "catalog_product_photo", target_type: "pool", pool_id: "pool-1", catalog_photo_id: "pool-photo-1" },
+          pools: { id: "pool-1", organization_id: "access-org", store_id: "access-store" },
+          poolPhotos: { id: "pool-photo-1", pool_id: "pool-1", organization_id: "access-org", store_id: "access-store", storage_path: "pool/photo.jpg" },
+        },
+        {
+          bucket: "store-catalog-photos",
+          metadata: { storage_bucket: "store-catalog-photos", storage_path: "item/photo.jpg", media_purpose: "catalog_product_photo", target_type: "catalog_item", catalog_item_id: "item-1", catalog_photo_id: "item-photo-1" },
+          catalogItem: { id: "item-1", organization_id: "other-org", store_id: "access-store" },
+          catalogPhoto: { id: "item-photo-1", catalog_item_id: "item-1", storage_path: "item/photo.jpg" },
+        },
+        {
+          bucket: "store-catalog-photos",
+          metadata: { storage_bucket: "store-catalog-photos", storage_path: "item/photo.jpg", media_purpose: "catalog_product_photo", target_type: "catalog_item", catalog_item_id: "item-1", catalog_photo_id: "wrong-photo" },
+          catalogItem: { id: "item-1", organization_id: "access-org", store_id: "access-store" },
+          catalogPhoto: { id: "item-photo-1", catalog_item_id: "item-1", storage_path: "item/photo.jpg" },
+        },
+        {
+          bucket: "store-catalog-photos",
+          metadata: { storage_bucket: "store-catalog-photos", storage_path: "item/wrong.jpg", media_purpose: "catalog_product_photo", target_type: "catalog_item", catalog_item_id: "item-1", catalog_photo_id: "item-photo-1" },
+          catalogItem: { id: "item-1", organization_id: "access-org", store_id: "access-store" },
+          catalogPhoto: { id: "item-photo-1", catalog_item_id: "item-1", storage_path: "item/photo.jpg" },
+        },
+        {
+          bucket: "pool-photos",
+          metadata: { storage_bucket: "pool-photos", storage_path: "pool/photo.jpg", media_purpose: "catalog_product_photo", target_type: "pool", pool_id: "pool-1" },
+          pools: { id: "pool-1", organization_id: "access-org", store_id: "access-store" },
+          poolPhotos: { id: "pool-photo-1", pool_id: "pool-1", organization_id: "access-org", store_id: "access-store", storage_path: "pool/photo.jpg" },
+        },
+        {
+          bucket: "pool-photos",
+          metadata: { storage_bucket: "pool-photos", storage_path: "pool/photo.jpg", media_purpose: "catalog_product_photo", target_type: "wrong", pool_id: "pool-1", catalog_photo_id: "pool-photo-1" },
+          pools: { id: "pool-1", organization_id: "access-org", store_id: "access-store" },
+          poolPhotos: { id: "pool-photo-1", pool_id: "pool-1", organization_id: "access-org", store_id: "access-store", storage_path: "pool/photo.jpg" },
+        },
+        {
+          bucket: "arbitrary",
+          metadata: { storage_bucket: "arbitrary", storage_path: "x.jpg", media_purpose: "catalog_product_photo", target_type: "pool", pool_id: "pool-1", catalog_photo_id: "pool-photo-1" },
+        },
+      ];
+
+      for (const item of cases) {
+        const client = createPrivilegedClientMock({
+          messages: [{ data: { id: "message-1", organization_id: "access-org", store_id: "access-store", conversation_id: "conversation-1", lead_id: "lead-1", message_type: "image", media_url: "private/photo.jpg", metadata: item.metadata }, error: null }],
+          conversations: [{ data: { id: "conversation-1", organization_id: "access-org", lead_id: "lead-1" }, error: null }],
+          leads: [{ data: { id: "lead-1", organization_id: "access-org", store_id: "access-store" }, error: null }],
+          pools: item.pools ? [{ data: item.pools, error: null }] : [],
+          poolPhotos: item.poolPhotos ? [{ data: item.poolPhotos, error: null }] : [],
+          catalogItems: item.catalogItem ? [{ data: item.catalogItem, error: null }] : [],
+          catalogPhotos: item.catalogPhoto ? [{ data: item.catalogPhoto, error: null }] : [],
+        });
+        const handler = createSignedMediaUrlGetHandler({ resolveAccess: async () => createGrantedAccess(), createPrivilegedClient: () => client as never });
+        const response = await handler(buildRequest(), buildContext());
+        assert.notEqual(response.status, 200, item.bucket);
+        assert.equal(client.storageCalls.length, 0, item.bucket);
+      }
+    },
+  },
   {
     name: "active account receives signed url for media from canonical store",
     run: async () => {
@@ -609,7 +826,7 @@ const tests: TestCase[] = [
 
       assert.equal(response.status, 500);
       assert.equal(body.error, "SIGNED_URL_GENERATION_FAILED");
-      assert.equal(body.message, "storage failed");
+      assert.equal(body.message, "Nao foi possivel gerar o link temporario deste anexo.");
       assert.equal(client.storageCalls.length, 1);
     },
   },

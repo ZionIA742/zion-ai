@@ -16,6 +16,9 @@ import {
   getOrCreatePendingManualQuoteCreationOperation,
 } from "./quote-create-operation";
 import QuoteCatalogPrefillPicker from "./QuoteCatalogPrefillPicker";
+import CatalogProductComposerPicker, {
+  type CatalogComposerProduct,
+} from "./CatalogProductComposerPicker";
 import {
   isQuoteTechnicalServicesPolicyAvailable,
   type QuoteCatalogPrefillValues,
@@ -61,6 +64,10 @@ type MessageRow = {
   media_url: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string | null;
+};
+
+type SelectedCatalogProduct = CatalogComposerProduct & {
+  operationId: string;
 };
 
 type CommercialTaskPayload = {
@@ -987,11 +994,7 @@ function isCatalogProductPhotoMessage(message: MessageRow) {
   const mediaPurpose = String(metadata?.media_purpose || "")
     .trim()
     .toLowerCase();
-  const mediaUrl = String(message.media_url || "").trim();
-
-  return (
-    mediaPurpose === "catalog_product_photo" && /^https?:\/\//i.test(mediaUrl)
-  );
+  return mediaPurpose === "catalog_product_photo";
 }
 
 function getMessageDisplayContent(message: MessageRow) {
@@ -1403,7 +1406,9 @@ export default function LeadPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [simulatingCustomer, setSimulatingCustomer] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
-  const [catalogPlaceholderOpen, setCatalogPlaceholderOpen] = useState(false);
+  const [catalogPickerOpen, setCatalogPickerOpen] = useState(false);
+  const [selectedCatalogProduct, setSelectedCatalogProduct] =
+    useState<SelectedCatalogProduct | null>(null);
   const [uploadingCustomerAttachment, setUploadingCustomerAttachment] = useState(false);
   const [uploadingManualAttachment, setUploadingManualAttachment] = useState(false);
   const [recordingAudio, setRecordingAudio] = useState(false);
@@ -3783,6 +3788,33 @@ export default function LeadPage() {
     const text = newMessage.trim();
     const pendingAttachment = manualPendingAttachment;
 
+    if (selectedCatalogProduct) {
+      if (!text) {
+        setErrorText("Digite uma legenda antes de enviar o produto do catalogo.");
+        return;
+      }
+      if (!lead || !conversation) {
+        setErrorText("Nao foi possivel enviar: conversa nao encontrada para este lead.");
+        return;
+      }
+      manualSendInFlightRef.current = true;
+      setWorking(true);
+      setErrorText(null);
+      setStatusText(null);
+      let sent = false;
+      try {
+        sent = await sendCatalogProduct(selectedCatalogProduct, text);
+      } finally {
+        manualSendInFlightRef.current = false;
+        setWorking(false);
+      }
+      if (!sent) return;
+      clearSelectedCatalogProduct();
+      setStatusText("Produto enviado com sucesso.");
+      await fetchLeadConversationAndMessages({ silent: true });
+      return;
+    }
+
     if (!text && !pendingAttachment) return;
 
     if (!lead || !conversation) {
@@ -4117,9 +4149,62 @@ export default function LeadPage() {
 
   function openCatalogPlaceholder() {
     setAttachmentMenuOpen(false);
-    setCatalogPlaceholderOpen(true);
+    setCatalogPickerOpen(true);
     setErrorText(null);
     setStatusText(null);
+  }
+
+  function handleComposerTextChange(value: string) {
+    setNewMessage(value);
+    if (selectedCatalogProduct) {
+      setSelectedCatalogProduct((current) =>
+        current ? { ...current, operationId: globalThis.crypto.randomUUID() } : current,
+      );
+    }
+  }
+
+  function selectCatalogProduct(product: CatalogComposerProduct) {
+    cancelPendingManualAttachment();
+    setSelectedCatalogProduct({
+      ...product,
+      operationId: globalThis.crypto.randomUUID(),
+    });
+    setNewMessage(product.name.trim());
+    setCatalogPickerOpen(false);
+    setErrorText(null);
+    setStatusText(null);
+  }
+
+  function clearSelectedCatalogProduct() {
+    setSelectedCatalogProduct(null);
+    setNewMessage("");
+  }
+
+  async function sendCatalogProduct(product: SelectedCatalogProduct, caption: string) {
+    try {
+      const response = await fetch("/api/crm/messages/send-manual-catalog-product", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: conversation?.id,
+          sourceKind: product.sourceKind,
+          sourceId: product.sourceId,
+          content: caption,
+          operationId: product.operationId,
+        }),
+      });
+      const result = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+      } | null;
+      if (!response.ok || !result?.ok) {
+        setErrorText("Nao foi possivel enviar o produto do catalogo.");
+        return false;
+      }
+      return true;
+    } catch {
+      setErrorText("Nao foi possivel enviar o produto do catalogo.");
+      return false;
+    }
   }
 
   function inferManualAttachmentKind(file: File): "document" | "media" | "audio" {
@@ -4132,6 +4217,10 @@ export default function LeadPage() {
   }
 
   function prepareManualAttachment(file: File, kind: "document" | "media" | "audio") {
+    if (selectedCatalogProduct) {
+      clearSelectedCatalogProduct();
+    }
+
     const mimeType = String(file.type || "").trim();
     const previewUrl =
       kind === "media" && (mimeType.startsWith("image/") || mimeType.startsWith("video/"))
@@ -4373,6 +4462,10 @@ export default function LeadPage() {
       return;
     }
 
+    if (selectedCatalogProduct) {
+      clearSelectedCatalogProduct();
+    }
+
     prepareManualAttachment(file, kind ?? inferManualAttachmentKind(file));
   }
 
@@ -4524,12 +4617,11 @@ export default function LeadPage() {
     );
   }
 
-  function openCatalogProductPhoto(mediaUrl: string | null) {
-    const safeMediaUrl = String(mediaUrl || "").trim();
+  function openCatalogProductPhoto(message: MessageRow) {
+    const safeMediaUrl = String(message.media_url || "").trim();
 
     if (!/^https?:\/\//i.test(safeMediaUrl)) {
-      setErrorText("Nao foi possivel abrir a foto do catalogo.");
-      setStatusText(null);
+      void openSignedAttachment(message, "Nao foi possivel abrir a foto do catalogo com seguranca.");
       return;
     }
 
@@ -4568,8 +4660,11 @@ export default function LeadPage() {
     const messagesToPreload = messages.filter((message) => {
       const safeMessageId = String(message.id || "").trim();
       const inlineKind = getInlinePrivateMediaKind(message);
+      const isPrivateCatalogPhoto =
+        isCatalogProductPhotoMessage(message) &&
+        !/^https?:\/\//i.test(String(message.media_url || "").trim());
 
-      if (!safeMessageId || !inlineKind) {
+      if (!safeMessageId || (!inlineKind && !isPrivateCatalogPhoto)) {
         return false;
       }
 
@@ -6722,6 +6817,9 @@ export default function LeadPage() {
                             signedMediaErrorByMessageId[message.id] || null;
                           const isLoadingSignedMedia =
                             loadingSignedMediaByMessageId[message.id] === true;
+                          const catalogPreviewUrl = /^https?:\/\//i.test(catalogMediaUrl)
+                            ? catalogMediaUrl
+                            : signedMedia?.signedUrl || null;
                           const shouldRenderInlinePrivateImage =
                             inlinePrivateMediaKind === "image" && !isCatalogProductPhoto;
                           const shouldRenderInlinePrivateAudio =
@@ -7004,16 +7102,16 @@ export default function LeadPage() {
 
                               {isCatalogProductPhoto ? (
                                 <div className="mt-3 max-w-full">
-                                  {!hasCatalogPreviewError ? (
+                                  {!hasCatalogPreviewError && catalogPreviewUrl ? (
                                     <img
-                                      src={catalogMediaUrl}
+                                      src={catalogPreviewUrl}
                                       alt={message.content || "Foto de catalogo"}
                                       onError={() => handleCatalogPreviewError(message.id)}
                                       className="block h-auto max-h-[220px] w-full max-w-[320px] rounded-xl object-cover ring-1 ring-black/10"
                                     />
                                   ) : (
                                     <div className="rounded-xl bg-black/5 px-3 py-2 text-xs text-gray-700 ring-1 ring-black/10">
-                                      Nao foi possivel carregar a previa da foto.
+                                      {signedMediaError || (isLoadingSignedMedia ? "Carregando foto..." : "Preparando foto...")}
                                     </div>
                                   )}
                                 </div>
@@ -7042,10 +7140,11 @@ export default function LeadPage() {
                                 <div className="mt-3">
                                   <button
                                     type="button"
-                                    onClick={() => openCatalogProductPhoto(message.media_url)}
-                                    className="rounded-lg border border-current/20 px-3 py-1.5 text-xs font-semibold opacity-90 transition hover:opacity-100"
+                                    onClick={() => openCatalogProductPhoto(message)}
+                                    disabled={isLoadingSignedMedia}
+                                    className="rounded-lg border border-current/20 px-3 py-1.5 text-xs font-semibold opacity-90 transition hover:opacity-100 disabled:opacity-60"
                                   >
-                                    Abrir foto
+                                    {isLoadingSignedMedia ? "Carregando..." : "Abrir foto"}
                                   </button>
                                 </div>
                               ) : null}
@@ -7155,28 +7254,35 @@ export default function LeadPage() {
                 </div>
               ) : null}
 
-              {catalogPlaceholderOpen ? (
-                <div className="mb-3 rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-4">
-                  <div className="flex items-start gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-gray-700 ring-1 ring-black/10">
-                      <CatalogComposerIcon />
+              <CatalogProductComposerPicker
+                open={catalogPickerOpen}
+                onSelect={selectCatalogProduct}
+                onClose={() => setCatalogPickerOpen(false)}
+              />
+
+              {selectedCatalogProduct ? (
+                <div className="mb-3 flex items-center gap-3 rounded-2xl bg-gray-50 p-3 ring-1 ring-black/5">
+                  <img
+                    src={selectedCatalogProduct.previewUrl}
+                    alt={selectedCatalogProduct.name}
+                    className="h-16 w-16 rounded-xl object-cover ring-1 ring-black/10"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold text-gray-900">
+                      {selectedCatalogProduct.name}
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-semibold text-gray-900">
-                        Produto do catálogo
-                      </div>
-                      <p className="mt-1 text-xs leading-5 text-gray-600">
-                        A seleção de produtos será disponibilizada em uma próxima etapa. Nenhum produto foi selecionado ou enviado.
-                      </p>
+                    <div className="text-xs text-gray-500">
+                      {selectedCatalogProduct.sourceKind === "pool" ? "Piscina" : "Produto do catálogo"}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setCatalogPlaceholderOpen(false)}
-                      className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                    >
-                      Fechar
-                    </button>
                   </div>
+                  <button
+                    type="button"
+                    onClick={clearSelectedCatalogProduct}
+                    disabled={working}
+                    className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100 disabled:opacity-50"
+                  >
+                    Remover
+                  </button>
                 </div>
               ) : null}
 
@@ -7237,7 +7343,7 @@ export default function LeadPage() {
 
                 <input
                   value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
+                  onChange={(e) => handleComposerTextChange(e.target.value)}
                   onKeyDown={handleInputKeyDown}
                   disabled={working || simulatingCustomer || uploadingManualAttachment || !conversation}
                   className="h-11 flex-1 rounded-full border border-gray-200 bg-gray-50 px-4 text-sm outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
