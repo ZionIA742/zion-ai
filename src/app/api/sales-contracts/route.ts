@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
-import { authenticateContractRequest, ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
+import { ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
+import {
+  resolveStoreApiAccess,
+  type ResolveStoreApiAccessDeps,
+  type StoreApiAccessDenied,
+  type StoreApiAccessGranted,
+} from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,12 +37,22 @@ function buildJsonResponse(body: unknown, status = 200) {
   });
 }
 
-export function createSalesContractsListGetHandler(deps?: {
-  authenticateContractRequest?: typeof authenticateContractRequest;
-}) {
-  const resolveAuth = deps?.authenticateContractRequest ?? authenticateContractRequest;
+type SalesContractsListRouteDeps = {
+  resolveAccess: (params: {
+    requirement: "active";
+    deps?: Partial<ResolveStoreApiAccessDeps>;
+  }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+};
+
+export function createSalesContractsListGetHandler(
+  deps: Partial<SalesContractsListRouteDeps> = {},
+) {
+  const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
 
   return async function GET(request: Request) {
+  const access = await resolveAccess({ requirement: "active" });
+  if (!access.ok) return createStoreApiDeniedResponse(access);
+
   try {
     const url = new URL(request.url);
     const leadId = String(url.searchParams.get("leadId") || "").trim();
@@ -47,7 +64,23 @@ export function createSalesContractsListGetHandler(deps?: {
       url.searchParams.get("commercialOpportunityId") || ""
     ).trim();
 
-    const auth = await resolveAuth();
+    if (organizationId && organizationId !== access.organizationId) {
+      throw new ContractAccessError(
+        403,
+        "FORBIDDEN_ORGANIZATION",
+        "Voce nao pode acessar contratos desta organizacao.",
+      );
+    }
+
+    if (storeId && storeId !== access.storeId) {
+      throw new ContractAccessError(
+        403,
+        "FORBIDDEN_STORE",
+        "Voce nao pode acessar contratos desta loja.",
+      );
+    }
+
+    const supabase = access.supabase;
 
     let validatedLead: LeadScopeRow | null = null;
     let validatedOpportunity: CommercialOpportunityScopeRow | null = null;
@@ -62,11 +95,11 @@ export function createSalesContractsListGetHandler(deps?: {
         );
       }
 
-      const { data: lead, error: leadError } = await auth.supabase
+      const { data: lead, error: leadError } = await supabase
         .from("leads")
         .select("id, organization_id, store_id")
         .eq("id", leadId)
-        .in("organization_id", auth.organizationIds)
+        .eq("organization_id", access.organizationId)
         .maybeSingle<LeadScopeRow>();
 
       if (leadError) {
@@ -91,28 +124,27 @@ export function createSalesContractsListGetHandler(deps?: {
         );
       }
 
-      if (storeId && storeId !== leadStoreId) {
+      if (leadStoreId !== access.storeId) {
         throw new ContractAccessError(
           403,
           "CONTRACT_OPPORTUNITY_SCOPE_MISMATCH",
-          "A loja informada nao pertence a lead da opportunity."
+          "A lead informada nao pertence a loja autorizada."
         );
       }
 
-      if (organizationId && organizationId !== lead.organization_id) {
+      if (lead.organization_id !== access.organizationId) {
         throw new ContractAccessError(
           403,
           "CONTRACT_OPPORTUNITY_SCOPE_MISMATCH",
-          "A organizacao informada nao pertence a lead da opportunity."
+          "A lead informada nao pertence a organizacao autorizada."
         );
       }
 
-      const { data: store, error: storeError } = await auth.supabase
+      const { data: store, error: storeError } = await supabase
         .from("stores")
         .select("id, organization_id")
-        .eq("id", leadStoreId)
-        .eq("organization_id", lead.organization_id)
-        .in("organization_id", auth.organizationIds)
+        .eq("id", access.storeId)
+        .eq("organization_id", access.organizationId)
         .maybeSingle<{ id: string; organization_id: string }>();
 
       if (storeError) {
@@ -127,12 +159,12 @@ export function createSalesContractsListGetHandler(deps?: {
         );
       }
 
-      const { data: opportunity, error: opportunityError } = await auth.supabase
+      const { data: opportunity, error: opportunityError } = await supabase
         .from("commercial_opportunities")
         .select("id, organization_id, store_id, origin_lead_id")
         .eq("id", commercialOpportunityId)
-        .eq("organization_id", lead.organization_id)
-        .eq("store_id", leadStoreId)
+        .eq("organization_id", access.organizationId)
+        .eq("store_id", access.storeId)
         .eq("origin_lead_id", lead.id)
         .maybeSingle<CommercialOpportunityScopeRow>();
 
@@ -152,11 +184,11 @@ export function createSalesContractsListGetHandler(deps?: {
         );
       }
 
-      const { data: quoteRows, error: quoteRowsError } = await auth.supabase
+      const { data: quoteRows, error: quoteRowsError } = await supabase
         .from("sales_quotes")
         .select("id")
-        .eq("organization_id", opportunity.organization_id)
-        .eq("store_id", opportunity.store_id)
+        .eq("organization_id", access.organizationId)
+        .eq("store_id", access.storeId)
         .eq("lead_id", lead.id)
         .eq("commercial_opportunity_id", opportunity.id);
 
@@ -177,16 +209,17 @@ export function createSalesContractsListGetHandler(deps?: {
         : [];
     }
 
-    let query = auth.supabase
+    let query = supabase
       .from("sales_contracts")
       .select("*")
-      .in("organization_id", auth.organizationIds)
+      .eq("organization_id", access.organizationId)
+      .eq("store_id", access.storeId)
       .order("created_at", { ascending: false });
 
     if (validatedLead && validatedOpportunity) {
       query = query
-        .eq("organization_id", validatedOpportunity.organization_id)
-        .eq("store_id", validatedOpportunity.store_id)
+        .eq("organization_id", access.organizationId)
+        .eq("store_id", access.storeId)
         .eq("lead_id", validatedLead.id);
 
       if (scopedQuoteIds && scopedQuoteIds.length > 0) {
@@ -213,22 +246,6 @@ export function createSalesContractsListGetHandler(deps?: {
 
     if (quoteId) {
       query = query.eq("quote_id", quoteId);
-    }
-
-    if (storeId) {
-      query = query.eq("store_id", storeId);
-    }
-
-    if (organizationId) {
-      if (!auth.organizationIds.includes(organizationId)) {
-        throw new ContractAccessError(
-          403,
-          "FORBIDDEN_ORGANIZATION",
-          "Voce nao pode acessar contratos desta organizacao."
-        );
-      }
-
-      query = query.eq("organization_id", organizationId);
     }
 
     const { data, error } = await query;
@@ -260,8 +277,8 @@ export function createSalesContractsListGetHandler(deps?: {
       ok: true,
       leadId: validatedLead?.id ?? (leadId || null),
       commercialOpportunityId: validatedOpportunity?.id ?? null,
-      organizationId: validatedOpportunity?.organization_id ?? (organizationId || null),
-      storeId: validatedOpportunity?.store_id ?? (storeId || null),
+      organizationId: validatedOpportunity?.organization_id ?? access.organizationId,
+      storeId: validatedOpportunity?.store_id ?? access.storeId,
       contracts,
     });
   } catch (error) {
