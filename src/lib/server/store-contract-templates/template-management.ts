@@ -351,6 +351,71 @@ async function resolveAuthorizedStoreTemplateScope(args: {
   };
 }
 
+export type StoreContractTemplateAuthorizedStoreScope = {
+  organizationId: string;
+  storeId: string;
+  sessionUserId: string;
+};
+
+export type ResolveStoreContractTemplateScopeForAuthorizedStoreScopeDeps = {
+  createServiceSupabaseClient: typeof createServiceSupabaseClient;
+};
+
+export async function resolveStoreContractTemplateScopeForAuthorizedStoreScope(
+  authorizedScope: StoreContractTemplateAuthorizedStoreScope,
+  deps: Partial<ResolveStoreContractTemplateScopeForAuthorizedStoreScopeDeps> = {},
+) {
+  const organizationId = String(authorizedScope?.organizationId || "").trim();
+  const storeId = String(authorizedScope?.storeId || "").trim();
+  const sessionUserId = String(authorizedScope?.sessionUserId || "").trim();
+
+  if (!organizationId || !storeId || !sessionUserId) {
+    throw new StoreContractTemplateAccessError(
+      500,
+      "INVALID_AUTHORIZED_TEMPLATE_SCOPE",
+      "Escopo autorizado da loja invalido.",
+    );
+  }
+
+  const createServiceClient =
+    deps.createServiceSupabaseClient ?? createServiceSupabaseClient;
+  const supabase = createServiceClient();
+  const { data, error } = await supabase
+    .from("stores")
+    .select("id, organization_id, name, created_at")
+    .eq("id", storeId)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (error) {
+    throw new StoreContractTemplateAccessError(
+      500,
+      "LOAD_STORE_FAILED",
+      error.message,
+    );
+  }
+
+  const store = data as StoreRow | null;
+  if (
+    !store ||
+    store.id !== storeId ||
+    store.organization_id !== organizationId
+  ) {
+    throw new StoreContractTemplateAccessError(
+      403,
+      "STORE_FORBIDDEN",
+      "Loja nao encontrada ou fora do escopo autorizado.",
+    );
+  }
+
+  return {
+    supabase,
+    userId: sessionUserId,
+    organizationId,
+    store,
+  };
+}
+
 async function loadStoreContractTemplate(args: {
   supabase: ReturnType<typeof createServiceSupabaseClient>;
   organizationId: string;
@@ -602,6 +667,45 @@ export async function listStoreContractTemplate(args: {
   organizationId?: string | null;
 }) {
   const scope = await resolveAuthorizedStoreTemplateScope(args);
+  const template = await loadStoreContractTemplate({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+  });
+
+  const versions = template?.id
+    ? await loadTemplateVersions({
+        supabase: scope.supabase,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        templateId: template.id,
+      })
+    : [];
+  const extractedRules =
+    versions.length > 0
+      ? await loadTemplateExtractedRules({
+          supabase: scope.supabase,
+          organizationId: scope.organizationId,
+          storeId: scope.store.id,
+          templateVersionIds: versions.map((version) => version.id),
+        })
+      : [];
+
+  return {
+    store: scope.store,
+    organizationId: scope.organizationId,
+    ...buildTemplateSummary(template, versions, extractedRules),
+  };
+}
+
+export async function listStoreContractTemplateForAuthorizedStoreScope(
+  authorizedScope: StoreContractTemplateAuthorizedStoreScope,
+  deps: Partial<ResolveStoreContractTemplateScopeForAuthorizedStoreScopeDeps> = {},
+) {
+  const scope = await resolveStoreContractTemplateScopeForAuthorizedStoreScope(
+    authorizedScope,
+    deps,
+  );
   const template = await loadStoreContractTemplate({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
