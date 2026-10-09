@@ -737,13 +737,17 @@ export async function listStoreContractTemplateForAuthorizedStoreScope(
   };
 }
 
-export async function uploadStoreContractTemplateVersion(args: {
-  storeId: string;
-  organizationId?: string | null;
-  file: File;
-}) {
-  const scope = await resolveAuthorizedStoreTemplateScope(args);
-  const file = args.file;
+type ResolvedStoreContractTemplateScope = {
+  supabase: ReturnType<typeof createServiceSupabaseClient>;
+  userId: string;
+  organizationId: string;
+  store: StoreRow;
+};
+
+async function uploadStoreContractTemplateVersionWithResolvedScope(
+  scope: ResolvedStoreContractTemplateScope,
+  file: File,
+) {
 
   if (!(file instanceof File)) {
     throw new StoreContractTemplateAccessError(
@@ -905,6 +909,27 @@ export async function uploadStoreContractTemplateVersion(args: {
     ...buildTemplateSummary(refreshedTemplate, versions, extractedRules),
     uploadedVersion: version as StoreContractTemplateVersionRow,
   };
+}
+
+export async function uploadStoreContractTemplateVersion(args: {
+  storeId: string;
+  organizationId?: string | null;
+  file: File;
+}) {
+  const scope = await resolveAuthorizedStoreTemplateScope(args);
+  return uploadStoreContractTemplateVersionWithResolvedScope(scope, args.file);
+}
+
+export async function uploadStoreContractTemplateVersionForAuthorizedStoreScope(
+  authorizedScope: StoreContractTemplateAuthorizedStoreScope,
+  file: File,
+  deps: Partial<ResolveStoreContractTemplateScopeForAuthorizedStoreScopeDeps> = {},
+) {
+  const scope = await resolveStoreContractTemplateScopeForAuthorizedStoreScope(
+    authorizedScope,
+    deps,
+  );
+  return uploadStoreContractTemplateVersionWithResolvedScope(scope, file);
 }
 
 export async function approveStoreContractTemplateVersion(args: {
