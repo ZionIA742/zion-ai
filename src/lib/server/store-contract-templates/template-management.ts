@@ -1303,15 +1303,22 @@ type AnalyzeStoreContractTemplateVersionDeps = {
   extractText: typeof extractContractTextFromStoredFile;
 };
 
+type AnalyzeStoreContractTemplateScopedDeps = {
+  createServiceSupabaseClient: typeof createServiceSupabaseClient;
+  extractText: typeof extractContractTextFromStoredFile;
+};
+
 export async function analyzeStoreContractTemplateVersion(args: {
   versionId: string;
   storeId: string;
   organizationId?: string | null;
 }) {
-  return analyzeStoreContractTemplateVersionInternal(args, {
-    resolveScope: resolveAuthorizedStoreTemplateScope,
-    extractText: extractContractTextFromStoredFile,
-  });
+  const scope = await resolveAuthorizedStoreTemplateScope(args);
+  return analyzeStoreContractTemplateVersionWithResolvedScope(
+    args,
+    scope,
+    extractContractTextFromStoredFile,
+  );
 }
 
 export function createAnalyzeStoreContractTemplateVersion(
@@ -1323,22 +1330,50 @@ export function createAnalyzeStoreContractTemplateVersion(
     ...overrides,
   };
 
-  return (args: {
+  return async (args: {
     versionId: string;
     storeId: string;
     organizationId?: string | null;
-  }) => analyzeStoreContractTemplateVersionInternal(args, deps);
+  }) => {
+    return deps.resolveScope(args).then((scope) =>
+      analyzeStoreContractTemplateVersionWithResolvedScope(
+        args,
+        scope,
+        deps.extractText,
+      ),
+    );
+  };
 }
 
-async function analyzeStoreContractTemplateVersionInternal(
+export async function analyzeStoreContractTemplateVersionForAuthorizedStoreScope(
+  authorizedScope: StoreContractTemplateAuthorizedStoreScope,
+  versionId: string,
+  deps: Partial<AnalyzeStoreContractTemplateScopedDeps> = {},
+) {
+  const scope = await resolveStoreContractTemplateScopeForAuthorizedStoreScope(
+    authorizedScope,
+    deps,
+  );
+  return analyzeStoreContractTemplateVersionWithResolvedScope(
+    {
+      versionId,
+      storeId: scope.store.id,
+      organizationId: scope.organizationId,
+    },
+    scope,
+    deps.extractText ?? extractContractTextFromStoredFile,
+  );
+}
+
+async function analyzeStoreContractTemplateVersionWithResolvedScope(
   args: {
     versionId: string;
     storeId: string;
     organizationId?: string | null;
   },
-  deps: AnalyzeStoreContractTemplateVersionDeps,
+  scope: Awaited<ReturnType<typeof resolveStoreContractTemplateScopeForAuthorizedStoreScope>>,
+  extractText: typeof extractContractTextFromStoredFile,
 ) {
-  const scope = await deps.resolveScope(args);
   const versionId = String(args.versionId || "").trim();
 
   if (!versionId) {
@@ -1439,7 +1474,7 @@ async function analyzeStoreContractTemplateVersionInternal(
 
     const fileBuffer = Buffer.from(await fileData.arrayBuffer());
 
-    const extracted = await deps.extractText({
+    const extracted = await extractText({
       fileName,
       mimeType,
       buffer: fileBuffer,
