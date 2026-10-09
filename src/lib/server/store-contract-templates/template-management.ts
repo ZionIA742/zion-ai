@@ -940,6 +940,14 @@ export async function approveStoreContractTemplateVersion(args: {
   const scope = await resolveAuthorizedStoreTemplateScope(args);
   const versionId = String(args.versionId || "").trim();
 
+  return approveStoreContractTemplateVersionWithResolvedScope(scope, versionId);
+}
+
+async function approveStoreContractTemplateVersionWithResolvedScope(
+  scope: ResolvedStoreContractTemplateScope,
+  versionId: string,
+) {
+
   if (!versionId) {
     throw new StoreContractTemplateAccessError(
       400,
@@ -1094,6 +1102,18 @@ export async function approveStoreContractTemplateVersion(args: {
     ...buildTemplateSummary(refreshedTemplate, versions, extractedRules),
     approvedVersion,
   };
+}
+
+export async function approveStoreContractTemplateVersionForAuthorizedStoreScope(
+  authorizedScope: StoreContractTemplateAuthorizedStoreScope,
+  versionId: string,
+  deps: Partial<ResolveStoreContractTemplateScopeForAuthorizedStoreScopeDeps> = {},
+) {
+  const scope = await resolveStoreContractTemplateScopeForAuthorizedStoreScope(
+    authorizedScope,
+    deps,
+  );
+  return approveStoreContractTemplateVersionWithResolvedScope(scope, versionId);
 }
 
 export async function rejectStoreContractTemplateVersion(args: {
