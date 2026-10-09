@@ -1570,7 +1570,26 @@ export async function extractStoreContractTemplateRules(args: {
   organizationId?: string | null;
 }) {
   const scope = await resolveAuthorizedStoreTemplateScope(args);
-  const versionId = String(args.versionId || "").trim();
+  return extractStoreContractTemplateRulesWithResolvedScope(scope, args.versionId);
+}
+
+export async function extractStoreContractTemplateRulesForAuthorizedStoreScope(
+  authorizedScope: StoreContractTemplateAuthorizedStoreScope,
+  versionId: string,
+  deps: Partial<ResolveStoreContractTemplateScopeForAuthorizedStoreScopeDeps> = {},
+) {
+  const scope = await resolveStoreContractTemplateScopeForAuthorizedStoreScope(
+    authorizedScope,
+    deps,
+  );
+  return extractStoreContractTemplateRulesWithResolvedScope(scope, versionId);
+}
+
+async function extractStoreContractTemplateRulesWithResolvedScope(
+  scope: ResolvedStoreContractTemplateScope,
+  rawVersionId: string,
+) {
+  const versionId = String(rawVersionId || "").trim();
 
   if (!versionId) {
     throw new StoreContractTemplateAccessError(
