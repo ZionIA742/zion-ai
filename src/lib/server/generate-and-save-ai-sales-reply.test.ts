@@ -7,6 +7,7 @@ import {
   buildCrossSellSuggestionLedgerOperationKey,
   findExistingCommercialHandoffTask,
   generateAndSaveAiSalesReply,
+  materializeSalesAiReplySet,
   mapGenerateAndSaveAiSalesReplyError,
   persistCustomerCatalogDocumentActions,
   tryHandleCustomerContractAcceptance,
@@ -618,6 +619,66 @@ function createStopContactOptOutHarness(args?: {
   };
 }
 
+function createI8WhatsappAwareClient(scope: ReturnType<typeof createAiWindowScopeSupabase>) {
+  return {
+    ...scope.client,
+    from(table: string) {
+      if (table === "messages") {
+        const builder = {
+          select() {
+            return builder;
+          },
+          eq() {
+            return builder;
+          },
+          order() {
+            return builder;
+          },
+          async limit() {
+            return {
+              data: [
+                {
+                  id: "msg-1",
+                  sender: "user",
+                  direction: "incoming",
+                  created_at: "2026-07-30T10:00:00.000Z",
+                  metadata: {
+                    source: "meta_whatsapp_webhook",
+                    channel: "whatsapp",
+                    external_channel: "whatsapp",
+                  },
+                },
+              ],
+              error: null,
+            };
+          },
+        };
+        return builder;
+      }
+
+      if (table === "external_integrations") {
+        const builder = {
+          select() {
+            return builder;
+          },
+          eq() {
+            return builder;
+          },
+          limit() {
+            return builder;
+          },
+          async maybeSingle() {
+            return { data: { id: "integration-1" }, error: null };
+          },
+        };
+        return builder;
+      }
+
+      return scope.client.from(table);
+    },
+  };
+}
+
 async function withMockedSupabaseEnv(run: () => Promise<void>) {
   const previousUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const previousKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -1208,6 +1269,623 @@ function createPreContractCurrentProposalHarness(args?: {
 }
 
 const tests: TestCase[] = [
+  {
+    name: "I8 transactional production seam materializes text, document, and photo once",
+    run: async () => {
+      const scope = createAiWindowScopeSupabase();
+      const i8Client = createI8WhatsappAwareClient(scope);
+      const materializeCalls: Array<Record<string, unknown>> = [];
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => i8Client as never,
+            ...createScopeAwareReplyDeps({
+              sendAiPanelMessage: undefined,
+              materializeSalesAiReplySet: async (args: Record<string, unknown>) => {
+                materializeCalls.push(args);
+                return {
+                  response_set_id: "set-transactional-1",
+                  text_message_id: "text-transactional-1",
+                  document_message_ids: ["doc-transactional-1"],
+                  photo_message_id: "photo-transactional-1",
+                  request_fingerprint: "b".repeat(64),
+                  replayed: false,
+                  payload: { ai_text: "Resposta comercial" },
+                } as never;
+              },
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Resposta comercial",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: { kind: "none", reason: "none" },
+                    customerCatalogDocumentActions: [
+                      {
+                        shouldSend: true,
+                        reason: "explicit_customer_catalog_file_request",
+                        organizationId: "org-canonical",
+                        storeId: "store-canonical",
+                        importFileId: "file-1",
+                        sortOrder: 1,
+                        originalFileName: "catalogo.pdf",
+                        mimeType: "application/pdf",
+                        extension: "pdf",
+                        storageBucket: "ignored-by-rpc",
+                        storagePath: "ignored-by-rpc",
+                        caption: "Catalogo",
+                      },
+                    ],
+                    catalogPhotoAction: {
+                      shouldSend: true,
+                      reason: "explicit_strong_product_photo_request",
+                      targetType: "pool",
+                      poolId: "pool-1",
+                      poolName: "Piscina",
+                      catalogItemId: null,
+                      catalogItemName: null,
+                      catalogItemSku: null,
+                      organizationId: "org-canonical",
+                      storeId: "store-canonical",
+                      source: "pool_photos",
+                      bucket: null,
+                      storagePath: null,
+                      publicUrl: null,
+                      caption: "Foto",
+                    },
+                  },
+                }) as never,
+            }),
+          },
+        );
+        assert.equal(result.ok, true, JSON.stringify(result));
+        assert.equal(materializeCalls.length, 1);
+        assert.equal(
+          (materializeCalls[0]?.documentActions as unknown[]).length,
+          1,
+        );
+        assert.equal(
+          (materializeCalls[0]?.photoAction as Record<string, unknown>)
+            .poolId,
+          "pool-1",
+        );
+        assert.equal(
+          (materializeCalls[0]?.photoAction as Record<string, unknown>)
+            .publicUrl,
+          "",
+        );
+      });
+    },
+  },
+  {
+    name: "I8 invalid explicit photo identity fails before transactional materialization",
+    run: async () => {
+      const scope = createAiWindowScopeSupabase();
+      let materializeCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => scope.client as never,
+            ...createScopeAwareReplyDeps({
+              sendAiPanelMessage: undefined,
+              materializeSalesAiReplySet: async () => {
+                materializeCalls += 1;
+                return null as never;
+              },
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Resposta comercial",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: { kind: "none", reason: "none" },
+                    catalogPhotoAction: {
+                      shouldSend: true,
+                      targetType: "pool",
+                      poolId: null,
+                      poolName: "Piscina",
+                      catalogItemId: null,
+                      organizationId: "org-canonical",
+                      storeId: "store-canonical",
+                      source: "pool_photos",
+                    },
+                  },
+                }) as never,
+            }),
+          },
+        );
+
+        assert.equal(result.ok, false);
+        if (!result.ok) {
+          assert.equal(result.error, "CUSTOMER_CATALOG_PHOTO_ACTION_INVALID");
+        }
+        assert.equal(materializeCalls, 0);
+      });
+    },
+  },
+  {
+    name: "I8 confirmed ledger replay returns the set and reconciles post-commit effects",
+    run: async () => {
+      const scope = createAiWindowScopeSupabase();
+      let generationCalls = 0;
+      let readCalls = 0;
+      let materializeCalls = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const runReplay = () => generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => scope.client as never,
+            ...createScopeAwareReplyDeps({
+              sendAiPanelMessage: undefined,
+              loadConversationMessageBoundaryState: createBoundaryLoader([
+                {
+                  lastIncomingCustomerMessageId: "msg-1",
+                  lastIncomingCustomerMessageAt: "2026-07-30T10:00:00.000Z",
+                  lastAiMessageId: "text-transactional-1",
+                  lastAiMessageAt: "2026-07-30T10:01:00.000Z",
+                },
+              ]),
+              generateAiSalesReply: async () => {
+                generationCalls += 1;
+                throw new Error("generation must not run on confirmed replay");
+              },
+              materializeSalesAiReplySet: async () => {
+                materializeCalls += 1;
+                return null as never;
+              },
+              readSalesAiReplySetByAnchor: async () => {
+                readCalls += 1;
+                return {
+                  response_set_id: "set-transactional-1",
+                  text_message_id: "text-transactional-1",
+                  document_message_ids: ["doc-transactional-1"],
+                  photo_message_id: "photo-transactional-1",
+                  request_fingerprint: "b".repeat(64),
+                  materialization_state: "confirmed",
+                  payload: {
+                    ai_text: "Resposta confirmada",
+                    commercial_opportunity_id: "opp-canonical",
+                    lead_id: "lead-canonical",
+                    caller_payload: {
+                      cross_sell_suggestions: [],
+                      operational_follow_up_decision: {
+                        kind: "stop_contact",
+                        reason: "customer_requested_stop",
+                      },
+                      last_customer_message_at: "2026-07-30T10:00:00.000Z",
+                      last_ai_message_at: "2026-07-30T10:01:00.000Z",
+                    },
+                  },
+                } as never;
+              },
+            }),
+          },
+        );
+        const result = await runReplay();
+        const secondReplay = await runReplay();
+
+        assert.equal(result.ok, true);
+        assert.equal(readCalls, 2);
+        assert.equal(generationCalls, 0);
+        assert.equal(materializeCalls, 0);
+        if (result.ok) {
+          assert.equal(result.context?.salesAiReplySet?.replayed, true);
+          assert.equal(result.messageId, "text-transactional-1");
+          assert.deepEqual(
+            result.context?.operationalFollowUpDecisionRecovery,
+            { attempted: true, recovered: true, failed: false },
+          );
+        }
+        assert.equal(secondReplay.ok, true);
+        assert.equal(readCalls, 2);
+        assert.equal(generationCalls, 0);
+        assert.equal(materializeCalls, 0);
+        if (secondReplay.ok) {
+          assert.deepEqual(
+            secondReplay.context?.operationalFollowUpDecisionRecovery,
+            { attempted: true, recovered: true, failed: false },
+          );
+        }
+      });
+    },
+  },
+  {
+    name: "I8 stop-contact confirmation remains authoritative when media is requested",
+    run: async () => {
+      const scope = createAiWindowScopeSupabase();
+      const i8Client = createI8WhatsappAwareClient(scope);
+      const systemRpcCalls: string[] = [];
+      let materializeCalls = 0;
+      let clientIndex = 0;
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => {
+              clientIndex += 1;
+              if (clientIndex === 1) return i8Client as never;
+              return {
+                ...i8Client,
+                async rpc(fn: string) {
+                  systemRpcCalls.push(fn);
+                  if (fn !== "opt_out_commercial_opportunity_followup_by_system") {
+                    throw new Error(`unexpected system rpc: ${fn}`);
+                  }
+                  return { data: { ok: true }, error: null };
+                },
+              } as never;
+            },
+            ...createScopeAwareReplyDeps({
+              sendAiPanelMessage: undefined,
+              materializeSalesAiReplySet: async (args: Record<string, unknown>) => {
+                materializeCalls += 1;
+                assert.equal(args.outboundKind, "stop_contact_ack");
+                assert.deepEqual(args.documentActions, []);
+                assert.equal(args.photoAction, null);
+                return {
+                  response_set_id: "set-stop-contact-1",
+                  text_message_id: "text-stop-contact-1",
+                  document_message_ids: [],
+                  photo_message_id: null,
+                  request_fingerprint: "c".repeat(64),
+                  replayed: false,
+                  payload: { ai_text: "Tudo bem, vou interromper os contatos." },
+                } as never;
+              },
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Tudo bem, vou interromper os contatos.",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                    operationalFollowUpDecision: {
+                      kind: "stop_contact",
+                      reason: "customer_requested_stop",
+                    },
+                    customerCatalogDocumentActions: [
+                      {
+                        shouldSend: true,
+                        reason: "explicit_customer_catalog_file_request",
+                        organizationId: "org-canonical",
+                        storeId: "store-canonical",
+                        importFileId: "file-stop-contact-1",
+                        sortOrder: 1,
+                        originalFileName: "catalogo.pdf",
+                        mimeType: "application/pdf",
+                        extension: "pdf",
+                        storageBucket: "ignored",
+                        storagePath: "ignored",
+                        caption: "Catalogo indevido",
+                      },
+                    ],
+                    catalogPhotoAction: {
+                      shouldSend: true,
+                      targetType: "pool",
+                      poolId: "pool-1",
+                      poolName: "Piscina",
+                      catalogItemId: null,
+                      catalogItemName: null,
+                      catalogItemSku: null,
+                      organizationId: "org-canonical",
+                      storeId: "store-canonical",
+                      source: "pool_photos",
+                      bucket: null,
+                      storagePath: null,
+                      publicUrl: null,
+                      caption: "Foto",
+                      reason: "explicit_strong_product_photo_request",
+                    },
+                  },
+                }) as never,
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true, JSON.stringify(result));
+        assert.equal(materializeCalls, 1, JSON.stringify(result));
+        assert.deepEqual(systemRpcCalls, [
+          "opt_out_commercial_opportunity_followup_by_system",
+        ]);
+        if (result.ok) {
+          assert.equal(result.context?.salesAiReplySet?.photoMessageId, null);
+          assert.deepEqual(result.context?.salesAiReplySet?.documentMessageIds, []);
+        }
+      });
+    },
+  },
+  {
+    name: "I8 double replay recovers failed post-commit effects without logical duplication",
+    run: async () => {
+      const scope = createAiWindowScopeSupabase();
+      const followUpRows = new Map<string, Record<string, unknown>>();
+      const crossSellRows = new Map<string, Record<string, unknown>>();
+      let rpcAttempts = 0;
+      let generationCalls = 0;
+      let materializeCalls = 0;
+      let readCalls = 0;
+      let clientIndex = 0;
+
+      const requestClient = {
+        ...scope.client,
+        from(table: string) {
+          if (table === "conversation_ai_window_state") {
+            const filters: Record<string, unknown> = {};
+            let payload: Record<string, unknown> = {};
+            const chain = {
+              update(nextPayload: Record<string, unknown>) {
+                payload = nextPayload;
+                return chain;
+              },
+              upsert(nextPayload: Record<string, unknown>) {
+                payload = nextPayload;
+                return chain;
+              },
+              eq(column: string, value: unknown) {
+                filters[column] = value;
+                return chain;
+              },
+              then(resolve: (value: unknown) => unknown) {
+                const key = String(
+                  payload.conversation_id || filters.conversation_id || "",
+                );
+                if (key) followUpRows.set(key, { ...payload, ...filters });
+                return Promise.resolve(resolve({ error: null }));
+              },
+            };
+            return chain;
+          }
+          return scope.client.from(table);
+        },
+      };
+
+      const createSystemClient = () => ({
+        ...requestClient,
+        async rpc(fn: string, payload: Record<string, unknown>) {
+          if (fn !== "record_commercial_cross_sell_suggestion_by_system") {
+            throw new Error(`unexpected replay rpc: ${fn}`);
+          }
+          rpcAttempts += 1;
+          if (rpcAttempts === 1) {
+            return { data: null, error: { message: "transient ledger failure" } };
+          }
+          const key = String(payload.p_operation_key || "");
+          if (key) crossSellRows.set(key, payload);
+          return { data: null, error: null };
+        },
+      });
+
+      await withMockedSupabaseEnv(async () => {
+        const runReplay = () =>
+          generateAndSaveAiSalesReply(
+            {
+              organizationId: "org-canonical",
+              storeId: "store-canonical",
+              conversationId: "conv-canonical",
+            },
+            {
+              createSupabaseClient: () => {
+                clientIndex += 1;
+                return (clientIndex % 2 === 1
+                  ? requestClient
+                  : createSystemClient()) as never;
+              },
+              ...createScopeAwareReplyDeps({
+                sendAiPanelMessage: undefined,
+                loadConversationMessageBoundaryState: createBoundaryLoader([
+                  {
+                    lastIncomingCustomerMessageId: "anchor-1",
+                    lastIncomingCustomerMessageAt: "2026-07-30T10:00:00.000Z",
+                    lastAiMessageId: "text-confirmed-1",
+                    lastAiMessageAt: "2026-07-30T10:01:00.000Z",
+                  },
+                ]),
+                generateAiSalesReply: async () => {
+                  generationCalls += 1;
+                  throw new Error("confirmed replay must not generate");
+                },
+                materializeSalesAiReplySet: async () => {
+                  materializeCalls += 1;
+                  throw new Error("confirmed replay must not materialize");
+                },
+                readSalesAiReplySetByAnchor: async () => {
+                  readCalls += 1;
+                  return {
+                    response_set_id: "set-confirmed-1",
+                    text_message_id: "text-confirmed-1",
+                    document_message_ids: [],
+                    photo_message_id: null,
+                    request_fingerprint: "d".repeat(64),
+                    materialization_state: "confirmed",
+                    payload: {
+                      ai_text: "Confirmado",
+                      commercial_opportunity_id: "opp-canonical",
+                      lead_id: "lead-canonical",
+                      caller_payload: {
+                        cross_sell_suggestions: [
+                          {
+                            candidateKey: "pool:pool-1",
+                            candidateKind: "pool",
+                            poolId: "pool-1",
+                            catalogItemId: null,
+                          },
+                        ],
+                        operational_follow_up_decision: {
+                          kind: "stop_contact",
+                          reason: "customer_requested_stop",
+                        },
+                        last_customer_message_at: "2026-07-30T10:00:00.000Z",
+                        last_ai_message_at: "2026-07-30T10:01:00.000Z",
+                      },
+                    },
+                  } as never;
+                },
+              }),
+            },
+          );
+
+        const first = await runReplay();
+        const second = await runReplay();
+
+        assert.equal(first.ok, true);
+        assert.equal(second.ok, true);
+        assert.equal(generationCalls, 0);
+        assert.equal(materializeCalls, 0);
+        assert.equal(readCalls, 2);
+        assert.equal(rpcAttempts, 2);
+        assert.equal(crossSellRows.size, 1);
+        assert.deepEqual(
+          [...crossSellRows.values()][0],
+          {
+            p_organization_id: "org-canonical",
+            p_store_id: "store-canonical",
+            p_commercial_opportunity_id: "opp-canonical",
+            p_conversation_id: "conv-canonical",
+            p_suggestion_message_id: "text-confirmed-1",
+            p_candidate_kind: "pool",
+            p_pool_id: "pool-1",
+            p_catalog_item_id: null,
+            p_operation_key:
+              "cross-sell-suggestion:text-confirmed-1:pool:pool-1",
+            p_request_fingerprint: buildCrossSellSuggestionLedgerFingerprint({
+              organizationId: "org-canonical",
+              storeId: "store-canonical",
+              commercialOpportunityId: "opp-canonical",
+              conversationId: "conv-canonical",
+              messageId: "text-confirmed-1",
+              suggestion: {
+                candidateKey: "pool:pool-1",
+                candidateKind: "pool",
+                poolId: "pool-1",
+                catalogItemId: null,
+              },
+            }),
+            p_metadata: {
+              source: "sales_ai_outbound_structured_cross_sell_v1",
+              candidate_key: "pool:pool-1",
+              source_message_id: "anchor-1",
+            },
+          },
+        );
+        assert.equal(followUpRows.size, 1);
+        assert.equal(
+          [...followUpRows.values()][0]?.conversation_id,
+          "conv-canonical",
+        );
+        if (first.ok && second.ok) {
+          assert.deepEqual(
+            first.context?.operationalFollowUpDecisionRecovery,
+            { attempted: true, recovered: true, failed: false },
+          );
+          assert.deepEqual(
+            second.context?.operationalFollowUpDecisionRecovery,
+            { attempted: true, recovered: true, failed: false },
+          );
+          assert.deepEqual(first.context?.crossSellSuggestionLedger, {
+            attempted: 1,
+            registered: 0,
+            failed: 1,
+          });
+          assert.deepEqual(second.context?.crossSellSuggestionLedger, {
+            attempted: 1,
+            registered: 1,
+            failed: 0,
+          });
+        }
+      });
+    },
+  },
+  {
+    name: "I8 legacy injected path never inserts an empty-url catalog photo",
+    run: async () => {
+      const scope = createAiWindowScopeSupabase();
+      const client = createI8WhatsappAwareClient(scope) as {
+        rpc?: (fn: string, payload: Record<string, unknown>) => Promise<unknown>;
+      };
+      let legacySendCalls = 0;
+      let imageInsertCalls = 0;
+      client.rpc = async (fn: string) => {
+        if (fn === "insert_message") imageInsertCalls += 1;
+        return { data: { id: "unexpected" }, error: null };
+      };
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => client as never,
+            ...createScopeAwareReplyDeps({
+              materializeSalesAiReplySet: undefined,
+              sendAiPanelMessage: async () => {
+                legacySendCalls += 1;
+                return "legacy-text-1";
+              },
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Resposta interna",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: { kind: "none", reason: "none" },
+                    catalogPhotoAction: {
+                      shouldSend: true,
+                      targetType: "pool",
+                      poolId: "pool-1",
+                      poolName: "Piscina",
+                      catalogItemId: null,
+                      catalogItemName: null,
+                      catalogItemSku: null,
+                      organizationId: "org-canonical",
+                      storeId: "store-canonical",
+                      source: "pool_photos",
+                      bucket: null,
+                      storagePath: null,
+                      publicUrl: null,
+                      caption: "Foto sem URL",
+                      reason: "explicit_strong_product_photo_request",
+                    },
+                  },
+                }) as never,
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true, JSON.stringify(result));
+        assert.equal(legacySendCalls, 1);
+        assert.equal(imageInsertCalls, 0);
+      });
+    },
+  },
   {
     name: "contract access errors are preserved in the public result",
     run: () => {
@@ -6353,6 +7031,107 @@ assert.equal(
         2,
         "replay must not create duplicate document messages",
       );
+    },
+  },
+  {
+    name: "I8 materializes one canonical reply-set call with media identities only",
+    run: async () => {
+      const calls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
+      const result = await materializeSalesAiReplySet({
+        supabase: {
+          async rpc(fn: string, payload: Record<string, unknown>) {
+            calls.push({ fn, payload });
+            return {
+              data: {
+                response_set_id: "set-1",
+                text_message_id: "text-1",
+                document_message_ids: ["doc-1"],
+                photo_message_id: "photo-1",
+                request_fingerprint: "a".repeat(64),
+                replayed: false,
+              },
+              error: null,
+            };
+          },
+        },
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conv-1",
+        leadId: "lead-1",
+        anchorMessageId: "anchor-1",
+        commercialOpportunityId: "opp-1",
+        aiText: "Resposta",
+        outboundKind: "reactive_ai_reply",
+        externalAuthorized: true,
+        documentActions: [
+          {
+            shouldSend: true,
+            reason: "explicit_customer_catalog_file_request",
+            organizationId: "org-1",
+            storeId: "store-1",
+            importFileId: "file-1",
+            sortOrder: 1,
+            originalFileName: "catalogo.pdf",
+            mimeType: "application/pdf",
+            extension: "pdf",
+            storageBucket: "ignored-by-rpc",
+            storagePath: "ignored-by-rpc",
+            caption: "Catálogo",
+          },
+        ],
+        photoAction: {
+          shouldSend: true,
+          reason: "explicit_strong_product_photo_request",
+          targetType: "pool",
+          poolId: "pool-1",
+          poolName: "Piscina",
+          catalogItemId: null,
+          catalogItemName: null,
+          catalogItemSku: null,
+          organizationId: "org-1",
+          storeId: "store-1",
+          source: "pool_photos",
+            bucket: null,
+          storagePath: "ignored-by-rpc",
+          publicUrl: "https://ignored.example/photo.jpg",
+          caption: "Foto",
+        },
+      });
+
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]?.fn, "materialize_sales_ai_reply_set_by_system");
+      assert.deepEqual(calls[0]?.payload.p_document_actions, [
+        { import_file_id: "file-1", sort_order: 1, caption: "Catálogo" },
+      ]);
+      assert.deepEqual(calls[0]?.payload.p_photo_action, {
+        target_type: "pool",
+        pool_id: "pool-1",
+        caption: "Foto",
+      });
+      assert.equal(
+        JSON.stringify(calls[0]?.payload).includes("storagePath"),
+        false,
+      );
+      assert.equal(result.text_message_id, "text-1");
+    },
+  },
+  {
+    name: "I8 source preserves stop-contact text authority and forbids its media path",
+    run: () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/lib/server/generate-and-save-ai-sales-reply.ts"),
+        "utf8",
+      );
+      const migration = readFileSync(
+        join(
+          process.cwd(),
+          "supabase/migrations/20261009120000_p19a_sales_ai_reply_set_materialization.sql",
+        ),
+        "utf8",
+      );
+      assert.equal(source.includes('? "stop_contact_ack"'), true);
+      assert.equal(migration.includes("P19A_I8_STOP_CONTACT_MEDIA_FORBIDDEN"), true);
+      assert.equal(migration.includes("v_media_send_external := v_send_external and p_outbound_kind = 'reactive_ai_reply'"), true);
     },
   },
 ];

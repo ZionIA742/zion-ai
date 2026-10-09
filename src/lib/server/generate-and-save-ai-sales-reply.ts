@@ -91,6 +91,8 @@ type GenerateAndSaveAiSalesReplyDeps = {
   generateAiSalesReply: typeof generateAiSalesReply;
   updateLatestRunningAiRunUsage: typeof updateLatestRunningAiRunUsage;
   sendAiPanelMessage: typeof sendAiPanelMessage;
+  materializeSalesAiReplySet?: typeof materializeSalesAiReplySet;
+  readSalesAiReplySetByAnchor?: typeof readSalesAiReplySetByAnchor;
   createHumanAssistantHandoff: typeof createHumanAssistantHandoff;
   createCommercialAssistantHandoff: typeof createCommercialAssistantHandoff;
   loadSalesAiOperatingWindowAuthority: typeof loadSalesAiOperatingWindowAuthority;
@@ -962,9 +964,9 @@ function normalizeCatalogPhotoAction(action: unknown): CatalogPhotoAction | null
     !storeId ||
     !source ||
     !caption ||
-    !/^https?:\/\//i.test(publicUrl) ||
     (targetType === "pool" && (!poolId || !poolName)) ||
-    (targetType === "catalog_item" && !catalogItemId)
+    (targetType === "pool" && catalogItemId !== null) ||
+    (targetType === "catalog_item" && (!catalogItemId || poolId !== null))
   ) {
     return null;
   }
@@ -3105,7 +3107,7 @@ export async function tryHandleCustomerContractAcceptance(args: {
     let messageId: string | null = null;
 
     try {
-      messageId = await resolvedDeps.sendAiPanelMessage({
+        messageId = await resolvedDeps.sendAiPanelMessage({
         supabase: args.supabase,
         organizationId: args.organizationId,
         storeId: args.storeId,
@@ -3518,6 +3520,269 @@ async function insertAiWhatsappMessage(args: {
 
   const row = Array.isArray(data) ? data[0] : data;
   return row?.id || null;
+}
+
+type SalesAiReplySetRow = {
+  response_set_id: string;
+  text_message_id: string;
+  document_message_ids: string[];
+  photo_message_id: string | null;
+  request_fingerprint: string;
+  replayed?: boolean;
+  payload?: Record<string, unknown> | null;
+  materialization_state?: string;
+};
+
+export async function materializeSalesAiReplySet(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string;
+  anchorMessageId: string;
+  commercialOpportunityId: string | null;
+  aiText: string;
+  outboundKind: "reactive_ai_reply" | "stop_contact_ack";
+  externalAuthorized: boolean;
+  documentActions: CustomerCatalogDocumentAction[];
+  photoAction: CatalogPhotoAction | null;
+  crossSellSuggestions?: CrossSellSuggestionIncluded[];
+  operationalFollowUpDecision?: OperationalFollowUpDecision | null;
+  lastCustomerMessageAt?: string | null;
+  lastAiMessageAt?: string | null;
+}) : Promise<SalesAiReplySetRow> {
+  const { data, error } = await args.supabase.rpc(
+    "materialize_sales_ai_reply_set_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_conversation_id: args.conversationId,
+      p_lead_id: args.leadId,
+      p_anchor_message_id: args.anchorMessageId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+      p_ai_text: args.aiText,
+      p_outbound_kind: args.outboundKind,
+      p_external_authorized: args.externalAuthorized,
+      p_document_actions: args.documentActions.map((action) => ({
+        import_file_id: action.importFileId,
+        sort_order: action.sortOrder,
+        caption: action.caption,
+      })),
+      p_photo_action: args.photoAction
+        ? {
+            target_type: args.photoAction.targetType,
+            ...(args.photoAction.targetType === "pool"
+              ? { pool_id: args.photoAction.poolId }
+              : { catalog_item_id: args.photoAction.catalogItemId }),
+            caption: args.photoAction.caption,
+          }
+        : null,
+      p_payload: {
+        source: "generate-and-save-ai-sales-reply",
+        response_kind: "sales_ai_reply_set",
+        cross_sell_suggestions: args.crossSellSuggestions || [],
+        operational_follow_up_decision:
+          args.operationalFollowUpDecision || { kind: "none", reason: "none" },
+        last_customer_message_at: args.lastCustomerMessageAt || null,
+        last_ai_message_at: args.lastAiMessageAt || null,
+      },
+    },
+  );
+
+  if (error) {
+    throw new Error(`SALES_AI_REPLY_SET_MATERIALIZATION_FAILED: ${error.message}`);
+  }
+
+  const row = (Array.isArray(data) ? data[0] : data) as SalesAiReplySetRow | null;
+  if (
+    !row ||
+    typeof row.response_set_id !== "string" ||
+    typeof row.text_message_id !== "string" ||
+    !Array.isArray(row.document_message_ids) ||
+    typeof row.request_fingerprint !== "string"
+  ) {
+    throw new Error("SALES_AI_REPLY_SET_MATERIALIZATION_NOT_CONFIRMED");
+  }
+
+  return row;
+}
+
+async function readSalesAiReplySetByAnchor(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  anchorMessageId: string;
+}): Promise<SalesAiReplySetRow | null> {
+  const { data, error } = await args.supabase.rpc(
+    "read_sales_ai_reply_set_by_anchor",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_conversation_id: args.conversationId,
+      p_anchor_message_id: args.anchorMessageId,
+    },
+  );
+
+  if (error) {
+    throw new Error(`SALES_AI_REPLY_SET_READ_FAILED: ${error.message}`);
+  }
+
+  const row = (Array.isArray(data) ? data[0] : data) as SalesAiReplySetRow | null;
+  return row && row.materialization_state === "confirmed" ? row : null;
+}
+
+function normalizePersistedOperationalFollowUpDecision(
+  value: unknown,
+): OperationalFollowUpDecision | null {
+  if (!isRecord(value)) return null;
+
+  const kind = value.kind;
+  const reason = value.reason;
+  if (
+    kind !== "none" &&
+    kind !== "schedule_resume" &&
+    kind !== "soft_pause" &&
+    kind !== "stop_contact"
+  ) {
+    return null;
+  }
+  if (
+    reason !== "customer_requested_tomorrow" &&
+    reason !== "customer_requested_next_week" &&
+    reason !== "customer_requested_next_month" &&
+    reason !== "customer_thinking" &&
+    reason !== "customer_not_interested" &&
+    reason !== "customer_hard_stop" &&
+    reason !== "customer_requested_stop" &&
+    reason !== "unclear_pause" &&
+    reason !== "none"
+  ) {
+    return null;
+  }
+
+  return {
+    kind,
+    reason: reason === "customer_requested_stop" ? "customer_hard_stop" : reason,
+    ...(typeof value.timingLabel === "string" || value.timingLabel === null
+      ? { timingLabel: value.timingLabel }
+      : {}),
+    ...(typeof value.requestedTiming === "string" || value.requestedTiming === null
+      ? { requestedTiming: value.requestedTiming }
+      : {}),
+  };
+}
+
+async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
+  supabase: any;
+  canonicalScope: Awaited<
+    ReturnType<typeof resolveConversationAiWindowStateScope>
+  >;
+  leadId: string | null;
+  systemSupabase: any;
+  row: SalesAiReplySetRow;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  anchorMessageId: string;
+}) {
+  const payload = isRecord(args.row.payload) ? args.row.payload : {};
+  const callerPayload = isRecord(payload.caller_payload)
+    ? payload.caller_payload
+    : {};
+  const suggestions = normalizeCrossSellSuggestionsActuallyIncluded(
+    callerPayload.cross_sell_suggestions,
+  );
+  const persistedDecision = normalizePersistedOperationalFollowUpDecision(
+    callerPayload.operational_follow_up_decision,
+  );
+  const persistedLastCustomerMessageAt =
+    typeof callerPayload.last_customer_message_at === "string"
+      ? callerPayload.last_customer_message_at
+      : null;
+  const persistedLastAiMessageAt =
+    typeof callerPayload.last_ai_message_at === "string"
+      ? callerPayload.last_ai_message_at
+      : null;
+  const operationalFollowUpDecisionRecovery = {
+    attempted: false,
+    recovered: false,
+    failed: false,
+  };
+
+  if (persistedDecision && persistedDecision.kind !== "none") {
+    operationalFollowUpDecisionRecovery.attempted = true;
+    try {
+      await persistOperationalFollowUpDecision({
+        supabase: args.supabase,
+        canonicalScope: args.canonicalScope,
+        leadId: args.leadId,
+        decision: persistedDecision,
+        anchorMessageId: args.anchorMessageId,
+        lastCustomerMessageAt: persistedLastCustomerMessageAt,
+        lastAiMessageAt: persistedLastAiMessageAt,
+      });
+      operationalFollowUpDecisionRecovery.recovered = true;
+    } catch (error: unknown) {
+      operationalFollowUpDecisionRecovery.failed = true;
+      console.warn("[zion-ai-sales-reply] Replay operational follow-up failed", {
+        responseSetId: args.row.response_set_id,
+        error: error instanceof Error ? error.message : String(error || ""),
+      });
+    }
+  }
+
+  try {
+    const crossSellSuggestionLedger = await recordIncludedCrossSellSuggestionsBySystem({
+      systemSupabase: args.systemSupabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      commercialOpportunityId:
+        typeof payload.commercial_opportunity_id === "string"
+          ? payload.commercial_opportunity_id
+          : null,
+      conversationId: args.conversationId,
+      suggestionMessageId: args.row.text_message_id,
+      sourceMessageId: args.anchorMessageId,
+      suggestions,
+    });
+    return { crossSellSuggestionLedger, operationalFollowUpDecisionRecovery };
+  } catch (error: unknown) {
+    console.warn("[zion-ai-sales-reply] Replay post-commit effect failed", {
+      responseSetId: args.row.response_set_id,
+      error: error instanceof Error ? error.message : String(error || ""),
+    });
+    return {
+      crossSellSuggestionLedger: {
+        attempted: suggestions.length,
+        registered: 0,
+        failed: suggestions.length,
+      },
+      operationalFollowUpDecisionRecovery,
+    };
+  }
+}
+
+function buildSalesAiReplySetReplayResult(
+  row: SalesAiReplySetRow,
+): GenerateAndSaveAiSalesReplyResult {
+  const payload = row.payload;
+  return {
+    ok: true,
+    aiText: String(payload?.ai_text || ""),
+    context: {
+      salesAiReplySet: {
+        responseSetId: row.response_set_id,
+        requestFingerprint: row.request_fingerprint,
+        replayed: true,
+        documentMessageIds: row.document_message_ids,
+        photoMessageId: row.photo_message_id,
+      },
+    },
+    usage: null,
+    persisted: true,
+    messageId: row.text_message_id,
+  };
 }
 
 async function sendAiPanelMessage(args: {
@@ -5000,6 +5265,8 @@ export async function generateAndSaveAiSalesReply(
       generateAiSalesReply,
       updateLatestRunningAiRunUsage,
       sendAiPanelMessage,
+      materializeSalesAiReplySet,
+      readSalesAiReplySetByAnchor,
       createHumanAssistantHandoff,
       createCommercialAssistantHandoff,
       loadSalesAiOperatingWindowAuthority,
@@ -5144,6 +5411,41 @@ export async function generateAndSaveAiSalesReply(
       !scheduledResumeContext &&
       hasAiReplyAfterLatestCustomerMessage(boundaryBeforeGeneration)
     ) {
+      if (!deps?.sendAiPanelMessage || deps?.materializeSalesAiReplySet) {
+        const confirmedSet = await resolvedDeps.readSalesAiReplySetByAnchor!({
+          supabase: systemSupabase,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          anchorMessageId: boundaryBeforeGeneration.lastIncomingCustomerMessageId,
+        });
+        if (confirmedSet) {
+          const postCommitEffects =
+            await reconcileConfirmedSalesAiReplySetPostCommitEffects({
+              supabase,
+              canonicalScope,
+              leadId: normalizedConversation.lead_id || null,
+              systemSupabase,
+              row: confirmedSet,
+              organizationId: canonicalOrganizationId,
+              storeId: canonicalStoreId,
+              conversationId: canonicalConversationId,
+              anchorMessageId:
+                boundaryBeforeGeneration.lastIncomingCustomerMessageId,
+            });
+          const replay = buildSalesAiReplySetReplayResult(confirmedSet);
+          return {
+            ...replay,
+            context: {
+              ...replay.context,
+              crossSellSuggestionLedger:
+                postCommitEffects.crossSellSuggestionLedger,
+              operationalFollowUpDecisionRecovery:
+                postCommitEffects.operationalFollowUpDecisionRecovery,
+            },
+          };
+        }
+      }
       return {
         ok: false,
         error: "AI_REPLY_ALREADY_EXISTS_FOR_LATEST_CUSTOMER_MESSAGE",
@@ -5251,11 +5553,18 @@ export async function generateAndSaveAiSalesReply(
       normalizeCrossSellSuggestionsActuallyIncluded(
         generationResult.context?.crossSellSuggestionsActuallyIncluded,
       );
+    const generationOperationalFollowUpKind = String(
+      (generationResult.context?.operationalFollowUpDecision as
+        | { kind?: unknown }
+        | null
+        | undefined)?.kind || "none",
+    );
 
     if (
       Array.isArray(rawCustomerCatalogDocumentActions) &&
       rawCustomerCatalogDocumentActions.length !==
-        customerCatalogDocumentActions.length
+        customerCatalogDocumentActions.length &&
+      generationOperationalFollowUpKind !== "stop_contact"
     ) {
       return {
         ok: false,
@@ -5326,6 +5635,40 @@ export async function generateAndSaveAiSalesReply(
         ? aiBoundaryChangedDuringGeneration
         : hasAiReplyAfterLatestCustomerMessage(boundaryBeforeSave)
     ) {
+      if (!deps?.sendAiPanelMessage || deps?.materializeSalesAiReplySet) {
+        const confirmedSet = await resolvedDeps.readSalesAiReplySetByAnchor!({
+          supabase: systemSupabase,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          anchorMessageId: generationAnchorMessageId,
+        });
+        if (confirmedSet) {
+          const postCommitEffects =
+            await reconcileConfirmedSalesAiReplySetPostCommitEffects({
+              supabase,
+              canonicalScope,
+              leadId: normalizedConversation.lead_id || null,
+              systemSupabase,
+              row: confirmedSet,
+              organizationId: canonicalOrganizationId,
+              storeId: canonicalStoreId,
+              conversationId: canonicalConversationId,
+              anchorMessageId: generationAnchorMessageId,
+            });
+          const replay = buildSalesAiReplySetReplayResult(confirmedSet);
+          return {
+            ...replay,
+            context: {
+              ...replay.context,
+              crossSellSuggestionLedger:
+                postCommitEffects.crossSellSuggestionLedger,
+              operationalFollowUpDecisionRecovery:
+                postCommitEffects.operationalFollowUpDecisionRecovery,
+            },
+          };
+        }
+      }
       return {
         ok: false,
         error: "AI_REPLY_ALREADY_EXISTS_FOR_LATEST_CUSTOMER_MESSAGE",
@@ -5459,6 +5802,10 @@ export async function generateAndSaveAiSalesReply(
       (operationalFollowUpDecision as { kind?: unknown } | null | undefined)?.kind ||
         "none",
     );
+    const effectiveOperationalFollowUpDecision: OperationalFollowUpDecision =
+      scheduledResumeContext || operationalFollowUpDecisionKind === "restore_contact"
+        ? { kind: "none", reason: "none" }
+        : operationalFollowUpDecision;
 
     if (!scheduledResumeContext && operationalFollowUpDecisionKind === "stop_contact") {
       if (!generationResolvedCommercialOpportunityId) {
@@ -5552,11 +5899,40 @@ export async function generateAndSaveAiSalesReply(
           commercial_opportunity_id: generationResolvedCommercialOpportunityId,
         }
       : null;
+    const outboundKind =
+      salesAiExternalMetadata?.outbound_kind === "stop_contact_ack"
+        ? "stop_contact_ack"
+        : "reactive_ai_reply";
+    const suppressCommercialMedia =
+      outboundKind === "stop_contact_ack" ||
+      operationalFollowUpDecisionKind === "stop_contact";
+
+    const rawCatalogPhotoAction = generationResult.context?.catalogPhotoAction;
+    const catalogPhotoAction = normalizeCatalogPhotoAction(rawCatalogPhotoAction);
+    if (
+      isRecord(rawCatalogPhotoAction) &&
+      rawCatalogPhotoAction.shouldSend === true &&
+      !suppressCommercialMedia &&
+      !catalogPhotoAction
+    ) {
+      return {
+        ok: false,
+        error: "CUSTOMER_CATALOG_PHOTO_ACTION_INVALID",
+        message:
+          "A identidade canonica da foto de catalogo e invalida; nenhuma parte da resposta foi persistida.",
+        aiText,
+      };
+    }
+
+    const replyDocumentActions = suppressCommercialMedia
+      ? []
+      : customerCatalogDocumentActions;
+    const replyPhotoAction = suppressCommercialMedia ? null : catalogPhotoAction;
 
     let customerCatalogDocumentSendExternal = false;
 
     if (
-      customerCatalogDocumentActions.some(
+      replyDocumentActions.some(
         (action) =>
           action.organizationId !== canonicalOrganizationId ||
           action.storeId !== canonicalStoreId,
@@ -5571,7 +5947,7 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    if (customerCatalogDocumentActions.length > 0) {
+    if (replyDocumentActions.length > 0) {
       try {
         customerCatalogDocumentSendExternal = await isRealWhatsappConversation({
           supabase,
@@ -5592,9 +5968,13 @@ export async function generateAndSaveAiSalesReply(
     }
 
     let messageId: string | null = null;
+    let crossSellSuggestionLedger: CrossSellSuggestionLedgerResult | null = null;
+    let materializedReplySet: SalesAiReplySetRow | null = null;
+    const materializationAiMessageTimestamp = new Date().toISOString();
 
-    try {
-      messageId = await resolvedDeps.sendAiPanelMessage({
+    if (deps?.sendAiPanelMessage && !deps?.materializeSalesAiReplySet) {
+      try {
+        messageId = await resolvedDeps.sendAiPanelMessage({
         supabase,
         organizationId: canonicalOrganizationId,
         storeId: canonicalStoreId,
@@ -5611,7 +5991,7 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    const crossSellSuggestionLedger =
+    crossSellSuggestionLedger =
       await recordIncludedCrossSellSuggestionsBySystem({
         systemSupabase,
         organizationId: canonicalOrganizationId,
@@ -5623,7 +6003,7 @@ export async function generateAndSaveAiSalesReply(
         suggestions: crossSellSuggestionsActuallyIncluded,
       });
 
-    if (customerCatalogDocumentActions.length > 0) {
+    if (replyDocumentActions.length > 0) {
       try {
         await persistCustomerCatalogDocumentActions({
           supabase,
@@ -5631,7 +6011,7 @@ export async function generateAndSaveAiSalesReply(
           storeId: canonicalStoreId,
           conversationId: canonicalConversationId,
           anchorMessageId: generationAnchorMessageId,
-          actions: customerCatalogDocumentActions,
+          actions: replyDocumentActions,
           sendExternal: customerCatalogDocumentSendExternal,
         });
       } catch (catalogDocumentInsertError: any) {
@@ -5646,31 +6026,28 @@ export async function generateAndSaveAiSalesReply(
       }
     }
 
-    const catalogPhotoAction = normalizeCatalogPhotoAction(
-      generationResult.context?.catalogPhotoAction
-    );
-
     if (
-      catalogPhotoAction &&
-      catalogPhotoAction.organizationId === canonicalOrganizationId &&
-      catalogPhotoAction.storeId === canonicalStoreId
+      replyPhotoAction &&
+      /^https?:\/\//i.test(replyPhotoAction.publicUrl) &&
+      replyPhotoAction.organizationId === canonicalOrganizationId &&
+      replyPhotoAction.storeId === canonicalStoreId
     ) {
       try {
         const imageMetadata: Record<string, unknown> = {
           media_purpose: "catalog_product_photo",
           catalog_photo_action: true,
-          target_type: catalogPhotoAction.targetType,
-          source: catalogPhotoAction.source,
-          pool_id: catalogPhotoAction.poolId,
-          pool_name: catalogPhotoAction.poolName,
-          catalog_item_id: catalogPhotoAction.catalogItemId,
-          catalog_item_name: catalogPhotoAction.catalogItemName,
-          catalog_item_sku: catalogPhotoAction.catalogItemSku,
-          storage_bucket: catalogPhotoAction.bucket,
-          storage_path: catalogPhotoAction.storagePath,
+          target_type: replyPhotoAction.targetType,
+          source: replyPhotoAction.source,
+          pool_id: replyPhotoAction.poolId,
+          pool_name: replyPhotoAction.poolName,
+          catalog_item_id: replyPhotoAction.catalogItemId,
+          catalog_item_name: replyPhotoAction.catalogItemName,
+          catalog_item_sku: replyPhotoAction.catalogItemSku,
+          storage_bucket: replyPhotoAction.bucket,
+          storage_path: replyPhotoAction.storagePath,
           generated_by: "ai_sales",
           auto_sent: true,
-          reason: catalogPhotoAction.reason,
+          reason: replyPhotoAction.reason,
         };
 
         const { error: imageInsertError } = await supabase.rpc("insert_message", {
@@ -5678,8 +6055,8 @@ export async function generateAndSaveAiSalesReply(
           p_sender: "ai",
           p_direction: "outgoing",
           p_message_type: "image",
-          p_content: catalogPhotoAction.caption,
-          p_media_url: catalogPhotoAction.publicUrl,
+          p_content: replyPhotoAction.caption,
+          p_media_url: replyPhotoAction.publicUrl,
           p_external_message_id: null,
           p_metadata: imageMetadata,
         });
@@ -5689,9 +6066,9 @@ export async function generateAndSaveAiSalesReply(
             organizationId,
             storeId,
             conversationId,
-            targetType: catalogPhotoAction.targetType,
-            poolId: catalogPhotoAction.poolId,
-            catalogItemId: catalogPhotoAction.catalogItemId,
+            targetType: replyPhotoAction.targetType,
+            poolId: replyPhotoAction.poolId,
+            catalogItemId: replyPhotoAction.catalogItemId,
             error: imageInsertError.message,
           });
         }
@@ -5700,9 +6077,9 @@ export async function generateAndSaveAiSalesReply(
           organizationId,
           storeId,
           conversationId,
-          targetType: catalogPhotoAction.targetType,
-          poolId: catalogPhotoAction.poolId,
-          catalogItemId: catalogPhotoAction.catalogItemId,
+          targetType: replyPhotoAction.targetType,
+          poolId: replyPhotoAction.poolId,
+          catalogItemId: replyPhotoAction.catalogItemId,
           error:
             catalogPhotoInsertError instanceof Error
               ? catalogPhotoInsertError.message
@@ -5711,22 +6088,115 @@ export async function generateAndSaveAiSalesReply(
       }
     }
 
-    const aiMessageTimestamp = new Date().toISOString();
+    } else {
+      if (
+        replyPhotoAction &&
+        (replyPhotoAction.organizationId !== canonicalOrganizationId ||
+          replyPhotoAction.storeId !== canonicalStoreId)
+      ) {
+        return {
+          ok: false,
+          error: "CUSTOMER_CATALOG_PHOTO_SCOPE_MISMATCH",
+          message:
+            "A foto de catalogo nao corresponde ao escopo canonico da conversa e foi bloqueada.",
+          aiText,
+        };
+      }
 
-    await persistOperationalFollowUpDecision({
-      supabase,
-      canonicalScope,
-      leadId: normalizedConversation.lead_id || null,
-      decision: scheduledResumeContext || operationalFollowUpDecisionKind === "restore_contact"
-        ? {
-            kind: "none",
-            reason: "none",
-          }
-        : operationalFollowUpDecision,
-      anchorMessageId: generationAnchorMessageId,
-      lastCustomerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
-      lastAiMessageAt: aiMessageTimestamp,
-    });
+      const externalAuthorized = Boolean(
+        salesAiExternalMetadata &&
+          salesAiExternalMetadata.outbound_kind === outboundKind,
+      );
+      try {
+        materializedReplySet = await resolvedDeps.materializeSalesAiReplySet!({
+          supabase: systemSupabase,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          leadId: normalizedConversation.lead_id || "",
+          anchorMessageId: generationAnchorMessageId,
+          commercialOpportunityId: generationResolvedCommercialOpportunityId,
+          aiText,
+          outboundKind,
+          externalAuthorized,
+          documentActions: replyDocumentActions,
+          photoAction: replyPhotoAction,
+          crossSellSuggestions: crossSellSuggestionsActuallyIncluded,
+          operationalFollowUpDecision: effectiveOperationalFollowUpDecision,
+          lastCustomerMessageAt:
+            boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
+          lastAiMessageAt: materializationAiMessageTimestamp,
+        });
+        messageId = materializedReplySet.text_message_id;
+      } catch (materializationError: any) {
+        return {
+          ok: false,
+          error: "SALES_AI_REPLY_SET_MATERIALIZATION_FAILED",
+          message:
+            materializationError?.message ||
+            "Falha ao materializar atomicamente a resposta da IA.",
+          aiText,
+        };
+      }
+
+      try {
+        crossSellSuggestionLedger =
+          await recordIncludedCrossSellSuggestionsBySystem({
+            systemSupabase,
+            organizationId: canonicalOrganizationId,
+            storeId: canonicalStoreId,
+            commercialOpportunityId: generationResolvedCommercialOpportunityId,
+            conversationId: canonicalConversationId,
+            suggestionMessageId: messageId,
+            sourceMessageId: generationAnchorMessageId,
+            suggestions: crossSellSuggestionsActuallyIncluded,
+          });
+      } catch (postCommitError: unknown) {
+        console.warn("[zion-ai-sales-reply] Post-commit effect failed", {
+          responseSetId: materializedReplySet.response_set_id,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          error:
+            postCommitError instanceof Error
+              ? postCommitError.message
+              : String(postCommitError || ""),
+        });
+        crossSellSuggestionLedger = {
+          attempted: crossSellSuggestionsActuallyIncluded.length,
+          registered: 0,
+          failed: crossSellSuggestionsActuallyIncluded.length,
+        };
+      }
+    }
+
+    const aiMessageTimestamp = materializationAiMessageTimestamp;
+
+    try {
+      await persistOperationalFollowUpDecision({
+        supabase,
+        canonicalScope,
+        leadId: normalizedConversation.lead_id || null,
+        decision: effectiveOperationalFollowUpDecision,
+        anchorMessageId: generationAnchorMessageId,
+        lastCustomerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
+        lastAiMessageAt: aiMessageTimestamp,
+      });
+    } catch (postCommitError: unknown) {
+      if (!materializedReplySet) {
+        throw postCommitError;
+      }
+      console.warn("[zion-ai-sales-reply] Operational follow-up effect failed after commit", {
+        responseSetId: materializedReplySet.response_set_id,
+        organizationId: canonicalOrganizationId,
+        storeId: canonicalStoreId,
+        conversationId: canonicalConversationId,
+        error:
+          postCommitError instanceof Error
+            ? postCommitError.message
+            : String(postCommitError || ""),
+      });
+    }
 
     let commercialHandoffResult: CommercialHandoffCreationResult | null = null;
 
@@ -5860,6 +6330,17 @@ export async function generateAndSaveAiSalesReply(
         commercialHandoffResult,
         preContractCardResult,
         crossSellSuggestionLedger,
+        ...(materializedReplySet
+          ? {
+              salesAiReplySet: {
+                responseSetId: materializedReplySet.response_set_id,
+                requestFingerprint: materializedReplySet.request_fingerprint,
+                replayed: materializedReplySet.replayed === true,
+                documentMessageIds: materializedReplySet.document_message_ids,
+                photoMessageId: materializedReplySet.photo_message_id,
+              },
+            }
+          : {}),
       },
       usage: generationResult.usage,
       persisted: true,
