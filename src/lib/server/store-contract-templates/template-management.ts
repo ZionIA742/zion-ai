@@ -1116,16 +1116,14 @@ export async function approveStoreContractTemplateVersionForAuthorizedStoreScope
   return approveStoreContractTemplateVersionWithResolvedScope(scope, versionId);
 }
 
-export async function rejectStoreContractTemplateVersion(args: {
-  versionId: string;
-  storeId: string;
-  organizationId?: string | null;
-  rejectionReason?: string | null;
-}) {
-  const scope = await resolveAuthorizedStoreTemplateScope(args);
-  const versionId = String(args.versionId || "").trim();
+async function rejectStoreContractTemplateVersionWithResolvedScope(
+  scope: ResolvedStoreContractTemplateScope,
+  versionId: string,
+  rejectionReason?: string | null,
+) {
+  const normalizedVersionId = String(versionId || "").trim();
 
-  if (!versionId) {
+  if (!normalizedVersionId) {
     throw new StoreContractTemplateAccessError(
       400,
       "INVALID_TEMPLATE_VERSION_ID",
@@ -1135,7 +1133,7 @@ export async function rejectStoreContractTemplateVersion(args: {
 
   const version = await loadTemplateVersionById({
     supabase: scope.supabase,
-    versionId,
+    versionId: normalizedVersionId,
     organizationId: scope.organizationId,
     storeId: scope.store.id,
   });
@@ -1186,7 +1184,7 @@ export async function rejectStoreContractTemplateVersion(args: {
         status: "rejected",
         rejected_at: now,
         rejected_by: scope.userId,
-        rejection_reason: cleanText(args.rejectionReason),
+        rejection_reason: cleanText(rejectionReason),
         updated_at: now,
       })
       .eq("id", version.id)
@@ -1255,6 +1253,39 @@ export async function rejectStoreContractTemplateVersion(args: {
     ...buildTemplateSummary(refreshedTemplate, versions, extractedRules),
     rejectedVersion,
   };
+}
+
+export async function rejectStoreContractTemplateVersion(args: {
+  versionId: string;
+  storeId: string;
+  organizationId?: string | null;
+  rejectionReason?: string | null;
+}) {
+  const scope = await resolveAuthorizedStoreTemplateScope(args);
+  const versionId = String(args.versionId || "").trim();
+
+  return rejectStoreContractTemplateVersionWithResolvedScope(
+    scope,
+    versionId,
+    args.rejectionReason,
+  );
+}
+
+export async function rejectStoreContractTemplateVersionForAuthorizedStoreScope(
+  authorizedScope: StoreContractTemplateAuthorizedStoreScope,
+  versionId: string,
+  rejectionReason?: string | null,
+  deps: Partial<ResolveStoreContractTemplateScopeForAuthorizedStoreScopeDeps> = {},
+) {
+  const scope = await resolveStoreContractTemplateScopeForAuthorizedStoreScope(
+    authorizedScope,
+    deps,
+  );
+  return rejectStoreContractTemplateVersionWithResolvedScope(
+    scope,
+    versionId,
+    rejectionReason,
+  );
 }
 
 export async function analyzeStoreContractTemplateVersion(args: {
