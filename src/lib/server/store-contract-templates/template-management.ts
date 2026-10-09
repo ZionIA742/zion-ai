@@ -596,6 +596,7 @@ async function updateTemplateVersionStatus(args: {
   versionId: string;
   organizationId: string;
   storeId: string;
+  expectedStatus: string;
   status: string;
   rawExtractedText?: string | null;
   analysisSummary?: string | null;
@@ -625,13 +626,22 @@ async function updateTemplateVersionStatus(args: {
     .eq("id", args.versionId)
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
+    .eq("status", args.expectedStatus)
     .select(
       "id, template_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, raw_extracted_text, analysis_summary, approved_at, approved_by, rejected_at, rejected_by, rejection_reason, metadata, created_at, updated_at"
     )
     .maybeSingle();
 
-  if (error || !data?.id) {
-    throw new Error(error?.message || "Falha ao atualizar a versao do contrato base.");
+  if (error) {
+    throw new Error(error.message || "Falha ao atualizar a versao do contrato base.");
+  }
+
+  if (!data?.id) {
+    throw new StoreContractTemplateAccessError(
+      409,
+      "TEMPLATE_VERSION_ANALYSIS_CONFLICT",
+      "O estado dessa versao mudou. Atualize a versao antes de tentar novamente.",
+    );
   }
 
   return data as StoreContractTemplateVersionRow;
@@ -1288,12 +1298,47 @@ export async function rejectStoreContractTemplateVersionForAuthorizedStoreScope(
   );
 }
 
+type AnalyzeStoreContractTemplateVersionDeps = {
+  resolveScope: typeof resolveAuthorizedStoreTemplateScope;
+  extractText: typeof extractContractTextFromStoredFile;
+};
+
 export async function analyzeStoreContractTemplateVersion(args: {
   versionId: string;
   storeId: string;
   organizationId?: string | null;
 }) {
-  const scope = await resolveAuthorizedStoreTemplateScope(args);
+  return analyzeStoreContractTemplateVersionInternal(args, {
+    resolveScope: resolveAuthorizedStoreTemplateScope,
+    extractText: extractContractTextFromStoredFile,
+  });
+}
+
+export function createAnalyzeStoreContractTemplateVersion(
+  overrides: Partial<AnalyzeStoreContractTemplateVersionDeps> = {},
+) {
+  const deps: AnalyzeStoreContractTemplateVersionDeps = {
+    resolveScope: resolveAuthorizedStoreTemplateScope,
+    extractText: extractContractTextFromStoredFile,
+    ...overrides,
+  };
+
+  return (args: {
+    versionId: string;
+    storeId: string;
+    organizationId?: string | null;
+  }) => analyzeStoreContractTemplateVersionInternal(args, deps);
+}
+
+async function analyzeStoreContractTemplateVersionInternal(
+  args: {
+    versionId: string;
+    storeId: string;
+    organizationId?: string | null;
+  },
+  deps: AnalyzeStoreContractTemplateVersionDeps,
+) {
+  const scope = await deps.resolveScope(args);
   const versionId = String(args.versionId || "").trim();
 
   if (!versionId) {
@@ -1351,6 +1396,7 @@ export async function analyzeStoreContractTemplateVersion(args: {
     versionId: version.id,
     organizationId: scope.organizationId,
     storeId: scope.store.id,
+    expectedStatus: normalizedStatus,
     status: "analyzing",
     metadata: {
       ...(version.metadata || {}),
@@ -1358,6 +1404,8 @@ export async function analyzeStoreContractTemplateVersion(args: {
       analysis_started_by_user_id: scope.userId,
     },
   });
+
+  let extractionCompleted = false;
 
   try {
     const fileName =
@@ -1391,7 +1439,7 @@ export async function analyzeStoreContractTemplateVersion(args: {
 
     const fileBuffer = Buffer.from(await fileData.arrayBuffer());
 
-    const extracted = await extractContractTextFromStoredFile({
+    const extracted = await deps.extractText({
       fileName,
       mimeType,
       buffer: fileBuffer,
@@ -1403,11 +1451,13 @@ export async function analyzeStoreContractTemplateVersion(args: {
       );
     }
 
+    extractionCompleted = true;
     await updateTemplateVersionStatus({
       supabase: scope.supabase,
       versionId: version.id,
       organizationId: scope.organizationId,
       storeId: scope.store.id,
+      expectedStatus: "analyzing",
       status: "awaiting_review",
       rawExtractedText: extracted.text,
       analysisSummary: extracted.summary,
@@ -1418,22 +1468,34 @@ export async function analyzeStoreContractTemplateVersion(args: {
       },
     });
   } catch (error) {
-    await updateTemplateVersionStatus({
-      supabase: scope.supabase,
-      versionId: version.id,
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
-      status: "failed",
-      analysisSummary:
-        error instanceof Error
-          ? error.message
-          : "Nao foi possivel ler esse arquivo nesta etapa.",
-      metadata: {
-        ...(analyzingVersion.metadata || {}),
-        analysis_failed_at: new Date().toISOString(),
-        analysis_failed_by_user_id: scope.userId,
-      },
-    });
+    if (extractionCompleted) {
+      throw error;
+    }
+
+    try {
+      await updateTemplateVersionStatus({
+        supabase: scope.supabase,
+        versionId: version.id,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        expectedStatus: "analyzing",
+        status: "failed",
+        analysisSummary:
+          error instanceof Error
+            ? error.message
+            : "Nao foi possivel ler esse arquivo nesta etapa.",
+        metadata: {
+          ...(analyzingVersion.metadata || {}),
+          analysis_failed_at: new Date().toISOString(),
+          analysis_failed_by_user_id: scope.userId,
+        },
+      });
+    } catch (failureUpdateError) {
+      if (failureUpdateError instanceof StoreContractTemplateAccessError) {
+        throw failureUpdateError;
+      }
+      throw error;
+    }
 
     throw error;
   }
