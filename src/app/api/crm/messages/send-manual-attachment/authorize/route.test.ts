@@ -61,7 +61,10 @@ function createRequest(body: unknown, options: { invalidJson?: boolean } = {}) {
 function createSupabase(args: {
   conversation?: { id: string; organization_id: string; lead_id: string | null } | null;
   lead?: { id: string; organization_id: string; store_id: string | null } | null;
+  conversationError?: { message: string } | null;
+  leadError?: { message: string } | null;
   signedToken?: string | null;
+  signedUploadError?: Error;
   calls: {
     signedUpload: Array<{ bucket: string; path: string; options: unknown }>;
     queries?: Array<{ table: string; filters: Record<string, unknown> }>;
@@ -78,10 +81,12 @@ function createSupabase(args: {
       maybeSingle: async () => {
         args.calls.queries?.push({ table, filters: { ...filters } });
         if (table === "conversations") {
+          if (args.conversationError) return { data: null, error: args.conversationError };
           const row = args.conversation;
           const matches = row && Object.entries(filters).every(([key, value]) => row[key as keyof typeof row] === value);
           return { data: matches ? row : null, error: null };
         }
+        if (args.leadError) return { data: null, error: args.leadError };
         const row = args.lead;
         const matches = row && Object.entries(filters).every(([key, value]) => row[key as keyof typeof row] === value);
         return { data: matches ? row : null, error: null };
@@ -96,6 +101,7 @@ function createSupabase(args: {
       from: (bucket: string) => ({
         createSignedUploadUrl: async (path: string, options: unknown) => {
           args.calls.signedUpload.push({ bucket, path, options });
+          if (args.signedUploadError) throw args.signedUploadError;
           return {
             data: args.signedToken === null ? null : { token: args.signedToken || "signed-upload-token" },
             error: args.signedToken === null ? { message: "signed upload unavailable" } : null,
@@ -153,6 +159,21 @@ async function assertRejectedWithoutUpload(
   assert.equal(payload.path, undefined);
   assert.equal(payload.authorizationToken, undefined);
   assert.deepEqual(calls.signedUpload, []);
+}
+
+async function assertInfrastructureFailure(
+  response: Response,
+  status: number,
+  error: string,
+) {
+  assert.equal(response.status, status);
+  const payload = await readJson(response);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error, error);
+  assert.equal(payload.token, undefined);
+  assert.equal(payload.path, undefined);
+  assert.equal(payload.authorizationToken, undefined);
+  assert.equal(JSON.stringify(payload).includes("storage internals"), false);
 }
 
 const validBody = {
@@ -403,6 +424,99 @@ const cases: TestCase[] = [
           },
         },
       ]);
+    },
+  },
+  {
+    name: "trata falha Supabase na consulta de conversations sem consultar lead ou Storage",
+    async run() {
+      const calls = {
+        signedUpload: [] as Array<{ bucket: string; path: string; options: unknown }>,
+        queries: [] as Array<{ table: string; filters: Record<string, unknown> }>,
+      };
+      const response = await run(validBody, {
+        supabase: createSupabase({
+          conversationError: { message: "database unavailable" },
+          calls,
+        }),
+      });
+
+      await assertInfrastructureFailure(response, 502, "conversation_lookup_failed");
+      assert.deepEqual(calls.queries?.map((query) => query.table), ["conversations"]);
+      assert.deepEqual(calls.signedUpload, []);
+    },
+  },
+  {
+    name: "trata falha Supabase na consulta de leads sem chamar Storage",
+    async run() {
+      const calls = {
+        signedUpload: [] as Array<{ bucket: string; path: string; options: unknown }>,
+        queries: [] as Array<{ table: string; filters: Record<string, unknown> }>,
+      };
+      const response = await run(validBody, {
+        supabase: createSupabase({
+          conversation: {
+            id: scope.conversationId,
+            organization_id: scope.organizationId,
+            lead_id: scope.leadId,
+          },
+          leadError: { message: "database unavailable" },
+          calls,
+        }),
+      });
+
+      await assertInfrastructureFailure(response, 502, "lead_lookup_failed");
+      assert.deepEqual(calls.queries?.map((query) => query.table), ["conversations", "leads"]);
+      assert.deepEqual(calls.signedUpload, []);
+    },
+  },
+  {
+    name: "trata retorno sem token de createSignedUploadUrl sem expor autorizacao",
+    async run() {
+      const calls = { signedUpload: [] as Array<{ bucket: string; path: string; options: unknown }> };
+      const response = await run(validBody, {
+        supabase: createSupabase({
+          conversation: {
+            id: scope.conversationId,
+            organization_id: scope.organizationId,
+            lead_id: scope.leadId,
+          },
+          lead: {
+            id: scope.leadId,
+            organization_id: scope.organizationId,
+            store_id: scope.storeId,
+          },
+          signedToken: null,
+          calls,
+        }),
+      });
+
+      await assertInfrastructureFailure(response, 502, "signed_upload_unavailable");
+      assert.equal(calls.signedUpload.length, 1);
+    },
+  },
+  {
+    name: "trata excecao de createSignedUploadUrl sem expor detalhes internos",
+    async run() {
+      const calls = { signedUpload: [] as Array<{ bucket: string; path: string; options: unknown }> };
+      const response = await run(validBody, {
+        supabase: createSupabase({
+          conversation: {
+            id: scope.conversationId,
+            organization_id: scope.organizationId,
+            lead_id: scope.leadId,
+          },
+          lead: {
+            id: scope.leadId,
+            organization_id: scope.organizationId,
+            store_id: scope.storeId,
+          },
+          signedUploadError: new Error("storage internals: provider credentials leaked"),
+          calls,
+        }),
+      });
+
+      await assertInfrastructureFailure(response, 500, "manual_attachment_authorization_failed");
+      assert.equal(calls.signedUpload.length, 1);
     },
   },
   {
