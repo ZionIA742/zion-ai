@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -28,7 +29,10 @@ function access(): StoreApiAccessGranted {
   };
 }
 
-function authorization(messageType: "image" | "document" | "audio" | "video" = "image") {
+function authorization(
+  messageType: "image" | "document" | "audio" | "video" = "image",
+  overrides: { expiresAt?: number } = {},
+) {
   const path = `${scope.organizationId}/${scope.storeId}/manual-attachments/${scope.conversationId}/upload.pdf`;
   return createManualAttachmentAuthorization({
     uploadId: "upload-1",
@@ -40,13 +44,21 @@ function authorization(messageType: "image" | "document" | "audio" | "video" = "
     messageType,
     content: "A loja enviou um arquivo.",
     idempotencyKey: "crm_manual_attachment:upload-1",
-    expiresAt: Date.now() + 60_000,
+    expiresAt: overrides.expiresAt ?? Date.now() + 60_000,
   });
 }
 
-function createSupabase(args: { rpcError?: boolean; removeCalls: string[] }) {
+function createSupabase(args: {
+  rpcError?: boolean;
+  removeCalls: string[];
+  infoCalls?: string[];
+  rpcCalls?: string[];
+}) {
   const storage = {
-    info: async () => ({ data: { size: 12, contentType: "image/png", metadata: {} }, error: null }),
+    info: async (path: string) => {
+      args.infoCalls?.push(path);
+      return { data: { size: 12, contentType: "image/png", metadata: {} }, error: null };
+    },
     remove: async (paths: string[]) => { args.removeCalls.push(...paths); return { data: null, error: null }; },
   };
   const query = (table: string) => {
@@ -66,10 +78,35 @@ function createSupabase(args: { rpcError?: boolean; removeCalls: string[] }) {
   return {
     from: (table: string) => table === MANUAL_ATTACHMENT_STORAGE_BUCKET ? storage : query(table),
     storage: { from: () => storage },
-    rpc: async () => args.rpcError
-      ? { data: null, error: { message: "ambiguous failure" } }
-      : { data: [{ message_id: "message-1", replayed: false }], error: null },
+    rpc: async () => {
+      args.rpcCalls?.push("finalize_manual_attachment_message");
+      return args.rpcError
+        ? { data: null, error: { message: "ambiguous failure" } }
+        : { data: [{ message_id: "message-1", replayed: false }], error: null };
+    },
   };
+}
+
+function authorizationWithInvalidFingerprint(token: string) {
+  const [encoded] = token.split(".");
+  const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as Record<string, unknown>;
+  payload.payloadFingerprint = "0".repeat(64);
+  const tamperedEncoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = createHmac("sha256", process.env.SUPABASE_SERVICE_ROLE_KEY || "")
+    .update(tamperedEncoded)
+    .digest("base64url");
+  return `${tamperedEncoded}.${signature}`;
+}
+
+async function assertInvalidAuthorization(
+  response: Response,
+  calls: { infoCalls: string[]; rpcCalls: string[] },
+) {
+  assert.equal(response.status, 403);
+  const payload = await response.json();
+  assert.deepEqual(payload, { ok: false, error: "invalid_upload_authorization" });
+  assert.deepEqual(calls.infoCalls, []);
+  assert.deepEqual(calls.rpcCalls, []);
 }
 
 async function run(body: Record<string, unknown>, supabase: ReturnType<typeof createSupabase>) {
@@ -94,6 +131,31 @@ const rpcResponse = await run(
 );
 assert.equal(rpcResponse.status, 500);
 assert.deepEqual(rpcRemovals, []);
+
+const invalidSignatureCalls = { infoCalls: [] as string[], rpcCalls: [] as string[] };
+const validToken = authorization();
+const [validEncoded, validSignature] = validToken.split(".");
+const alteredSignature = `${validSignature.slice(0, -1)}${validSignature.endsWith("A") ? "B" : "A"}`;
+assert.notEqual(alteredSignature, validSignature);
+const invalidSignatureResponse = await run(
+  { authorizationToken: `${validEncoded}.${alteredSignature}`, path: `${scope.organizationId}/${scope.storeId}/manual-attachments/${scope.conversationId}/upload.pdf` },
+  createSupabase({ removeCalls: [], infoCalls: invalidSignatureCalls.infoCalls, rpcCalls: invalidSignatureCalls.rpcCalls }),
+);
+await assertInvalidAuthorization(invalidSignatureResponse, invalidSignatureCalls);
+
+const expiredCalls = { infoCalls: [] as string[], rpcCalls: [] as string[] };
+const expiredResponse = await run(
+  { authorizationToken: authorization("image", { expiresAt: Date.now() - 1 }), path: `${scope.organizationId}/${scope.storeId}/manual-attachments/${scope.conversationId}/upload.pdf` },
+  createSupabase({ removeCalls: [], infoCalls: expiredCalls.infoCalls, rpcCalls: expiredCalls.rpcCalls }),
+);
+await assertInvalidAuthorization(expiredResponse, expiredCalls);
+
+const invalidFingerprintCalls = { infoCalls: [] as string[], rpcCalls: [] as string[] };
+const invalidFingerprintResponse = await run(
+  { authorizationToken: authorizationWithInvalidFingerprint(validToken), path: `${scope.organizationId}/${scope.storeId}/manual-attachments/${scope.conversationId}/upload.pdf` },
+  createSupabase({ removeCalls: [], infoCalls: invalidFingerprintCalls.infoCalls, rpcCalls: invalidFingerprintCalls.rpcCalls }),
+);
+await assertInvalidAuthorization(invalidFingerprintResponse, invalidFingerprintCalls);
 
 const successRemovals: string[] = [];
 const successResponse = await run(
