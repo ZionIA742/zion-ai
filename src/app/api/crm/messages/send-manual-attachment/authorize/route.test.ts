@@ -62,7 +62,10 @@ function createSupabase(args: {
   conversation?: { id: string; organization_id: string; lead_id: string | null } | null;
   lead?: { id: string; organization_id: string; store_id: string | null } | null;
   signedToken?: string | null;
-  calls: { signedUpload: Array<{ bucket: string; path: string; options: unknown }> };
+  calls: {
+    signedUpload: Array<{ bucket: string; path: string; options: unknown }>;
+    queries?: Array<{ table: string; filters: Record<string, unknown> }>;
+  };
 }) {
   const query = (table: string) => {
     const filters: Record<string, unknown> = {};
@@ -73,6 +76,7 @@ function createSupabase(args: {
         return builder;
       },
       maybeSingle: async () => {
+        args.calls.queries?.push({ table, filters: { ...filters } });
         if (table === "conversations") {
           const row = args.conversation;
           const matches = row && Object.entries(filters).every(([key, value]) => row[key as keyof typeof row] === value);
@@ -135,6 +139,20 @@ async function run(
 
 async function readJson(response: Response) {
   return (await response.json()) as Record<string, unknown>;
+}
+
+async function assertRejectedWithoutUpload(
+  response: Response,
+  calls: { signedUpload: Array<{ bucket: string; path: string; options: unknown }> },
+  error: string,
+) {
+  assert.equal(response.status, 403);
+  const payload = await readJson(response);
+  assert.equal(payload.error, error);
+  assert.equal(payload.token, undefined);
+  assert.equal(payload.path, undefined);
+  assert.equal(payload.authorizationToken, undefined);
+  assert.deepEqual(calls.signedUpload, []);
 }
 
 const validBody = {
@@ -213,6 +231,178 @@ const cases: TestCase[] = [
       assert.equal(response.status, 403);
       assert.equal((await readJson(response)).error, "conversation_not_found_or_forbidden");
       assert.deepEqual(calls.signedUpload, []);
+    },
+  },
+  {
+    name: "rejeita conversa pertencente a outra organizacao com filtro de organization",
+    async run() {
+      const calls = {
+        signedUpload: [] as Array<{ bucket: string; path: string; options: unknown }>,
+        queries: [] as Array<{ table: string; filters: Record<string, unknown> }>,
+      };
+      const response = await run(validBody, {
+        supabase: createSupabase({
+          conversation: {
+            id: scope.conversationId,
+            organization_id: "org-other",
+            lead_id: scope.leadId,
+          },
+          lead: {
+            id: scope.leadId,
+            organization_id: scope.organizationId,
+            store_id: scope.storeId,
+          },
+          calls,
+        }),
+      });
+
+      await assertRejectedWithoutUpload(
+        response,
+        calls,
+        "conversation_not_found_or_forbidden",
+      );
+      assert.deepEqual(calls.queries, [
+        {
+          table: "conversations",
+          filters: {
+            id: scope.conversationId,
+            organization_id: scope.organizationId,
+          },
+        },
+      ]);
+    },
+  },
+  {
+    name: "rejeita lead da loja errada com filtros de organization e store",
+    async run() {
+      const calls = {
+        signedUpload: [] as Array<{ bucket: string; path: string; options: unknown }>,
+        queries: [] as Array<{ table: string; filters: Record<string, unknown> }>,
+      };
+      const response = await run(validBody, {
+        supabase: createSupabase({
+          conversation: {
+            id: scope.conversationId,
+            organization_id: scope.organizationId,
+            lead_id: scope.leadId,
+          },
+          lead: {
+            id: scope.leadId,
+            organization_id: scope.organizationId,
+            store_id: "store-other",
+          },
+          calls,
+        }),
+      });
+
+      await assertRejectedWithoutUpload(
+        response,
+        calls,
+        "lead_not_found_or_forbidden",
+      );
+      assert.deepEqual(calls.queries, [
+        {
+          table: "conversations",
+          filters: {
+            id: scope.conversationId,
+            organization_id: scope.organizationId,
+          },
+        },
+        {
+          table: "leads",
+          filters: {
+            id: scope.leadId,
+            organization_id: scope.organizationId,
+            store_id: scope.storeId,
+          },
+        },
+      ]);
+    },
+  },
+  {
+    name: "rejeita lead de outra organizacao com filtros de organization e store",
+    async run() {
+      const calls = {
+        signedUpload: [] as Array<{ bucket: string; path: string; options: unknown }>,
+        queries: [] as Array<{ table: string; filters: Record<string, unknown> }>,
+      };
+      const response = await run(validBody, {
+        supabase: createSupabase({
+          conversation: {
+            id: scope.conversationId,
+            organization_id: scope.organizationId,
+            lead_id: scope.leadId,
+          },
+          lead: {
+            id: scope.leadId,
+            organization_id: "org-other",
+            store_id: scope.storeId,
+          },
+          calls,
+        }),
+      });
+
+      await assertRejectedWithoutUpload(
+        response,
+        calls,
+        "lead_not_found_or_forbidden",
+      );
+      assert.deepEqual(calls.queries, [
+        {
+          table: "conversations",
+          filters: {
+            id: scope.conversationId,
+            organization_id: scope.organizationId,
+          },
+        },
+        {
+          table: "leads",
+          filters: {
+            id: scope.leadId,
+            organization_id: scope.organizationId,
+            store_id: scope.storeId,
+          },
+        },
+      ]);
+    },
+  },
+  {
+    name: "rejeita conversa sem lead_id e nao consulta lead",
+    async run() {
+      const calls = {
+        signedUpload: [] as Array<{ bucket: string; path: string; options: unknown }>,
+        queries: [] as Array<{ table: string; filters: Record<string, unknown> }>,
+      };
+      const response = await run(validBody, {
+        supabase: createSupabase({
+          conversation: {
+            id: scope.conversationId,
+            organization_id: scope.organizationId,
+            lead_id: null,
+          },
+          lead: {
+            id: scope.leadId,
+            organization_id: scope.organizationId,
+            store_id: scope.storeId,
+          },
+          calls,
+        }),
+      });
+
+      await assertRejectedWithoutUpload(
+        response,
+        calls,
+        "conversation_not_found_or_forbidden",
+      );
+      assert.deepEqual(calls.queries, [
+        {
+          table: "conversations",
+          filters: {
+            id: scope.conversationId,
+            organization_id: scope.organizationId,
+          },
+        },
+      ]);
     },
   },
   {
