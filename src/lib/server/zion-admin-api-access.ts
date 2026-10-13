@@ -7,7 +7,7 @@ import { resolveAccessForRequest } from "./account-access-resolver";
 
 type ZionAdminDeniedHttpStatus = 401 | 403 | 409 | 503;
 
-export type ZionAdminCapability = "manage_accounts";
+export type ZionAdminCapability = "manage_accounts" | "manage_whatsapp_pins";
 
 type ZionAdminRole = "owner" | "admin" | "super_admin";
 
@@ -16,6 +16,9 @@ const ZION_ADMIN_MANAGEMENT_ROLES = new Set<ZionAdminRole>([
   "admin",
   "super_admin",
 ]);
+
+const ZION_ADMIN_WHATSAPP_PINS_ALLOWLIST_ENV =
+  "ZION_ADMIN_WHATSAPP_PINS_ALLOWLIST";
 
 type ZionAdminDeniedPayload = {
   ok: false;
@@ -82,6 +85,7 @@ export type ZionAdminApiAccessResult =
 export type ResolveZionAdminApiAccessDeps = {
   createSupabase: typeof createSupabaseServerClient;
   resolveAccess: typeof resolveAccessForRequest;
+  getWhatsappPinsAllowlist?: () => string | undefined;
 };
 
 const DEFAULT_TECHNICAL_REASON_CODE: AccessReasonCode =
@@ -110,7 +114,16 @@ function createGrantedResolution(
   resolution: AccessResolution & { status: "zion_admin_allowed" },
   sessionUserId: string,
   role: ZionAdminRole,
+  whatsappPinsAllowlisted: boolean,
 ): ZionAdminApiGrantedResolution {
+  const capabilities: ZionAdminCapability[] = ZION_ADMIN_MANAGEMENT_ROLES.has(role)
+    ? ["manage_accounts"]
+    : [];
+
+  if (whatsappPinsAllowlisted) {
+    capabilities.push("manage_whatsapp_pins");
+  }
+
   return {
     domain: "zion_admin",
     status: "zion_admin_allowed",
@@ -125,10 +138,32 @@ function createGrantedResolution(
     reasonCode: resolution.reasonCode,
     message: resolution.message,
     role,
-    capabilities: ZION_ADMIN_MANAGEMENT_ROLES.has(role)
-      ? ["manage_accounts"]
-      : [],
+    capabilities,
   };
+}
+
+function isValidSupabaseUserId(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+function isWhatsappPinsUserAllowlisted(
+  sessionUserId: string,
+  rawAllowlist: string | undefined,
+) {
+  const normalizedSessionUserId = sessionUserId.trim().toLowerCase();
+  if (!isValidSupabaseUserId(normalizedSessionUserId)) return false;
+
+  const entries = (rawAllowlist ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase());
+
+  if (entries.length === 0 || entries.some((value) => !isValidSupabaseUserId(value))) {
+    return false;
+  }
+
+  return entries.includes(normalizedSessionUserId);
 }
 
 type ZionAdminRoleLookupFailureKind = "technical" | "invalid";
@@ -303,6 +338,9 @@ export async function resolveZionAdminApiAccess(
   const deps = input?.deps ?? input;
   const createSupabase = deps?.createSupabase ?? createSupabaseServerClient;
   const resolveAccess = deps?.resolveAccess ?? resolveAccessForRequest;
+  const getWhatsappPinsAllowlist =
+    deps?.getWhatsappPinsAllowlist ??
+    (() => process.env[ZION_ADMIN_WHATSAPP_PINS_ALLOWLIST_ENV]);
 
   let supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
 
@@ -371,6 +409,10 @@ export async function resolveZionAdminApiAccess(
     grantedSourceResolution,
     sessionUserId,
     role,
+    isWhatsappPinsUserAllowlisted(
+      sessionUserId,
+      getWhatsappPinsAllowlist(),
+    ),
   );
 
   if (

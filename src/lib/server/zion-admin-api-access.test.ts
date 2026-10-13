@@ -62,6 +62,7 @@ function createDeps(
     role?: unknown;
     roleError?: unknown;
     missingRole?: boolean;
+    whatsappPinsAllowlist?: string;
   },
 ): ResolveZionAdminApiAccessDeps {
   const supabase = {
@@ -121,6 +122,9 @@ function createDeps(
       }
 
       return resolution;
+    },
+    getWhatsappPinsAllowlist() {
+      return hooks?.whatsappPinsAllowlist;
     },
   };
 }
@@ -236,6 +240,131 @@ const tests: TestCase[] = [
         assert.equal(result.resolution.role, role);
         assert.deepEqual(result.resolution.capabilities, ["manage_accounts"]);
       }
+    },
+  },
+  {
+    name: "explicitly allowlisted administrator receives only the PIN capability in addition to existing access",
+    run: async () => {
+      const userId = "11111111-1111-4111-8111-111111111111";
+      const resolution = createAllowedResolution();
+      resolution.sessionUserId = userId;
+
+      const result = await resolveZionAdminApiAccess({
+        ...createDeps(resolution, { whatsappPinsAllowlist: userId }),
+        requiredCapability: "manage_whatsapp_pins",
+      });
+
+      assert.equal(result.ok, true);
+      if (!result.ok) throw new Error("expected allowlisted PIN access");
+      assert.deepEqual(result.resolution.capabilities, [
+        "manage_accounts",
+        "manage_whatsapp_pins",
+      ]);
+    },
+  },
+  {
+    name: "administrator outside the explicit PIN allowlist is denied",
+    run: async () => {
+      const resolution = createAllowedResolution();
+      resolution.sessionUserId = "22222222-2222-4222-8222-222222222222";
+
+      const result = await resolveZionAdminApiAccess({
+        ...createDeps(resolution, {
+          whatsappPinsAllowlist: "33333333-3333-4333-8333-333333333333",
+        }),
+        requiredCapability: "manage_whatsapp_pins",
+      });
+
+      assert.equal(result.ok, false);
+      if (result.ok) throw new Error("expected PIN capability denial");
+      assert.equal(result.httpStatus, 403);
+      assert.equal(result.payload.reasonCode, "zion_admin_capability_denied");
+    },
+  },
+  {
+    name: "owner admin and super_admin remain denied without explicit PIN authorization",
+    run: async () => {
+      for (const role of ["owner", "admin", "super_admin"] as const) {
+        const resolution = createAllowedResolution();
+        resolution.sessionUserId = "44444444-4444-4444-8444-444444444444";
+        const result = await resolveZionAdminApiAccess({
+          ...createDeps(resolution, { role }),
+          requiredCapability: "manage_whatsapp_pins",
+        });
+
+        assert.equal(result.ok, false, role);
+        if (result.ok) throw new Error("expected PIN capability denial");
+        assert.equal(result.httpStatus, 403, role);
+      }
+    },
+  },
+  {
+    name: "anonymous, missing allowlist and invalid identity fail closed for PIN access",
+    run: async () => {
+      const anonymous = await resolveZionAdminApiAccess({
+        ...createDeps(createResolution({ status: "anonymous" })),
+        requiredCapability: "manage_whatsapp_pins",
+      });
+      assert.equal(anonymous.ok, false);
+      if (anonymous.ok) throw new Error("expected anonymous denial");
+      assert.equal(anonymous.httpStatus, 401);
+
+      const missingAllowlistResolution = createAllowedResolution();
+      missingAllowlistResolution.sessionUserId =
+        "55555555-5555-4555-8555-555555555555";
+      const missingAllowlist = await resolveZionAdminApiAccess({
+        ...createDeps(missingAllowlistResolution),
+        requiredCapability: "manage_whatsapp_pins",
+      });
+      assert.equal(missingAllowlist.ok, false);
+      if (missingAllowlist.ok) throw new Error("expected missing allowlist denial");
+      assert.equal(missingAllowlist.httpStatus, 403);
+
+      const malformedAllowlistResolution = createAllowedResolution();
+      malformedAllowlistResolution.sessionUserId =
+        "66666666-6666-4666-8666-666666666666";
+      const malformedAllowlist = await resolveZionAdminApiAccess({
+        ...createDeps(malformedAllowlistResolution, {
+          whatsappPinsAllowlist:
+            "66666666-6666-4666-8666-666666666666,not-a-uuid",
+        }),
+        requiredCapability: "manage_whatsapp_pins",
+      });
+      assert.equal(malformedAllowlist.ok, false);
+      if (malformedAllowlist.ok) {
+        throw new Error("expected malformed allowlist denial");
+      }
+      assert.equal(malformedAllowlist.httpStatus, 403);
+
+      const invalidIdentityResolution = createAllowedResolution();
+      invalidIdentityResolution.sessionUserId = "not-a-user-id";
+      const invalidIdentity = await resolveZionAdminApiAccess({
+        ...createDeps(invalidIdentityResolution, {
+          whatsappPinsAllowlist: "not-a-user-id",
+        }),
+        requiredCapability: "manage_whatsapp_pins",
+      });
+      assert.equal(invalidIdentity.ok, false);
+      if (invalidIdentity.ok) throw new Error("expected invalid identity denial");
+      assert.equal(invalidIdentity.httpStatus, 403);
+    },
+  },
+  {
+    name: "browser-supplied organization or store identifiers do not grant PIN access",
+    run: async () => {
+      const resolution = createAllowedResolution();
+      resolution.sessionUserId = "77777777-7777-4777-8777-777777777777";
+      const result = await resolveZionAdminApiAccess({
+        ...createDeps(resolution),
+        requiredCapability: "manage_whatsapp_pins",
+        organizationId: "browser-controlled-organization",
+        storeId: "browser-controlled-store",
+      } as never);
+
+      assert.equal(result.ok, false);
+      if (result.ok) throw new Error("expected browser data to be ignored");
+      assert.equal(result.httpStatus, 403);
+      assert.equal(result.payload.reasonCode, "zion_admin_capability_denied");
     },
   },
   {
