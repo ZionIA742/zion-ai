@@ -1407,12 +1407,11 @@ const tests: TestCase[] = [
       const block = getDiscountItemsBlock(source);
 
       for (const label of [
-        'label: "Desconto inicial para negociar"',
-        'label: "Maior desconto da negociação normal"',
-        'label: "A IA pode confirmar sozinha"',
-        'label: "Pode consultar acima do limite"',
-        'label: "Regra para vendas de valor alto"',
-        'label: "Aprovação em venda de valor alto"',
+        'label: "Desconto inicial"',
+        'label: "Limite normal"',
+        'label: "Autonomia da IA"',
+        'label: "Venda de valor alto"',
+        'label: "Contrapartidas"',
       ]) {
         assert.equal(
           block.includes(label),
