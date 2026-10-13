@@ -79,7 +79,7 @@ function createSupabase(args: {
   leadError?: { message: string };
   incomingMessages?: Array<Record<string, unknown>>;
   integrations?: Array<Record<string, unknown>>;
-  storageInfo?: { data: { size: number; contentType?: string; metadata?: Record<string, unknown> } | null; error: { message: string } | null };
+  storageInfo?: { data: { size: number; contentType?: string; metadata?: Record<string, unknown> } | null; error: { message: string; status?: number; statusCode?: string; code?: string } | null };
   storageInfoThrows?: Error;
   whatsapp?: boolean;
 }) {
@@ -414,22 +414,71 @@ for (const [name, storageSize] of [["different", 13], ["too-large", MANUAL_ATTAC
   assertNoRpc(sizeCalls);
 }
 
-for (const storageInfo of [
-  { data: null, error: null },
-  { data: null, error: { message: "storage unavailable" } },
-] as const) {
-  const objectCalls = { infoCalls: [] as string[], rpcCalls: [] as string[] };
-  const objectResponse = await run(
-    validBody(),
-    createSupabase({ removeCalls: [], infoCalls: objectCalls.infoCalls, rpcCalls: objectCalls.rpcCalls, storageInfo }),
-  );
-  const objectPayload = await objectResponse.json();
-  assert.equal(objectResponse.status, 404);
-  assert.deepEqual(objectPayload, { ok: false, error: "attachment_object_not_found" });
-  assertNoAuthorizationArtifacts(objectPayload);
-  assertNoRpc(objectCalls);
-}
+const missingObjectCalls = { infoCalls: [] as string[], rpcCalls: [] as string[] };
+const missingObjectResponse = await run(
+  validBody(),
+  createSupabase({
+    removeCalls: [],
+    infoCalls: missingObjectCalls.infoCalls,
+    rpcCalls: missingObjectCalls.rpcCalls,
+    storageInfo: { data: null, error: { message: "Object not found", status: 404, code: "NoSuchKey" } },
+  }),
+);
+const missingObjectPayload = await missingObjectResponse.json();
+assert.equal(missingObjectResponse.status, 404);
+assert.deepEqual(missingObjectPayload, { ok: false, error: "attachment_object_not_found" });
+assertNoAuthorizationArtifacts(missingObjectPayload);
+assertNoRpc(missingObjectCalls);
 
+const unavailableObjectCalls = { infoCalls: [] as string[], rpcCalls: [] as string[] };
+const unavailableObjectResponse = await run(
+  validBody(),
+  createSupabase({
+    removeCalls: [],
+    infoCalls: unavailableObjectCalls.infoCalls,
+    rpcCalls: unavailableObjectCalls.rpcCalls,
+    storageInfo: { data: null, error: { message: "Storage unavailable", status: 503, statusCode: "503" } },
+  }),
+);
+const unavailableObjectPayload = await unavailableObjectResponse.json();
+assert.equal(unavailableObjectResponse.status, 503);
+assert.deepEqual(unavailableObjectPayload, { ok: false, error: "attachment_storage_unavailable" });
+assertNoAuthorizationArtifacts(unavailableObjectPayload);
+assertNoRpc(unavailableObjectCalls);
+
+const unknownObjectCalls = { infoCalls: [] as string[], rpcCalls: [] as string[] };
+const unknownObjectResponse = await run(
+  validBody(),
+  createSupabase({
+    removeCalls: [],
+    infoCalls: unknownObjectCalls.infoCalls,
+    rpcCalls: unknownObjectCalls.rpcCalls,
+    storageInfo: { data: null, error: { message: "unclassified storage failure" } },
+  }),
+);
+const unknownObjectPayload = await unknownObjectResponse.json();
+assert.equal(unknownObjectResponse.status, 503);
+assert.deepEqual(unknownObjectPayload, { ok: false, error: "attachment_storage_unavailable" });
+assertNoAuthorizationArtifacts(unknownObjectPayload);
+assertNoRpc(unknownObjectCalls);
+
+const emptyObjectCalls = { infoCalls: [] as string[], rpcCalls: [] as string[] };
+const emptyObjectResponse = await run(
+  validBody(),
+  createSupabase({
+    removeCalls: [],
+    infoCalls: emptyObjectCalls.infoCalls,
+    rpcCalls: emptyObjectCalls.rpcCalls,
+    storageInfo: { data: null, error: null },
+  }),
+);
+const emptyObjectPayload = await emptyObjectResponse.json();
+assert.equal(emptyObjectResponse.status, 503);
+assert.deepEqual(emptyObjectPayload, { ok: false, error: "attachment_storage_unavailable" });
+assertNoAuthorizationArtifacts(emptyObjectPayload);
+assertNoRpc(emptyObjectCalls);
+
+/* A thrown SDK/network error is also an unavailable Storage dependency. */
 const storageExceptionCalls = { infoCalls: [] as string[], rpcCalls: [] as string[] };
 const storageExceptionResponse = await run(
   validBody(),
@@ -441,11 +490,25 @@ const storageExceptionResponse = await run(
   }),
 );
 const storageExceptionPayload = await storageExceptionResponse.json();
-assert.equal(storageExceptionResponse.status, 500);
-assert.deepEqual(storageExceptionPayload, { ok: false, error: "manual_attachment_finalize_failed" });
+assert.equal(storageExceptionResponse.status, 503);
+assert.deepEqual(storageExceptionPayload, { ok: false, error: "attachment_storage_unavailable" });
 assert.equal(JSON.stringify(storageExceptionPayload).includes("storage secret internal detail"), false);
 assertNoAuthorizationArtifacts(storageExceptionPayload);
 assertNoRpc(storageExceptionCalls);
+
+/* The previous generic Storage error is no longer treated as a 404. */
+const genericStorageErrorCalls = { infoCalls: [] as string[], rpcCalls: [] as string[] };
+const genericStorageErrorResponse = await run(
+  validBody(),
+  createSupabase({
+    removeCalls: [],
+    infoCalls: genericStorageErrorCalls.infoCalls,
+    rpcCalls: genericStorageErrorCalls.rpcCalls,
+    storageInfo: { data: null, error: { message: "storage unavailable" } },
+  }),
+);
+assert.equal(genericStorageErrorResponse.status, 503);
+assertNoRpc(genericStorageErrorCalls);
 
 const payloadCalls = { infoCalls: [] as string[], rpcCalls: [] as string[], rpcPayloads: [] as Array<Record<string, unknown>> };
 const payloadToken = authorization();
@@ -522,8 +585,8 @@ const conflictResponse = await run(
   createSupabase({ removeCalls: [], infoCalls: conflictCalls.infoCalls, rpcCalls: conflictCalls.rpcCalls, rpcError: { message: "MANUAL_ATTACHMENT_IDEMPOTENCY_CONFLICT" } }),
 );
 const conflictPayload = await conflictResponse.json();
-assert.equal(conflictResponse.status, 500);
-assert.deepEqual(conflictPayload, { ok: false, error: "manual_attachment_finalize_failed" });
+assert.equal(conflictResponse.status, 409);
+assert.deepEqual(conflictPayload, { ok: false, error: "manual_attachment_idempotency_conflict" });
 assertNoAuthorizationArtifacts(conflictPayload);
 assert.deepEqual(conflictCalls.rpcCalls, ["finalize_manual_attachment_message"]);
 

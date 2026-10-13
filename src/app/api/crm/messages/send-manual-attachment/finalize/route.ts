@@ -26,6 +26,21 @@ function messageFromRpc(value: unknown) {
   return value && typeof value === "object" ? value : null;
 }
 
+function storageInfoFailureStatus(error: unknown): 404 | 503 {
+  const candidate = error && typeof error === "object"
+    ? error as { status?: unknown; code?: unknown; statusCode?: unknown; originalError?: unknown }
+    : null;
+  const status = Number(candidate?.status);
+  const code = String(candidate?.code || candidate?.statusCode || "").toLowerCase();
+
+  if (status === 404 || code === "nosuchkey" || code === "notfound") return 404;
+
+  const original = candidate?.originalError;
+  if (original && original !== error) return storageInfoFailureStatus(original);
+
+  return 503;
+}
+
 export async function handleManualAttachmentFinalizePost(
   request: Request,
   deps: { resolveAccess?: typeof resolveStoreApiAccess; createServiceClient?: typeof createServiceSupabaseClient } = {},
@@ -58,8 +73,20 @@ export async function handleManualAttachmentFinalizePost(
       return errorResponse(403, "attachment_scope_mismatch");
     }
 
-    const objectInfo = await supabase.storage.from(MANUAL_ATTACHMENT_STORAGE_BUCKET).info(authorization.path);
-    if (objectInfo.error || !objectInfo.data) return errorResponse(404, "attachment_object_not_found");
+    let objectInfo;
+    try {
+      objectInfo = await supabase.storage.from(MANUAL_ATTACHMENT_STORAGE_BUCKET).info(authorization.path);
+    } catch (error) {
+      return storageInfoFailureStatus(error) === 404
+        ? errorResponse(404, "attachment_object_not_found")
+        : errorResponse(503, "attachment_storage_unavailable");
+    }
+    if (objectInfo.error) {
+      return storageInfoFailureStatus(objectInfo.error) === 404
+        ? errorResponse(404, "attachment_object_not_found")
+        : errorResponse(503, "attachment_storage_unavailable");
+    }
+    if (!objectInfo.data) return errorResponse(503, "attachment_storage_unavailable");
     const objectSize = Number(objectInfo.data.size);
     const objectMime = normalizeManualAttachmentMimeType(
       objectInfo.data.contentType ?? objectInfo.data.metadata?.mimetype ?? objectInfo.data.metadata?.contentType,
@@ -81,6 +108,9 @@ export async function handleManualAttachmentFinalizePost(
       sessionUserId: access.sessionUserId,
     });
     if (rpc.error) {
+      if (String(rpc.error.message || "").includes("MANUAL_ATTACHMENT_IDEMPOTENCY_CONFLICT")) {
+        return errorResponse(409, "manual_attachment_idempotency_conflict");
+      }
       // Storage and PostgreSQL are separate systems. A failed/ambiguous RPC
       // cannot prove that a concurrent transaction will not materialize this
       // exact object, so preserve the private object for controlled cleanup.
