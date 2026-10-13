@@ -34,6 +34,7 @@ export async function extractContractTextFromStoredFile(args: {
     fileName: args.fileName,
     mimeType: args.mimeType,
     buffer: args.buffer,
+    strictPdfErrors: true,
   });
 
   const text = cleanInlineText(extracted.text || "");

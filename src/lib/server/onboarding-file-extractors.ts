@@ -73,6 +73,40 @@ export type ExtractedFileContent = {
   diagnostics?: ExtractedFileDiagnostics;
 };
 
+export type PdfTextExtractionErrorCode =
+  | "PDF_READER_LOAD_FAILED"
+  | "PDF_READER_API_UNAVAILABLE"
+  | "PDF_READER_PARSE_FAILED";
+
+export type PdfTextExtractionWarningCode = "PDF_READER_DESTROY_FAILED";
+
+export class PdfTextExtractionError extends Error {
+  readonly code: PdfTextExtractionErrorCode;
+
+  constructor(code: PdfTextExtractionErrorCode) {
+    super("Falha tecnica ao ler o PDF.");
+    this.name = "PdfTextExtractionError";
+    this.code = code;
+  }
+}
+
+export type PdfParserInstance = {
+  getText?: () => Promise<unknown>;
+  destroy?: () => Promise<void> | void;
+};
+
+export type PdfParserModule = {
+  PDFParse?: new (args: { data: Buffer }) => PdfParserInstance;
+  default?: ((buffer: Buffer) => Promise<unknown>) | unknown;
+} | ((buffer: Buffer) => Promise<unknown>);
+
+export type PdfParserLoader = () => PdfParserModule;
+
+export type ExtractTextFromFileOptions = {
+  strictPdfErrors?: boolean;
+  pdfParserLoader?: PdfParserLoader;
+};
+
 export type ExtractedPositionalTextBlock = {
   pageNumber: number;
   blockIndex: number;
@@ -115,6 +149,17 @@ export type ExtractedFileDiagnostics = {
 function getExtension(fileName: string) {
   const parts = fileName.toLowerCase().split(".");
   return parts.length > 1 ? parts[parts.length - 1] : "";
+}
+
+function cleanPdfText(value: string) {
+  return cleanInlineText(value.replace(/^--\s+\d+\s+of\s+\d+\s+--$/gm, ""));
+}
+
+function getPdfResultText(result: unknown) {
+  if (typeof result === "string") return result;
+  if (!result || typeof result !== "object") return "";
+  const text = (result as { text?: unknown }).text;
+  return typeof text === "string" ? text : "";
 }
 
 export function isSupportedIntelligentImportExtension(extension: string) {
@@ -1846,34 +1891,96 @@ async function extractTextFromPptx(buffer: Buffer) {
   return text;
 }
 
-async function extractTextFromPdf(buffer: Buffer) {
+export async function extractPdfTextWithParser(
+  buffer: Buffer,
+  loadPdfParser: PdfParserLoader = () => nodeRequire("pdf-parse") as PdfParserModule,
+) {
+  let pdfParseModule: PdfParserModule;
+
   try {
-    const pdfParseModule = nodeRequire("pdf-parse");
-    let result: any = null;
-    const PDFParse = (pdfParseModule as any).PDFParse;
+    pdfParseModule = loadPdfParser();
+  } catch {
+    throw new PdfTextExtractionError("PDF_READER_LOAD_FAILED");
+  }
+
+  let result: unknown = null;
+  let parser: PdfParserInstance | null = null;
+  let primaryError: PdfTextExtractionError | null = null;
+  let warningCode: PdfTextExtractionWarningCode | undefined;
+
+  const PDFParse =
+    typeof pdfParseModule === "function" ? undefined : pdfParseModule.PDFParse;
 
     if (typeof PDFParse === "function") {
-      const parser = new PDFParse({ data: buffer });
       try {
-        result = await parser.getText();
-      } finally {
-        await parser.destroy?.();
+        parser = new PDFParse({ data: buffer });
+      } catch {
+        throw new PdfTextExtractionError("PDF_READER_PARSE_FAILED");
       }
+
+      try {
+        if (typeof parser.getText !== "function") {
+          throw new PdfTextExtractionError("PDF_READER_API_UNAVAILABLE");
+        }
+        result = await parser.getText();
+      } catch (error) {
+        primaryError =
+          error instanceof PdfTextExtractionError
+            ? error
+            : new PdfTextExtractionError("PDF_READER_PARSE_FAILED");
+      }
+
+      try {
+        await parser.destroy?.();
+      } catch {
+        if (!primaryError) {
+          const text = cleanPdfText(
+            getPdfResultText(result),
+          );
+          if (!text) {
+            throw new PdfTextExtractionError("PDF_READER_PARSE_FAILED");
+          }
+          warningCode = "PDF_READER_DESTROY_FAILED";
+        }
+      }
+
+      if (primaryError) throw primaryError;
     } else {
-      const pdfParseFn: any = (pdfParseModule as any).default ?? (pdfParseModule as any);
+      const pdfParseFn =
+        typeof pdfParseModule === "function" ? pdfParseModule : pdfParseModule.default;
       if (typeof pdfParseFn === "function") {
-        result = await pdfParseFn(buffer);
+        try {
+          result = await pdfParseFn(buffer);
+        } catch {
+          throw new PdfTextExtractionError("PDF_READER_PARSE_FAILED");
+        }
+      } else {
+        throw new PdfTextExtractionError("PDF_READER_API_UNAVAILABLE");
       }
     }
 
-    const text = cleanInlineText(
-      typeof result === "string" ? result : result?.text || ""
-    );
+  return {
+    text: cleanPdfText(
+      getPdfResultText(result),
+    ),
+    warningCode,
+  };
+}
+
+async function extractTextFromPdf(
+  buffer: Buffer,
+  options: ExtractTextFromFileOptions = {},
+) {
+  let text = "";
+
+  try {
+    const parsed = await extractPdfTextWithParser(buffer, options.pdfParserLoader);
+    text = parsed.text;
     const positionalTextBlocks = await extractPositionalTextBlocksFromPdf(buffer);
     debugIntelligentImport("extractTextFromPdf", {
       textLength: text.length,
-      preview: text.slice(0, 300),
       positionalBlocks: positionalTextBlocks.length,
+      warningCode: parsed.warningCode,
     });
     return {
       text,
@@ -1881,8 +1988,13 @@ async function extractTextFromPdf(buffer: Buffer) {
     };
   } catch (error) {
     debugIntelligentImport("extractTextFromPdf:error", {
-      error: error instanceof Error ? error.message : String(error),
+      code: error instanceof PdfTextExtractionError ? error.code : "PDF_READER_UNKNOWN_ERROR",
+      errorClass: error instanceof Error ? error.name : typeof error,
     });
+    if (options.strictPdfErrors) {
+      if (error instanceof PdfTextExtractionError) throw error;
+      throw new PdfTextExtractionError("PDF_READER_PARSE_FAILED");
+    }
     return {
       text: "",
       positionalTextBlocks: [] as ExtractedPositionalTextBlock[],
@@ -2449,8 +2561,8 @@ export async function extractTextFromFile(params: {
   fileName: string;
   mimeType: string;
   buffer: Buffer;
-}): Promise<ExtractedFileContent> {
-  const { fileName, mimeType, buffer } = params;
+} & ExtractTextFromFileOptions): Promise<ExtractedFileContent> {
+  const { fileName, mimeType, buffer, strictPdfErrors, pdfParserLoader } = params;
   const extension = getExtension(fileName);
 
   let text = "";
@@ -2466,7 +2578,10 @@ export async function extractTextFromFile(params: {
   });
 
   if (extension === "pdf") {
-    const pdfExtraction = await extractTextFromPdf(buffer);
+    const pdfExtraction = await extractTextFromPdf(buffer, {
+      strictPdfErrors,
+      pdfParserLoader,
+    });
     text = pdfExtraction.text;
     positionalTextBlocks = pdfExtraction.positionalTextBlocks;
     extractedImages = await extractImagesFromPdf(buffer, fileName);

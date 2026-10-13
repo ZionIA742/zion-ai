@@ -1,6 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
-import { extractContractTextFromStoredFile } from "./contract-text-analysis";
+import {
+  extractContractTextFromStoredFile,
+} from "./contract-text-analysis";
+import { PdfTextExtractionError } from "../onboarding-file-extractors";
 import { extractSuggestedContractRules } from "./contract-rule-extraction";
 
 const STORAGE_BUCKET = "zion-store-files";
@@ -235,6 +238,17 @@ export class StoreContractTemplateAccessError extends Error {
 }
 
 export function buildStoreContractTemplateErrorResponse(error: unknown) {
+  if (error instanceof PdfTextExtractionError) {
+    return Response.json(
+      {
+        ok: false,
+        error: error.code,
+        message: error.message,
+      },
+      { status: 500, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
   if (error instanceof StoreContractTemplateAccessError) {
     return Response.json(
       {
