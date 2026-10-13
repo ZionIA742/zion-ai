@@ -3,11 +3,9 @@ import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import { XMLParser } from "fast-xml-parser";
 import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const nodeRequire = createRequire(`${process.cwd()}/package.json`);
 const MAX_RENDERED_PDF_IMAGE_PAGES = 150;
 const PDF_RENDER_SCALE = 0.75;
 export const SUPPORTED_INTELLIGENT_IMPORT_EXTENSIONS = [
@@ -100,7 +98,7 @@ export type PdfParserModule = {
   default?: ((buffer: Buffer) => Promise<unknown>) | unknown;
 } | ((buffer: Buffer) => Promise<unknown>);
 
-export type PdfParserLoader = () => PdfParserModule;
+export type PdfParserLoader = () => PdfParserModule | Promise<PdfParserModule>;
 
 export type ExtractTextFromFileOptions = {
   strictPdfErrors?: boolean;
@@ -1893,12 +1891,12 @@ async function extractTextFromPptx(buffer: Buffer) {
 
 export async function extractPdfTextWithParser(
   buffer: Buffer,
-  loadPdfParser: PdfParserLoader = () => nodeRequire("pdf-parse") as PdfParserModule,
+  loadPdfParser: PdfParserLoader = async () => (await import("pdf-parse")) as PdfParserModule,
 ) {
   let pdfParseModule: PdfParserModule;
 
   try {
-    pdfParseModule = loadPdfParser();
+    pdfParseModule = await loadPdfParser();
   } catch {
     throw new PdfTextExtractionError("PDF_READER_LOAD_FAILED");
   }
@@ -2470,7 +2468,7 @@ function buildPdfRenderedPageFileName(fileName: string, pageNumber: number) {
 
 async function extractImagesFromPdf(buffer: Buffer, fileName: string) {
   try {
-    const pdfParseModule = nodeRequire("pdf-parse");
+    const pdfParseModule = (await import("pdf-parse")) as PdfParserModule;
     const PDFParse = (pdfParseModule as any).PDFParse;
     if (typeof PDFParse !== "function") {
       return [] as ExtractedImageAsset[];
