@@ -95,14 +95,22 @@ WITH
           ) FROM target t), false),
           'Nenhuma permissao direta a anon/authenticated'
    UNION ALL
-   SELECT 5, 'service_role_sem_delete',
+   SELECT 5, 'service_role_permissoes_por_etapa',
           COALESCE((SELECT
             has_table_privilege('service_role', t.table_oid, 'SELECT')
-            AND has_table_privilege('service_role', t.table_oid, 'INSERT')
-            AND has_table_privilege('service_role', t.table_oid, 'UPDATE')
             AND NOT has_table_privilege('service_role', t.table_oid, 'DELETE')
+            AND CASE
+              WHEN to_regprocedure(
+                'public.p9_request_quote_send_approval_by_system(uuid,uuid,uuid,uuid,integer,uuid,uuid,jsonb)'
+              ) IS NULL THEN
+                has_table_privilege('service_role', t.table_oid, 'INSERT')
+                AND has_table_privilege('service_role', t.table_oid, 'UPDATE')
+              ELSE
+                NOT has_table_privilege('service_role', t.table_oid, 'INSERT')
+                AND NOT has_table_privilege('service_role', t.table_oid, 'UPDATE')
+            END
           FROM target t), false),
-          'Permissoes de servico coerentes com fundacao'
+          'Fundacao: escrita da service_role; apos writer: escrita direta bloqueada'
    UNION ALL
    SELECT 6, 'oito_chaves_estrangeiras',
           NOT EXISTS (
