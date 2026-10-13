@@ -93,6 +93,7 @@ type StoreContractTemplateExtractedRuleRow = {
   source_excerpt: string | null;
   confidence: number | null;
   review_status: string | null;
+  review_revision: number;
   sort_order: number | null;
   created_at: string | null;
   updated_at: string | null;
@@ -101,6 +102,25 @@ type StoreContractTemplateExtractedRuleRow = {
 function cleanText(value: unknown) {
   const normalized = String(value || "").trim();
   return normalized || null;
+}
+
+function isUuid(value: unknown) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || "").trim(),
+  );
+}
+
+function withReviewRevision(rule: StoreContractTemplateExtractedRuleRow) {
+  return {
+    ...rule,
+    reviewRevision: Number(rule.review_revision),
+  };
+}
+
+function withReviewRevisions(
+  rules: StoreContractTemplateExtractedRuleRow[],
+) {
+  return rules.map(withReviewRevision);
 }
 
 function normalizeMimeType(value: string | null | undefined) {
@@ -507,7 +527,7 @@ async function loadTemplateExtractedRules(args: {
   const { data, error } = await args.supabase
     .from("store_contract_template_extracted_rules")
     .select(
-      "id, template_version_id, organization_id, store_id, rule_key, rule_group, label, value_text, value_json, source_excerpt, confidence, review_status, sort_order, created_at, updated_at"
+      "id, template_version_id, organization_id, store_id, rule_key, rule_group, label, value_text, value_json, source_excerpt, confidence, review_status, review_revision, sort_order, created_at, updated_at"
     )
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
@@ -531,7 +551,7 @@ async function loadTemplateExtractedRuleById(args: {
   const { data, error } = await args.supabase
     .from("store_contract_template_extracted_rules")
     .select(
-      "id, template_version_id, organization_id, store_id, rule_key, rule_group, label, value_text, value_json, source_excerpt, confidence, review_status, sort_order, created_at, updated_at"
+      "id, template_version_id, organization_id, store_id, rule_key, rule_group, label, value_text, value_json, source_excerpt, confidence, review_status, review_revision, sort_order, created_at, updated_at"
     )
     .eq("id", args.ruleId)
     .eq("organization_id", args.organizationId)
@@ -668,7 +688,7 @@ function buildTemplateSummary(
     template,
     activeVersion,
     versions,
-    extractedRules,
+    extractedRules: withReviewRevisions(extractedRules),
   };
 }
 
@@ -1740,15 +1760,25 @@ async function extractStoreContractTemplateRulesWithResolvedScope(
   };
 }
 
-export async function reviewStoreContractTemplateRule(args: {
+export type ReviewStoreContractTemplateRuleDeps = {
+  resolveScope: typeof resolveAuthorizedStoreTemplateScope;
+};
+
+export async function reviewStoreContractTemplateRule(
+  args: {
   ruleId: string;
   storeId: string;
   organizationId?: string | null;
   reviewStatus: "approved" | "rejected" | "edited";
+  expectedRevision: number;
+  idempotencyKey: string;
   valueText?: string | null;
   label?: string | null;
-}) {
-  const scope = await resolveAuthorizedStoreTemplateScope(args);
+  },
+  deps: Partial<ReviewStoreContractTemplateRuleDeps> = {},
+) {
+  const resolveScope = deps.resolveScope ?? resolveAuthorizedStoreTemplateScope;
+  const scope = await resolveScope(args);
   const ruleId = String(args.ruleId || "").trim();
 
   if (!ruleId) {
@@ -1756,6 +1786,22 @@ export async function reviewStoreContractTemplateRule(args: {
       400,
       "INVALID_RULE_ID",
       "Rule ID nao informado."
+    );
+  }
+
+  if (!Number.isSafeInteger(args.expectedRevision) || args.expectedRevision < 0) {
+    throw new StoreContractTemplateAccessError(
+      400,
+      "INVALID_RULE_REVIEW_REVISION",
+      "Informe uma revisao esperada inteira e nao negativa.",
+    );
+  }
+
+  if (!isUuid(args.idempotencyKey)) {
+    throw new StoreContractTemplateAccessError(
+      400,
+      "INVALID_RULE_REVIEW_IDEMPOTENCY_KEY",
+      "Informe uma chave de idempotencia UUID valida.",
     );
   }
 
@@ -1782,48 +1828,17 @@ export async function reviewStoreContractTemplateRule(args: {
     );
   }
 
-  // A versao dona da regra precisa ser validada ANTES de qualquer UPDATE.
-  const version = await loadTemplateVersionById({
-    supabase: scope.supabase,
-    versionId: rule.template_version_id,
-    organizationId: scope.organizationId,
-    storeId: scope.store.id,
-  });
-
-  if (!version?.id) {
-    throw new StoreContractTemplateAccessError(
-      404,
-      "TEMPLATE_VERSION_NOT_FOUND",
-      "Versao do contrato base nao encontrada nessa loja."
-    );
-  }
-
   const template = await loadStoreContractTemplate({
     supabase: scope.supabase,
     organizationId: scope.organizationId,
     storeId: scope.store.id,
   });
 
-  if (!template?.id || template.id !== version.template_id) {
+  if (!template?.id) {
     throw new StoreContractTemplateAccessError(
       404,
       "TEMPLATE_NOT_FOUND",
       "Template do contrato base nao encontrado nessa loja."
-    );
-  }
-
-  const normalizedVersionStatus = String(version.status || "")
-    .trim()
-    .toLowerCase();
-
-  if (
-    !REVIEWABLE_TEMPLATE_VERSION_STATUSES.has(normalizedVersionStatus) ||
-    version.rejected_at
-  ) {
-    throw new StoreContractTemplateAccessError(
-      409,
-      "TEMPLATE_RULE_VERSION_READ_ONLY",
-      "Essa regra pertence a uma versao somente leitura."
     );
   }
 
@@ -1838,65 +1853,103 @@ export async function reviewStoreContractTemplateRule(args: {
     );
   }
 
-  const effectiveValueText = nextValueText ?? rule.value_text;
-  const effectiveLabel = nextLabel ?? rule.label;
-  const normalizedCurrentReviewStatus = String(rule.review_status || "")
-    .trim()
-    .toLowerCase();
+  const { data: rpcResult, error: rpcError } = await scope.supabase.rpc(
+    "review_store_contract_template_rule_by_system",
+    {
+      p_rule_id: rule.id,
+      p_organization_id: scope.organizationId,
+      p_store_id: scope.store.id,
+      p_actor_user_id: scope.userId,
+      p_expected_revision: args.expectedRevision,
+      p_idempotency_key: args.idempotencyKey,
+      p_review_status: args.reviewStatus,
+      p_value_text: nextValueText,
+      p_label: nextLabel,
+    },
+  );
 
-  const isExactReplay =
-    normalizedCurrentReviewStatus === args.reviewStatus &&
-    effectiveValueText === rule.value_text &&
-    effectiveLabel === rule.label;
-
-  let reviewedRule = rule;
-
-  if (!isExactReplay) {
-    const now = new Date().toISOString();
-
-    const { data: updatedRule, error: updateError } = await scope.supabase
-      .from("store_contract_template_extracted_rules")
-      .update({
-        review_status: args.reviewStatus,
-        value_text: effectiveValueText,
-        label: effectiveLabel,
-        updated_at: now,
-      })
-      .eq("id", rule.id)
-      .eq("template_version_id", version.id)
-      .eq("organization_id", scope.organizationId)
-      .eq("store_id", scope.store.id)
-      .select(
-        "id, template_version_id, organization_id, store_id, rule_key, rule_group, label, value_text, value_json, source_excerpt, confidence, review_status, sort_order, created_at, updated_at"
-      )
-      .maybeSingle();
-
-    if (updateError) {
-      const message = String(updateError.message || "").trim();
-
-      if (message.includes("P19A_CONTRACT_")) {
-        throw new StoreContractTemplateAccessError(
-          409,
-          "TEMPLATE_RULE_VERSION_READ_ONLY",
-          "Essa regra pertence a uma versao somente leitura."
-        );
-      }
-
-      throw new Error(
-        message || "Falha ao atualizar revisao da regra."
-      );
-    }
-
-    if (!updatedRule?.id) {
-      throw new StoreContractTemplateAccessError(
+  if (rpcError) {
+    const message = String(rpcError.message || "").trim();
+    const knownErrors: Record<string, [number, string, string]> = {
+      ZION_ADM_RULE_REVIEW_CONFLICT: [
         409,
         "TEMPLATE_RULE_REVIEW_CONFLICT",
-        "O estado dessa regra mudou antes da revisao. Atualize e tente novamente."
+        "O estado dessa regra mudou antes da revisao. Atualize e tente novamente.",
+      ],
+      ZION_ADM_RULE_REVIEW_IDEMPOTENCY_KEY_REUSED: [
+        409,
+        "TEMPLATE_RULE_REVIEW_IDEMPOTENCY_KEY_REUSED",
+        "A chave de idempotencia ja foi usada para outra decisao.",
+      ],
+      ZION_ADM_RULE_REVIEW_VERSION_READ_ONLY: [
+        409,
+        "TEMPLATE_RULE_VERSION_READ_ONLY",
+        "Essa regra pertence a uma versao somente leitura.",
+      ],
+      ZION_ADM_RULE_REVIEW_NOT_FOUND_OR_OUT_OF_SCOPE: [
+        404,
+        "RULE_NOT_FOUND",
+        "Regra do contrato nao encontrada nessa loja.",
+      ],
+      ZION_ADM_RULE_REVIEW_RULE_NOT_FOUND: [
+        404,
+        "RULE_NOT_FOUND",
+        "Regra do contrato nao encontrada nessa loja.",
+      ],
+      ZION_ADM_RULE_REVIEW_TEMPLATE_NOT_FOUND: [
+        404,
+        "TEMPLATE_NOT_FOUND",
+        "Template do contrato base nao encontrado nessa loja.",
+      ],
+      ZION_ADM_RULE_REVIEW_VERSION_NOT_FOUND: [
+        404,
+        "TEMPLATE_VERSION_NOT_FOUND",
+        "Versao do contrato base nao encontrada nessa loja.",
+      ],
+      ZION_ADM_RULE_REVIEW_VALUE_REQUIRED: [
+        400,
+        "EDITED_RULE_VALUE_REQUIRED",
+        "Informe o texto ajustado da regra.",
+      ],
+      ZION_ADM_RULE_REVIEW_INVALID_REVISION: [
+        400,
+        "INVALID_RULE_REVIEW_REVISION",
+        "Informe uma revisao esperada inteira e nao negativa.",
+      ],
+    };
+    const matchedCode = Object.keys(knownErrors).find((code) =>
+      message.includes(code),
+    );
+    if (matchedCode) {
+      const [status, code, detail] = knownErrors[matchedCode];
+      throw new StoreContractTemplateAccessError(status, code, detail);
+    }
+
+    if (rpcError.code === "42883" || rpcError.code === "PGRST202") {
+      throw new StoreContractTemplateAccessError(
+        500,
+        "RULE_REVIEW_AUTHORITY_UNAVAILABLE",
+        "A autoridade transacional de revisao ainda nao esta disponivel.",
       );
     }
 
-    reviewedRule =
-      updatedRule as StoreContractTemplateExtractedRuleRow;
+    throw new Error(message || "Falha ao revisar regra do contrato.");
+  }
+
+  const rpcPayload = (rpcResult ?? {}) as {
+    rule?: StoreContractTemplateExtractedRuleRow | null;
+    eventId?: string | null;
+    replayed?: boolean;
+  };
+  const reviewedRule = rpcPayload.rule
+    ? withReviewRevision(rpcPayload.rule)
+    : null;
+  if (!reviewedRule?.id) {
+    throw new StoreContractTemplateAccessError(
+      500,
+      "INVALID_RULE_REVIEW_AUTHORITY_RESPONSE",
+      "A autoridade de revisao retornou uma resposta invalida.",
+    );
   }
 
   const versions = await loadTemplateVersions({
@@ -1916,7 +1969,9 @@ export async function reviewStoreContractTemplateRule(args: {
   return {
     store: scope.store,
     organizationId: scope.organizationId,
-    ...buildTemplateSummary(template, versions, refreshedRules),
+    ...buildTemplateSummary(template, versions, withReviewRevisions(refreshedRules)),
     reviewedRule,
+    reviewEventId: rpcPayload.eventId || null,
+    reviewReplayed: rpcPayload.replayed === true,
   };
 }
