@@ -4,6 +4,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import IntelligentCatalogImportPanel from "@/components/catalog/IntelligentCatalogImportPanel";
 import { useStoreContext } from "@/components/StoreProvider";
+import {
+  preserveContractRuleDraftAfterConflict,
+  submitContractRuleReview,
+} from "./contract-rule-review-ui";
 import { supabase } from "@/lib/supabaseBrowser";
 import {
   createStoreCommercialAiSettingsInputFromSources,
@@ -286,6 +290,8 @@ type StoreContractTemplateExtractedRuleRow = {
   source_excerpt: string | null;
   confidence: number | null;
   review_status: string | null;
+  review_revision?: number | null;
+  reviewRevision?: number | null;
   sort_order: number | null;
   created_at: string | null;
   updated_at: string | null;
@@ -297,6 +303,9 @@ type StoreContractTemplateApiResponse = {
   activeVersion?: StoreContractTemplateVersionRow | null;
   versions?: StoreContractTemplateVersionRow[];
   extractedRules?: StoreContractTemplateExtractedRuleRow[];
+  reviewedRule?: StoreContractTemplateExtractedRuleRow | null;
+  reviewEventId?: string | null;
+  reviewReplayed?: boolean;
   error?: string;
   message?: string;
 };
@@ -4406,6 +4415,7 @@ export default function ConfiguracoesPage() {
     "approve" | "reject" | "save-edit" | null
   >(null);
   const [contractRuleEditDrafts, setContractRuleEditDrafts] = useState<Record<string, string>>({});
+  const contractRuleReviewAttemptsRef = useRef<Record<string, string>>({});
   const [contractRuleEditingIds, setContractRuleEditingIds] = useState<Record<string, boolean>>({});
   const [contractContentModal, setContractContentModal] = useState<
     | {
@@ -4910,7 +4920,7 @@ export default function ConfiguracoesPage() {
     const versionAccess = rule
       ? resolveStoreContractVersionAccess(rule.template_version_id)
       : null;
-    if (!versionAccess || !canReviewRulesForStoreContractVersion(versionAccess)) {
+    if (!rule || !versionAccess || !canReviewRulesForStoreContractVersion(versionAccess)) {
       setContractsErrorText("Essa regra pertence a uma versao somente leitura.");
       setContractsSuccessText(null);
       return;
@@ -4928,29 +4938,18 @@ export default function ConfiguracoesPage() {
     setContractsSuccessText(null);
 
     try {
-      const response = await fetch(
-        `/api/store-contract-templates/rules/${args.ruleId}/review`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          credentials: "include",
-          body: JSON.stringify({
-            storeId: activeStoreId,
-            reviewStatus: args.reviewStatus,
-            valueText: contractRuleEditDrafts[args.ruleId] || undefined,
-          }),
-        }
+      const draftBeforeRefresh = contractRuleEditDrafts[args.ruleId] ?? "";
+      const submission = await submitContractRuleReview({
+        rule,
+        storeId: activeStoreId,
+        reviewStatus: args.reviewStatus,
+        draftValue: draftBeforeRefresh,
+        attempts: contractRuleReviewAttemptsRef.current,
+      });
+
+      applyStoreContractTemplateResponse(
+        submission.result as StoreContractTemplateApiResponse,
       );
-
-      const result = (await response.json().catch(() => null)) as StoreContractTemplateApiResponse | null;
-
-      if (!response.ok || !result?.ok) {
-        throw new Error(result?.message || "Nao foi possivel revisar essa regra.");
-      }
-
-      applyStoreContractTemplateResponse(result);
       if (args.reviewStatus === "edited") {
         setContractRuleEditingIds((current) => ({
           ...current,
@@ -4959,6 +4958,17 @@ export default function ConfiguracoesPage() {
       }
       setContractsSuccessText("Regra atualizada com sucesso.");
     } catch (error: any) {
+      if (error?.status === 409) {
+        const draftBeforeRefresh = contractRuleEditDrafts[args.ruleId] ?? "";
+        await fetchStoreContractTemplates();
+        setContractRuleEditDrafts((current) =>
+          preserveContractRuleDraftAfterConflict({
+            drafts: current,
+            ruleId: args.ruleId,
+            draftBeforeRefresh,
+          }),
+        );
+      }
       setContractsErrorText(error?.message || "Nao foi possivel revisar essa regra.");
     } finally {
       setContractRuleActionRuleId(null);
