@@ -155,8 +155,8 @@ async function main() {
   const non2xxJson = await runCase({ status: 401, body: JSON.stringify({ error: { message: "unauthorized" } }) }, { uncertainOnTransportFailure: true });
   assertReason(non2xxJson.result, "send_failed");
 
-  const non2xxInvalid = await runCase({ status: 500, body: "not-json" }, { uncertainOnTransportFailure: true });
-  assertReason(non2xxInvalid.result, "send_failed");
+  const serverFailure = await runCase({ status: 500, body: "not-json" }, { uncertainOnTransportFailure: true });
+  assertReason(serverFailure.result, "send_uncertain");
 
   const successInvalid = await runCase({ status: 200, body: "not-json" }, { uncertainOnTransportFailure: true });
   assertReason(successInvalid.result, "send_uncertain");

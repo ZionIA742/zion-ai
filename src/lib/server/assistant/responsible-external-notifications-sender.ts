@@ -223,10 +223,15 @@ async function sendWhatsappPayload(params: {
       // The HTTP status is already a deterministic provider rejection. Do not
       // turn an unreadable error body into transport uncertainty.
     }
-    throw new Error(
+    const message =
       cleanText(payload?.error?.message) ||
-        `Falha HTTP ${response.status} ao enviar mensagem para WhatsApp`,
-    );
+      `Falha HTTP ${response.status} ao enviar mensagem para WhatsApp`;
+    if (response.status >= 500) {
+      const uncertain = new Error(message);
+      uncertain.name = "WHATSAPP_TRANSPORT_UNCERTAIN";
+      throw uncertain;
+    }
+    throw new Error(message);
   }
 
   let payload: WhatsAppSendResponse;
@@ -286,6 +291,79 @@ async function sendWhatsappTemplateMessage(params: {
       template: params.template,
     },
   });
+}
+
+export type ResponsibleWhatsappPayload =
+  | { type: "text"; body: string }
+  | { type: "template"; template: Record<string, unknown> }
+  | { type: "document"; link: string; filename: string; caption?: string };
+
+export async function sendResponsibleWhatsappPayload(args: {
+  organizationId: string;
+  storeId: string;
+  responsibleId: string;
+  destination: string;
+  payload: ResponsibleWhatsappPayload;
+}): Promise<
+  | { ok: true; externalMessageId: string }
+  | { ok: false; reason: string }
+> {
+  const organizationId = cleanText(args.organizationId);
+  const storeId = cleanText(args.storeId);
+  const responsibleId = cleanText(args.responsibleId);
+  const destination = cleanText(args.destination);
+  if (!organizationId || !storeId || !responsibleId || !destination) {
+    return { ok: false, reason: "RESPONSIBLE_WHATSAPP_SEND_INVALID_INPUT" };
+  }
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const responsible = await loadCanonicalActivePrimaryStoreResponsible({
+      supabase,
+      organizationId,
+      storeId,
+    });
+    if (!responsible.ok || responsible.responsible.id !== responsibleId) {
+      return { ok: false, reason: "RESPONSIBLE_WHATSAPP_DESTINATION_SCOPE_MISMATCH" };
+    }
+    if (responsible.responsible.whatsappNumber !== destination) {
+      return { ok: false, reason: "RESPONSIBLE_WHATSAPP_DESTINATION_CHANGED" };
+    }
+
+    const integration = await getResponsibleSendWhatsappIntegration({
+      supabase,
+      organizationId,
+      storeId,
+    });
+    const externalMessageId = args.payload.type === "text"
+      ? await sendWhatsappTextMessage({ ...integration, to: destination, body: args.payload.body })
+      : args.payload.type === "template"
+        ? await sendWhatsappTemplateMessage({ ...integration, to: destination, template: args.payload.template })
+        : await sendWhatsappPayload({
+            ...integration,
+            to: destination,
+            payload: {
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: destination,
+              type: "document",
+              document: {
+                link: args.payload.link,
+                filename: args.payload.filename,
+                ...(args.payload.caption ? { caption: args.payload.caption } : {}),
+              },
+            },
+          });
+    return { ok: true, externalMessageId };
+  } catch (error) {
+    if (error instanceof Error && error.name === "WHATSAPP_TRANSPORT_UNCERTAIN") {
+      return { ok: false, reason: "send_uncertain" };
+    }
+    return {
+      ok: false,
+      reason: "RESPONSIBLE_WHATSAPP_SEND_FAILED",
+    };
+  }
 }
 
 export async function sendResponsibleAssistantText(args: {
