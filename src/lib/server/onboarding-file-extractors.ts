@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import { XMLParser } from "fast-xml-parser";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -32,6 +33,30 @@ const DEBUG_INTELLIGENT_IMPORT =
 function debugIntelligentImport(...args: unknown[]) {
   if (!DEBUG_INTELLIGENT_IMPORT) return;
   console.log("[ZION][intelligent-import][extractors]", ...args);
+}
+
+function logPdfReaderFailure(args: {
+  diagnosticId: string;
+  stage: "module_load" | "parser_constructor" | "get_text" | "destroy";
+  module: "pdf-parse";
+  error: unknown;
+}) {
+  const error = args.error as { code?: unknown; name?: unknown; message?: unknown };
+  const message = typeof error?.message === "string"
+    ? error.message
+        .replace(/[\u0000-\u001f\u007f]/g, " ")
+        .replace(/\b(authorization|token|secret|password|cookie|key)\s*[:=]\s*[^\s,;]+/gi, "$1=<redacted>")
+        .slice(0, 240)
+    : undefined;
+
+  console.error("[ZION][pdf-reader][failure]", {
+    diagnosticId: args.diagnosticId,
+    stage: args.stage,
+    module: args.module,
+    errorClass: typeof error?.name === "string" ? error.name : typeof args.error,
+    errorCode: typeof error?.code === "string" ? error.code : undefined,
+    errorMessage: message,
+  });
 }
 
 export type ExtractedImageAsset = {
@@ -1893,11 +1918,18 @@ export async function extractPdfTextWithParser(
   buffer: Buffer,
   loadPdfParser: PdfParserLoader = async () => (await import("pdf-parse")) as PdfParserModule,
 ) {
+  const diagnosticId = `pdf_${randomUUID()}`;
   let pdfParseModule: PdfParserModule;
 
   try {
     pdfParseModule = await loadPdfParser();
-  } catch {
+  } catch (error) {
+    logPdfReaderFailure({
+      diagnosticId,
+      stage: "module_load",
+      module: "pdf-parse",
+      error,
+    });
     throw new PdfTextExtractionError("PDF_READER_LOAD_FAILED");
   }
 
