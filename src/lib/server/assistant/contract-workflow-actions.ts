@@ -6,7 +6,9 @@ import {
 } from "@/lib/server/sales-quotes/quote-auth";
 import { executeAssistantContractGeneration } from "@/lib/server/assistant/contract-generation-intent";
 
-export type AssistantContractWorkflowAction = "generate_contract";
+export type AssistantContractWorkflowAction =
+  | "generate_contract"
+  | "confirm_customer_acceptance";
 
 type ContractWorkflowMessageRow = {
   id: string;
@@ -112,6 +114,30 @@ function readContractWorkflowMetadata(metadata: Record<string, unknown> | null |
   if (!isRecord(metadata)) return null;
   if (cleanText(metadata.kind) !== "contract_workflow_decision") return null;
   return metadata;
+}
+
+function readAvailableActionIds(metadata: Record<string, unknown>) {
+  return new Set(
+    Array.isArray(metadata.available_actions)
+      ? metadata.available_actions
+          .map((action) => (isRecord(action) ? cleanText(action.id) : cleanText(action)))
+          .filter((action): action is string => Boolean(action))
+      : [],
+  );
+}
+
+function mapCustomerAcceptanceRpcError(error: { code?: string | null; message?: string | null }) {
+  const raw = `${error.code || ""} ${error.message || ""}`;
+  const knownCodes = [
+    "PROPOSAL_STALE",
+    "CURRENT_PROPOSAL_CYCLE_UNANCHORED",
+    "SOURCE_MESSAGE_NOT_CUSTOMER_INBOUND",
+    "SOURCE_MESSAGE_PREDATES_PROPOSAL",
+    "SOURCE_MESSAGE_OUT_OF_SCOPE",
+    "OPPORTUNITY_OUT_OF_SCOPE",
+  ];
+  const reasonCode = knownCodes.find((code) => raw.includes(code));
+  return reasonCode || "CUSTOMER_ACCEPTANCE_CONFIRMATION_FAILED";
 }
 
 async function pushAssistantActionResultMessage(args: {
@@ -287,6 +313,163 @@ async function generateContractFromWorkflowCard(
   };
 }
 
+async function confirmCustomerAcceptanceFromWorkflowCard(
+  workflowMessageId: string,
+  deps: Pick<
+    ContractWorkflowActionDeps,
+    | "loadAuthorizedContractWorkflowMessage"
+    | "resolveAuthorizedExistingQuote"
+    | "pushAssistantActionResultMessage"
+  >,
+) {
+  const messageScope = await deps.loadAuthorizedContractWorkflowMessage(workflowMessageId);
+  const messageMetadata = readContractWorkflowMetadata(messageScope.message.metadata || null);
+
+  if (!messageMetadata || cleanText(messageMetadata.trigger) !== "customer_accepted_quote") {
+    return {
+      ok: false as const,
+      status: 409,
+      error: "INVALID_CUSTOMER_ACCEPTANCE_CARD",
+      message: "Esse card nao representa um aceite explicito do cliente.",
+    };
+  }
+
+  if (!readAvailableActionIds(messageMetadata).has("confirm_customer_acceptance")) {
+    return {
+      ok: false as const,
+      status: 409,
+      error: "CUSTOMER_ACCEPTANCE_ACTION_NOT_AUTHORIZED",
+      message: "Esse card nao possui autorizacao para confirmar o aceite.",
+    };
+  }
+
+  const organizationId = cleanText(messageScope.message.organization_id);
+  const storeId = cleanText(messageScope.message.store_id);
+  const metadataOrganizationId = cleanText(messageMetadata.organization_id);
+  const metadataStoreId = cleanText(messageMetadata.store_id);
+  const commercialOpportunityId = cleanText(messageMetadata.commercial_opportunity_id);
+  const quoteId = cleanText(messageMetadata.quote_id);
+  const quoteVersionId = cleanText(messageMetadata.quote_version_id);
+  const sourceMessageId = cleanText(messageMetadata.source_message_id);
+  const lifecycleCycleRaw = messageMetadata.lifecycle_cycle;
+  const lifecycleCycle =
+    typeof lifecycleCycleRaw === "number" && Number.isInteger(lifecycleCycleRaw)
+      ? lifecycleCycleRaw
+      : null;
+
+  if (
+    !organizationId ||
+    !storeId ||
+    !commercialOpportunityId ||
+    !quoteId ||
+    !quoteVersionId ||
+    !sourceMessageId ||
+    lifecycleCycle === null
+  ) {
+    return {
+      ok: false as const,
+      status: 409,
+      error: "CUSTOMER_ACCEPTANCE_EVIDENCE_INCOMPLETE",
+      message: "O card nao preserva todas as evidencias canonicas do aceite.",
+    };
+  }
+
+  if (
+    (metadataOrganizationId && metadataOrganizationId !== organizationId) ||
+    (metadataStoreId && metadataStoreId !== storeId)
+  ) {
+    return {
+      ok: false as const,
+      status: 403,
+      error: "CUSTOMER_ACCEPTANCE_SCOPE_MISMATCH",
+      message: "O card nao pertence ao escopo autorizado da loja.",
+    };
+  }
+
+  const quoteScope = await deps.resolveAuthorizedExistingQuote(quoteId);
+  if (
+    quoteScope.organizationId !== organizationId ||
+    quoteScope.store.id !== storeId ||
+    cleanText(quoteScope.quote.current_version_id) !== quoteVersionId
+  ) {
+    return {
+      ok: false as const,
+      status: 409,
+      error: "PROPOSAL_STALE",
+      message: "A versao exibida no card nao e mais a proposta vigente.",
+    };
+  }
+
+  const { data, error } = await messageScope.sessionSupabase.rpc(
+    "accept_current_commercial_proposal_customer_signal_by_user",
+    {
+      p_organization_id: organizationId,
+      p_store_id: storeId,
+      p_commercial_opportunity_id: commercialOpportunityId,
+      p_expected_lifecycle_cycle: lifecycleCycle,
+      p_quote_id: quoteId,
+      p_quote_version_id: quoteVersionId,
+      p_source_message_id: sourceMessageId,
+    },
+  );
+
+  if (error) {
+    const reasonCode = mapCustomerAcceptanceRpcError(error);
+    return {
+      ok: false as const,
+      status: reasonCode === "PROPOSAL_STALE" ? 409 : 422,
+      error: reasonCode,
+      message:
+        reasonCode === "PROPOSAL_STALE"
+          ? "A proposta mudou antes da confirmacao; nenhuma confirmacao foi registrada."
+          : "Nao foi possivel confirmar o aceite com as evidencias atuais.",
+    };
+  }
+
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  const outcome = cleanText(rows[0]?.outcome);
+  if (rows.length !== 1 || (outcome !== "accepted" && outcome !== "already_accepted")) {
+    return {
+      ok: false as const,
+      status: 502,
+      error: "CUSTOMER_ACCEPTANCE_RESULT_UNCERTAIN",
+      message: "A resposta da confirmacao nao foi inequivoca; nenhuma nova tentativa sera feita automaticamente.",
+    };
+  }
+
+  const message =
+    outcome === "already_accepted"
+      ? "O aceite do cliente ja estava confirmado para esta versao."
+      : "Aceite do cliente confirmado para a versao exata apresentada.";
+
+  try {
+    await deps.pushAssistantActionResultMessage({
+      supabase: messageScope.supabase,
+      organizationId,
+      storeId,
+      leadId: cleanText(messageMetadata.lead_id) || messageScope.message.related_lead_id,
+      conversationId:
+        cleanText(messageMetadata.conversation_id) || messageScope.message.related_conversation_id,
+      content: message,
+      metadata: {
+        source: "assistant_customer_acceptance_confirmation_v1",
+        kind: "contract_workflow_action_result",
+        related_workflow_message_id: workflowMessageId,
+        action: "confirm_customer_acceptance",
+        quote_id: quoteId,
+        quote_version_id: quoteVersionId,
+        source_message_id: sourceMessageId,
+        outcome,
+        trigger: "human_explicit_request",
+      },
+    });
+  } catch (resultMessageError) {
+    console.warn("[assistant_customer_acceptance] resultado confirmado, mas aviso nao registrado", resultMessageError);
+  }
+
+  return { ok: true as const, status: 200, message };
+}
+
 export async function executeAssistantContractWorkflowAction(
   args: ExecuteAssistantContractWorkflowActionArgs,
   deps?: Partial<ContractWorkflowActionDeps>
@@ -313,11 +496,10 @@ export async function executeAssistantContractWorkflowAction(
   }
 
   try {
-    const result = await generateContractFromWorkflowCard(
-      args.request,
-      args.messageId,
-      resolvedDeps,
-    );
+    const result =
+      args.action === "confirm_customer_acceptance"
+        ? await confirmCustomerAcceptanceFromWorkflowCard(args.messageId, resolvedDeps)
+        : await generateContractFromWorkflowCard(args.request, args.messageId, resolvedDeps);
 
     return {
       ok: result.ok,

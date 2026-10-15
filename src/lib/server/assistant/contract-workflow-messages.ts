@@ -7,6 +7,12 @@ const CONTRACT_WORKFLOW_NOTIFICATION_TYPE = "important_alert";
 
 type AssistantContractWorkflowAction =
   | {
+      id: "confirm_customer_acceptance";
+      label: string;
+      kind: "confirm_customer_acceptance";
+      requires_confirmation: true;
+    }
+  | {
       id: "generate_contract";
       label: string;
       kind: "generate_contract";
@@ -36,6 +42,9 @@ export type PushAssistantContractWorkflowDecisionMessageInput = {
   conversationId?: string | null;
   quoteId: string;
   quoteVersionId: string;
+  commercialOpportunityId?: string | null;
+  lifecycleCycle?: number | null;
+  sourceMessageId?: string | null;
   quoteNumber?: string | null;
   customerName?: string | null;
   trigger: ContractWorkflowDecisionTrigger;
@@ -83,6 +92,21 @@ function buildDefaultAvailableActions(): AssistantContractWorkflowAction[] {
       label: "Me lembrar depois",
       kind: "remind_later",
     },
+  ];
+}
+
+function buildAvailableActions(input: PushAssistantContractWorkflowDecisionMessageInput) {
+  const actions = buildDefaultAvailableActions();
+  if (input.trigger !== "customer_accepted_quote") return actions;
+
+  return [
+    {
+      id: "confirm_customer_acceptance" as const,
+      label: "Confirmar aceite do cliente",
+      kind: "confirm_customer_acceptance" as const,
+      requires_confirmation: true as const,
+    },
+    ...actions,
   ];
 }
 
@@ -146,6 +170,9 @@ async function buildContractWorkflowMetadata(
     conversation_id: cleanText(input.conversationId),
     quote_id: cleanText(input.quoteId),
     quote_version_id: cleanText(input.quoteVersionId),
+    commercial_opportunity_id: cleanText(input.commercialOpportunityId),
+    lifecycle_cycle: input.lifecycleCycle ?? null,
+    source_message_id: cleanText(input.sourceMessageId),
     quote_number: cleanText(input.quoteNumber),
     customer_name: cleanText(input.customerName),
     trigger: input.trigger,
@@ -162,7 +189,7 @@ async function buildContractWorkflowMetadata(
     available_actions:
       input.availableActionsOverride && input.availableActionsOverride.length > 0
         ? input.availableActionsOverride
-        : buildDefaultAvailableActions(),
+        : buildAvailableActions(input),
     customer_context_summary: customerContextSummary,
   };
 }

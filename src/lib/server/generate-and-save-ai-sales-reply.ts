@@ -5114,16 +5114,65 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
   conversationId: string;
   leadId: string | null;
   commercialOpportunityId?: string | null;
+  sourceMessageId?: string | null;
   customerName: string | null;
   lastCustomerMessage: string | null | undefined;
 }) : Promise<ContractWorkflowCardCreationResult> {
-  const trigger = inferPreContractCustomerSignalTrigger(args.lastCustomerMessage);
-  if (!trigger) {
+  const inferredTrigger = inferPreContractCustomerSignalTrigger(args.lastCustomerMessage);
+  if (!inferredTrigger) {
     return {
       attempted: false,
       created: false,
       reason: "no_clear_pre_contract_signal",
     };
+  }
+
+  let trigger: ContractWorkflowDecisionTrigger = inferredTrigger;
+  const sourceMessageId = cleanText(args.sourceMessageId);
+
+  if (inferredTrigger === "customer_accepted_quote") {
+    if (!sourceMessageId) {
+      return {
+        attempted: true,
+        created: false,
+        reason: "customer_acceptance_source_message_missing",
+      };
+    }
+
+    const { data: sourceMessageData, error: sourceMessageError } = await args.systemSupabase
+      .from("messages")
+      .select("id, organization_id, store_id, conversation_id, sender, direction, content")
+      .eq("id", sourceMessageId)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("conversation_id", args.conversationId)
+      .maybeSingle();
+    const sourceMessage = sourceMessageData as CustomerIncomingMessageRow | null;
+
+    if (
+      sourceMessageError ||
+      !sourceMessage ||
+      !isCustomerIncomingMessage(sourceMessage) ||
+      sourceMessage.organization_id !== args.organizationId ||
+      sourceMessage.store_id !== args.storeId ||
+      sourceMessage.conversation_id !== args.conversationId
+    ) {
+      return {
+        attempted: true,
+        created: false,
+        reason: "customer_acceptance_source_message_invalid",
+      };
+    }
+
+    const sourceTrigger = inferPreContractCustomerSignalTrigger(sourceMessage.content);
+    if (sourceTrigger !== "customer_accepted_quote") {
+      return {
+        attempted: false,
+        created: false,
+        reason: "no_clear_pre_contract_signal",
+      };
+    }
+    trigger = sourceTrigger;
   }
 
   const commercialOpportunityId = cleanText(args.commercialOpportunityId);
@@ -5152,6 +5201,19 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
     };
   }
 
+  if (
+    proposal.organization_id !== args.organizationId ||
+    proposal.store_id !== args.storeId ||
+    proposal.commercial_opportunity_id !== commercialOpportunityId
+  ) {
+    return {
+      attempted: true,
+      created: false,
+      reason: "current_commercial_proposal_scope_mismatch",
+      trigger,
+    };
+  }
+
   const proposalState = cleanText(proposal.proposal_state);
   if (proposalState !== "available") {
     return {
@@ -5168,6 +5230,20 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
       attempted: true,
       created: false,
       reason: "current_commercial_proposal_incomplete",
+      trigger,
+    };
+  }
+
+  if (
+    selectedQuote.conversation_id !== args.conversationId ||
+    (selectedQuote.lead_id && args.leadId && selectedQuote.lead_id !== args.leadId)
+  ) {
+    return {
+      attempted: true,
+      created: false,
+      reason: "current_commercial_proposal_message_scope_mismatch",
+      quoteId: selectedQuote.id,
+      quoteNumber: cleanText(selectedQuote.quote_number),
       trigger,
     };
   }
@@ -5232,6 +5308,9 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
     conversationId: selectedQuote.conversation_id || args.conversationId,
     quoteId: selectedQuote.id,
     quoteVersionId: selectedQuote.current_version_id,
+    commercialOpportunityId: proposal.commercial_opportunity_id,
+    lifecycleCycle: proposal.lifecycle_cycle,
+    sourceMessageId: args.sourceMessageId,
     quoteNumber: cleanText(selectedQuote.quote_number),
     customerName: cleanText(args.customerName),
     trigger,
@@ -6237,6 +6316,7 @@ export async function generateAndSaveAiSalesReply(
         conversationId: canonicalConversationId,
         leadId: normalizedConversation.lead_id || null,
         commercialOpportunityId: generationResolvedCommercialOpportunityId,
+        sourceMessageId: generationAnchorMessageId,
         customerName: generationResult.context?.leadName || null,
         lastCustomerMessage:
           generationResult.context?.lastCustomerMessage ||

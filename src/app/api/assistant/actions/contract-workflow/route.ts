@@ -13,7 +13,7 @@ type ContractWorkflowActionRequestBody = {
 };
 
 function isValidAction(value: string): value is AssistantContractWorkflowAction {
-  return value === "generate_contract";
+  return value === "generate_contract" || value === "confirm_customer_acceptance";
 }
 
 function isValidUuid(value: string) {
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
         {
           ok: false,
           error: "INVALID_ACTION",
-          message: "A action precisa ser generate_contract.",
+          message: "Acao de card de pre-contrato invalida.",
         },
         { status: 400 }
       );

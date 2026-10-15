@@ -61,7 +61,9 @@ type AssistantDocumentActionApiResponse = {
   documentId?: string;
 };
 
-type AssistantContractWorkflowActionId = "generate_contract";
+type AssistantContractWorkflowActionId =
+  | "generate_contract"
+  | "confirm_customer_acceptance";
 
 type AssistantContractWorkflowActionApiResponse = {
   ok: boolean;
@@ -108,6 +110,10 @@ type AssistantContractWorkflowDecisionMetadata = {
   lead_id?: string | null;
   conversation_id?: string | null;
   quote_id?: string;
+  quote_version_id?: string;
+  commercial_opportunity_id?: string | null;
+  lifecycle_cycle?: number | null;
+  source_message_id?: string | null;
   quote_number?: string | null;
   customer_name?: string | null;
   trigger?: string;
@@ -563,6 +569,7 @@ function getContractWorkflowActionLabel(
 
   const key = getContractWorkflowActionKey(action);
   if (key === "generate_contract") return "Gerar contrato";
+  if (key === "confirm_customer_acceptance") return "Confirmar aceite do cliente";
   if (key === "not_closed_yet") return "Ainda não fechou";
   if (key === "adjust_quote") return "Ajustar orçamento";
   if (key === "remind_later") return "Me lembrar depois";
@@ -1667,7 +1674,10 @@ export default function AssistantPage() {
       return;
     }
 
-    if (actionId !== "generate_contract") {
+    if (
+      actionId !== "generate_contract" &&
+      actionId !== "confirm_customer_acceptance"
+    ) {
       setContractWorkflowActionFeedback((current) => ({
         ...current,
         [message.id]: {
@@ -2136,20 +2146,26 @@ export default function AssistantPage() {
                                           key={`${message.id}:contract-workflow-action:${index}`}
                                           type="button"
                                           onClick={() => {
+                                            const actionKey = getContractWorkflowActionKey(action);
                                             if (
-                                              getContractWorkflowActionKey(action) ===
-                                              "generate_contract"
+                                              actionKey === "generate_contract" ||
+                                              actionKey === "confirm_customer_acceptance"
                                             ) {
                                               void handleContractWorkflowAction(
                                                 message,
-                                                "generate_contract"
+                                                actionKey as AssistantContractWorkflowActionId
                                               );
                                             }
                                           }}
                                           disabled={
-                                            getContractWorkflowActionKey(action) !==
-                                              "generate_contract" ||
-                                            generateContractLoading
+                                            (getContractWorkflowActionKey(action) !==
+                                              "generate_contract" &&
+                                              getContractWorkflowActionKey(action) !==
+                                                "confirm_customer_acceptance") ||
+                                            (getContractWorkflowActionKey(action) ===
+                                            "generate_contract"
+                                              ? generateContractLoading
+                                              : false)
                                           }
                                           title={
                                             getContractWorkflowActionKey(action) ===
