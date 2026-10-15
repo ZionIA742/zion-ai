@@ -113,13 +113,26 @@ export class PdfTextExtractionError extends Error {
   }
 }
 
+type PdfScreenshotPage = {
+  pageNumber?: number;
+  dataUrl?: string;
+  data?: Uint8Array;
+};
+
+type PdfScreenshotResult = {
+  total?: number;
+  pages?: PdfScreenshotPage[];
+};
+
 export type PdfParserInstance = {
   getText?: () => Promise<unknown>;
+  getScreenshot?: (options?: Record<string, unknown>) => Promise<PdfScreenshotResult>;
   destroy?: () => Promise<void> | void;
 };
 
 export type PdfParserModule = {
-  PDFParse?: new (args: { data: Buffer }) => PdfParserInstance;
+  PDFParse?: new (args: { data: Buffer; CanvasFactory?: unknown }) => PdfParserInstance;
+  CanvasFactory?: unknown;
   default?: ((buffer: Buffer) => Promise<unknown>) | unknown;
 } | ((buffer: Buffer) => Promise<unknown>);
 
@@ -129,6 +142,17 @@ export type ExtractTextFromFileOptions = {
   strictPdfErrors?: boolean;
   pdfParserLoader?: PdfParserLoader;
 };
+
+async function loadPdfParseModule(): Promise<PdfParserModule> {
+  // pdf-parse documents this import order for serverless Node runtimes. The
+  // worker module supplies the Node CanvasFactory before pdfjs is initialized.
+  const worker = await import("pdf-parse/worker");
+  const pdfParse = await import("pdf-parse");
+  return {
+    ...pdfParse,
+    CanvasFactory: worker.CanvasFactory,
+  } as PdfParserModule;
+}
 
 export type ExtractedPositionalTextBlock = {
   pageNumber: number;
@@ -1916,7 +1940,7 @@ async function extractTextFromPptx(buffer: Buffer) {
 
 export async function extractPdfTextWithParser(
   buffer: Buffer,
-  loadPdfParser: PdfParserLoader = async () => (await import("pdf-parse")) as PdfParserModule,
+  loadPdfParser: PdfParserLoader = loadPdfParseModule,
 ) {
   const diagnosticId = `pdf_${randomUUID()}`;
   let pdfParseModule: PdfParserModule;
@@ -1943,7 +1967,11 @@ export async function extractPdfTextWithParser(
 
     if (typeof PDFParse === "function") {
       try {
-        parser = new PDFParse({ data: buffer });
+        parser = new PDFParse({
+          data: buffer,
+          CanvasFactory:
+            typeof pdfParseModule === "function" ? undefined : pdfParseModule.CanvasFactory,
+        });
       } catch {
         throw new PdfTextExtractionError("PDF_READER_PARSE_FAILED");
       }
@@ -2500,16 +2528,24 @@ function buildPdfRenderedPageFileName(fileName: string, pageNumber: number) {
 
 async function extractImagesFromPdf(buffer: Buffer, fileName: string) {
   try {
-    const pdfParseModule = (await import("pdf-parse")) as PdfParserModule;
-    const PDFParse = (pdfParseModule as any).PDFParse;
+    const pdfParseModule = await loadPdfParseModule();
+    const PDFParse = typeof pdfParseModule === "function" ? undefined : pdfParseModule.PDFParse;
     if (typeof PDFParse !== "function") {
       return [] as ExtractedImageAsset[];
     }
 
-    const parser = new PDFParse({ data: buffer });
+    const parser = new PDFParse({
+      data: buffer,
+      CanvasFactory:
+        typeof pdfParseModule === "function" ? undefined : pdfParseModule.CanvasFactory,
+    });
     const assets: ExtractedImageAsset[] = [];
 
     try {
+      if (typeof parser.getScreenshot !== "function") {
+        return [] as ExtractedImageAsset[];
+      }
+
       const screenshot = await parser.getScreenshot({
         first: MAX_RENDERED_PDF_IMAGE_PAGES,
         scale: PDF_RENDER_SCALE,
