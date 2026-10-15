@@ -4,6 +4,7 @@ import { createServerClient } from "@supabase/ssr";
 import ZionAdminDashboardClient, {
   type ZionAdminOverview,
 } from "./ZionAdminDashboardClient";
+import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 
 async function getSupabaseServerClient() {
   const cookieStore = await cookies();
@@ -83,10 +84,13 @@ async function getZionAdminOverview(): Promise<{
       data: json as ZionAdminOverview,
       error: null,
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
     return {
       data: null,
-      error: error?.message ?? "Erro inesperado ao buscar dados internos.",
+      error:
+        error instanceof Error
+          ? error.message
+          : "Erro inesperado ao buscar dados internos.",
     };
   }
 }
@@ -114,10 +118,14 @@ export default async function ZionAdminDashboardPage() {
   }
 
   const overview = await getZionAdminOverview();
+  const pinAccess = await resolveZionAdminApiAccess({
+    requiredCapability: "manage_whatsapp_pins",
+  });
 
   return (
     <ZionAdminDashboardClient
       adminRole={String(admin.role || "admin")}
+      canManageWhatsappPins={pinAccess.ok}
       initialData={overview.data}
       initialError={overview.error}
     />

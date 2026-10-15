@@ -379,8 +379,22 @@ type AccountAccessHistoryStatus = "available" | "unavailable";
 
 type Props = {
   adminRole: string;
+  canManageWhatsappPins: boolean;
   initialData: ZionAdminOverview | null;
   initialError: string | null;
+};
+
+type ZionAdminWhatsappPin = {
+  secret_id: string;
+  organization_id: string;
+  store_id: string;
+  store_name: string;
+  phone_number_id_masked: string;
+  secret_status: "pending" | "active" | "invalidated" | string;
+  created_at: string | null;
+  activated_at: string | null;
+  invalidated_at: string | null;
+  can_reveal: boolean;
 };
 
 type AdminAccountProvisioning = {
@@ -3628,8 +3642,201 @@ function StoreListSection({
   );
 }
 
+function WhatsappPinsSection({ canAccess }: { canAccess: boolean }) {
+  const [pins, setPins] = useState<ZionAdminWhatsappPin[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [revealedPins, setRevealedPins] = useState<Record<string, string>>({});
+  const [revealBusyId, setRevealBusyId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!canAccess || loaded) return;
+
+    const controller = new AbortController();
+    void fetch("/api/zion-admin/whatsapp-pins", {
+      method: "GET",
+      credentials: "include",
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok || !Array.isArray(payload.pins)) {
+          throw new Error(payload?.message || "Nao foi possivel carregar os PINs.");
+        }
+        setPins(payload.pins as ZionAdminWhatsappPin[]);
+        setLoaded(true);
+      })
+      .catch((reason) => {
+        if (!controller.signal.aborted) {
+          setError(reason instanceof Error ? reason.message : "Nao foi possivel carregar os PINs.");
+        }
+      })
+      .finally(() => {
+        // The loaded/error state determines the terminal UI state.
+      });
+
+    return () => controller.abort();
+  }, [canAccess, loaded]);
+
+  useEffect(() => {
+    const timers = Object.keys(revealedPins).map((secretId) =>
+      window.setTimeout(() => {
+        setRevealedPins((current) => {
+          const next = { ...current };
+          delete next[secretId];
+          return next;
+        });
+      }, 15_000),
+    );
+
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [revealedPins]);
+
+  async function revealPin(pin: ZionAdminWhatsappPin) {
+    if (!pin.can_reveal || pin.secret_status === "pending" || revealBusyId) return;
+
+    setRevealBusyId(pin.secret_id);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/zion-admin/whatsapp-pins/reveal", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        cache: "no-store",
+        body: JSON.stringify({
+          secretId: pin.secret_id,
+          organizationId: pin.organization_id,
+          storeId: pin.store_id,
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok || !payload?.ok || typeof payload.pin !== "string") {
+        throw new Error(payload?.message || "Nao foi possivel revelar este PIN.");
+      }
+
+      setRevealedPins((current) => ({ ...current, [pin.secret_id]: payload.pin }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Nao foi possivel revelar este PIN.");
+    } finally {
+      setRevealBusyId(null);
+    }
+  }
+
+  if (!canAccess) return null;
+
+  const loading = !loaded && !error;
+
+  return (
+    <section className="rounded-2xl border border-violet-400/20 bg-violet-500/[0.06] p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-200/70">
+            Segurança operacional
+          </div>
+          <h2 className="mt-1 text-lg font-semibold text-zinc-100">PINs</h2>
+          <p className="mt-1 text-xs leading-5 text-zinc-400">
+            Segredos armazenados para a verificação em duas etapas do WhatsApp.
+          </p>
+        </div>
+        <span className="w-fit rounded-full border border-white/10 bg-zinc-950/50 px-3 py-1 text-xs text-zinc-400">
+          {loading ? "Carregando..." : `${formatNumber(pins.length)} PIN(s)`}
+        </span>
+      </div>
+
+      {error ? (
+        <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-100">
+          {error}
+        </div>
+      ) : null}
+
+      {!loading && !error && pins.length === 0 ? (
+        <div className="mt-3 rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">
+          Nenhum PIN armazenado foi encontrado.
+        </div>
+      ) : null}
+
+      <div className="mt-3 space-y-2">
+        {pins.map((pin) => {
+          const revealed = revealedPins[pin.secret_id];
+          const invalidated = pin.secret_status === "invalidated";
+          const pending = pin.secret_status === "pending";
+
+          return (
+            <div
+              key={pin.secret_id}
+              className="rounded-xl border border-white/10 bg-zinc-950/50 p-3"
+            >
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold text-zinc-100">{pin.store_name}</span>
+                    <span
+                      className={[
+                        "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase",
+                        invalidated
+                          ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
+                          : pending
+                            ? "border-zinc-500/30 bg-zinc-500/10 text-zinc-300"
+                            : "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
+                      ].join(" ")}
+                    >
+                      {pin.secret_status}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-500">
+                    Telefone: {pin.phone_number_id_masked}
+                  </div>
+                  {invalidated ? (
+                    <div className="mt-2 text-xs leading-5 text-amber-200">
+                      PIN historico invalidado. Sua validade atual na Meta nao esta confirmada.
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <code className="min-w-[92px] rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-center text-sm tracking-[0.28em] text-zinc-200">
+                    {revealed || "••••••"}
+                  </code>
+                  {revealed ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setRevealedPins((current) => {
+                          const next = { ...current };
+                          delete next[pin.secret_id];
+                          return next;
+                        })
+                      }
+                      className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-zinc-200 hover:bg-white/[0.08]"
+                    >
+                      Ocultar PIN
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={pending || !pin.can_reveal || revealBusyId !== null}
+                      onClick={() => void revealPin(pin)}
+                      className="rounded-lg bg-violet-400 px-3 py-2 text-xs font-semibold text-zinc-950 hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {revealBusyId === pin.secret_id ? "Revelando..." : "Revelar PIN"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export default function ZionAdminDashboardClient({
   adminRole,
+  canManageWhatsappPins,
   initialData,
   initialError,
 }: Props) {
@@ -3664,9 +3871,6 @@ export default function ZionAdminDashboardClient({
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
-
-    setData(initialData);
-    setOverviewError(initialError);
 
     async function refreshOverview() {
       try {
@@ -4037,6 +4241,8 @@ export default function ZionAdminDashboardClient({
             somente dados com origem confiável.
           </div>
         ) : null}
+
+        <WhatsappPinsSection canAccess={canManageWhatsappPins} />
 
         {orphanStoresCount > 0 ? (
           <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
