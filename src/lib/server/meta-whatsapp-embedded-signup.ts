@@ -27,11 +27,19 @@ export type MetaWhatsappEmbeddedSignupValidationResult = {
   validatedAt: string;
 };
 
+export type MetaWhatsappPhoneRegistrationState = {
+  phoneNumberId: string;
+  displayPhoneNumber: string;
+  codeVerificationStatus: string;
+  platformType: string;
+};
+
 export type MetaWhatsappBindingValidationInput = {
   code: string;
   whatsappBusinessAccountId: string;
   phoneNumberId?: string;
   connectionMode?: MetaWhatsappEmbeddedSignupConnectionMode;
+  recovery?: boolean;
 };
 
 export type MetaWhatsappEmbeddedSignupDeps = {
@@ -318,6 +326,86 @@ async function listWabaPhoneNumbers(params: {
     params.deps,
     "list_phone_numbers",
   );
+}
+
+export async function confirmMetaWhatsappPhoneRegistration(
+  validated: MetaWhatsappEmbeddedSignupValidationResult,
+  options?: {
+    deps?: Partial<MetaWhatsappEmbeddedSignupDeps>;
+  },
+): Promise<MetaWhatsappPhoneRegistrationState> {
+  const deps: MetaWhatsappEmbeddedSignupDeps = {
+    fetch: options?.deps?.fetch ?? fetch,
+    createAbortController:
+      options?.deps?.createAbortController ?? createDefaultAbortController,
+    now: options?.deps?.now ?? (() => new Date()),
+    timeoutMs: options?.deps?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  };
+  const url = new URL(
+    `${graphBaseUrl(validated.graphApiVersion)}/${encodeURIComponent(validated.phoneNumberId)}`,
+  );
+  url.searchParams.set(
+    "fields",
+    "id,display_phone_number,code_verification_status,platform_type",
+  );
+
+  const response = await fetchJsonWithTimeout(
+    url.toString(),
+    {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${validated.accessToken}`,
+      },
+    },
+    deps,
+    "read_phone_registration_state",
+  );
+
+  requireMetaOk(
+    response,
+    "META_PHONE_STATE_READ_FAILED",
+    "Nao foi possivel confirmar o estado operacional do telefone na Meta.",
+    "read_phone_registration_state",
+  );
+
+  const phoneId =
+    typeof response.body?.id === "string" ? normalizeMetaId(response.body.id) : "";
+  const displayPhoneNumber =
+    typeof response.body?.display_phone_number === "string"
+      ? cleanText(response.body.display_phone_number)
+      : "";
+  const codeVerificationStatus =
+    typeof response.body?.code_verification_status === "string"
+      ? cleanText(response.body.code_verification_status).toUpperCase()
+      : "";
+  const platformType =
+    typeof response.body?.platform_type === "string"
+      ? cleanText(response.body.platform_type).toUpperCase()
+      : "";
+
+  if (
+    phoneId !== validated.phoneNumberId ||
+    !displayPhoneNumber ||
+    codeVerificationStatus !== "VERIFIED" ||
+    platformType !== "CLOUD_API"
+  ) {
+    throw new MetaWhatsappEmbeddedSignupError(
+      "META_PHONE_REGISTRATION_UNCONFIRMED",
+      "A Meta nao forneceu evidencia suficiente de registro operacional do telefone.",
+      422,
+      {
+        operation: "read_phone_registration_state",
+      },
+    );
+  }
+
+  return {
+    phoneNumberId: phoneId,
+    displayPhoneNumber,
+    codeVerificationStatus,
+    platformType,
+  };
 }
 
 async function subscribeWabaApps(params: {

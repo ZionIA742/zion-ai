@@ -255,6 +255,9 @@ function createRouteHandler(args?: {
   candidateRpcData?: unknown;
   events?: string[];
   register?: (validated: ReturnType<typeof createSuccessfulValidation>, pin: string) => Promise<void>;
+  confirmPhoneRegistration?: (
+    validated: ReturnType<typeof createSuccessfulValidation>,
+  ) => Promise<unknown>;
   readActiveBinding?: () => Promise<{ ok: true; hasActiveBinding: boolean }>;
 }) {
   const rpc = createPrivilegedClientMock({
@@ -273,6 +276,16 @@ function createRouteHandler(args?: {
         return args.validate();
       }
 
+      if (input.recovery) {
+        assert.equal(input.code, "auth-code");
+        assert.equal(input.whatsappBusinessAccountId, "1642288770859048");
+        assert.equal(input.phoneNumberId, "1322472314288518");
+        return createSuccessfulValidation({
+          whatsappBusinessAccountId: "1642288770859048",
+          phoneNumberId: "1322472314288518",
+        });
+      }
+
       assert.equal(input.code, "auth-code");
       assert.equal(input.whatsappBusinessAccountId, "claimed-waba");
       assert.equal(input.phoneNumberId, "claimed-phone");
@@ -285,6 +298,12 @@ function createRouteHandler(args?: {
     registerEmbeddedSignup: async (validated, pin) => {
       if (args?.register) {
         await args.register(validated, pin);
+      }
+    },
+    confirmPhoneRegistration: async (validated) => {
+      args?.events?.push("confirm-phone");
+      if (args?.confirmPhoneRegistration) {
+        await args.confirmPhoneRegistration(validated);
       }
     },
     readActiveBinding: args?.readActiveBinding,
@@ -857,7 +876,9 @@ const tests: TestCase[] = [
     name: "first connection generates a server PIN, persists pending before register, then activates after materialization",
     run: async () => {
       let registeredPin = "";
+      const events: string[] = [];
       const { handler, secretRpcCalls } = createRouteHandler({
+        events,
         register: async (_validated, pin) => {
           registeredPin = pin;
         },
@@ -873,6 +894,7 @@ const tests: TestCase[] = [
       const body = await parseBody(response);
 
       assert.equal(response.status, 200);
+      assert.equal(events.includes("confirm-phone"), false);
       assert.match(registeredPin, /^\d{6}$/);
       assert.deepEqual(
         secretRpcCalls.map((call) => call.name),
@@ -1416,6 +1438,126 @@ const tests: TestCase[] = [
       assert.equal(registrationBoundaryCalls, 1);
       assert.equal(secretRpcCalls.length, 0);
       assert.equal(rpcCalls.some((call) => call.name === "materialize_store_whatsapp_embedded_signup_by_system"), true);
+    },
+  },
+  {
+    name: "recovery confirms remote state without register or materialization after invalidated PIN",
+    run: async () => {
+      const events: string[] = [];
+      let registerCalls = 0;
+      const { handler, rpcCalls, candidateRpcCalls, secretRpcCalls } = createRouteHandler({
+        access: createGrantedAccess({
+          organizationId: "fbd4afaa-4958-4663-9234-98589ab322c7",
+          storeId: "54fb81f4-92e5-463a-af6c-fc1544ea4b04",
+        }),
+        events,
+        confirmPhoneRegistration: async () => undefined,
+        register: async () => {
+          registerCalls += 1;
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "1642288770859048",
+          phoneNumberId: "1322472314288518",
+          recovery: true,
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "WHATSAPP_RECOVERY_REQUIRES_NEW_PIN_AUTHORIZATION");
+      assert.equal(body.phoneRegistrationConfirmed, true);
+      assertNoSecretLeak(body, ["auth-code", "fake-business-token", "123456"]);
+      assert.deepEqual(events, ["rpc-client", "validate", "confirm-phone"]);
+      assert.equal(registerCalls, 0);
+      assert.equal(rpcCalls.length, 0);
+      assert.equal(candidateRpcCalls.length, 0);
+      assert.equal(secretRpcCalls.length, 0);
+    },
+  },
+  {
+    name: "recovery blocks unknown remote state without exposing internal evidence",
+    run: async () => {
+      const { handler, rpcCalls } = createRouteHandler({
+        access: createGrantedAccess({
+          organizationId: "fbd4afaa-4958-4663-9234-98589ab322c7",
+          storeId: "54fb81f4-92e5-463a-af6c-fc1544ea4b04",
+        }),
+        confirmPhoneRegistration: async () => {
+          throw new MetaWhatsappEmbeddedSignupError(
+            "META_PHONE_REGISTRATION_UNCONFIRMED",
+            "private state details",
+            422,
+          );
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "1642288770859048",
+          phoneNumberId: "1322472314288518",
+          recovery: true,
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 422);
+      assert.equal(body.error, "META_PHONE_REGISTRATION_UNCONFIRMED");
+      assert.equal(String(body.message).includes("private state details"), false);
+      assert.equal(rpcCalls.length, 0);
+    },
+  },
+  {
+    name: "recovery rejects another store or a divergent WABA or phone before Meta or local access",
+    run: async () => {
+      const cases = [
+        {
+          access: { organizationId: "fbd4afaa-4958-4663-9234-98589ab322c7", storeId: "54fb81f4-92e5-463a-af6c-fc1544ea4b04" },
+          waba: "different-waba",
+          phone: "1322472314288518",
+        },
+        {
+          access: { organizationId: "fbd4afaa-4958-4663-9234-98589ab322c7", storeId: "54fb81f4-92e5-463a-af6c-fc1544ea4b04" },
+          waba: "1642288770859048",
+          phone: "different-phone",
+        },
+        {
+          access: { organizationId: "another-org", storeId: "54fb81f4-92e5-463a-af6c-fc1544ea4b04" },
+          waba: "1642288770859048",
+          phone: "1322472314288518",
+        },
+        {
+          access: { organizationId: "fbd4afaa-4958-4663-9234-98589ab322c7", storeId: "another-store" },
+          waba: "1642288770859048",
+          phone: "1322472314288518",
+        },
+      ];
+
+      for (const scenario of cases) {
+        const events: string[] = [];
+        const { handler, rpcCalls } = createRouteHandler({
+          events,
+          access: createGrantedAccess(scenario.access),
+        });
+        const response = await handler(
+          createJsonRequest({
+            code: "fresh-auth-code",
+            whatsappBusinessAccountId: scenario.waba,
+            phoneNumberId: scenario.phone,
+            recovery: true,
+          }),
+        );
+        const body = await parseBody(response);
+
+        assert.equal(response.status, 409);
+        assert.equal(body.error, "WHATSAPP_RECOVERY_TARGET_MISMATCH");
+        assert.deepEqual(events, []);
+        assert.equal(rpcCalls.length, 0);
+      }
     },
   },
   {

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { randomUUID } from "node:crypto";
 import {
   resolveStoreApiAccess,
   type ResolveStoreApiAccessDeps,
@@ -9,6 +10,7 @@ import {
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 import {
   exchangeAndValidateMetaWhatsappBinding,
+  confirmMetaWhatsappPhoneRegistration,
   registerMetaWhatsappEmbeddedSignup,
   MetaWhatsappEmbeddedSignupError,
   type MetaWhatsappEmbeddedSignupConnectionMode,
@@ -38,6 +40,7 @@ type EmbeddedSignupRequestBody = {
   phoneNumberId?: unknown;
   connectionMode?: unknown;
   changeRequestIdempotencyKey?: unknown;
+  recovery?: unknown;
 };
 
 type MaterializedWhatsappIntegration = {
@@ -76,6 +79,9 @@ type EmbeddedSignupRouteDeps = {
     validated: MetaWhatsappEmbeddedSignupValidationResult,
     twoStepPin: string,
   ) => Promise<void>;
+  confirmPhoneRegistration: (
+    validated: MetaWhatsappEmbeddedSignupValidationResult,
+  ) => Promise<void>;
   readActiveBinding?: (client: PrivilegedClient, access: StoreApiAccessGranted) => Promise<{
     ok: true;
     hasActiveBinding: boolean;
@@ -83,6 +89,10 @@ type EmbeddedSignupRouteDeps = {
 };
 
 const MAX_PAYLOAD_BYTES = 8 * 1024;
+const META_RECOVERY_ORGANIZATION_ID = "fbd4afaa-4958-4663-9234-98589ab322c7";
+const META_RECOVERY_STORE_ID = "54fb81f4-92e5-463a-af6c-fc1544ea4b04";
+const META_RECOVERY_WABA_ID = "1642288770859048";
+const META_RECOVERY_PHONE_NUMBER_ID = "1322472314288518";
 
 function createJsonResponse(body: unknown, status = 200) {
   return NextResponse.json(body, {
@@ -279,6 +289,7 @@ function validatePayload(body: EmbeddedSignupRequestBody) {
       whatsappBusinessAccountId,
       ...(phoneNumberId ? { phoneNumberId } : {}),
       connectionMode: connectionMode as MetaWhatsappEmbeddedSignupConnectionMode,
+      recovery: body.recovery === true,
     },
   };
 }
@@ -404,6 +415,29 @@ function sanitizeUnexpectedError(error: unknown) {
   };
 }
 
+function logMetaFailure(error: unknown, attemptId: string, startedAt: number) {
+  if (error instanceof MetaWhatsappEmbeddedSignupError) {
+    console.error("[api/store/whatsapp/embedded-signup][Meta]", {
+      attemptId,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      operation: error.evidence.operation,
+      code: error.code,
+      httpStatus: error.evidence.httpStatus,
+      metaCode: error.evidence.metaCode,
+      metaSubcode: error.evidence.metaSubcode,
+      metaType: error.evidence.metaType,
+      normalizedCode: error.evidence.normalizedCode,
+    });
+    return;
+  }
+
+  console.error("[api/store/whatsapp/embedded-signup][Meta]", {
+    attemptId,
+    durationMs: Math.max(0, Date.now() - startedAt),
+    code: "META_UNEXPECTED_ERROR",
+  });
+}
+
 export function createStoreWhatsappEmbeddedSignupPostHandler(
   deps: Partial<EmbeddedSignupRouteDeps> = {},
 ) {
@@ -414,10 +448,17 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
     deps.validateEmbeddedSignup ?? exchangeAndValidateMetaWhatsappBinding;
   const registerEmbeddedSignup =
     deps.registerEmbeddedSignup ?? registerMetaWhatsappEmbeddedSignup;
+  const confirmPhoneRegistration =
+    deps.confirmPhoneRegistration ??
+    (async (validated: MetaWhatsappEmbeddedSignupValidationResult) => {
+      await confirmMetaWhatsappPhoneRegistration(validated);
+    });
   const readActiveBinding: NonNullable<EmbeddedSignupRouteDeps["readActiveBinding"]> =
     deps.readActiveBinding ?? defaultReadActiveBinding;
 
   return async function POST(request: Request) {
+    const attemptId = randomUUID();
+    const startedAt = Date.now();
     const access = await resolveAccess({
       requirement: "active_or_onboarding",
     });
@@ -434,6 +475,23 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
     const payloadResult = validatePayload(bodyResult.body);
     if (!payloadResult.ok) {
       return payloadResult.response;
+    }
+
+    if (
+      payloadResult.input.recovery &&
+      (access.organizationId !== META_RECOVERY_ORGANIZATION_ID ||
+        access.storeId !== META_RECOVERY_STORE_ID ||
+        payloadResult.input.whatsappBusinessAccountId !== META_RECOVERY_WABA_ID ||
+        payloadResult.input.phoneNumberId !== META_RECOVERY_PHONE_NUMBER_ID)
+    ) {
+      return createJsonResponse(
+        {
+          ok: false,
+          error: "WHATSAPP_RECOVERY_TARGET_MISMATCH",
+          message: "A verificação não corresponde à conexão META autorizada para esta loja.",
+        },
+        409,
+      );
     }
 
     const privilegedClient = createClientWithPrivileges();
@@ -458,7 +516,7 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
     const preflightScenario = classifyWhatsappConnectionScenario({
       hasActiveZionBinding: activeBindingResult.hasActiveBinding,
     });
-    if (preflightScenario.scenario === "existing_zion_binding") {
+    if (!payloadResult.input.recovery && preflightScenario.scenario === "existing_zion_binding") {
       return createJsonResponse(
         {
           ok: false,
@@ -478,11 +536,27 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
       validated = await validateEmbeddedSignup(payloadResult.input);
     } catch (error) {
       if (error instanceof MetaWhatsappEmbeddedSignupError) {
+        logMetaFailure(error, attemptId, startedAt);
+        if (
+          payloadResult.input.recovery &&
+          (error.evidence.httpStatus === 400 ||
+            error.evidence.httpStatus === 401 ||
+            error.evidence.httpStatus === 403)
+        ) {
+          return createJsonResponse(
+            {
+              ok: false,
+              error: "WHATSAPP_RECOVERY_AUTHORIZATION_INSUFFICIENT",
+              message: "A autorização Meta não permitiu consultar a conta ou o telefone.",
+            },
+            403,
+          );
+        }
         const mapped = mapMetaError(error);
         return createJsonResponse(mapped.body, mapped.status);
       }
 
-      console.error("[api/store/whatsapp/embedded-signup][POST] Meta validation error:", sanitizeUnexpectedError(error));
+      logMetaFailure(error, attemptId, startedAt);
 
       return createJsonResponse(
         {
@@ -495,6 +569,58 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
     }
 
     try {
+      if (payloadResult.input.recovery) {
+        try {
+          await confirmPhoneRegistration(validated);
+        } catch (error) {
+          logMetaFailure(error, attemptId, startedAt);
+          if (error instanceof MetaWhatsappEmbeddedSignupError) {
+            if (
+              error.evidence.httpStatus === 400 ||
+              error.evidence.httpStatus === 401 ||
+              error.evidence.httpStatus === 403
+            ) {
+              return createJsonResponse(
+                {
+                  ok: false,
+                  error: "WHATSAPP_RECOVERY_AUTHORIZATION_INSUFFICIENT",
+                  message: "A autorização Meta não permitiu consultar o estado do telefone.",
+                },
+                403,
+              );
+            }
+            const mapped = mapMetaError(error);
+            return createJsonResponse(mapped.body, mapped.status);
+          }
+
+          return createJsonResponse(
+            {
+              ok: false,
+              error: "WHATSAPP_RECOVERY_STATE_UNAVAILABLE",
+              message: "Nao foi possivel confirmar o estado remoto do WhatsApp.",
+              connectionScenario: "unknown_meta_state",
+              canRetry: true,
+              requiresUserAction: true,
+            },
+            503,
+          );
+        }
+
+        return createJsonResponse(
+          {
+            ok: false,
+            error: "WHATSAPP_RECOVERY_REQUIRES_NEW_PIN_AUTHORIZATION",
+            message:
+              "A Meta confirmou o registro e a verificação do telefone, mas a integração do ZION continua pendente de nova autorização de PIN.",
+            phoneRegistrationConfirmed: true,
+            connectionScenario: "unknown_meta_state",
+            canRetry: false,
+            requiresUserAction: true,
+          },
+          409,
+        );
+      }
+
       const idempotencyKey =
         trimInputString(bodyResult.body.changeRequestIdempotencyKey) ||
         `embedded-signup:${validated.phoneNumberId}`;
@@ -573,6 +699,7 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
       try {
         await registerEmbeddedSignup(validated, pin);
       } catch (error) {
+        logMetaFailure(error, attemptId, startedAt);
         if (pendingSecret) {
           try {
             await invalidateWhatsappTwoStepPinSecret({
@@ -659,7 +786,10 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
         },
       });
     } catch (error) {
-      console.error("[api/store/whatsapp/embedded-signup][POST] writer error:", sanitizeUnexpectedError(error));
+      console.error("[api/store/whatsapp/embedded-signup][POST] writer error:", {
+        attemptId,
+        ...sanitizeUnexpectedError(error),
+      });
 
       return createJsonResponse(
         {

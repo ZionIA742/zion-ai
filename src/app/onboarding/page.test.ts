@@ -64,7 +64,7 @@ function getMetaSignupSessionParserBlock(source: string) {
 function getStartMetaSignupBlock(source: string) {
   return getFunctionBlock(
     source,
-    "  async function startMetaEmbeddedSignup() {",
+    "  async function startMetaEmbeddedSignup(intent: \"connect\" | \"verify-existing\" = \"connect\") {",
     "  useEffect(() => {",
   );
 }
@@ -422,7 +422,7 @@ const tests: TestCase[] = [
     name: "Embedded Signup button depends only on request state",
     run: () => {
       const source = readPageSource();
-      const buttonStart = source.indexOf("onClick={startMetaEmbeddedSignup}");
+      const buttonStart = source.indexOf('onClick={() => startMetaEmbeddedSignup("connect")}');
       const buttonEnd = source.indexOf("className=", buttonStart);
       const buttonBlock = source.slice(buttonStart, buttonEnd);
 
@@ -544,7 +544,7 @@ const tests: TestCase[] = [
       const catchBlock = getCatchBlock(block);
 
       assert.equal(block.includes("cleanText(result?.message)"), false);
-      assert.equal(catchBlock.includes("error.message"), false);
+      assert.equal(catchBlock.includes("setEmbeddedSignupError(error.message)"), false);
       assert.equal(catchBlock.includes("mapEmbeddedSignupError(error)"), true);
       assert.equal(source.includes("function mapEmbeddedSignupError(error: unknown)"), true);
       assert.equal(source.includes("result.message ||"), false);
@@ -582,6 +582,46 @@ const tests: TestCase[] = [
       assert.equal(catchBlock.includes("setEmbeddedSignupError("), true);
       assert.equal(catchBlock.includes("setWhatsappStatusConnected"), false);
       assert.equal(catchBlock.includes("setWhatsappStatus((current)"), false);
+    },
+  },
+  {
+    name: "existing-connection verification is limited to the canonical META store and requires fresh Embedded Signup auth",
+    run: () => {
+      const source = readPageSource();
+      const startBlock = getStartMetaSignupBlock(source);
+      const submitBlock = getEmbeddedSignupSubmitBlock(source);
+
+      assert.equal(source.includes('organizationId === META_RECOVERY_ORGANIZATION_ID'), true);
+      assert.equal(source.includes('activeStore.id === META_RECOVERY_STORE_ID'), true);
+      assert.equal(source.includes('onClick={() => startMetaEmbeddedSignup("verify-existing")}'), true);
+      assert.equal(startBlock.includes('window.FB.login('), true);
+      assert.equal(startBlock.includes('setEmbeddedSignupIntent(intent);'), true);
+      assert.equal(submitBlock.includes('...(isRecoveryVerification ? { recovery: true } : {})'), true);
+      assert.equal(submitBlock.includes('embeddedSignupSession.whatsappBusinessAccountId !== META_RECOVERY_WABA_ID'), true);
+      assert.equal(submitBlock.includes('embeddedSignupSession.phoneNumberId !== META_RECOVERY_PHONE_NUMBER_ID'), true);
+    },
+  },
+  {
+    name: "recovery confirmation reports remote phone evidence without updating connection status or readiness",
+    run: () => {
+      const source = readPageSource();
+      const block = getEmbeddedSignupSubmitBlock(source);
+      const confirmedIndex = block.indexOf('result?.error === "WHATSAPP_RECOVERY_REQUIRES_NEW_PIN_AUTHORIZATION"');
+      const confirmationMessageIndex = block.indexOf("A Meta confirmou que o telefone", confirmedIndex);
+      const confirmationReturnIndex = block.indexOf("return;", confirmationMessageIndex);
+      const normalConnectionStatusIndex = block.indexOf("const confirmedWhatsappStatus", confirmationReturnIndex);
+      const readinessIndex = block.indexOf("refreshActivationReadinessAfterEmbeddedSignup()", normalConnectionStatusIndex);
+      const noMutationCopyIndex = source.indexOf("não salva uma integração e não consulta nem reutiliza PIN.");
+
+      assert.equal(confirmedIndex > -1, true);
+      assert.equal(block.includes("result.phoneRegistrationConfirmed === true", confirmedIndex), true);
+      assert.equal(confirmationMessageIndex > confirmedIndex, true);
+      assert.equal(confirmationReturnIndex > confirmationMessageIndex, true);
+      assert.equal(normalConnectionStatusIndex > confirmationReturnIndex, true);
+      assert.equal(readinessIndex > normalConnectionStatusIndex, true);
+      assert.equal(block.includes("if (!isRecoveryVerification) await fetchWhatsappStatus();"), true);
+      assert.equal(noMutationCopyIndex > -1, true);
+      assert.equal(block.includes("refreshActivationReadinessAfterEmbeddedSignup()"), true);
     },
   },
   {

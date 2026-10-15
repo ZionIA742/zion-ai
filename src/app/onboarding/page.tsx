@@ -357,6 +357,10 @@ const EMBEDDED_SIGNUP_READINESS_NOT_CONFIRMED_MESSAGE =
   "A conexao foi recebida, mas a ativacao da loja ainda nao foi confirmada.";
 const EMBEDDED_SIGNUP_GENERIC_ERROR_MESSAGE =
   "Nao foi possivel concluir a conexao com a Meta. Reinicie o Embedded Signup.";
+const META_RECOVERY_ORGANIZATION_ID = "fbd4afaa-4958-4663-9234-98589ab322c7";
+const META_RECOVERY_STORE_ID = "54fb81f4-92e5-463a-af6c-fc1544ea4b04";
+const META_RECOVERY_WABA_ID = "1642288770859048";
+const META_RECOVERY_PHONE_NUMBER_ID = "1322472314288518";
 
 function isWhatsappStatusConnected(status: StoreWhatsappStatusApiResponse | null) {
   const normalizedStatus = cleanText(status?.status).toLowerCase();
@@ -799,6 +803,7 @@ function OnboardingContent() {
   const [whatsappStatusLoading, setWhatsappStatusLoading] = useState(false);
   const [whatsappStatusError, setWhatsappStatusError] = useState<string | null>(null);
   const [embeddedSignupCode, setEmbeddedSignupCode] = useState("");
+  const [embeddedSignupIntent, setEmbeddedSignupIntent] = useState<"connect" | "verify-existing">("connect");
   const [embeddedSignupSession, setEmbeddedSignupSession] =
     useState<MetaEmbeddedSignupSession | null>(null);
   const [embeddedSignupLoading, setEmbeddedSignupLoading] = useState(false);
@@ -1563,7 +1568,7 @@ function OnboardingContent() {
     }
   }, [activeStore?.id, organizationId]);
 
-  async function startMetaEmbeddedSignup() {
+  async function startMetaEmbeddedSignup(intent: "connect" | "verify-existing" = "connect") {
     if (embeddedSignupAttemptRef.current || embeddedSignupSubmittingRef.current) return;
 
     setFormError(null);
@@ -1572,6 +1577,7 @@ function OnboardingContent() {
     setEmbeddedSignupMessage(null);
     setEmbeddedSignupSession(null);
     setEmbeddedSignupCode("");
+    setEmbeddedSignupIntent(intent);
 
     if (!metaEmbeddedSignupConfig.appId || !metaEmbeddedSignupConfig.configId) {
       setEmbeddedSignupError("Configuracao publica da Meta ausente no frontend.");
@@ -1653,10 +1659,25 @@ function OnboardingContent() {
     embeddedSignupSubmittingRef.current = true;
     setEmbeddedSignupSubmitting(true);
     setEmbeddedSignupError(null);
-    setEmbeddedSignupMessage("Conectando WhatsApp oficial da loja.");
+    const isRecoveryVerification = embeddedSignupIntent === "verify-existing";
+    setEmbeddedSignupMessage(
+      isRecoveryVerification
+        ? "Verificando a conexão existente com uma nova autorização da Meta."
+        : "Conectando WhatsApp oficial da loja.",
+    );
 
     const attempt = (async () => {
       try {
+        if (
+          isRecoveryVerification &&
+          (!organizationId || organizationId !== META_RECOVERY_ORGANIZATION_ID ||
+            activeStore?.id !== META_RECOVERY_STORE_ID ||
+            embeddedSignupSession.whatsappBusinessAccountId !== META_RECOVERY_WABA_ID ||
+            embeddedSignupSession.phoneNumberId !== META_RECOVERY_PHONE_NUMBER_ID)
+        ) {
+          throw new Error("WHATSAPP_RECOVERY_TARGET_MISMATCH");
+        }
+
         const response = await fetch("/api/store/whatsapp/embedded-signup", {
           method: "POST",
           headers: {
@@ -1670,6 +1691,7 @@ function OnboardingContent() {
               ? { phoneNumberId: embeddedSignupSession.phoneNumberId }
               : {}),
             connectionMode: embeddedSignupSession.connectionMode,
+            ...(isRecoveryVerification ? { recovery: true } : {}),
           }),
         });
 
@@ -1678,12 +1700,43 @@ function OnboardingContent() {
               ok?: boolean;
               message?: string;
               error?: string;
+              phoneRegistrationConfirmed?: boolean;
               connectionScenario?: string;
               connectionMode?: "standard" | "business_app_coexistence";
             }
           | null;
 
+        if (
+          isRecoveryVerification &&
+          response.status === 409 &&
+          result?.error === "WHATSAPP_RECOVERY_REQUIRES_NEW_PIN_AUTHORIZATION" &&
+          result.phoneRegistrationConfirmed === true
+        ) {
+          if (!embeddedSignupMountedRef.current) return;
+          clearEmbeddedSignupSensitiveState();
+          setEmbeddedSignupSession(null);
+          setEmbeddedSignupMessage(
+            "A Meta confirmou que o telefone está registrado e verificado. A integração do ZION continua pendente: será necessária uma nova autorização de PIN para regularizá-la.",
+          );
+          setEmbeddedSignupError(null);
+          return;
+        }
+
         if (!response.ok || result?.ok !== true) {
+          if (isRecoveryVerification) {
+            if (response.status === 401 || response.status === 403) {
+              throw new Error("WHATSAPP_RECOVERY_AUTHORIZATION_INSUFFICIENT");
+            }
+            if (
+              result?.error === "META_PHONE_WABA_MISMATCH" ||
+              result?.error === "META_WABA_VALIDATION_FAILED" ||
+              result?.error === "META_PHONE_REGISTRATION_UNCONFIRMED" ||
+              result?.error === "WHATSAPP_RECOVERY_TARGET_MISMATCH"
+            ) {
+              throw new Error("WHATSAPP_RECOVERY_INCOMPATIBLE_STATE");
+            }
+            throw new Error("WHATSAPP_RECOVERY_TECHNICAL_ERROR");
+          }
           const scenarioMessage = readEmbeddedSignupScenarioMessage(result);
           throw new Error(
             scenarioMessage || "EMBEDDED_SIGNUP_BACKEND_REJECTED",
@@ -1717,10 +1770,20 @@ function OnboardingContent() {
 
         clearEmbeddedSignupSensitiveState();
         setEmbeddedSignupSession(null);
-        await fetchWhatsappStatus();
+        if (!isRecoveryVerification) await fetchWhatsappStatus();
         if (!embeddedSignupMountedRef.current) return;
         setEmbeddedSignupMessage(null);
-        setEmbeddedSignupError(mapEmbeddedSignupError(error));
+        const errorCode = error instanceof Error ? error.message : "";
+        setEmbeddedSignupError(
+          isRecoveryVerification
+            ? errorCode === "WHATSAPP_RECOVERY_AUTHORIZATION_INSUFFICIENT"
+              ? "A autorização nova da Meta não concedeu acesso suficiente, expirou ou foi recusada. Reinicie a verificação e conclua a autorização."
+              : errorCode === "WHATSAPP_RECOVERY_INCOMPATIBLE_STATE" ||
+                  errorCode === "WHATSAPP_RECOVERY_TARGET_MISMATCH"
+                ? "A conta ou o telefone selecionado não corresponde à conexão META esperada, ou o estado remoto não é compatível. Nenhuma alteração foi feita."
+                : "Não foi possível verificar o estado remoto da Meta. Nenhuma alteração foi feita; tente novamente ou procure o suporte."
+            : mapEmbeddedSignupError(error),
+        );
       }
     })();
 
@@ -1737,10 +1800,13 @@ function OnboardingContent() {
       })
       .catch(() => undefined);
   }, [
+    activeStore?.id,
     clearEmbeddedSignupSensitiveState,
     embeddedSignupCode,
+    embeddedSignupIntent,
     embeddedSignupSession,
     fetchWhatsappStatus,
+    organizationId,
     refreshActivationReadinessAfterEmbeddedSignup,
   ]);
 
@@ -2100,7 +2166,7 @@ function OnboardingContent() {
                   <div className="mt-4 space-y-4 rounded-xl border border-amber-200 bg-white p-4">
                     <button
                       type="button"
-                      onClick={startMetaEmbeddedSignup}
+                      onClick={() => startMetaEmbeddedSignup("connect")}
                       disabled={
                         embeddedSignupLoading ||
                         embeddedSignupSubmitting
@@ -2112,6 +2178,34 @@ function OnboardingContent() {
                         : "Conectar WhatsApp pela Meta"}
                     </button>
 
+                    {embeddedSignupMessage ? (
+                      <p className="text-sm leading-6 text-emerald-800">{embeddedSignupMessage}</p>
+                    ) : null}
+                    {embeddedSignupError ? (
+                      <p className="text-sm leading-6 text-red-800">{embeddedSignupError}</p>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {organizationId === META_RECOVERY_ORGANIZATION_ID &&
+                activeStore.id === META_RECOVERY_STORE_ID ? (
+                  <div className="mt-4 space-y-3 rounded-xl border border-blue-200 bg-white p-4">
+                    <div>
+                      <p className="text-sm font-semibold text-gray-900">Verificar conexão existente — loja META</p>
+                      <p className="mt-1 text-sm leading-6 text-gray-600">
+                        Solicita uma nova autorização Meta e apenas consulta o estado do WABA e do telefone. Não registra o telefone, não salva uma integração e não consulta nem reutiliza PIN.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => startMetaEmbeddedSignup("verify-existing")}
+                      disabled={embeddedSignupLoading || embeddedSignupSubmitting}
+                      className="rounded-xl border border-blue-300 px-5 py-2.5 text-sm font-semibold text-blue-900 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {embeddedSignupLoading || embeddedSignupSubmitting
+                        ? "Verificando com a Meta..."
+                        : "Verificar conexão existente"}
+                    </button>
                     {embeddedSignupMessage ? (
                       <p className="text-sm leading-6 text-emerald-800">{embeddedSignupMessage}</p>
                     ) : null}

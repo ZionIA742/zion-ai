@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
+  confirmMetaWhatsappPhoneRegistration,
   exchangeAndValidateMetaWhatsappBinding,
   registerMetaWhatsappEmbeddedSignup,
   MetaWhatsappEmbeddedSignupError,
@@ -186,5 +187,96 @@ test("Meta error evidence is preserved safely without retaining raw payload", as
       assert.equal(error.message.includes("raw-meta-message-sentinel"), false);
       return true;
     },
+  );
+});
+
+test("recovery confirmation requires a verified Cloud API phone and performs no mutation", async () => {
+  const urls: string[] = [];
+  const methods: string[] = [];
+  const state = await confirmMetaWhatsappPhoneRegistration(
+    {
+      accessToken: "fresh-token-sentinel",
+      whatsappBusinessAccountId: "waba-candidate",
+      phoneNumberId: "phone-candidate",
+      connectionMode: "standard",
+      displayPhoneNumber: "+5511999999999",
+      graphApiVersion: "v99.0",
+      appId: "app-test",
+      validatedAt: "2026-10-02T12:00:00.000Z",
+    },
+    {
+      deps: depsFor(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        urls.push(url);
+        methods.push(init?.method || "GET");
+        return Response.json({
+          id: "phone-candidate",
+          display_phone_number: "+5511999999999",
+          code_verification_status: "VERIFIED",
+          platform_type: "CLOUD_API",
+        });
+      }),
+    },
+  );
+
+  assert.equal(state.codeVerificationStatus, "VERIFIED");
+  assert.equal(state.platformType, "CLOUD_API");
+  assert.equal(JSON.stringify(state).includes("fresh-token-sentinel"), false);
+  assert.equal(urls.length, 1);
+  assert.deepEqual(methods, ["GET"]);
+  assert.match(urls[0] || "", /fields=id%2Cdisplay_phone_number%2Ccode_verification_status%2Cplatform_type/);
+  assert.equal(urls.some((url) => url.includes("/register")), false);
+  assert.equal(urls.some((url) => url.includes("/subscribed_apps")), false);
+});
+
+test("recovery confirmation blocks an unconfirmed remote phone", async () => {
+  await assert.rejects(
+    confirmMetaWhatsappPhoneRegistration(
+      {
+        accessToken: "fresh-token-sentinel",
+        whatsappBusinessAccountId: "waba-candidate",
+        phoneNumberId: "phone-candidate",
+        connectionMode: "standard",
+        displayPhoneNumber: "+5511999999999",
+        graphApiVersion: "v99.0",
+        appId: "app-test",
+        validatedAt: "2026-10-02T12:00:00.000Z",
+      },
+      {
+        deps: depsFor(async () =>
+          Response.json({
+            id: "phone-candidate",
+            display_phone_number: "+5511999999999",
+            code_verification_status: "NOT_VERIFIED",
+            platform_type: "CLOUD_API",
+          }),
+        ),
+      },
+    ),
+    (error: unknown) =>
+      error instanceof MetaWhatsappEmbeddedSignupError &&
+      error.code === "META_PHONE_REGISTRATION_UNCONFIRMED",
+  );
+});
+
+test("recovery confirmation preserves Meta unavailability as a safe error", async () => {
+  await assert.rejects(
+    confirmMetaWhatsappPhoneRegistration(
+      {
+        accessToken: "fresh-token-sentinel",
+        whatsappBusinessAccountId: "waba-candidate",
+        phoneNumberId: "phone-candidate",
+        connectionMode: "standard",
+        displayPhoneNumber: "+5511999999999",
+        graphApiVersion: "v99.0",
+        appId: "app-test",
+        validatedAt: "2026-10-02T12:00:00.000Z",
+      },
+      { deps: depsFor(async () => new Response("unavailable", { status: 503 })) },
+    ),
+    (error: unknown) =>
+      error instanceof MetaWhatsappEmbeddedSignupError &&
+      error.code === "META_UNAVAILABLE" &&
+      error.httpStatus === 502,
   );
 });
