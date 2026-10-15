@@ -287,6 +287,12 @@ function normalizeLedgerPart(value: unknown): DeliveryLedgerPart | null {
   };
 }
 
+function isDeliveryLedgerPart(
+  value: DeliveryLedgerPart | null,
+): value is DeliveryLedgerPart {
+  return value !== null;
+}
+
 async function readDeliveryLedger(client: DeliverySupabase, scope: DeliveryScope): Promise<DeliveryLedgerPart[]> {
   const reader = client as unknown as LedgerReader;
   const { data, error } = await reader
@@ -297,12 +303,13 @@ async function readDeliveryLedger(client: DeliverySupabase, scope: DeliveryScope
     .eq("store_id", scope.store_id);
   if (error) throw new Error("P9_DELIVERY_LEDGER_READ_FAILED");
   const rows = Array.isArray(data) ? data.map(normalizeLedgerPart) : [];
-  if (rows.some((part): part is null => part === null) || rows.length !== 3) throw new Error("P9_DELIVERY_LEDGER_INVALID");
-  const components = new Set(rows.map((part) => part.component));
+  const validRows = rows.filter(isDeliveryLedgerPart);
+  if (validRows.length !== rows.length || rows.length !== 3) throw new Error("P9_DELIVERY_LEDGER_INVALID");
+  const components = new Set(validRows.map((part) => part.component));
   if (components.size !== 3 || !["opening_template", "report", "pdf"].every((component) => components.has(component as QuoteApprovalDeliveryComponent))) {
     throw new Error("P9_DELIVERY_LEDGER_INVALID");
   }
-  for (const part of rows) {
+  for (const part of validRows) {
     if (part.request_id !== scope.request_id || part.organization_id !== scope.organization_id || part.store_id !== scope.store_id) {
       throw new Error("P9_DELIVERY_LEDGER_SCOPE_INVALID");
     }
@@ -315,7 +322,7 @@ async function readDeliveryLedger(client: DeliverySupabase, scope: DeliveryScope
     if (part.status === "accepted" && !part.external_message_id) throw new Error("P9_DELIVERY_LEDGER_INVALID");
     if (part.status !== "accepted" && part.external_message_id) throw new Error("P9_DELIVERY_LEDGER_INVALID");
   }
-  return rows;
+  return validRows;
 }
 
 async function finish(
@@ -411,11 +418,11 @@ async function sendClaimed(args: {
   return { ok: true, finish: final, externalMessageId: sent.externalMessageId };
 }
 
-function defaultClient(): SupabaseClient {
+function defaultClient(): DeliverySupabase {
   const url = text(process.env.NEXT_PUBLIC_SUPABASE_URL);
   const key = text(process.env.SUPABASE_SERVICE_ROLE_KEY);
   if (!url || !key) throw new Error("P9_QUOTE_APPROVAL_DELIVERY_ADMIN_CONFIG_MISSING");
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } }) as unknown as DeliverySupabase;
 }
 
 export async function deliverQuoteApprovalRequest(args: {
@@ -428,6 +435,7 @@ export async function deliverQuoteApprovalRequest(args: {
   const requestId = text(args.requestId);
   if (!requestId) return { ok: false, requestId: "", state: "invalid", reason: "P9_QUOTE_APPROVAL_REQUEST_ID_REQUIRED" };
   const client = args.supabase || defaultClient();
+  const policyClient = client as unknown as SupabaseClient;
   const transport = args.transport || sendResponsibleWhatsappPayload;
   const resolvePolicy = args.resolvePolicy || resolveResponsibleWhatsappOutboundPolicy;
 
@@ -480,7 +488,7 @@ export async function deliverQuoteApprovalRequest(args: {
   let policy: Awaited<ReturnType<typeof resolveResponsibleWhatsappOutboundPolicy>>;
   try {
     policy = await resolvePolicy({
-      supabase: client as SupabaseClient,
+      supabase: policyClient,
       organizationId: scope.organization_id,
       storeId: scope.store_id,
       responsibleId: scope.responsible_id,
@@ -513,7 +521,7 @@ export async function deliverQuoteApprovalRequest(args: {
     let revalidated: Awaited<ReturnType<typeof resolveResponsibleWhatsappOutboundPolicy>>;
     try {
       revalidated = await resolvePolicy({
-        supabase: client as SupabaseClient,
+        supabase: policyClient,
         organizationId: scope.organization_id,
         storeId: scope.store_id,
         responsibleId: scope.responsible_id,
@@ -562,7 +570,7 @@ export async function deliverQuoteApprovalRequest(args: {
     let reportPolicy: Awaited<ReturnType<typeof resolveResponsibleWhatsappOutboundPolicy>>;
     try {
       reportPolicy = await resolvePolicy({
-        supabase: client as SupabaseClient,
+        supabase: policyClient,
         organizationId: scope.organization_id,
         storeId: scope.store_id,
         responsibleId: scope.responsible_id,
@@ -602,7 +610,7 @@ export async function deliverQuoteApprovalRequest(args: {
   let pdfWindowPolicy: Awaited<ReturnType<typeof resolveResponsibleWhatsappOutboundPolicy>>;
   try {
     pdfWindowPolicy = await resolvePolicy({
-      supabase: client as SupabaseClient,
+      supabase: policyClient,
       organizationId: scope.organization_id,
       storeId: scope.store_id,
       responsibleId: scope.responsible_id,
@@ -682,7 +690,7 @@ export async function deliverQuoteApprovalRequest(args: {
   let pdfPolicy: Awaited<ReturnType<typeof resolveResponsibleWhatsappOutboundPolicy>>;
   try {
     pdfPolicy = await resolvePolicy({
-      supabase: client as SupabaseClient,
+      supabase: policyClient,
       organizationId: scope.organization_id,
       storeId: scope.store_id,
       responsibleId: scope.responsible_id,
