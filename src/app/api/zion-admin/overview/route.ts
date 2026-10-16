@@ -39,6 +39,7 @@ import {
   sanitizeOverviewError,
   sanitizeTechnicalPreview,
 } from "./overview-sensitive-data";
+import { appendOverviewDiagnostic } from "./overview-diagnostic-association";
 
 type StoreRow = {
   id: string;
@@ -590,16 +591,16 @@ function shouldExposeIssueDetail(row: QueueMetricRow) {
 
 function pushPendingIssueDetail(
   metricsByStore: Map<string, StoreOverviewMetrics>,
+  operationalStoreIds: ReadonlySet<string>,
   storeId: string | null | undefined,
   issue: PendingIssueDetail,
 ) {
-  const metrics = getStoreMetrics(metricsByStore, storeId);
-
-  if (!metrics) {
-    return;
-  }
-
-  metrics.pendingIssueDetails.push(issue);
+  appendOverviewDiagnostic({
+    bucketsByStoreId: metricsByStore,
+    operationalStoreIds,
+    storeId,
+    diagnostic: issue,
+  });
 }
 
 function pushStoreConfigurationIssue(
@@ -733,6 +734,7 @@ function applyStoreConfigurationIssues(args: {
 
 function applyPendingIssueDetails(args: {
   metricsByStore: Map<string, StoreOverviewMetrics>;
+  operationalStoreIds: ReadonlySet<string>;
   aiRunQueueRows: AiRunQueueIssueRow[];
   salesActionQueueRows: SalesActionQueueIssueRow[];
   whatsappQueueRows: WhatsappInboxIssueRow[];
@@ -740,7 +742,7 @@ function applyPendingIssueDetails(args: {
   for (const row of args.aiRunQueueRows) {
     if (!shouldExposeIssueDetail(row)) continue;
 
-    pushPendingIssueDetail(args.metricsByStore, row.store_id, {
+    pushPendingIssueDetail(args.metricsByStore, args.operationalStoreIds, row.store_id, {
       id: row.id,
       source: "ai_run_queue",
       label: "Fila de IA",
@@ -762,7 +764,7 @@ function applyPendingIssueDetails(args: {
   for (const row of args.salesActionQueueRows) {
     if (!shouldExposeIssueDetail(row)) continue;
 
-    pushPendingIssueDetail(args.metricsByStore, row.store_id, {
+    pushPendingIssueDetail(args.metricsByStore, args.operationalStoreIds, row.store_id, {
       id: row.id,
       source: "ai_sales_action_queue",
       label: "Ações comerciais da IA",
@@ -785,7 +787,7 @@ function applyPendingIssueDetails(args: {
   for (const row of args.whatsappQueueRows) {
     if (!shouldExposeIssueDetail(row)) continue;
 
-    pushPendingIssueDetail(args.metricsByStore, row.store_id, {
+    pushPendingIssueDetail(args.metricsByStore, args.operationalStoreIds, row.store_id, {
       id: row.id,
       source: "channel_whatsapp_inbox",
       label: "WhatsApp de entrada",
@@ -2098,6 +2100,7 @@ export async function GET() {
 
     applyPendingIssueDetails({
       metricsByStore,
+      operationalStoreIds,
       aiRunQueueRows: aiRunQueueIssueRows.rows,
       salesActionQueueRows: salesActionQueueIssueRows.rows,
       whatsappQueueRows: whatsappIssueRows.rows,

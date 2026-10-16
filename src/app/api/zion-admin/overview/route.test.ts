@@ -48,6 +48,29 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "diagnostic fields remain store-bound and previews use the sanitizer",
+    run: () => {
+      const source = readSource(routePath);
+      const detailsSource = source.slice(
+        source.indexOf("function applyPendingIssueDetails"),
+      );
+
+      for (const token of [
+        "row.store_id",
+        "storeId: row.store_id",
+        "queueKey: row.queue_key",
+        "nextAction: row.next_action",
+        "actionKey: row.action_key",
+        "provider: row.provider",
+        "externalEventId: row.external_event_id",
+        "sanitizeTechnicalPreview(row.input)",
+        "sanitizeTechnicalPreview(row.payload)",
+      ]) {
+        assert.equal(detailsSource.includes(token), true, `missing store-bound diagnostic token: ${token}`);
+      }
+    },
+  },
+  {
     name: "GET resolves access exactly once before service role and queries",
     run: () => {
       const source = readSource(routePath);
