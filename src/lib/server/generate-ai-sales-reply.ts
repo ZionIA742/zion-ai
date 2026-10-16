@@ -12,6 +12,10 @@ import { buildBehaviorInstructionBlock } from "./ai-sales-behavior";
 import { buildSalesMethodologyInstructionBlock } from "./ai-sales-methodology";
 import { buildSalesResponseBrain } from "./ai-sales-response-brain";
 import {
+  createSalesAiErrorDiagnostic,
+  type SalesAiErrorDiagnostic,
+} from "./sales-ai-error-diagnostics";
+import {
   buildCommercialSuggestionPolicy,
   createStoreCommercialAiSettingsInputFromSources,
   deriveStoreCommercialAiLegacyMirrors,
@@ -877,6 +881,7 @@ export type GenerateAiSalesReplyResult =
       ok: false;
       error: string;
       message: string;
+      diagnostic?: SalesAiErrorDiagnostic;
     };
 
 export function buildCommercialDecisionExplanation(args: {
@@ -11014,6 +11019,7 @@ type WriteCommercialMessageIntentResolutionResult =
       ok: false;
       error: "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED";
       message: string;
+      diagnostic?: SalesAiErrorDiagnostic;
     };
 
 async function writeCanonicalCommercialMessageIntentResolutionBySystem(args: {
@@ -11058,6 +11064,10 @@ async function writeCanonicalCommercialMessageIntentResolutionBySystem(args: {
     return {
       ok: false,
       error: "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED",
+      diagnostic: createSalesAiErrorDiagnostic(
+        "write_commercial_message_intent_resolution_by_system",
+        error,
+      ),
       message: error.message || "Falha ao persistir a resoluÃ§Ã£o comercial canÃ´nica.",
     };
   }
@@ -11066,6 +11076,10 @@ async function writeCanonicalCommercialMessageIntentResolutionBySystem(args: {
     return {
       ok: false,
       error: "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED",
+      diagnostic: createSalesAiErrorDiagnostic(
+        "write_commercial_message_intent_resolution_by_system",
+        null,
+      ),
       message: "Writer CMIR retornou cardinalidade invÃ¡lida.",
     };
   }
@@ -11096,6 +11110,10 @@ async function writeCanonicalCommercialMessageIntentResolutionBySystem(args: {
     return {
       ok: false,
       error: "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED",
+      diagnostic: createSalesAiErrorDiagnostic(
+        "write_commercial_message_intent_resolution_by_system",
+        null,
+      ),
       message: "Writer CMIR retornou payload estruturalmente invÃ¡lido.",
     };
   }
@@ -11126,6 +11144,7 @@ type ResolveCanonicalCommercialMessageIntentResult =
         | "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED"
         | "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED";
       message: string;
+      diagnostic?: SalesAiErrorDiagnostic;
       semanticResponse?: unknown | null;
     };
 
@@ -12609,6 +12628,7 @@ export async function generateAiSalesReply(
         ok: false,
         error: commercialIntentResolutionResult.error,
         message: commercialIntentResolutionResult.message,
+        diagnostic: commercialIntentResolutionResult.diagnostic,
       };
     }
 

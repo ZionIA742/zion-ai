@@ -25,6 +25,11 @@ import { pushAssistantContractWorkflowDecisionMessage } from "./assistant/contra
 import {
   loadSalesAiOperatingWindowAuthority,
 } from "./sales-ai-operating-window";
+import {
+  createSalesAiErrorDiagnostic,
+  SalesAiPersistenceError,
+  type SalesAiErrorDiagnostic,
+} from "./sales-ai-error-diagnostics";
 
 type ScheduledSalesResumeReason =
   | "sales_ai_after_hours_policy"
@@ -69,6 +74,7 @@ type GenerateAndSaveAiSalesReplyResult =
       message: string;
       aiText?: string;
       context?: any;
+      diagnostic?: SalesAiErrorDiagnostic;
     };
 
 type AiSalesReplyUsage = {
@@ -3590,7 +3596,13 @@ export async function materializeSalesAiReplySet(args: {
   );
 
   if (error) {
-    throw new Error(`SALES_AI_REPLY_SET_MATERIALIZATION_FAILED: ${error.message}`);
+    throw new SalesAiPersistenceError(
+      "SALES_AI_REPLY_SET_MATERIALIZATION_FAILED",
+      createSalesAiErrorDiagnostic(
+        "materialize_sales_ai_reply_set_by_system",
+        error,
+      ),
+    );
   }
 
   const row = (Array.isArray(data) ? data[0] : data) as SalesAiReplySetRow | null;
@@ -5610,6 +5622,7 @@ export async function generateAndSaveAiSalesReply(
         ok: false,
         error: generationResult.error,
         message: generationResult.message,
+        diagnostic: generationResult.diagnostic,
       };
     }
 
@@ -6211,9 +6224,11 @@ export async function generateAndSaveAiSalesReply(
         return {
           ok: false,
           error: "SALES_AI_REPLY_SET_MATERIALIZATION_FAILED",
-          message:
-            materializationError?.message ||
-            "Falha ao materializar atomicamente a resposta da IA.",
+          message: "Falha ao materializar atomicamente a resposta da IA.",
+          diagnostic:
+            materializationError instanceof SalesAiPersistenceError
+              ? materializationError.diagnostic
+              : undefined,
           aiText,
         };
       }

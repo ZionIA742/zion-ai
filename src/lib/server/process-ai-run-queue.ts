@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { generateAndSaveAiSalesReply } from "./generate-and-save-ai-sales-reply";
 import { isSalesAiConversationStatusEligible } from "./conversation-ai-sales-eligibility";
+import { formatSalesAiProcessingError } from "./sales-ai-error-diagnostics";
 
 type AiRunQueueRow = {
   id: string;
@@ -351,7 +352,9 @@ export async function processDueAiRunQueue(
           styleHint,
         },
       });
-      const detail = aiResult.ok ? null : aiResult.error;
+      const detail = aiResult.ok
+        ? null
+        : formatSalesAiProcessingError(aiResult.error, aiResult.diagnostic);
 
       await markQueueProcessed({
         supabase,

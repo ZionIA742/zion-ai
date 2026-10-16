@@ -602,6 +602,72 @@ const tests: TestCase[] = [
       ]);
     },
   },
+  {
+    name: "persists safe CMIR RPC diagnostics without raw Supabase details",
+    run: async () => {
+      const recorder = createQueueSupabase([queueRow()]);
+      const leaked = "phone=+5511999999999 password=top-secret";
+
+      const result = await processDueAiRunQueue({
+        organizationId: "org-1",
+        storeId: "store-1",
+        supabaseClient: recorder.supabase,
+        runAiFlow: async () => ({
+          ok: false,
+          error: "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED",
+          message: leaked,
+          diagnostic: {
+            authority: "write_commercial_message_intent_resolution_by_system",
+            sqlstate: "23514",
+            constraint: "commercial_message_intent_resolution_shape_check",
+            reason: null,
+          },
+        }),
+      });
+
+      const persisted = String(recorder.updates[0]?.payload.processing_error || "");
+      assert.equal(result.failed, 1);
+      assert.equal(
+        persisted,
+        "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED;authority=write_commercial_message_intent_resolution_by_system;sqlstate=23514;constraint=commercial_message_intent_resolution_shape_check;reason=unknown",
+      );
+      assert.equal(persisted.includes(leaked), false);
+      assert.equal(persisted.includes("password"), false);
+    },
+  },
+  {
+    name: "persists safe reply materialization diagnostics without raw Supabase details",
+    run: async () => {
+      const recorder = createQueueSupabase([queueRow()]);
+      const leaked = "details=secret payload with customer phone";
+
+      const result = await processDueAiRunQueue({
+        organizationId: "org-1",
+        storeId: "store-1",
+        supabaseClient: recorder.supabase,
+        runAiFlow: async () => ({
+          ok: false,
+          error: "SALES_AI_REPLY_SET_MATERIALIZATION_FAILED",
+          message: leaked,
+          diagnostic: {
+            authority: "materialize_sales_ai_reply_set_by_system",
+            sqlstate: "42501",
+            constraint: "sales_ai_reply_set_scope_check",
+            reason: null,
+          },
+        }),
+      });
+
+      const persisted = String(recorder.updates[0]?.payload.processing_error || "");
+      assert.equal(result.failed, 1);
+      assert.equal(
+        persisted,
+        "SALES_AI_REPLY_SET_MATERIALIZATION_FAILED;authority=materialize_sales_ai_reply_set_by_system;sqlstate=42501;constraint=sales_ai_reply_set_scope_check;reason=unknown",
+      );
+      assert.equal(persisted.includes(leaked), false);
+      assert.equal(persisted.includes("customer phone"), false);
+    },
+  },
 ];
 
 async function main() {
