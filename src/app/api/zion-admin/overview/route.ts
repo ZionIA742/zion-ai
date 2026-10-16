@@ -35,6 +35,10 @@ import {
   loadStoreSettingsReadiness,
   type SettingsReadinessOverviewClient,
 } from "./settings-readiness-overview";
+import {
+  sanitizeOverviewError,
+  sanitizeTechnicalPreview,
+} from "./overview-sensitive-data";
 
 type StoreRow = {
   id: string;
@@ -580,25 +584,6 @@ function applyQueueMetrics(args: {
   }
 }
 
-function stringifyPreview(value: unknown, maxLength = 320) {
-  if (value == null) return null;
-
-  let text = "";
-
-  try {
-    text = typeof value === "string" ? value : JSON.stringify(value);
-  } catch {
-    text = String(value);
-  }
-
-  const normalized = text.replace(/\s+/g, " " ).trim();
-
-  if (!normalized) return null;
-  if (normalized.length <= maxLength) return normalized;
-
-  return `${normalized.slice(0, maxLength)}...`;
-}
-
 function shouldExposeIssueDetail(row: QueueMetricRow) {
   return isPendingQueueItem(row) || isErroredText(row.processing_error);
 }
@@ -760,13 +745,17 @@ function applyPendingIssueDetails(args: {
       source: "ai_run_queue",
       label: "Fila de IA",
       storeId: row.store_id,
-      error: row.processing_error || (row.processed_at ? null : "Item ainda pendente de processamento"),
+      error: sanitizeOverviewError({
+        source: "ai_run_queue",
+        rawError: row.processing_error,
+        pending: !row.processed_at,
+      }),
       occurredAt: row.enqueued_at,
       processedAt: row.processed_at,
       queueKey: row.queue_key,
       conversationId: row.conversation_id,
       leadId: row.lead_id,
-      inputPreview: stringifyPreview(row.input),
+      inputPreview: sanitizeTechnicalPreview(row.input),
     });
   }
 
@@ -778,14 +767,18 @@ function applyPendingIssueDetails(args: {
       source: "ai_sales_action_queue",
       label: "Ações comerciais da IA",
       storeId: row.store_id,
-      error: row.processing_error || (row.processed_at ? null : "Ação comercial ainda pendente de processamento"),
+      error: sanitizeOverviewError({
+        source: "ai_sales_action_queue",
+        rawError: row.processing_error,
+        pending: !row.processed_at,
+      }),
       occurredAt: row.enqueued_at,
       processedAt: row.processed_at,
       conversationId: row.conversation_id,
       aiRunId: row.ai_run_id,
       nextAction: row.next_action,
       actionKey: row.action_key,
-      payloadPreview: stringifyPreview(row.payload),
+      payloadPreview: sanitizeTechnicalPreview(row.payload),
     });
   }
 
@@ -797,12 +790,16 @@ function applyPendingIssueDetails(args: {
       source: "channel_whatsapp_inbox",
       label: "WhatsApp de entrada",
       storeId: row.store_id,
-      error: row.processing_error || (row.processed_at ? null : "Evento de WhatsApp ainda pendente de processamento"),
+      error: sanitizeOverviewError({
+        source: "channel_whatsapp_inbox",
+        rawError: row.processing_error,
+        pending: !row.processed_at,
+      }),
       occurredAt: row.received_at,
       processedAt: row.processed_at,
       provider: row.provider,
       externalEventId: row.external_event_id,
-      payloadPreview: stringifyPreview(row.payload),
+      payloadPreview: sanitizeTechnicalPreview(row.payload),
     });
   }
 }
@@ -2050,7 +2047,10 @@ export async function GET() {
           id: row.id,
           model: row.model,
           status: row.status,
-          error: row.error,
+          error: sanitizeOverviewError({
+            source: "ai_run",
+            rawError: row.error || normalizedStatus === "failed",
+          }),
           createdAt: row.created_at,
           finishedAt: row.finished_at,
         });
@@ -2061,7 +2061,10 @@ export async function GET() {
           id: row.id,
           model: row.model,
           status: row.status,
-          error: row.error,
+          error: sanitizeOverviewError({
+            source: "ai_run",
+            rawError: row.error,
+          }),
           createdAt: row.created_at,
           finishedAt: row.finished_at,
         });
