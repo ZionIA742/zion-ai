@@ -20,6 +20,13 @@ import {
   createQuoteVersion,
   recordQuoteGenerationFailure,
 } from "@/lib/server/sales-quotes/quote-versioning";
+import {
+  buildAcceptedSalesQuoteRevisionOperationKey,
+  ACCEPTED_REVISION_INPUT_FINGERPRINT_KEY,
+  buildAcceptedSalesQuoteRevisionInputFingerprint,
+  createAcceptedSalesQuoteRevisionBySystem,
+  resolveAcceptedSalesQuoteRevision,
+} from "@/lib/server/sales-quotes/accepted-sales-quote-revision";
 import { resolveSalesQuoteKindForVersion } from "@/lib/server/sales-quotes/quote-kind";
 import {
   parseValidityDays,
@@ -715,6 +722,58 @@ async function loadOpenChangeRequest(args: {
   return changeRequest;
 }
 
+async function loadAcceptedRevisionReplay(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  quoteId: string;
+  changeRequestId?: string | null;
+  inputFingerprint: string;
+  quoteMetadata: unknown;
+}) {
+  const changeRequestId = String(args.changeRequestId || "").trim();
+  if (!changeRequestId) return null;
+
+  const operationKey = buildAcceptedSalesQuoteRevisionOperationKey(changeRequestId);
+  const { data, error } = await args.supabase
+    .from("p9_accepted_quote_revisions")
+    .select(
+      "id, quote_id, source_quote_version_id, target_quote_version_id, source_acceptance_event_id, operation_key"
+    )
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("quote_id", args.quoteId)
+    .eq("operation_key", operationKey)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao verificar replay da revisao aceita: ${error.message}`);
+  }
+
+  if (!data?.id) return null;
+
+  const metadata =
+    args.quoteMetadata && typeof args.quoteMetadata === "object"
+      ? (args.quoteMetadata as Record<string, unknown>)
+      : null;
+  if (metadata?.[ACCEPTED_REVISION_INPUT_FINGERPRINT_KEY] !== args.inputFingerprint) {
+    throw new QuoteAccessError(
+      409,
+      "ACCEPTED_REVISION_OPERATION_KEY_CONFLICT",
+      "O pedido de alteracao diverge da operacao de revisao ja materializada."
+    );
+  }
+
+  return {
+    revisionId: String(data.id),
+    quoteId: String(data.quote_id),
+    sourceQuoteVersionId: String(data.source_quote_version_id),
+    targetQuoteVersionId: String(data.target_quote_version_id),
+    sourceAcceptanceEventId: String(data.source_acceptance_event_id),
+    operationKey,
+  };
+}
+
 export async function POST(
   request: Request,
   context: { params: Promise<{ quoteId: string }> }
@@ -739,6 +798,8 @@ export async function POST(
       }
     | null = null;
   let failureSnapshot: QuoteSnapshot | null = null;
+  let acceptedRevisionFlow = false;
+  let acceptedRevisionRpcCalled = false;
 
   try {
     const body = (await request.json().catch(() => null)) as ApplyChangeBody | null;
@@ -747,21 +808,69 @@ export async function POST(
     const { quoteId: rawQuoteId } = await context.params;
     const quoteId = String(rawQuoteId || "").trim();
     const scope = await resolveAuthorizedExistingQuote(quoteId);
-    const eventGuard = await canInsertQuoteConversationEvent({
-      supabase: scope.supabase,
-      quote: scope.quote,
-      eventType: CHANGE_APPLIED_EVENT_TYPE,
-    });
+    const requestedChangeId = String(safeBody.changeRequestId || scope.quote.last_change_request_id || "").trim();
+    const acceptedRevisionInputFingerprint = buildAcceptedSalesQuoteRevisionInputFingerprint(
+      safeBody as Record<string, unknown>,
+      requestedChangeId,
+    );
+    if (String(scope.quote.status || "").trim().toLowerCase() !== "changes_requested") {
+      const replay = await loadAcceptedRevisionReplay({
+        supabase: scope.supabase,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        quoteId: scope.quote.id,
+        changeRequestId: requestedChangeId,
+        inputFingerprint: acceptedRevisionInputFingerprint,
+        quoteMetadata: scope.quote.metadata,
+      });
 
-    if (!eventGuard.allowed) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "QUOTE_EVENT_NOT_ALLOWED",
-          message: "A alteracao do orcamento nao esta permitida no estado atual da conversa.",
-        },
-        { status: 409 }
-      );
+      if (replay) {
+        return NextResponse.json({
+          ok: true,
+          outcome: "replayed",
+          quoteId: replay.quoteId,
+          status: "pending_review",
+          changeRequestId: requestedChangeId,
+          previousVersionId: replay.sourceQuoteVersionId,
+          versionId: replay.targetQuoteVersionId,
+          revisionId: replay.revisionId,
+          acceptanceEventId: replay.sourceAcceptanceEventId,
+        });
+      }
+    }
+    const acceptedRevision =
+      String(scope.quote.status || "").trim().toLowerCase() === "changes_requested"
+        ? await resolveAcceptedSalesQuoteRevision({
+            supabase: scope.supabase,
+            organizationId: scope.organizationId,
+            storeId: scope.store.id,
+            commercialOpportunityId: scope.quote.commercial_opportunity_id,
+            quoteId: scope.quote.id,
+            quoteVersionId: scope.quote.current_version_id,
+          })
+        : { kind: "not_accepted" as const };
+
+    const acceptedRevisionDetails = acceptedRevision.kind === "accepted" ? acceptedRevision : null;
+    if (acceptedRevisionDetails) {
+      acceptedRevisionFlow = true;
+    }
+    if (!acceptedRevisionFlow) {
+      const eventGuard = await canInsertQuoteConversationEvent({
+        supabase: scope.supabase,
+        quote: scope.quote,
+        eventType: CHANGE_APPLIED_EVENT_TYPE,
+      });
+
+      if (!eventGuard.allowed) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "QUOTE_EVENT_NOT_ALLOWED",
+            message: "A alteracao do orcamento nao esta permitida no estado atual da conversa.",
+          },
+          { status: 409 }
+        );
+      }
     }
 
     const items = await loadQuoteItems({
@@ -813,6 +922,11 @@ export async function POST(
       body: safeBody,
       currentItems: items,
     });
+
+    if (acceptedRevisionDetails) {
+      nextMetadata[ACCEPTED_REVISION_INPUT_FINGERPRINT_KEY] =
+        acceptedRevisionInputFingerprint;
+    }
 
     const quoteKind = await resolveSalesQuoteKindForVersion({
       supabase: scope.supabase,
@@ -909,8 +1023,71 @@ export async function POST(
       quoteId: scope.quote.id,
       quoteNumber: String(updatedQuote.quote_number || "").trim() || updatedQuote.id,
       versionNumber: null,
+      operationKey: acceptedRevisionFlow
+        ? buildAcceptedSalesQuoteRevisionOperationKey(changeRequest.id)
+        : null,
       pdfBytes,
     });
+
+    if (acceptedRevisionDetails) {
+      const operationKey = buildAcceptedSalesQuoteRevisionOperationKey(changeRequest.id);
+      const revisionSnapshot = {
+        ...snapshot,
+        generatedAt: changeRequest.created_at || snapshot.generatedAt,
+      };
+      const revisionPayload = {
+        items: serializeQuoteItemsForAtomicWriter(nextItems),
+        quote_snapshot: revisionSnapshot,
+        subtotal_cents: Number(updatedQuote.subtotal_cents || 0),
+        discount_cents: nextDiscountCents,
+        total_cents: nextTotalCents,
+        title: updatedQuote.title,
+        customer_notes: updatedQuote.customer_notes,
+        internal_notes: updatedQuote.internal_notes,
+        payment_terms: updatedQuote.payment_terms ?? null,
+        delivery_terms: updatedQuote.delivery_terms ?? null,
+        warranty_terms: updatedQuote.warranty_terms ?? null,
+        metadata: nextMetadata,
+        valid_until: updatedQuote.valid_until ?? null,
+        store_file_id: storedFile.storeFileId,
+        storage_bucket: storedFile.storageBucket,
+        storage_path: storedFile.storagePath,
+        original_filename: storedFile.originalFilename,
+        mime_type: "application/pdf",
+        size_bytes: storedFile.sizeBytes,
+        quote_kind: quoteKind,
+      };
+
+      acceptedRevisionRpcCalled = true;
+      const revision = await createAcceptedSalesQuoteRevisionBySystem({
+        supabase: scope.supabase,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        commercialOpportunityId: acceptedRevisionDetails.commercialOpportunityId,
+        expectedLifecycleCycle: acceptedRevisionDetails.lifecycleCycle,
+        quoteId: acceptedRevisionDetails.quoteId,
+        sourceQuoteVersionId: acceptedRevisionDetails.quoteVersionId,
+        sourceAcceptanceEventId: acceptedRevisionDetails.acceptanceEventId,
+        changeRequestId: changeRequest.id,
+        operationKey,
+        revision: revisionPayload,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        outcome: revision.outcome,
+        quoteId: revision.quoteId,
+        quoteNumber: updatedQuote.quote_number,
+        status: revision.quoteStatus,
+        changeRequestId: changeRequest.id,
+        previousVersionId: revision.sourceQuoteVersionId,
+        versionId: revision.targetQuoteVersionId,
+        revisionId: revision.revisionId,
+        acceptanceEventId: revision.sourceAcceptanceEventId,
+        totalCents: nextTotalCents,
+        appliedChanges,
+      });
+    }
 
     revertContext = {
       supabase: scope.supabase,
@@ -1017,7 +1194,7 @@ export async function POST(
       appliedChanges,
     });
   } catch (error) {
-    if (revertContext && quoteUpdated && !versionCreated) {
+    if (!acceptedRevisionFlow && revertContext && quoteUpdated && !versionCreated) {
       try {
         if (itemsReplaced) {
           await persistQuoteChangeAtomically({
@@ -1050,7 +1227,7 @@ export async function POST(
       }
     }
 
-    if (storedFile && !versionCreated) {
+    if (storedFile && !versionCreated && (!acceptedRevisionFlow || !acceptedRevisionRpcCalled)) {
       try {
         await revertContext!.supabase.storage
           .from(storedFile.storageBucket)
@@ -1069,7 +1246,7 @@ export async function POST(
       }
     }
 
-    if (revertContext && failureSnapshot && !versionCreated) {
+    if (!acceptedRevisionFlow && revertContext && failureSnapshot && !versionCreated) {
       try {
         await recordQuoteGenerationFailure({
           supabase: revertContext.supabase,

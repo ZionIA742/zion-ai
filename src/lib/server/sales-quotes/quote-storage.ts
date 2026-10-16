@@ -15,7 +15,19 @@ function buildQuoteStoragePath(args: {
   storeId: string;
   quoteId: string;
   versionNumber?: number | null;
+  operationKey?: string | null;
 }) {
+  const stableOperationKey = sanitizeFilePart(args.operationKey || "");
+  if (stableOperationKey) {
+    return [
+      args.organizationId,
+      args.storeId,
+      "sales-quotes",
+      args.quoteId,
+      `accepted-revision-${stableOperationKey}.pdf`,
+    ].join("/");
+  }
+
   const now = new Date();
   const dateKey = [
     now.getUTCFullYear(),
@@ -52,10 +64,60 @@ export async function storeQuotePdfFile(args: {
   quoteId: string;
   quoteNumber: string;
   versionNumber?: number | null;
+  operationKey?: string | null;
   pdfBytes: Uint8Array;
 }) {
   const storagePath = buildQuoteStoragePath(args);
   const originalFilename = buildPdfFileName(args.quoteNumber, args.versionNumber);
+
+  if (args.operationKey) {
+    const { data: existingFile, error: existingFileError } = await args.supabase
+      .from("store_files")
+      .select("id, storage_bucket, storage_path, original_filename, mime_type, size_bytes")
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("file_kind", "sales_quote_pdf")
+      .eq("storage_path", storagePath)
+      .maybeSingle();
+
+    if (existingFileError) {
+      throw new Error(`Falha ao verificar PDF deterministico no storage: ${existingFileError.message}`);
+    }
+
+    if (existingFile?.id) {
+      if (
+        existingFile.storage_bucket !== STORAGE_BUCKET ||
+        existingFile.mime_type !== "application/pdf" ||
+        Number(existingFile.size_bytes) !== args.pdfBytes.byteLength
+      ) {
+        throw new Error("POST_ACCEPTANCE_REVISION_PDF_EVIDENCE_CONFLICT");
+      }
+
+      const { data: existingPdf, error: existingPdfError } = await args.supabase.storage
+        .from(STORAGE_BUCKET)
+        .download(storagePath);
+
+      if (existingPdfError || !existingPdf) {
+        throw new Error("POST_ACCEPTANCE_REVISION_PDF_EVIDENCE_CONFLICT");
+      }
+
+      const existingPdfBytes = new Uint8Array(await existingPdf.arrayBuffer());
+      if (
+        existingPdfBytes.byteLength !== args.pdfBytes.byteLength ||
+        existingPdfBytes.some((value, index) => value !== args.pdfBytes[index])
+      ) {
+        throw new Error("POST_ACCEPTANCE_REVISION_PDF_EVIDENCE_CONFLICT");
+      }
+
+      return {
+        storeFileId: String(existingFile.id),
+        storageBucket: STORAGE_BUCKET,
+        storagePath,
+        originalFilename: String(existingFile.original_filename || originalFilename),
+        sizeBytes: Number(existingFile.size_bytes),
+      };
+    }
+  }
 
   const { error: uploadError } = await args.supabase.storage
     .from(STORAGE_BUCKET)

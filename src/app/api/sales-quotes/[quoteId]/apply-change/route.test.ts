@@ -985,6 +985,56 @@ const tests: TestCase[] = [
       );
     },
   },
+  {
+    name: "apply-change separa aceite anterior antes de qualquer mutacao da versao comum",
+    run: () => {
+      assert.match(
+        routeSource,
+        /resolveAcceptedSalesQuoteRevision\(\{/,
+        "apply-change must resolve the canonical acceptance boundary",
+      );
+      assert.equal(
+        routeSource.indexOf("resolveAcceptedSalesQuoteRevision({") <
+          routeSource.indexOf("canInsertQuoteConversationEvent({"),
+        true,
+        "accepted revision boundary must run before common apply-change work",
+      );
+      assert.match(routeSource, /createAcceptedSalesQuoteRevisionBySystem\(/);
+      assert.match(routeSource, /acceptedRevisionFlow/);
+      assert.equal(
+        routeSource.indexOf("createAcceptedSalesQuoteRevisionBySystem({") <
+          routeSource.indexOf("const quoteUpdatePayload"),
+        true,
+        "accepted revision must call the installed RPC before common quote writes",
+      );
+    },
+  },
+  {
+    name: "accepted revision sends the complete atomic revision payload and stable operation key",
+    run: () => {
+      for (const token of [
+        "items: serializeQuoteItemsForAtomicWriter(nextItems)",
+        "quote_snapshot: revisionSnapshot",
+        "store_file_id: storedFile.storeFileId",
+        "storage_path: storedFile.storagePath",
+        "operationKey",
+        "outcome: revision.outcome",
+        'status: revision.quoteStatus',
+      ]) {
+        assert.equal(routeSource.includes(token), true, `missing accepted revision token: ${token}`);
+      }
+      assert.match(routeSource, /operationKey: acceptedRevisionFlow\s*\?/);
+      assert.match(routeSource, /revision: revisionPayload/);
+    },
+  },
+  {
+    name: "accepted revision replay returns the existing version without regenerating the operation",
+    run: () => {
+      assert.match(routeSource, /loadAcceptedRevisionReplay\(/);
+      assert.match(routeSource, /outcome: "replayed"/);
+      assert.match(routeSource, /buildAcceptedSalesQuoteRevisionOperationKey\(/);
+    },
+  },
 ];
 
 void (async () => {
