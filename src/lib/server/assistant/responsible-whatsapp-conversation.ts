@@ -173,6 +173,12 @@ export async function routeResponsibleWhatsappToAssistant(args: {
   messageType?: string;
   metadata?: Record<string, unknown>;
   media?: ResponsibleWhatsappMedia | null;
+  onInboundPersisted?: (input: {
+    inboundMessageId: string;
+    externalMessageId: string;
+    content: string;
+    contextMessageId: string | null;
+  }) => Promise<void>;
 }) {
   const organizationId = clean(args.organizationId);
   const storeId = clean(args.storeId);
@@ -315,6 +321,18 @@ export async function routeResponsibleWhatsappToAssistant(args: {
       inbound_message_id: inbound.id,
       thread_id: inbound.thread_id,
     });
+
+    if (args.onInboundPersisted && args.messageType === "text") {
+      await args.onInboundPersisted({
+        inboundMessageId: inbound.id,
+        externalMessageId,
+        content,
+        contextMessageId:
+          typeof args.metadata?.context_message_id === "string"
+            ? args.metadata.context_message_id
+            : null,
+      });
+    }
 
     const { data: existingAssistant, error: existingAssistantError } = await supabase
       .from("store_assistant_messages")

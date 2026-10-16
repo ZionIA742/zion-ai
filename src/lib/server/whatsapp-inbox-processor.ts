@@ -18,6 +18,7 @@ import {
 import { classifyIncomingMediaMessage } from "@/lib/server/media-classification";
 import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
 import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
+import { decideQuoteApprovalFromPersistedInbound } from "@/lib/server/sales-quotes/quote-approval-decision";
 
 type Json =
   | string
@@ -532,6 +533,7 @@ function buildContactsContent(contacts: CanonicalContact[]) {
 }
 
 async function handleResponsibleInboundBeforeCustomerThread(args: {
+  supabase: SupabaseClient;
   inbox: InboxRow;
   extracted: ReturnType<typeof extractIncomingMessage>;
   payload: StoredInboxPayload;
@@ -588,6 +590,7 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
     }
 
     const assistantResult = await routeResponsibleWhatsappToAssistant({
+      supabase: args.supabase,
       organizationId: args.inbox.organization_id,
       storeId: args.inbox.store_id,
       responsibleId: responsible.responsible.id,
@@ -602,6 +605,18 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
         context_message_id: args.extracted.contextMessageId,
         inbox_id: args.inbox.id,
         external_event_id: args.inbox.external_event_id,
+      },
+      onInboundPersisted: async (inbound) => {
+        await decideQuoteApprovalFromPersistedInbound({
+          supabase: args.supabase,
+          organizationId: args.inbox.organization_id,
+          storeId: args.inbox.store_id,
+          responsibleId: responsible.responsible.id,
+          inboundMessageId: inbound.inboundMessageId,
+          externalMessageId: inbound.externalMessageId,
+          content: inbound.content,
+          contextMessageId: inbound.contextMessageId,
+        });
       },
     });
 
@@ -641,6 +656,7 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
   }
 
   const assistantResult = await routeResponsibleWhatsappToAssistant({
+    supabase: args.supabase,
     organizationId: args.inbox.organization_id,
     storeId: args.inbox.store_id,
     responsibleId: responsible.responsible.id,
@@ -2092,6 +2108,7 @@ async function processSingleInboxRow(
   }
 
   const responsibleInbound = await handleResponsibleInboundBeforeCustomerThread({
+    supabase,
     inbox,
     extracted,
     payload,
