@@ -14,6 +14,8 @@ import {
 } from "@/lib/server/sales-quotes/quote-auth";
 import { loadStoreQuoteSettings } from "@/lib/server/sales-quotes/quote-settings";
 import { storeQuotePdfFile } from "@/lib/server/sales-quotes/quote-storage";
+import { requestQuoteSendApprovalBySystem } from "@/lib/server/sales-quotes/quote-approval-request";
+import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
 import {
   buildQuoteKindNotice,
   buildQuoteSnapshot,
@@ -70,6 +72,7 @@ type ApplyChangeBody = {
 };
 
 const CHANGE_APPLIED_EVENT_TYPE = "orcamento_alterado";
+type QuoteSupabaseClient = Awaited<ReturnType<typeof resolveAuthorizedExistingQuote>>["supabase"];
 const ALLOWED_APPLY_CHANGE_ITEM_TYPES = ["pool", "catalog_item", "service", "custom"] as const;
 
 type AllowedApplyChangeItemType = (typeof ALLOWED_APPLY_CHANGE_ITEM_TYPES)[number];
@@ -738,7 +741,7 @@ async function loadAcceptedRevisionReplay(args: {
   const { data, error } = await args.supabase
     .from("p9_accepted_quote_revisions")
     .select(
-      "id, quote_id, source_quote_version_id, target_quote_version_id, source_acceptance_event_id, operation_key"
+      "id, quote_id, source_quote_version_id, target_quote_version_id, source_acceptance_event_id, commercial_opportunity_id, lifecycle_cycle, operation_key"
     )
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
@@ -770,8 +773,123 @@ async function loadAcceptedRevisionReplay(args: {
     sourceQuoteVersionId: String(data.source_quote_version_id),
     targetQuoteVersionId: String(data.target_quote_version_id),
     sourceAcceptanceEventId: String(data.source_acceptance_event_id),
+    commercialOpportunityId: String(data.commercial_opportunity_id),
+    lifecycleCycle: Number(data.lifecycle_cycle),
     operationKey,
   };
+}
+
+async function loadRevisionVersionForApproval(args: {
+  supabase: QuoteSupabaseClient;
+  organizationId: string;
+  storeId: string;
+  quoteId: string;
+  quoteVersionId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("sales_quote_versions")
+    .select("id, quote_id, organization_id, store_id, version_number, status, sent_at, store_file_id")
+    .eq("id", args.quoteVersionId)
+    .eq("quote_id", args.quoteId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao carregar a versao revisada para aprovacao: ${error.message}`);
+  }
+  if (
+    !data?.id ||
+    String(data.id) !== args.quoteVersionId ||
+    String(data.quote_id) !== args.quoteId ||
+    Number(data.version_number) < 1 ||
+    String(data.status || "").trim() !== "pending_review" ||
+    data.sent_at ||
+    !String(data.store_file_id || "").trim()
+  ) {
+    throw new Error("P9_QUOTE_APPROVAL_REVISION_VERSION_INVALID");
+  }
+
+  return {
+    id: String(data.id),
+    versionNumber: Number(data.version_number),
+    storeFileId: String(data.store_file_id),
+  };
+}
+
+function buildQuoteApprovalReportSnapshot(args: {
+  quote: SalesQuoteRow;
+  quoteVersionId: string;
+  versionNumber: number;
+  storeFileId: string;
+}) {
+  const metadata = args.quote.metadata && typeof args.quote.metadata === "object"
+    ? args.quote.metadata
+    : {};
+  const currency = typeof metadata.currency === "string" && metadata.currency.trim()
+    ? metadata.currency.trim().toUpperCase()
+    : "BRL";
+
+  return {
+    quote_id: args.quote.id,
+    quote_version_id: args.quoteVersionId,
+    quote_number: String(args.quote.quote_number || "").trim(),
+    quote_version_number: String(args.versionNumber),
+    customer_name: args.quote.customer_name || null,
+    payment_terms: args.quote.payment_terms || null,
+    delivery_terms: args.quote.delivery_terms || null,
+    valid_until: args.quote.valid_until || null,
+    notes: args.quote.customer_notes || null,
+    subtotal_cents: Number(args.quote.subtotal_cents || 0),
+    discount_cents: Number(args.quote.discount_cents || 0),
+    total_cents: Number(args.quote.total_cents || 0),
+    currency,
+    quote_pdf_store_file_id: args.storeFileId,
+  };
+}
+
+async function requestApprovalForRevision(args: {
+  supabase: QuoteSupabaseClient;
+  organizationId: string;
+  storeId: string;
+  quote: SalesQuoteRow;
+  commercialOpportunityId: string;
+  lifecycleCycle: number;
+  quoteVersionId: string;
+}) {
+  const responsible = await loadCanonicalActivePrimaryStoreResponsible({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+  });
+  if (!responsible.ok) {
+    throw new Error(`P9_QUOTE_APPROVAL_RESPONSIBLE_UNAVAILABLE:${responsible.reason}`);
+  }
+
+  const version = await loadRevisionVersionForApproval({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    quoteId: args.quote.id,
+    quoteVersionId: args.quoteVersionId,
+  });
+
+  return requestQuoteSendApprovalBySystem({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    responsibleId: responsible.responsible.id,
+    commercialOpportunityId: args.commercialOpportunityId,
+    expectedLifecycleCycle: args.lifecycleCycle,
+    quoteId: args.quote.id,
+    quoteVersionId: args.quoteVersionId,
+    reportSnapshot: buildQuoteApprovalReportSnapshot({
+      quote: args.quote,
+      quoteVersionId: args.quoteVersionId,
+      versionNumber: version.versionNumber,
+      storeFileId: version.storeFileId,
+    }),
+  });
 }
 
 export async function POST(
@@ -800,6 +918,7 @@ export async function POST(
   let failureSnapshot: QuoteSnapshot | null = null;
   let acceptedRevisionFlow = false;
   let acceptedRevisionRpcCalled = false;
+  let acceptedRevisionResult: Awaited<ReturnType<typeof createAcceptedSalesQuoteRevisionBySystem>> | null = null;
 
   try {
     const body = (await request.json().catch(() => null)) as ApplyChangeBody | null;
@@ -825,17 +944,42 @@ export async function POST(
       });
 
       if (replay) {
-        return NextResponse.json({
-          ok: true,
-          outcome: "replayed",
-          quoteId: replay.quoteId,
-          status: "pending_review",
-          changeRequestId: requestedChangeId,
-          previousVersionId: replay.sourceQuoteVersionId,
-          versionId: replay.targetQuoteVersionId,
-          revisionId: replay.revisionId,
-          acceptanceEventId: replay.sourceAcceptanceEventId,
-        });
+        try {
+          const approval = await requestApprovalForRevision({
+            supabase: scope.supabase,
+            organizationId: scope.organizationId,
+            storeId: scope.store.id,
+            quote: scope.quote,
+            commercialOpportunityId: replay.commercialOpportunityId,
+            lifecycleCycle: replay.lifecycleCycle,
+            quoteVersionId: replay.targetQuoteVersionId,
+          });
+          return NextResponse.json({
+            ok: true,
+            outcome: "replayed",
+            quoteId: replay.quoteId,
+            status: "pending_review",
+            changeRequestId: requestedChangeId,
+            previousVersionId: replay.sourceQuoteVersionId,
+            versionId: replay.targetQuoteVersionId,
+            revisionId: replay.revisionId,
+            acceptanceEventId: replay.sourceAcceptanceEventId,
+            approvalRequestId: approval.requestId,
+            approvalStatus: approval.status,
+            approvalCreated: approval.created,
+          });
+        } catch {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "QUOTE_REVISION_APPROVAL_REQUEST_FAILED",
+              revisionId: replay.revisionId,
+              versionId: replay.targetQuoteVersionId,
+              retryable: true,
+            },
+            { status: 503 },
+          );
+        }
       }
     }
     const acceptedRevision =
@@ -1072,6 +1216,17 @@ export async function POST(
         operationKey,
         revision: revisionPayload,
       });
+      acceptedRevisionResult = revision;
+
+      const approval = await requestApprovalForRevision({
+        supabase: scope.supabase,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        quote: updatedQuote,
+        commercialOpportunityId: acceptedRevisionDetails.commercialOpportunityId,
+        lifecycleCycle: acceptedRevisionDetails.lifecycleCycle,
+        quoteVersionId: revision.targetQuoteVersionId,
+      });
 
       return NextResponse.json({
         ok: true,
@@ -1084,6 +1239,9 @@ export async function POST(
         versionId: revision.targetQuoteVersionId,
         revisionId: revision.revisionId,
         acceptanceEventId: revision.sourceAcceptanceEventId,
+        approvalRequestId: approval.requestId,
+        approvalStatus: approval.status,
+        approvalCreated: approval.created,
         totalCents: nextTotalCents,
         appliedChanges,
       });
@@ -1194,6 +1352,24 @@ export async function POST(
       appliedChanges,
     });
   } catch (error) {
+    if (acceptedRevisionFlow) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: acceptedRevisionResult
+            ? "QUOTE_REVISION_APPROVAL_REQUEST_FAILED"
+            : "QUOTE_REVISION_FAILED",
+          ...(acceptedRevisionResult
+            ? {
+                revisionId: acceptedRevisionResult.revisionId,
+                versionId: acceptedRevisionResult.targetQuoteVersionId,
+              }
+            : {}),
+          retryable: true,
+        },
+        { status: 503 },
+      );
+    }
     if (!acceptedRevisionFlow && revertContext && quoteUpdated && !versionCreated) {
       try {
         if (itemsReplaced) {

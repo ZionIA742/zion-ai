@@ -1035,6 +1035,45 @@ const tests: TestCase[] = [
       assert.match(routeSource, /buildAcceptedSalesQuoteRevisionOperationKey\(/);
     },
   },
+  {
+    name: "accepted revision requests approval for the exact V2 after atomic creation",
+    run: () => {
+      assert.match(routeSource, /requestApprovalForRevision\(/);
+      assert.match(routeSource, /approvalRequestId/);
+      assert.match(routeSource, /approvalStatus/);
+      assert.match(routeSource, /approvalCreated/);
+      assert.match(routeSource, /quoteVersionId: revision\.targetQuoteVersionId/);
+      assert.match(routeSource, /commercialOpportunityId: acceptedRevisionDetails\.commercialOpportunityId/);
+      assert.equal(
+        routeSource.indexOf("createAcceptedSalesQuoteRevisionBySystem({") <
+          routeSource.indexOf("requestApprovalForRevision({", routeSource.indexOf("createAcceptedSalesQuoteRevisionBySystem({")),
+        true,
+        "approval must be requested only after the V2 RPC succeeds",
+      );
+    },
+  },
+  {
+    name: "approval failure preserves V2 and exposes a retryable reconciliation result",
+    run: () => {
+      assert.match(routeSource, /QUOTE_REVISION_APPROVAL_REQUEST_FAILED/);
+      assert.match(routeSource, /retryable: true/);
+      assert.match(routeSource, /acceptedRevisionResult\.targetQuoteVersionId/);
+      assert.match(routeSource, /approvalRequestId: approval\.requestId/);
+    },
+  },
+  {
+    name: "the first proposal remains on the common flow without approval-request coupling",
+    run: () => {
+      assert.match(routeSource, /if \(acceptedRevisionDetails\)/);
+      assert.match(routeSource, /const quoteUpdatePayload/);
+      assert.match(routeSource, /createQuoteVersion\(/);
+      assert.equal(
+        routeSource.indexOf("requestApprovalForRevision({", routeSource.indexOf("const quoteUpdatePayload")) === -1,
+        true,
+        "common first-proposal writes must not request post-acceptance approval",
+      );
+    },
+  },
 ];
 
 void (async () => {
