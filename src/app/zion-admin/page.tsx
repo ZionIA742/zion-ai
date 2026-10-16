@@ -126,6 +126,7 @@ export default async function ZionAdminDashboardPage() {
     <ZionAdminDashboardClient
       adminRole={String(admin.role || "admin")}
       canManageWhatsappPins={pinAccess.ok}
+      whatsappPinRecoveryMetaEnabled={process.env.ZION_WHATSAPP_PIN_RECOVERY_META_ENABLED === "true"}
       initialData={overview.data}
       initialError={overview.error}
     />

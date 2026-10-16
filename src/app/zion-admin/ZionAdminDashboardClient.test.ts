@@ -287,6 +287,49 @@ const tests: TestCase[] = [
       assert.equal(source.includes("userId"), true);
     },
   },
+  {
+    name: "WhatsApp PIN recovery is restricted to the capability-gated fixed target",
+    run: () => {
+      const source = readSource();
+
+      for (const token of [
+        "function WhatsappPinRecoverySection",
+        "if (!canAccess) return null",
+        'wabaId: "1642288770859048"',
+        'phoneNumberId: "1322472314288518"',
+        "metaExecutionEnabled",
+        "canManageWhatsappPins",
+        "whatsappPinRecoveryMetaEnabled",
+      ]) {
+        assert.equal(source.includes(token), true, `missing recovery access token: ${token}`);
+      }
+    },
+  },
+  {
+    name: "recovery UI keeps the disabled branch safe and binds OAuth to the prepared attempt",
+    run: () => {
+      const source = readSource();
+
+      assert.equal(source.includes("Bloqueada por padrão"), true);
+      assert.equal(source.includes("Nenhuma operação, chamada OAuth ou chamada externa"), true);
+      assert.equal(source.includes("Esta operação nunca exibe o PIN original."), true);
+      assert.equal(source.includes("novo OAuth, sem reutilizar código"), true);
+      assert.equal(source.includes("somente após confirmação remota"), true);
+      assert.equal(source.includes('/api/zion-admin/whatsapp-pins/recovery'), true);
+      assert.equal(source.includes('action: "prepare"'), true);
+      assert.equal(source.includes('action,\n          attemptId: recoveryAttempt.attemptId'), true);
+      assert.equal(source.includes("localStorage"), false);
+
+      const recoveryStart = source.indexOf("function WhatsappPinRecoverySection");
+      const recoveryEnd = source.indexOf("function WhatsappPinsSection", recoveryStart);
+      const recoveryBlock = source.slice(recoveryStart, recoveryEnd);
+      assert.equal(recoveryBlock.includes("fetch(\"/api/zion-admin/whatsapp-pins/recovery\""), true);
+      assert.equal(recoveryBlock.includes("window.FB?.login"), true);
+      assert.equal(recoveryBlock.includes("payload.pin"), false);
+      assert.equal(recoveryBlock.includes("localStorage"), false);
+      assert.equal(recoveryBlock.includes("window.location"), false);
+    },
+  },
 ];
 
 async function run() {

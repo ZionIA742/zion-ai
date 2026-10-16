@@ -1,7 +1,15 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  ensureFacebookSdkLoaded,
+  extractMetaEmbeddedSignupSession,
+  getMetaEmbeddedSignupConfig,
+  isMetaEmbeddedSignupCancellation,
+  type FacebookLoginResponse,
+  type MetaEmbeddedSignupSession,
+} from "@/lib/client/meta-embedded-signup";
 import {
   getFirstAccessControlState,
   type StoreAccountAccess,
@@ -380,6 +388,7 @@ type AccountAccessHistoryStatus = "available" | "unavailable";
 type Props = {
   adminRole: string;
   canManageWhatsappPins: boolean;
+  whatsappPinRecoveryMetaEnabled: boolean;
   initialData: ZionAdminOverview | null;
   initialError: string | null;
 };
@@ -3642,7 +3651,451 @@ function StoreListSection({
   );
 }
 
-function WhatsappPinsSection({ canAccess }: { canAccess: boolean }) {
+const WHATSAPP_PIN_RECOVERY_TARGET = {
+  organizationId: "fbd4afaa-4958-4663-9234-98589ab322c7",
+  storeId: "54fb81f4-92e5-463a-af6c-fc1544ea4b04",
+  wabaId: "1642288770859048",
+  phoneNumberId: "1322472314288518",
+} as const;
+
+type WhatsappPinRecoveryPhase =
+  | "idle"
+  | "preparing"
+  | "prepared"
+  | "authorizing_execute"
+  | "executing"
+  | "remote_confirmed"
+  | "authorizing_materialize"
+  | "materializing"
+  | "completed"
+  | "remote_rejected"
+  | "remote_uncertain"
+  | "failed";
+
+type WhatsappPinRecoveryAttempt = {
+  attemptId: string;
+  operationId: string;
+  expiresAt: string;
+};
+
+function mapWhatsappPinRecoveryError(payload: unknown, status: number) {
+  const error =
+    payload && typeof payload === "object" && !Array.isArray(payload) &&
+    typeof (payload as Record<string, unknown>).error === "string"
+      ? String((payload as Record<string, unknown>).error)
+      : "";
+
+  switch (error) {
+    case "WHATSAPP_PIN_RECOVERY_META_EXECUTION_DISABLED":
+      return "A recuperação Meta está desabilitada por configuração.";
+    case "WHATSAPP_PIN_RECOVERY_OAUTH_CODE_REQUIRED":
+    case "WHATSAPP_PIN_RECOVERY_FRESH_OAUTH_CODE_REQUIRED":
+      return "A autorização Meta não foi recebida. Reinicie a autorização.";
+    case "WHATSAPP_PIN_RECOVERY_EXPLICIT_CONSENT_REQUIRED":
+      return "Confirme o consentimento administrativo antes de preparar a recuperação.";
+    case "WHATSAPP_PIN_RECOVERY_REMOTE_RESULT_RETURN_INVALID":
+      return "A Meta respondeu, mas o resultado não pôde ser confirmado com segurança.";
+    case "WHATSAPP_PIN_RECOVERY_MATERIALIZATION_AUTHORIZATION_INVALID":
+      return "A autorização para concluir a integração não corresponde à tentativa preparada.";
+    case "WHATSAPP_PIN_RECOVERY_BEGIN_RETURN_INVALID":
+      return "A autorização local da recuperação não pôde ser confirmada.";
+    default:
+      return status === 401 || status === 403
+        ? "Sua sessão administrativa não está autorizada para esta recuperação."
+        : "Não foi possível concluir a etapa da recuperação. Nenhum PIN foi exibido.";
+  }
+}
+
+function maskWhatsappRecoveryPhoneNumberId(value: string) {
+  return value.length > 8
+    ? `${value.slice(0, 4)}••••${value.slice(-4)}`
+    : "••••••••";
+}
+
+function WhatsappPinRecoverySection({
+  canAccess,
+  metaExecutionEnabled,
+}: {
+  canAccess: boolean;
+  metaExecutionEnabled: boolean;
+}) {
+  const [recoveryConsent, setRecoveryConsent] = useState(false);
+  const [recoveryPhase, setRecoveryPhase] = useState<WhatsappPinRecoveryPhase>("idle");
+  const [recoveryAttempt, setRecoveryAttempt] = useState<WhatsappPinRecoveryAttempt | null>(null);
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [recoverySession, setRecoverySession] = useState<MetaEmbeddedSignupSession | null>(null);
+  const [recoveryOAuthPurpose, setRecoveryOAuthPurpose] = useState<"execute" | "materialize" | null>(null);
+  const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const recoveryBusyRef = useRef(false);
+  const recoveryMountedRef = useRef(true);
+  const recoveryOAuthTimerRef = useRef<number | null>(null);
+  const metaEmbeddedSignupConfig = useMemo(() => getMetaEmbeddedSignupConfig(), []);
+
+  useEffect(() => {
+    return () => {
+      recoveryMountedRef.current = false;
+      if (recoveryOAuthTimerRef.current !== null) {
+        window.clearTimeout(recoveryOAuthTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!metaExecutionEnabled) return;
+
+    const handleEmbeddedSignupMessage = (event: MessageEvent) => {
+      if (recoveryPhase !== "authorizing_execute" && recoveryPhase !== "authorizing_materialize") {
+        return;
+      }
+
+      const session = extractMetaEmbeddedSignupSession(event);
+      if (session) {
+        if (
+          session.whatsappBusinessAccountId !== WHATSAPP_PIN_RECOVERY_TARGET.wabaId ||
+          session.phoneNumberId !== WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId
+        ) {
+          setRecoverySession(null);
+          setRecoveryError("A sessão Meta não corresponde ao alvo autorizado desta recuperação.");
+          return;
+        }
+        setRecoverySession(session);
+        setRecoveryMessage("Contexto Meta recebido. Aguardando o código OAuth seguro.");
+        return;
+      }
+
+      if (isMetaEmbeddedSignupCancellation(event)) {
+        setRecoveryCode("");
+        setRecoverySession(null);
+        setRecoveryOAuthPurpose(null);
+        setRecoveryPhase(recoveryAttempt ? "prepared" : "idle");
+        setRecoveryMessage(null);
+        setRecoveryError("A autorização Meta foi cancelada antes da conclusão.");
+      }
+    };
+
+    window.addEventListener("message", handleEmbeddedSignupMessage);
+    return () => window.removeEventListener("message", handleEmbeddedSignupMessage);
+  }, [metaExecutionEnabled, recoveryAttempt, recoveryPhase]);
+
+  const runRecoveryAction = useCallback(async (action: "execute" | "materialize", oauthCode: string) => {
+    if (!recoveryAttempt || recoveryBusyRef.current || !oauthCode) return;
+
+    recoveryBusyRef.current = true;
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    setRecoveryMessage(action === "execute" ? "Executando a autorização remota..." : "Materializando a integração confirmada...");
+    setRecoveryPhase(action === "execute" ? "executing" : "materializing");
+
+    try {
+      const response = await fetch("/api/zion-admin/whatsapp-pins/recovery", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        cache: "no-store",
+        body: JSON.stringify({
+          action,
+          attemptId: recoveryAttempt.attemptId,
+          operationId: recoveryAttempt.operationId,
+          oauthCode,
+        }),
+      });
+      const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+      const status = typeof payload?.status === "string" ? payload.status : "";
+
+      if (action === "execute" && status === "remote_uncertain") {
+        setRecoveryPhase("remote_uncertain");
+        setRecoveryMessage("O resultado remoto ficou incerto. Não repita a operação automaticamente.");
+        return;
+      }
+      if (action === "execute" && status === "remote_rejected") {
+        setRecoveryPhase("remote_rejected");
+        setRecoveryMessage("A Meta rejeitou a operação de recuperação.");
+        return;
+      }
+      if (action === "execute" && response.ok && status === "remote_confirmed") {
+        setRecoveryPhase("remote_confirmed");
+        setRecoveryMessage("A Meta confirmou a operação. É necessária uma nova autorização para materializar.");
+        return;
+      }
+      if (action === "materialize" && response.ok && status === "completed") {
+        setRecoveryPhase("completed");
+        setRecoveryMessage("Recuperação concluída e integração materializada pelo backend.");
+        return;
+      }
+
+      throw new Error(mapWhatsappPinRecoveryError(payload, response.status));
+    } catch (reason) {
+      setRecoveryPhase("failed");
+      setRecoveryError(reason instanceof Error ? reason.message : "Não foi possível concluir a recuperação.");
+    } finally {
+      setRecoveryCode("");
+      setRecoverySession(null);
+      setRecoveryOAuthPurpose(null);
+      recoveryBusyRef.current = false;
+      setRecoveryBusy(false);
+      if (recoveryOAuthTimerRef.current !== null) {
+        window.clearTimeout(recoveryOAuthTimerRef.current);
+        recoveryOAuthTimerRef.current = null;
+      }
+    }
+  }, [recoveryAttempt]);
+
+  useEffect(() => {
+    if (!recoveryCode || !recoverySession || !recoveryOAuthPurpose || recoveryBusyRef.current) return;
+    void runRecoveryAction(recoveryOAuthPurpose, recoveryCode);
+  }, [recoveryCode, recoveryOAuthPurpose, recoverySession, runRecoveryAction]);
+
+  async function startRecoveryOAuth(purpose: "execute" | "materialize") {
+    if (
+      !metaExecutionEnabled ||
+      !recoveryAttempt ||
+      recoveryBusyRef.current ||
+      (purpose === "execute" && recoveryPhase !== "prepared") ||
+      (purpose === "materialize" && recoveryPhase !== "remote_confirmed")
+    ) return;
+
+    setRecoveryError(null);
+    setRecoveryMessage("Carregando a autorização oficial da Meta...");
+    setRecoveryCode("");
+    setRecoverySession(null);
+    setRecoveryOAuthPurpose(purpose);
+    setRecoveryPhase(purpose === "execute" ? "authorizing_execute" : "authorizing_materialize");
+
+    try {
+      await ensureFacebookSdkLoaded(metaEmbeddedSignupConfig.appId);
+      if (!window.FB?.login) throw new Error("FACEBOOK_SDK_LOGIN_UNAVAILABLE");
+
+      window.FB.login(
+        (response: FacebookLoginResponse) => {
+          const code = typeof response.authResponse?.code === "string"
+            ? response.authResponse.code.trim()
+            : "";
+          if (!code) {
+            setRecoveryCode("");
+            setRecoverySession(null);
+            setRecoveryOAuthPurpose(null);
+            setRecoveryPhase(recoveryAttempt ? "prepared" : "idle");
+            setRecoveryError("A autorização Meta foi cancelada ou não retornou código.");
+            return;
+          }
+          setRecoveryCode(code);
+          setRecoveryMessage("Código OAuth recebido em memória. Aguardando o contexto validado da Meta.");
+        },
+        {
+          config_id: metaEmbeddedSignupConfig.configId,
+          response_type: "code",
+          override_default_response_type: true,
+          extras: {
+            version: "v4",
+            featureType: "whatsapp_business_app_onboarding",
+            sessionInfoVersion: "3",
+          },
+        },
+      );
+
+      if (recoveryOAuthTimerRef.current !== null) window.clearTimeout(recoveryOAuthTimerRef.current);
+      recoveryOAuthTimerRef.current = window.setTimeout(() => {
+        if (!recoveryMountedRef.current || recoveryBusyRef.current) return;
+        setRecoveryCode("");
+        setRecoverySession(null);
+        setRecoveryOAuthPurpose(null);
+        setRecoveryPhase(recoveryAttempt ? "prepared" : "idle");
+        setRecoveryError("A autorização Meta expirou ou foi fechada antes da conclusão.");
+      }, 60_000);
+    } catch {
+      setRecoveryCode("");
+      setRecoverySession(null);
+      setRecoveryOAuthPurpose(null);
+      setRecoveryPhase(recoveryAttempt ? "prepared" : "idle");
+      setRecoveryError("Não foi possível iniciar a autorização oficial da Meta.");
+    }
+  }
+
+  async function prepareRecovery() {
+    if (!metaExecutionEnabled || !recoveryConsent || recoveryBusyRef.current) return;
+
+    recoveryBusyRef.current = true;
+    setRecoveryBusy(true);
+    setRecoveryPhase("preparing");
+    setRecoveryError(null);
+    setRecoveryMessage("Preparando a tentativa administrativa...");
+
+    try {
+      const response = await fetch("/api/zion-admin/whatsapp-pins/recovery", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        cache: "no-store",
+        body: JSON.stringify({
+          action: "prepare",
+          consent: true,
+          target: WHATSAPP_PIN_RECOVERY_TARGET,
+        }),
+      });
+      const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+      if (
+        !response.ok ||
+        payload?.ok !== true ||
+        typeof payload.attemptId !== "string" ||
+        typeof payload.operationId !== "string" ||
+        typeof payload.expiresAt !== "string"
+      ) {
+        throw new Error(mapWhatsappPinRecoveryError(payload, response.status));
+      }
+
+      setRecoveryAttempt({
+        attemptId: payload.attemptId,
+        operationId: payload.operationId,
+        expiresAt: payload.expiresAt,
+      });
+      setRecoveryPhase("prepared");
+      setRecoveryMessage("Tentativa preparada. Use uma nova autorização oficial da Meta para continuar.");
+    } catch (reason) {
+      setRecoveryPhase("failed");
+      setRecoveryError(reason instanceof Error ? reason.message : "Não foi possível preparar a recuperação.");
+    } finally {
+      recoveryBusyRef.current = false;
+      setRecoveryBusy(false);
+    }
+  }
+
+  if (!canAccess) return null;
+
+  return (
+    <section className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/[0.06] p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-200/70">
+            Recuperação controlada
+          </div>
+          <h2 className="mt-1 text-lg font-semibold text-zinc-100">
+            Regularização do WhatsApp
+          </h2>
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-zinc-400">
+            A Meta registra este telefone, mas ele ainda não está vinculado à integração do ZION.
+            Esta operação nunca exibe o PIN original.
+          </p>
+        </div>
+        <span className="w-fit rounded-full border border-amber-400/20 bg-zinc-950/50 px-3 py-1 text-xs text-amber-100">
+          {metaExecutionEnabled ? "Disponibilidade controlada" : "Bloqueada por padrão"}
+        </span>
+      </div>
+
+      <div className="mt-3 grid gap-2 text-xs text-zinc-300 sm:grid-cols-2">
+        <div className="rounded-xl border border-white/10 bg-zinc-950/40 p-3">
+          <div className="text-zinc-500">WABA autorizada</div>
+          <code className="mt-1 block text-zinc-200">{WHATSAPP_PIN_RECOVERY_TARGET.wabaId}</code>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-zinc-950/40 p-3">
+          <div className="text-zinc-500">Phone ID autorizado</div>
+          <code className="mt-1 block text-zinc-200">
+            {maskWhatsappRecoveryPhoneNumberId(WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId)}
+          </code>
+        </div>
+      </div>
+
+      <ol className="mt-3 grid gap-2 text-xs text-zinc-400 sm:grid-cols-4">
+        {[
+          ["1", "Preparar", "consentimento e autorização local"],
+          ["2", "Autorizar na Meta", "novo OAuth, sem reutilizar código"],
+          ["3", "Executar", "operação remota com resultado explícito"],
+          ["4", "Materializar", "somente após confirmação remota"],
+        ].map(([number, title, description]) => (
+          <li key={number} className="rounded-xl border border-white/10 bg-zinc-950/40 p-3">
+            <span className="font-semibold text-zinc-200">{number}. {title}</span>
+            <span className="mt-1 block leading-5">{description}</span>
+          </li>
+        ))}
+      </ol>
+
+      {metaExecutionEnabled ? (
+        <div className="mt-3 rounded-xl border border-white/10 bg-zinc-950/40 p-3">
+          <label className="flex items-start gap-2 text-xs leading-5 text-zinc-300">
+            <input
+              type="checkbox"
+              checked={recoveryConsent}
+              disabled={recoveryBusy || recoveryAttempt !== null}
+              onChange={(event) => setRecoveryConsent(event.target.checked)}
+              className="mt-1 accent-amber-400"
+            />
+            <span>
+              Confirmo que esta é uma operação administrativa explícita para a loja Meta autorizada e
+              que a execução externa só poderá ocorrer após nova autorização na Meta.
+            </span>
+          </label>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            {!recoveryAttempt ? (
+              <button
+                type="button"
+                disabled={!recoveryConsent || recoveryPhase === "preparing" || recoveryBusy}
+                onClick={() => void prepareRecovery()}
+                className="rounded-lg bg-amber-300 px-3 py-2 text-xs font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {recoveryPhase === "preparing" ? "Preparando..." : "Preparar recuperação"}
+              </button>
+            ) : null}
+
+            {recoveryPhase === "prepared" ? (
+              <button
+                type="button"
+                disabled={recoveryBusy}
+                onClick={() => void startRecoveryOAuth("execute")}
+                className="rounded-lg bg-violet-400 px-3 py-2 text-xs font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Autorizar na Meta e executar
+              </button>
+            ) : null}
+
+            {recoveryPhase === "remote_confirmed" ? (
+              <button
+                type="button"
+                disabled={recoveryBusy}
+                onClick={() => void startRecoveryOAuth("materialize")}
+                className="rounded-lg bg-emerald-300 px-3 py-2 text-xs font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Autorizar novamente e materializar
+              </button>
+            ) : null}
+          </div>
+
+          {recoveryAttempt ? (
+            <div className="mt-2 text-[11px] text-zinc-500">
+              Tentativa preparada. A validade é controlada pelo backend; não reutilize esta operação em outra sessão.
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {recoveryMessage ? (
+        <div className="mt-3 rounded-xl border border-blue-400/20 bg-blue-400/10 p-3 text-xs leading-5 text-blue-100">
+          {recoveryMessage}
+        </div>
+      ) : null}
+      {recoveryError ? (
+        <div className="mt-3 rounded-xl border border-red-400/20 bg-red-400/10 p-3 text-xs leading-5 text-red-100">
+          {recoveryError}
+        </div>
+      ) : null}
+
+      <div className="mt-3 rounded-xl border border-amber-400/20 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">
+        {metaExecutionEnabled
+          ? "A autorização usa o mecanismo Embedded Signup compartilhado com o onboarding. O backend valida o alvo, a sessão, a tentativa e o código antes de qualquer operação externa."
+          : "A execução Meta está desabilitada por configuração. Nenhuma operação, chamada OAuth ou chamada externa está disponível neste painel."}
+      </div>
+    </section>
+  );
+}
+
+function WhatsappPinsSection({
+  canAccess,
+  metaExecutionEnabled,
+}: {
+  canAccess: boolean;
+  metaExecutionEnabled: boolean;
+}) {
   const [pins, setPins] = useState<ZionAdminWhatsappPin[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3830,6 +4283,11 @@ function WhatsappPinsSection({ canAccess }: { canAccess: boolean }) {
           );
         })}
       </div>
+
+      <WhatsappPinRecoverySection
+        canAccess={canAccess}
+        metaExecutionEnabled={metaExecutionEnabled}
+      />
     </section>
   );
 }
@@ -3837,6 +4295,7 @@ function WhatsappPinsSection({ canAccess }: { canAccess: boolean }) {
 export default function ZionAdminDashboardClient({
   adminRole,
   canManageWhatsappPins,
+  whatsappPinRecoveryMetaEnabled,
   initialData,
   initialError,
 }: Props) {
@@ -4242,7 +4701,10 @@ export default function ZionAdminDashboardClient({
           </div>
         ) : null}
 
-        <WhatsappPinsSection canAccess={canManageWhatsappPins} />
+        <WhatsappPinsSection
+          canAccess={canManageWhatsappPins}
+          metaExecutionEnabled={whatsappPinRecoveryMetaEnabled}
+        />
 
         {orphanStoresCount > 0 ? (
           <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">

@@ -8,9 +8,14 @@ type TestCase = {
 };
 
 const pagePath = join(process.cwd(), "src/app/onboarding/page.tsx");
+const sharedMetaSignupPath = join(process.cwd(), "src/lib/client/meta-embedded-signup.ts");
 
 function readPageSource() {
   return readFileSync(pagePath, "utf8").replace(/\r\n/g, "\n");
+}
+
+function readSharedMetaSignupSource() {
+  return readFileSync(sharedMetaSignupPath, "utf8").replace(/\r\n/g, "\n");
 }
 
 function getFunctionBlock(source: string, signature: string, nextSignature: string) {
@@ -55,7 +60,7 @@ function getSaveStep2Block(source: string) {
 
 function getMetaSignupSessionParserBlock(source: string) {
   return getFunctionBlock(
-    source,
+    readSharedMetaSignupSource(),
     "function extractMetaEmbeddedSignupSession(",
     "function isMetaEmbeddedSignupCancellation(",
   );
@@ -78,11 +83,10 @@ function getEmbeddedSignupSubmitBlock(source: string) {
 }
 
 function getFacebookSdkLoaderBlock(source: string) {
-  return getFunctionBlock(
-    source,
-    "function ensureFacebookSdkLoaded(appId: string) {",
-    "function isKnownWhatsappOperationalUnavailability(",
-  );
+  const sharedSource = readSharedMetaSignupSource();
+  const start = sharedSource.indexOf("export function ensureFacebookSdkLoaded(appId: string) {");
+  assert.equal(start > -1, true, "ensureFacebookSdkLoaded not found");
+  return sharedSource.slice(start);
 }
 
 function getCatchBlock(block: string) {
@@ -99,7 +103,7 @@ const tests: TestCase[] = [
   {
     name: "completed onboarding does not redirect away from the revisitable page",
     run: () => {
-      const source = readPageSource();
+      const source = `${readPageSource()}\n${readSharedMetaSignupSource()}`;
 
       assert.equal(source.includes('router.replace("/dashboard")'), true);
       assert.equal(
@@ -115,7 +119,7 @@ const tests: TestCase[] = [
   {
     name: "expected WhatsApp operational unavailability is preserved as UI state without fatal throw",
     run: () => {
-      const source = readPageSource();
+      const source = `${readPageSource()}\n${readSharedMetaSignupSource()}`;
       const block = getFetchWhatsappStatusBlock(source);
 
       const knownIndex = block.indexOf(
@@ -146,7 +150,7 @@ const tests: TestCase[] = [
   {
     name: "real WhatsApp status transport or unusable response errors remain fail closed",
     run: () => {
-      const source = readPageSource();
+      const source = `${readPageSource()}\n${readSharedMetaSignupSource()}`;
       const block = getFetchWhatsappStatusBlock(source);
       const catchBlock = getCatchBlock(block);
 
@@ -172,7 +176,7 @@ const tests: TestCase[] = [
   {
     name: "activateZion calls the canonical onboarding completion RPC",
     run: () => {
-      const source = readPageSource();
+      const source = `${readPageSource()}\n${readSharedMetaSignupSource()}`;
       const block = getActivateZionBlock(source);
 
       assert.equal(
@@ -261,7 +265,7 @@ const tests: TestCase[] = [
   {
     name: "Meta Embedded Signup ignores invalid window message origins",
     run: () => {
-      const source = readPageSource();
+      const source = `${readPageSource()}\n${readSharedMetaSignupSource()}`;
       const parserBlock = getMetaSignupSessionParserBlock(source);
 
       assert.equal(source.includes("window.addEventListener(\"message\", handleEmbeddedSignupMessage)"), true);
@@ -276,7 +280,7 @@ const tests: TestCase[] = [
   {
     name: "Meta Embedded Signup ignores irrelevant message events",
     run: () => {
-      const source = readPageSource();
+      const source = `${readPageSource()}\n${readSharedMetaSignupSource()}`;
       const parserBlock = getMetaSignupSessionParserBlock(source);
 
       assert.equal(
@@ -291,7 +295,7 @@ const tests: TestCase[] = [
   {
     name: "valid Meta Embedded Signup session captures WABA and phone ids",
     run: () => {
-      const source = readPageSource();
+      const source = `${readPageSource()}\n${readSharedMetaSignupSource()}`;
       const parserBlock = getMetaSignupSessionParserBlock(source);
 
       assert.equal(parserBlock.includes("normalizeMetaIdentifier(payloadData.whatsapp_business_account_id)"), true);
@@ -324,7 +328,7 @@ const tests: TestCase[] = [
   {
     name: "Facebook SDK init uses a valid Graph API version distinct from Embedded Signup v4",
     run: () => {
-      const source = readPageSource();
+      const source = `${readPageSource()}\n${readSharedMetaSignupSource()}`;
       const initCalls = source.match(/window\.FB\.init\(\{[\s\S]*?\}\);/g) || [];
 
       assert.equal(initCalls.length, 2);
