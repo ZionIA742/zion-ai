@@ -18,6 +18,14 @@ function readProcessorSource() {
   );
 }
 
+test("responsible decision hook returns its canonical result to stop assistant handling", () => {
+  const source = readProcessorSource();
+  const hookStart = source.indexOf("onInboundPersisted: async (inbound) =>");
+  assert.ok(hookStart >= 0);
+  const hook = source.slice(hookStart, hookStart + 1_200);
+  assert.match(hook, /return decideQuoteApprovalFromPersistedInbound\(/);
+});
+
 function jsonFetchResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,

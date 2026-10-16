@@ -7,6 +7,7 @@ import {
 import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
 import { sendResponsibleAssistantText } from "@/lib/server/assistant/responsible-external-notifications-sender";
 import { downloadAndStoreWhatsappInboundMedia, removeWhatsappInboundStoredMedia } from "@/lib/server/whatsapp-inbound-media";
+import type { QuoteApprovalDecisionResult } from "@/lib/server/sales-quotes/quote-approval-decision";
 
 type ResponsibleWhatsappEvent = {
   id: string;
@@ -178,7 +179,7 @@ export async function routeResponsibleWhatsappToAssistant(args: {
     externalMessageId: string;
     content: string;
     contextMessageId: string | null;
-  }) => Promise<void>;
+  }) => Promise<QuoteApprovalDecisionResult | null>;
 }) {
   const organizationId = clean(args.organizationId);
   const storeId = clean(args.storeId);
@@ -322,8 +323,9 @@ export async function routeResponsibleWhatsappToAssistant(args: {
       thread_id: inbound.thread_id,
     });
 
+    let inboundHookResult: QuoteApprovalDecisionResult | null = null;
     if (args.onInboundPersisted && args.messageType === "text") {
-      await args.onInboundPersisted({
+      inboundHookResult = await args.onInboundPersisted({
         inboundMessageId: inbound.id,
         externalMessageId,
         content,
@@ -332,6 +334,26 @@ export async function routeResponsibleWhatsappToAssistant(args: {
             ? args.metadata.context_message_id
             : null,
       });
+    }
+
+    if (inboundHookResult) {
+      await updateEvent(supabase, event.id, event.claim_token!, {
+        status: "sent",
+        outbound_status: null,
+        outbound_finished_at: null,
+        outbound_error: null,
+        error_text: null,
+        locked_at: null,
+        locked_by: null,
+      });
+      return {
+        handled: true,
+        duplicate: false,
+        status: "sent",
+        decisionHandled: true,
+        decision: inboundHookResult,
+        threadId: thread.threadId,
+      } as const;
     }
 
     const { data: existingAssistant, error: existingAssistantError } = await supabase

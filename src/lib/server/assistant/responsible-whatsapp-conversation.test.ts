@@ -34,6 +34,26 @@ test("responsible WhatsApp bridge uses the canonical assistant thread and sender
   assert.match(source, /storeId/);
 });
 
+test("a canonical quote decision terminates the assistant bridge before generation or outbound", () => {
+  const source = readFileSync(
+    "src/lib/server/assistant/responsible-whatsapp-conversation.ts",
+    "utf8",
+  );
+
+  assert.match(source, /QuoteApprovalDecisionResult \| null/);
+  assert.match(source, /decisionHandled: true/);
+  assert.match(source, /outbound_status: null/);
+
+  const decisionBranch = source.indexOf("if (inboundHookResult)");
+  const assistantGeneration = source.indexOf("const { data: existingAssistant");
+  assert.ok(decisionBranch >= 0);
+  assert.ok(assistantGeneration > decisionBranch);
+  assert.match(
+    source.slice(decisionBranch, assistantGeneration),
+    /return \{[\s\S]*decisionHandled: true[\s\S]*\} as const;/,
+  );
+});
+
 test("responsible WhatsApp bridge has a persisted concurrency/idempotency ledger", () => {
   const migration = readFileSync(
     "supabase/migrations/20260930120000_p19a_responsible_assistant_whatsapp_bridge.sql",

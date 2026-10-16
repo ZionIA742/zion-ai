@@ -607,7 +607,7 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
         external_event_id: args.inbox.external_event_id,
       },
       onInboundPersisted: async (inbound) => {
-        await decideQuoteApprovalFromPersistedInbound({
+        return decideQuoteApprovalFromPersistedInbound({
           supabase: args.supabase,
           organizationId: args.inbox.organization_id,
           storeId: args.inbox.store_id,
