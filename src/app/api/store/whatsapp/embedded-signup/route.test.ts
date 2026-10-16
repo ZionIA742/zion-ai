@@ -1441,6 +1441,135 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "protected phone blocks conventional onboarding before writer, secret, or Meta register",
+    run: async () => {
+      let registerCalls = 0;
+      const { handler, candidateRpcCalls, secretRpcCalls } = createRouteHandler({
+        validate: async () =>
+          createSuccessfulValidation({
+            whatsappBusinessAccountId: "1642288770859048",
+            phoneNumberId: "1322472314288518",
+          }),
+        register: async () => {
+          registerCalls += 1;
+        },
+      });
+
+      const previousFlag = process.env.ZION_WHATSAPP_PIN_RECOVERY_META_ENABLED;
+      process.env.ZION_WHATSAPP_PIN_RECOVERY_META_ENABLED = "false";
+      let response: Response;
+      try {
+        response = await handler(
+          createJsonRequest({
+            code: "auth-code",
+            whatsappBusinessAccountId: "claimed-waba",
+            phoneNumberId: "claimed-phone",
+          }),
+        );
+      } finally {
+        if (previousFlag === undefined) {
+          delete process.env.ZION_WHATSAPP_PIN_RECOVERY_META_ENABLED;
+        } else {
+          process.env.ZION_WHATSAPP_PIN_RECOVERY_META_ENABLED = previousFlag;
+        }
+      }
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.deepEqual(body, {
+        ok: false,
+        error: "WHATSAPP_CONTROLLED_RECOVERY_REQUIRED",
+        message: "Este telefone possui um fluxo controlado de regularizacao.",
+      });
+      assert.equal(registerCalls, 0);
+      assert.equal(candidateRpcCalls.length, 0);
+      assert.equal(secretRpcCalls.length, 0);
+      assertNoSecretLeak(body, [
+        "fbd4afaa-4958-4663-9234-98589ab322c7",
+        "54fb81f4-92e5-463a-af6c-fc1544ea4b04",
+        "1642288770859048",
+        "1322472314288518",
+      ]);
+    },
+  },
+  {
+    name: "protected phone remains blocked for another organization and store without recovery ledger state",
+    run: async () => {
+      let registerCalls = 0;
+      const { handler, candidateRpcCalls, secretRpcCalls } = createRouteHandler({
+        access: createGrantedAccess({
+          organizationId: "other-organization",
+          storeId: "other-store",
+        }),
+        validate: async () =>
+          createSuccessfulValidation({
+            whatsappBusinessAccountId: "other-waba",
+            phoneNumberId: "1322472314288518",
+          }),
+        register: async () => {
+          registerCalls += 1;
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "other-waba",
+          phoneNumberId: "other-phone",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "WHATSAPP_CONTROLLED_RECOVERY_REQUIRED");
+      assert.equal(JSON.stringify(body).includes("other-organization"), false);
+      assert.equal(JSON.stringify(body).includes("other-store"), false);
+      assert.equal(registerCalls, 0);
+      assert.equal(candidateRpcCalls.length, 0);
+      assert.equal(secretRpcCalls.length, 0);
+    },
+  },
+  {
+    name: "concurrent simulated conventional attempts cannot bypass the protected-phone block",
+    run: async () => {
+      let registerCalls = 0;
+      const { handler, candidateRpcCalls, secretRpcCalls } = createRouteHandler({
+        validate: async () =>
+          createSuccessfulValidation({
+            phoneNumberId: "1322472314288518",
+          }),
+        register: async () => {
+          registerCalls += 1;
+        },
+      });
+
+      const responses = await Promise.all([
+        handler(
+          createJsonRequest({
+            code: "auth-code-a",
+            whatsappBusinessAccountId: "claimed-waba",
+            phoneNumberId: "claimed-phone",
+          }),
+        ),
+        handler(
+          createJsonRequest({
+            code: "auth-code-b",
+            whatsappBusinessAccountId: "claimed-waba",
+            phoneNumberId: "claimed-phone",
+          }),
+        ),
+      ]);
+
+      assert.deepEqual(
+        responses.map((response) => response.status),
+        [409, 409],
+      );
+      assert.equal(registerCalls, 0);
+      assert.equal(candidateRpcCalls.length, 0);
+      assert.equal(secretRpcCalls.length, 0);
+    },
+  },
+  {
     name: "recovery confirms remote state without register or materialization after invalidated PIN",
     run: async () => {
       const events: string[] = [];
@@ -1595,6 +1724,18 @@ const tests: TestCase[] = [
       assert.equal(routeSource.includes("metaSubcode"), true);
       assert.equal(routeSource.includes("metaType"), true);
       assert.equal(routeSource.includes("raw-meta-message"), false);
+      const controlledBlock = routeSource.indexOf(
+        'WHATSAPP_CONTROLLED_RECOVERY_REQUIRED',
+      );
+      assert.equal(controlledBlock >= 0, true);
+      assert.equal(
+        controlledBlock < routeSource.indexOf("? generateWhatsappTwoStepPin()"),
+        true,
+      );
+      assert.equal(
+        controlledBlock < routeSource.indexOf("registerEmbeddedSignup(validated"),
+        true,
+      );
     },
   },
   {

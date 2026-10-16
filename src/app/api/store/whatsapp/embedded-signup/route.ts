@@ -568,6 +568,23 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
       );
     }
 
+    // This phone is reserved for the controlled recovery flow. The check uses
+    // the server-validated Meta identity and must happen before any candidate
+    // writer, temporary PIN/secret, or conventional /register operation.
+    if (
+      !payloadResult.input.recovery &&
+      validated.phoneNumberId === META_RECOVERY_PHONE_NUMBER_ID
+    ) {
+      return createJsonResponse(
+        {
+          ok: false,
+          error: "WHATSAPP_CONTROLLED_RECOVERY_REQUIRED",
+          message: "Este telefone possui um fluxo controlado de regularizacao.",
+        },
+        409,
+      );
+    }
+
     try {
       if (payloadResult.input.recovery) {
         try {
