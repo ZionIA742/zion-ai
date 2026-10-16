@@ -25,6 +25,7 @@ export type MetaWhatsappEmbeddedSignupValidationResult = {
   graphApiVersion: string;
   appId: string;
   validatedAt: string;
+  oauthDiagnostic?: MetaWhatsappOauthDiagnostic;
 };
 
 export type MetaWhatsappPhoneRegistrationState = {
@@ -40,6 +41,30 @@ export type MetaWhatsappBindingValidationInput = {
   phoneNumberId?: string;
   connectionMode?: MetaWhatsappEmbeddedSignupConnectionMode;
   recovery?: boolean;
+};
+
+export type MetaWhatsappOauthDiagnosticState =
+  | "present"
+  | "absent"
+  | "indeterminate";
+
+export type MetaWhatsappOauthDiagnostic = {
+  tokenValidity: "valid" | "invalid" | "indeterminate";
+  appIdMatch: "yes" | "no" | "indeterminate";
+  tokenType: string | null;
+  expiresAt: number | null;
+  permissions: {
+    whatsappBusinessMessaging: MetaWhatsappOauthDiagnosticState;
+    whatsappBusinessManagement: MetaWhatsappOauthDiagnosticState;
+    businessManagement: MetaWhatsappOauthDiagnosticState;
+  };
+  wabaAccess: "confirmed" | "denied" | "indeterminate";
+  phoneRecognized: "confirmed" | "not_confirmed";
+  conclusion:
+    | "ready_for_further_validation"
+    | "missing_permission"
+    | "invalid_token"
+    | "indeterminate";
 };
 
 export type MetaWhatsappEmbeddedSignupDeps = {
@@ -138,6 +163,151 @@ function assertConfig(config: MetaWhatsappEmbeddedSignupConfig) {
 
 function graphBaseUrl(graphApiVersion: string) {
   return `https://graph.facebook.com/${encodeURIComponent(graphApiVersion)}`;
+}
+
+function readMetaString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readMetaNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function scopeState(
+  scope: string,
+  expectedWabaId: string,
+  data: Record<string, unknown>,
+): MetaWhatsappOauthDiagnosticState {
+  const scopes = Array.isArray(data.scopes)
+    ? data.scopes.filter((value): value is string => typeof value === "string")
+    : [];
+  const granularScopes = Array.isArray(data.granular_scopes)
+    ? data.granular_scopes.filter(
+        (value): value is Record<string, unknown> =>
+          Boolean(value) && typeof value === "object" && !Array.isArray(value),
+      )
+    : [];
+
+  if (!scopes.length && !granularScopes.length) return "indeterminate";
+  if (!scopes.includes(scope) && !granularScopes.some((entry) => entry.scope === scope)) {
+    return "absent";
+  }
+
+  const scopedEntries = granularScopes.filter((entry) => entry.scope === scope);
+  if (!scopedEntries.length) return "present";
+
+  const hasExpectedTarget = scopedEntries.some((entry) => {
+    const targetIds = Array.isArray(entry.target_ids)
+      ? entry.target_ids.filter((value): value is string => typeof value === "string")
+      : [];
+    return targetIds.includes(expectedWabaId);
+  });
+  return hasExpectedTarget ? "present" : "absent";
+}
+
+function createIndeterminateOauthDiagnostic(): MetaWhatsappOauthDiagnostic {
+  return {
+    tokenValidity: "indeterminate",
+    appIdMatch: "indeterminate",
+    tokenType: null,
+    expiresAt: null,
+    permissions: {
+      whatsappBusinessMessaging: "indeterminate",
+      whatsappBusinessManagement: "indeterminate",
+      businessManagement: "indeterminate",
+    },
+    wabaAccess: "indeterminate",
+    phoneRecognized: "not_confirmed",
+    conclusion: "indeterminate",
+  };
+}
+
+export async function debugMetaWhatsappAccessToken(params: {
+  accessToken: string;
+  whatsappBusinessAccountId: string;
+  config: MetaWhatsappEmbeddedSignupConfig;
+  deps: MetaWhatsappEmbeddedSignupDeps;
+}): Promise<MetaWhatsappOauthDiagnostic> {
+  const diagnostic = createIndeterminateOauthDiagnostic();
+  const url = new URL(`${graphBaseUrl(params.config.graphApiVersion)}/debug_token`);
+  // This request is server-side only. Neither credential nor token is logged
+  // or returned to the browser.
+  url.searchParams.set("input_token", params.accessToken);
+  url.searchParams.set(
+    "access_token",
+    `${params.config.appId}|${params.config.appSecret}`,
+  );
+
+  let response: { ok: boolean; status: number; body: MetaJson | null };
+  try {
+    response = await fetchJsonWithTimeout(
+      url.toString(),
+      { method: "GET", headers: { Accept: "application/json" } },
+      params.deps,
+      "debug_token",
+    );
+  } catch {
+    return diagnostic;
+  }
+  if (
+    !response.ok ||
+    !response.body ||
+    !response.body.data ||
+    typeof response.body.data !== "object" ||
+    Array.isArray(response.body.data)
+  ) {
+    return diagnostic;
+  }
+
+  const data = response.body.data as Record<string, unknown>;
+  diagnostic.tokenValidity =
+    typeof data.is_valid === "boolean"
+      ? data.is_valid
+        ? "valid"
+        : "invalid"
+      : "indeterminate";
+  diagnostic.appIdMatch =
+    typeof data.app_id === "string"
+      ? normalizeMetaId(data.app_id) === normalizeMetaId(params.config.appId)
+        ? "yes"
+        : "no"
+      : "indeterminate";
+  diagnostic.tokenType = readMetaString(data.type)?.toUpperCase().slice(0, 32) ?? null;
+  diagnostic.expiresAt = readMetaNumber(data.expires_at);
+  diagnostic.permissions = {
+    whatsappBusinessMessaging: scopeState(
+      "whatsapp_business_messaging",
+      params.whatsappBusinessAccountId,
+      data,
+    ),
+    whatsappBusinessManagement: scopeState(
+      "whatsapp_business_management",
+      params.whatsappBusinessAccountId,
+      data,
+    ),
+    businessManagement: scopeState(
+      "business_management",
+      params.whatsappBusinessAccountId,
+      data,
+    ),
+  };
+
+  const requiredPermissions = [
+    diagnostic.permissions.whatsappBusinessMessaging,
+    diagnostic.permissions.whatsappBusinessManagement,
+  ];
+  diagnostic.wabaAccess = requiredPermissions.some((state) => state === "absent")
+    ? "denied"
+    : requiredPermissions.every((state) => state === "present")
+      ? "confirmed"
+      : "indeterminate";
+  diagnostic.conclusion =
+    diagnostic.tokenValidity === "invalid" || diagnostic.appIdMatch === "no"
+      ? "invalid_token"
+      : requiredPermissions.some((state) => state === "absent")
+        ? "missing_permission"
+        : "indeterminate";
+  return diagnostic;
 }
 
 async function fetchJsonWithTimeout(
@@ -566,6 +736,15 @@ export async function exchangeAndValidateMetaWhatsappBinding(
     deps,
   });
 
+  const oauthDiagnostic = input.recovery
+    ? await debugMetaWhatsappAccessToken({
+        accessToken,
+        whatsappBusinessAccountId: expectedWabaId,
+        config,
+        deps,
+      })
+    : undefined;
+
   const wabaResponse = await getMetaObject({
     graphApiVersion: config.graphApiVersion,
     objectId: expectedWabaId,
@@ -635,6 +814,17 @@ export async function exchangeAndValidateMetaWhatsappBinding(
     );
   }
 
+  if (oauthDiagnostic) {
+    oauthDiagnostic.phoneRecognized = "confirmed";
+    if (
+      oauthDiagnostic.tokenValidity === "valid" &&
+      oauthDiagnostic.appIdMatch === "yes" &&
+      oauthDiagnostic.wabaAccess === "confirmed"
+    ) {
+      oauthDiagnostic.conclusion = "ready_for_further_validation";
+    }
+  }
+
   const displayPhoneNumber =
     typeof listedPhone.display_phone_number === "string"
       ? cleanText(listedPhone.display_phone_number)
@@ -656,6 +846,7 @@ export async function exchangeAndValidateMetaWhatsappBinding(
     graphApiVersion: config.graphApiVersion,
     appId: config.appId,
     validatedAt: deps.now().toISOString(),
+    ...(oauthDiagnostic ? { oauthDiagnostic } : {}),
   };
 }
 

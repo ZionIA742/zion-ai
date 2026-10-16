@@ -633,6 +633,9 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
             connectionScenario: "unknown_meta_state",
             canRetry: false,
             requiresUserAction: true,
+            ...(validated.oauthDiagnostic
+              ? { oauthDiagnostic: validated.oauthDiagnostic }
+              : {}),
           },
           409,
         );

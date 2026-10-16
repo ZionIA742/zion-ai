@@ -89,6 +89,172 @@ test("fresh-token helper rejects a phone outside the candidate WABA", async () =
   );
 });
 
+function recoveryFetchMock(options?: {
+  debug?: Record<string, unknown> | null;
+  debugStatus?: number;
+  phoneId?: string;
+}) {
+  return async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/oauth/access_token")) {
+      return Response.json({ access_token: "recovery-token-sentinel" });
+    }
+    if (url.includes("/debug_token")) {
+      if (options?.debugStatus) {
+        return Response.json({ error: { code: 190 } }, { status: options.debugStatus });
+      }
+      return Response.json({ data: options?.debug ?? {} });
+    }
+    if (url.endsWith("/waba-recovery?fields=id")) {
+      return Response.json({ id: "waba-recovery" });
+    }
+    if (url.includes("/waba-recovery/phone_numbers")) {
+      return Response.json({
+        data: [
+          {
+            id: options?.phoneId ?? "phone-recovery",
+            display_phone_number: "+5511999999999",
+          },
+        ],
+      });
+    }
+    return new Response(JSON.stringify({}), { status: 500 });
+  };
+}
+
+function recoveryDebugData(overrides: Record<string, unknown> = {}) {
+  return {
+    is_valid: true,
+    app_id: "app-recovery",
+    type: "USER",
+    expires_at: 0,
+    scopes: [
+      "whatsapp_business_messaging",
+      "whatsapp_business_management",
+      "business_management",
+    ],
+    granular_scopes: [
+      {
+        scope: "whatsapp_business_management",
+        target_ids: ["waba-recovery"],
+      },
+    ],
+    ...overrides,
+  };
+}
+
+async function exchangeRecoveryToken(fetch: typeof globalThis.fetch) {
+  return exchangeAndValidateMetaWhatsappBinding(
+    {
+      code: "recovery-code",
+      whatsappBusinessAccountId: "waba-recovery",
+      phoneNumberId: "phone-recovery",
+      recovery: true,
+    },
+    {
+      config: {
+        graphApiVersion: "v99.0",
+        appId: "app-recovery",
+        appSecret: "secret-recovery",
+      },
+      deps: depsFor(fetch),
+    },
+  );
+}
+
+test("recovery diagnostics confirm the app, required scopes, WABA and phone", async () => {
+  const urls: string[] = [];
+  const result = await exchangeRecoveryToken(
+    async (input: RequestInfo | URL) => {
+      urls.push(String(input));
+      return recoveryFetchMock({ debug: recoveryDebugData() })(input);
+    },
+  );
+
+  assert.deepEqual(result.oauthDiagnostic, {
+    tokenValidity: "valid",
+    appIdMatch: "yes",
+    tokenType: "USER",
+    expiresAt: 0,
+    permissions: {
+      whatsappBusinessMessaging: "present",
+      whatsappBusinessManagement: "present",
+      businessManagement: "present",
+    },
+    wabaAccess: "confirmed",
+    phoneRecognized: "confirmed",
+    conclusion: "ready_for_further_validation",
+  });
+  assert.equal(urls.some((url) => url.includes("/register")), false);
+  assert.equal(urls.some((url) => url.includes("/subscribed_apps")), false);
+});
+
+test("recovery diagnostics classify missing WhatsApp permissions", async () => {
+  const result = await exchangeRecoveryToken(
+    recoveryFetchMock({
+      debug: recoveryDebugData({ scopes: ["business_management"], granular_scopes: [] }),
+    }),
+  );
+
+  assert.equal(result.oauthDiagnostic?.permissions.whatsappBusinessMessaging, "absent");
+  assert.equal(result.oauthDiagnostic?.permissions.whatsappBusinessManagement, "absent");
+  assert.equal(result.oauthDiagnostic?.conclusion, "missing_permission");
+});
+
+test("recovery diagnostics reject a token issued to another app", async () => {
+  const result = await exchangeRecoveryToken(
+    recoveryFetchMock({ debug: recoveryDebugData({ app_id: "other-app" }) }),
+  );
+
+  assert.equal(result.oauthDiagnostic?.appIdMatch, "no");
+  assert.equal(result.oauthDiagnostic?.conclusion, "invalid_token");
+});
+
+test("recovery diagnostics classify an invalid or expired token", async () => {
+  const result = await exchangeRecoveryToken(
+    recoveryFetchMock({ debug: recoveryDebugData({ is_valid: false, expires_at: 1 }) }),
+  );
+
+  assert.equal(result.oauthDiagnostic?.tokenValidity, "invalid");
+  assert.equal(result.oauthDiagnostic?.conclusion, "invalid_token");
+});
+
+test("recovery diagnostics detect a WABA-restricted granular scope", async () => {
+  const result = await exchangeRecoveryToken(
+    recoveryFetchMock({
+      debug: recoveryDebugData({
+        granular_scopes: [
+          { scope: "whatsapp_business_management", target_ids: ["other-waba"] },
+        ],
+      }),
+    }),
+  );
+
+  assert.equal(result.oauthDiagnostic?.permissions.whatsappBusinessManagement, "absent");
+  assert.equal(result.oauthDiagnostic?.wabaAccess, "denied");
+  assert.equal(result.oauthDiagnostic?.conclusion, "missing_permission");
+});
+
+test("recovery diagnostics remain indeterminate when debug_token is unavailable", async () => {
+  const result = await exchangeRecoveryToken(
+    recoveryFetchMock({ debugStatus: 502 }),
+  );
+
+  assert.equal(result.oauthDiagnostic?.conclusion, "indeterminate");
+  assert.equal(result.oauthDiagnostic?.wabaAccess, "indeterminate");
+  assert.equal(JSON.stringify(result.oauthDiagnostic).includes("recovery-token-sentinel"), false);
+});
+
+test("recovery diagnostics fail closed on an incomplete debug_token response", async () => {
+  const result = await exchangeRecoveryToken(
+    recoveryFetchMock({ debug: { is_valid: true, app_id: "app-recovery" } }),
+  );
+
+  assert.equal(result.oauthDiagnostic?.conclusion, "indeterminate");
+  assert.equal(result.oauthDiagnostic?.permissions.whatsappBusinessMessaging, "indeterminate");
+  assert.equal(result.oauthDiagnostic?.permissions.whatsappBusinessManagement, "indeterminate");
+});
+
 test("coexistence discovers the sole WABA phone and skips standard registration", async () => {
   const urls: string[] = [];
   const validated = await exchangeAndValidateMetaWhatsappBinding(

@@ -1641,6 +1641,51 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "recovery returns only the sanitized OAuth diagnostic",
+    run: async () => {
+      const { handler } = createRouteHandler({
+        access: createGrantedAccess({
+          organizationId: "fbd4afaa-4958-4663-9234-98589ab322c7",
+          storeId: "54fb81f4-92e5-463a-af6c-fc1544ea4b04",
+        }),
+        validate: async () =>
+          createSuccessfulValidation({
+            whatsappBusinessAccountId: "1642288770859048",
+            phoneNumberId: "1322472314288518",
+            accessToken: "server-only-recovery-token",
+            oauthDiagnostic: {
+              tokenValidity: "valid",
+              appIdMatch: "yes",
+              tokenType: "USER",
+              expiresAt: 0,
+              permissions: {
+                whatsappBusinessMessaging: "present",
+                whatsappBusinessManagement: "present",
+                businessManagement: "present",
+              },
+              wabaAccess: "confirmed",
+              phoneRecognized: "confirmed",
+              conclusion: "ready_for_further_validation",
+            },
+          }),
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "1642288770859048",
+          phoneNumberId: "1322472314288518",
+          recovery: true,
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.oauthDiagnostic && typeof body.oauthDiagnostic, "object");
+      assertNoSecretLeak(body, ["auth-code", "server-only-recovery-token"]);
+    },
+  },
+  {
     name: "recovery rejects another store or a divergent WABA or phone before Meta or local access",
     run: async () => {
       const cases = [
