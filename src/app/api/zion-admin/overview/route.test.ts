@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   loadAllOverviewRows,
   loadAllOverviewRowsByChunks,
+  worstOverviewAvailability,
   OVERVIEW_IN_CHUNK_SIZE,
   OVERVIEW_LOAD_ERROR,
   OVERVIEW_MAX_PAGES,
@@ -427,7 +428,7 @@ const tests: TestCase[] = [
         return { data: [1], error: null };
       }, 2);
 
-      assert.deepEqual(result, { rows: [1], error: null });
+      assert.deepEqual(result, { rows: [1], error: null, availability: "available" });
       assert.equal(calls, 1);
     },
   },
@@ -443,6 +444,7 @@ const tests: TestCase[] = [
       }, 2);
 
       assert.deepEqual(result.rows, []);
+      assert.equal(result.availability, "partial");
        assert.equal(result.error, OVERVIEW_LOAD_ERROR);
     },
   },
@@ -481,7 +483,73 @@ const tests: TestCase[] = [
       });
 
       assert.equal(calls, 2);
-      assert.deepEqual(result, { rows: [], error: OVERVIEW_LOAD_ERROR });
+      assert.deepEqual(result, {
+        rows: [],
+        error: OVERVIEW_LOAD_ERROR,
+        availability: "partial",
+      });
+    },
+  },
+  {
+    name: "a later empty chunk followed by failure is partial",
+    run: async () => {
+      const result = await loadAllOverviewRowsByChunks<number>({
+        values: ["a", "b"],
+        chunkSize: 1,
+        loadPage: async (values) =>
+          values[0] === "b"
+            ? { data: null, error: new Error("chunk unavailable") }
+            : { data: [], error: null },
+      });
+
+      assert.deepEqual(result, {
+        rows: [],
+        error: OVERVIEW_LOAD_ERROR,
+        availability: "partial",
+      });
+    },
+  },
+  {
+    name: "the first chunk failure without progress is unavailable",
+    run: async () => {
+      const result = await loadAllOverviewRowsByChunks<number>({
+        values: ["a"],
+        loadPage: async () => ({
+          data: null,
+          error: new Error("chunk unavailable"),
+        }),
+      });
+
+      assert.equal(result.availability, "unavailable");
+    },
+  },
+  {
+    name: "overview availability aggregates only uniform states",
+    run: () => {
+      assert.equal(worstOverviewAvailability("available", "available"), "available");
+      assert.equal(worstOverviewAvailability("unavailable", "unavailable"), "unavailable");
+      assert.equal(
+        worstOverviewAvailability("available", "available", "unavailable"),
+        "partial",
+      );
+      assert.equal(
+        worstOverviewAvailability("partial", "available", "available"),
+        "partial",
+      );
+    },
+  },
+  {
+    name: "store availability exposes conservative overall states",
+    run: () => {
+      const source = readSource(routePath);
+
+      assert.equal(
+        source.match(
+          /dataAvailability:\s*\{\s*ai:\s*\{\s*runs:\s*aiRunRows\.availability/g,
+        )?.length,
+        2,
+      );
+      assert.equal(source.match(/overall: worstOverviewAvailability\(/g)?.length, 4);
     },
   },
   {
@@ -494,7 +562,11 @@ const tests: TestCase[] = [
       }, 1);
 
       assert.equal(calls, OVERVIEW_MAX_PAGES);
-      assert.deepEqual(result, { rows: [], error: OVERVIEW_LOAD_ERROR });
+      assert.deepEqual(result, {
+        rows: [],
+        error: OVERVIEW_LOAD_ERROR,
+        availability: "partial",
+      });
     },
   },
   {
@@ -505,7 +577,7 @@ const tests: TestCase[] = [
         error: null,
       }));
 
-      assert.deepEqual(result, { rows: [], error: null });
+      assert.deepEqual(result, { rows: [], error: null, availability: "available" });
     },
   },
   {

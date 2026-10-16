@@ -14,6 +14,9 @@ import {
   loadAllOverviewRowsByChunks,
   loadAllOverviewRows,
   OVERVIEW_LOAD_ERROR,
+  type OverviewDataAvailability,
+  type OverviewLoadResult,
+  worstOverviewAvailability,
 } from "./overview-pagination";
 import { resolveCanonicalOwnerMembership } from "./store-account-access-resolution";
 import { resolveStoreAccountIdentity } from "./store-account-identity-resolution";
@@ -1039,7 +1042,7 @@ function buildCanonicalSubscriptionMap(rows: SubscriptionRow[]) {
 async function loadStoreIdRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
   table: string,
-): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<StoreMetricRow>> {
   return loadAllOverviewRows<StoreMetricRow>((from, to) =>
     supabase
       .from(table)
@@ -1051,7 +1054,7 @@ async function loadStoreIdRows(
 
 async function loadConversationStoreRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<StoreMetricRow>> {
   const conversationsResult = await loadAllOverviewRows<{
     lead_id: string | null;
     organization_id: string | null;
@@ -1064,7 +1067,11 @@ async function loadConversationStoreRows(
   );
 
   if (conversationsResult.error) {
-    return { rows: [], error: conversationsResult.error };
+    return {
+      rows: [],
+      error: conversationsResult.error,
+      availability: conversationsResult.availability,
+    };
   }
 
   const conversationRows = conversationsResult.rows;
@@ -1077,6 +1084,7 @@ async function loadConversationStoreRows(
     return {
       rows: [],
       error: OVERVIEW_LOAD_ERROR,
+      availability: "unavailable",
     };
   }
 
@@ -1092,6 +1100,7 @@ async function loadConversationStoreRows(
     return {
       rows: [],
       error: null,
+      availability: "available",
     };
   }
 
@@ -1108,7 +1117,13 @@ async function loadConversationStoreRows(
   );
 
   if (leadsResult.error) {
-    return { rows: [], error: leadsResult.error };
+    return {
+      rows: [],
+      error: leadsResult.error,
+      availability: conversationsResult.availability === "available"
+        ? leadsResult.availability
+        : "partial",
+    };
   }
 
   const leadsById = new Map<
@@ -1139,6 +1154,7 @@ async function loadConversationStoreRows(
       return {
         rows: [],
         error: OVERVIEW_LOAD_ERROR,
+        availability: "partial",
       };
     }
 
@@ -1150,12 +1166,13 @@ async function loadConversationStoreRows(
   return {
     rows,
     error: null,
+    availability: "available",
   };
 }
 
 async function loadActiveMessageRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<StoreMetricRow>> {
   return loadAllOverviewRows<StoreMetricRow>((from, to) =>
     supabase
       .from("messages")
@@ -1168,7 +1185,7 @@ async function loadActiveMessageRows(
 
 async function loadSalesAiMessageRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<StoreMetricRow>> {
   return loadAllOverviewRows<StoreMetricRow>((from, to) =>
     supabase
       .from("messages")
@@ -1183,7 +1200,7 @@ async function loadSalesAiMessageRows(
 
 async function loadStoreOnboardingConfigRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: StoreOnboardingConfigRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<StoreOnboardingConfigRow>> {
   return loadAllOverviewRows<StoreOnboardingConfigRow>((from, to) =>
     supabase
       .from("store_onboarding")
@@ -1196,7 +1213,7 @@ async function loadStoreOnboardingConfigRows(
 async function loadStoreBooleanConfigRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
   table: string,
-): Promise<{ rows: StoreBooleanConfigRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<StoreBooleanConfigRow>> {
   return loadAllOverviewRows<StoreBooleanConfigRow>((from, to) => {
     const query = supabase
       .from(table)
@@ -1213,7 +1230,7 @@ async function loadStoreBooleanConfigRows(
 
 async function loadStoreAuthConfigRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: StoreAuthConfigRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<StoreAuthConfigRow>> {
   return loadAllOverviewRows<StoreAuthConfigRow>((from, to) =>
     supabase
       .from("store_auth_settings")
@@ -1225,7 +1242,7 @@ async function loadStoreAuthConfigRows(
 
 async function loadStoreCatalogConfigRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: StoreCatalogConfigRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<StoreCatalogConfigRow>> {
   return loadAllOverviewRows<StoreCatalogConfigRow>((from, to) =>
     supabase
       .from("store_catalog_items")
@@ -1238,7 +1255,7 @@ async function loadStoreCatalogConfigRows(
 async function loadQueueRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
   table: string,
-): Promise<{ rows: QueueMetricRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<QueueMetricRow>> {
   return loadAllOverviewRows<QueueMetricRow>((from, to) =>
     supabase
       .from(table)
@@ -1250,7 +1267,7 @@ async function loadQueueRows(
 
 async function loadAiRunQueueIssueRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: AiRunQueueIssueRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<AiRunQueueIssueRow>> {
   return loadAllOverviewRows<AiRunQueueIssueRow>((from, to) =>
     supabase
       .from("ai_run_queue")
@@ -1264,7 +1281,7 @@ async function loadAiRunQueueIssueRows(
 
 async function loadSalesActionQueueIssueRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: SalesActionQueueIssueRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<SalesActionQueueIssueRow>> {
   return loadAllOverviewRows<SalesActionQueueIssueRow>((from, to) =>
     supabase
       .from("ai_sales_action_queue")
@@ -1278,7 +1295,7 @@ async function loadSalesActionQueueIssueRows(
 
 async function loadWhatsappInboxIssueRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: WhatsappInboxIssueRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<WhatsappInboxIssueRow>> {
   return loadAllOverviewRows<WhatsappInboxIssueRow>((from, to) =>
     supabase
       .from("channel_whatsapp_inbox")
@@ -1292,7 +1309,7 @@ async function loadWhatsappInboxIssueRows(
 
 async function loadAiRunRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: AiRunRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<AiRunRow>> {
   return loadAllOverviewRows<AiRunRow>((from, to) =>
     supabase
       .from("ai_runs")
@@ -1306,7 +1323,7 @@ async function loadAiRunRows(
 
 async function loadWhatsappOutboundHealthRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: WhatsappOutboundHealthRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<WhatsappOutboundHealthRow>> {
   return loadAllOverviewRows<WhatsappOutboundHealthRow>((from, to) =>
     supabase
       .from("messages")
@@ -1329,6 +1346,7 @@ async function loadAssistantOperationalHealthRows(
 ): Promise<{
   rows: AssistantOperationalQueueHealthRow[];
   error: string | null;
+  availability: OverviewDataAvailability;
 }> {
   return loadAllOverviewRows<AssistantOperationalQueueHealthRow>((from, to) =>
     supabase
@@ -1344,6 +1362,7 @@ async function loadResponsibleNotificationHealthRows(
 ): Promise<{
   rows: ResponsibleNotificationHealthRow[];
   error: string | null;
+  availability: OverviewDataAvailability;
 }> {
   return loadAllOverviewRows<ResponsibleNotificationHealthRow>((from, to) =>
     supabase
@@ -1356,7 +1375,7 @@ async function loadResponsibleNotificationHealthRows(
 
 async function loadAppointmentHealthRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-): Promise<{ rows: AppointmentHealthRow[]; error: string | null }> {
+): Promise<OverviewLoadResult<AppointmentHealthRow>> {
   return loadAllOverviewRows<AppointmentHealthRow>((from, to) =>
     supabase
       .from("store_appointments")
@@ -1371,6 +1390,7 @@ async function loadPostAppointmentFollowupHealthRows(
 ): Promise<{
   rows: PostAppointmentFollowupHealthRow[];
   error: string | null;
+  availability: OverviewDataAvailability;
 }> {
   return loadAllOverviewRows<PostAppointmentFollowupHealthRow>((from, to) =>
     supabase
@@ -2244,6 +2264,26 @@ export async function GET() {
             subscriptions: null,
           }),
         operationalHealth,
+        dataAvailability: {
+          ai: {
+            runs: aiRunRows.availability,
+            queue: aiRunQueueRows.availability,
+            diagnostics: aiRunQueueIssueRows.availability,
+            overall: worstOverviewAvailability(
+              aiRunRows.availability,
+              aiRunQueueRows.availability,
+              aiRunQueueIssueRows.availability,
+            ),
+          },
+          commercial: {
+            queue: salesActionQueueRows.availability,
+            diagnostics: salesActionQueueIssueRows.availability,
+            overall: worstOverviewAvailability(
+              salesActionQueueRows.availability,
+              salesActionQueueIssueRows.availability,
+            ),
+          },
+        },
         settingsReadiness:
           settingsReadinessByStoreId.get(store.id) ?? null,
 
@@ -2480,6 +2520,26 @@ export async function GET() {
         storeDiscountSettingsConfig: discountSettingsConfigRows.error,
         storeAuthSettingsConfig: authSettingsConfigRows.error,
         storeCatalogConfig: catalogConfigRows.error,
+      },
+      dataAvailability: {
+        ai: {
+          runs: aiRunRows.availability,
+          queue: aiRunQueueRows.availability,
+          diagnostics: aiRunQueueIssueRows.availability,
+          overall: worstOverviewAvailability(
+            aiRunRows.availability,
+            aiRunQueueRows.availability,
+            aiRunQueueIssueRows.availability,
+          ),
+        },
+        commercial: {
+          queue: salesActionQueueRows.availability,
+          diagnostics: salesActionQueueIssueRows.availability,
+          overall: worstOverviewAvailability(
+            salesActionQueueRows.availability,
+            salesActionQueueIssueRows.availability,
+          ),
+        },
       },
       integrity: {
         orphanStoresCount: orphanStoreSummaries.length,
