@@ -325,6 +325,13 @@ const tests: TestCase[] = [
       const recoveryBlock = source.slice(recoveryStart, recoveryEnd);
       assert.equal(recoveryBlock.includes("fetch(\"/api/zion-admin/whatsapp-pins/recovery\""), true);
       assert.equal(recoveryBlock.includes("window.FB?.login"), true);
+      assert.equal(recoveryBlock.includes("ensureRecoveryMessageListener(flowId);"), true);
+      assert.equal(recoveryBlock.includes("isMetaEmbeddedSignupFlowActive"), true);
+      assert.equal(recoveryBlock.includes("flow.code !== recoveryCode"), true);
+      assert.equal(recoveryBlock.includes("flow.session !== recoverySession"), true);
+      assert.equal(recoveryBlock.includes("classificada como fechada"), true);
+      assert.equal(recoveryBlock.includes("4 * 60_000"), true);
+      assert.equal(recoveryBlock.includes("classifyMetaEmbeddedSignupMessage"), true);
       assert.equal(recoveryBlock.includes("payload.pin"), false);
       assert.equal(recoveryBlock.includes("localStorage"), false);
       assert.equal(recoveryBlock.includes("window.location"), false);

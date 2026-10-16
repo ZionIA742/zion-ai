@@ -4,6 +4,9 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { useRouter } from "next/navigation";
 import {
   ensureFacebookSdkLoaded,
+  classifyMetaEmbeddedSignupMessage,
+  createMetaEmbeddedSignupFlowCoordinator,
+  isMetaEmbeddedSignupFlowActive,
   extractMetaEmbeddedSignupSession,
   getMetaEmbeddedSignupConfig,
   isMetaEmbeddedSignupCancellation,
@@ -3731,53 +3734,99 @@ function WhatsappPinRecoverySection({
   const recoveryBusyRef = useRef(false);
   const recoveryMountedRef = useRef(true);
   const recoveryOAuthTimerRef = useRef<number | null>(null);
+  const recoveryAttemptRef = useRef<WhatsappPinRecoveryAttempt | null>(null);
+  const recoveryOAuthSequenceRef = useRef(0);
+  const recoveryOAuthFlowRef = useRef<{
+    id: number;
+    purpose: "execute" | "materialize";
+    code: string;
+    session: MetaEmbeddedSignupSession | null;
+    status: "authorizing" | "submitting" | "closed";
+  } | null>(null);
+  const recoveryOAuthCoordinatorRef = useRef<ReturnType<typeof createMetaEmbeddedSignupFlowCoordinator> | null>(null);
+  const recoveryMessageListenerRef = useRef<((event: MessageEvent) => void) | null>(null);
   const metaEmbeddedSignupConfig = useMemo(() => getMetaEmbeddedSignupConfig(), []);
+
+  useEffect(() => {
+    recoveryAttemptRef.current = recoveryAttempt;
+  }, [recoveryAttempt]);
+
+  const removeRecoveryMessageListener = useCallback(() => {
+    const listener = recoveryMessageListenerRef.current;
+    if (!listener || typeof window === "undefined") return;
+    window.removeEventListener("message", listener);
+    recoveryMessageListenerRef.current = null;
+  }, []);
+
+  const handleRecoveryEmbeddedSignupMessage = useCallback((flowId: number, event: MessageEvent) => {
+    const flow = recoveryOAuthFlowRef.current;
+    if (!flow || !isMetaEmbeddedSignupFlowActive({ expectedFlowId: flowId, currentFlowId: flow.id, status: flow.status })) return;
+    recoveryOAuthCoordinatorRef.current?.acceptMessage(event);
+
+    const diagnostic = classifyMetaEmbeddedSignupMessage(event);
+    if (diagnostic === "origin_rejected") {
+      setRecoveryMessage("Evento Meta rejeitado por origem não autorizada.");
+      return;
+    }
+    if (diagnostic === "ignored_message") return;
+    if (diagnostic === "other_event") {
+      setRecoveryMessage("Evento Meta recebido; aguardando FINISH validado.");
+      return;
+    }
+    if (diagnostic === "cancelled" || isMetaEmbeddedSignupCancellation(event)) {
+      flow.status = "closed";
+      if (recoveryOAuthTimerRef.current !== null) window.clearTimeout(recoveryOAuthTimerRef.current);
+      recoveryOAuthFlowRef.current = null;
+      recoveryOAuthCoordinatorRef.current?.close();
+      recoveryOAuthCoordinatorRef.current = null;
+      removeRecoveryMessageListener();
+      setRecoveryCode("");
+      setRecoverySession(null);
+      setRecoveryOAuthPurpose(null);
+      setRecoveryPhase(recoveryAttemptRef.current ? "prepared" : "idle");
+      setRecoveryMessage("A autorização Meta foi cancelada antes da conclusão.");
+      return;
+    }
+    if (diagnostic === "finish_missing_context" || diagnostic === "finish_missing_ids") {
+      setRecoveryMessage("FINISH recebido sem contexto Meta completo; aguardando confirmação válida.");
+      return;
+    }
+
+    const session = extractMetaEmbeddedSignupSession(event);
+    if (!session) {
+      setRecoveryMessage("FINISH Meta rejeitado por formato ou identificadores inválidos.");
+      return;
+    }
+    if (
+      session.whatsappBusinessAccountId !== WHATSAPP_PIN_RECOVERY_TARGET.wabaId ||
+      session.phoneNumberId !== WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId
+    ) {
+      setRecoverySession(null);
+      setRecoveryMessage("FINISH Meta rejeitado: WABA ou Phone ID não corresponde ao alvo autorizado.");
+      return;
+    }
+
+    flow.session = session;
+    setRecoverySession(session);
+    setRecoveryMessage("Contexto Meta FINISH recebido. Aguardando o código OAuth seguro.");
+  }, [removeRecoveryMessageListener]);
+
+  const ensureRecoveryMessageListener = useCallback((flowId: number) => {
+    if (typeof window === "undefined" || recoveryMessageListenerRef.current) return;
+    const listener = (event: MessageEvent) => handleRecoveryEmbeddedSignupMessage(flowId, event);
+    recoveryMessageListenerRef.current = listener;
+    window.addEventListener("message", listener);
+  }, [handleRecoveryEmbeddedSignupMessage]);
 
   useEffect(() => {
     return () => {
       recoveryMountedRef.current = false;
-      if (recoveryOAuthTimerRef.current !== null) {
-        window.clearTimeout(recoveryOAuthTimerRef.current);
-      }
+      if (recoveryOAuthTimerRef.current !== null) window.clearTimeout(recoveryOAuthTimerRef.current);
+      recoveryOAuthFlowRef.current = null;
+      recoveryOAuthCoordinatorRef.current = null;
+      removeRecoveryMessageListener();
     };
-  }, []);
-
-  useEffect(() => {
-    if (!metaExecutionEnabled) return;
-
-    const handleEmbeddedSignupMessage = (event: MessageEvent) => {
-      if (recoveryPhase !== "authorizing_execute" && recoveryPhase !== "authorizing_materialize") {
-        return;
-      }
-
-      const session = extractMetaEmbeddedSignupSession(event);
-      if (session) {
-        if (
-          session.whatsappBusinessAccountId !== WHATSAPP_PIN_RECOVERY_TARGET.wabaId ||
-          session.phoneNumberId !== WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId
-        ) {
-          setRecoverySession(null);
-          setRecoveryError("A sessão Meta não corresponde ao alvo autorizado desta recuperação.");
-          return;
-        }
-        setRecoverySession(session);
-        setRecoveryMessage("Contexto Meta recebido. Aguardando o código OAuth seguro.");
-        return;
-      }
-
-      if (isMetaEmbeddedSignupCancellation(event)) {
-        setRecoveryCode("");
-        setRecoverySession(null);
-        setRecoveryOAuthPurpose(null);
-        setRecoveryPhase(recoveryAttempt ? "prepared" : "idle");
-        setRecoveryMessage(null);
-        setRecoveryError("A autorização Meta foi cancelada antes da conclusão.");
-      }
-    };
-
-    window.addEventListener("message", handleEmbeddedSignupMessage);
-    return () => window.removeEventListener("message", handleEmbeddedSignupMessage);
-  }, [metaExecutionEnabled, recoveryAttempt, recoveryPhase]);
+  }, [removeRecoveryMessageListener]);
 
   const runRecoveryAction = useCallback(async (action: "execute" | "materialize", oauthCode: string) => {
     if (!recoveryAttempt || recoveryBusyRef.current || !oauthCode) return;
@@ -3839,11 +3888,28 @@ function WhatsappPinRecoverySection({
         window.clearTimeout(recoveryOAuthTimerRef.current);
         recoveryOAuthTimerRef.current = null;
       }
+      recoveryOAuthFlowRef.current = null;
+      recoveryOAuthCoordinatorRef.current?.close();
+      recoveryOAuthCoordinatorRef.current = null;
+      removeRecoveryMessageListener();
     }
-  }, [recoveryAttempt]);
+  }, [recoveryAttempt, removeRecoveryMessageListener]);
 
   useEffect(() => {
-    if (!recoveryCode || !recoverySession || !recoveryOAuthPurpose || recoveryBusyRef.current) return;
+    const flow = recoveryOAuthFlowRef.current;
+    if (
+      !flow ||
+      flow.status !== "authorizing" ||
+      !recoveryCode ||
+      !recoverySession ||
+      !recoveryOAuthPurpose ||
+      flow.code !== recoveryCode ||
+      flow.session !== recoverySession ||
+      flow.purpose !== recoveryOAuthPurpose ||
+      recoveryBusyRef.current
+    ) return;
+    flow.status = "submitting";
+    recoveryOAuthCoordinatorRef.current?.markSubmitting();
     void runRecoveryAction(recoveryOAuthPurpose, recoveryCode);
   }, [recoveryCode, recoveryOAuthPurpose, recoverySession, runRecoveryAction]);
 
@@ -3862,6 +3928,20 @@ function WhatsappPinRecoverySection({
     setRecoverySession(null);
     setRecoveryOAuthPurpose(purpose);
     setRecoveryPhase(purpose === "execute" ? "authorizing_execute" : "authorizing_materialize");
+    const flowId = recoveryOAuthSequenceRef.current + 1;
+    recoveryOAuthSequenceRef.current = flowId;
+    recoveryOAuthFlowRef.current = {
+      id: flowId,
+      purpose,
+      code: "",
+      session: null,
+      status: "authorizing",
+    };
+    recoveryOAuthCoordinatorRef.current = createMetaEmbeddedSignupFlowCoordinator({
+      wabaId: WHATSAPP_PIN_RECOVERY_TARGET.wabaId,
+      phoneNumberId: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId,
+    });
+    ensureRecoveryMessageListener(flowId);
 
     try {
       await ensureFacebookSdkLoaded(metaEmbeddedSignupConfig.appId);
@@ -3869,19 +3949,26 @@ function WhatsappPinRecoverySection({
 
       window.FB.login(
         (response: FacebookLoginResponse) => {
+          const flow = recoveryOAuthFlowRef.current;
+          if (!flow || !isMetaEmbeddedSignupFlowActive({ expectedFlowId: flowId, currentFlowId: flow.id, status: flow.status })) return;
           const code = typeof response.authResponse?.code === "string"
             ? response.authResponse.code.trim()
             : "";
           if (!code) {
+            flow.status = "closed";
+            recoveryOAuthFlowRef.current = null;
+            removeRecoveryMessageListener();
             setRecoveryCode("");
             setRecoverySession(null);
             setRecoveryOAuthPurpose(null);
-            setRecoveryPhase(recoveryAttempt ? "prepared" : "idle");
+            setRecoveryPhase(recoveryAttemptRef.current ? "prepared" : "idle");
             setRecoveryError("A autorização Meta foi cancelada ou não retornou código.");
             return;
           }
+          if (!recoveryOAuthCoordinatorRef.current?.acceptOAuthCode(code)) return;
+          flow.code = code;
           setRecoveryCode(code);
-          setRecoveryMessage("Código OAuth recebido em memória. Aguardando o contexto validado da Meta.");
+          setRecoveryMessage("Código OAuth recebido em memória. Aguardando o FINISH validado da Meta.");
         },
         {
           config_id: metaEmbeddedSignupConfig.configId,
@@ -3897,18 +3984,27 @@ function WhatsappPinRecoverySection({
 
       if (recoveryOAuthTimerRef.current !== null) window.clearTimeout(recoveryOAuthTimerRef.current);
       recoveryOAuthTimerRef.current = window.setTimeout(() => {
-        if (!recoveryMountedRef.current || recoveryBusyRef.current) return;
+        const flow = recoveryOAuthFlowRef.current;
+        if (!recoveryMountedRef.current || recoveryBusyRef.current || !flow || !isMetaEmbeddedSignupFlowActive({ expectedFlowId: flowId, currentFlowId: flow.id, status: flow.status })) return;
+        flow.status = "closed";
+        recoveryOAuthFlowRef.current = null;
+        removeRecoveryMessageListener();
         setRecoveryCode("");
         setRecoverySession(null);
         setRecoveryOAuthPurpose(null);
-        setRecoveryPhase(recoveryAttempt ? "prepared" : "idle");
-        setRecoveryError("A autorização Meta expirou ou foi fechada antes da conclusão.");
-      }, 60_000);
+        setRecoveryPhase(recoveryAttemptRef.current ? "prepared" : "idle");
+        setRecoveryError("O tempo seguro para receber código e contexto Meta terminou. A janela não foi classificada como fechada.");
+      }, 4 * 60_000);
     } catch {
+      const flow = recoveryOAuthFlowRef.current;
+      if (!flow || flow.id !== flowId) return;
+      flow.status = "closed";
+      recoveryOAuthFlowRef.current = null;
+      removeRecoveryMessageListener();
       setRecoveryCode("");
       setRecoverySession(null);
       setRecoveryOAuthPurpose(null);
-      setRecoveryPhase(recoveryAttempt ? "prepared" : "idle");
+      setRecoveryPhase(recoveryAttemptRef.current ? "prepared" : "idle");
       setRecoveryError("Não foi possível iniciar a autorização oficial da Meta.");
     }
   }
