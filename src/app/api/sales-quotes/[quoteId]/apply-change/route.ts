@@ -15,6 +15,11 @@ import {
 import { loadStoreQuoteSettings } from "@/lib/server/sales-quotes/quote-settings";
 import { storeQuotePdfFile } from "@/lib/server/sales-quotes/quote-storage";
 import { requestQuoteSendApprovalBySystem } from "@/lib/server/sales-quotes/quote-approval-request";
+import {
+  deliverQuoteApprovalRequest,
+  type QuoteApprovalDeliveryResult,
+} from "@/lib/server/sales-quotes/quote-approval-delivery";
+import type { ResponsibleWhatsappTemplateContext } from "@/lib/server/assistant/responsible-whatsapp-outbound-policy";
 import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
 import {
   buildQuoteKindNotice,
@@ -892,6 +897,93 @@ async function requestApprovalForRevision(args: {
   });
 }
 
+function buildQuoteApprovalOpeningTemplateContext(
+  quote: SalesQuoteRow,
+): ResponsibleWhatsappTemplateContext {
+  return {
+    templateKind: "operational_approval",
+    body: "Uma versao revisada do orcamento aguarda aprovacao comercial.",
+    context: {
+      situation: "Uma versao revisada do orcamento aguarda aprovacao comercial.",
+      decision: "aprovar ou recusar a versao revisada do orcamento",
+    },
+    relatedLeadId: quote.lead_id,
+    relatedConversationId: quote.conversation_id,
+  };
+}
+
+type RevisionApprovalDeliveryResult = QuoteApprovalDeliveryResult | {
+  ok: true;
+  requestId: string;
+  requestStatus: string;
+  state: "already_reconciled";
+};
+
+function revisionDeliveryState(delivery: RevisionApprovalDeliveryResult): string {
+  return "state" in delivery ? delivery.state : "completed";
+}
+
+async function deliverRevisionApproval(args: {
+  supabase: QuoteSupabaseClient;
+  requestId: string;
+  requestStatus: string;
+  quote: SalesQuoteRow;
+}): Promise<RevisionApprovalDeliveryResult> {
+  if (args.requestStatus === "awaiting_responsible" || args.requestStatus === "approved") {
+    return {
+      ok: true,
+      requestId: args.requestId,
+      requestStatus: args.requestStatus,
+      state: "already_reconciled",
+    };
+  }
+  if (args.requestStatus === "dispatch_uncertain") {
+    return {
+      ok: false,
+      requestId: args.requestId,
+      state: "dispatch_uncertain",
+      reason: "P9_DELIVERY_DISPATCH_UNCERTAIN_REQUIRES_RECONCILIATION",
+      requestStatus: args.requestStatus,
+    };
+  }
+  try {
+    return await deliverQuoteApprovalRequest({
+      requestId: args.requestId,
+      supabase: args.supabase as unknown as NonNullable<Parameters<typeof deliverQuoteApprovalRequest>[0]["supabase"]>,
+      openingTemplateContext: buildQuoteApprovalOpeningTemplateContext(args.quote),
+    });
+  } catch {
+    return {
+      ok: false,
+      requestId: args.requestId,
+      state: "delivery_exception",
+      reason: "P9_DELIVERY_EXCEPTION_REQUIRES_RECONCILIATION",
+      requestStatus: args.requestStatus,
+    };
+  }
+}
+
+function deliveryFailureResponse(args: {
+  delivery: Exclude<RevisionApprovalDeliveryResult, { ok: true }>;
+  approvalRequestId: string;
+  revisionId: string;
+  versionId: string;
+}) {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "QUOTE_APPROVAL_DELIVERY_FAILED",
+      approvalRequestId: args.approvalRequestId,
+      revisionId: args.revisionId,
+      versionId: args.versionId,
+      deliveryState: args.delivery.state,
+      deliveryReason: args.delivery.reason,
+      retryable: args.delivery.state !== "uncertain" && args.delivery.state !== "finalization_uncertain" && args.delivery.state !== "dispatch_uncertain",
+    },
+    { status: 503 },
+  );
+}
+
 export async function POST(
   request: Request,
   context: { params: Promise<{ quoteId: string }> }
@@ -954,6 +1046,20 @@ export async function POST(
             lifecycleCycle: replay.lifecycleCycle,
             quoteVersionId: replay.targetQuoteVersionId,
           });
+          const delivery = await deliverRevisionApproval({
+            supabase: scope.supabase,
+            requestId: approval.requestId,
+            requestStatus: approval.status,
+            quote: scope.quote,
+          });
+          if (!delivery.ok) {
+            return deliveryFailureResponse({
+              delivery,
+              approvalRequestId: approval.requestId,
+              revisionId: replay.revisionId,
+              versionId: replay.targetQuoteVersionId,
+            });
+          }
           return NextResponse.json({
             ok: true,
             outcome: "replayed",
@@ -967,6 +1073,8 @@ export async function POST(
             approvalRequestId: approval.requestId,
             approvalStatus: approval.status,
             approvalCreated: approval.created,
+            deliveryState: revisionDeliveryState(delivery),
+            deliveryRequestStatus: delivery.requestStatus,
           });
         } catch {
           return NextResponse.json(
@@ -1227,6 +1335,20 @@ export async function POST(
         lifecycleCycle: acceptedRevisionDetails.lifecycleCycle,
         quoteVersionId: revision.targetQuoteVersionId,
       });
+      const delivery = await deliverRevisionApproval({
+        supabase: scope.supabase,
+        requestId: approval.requestId,
+        requestStatus: approval.status,
+        quote: updatedQuote,
+      });
+      if (!delivery.ok) {
+        return deliveryFailureResponse({
+          delivery,
+          approvalRequestId: approval.requestId,
+          revisionId: revision.revisionId,
+          versionId: revision.targetQuoteVersionId,
+        });
+      }
 
       return NextResponse.json({
         ok: true,
@@ -1242,6 +1364,8 @@ export async function POST(
         approvalRequestId: approval.requestId,
         approvalStatus: approval.status,
         approvalCreated: approval.created,
+        deliveryState: revisionDeliveryState(delivery),
+        deliveryRequestStatus: delivery.requestStatus,
         totalCents: nextTotalCents,
         appliedChanges,
       });

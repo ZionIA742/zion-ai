@@ -1074,6 +1074,28 @@ const tests: TestCase[] = [
       );
     },
   },
+  {
+    name: "accepted V2 reuses the canonical delivery service with the exact revision context",
+    run: () => {
+      assert.match(routeSource, /deliverQuoteApprovalRequest\(/);
+      assert.match(routeSource, /buildQuoteApprovalOpeningTemplateContext\(/);
+      assert.match(routeSource, /relatedLeadId: quote\.lead_id/);
+      assert.match(routeSource, /relatedConversationId: quote\.conversation_id/);
+      assert.match(routeSource, /templateKind: "operational_approval"/);
+      assert.match(routeSource, /quoteVersionId: revision\.targetQuoteVersionId/);
+      assert.match(routeSource, /requestId: approval\.requestId/);
+    },
+  },
+  {
+    name: "delivery replay and uncertain outcomes never trigger a blind resend",
+    run: () => {
+      assert.match(routeSource, /requestStatus === "awaiting_responsible"/);
+      assert.match(routeSource, /requestStatus === "dispatch_uncertain"/);
+      assert.match(routeSource, /P9_DELIVERY_DISPATCH_UNCERTAIN_REQUIRES_RECONCILIATION/);
+      assert.match(routeSource, /QUOTE_APPROVAL_DELIVERY_FAILED/);
+      assert.match(routeSource, /retryable: args\.delivery\.state !== "uncertain"/);
+    },
+  },
 ];
 
 void (async () => {
