@@ -327,6 +327,62 @@ async function prepare(body: Record<string, unknown>, access: RecoveryAccess, de
   });
 }
 
+async function readResumableAttempt(access: RecoveryAccess, deps: RecoveryDeps) {
+  const client = deps.createServiceSupabase();
+  const result = await client.rpc("read_whatsapp_pin_recovery_resumable_attempt_by_system", {
+    p_actor_user_id: access.sessionUserId,
+    p_organization_id: WHATSAPP_PIN_RECOVERY_TARGET.organizationId,
+    p_store_id: WHATSAPP_PIN_RECOVERY_TARGET.storeId,
+    p_waba_id: WHATSAPP_PIN_RECOVERY_TARGET.wabaId,
+    p_phone_number_id: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId,
+  });
+  if (result.error) throw new Error(safeErrorCode(result.error));
+
+  if (!Array.isArray(result.data)) {
+    throw new Error("WHATSAPP_PIN_RECOVERY_RESUME_RETURN_INVALID");
+  }
+
+  if (result.data.length === 0) {
+    return jsonResponse({ ok: true, resumable: false });
+  }
+
+  if (result.data.length !== 1) {
+    throw new Error("WHATSAPP_PIN_RECOVERY_RESUME_RETURN_INVALID");
+  }
+
+  const row = firstRow(result.data);
+  if (
+    !row ||
+    !isUuid(clean(row.attempt_id)) ||
+    !isUuid(clean(row.operation_id)) ||
+    clean(row.status) !== "remote_confirmed" ||
+    clean(row.organization_id) !== WHATSAPP_PIN_RECOVERY_TARGET.organizationId ||
+    clean(row.store_id) !== WHATSAPP_PIN_RECOVERY_TARGET.storeId ||
+    clean(row.waba_id) !== WHATSAPP_PIN_RECOVERY_TARGET.wabaId ||
+    clean(row.phone_number_id) !== WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId ||
+    !clean(row.created_at) ||
+    !clean(row.remote_result_at) ||
+    !clean(row.authorization_expires_at) ||
+    !Number.isFinite(Date.parse(clean(row.created_at))) ||
+    !Number.isFinite(Date.parse(clean(row.remote_result_at))) ||
+    !Number.isFinite(Date.parse(clean(row.authorization_expires_at)))
+  ) {
+    throw new Error("WHATSAPP_PIN_RECOVERY_RESUME_RETURN_INVALID");
+  }
+
+  return jsonResponse({
+    ok: true,
+    resumable: true,
+    status: "remote_confirmed",
+    attemptId: clean(row.attempt_id),
+    operationId: clean(row.operation_id),
+    createdAt: clean(row.created_at),
+    remoteResultAt: clean(row.remote_result_at),
+    authorizationExpiresAt: clean(row.authorization_expires_at),
+    target: { ...WHATSAPP_PIN_RECOVERY_TARGET },
+  });
+}
+
 async function execute(body: Record<string, unknown>, access: RecoveryAccess, deps: RecoveryDeps) {
   if (!deps.isMetaExecutionEnabled()) return jsonResponse({ ok: false, error: "WHATSAPP_PIN_RECOVERY_META_EXECUTION_DISABLED" }, 503);
   const { attemptId, operationId } = requireOperationIds(body);
@@ -540,6 +596,31 @@ export function createWhatsappPinRecoveryPostHandler(overrides: Partial<Recovery
             ? 400
             : 503;
       return jsonResponse({ ok: false, error: code.startsWith("WHATSAPP_") || code.startsWith("ZION_") ? code : "WHATSAPP_PIN_RECOVERY_FAILED" }, status);
+    }
+  };
+}
+
+export function createWhatsappPinRecoveryGetHandler(overrides: Partial<RecoveryDeps> = {}) {
+  const deps = depsWithDefaults(overrides);
+  return async function GET() {
+    let access: ZionAdminApiAccessResult;
+    try {
+      access = await deps.resolveAccess();
+    } catch {
+      return jsonResponse({ ok: false, error: "WHATSAPP_PIN_RECOVERY_ACCESS_UNAVAILABLE" }, 503);
+    }
+    if (!access.ok) return jsonResponse(access.payload, access.httpStatus);
+    try {
+      return await readResumableAttempt(access, deps);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "WHATSAPP_PIN_RECOVERY_FAILED";
+      const status = code.includes("INVALID") ? 400 : 503;
+      return jsonResponse({
+        ok: false,
+        error: code.startsWith("WHATSAPP_") || code.startsWith("ZION_")
+          ? code
+          : "WHATSAPP_PIN_RECOVERY_FAILED",
+      }, status);
     }
   };
 }

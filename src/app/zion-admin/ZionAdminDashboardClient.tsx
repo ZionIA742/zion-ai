@@ -27,6 +27,7 @@ import {
   normalizeOverviewDataAvailability,
   type OverviewDataAvailability,
 } from "./overview-availability";
+import { selectRecentAiErrors } from "./recent-ai-errors";
 
 type OverviewPanelKey =
   | "ia"
@@ -280,6 +281,8 @@ type AiRunEvent = {
   error: string | null;
   createdAt: string | null;
   finishedAt: string | null;
+  storeId?: string;
+  storeName?: string;
 };
 
 type PendingIssueDetail = {
@@ -766,7 +769,7 @@ function formatDateTime(value: string | null | undefined) {
 }
 
 function getAiRunEventDate(event: AiRunEvent) {
-  return formatDateTime(event.finishedAt || event.createdAt);
+  return formatDateTime(event.createdAt || event.finishedAt);
 }
 
 function getReadableAiError(error: string | null | undefined) {
@@ -832,20 +835,35 @@ function AiRunEventList({
   emptyText,
   events,
   variant,
+  availability,
 }: {
   title: string;
   emptyText: string;
   events: AiRunEvent[] | undefined;
   variant: "error" | "success";
+  availability?: unknown;
 }) {
   const safeEvents = events ?? [];
+  const availabilityState = availability === undefined
+    ? "available"
+    : normalizeOverviewDataAvailability(availability);
 
   return (
     <section>
       <h3 className="text-sm font-semibold text-zinc-200">{title}</h3>
 
+      {availabilityState === "partial" ? (
+        <div className="mt-2 rounded-xl border border-amber-400/20 bg-amber-500/[0.06] p-3 text-xs text-amber-100">
+          Consulta parcial; a lista pode não conter todas as ocorrências do recorte.
+        </div>
+      ) : null}
+
       <div className="mt-3 space-y-2">
-        {safeEvents.length === 0 ? (
+        {availabilityState === "unavailable" ? (
+          <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">
+            Fonte de execuções indisponível; não é possível confirmar a ausência de erros.
+          </div>
+        ) : safeEvents.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">
             {emptyText}
           </div>
@@ -878,6 +896,12 @@ function AiRunEventList({
                   <span className="text-zinc-500">Status:</span>{" "}
                   {event.status || "Sem status"}
                 </div>
+                {event.storeName ? (
+                  <div>
+                    <span className="text-zinc-500">Loja:</span>{" "}
+                    {event.storeName}
+                  </div>
+                ) : null}
               </div>
 
               {variant === "error" ? (
@@ -3595,8 +3619,9 @@ function OverviewInlineDetails({
             <AiRunEventList
               title="Erros recentes por loja"
               emptyText="Nenhum erro recente disponível no recorte carregado."
-              events={stores.flatMap((store) => store.recentAiErrors ?? []).slice(0, 6)}
+              events={selectRecentAiErrors(stores)}
               variant="error"
+              availability={getGlobalAiAvailability(data, "runs")}
             />
           </div>
         ) : null}
@@ -3892,6 +3917,8 @@ function WhatsappPinRecoverySection({
   const recoveryOAuthTimerRef = useRef<number | null>(null);
   const recoveryAttemptRef = useRef<WhatsappPinRecoveryAttempt | null>(null);
   const recoveryOAuthSequenceRef = useRef(0);
+  const recoveryResumeSequenceRef = useRef(0);
+  const recoveryResumeLoadingRef = useRef(false);
   const recoveryOAuthFlowRef = useRef<{
     id: number;
     purpose: "execute" | "materialize";
@@ -3906,6 +3933,96 @@ function WhatsappPinRecoverySection({
   useEffect(() => {
     recoveryAttemptRef.current = recoveryAttempt;
   }, [recoveryAttempt]);
+
+  useEffect(() => {
+    if (!canAccess || !metaExecutionEnabled || recoveryAttempt) return;
+
+    const requestId = recoveryResumeSequenceRef.current + 1;
+    recoveryResumeSequenceRef.current = requestId;
+    recoveryResumeLoadingRef.current = true;
+    recoveryBusyRef.current = true;
+    void Promise.resolve().then(() => {
+      if (
+        recoveryMountedRef.current &&
+        recoveryResumeLoadingRef.current &&
+        recoveryResumeSequenceRef.current === requestId
+      ) setRecoveryBusy(true);
+    });
+    const controller = new AbortController();
+    void fetch("/api/zion-admin/whatsapp-pins/recovery", {
+      method: "GET",
+      credentials: "include",
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (
+          !recoveryMountedRef.current ||
+          !recoveryResumeLoadingRef.current ||
+          recoveryResumeSequenceRef.current !== requestId
+        ) return;
+        const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+        if (!response.ok || payload?.ok !== true) {
+          throw new Error(mapWhatsappPinRecoveryError(payload, response.status));
+        }
+        if (payload.resumable !== true) return;
+        if (
+          payload.status !== "remote_confirmed" ||
+          typeof payload.attemptId !== "string" ||
+          typeof payload.operationId !== "string" ||
+          typeof payload.authorizationExpiresAt !== "string" ||
+          typeof payload.createdAt !== "string" ||
+          typeof payload.remoteResultAt !== "string"
+        ) {
+          throw new Error("A retomada retornou dados inválidos e foi bloqueada.");
+        }
+        const target = payload.target;
+        if (!target || typeof target !== "object" || Array.isArray(target)) {
+          throw new Error("A retomada retornou um alvo inválido e foi bloqueada.");
+        }
+        const targetRecord = target as Record<string, unknown>;
+        if (
+          targetRecord.organizationId !== WHATSAPP_PIN_RECOVERY_TARGET.organizationId ||
+          targetRecord.storeId !== WHATSAPP_PIN_RECOVERY_TARGET.storeId ||
+          targetRecord.wabaId !== WHATSAPP_PIN_RECOVERY_TARGET.wabaId ||
+          targetRecord.phoneNumberId !== WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId
+        ) {
+          throw new Error("A retomada retornou um alvo divergente e foi bloqueada.");
+        }
+        setRecoveryAttempt({
+          attemptId: payload.attemptId,
+          operationId: payload.operationId,
+          expiresAt: payload.authorizationExpiresAt,
+        });
+        setRecoveryPhase("remote_confirmed");
+        setRecoveryMessage("Recuperação remota confirmada localizada. Autorize novamente na Meta para materializar.");
+      })
+      .catch((reason) => {
+        if (
+          !controller.signal.aborted &&
+          recoveryMountedRef.current &&
+          recoveryResumeLoadingRef.current &&
+          recoveryResumeSequenceRef.current === requestId
+        ) {
+          setRecoveryError(reason instanceof Error ? reason.message : "Não foi possível consultar a retomada segura.");
+        }
+      })
+      .finally(() => {
+        if (
+          !recoveryMountedRef.current ||
+          recoveryResumeSequenceRef.current !== requestId
+        ) return;
+        recoveryResumeLoadingRef.current = false;
+        recoveryBusyRef.current = false;
+        setRecoveryBusy(false);
+      });
+
+    return () => {
+      recoveryResumeSequenceRef.current += 1;
+      recoveryResumeLoadingRef.current = false;
+      controller.abort();
+    };
+  }, [canAccess, metaExecutionEnabled, recoveryAttempt]);
 
   const removeRecoveryMessageListener = useCallback(() => {
     const listener = recoveryMessageListenerRef.current;
@@ -4168,6 +4285,8 @@ function WhatsappPinRecoverySection({
   async function prepareRecovery() {
     if (!metaExecutionEnabled || !recoveryConsent || recoveryBusyRef.current) return;
 
+    recoveryResumeSequenceRef.current += 1;
+    recoveryResumeLoadingRef.current = false;
     recoveryBusyRef.current = true;
     setRecoveryBusy(true);
     setRecoveryPhase("preparing");

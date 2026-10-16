@@ -382,6 +382,18 @@ const tests: TestCase[] = [
       assert.equal(recoveryBlock.includes("classificada como fechada"), true);
       assert.equal(recoveryBlock.includes("4 * 60_000"), true);
       assert.equal(recoveryBlock.includes("classifyMetaEmbeddedSignupMessage"), true);
+      assert.equal(recoveryBlock.includes('method: "GET"'), true);
+      assert.equal(recoveryBlock.includes("payload.resumable !== true"), true);
+      assert.equal(recoveryBlock.includes('setRecoveryPhase("remote_confirmed")'), true);
+      assert.equal(recoveryBlock.includes("authorizationExpiresAt"), true);
+      assert.equal(recoveryBlock.includes("A retomada retornou um alvo divergente"), true);
+      assert.equal(recoveryBlock.includes("recoveryResumeSequenceRef"), true);
+      assert.equal(recoveryBlock.includes("recoveryResumeLoadingRef"), true);
+      assert.equal(recoveryBlock.includes("recoveryResumeSequenceRef.current !== requestId"), true);
+      assert.equal(recoveryBlock.includes("recoveryBusyRef.current = true"), true);
+      assert.equal(recoveryBlock.includes("recoveryResumeSequenceRef.current += 1"), true);
+      assert.equal(recoveryBlock.includes("controller.abort()"), true);
+      assert.equal(recoveryBlock.includes(".finally(() =>"), true);
       assert.equal(recoveryBlock.includes("payload.pin"), false);
       assert.equal(recoveryBlock.includes("localStorage"), false);
       assert.equal(recoveryBlock.includes("window.location"), false);

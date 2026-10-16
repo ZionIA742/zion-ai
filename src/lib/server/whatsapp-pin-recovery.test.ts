@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  createWhatsappPinRecoveryGetHandler,
   createWhatsappPinRecoveryPostHandler,
   WHATSAPP_PIN_RECOVERY_TARGET,
 } from "./whatsapp-pin-recovery";
@@ -52,6 +53,7 @@ type FakeOptions = {
   authorize?: FakeRpcResult;
   integration?: FakeRpcResult;
   finalize?: FakeRpcResult;
+  resumable?: FakeRpcResult;
   rpcErrors?: Partial<Record<string, string>>;
 };
 
@@ -81,6 +83,9 @@ function createFakeSupabase(options: FakeOptions = {}) {
       calls.push({ name, args });
       const forcedError = options.rpcErrors?.[name];
       if (forcedError) return { data: null, error: { message: forcedError } };
+      if (name === "read_whatsapp_pin_recovery_resumable_attempt_by_system") {
+        return options.resumable || { data: [], error: null };
+      }
       if (name === "prepare_whatsapp_pin_recovery_attempt_by_system") {
         return { data: [{ attempt_id: ATTEMPT, operation_id: OPERATION, status: "prepared", historical_secret_id: SECRET, outcome: "created", expires_at: "2099-01-01T00:00:00.000Z" }], error: null };
       }
@@ -212,6 +217,125 @@ test("access denial and missing historical secret stop before recovery RPC", asy
   assert.equal(missingFake.calls.length, 0);
 });
 
+test("GET resumes only the original administrator's validated remote_confirmed attempt", async () => {
+  const fake = createFakeSupabase({
+    resumable: {
+      data: [{
+        attempt_id: ATTEMPT,
+        operation_id: OPERATION,
+        status: "remote_confirmed",
+        organization_id: WHATSAPP_PIN_RECOVERY_TARGET.organizationId,
+        store_id: WHATSAPP_PIN_RECOVERY_TARGET.storeId,
+        waba_id: WHATSAPP_PIN_RECOVERY_TARGET.wabaId,
+        phone_number_id: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId,
+        created_at: "2026-10-16T19:56:48.585Z",
+        remote_result_at: "2026-10-16T19:57:47.596Z",
+        authorization_expires_at: "2026-10-16T20:01:48.441Z",
+      }],
+      error: null,
+    },
+  });
+  const handler = createWhatsappPinRecoveryGetHandler(baseDeps(fake));
+  const response = await handler();
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.resumable, true);
+  assert.equal(body.attemptId, ATTEMPT);
+  assert.equal(body.operationId, OPERATION);
+  assert.equal(body.status, "remote_confirmed");
+  assert.equal(body.target.phoneNumberId, WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId);
+  assert.equal(JSON.stringify(body).includes("ciphertext"), false);
+  assert.equal(JSON.stringify(body).includes(TOKEN), false);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(fake.calls[0], {
+    name: "read_whatsapp_pin_recovery_resumable_attempt_by_system",
+    args: {
+      p_actor_user_id: ACTOR,
+      p_organization_id: WHATSAPP_PIN_RECOVERY_TARGET.organizationId,
+      p_store_id: WHATSAPP_PIN_RECOVERY_TARGET.storeId,
+      p_waba_id: WHATSAPP_PIN_RECOVERY_TARGET.wabaId,
+      p_phone_number_id: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId,
+    },
+  });
+});
+
+test("GET treats no resumable attempt and invalid reader payload safely", async () => {
+  const emptyFake = createFakeSupabase();
+  const emptyResponse = await createWhatsappPinRecoveryGetHandler(baseDeps(emptyFake))();
+  assert.equal(emptyResponse.status, 200);
+  assert.deepEqual(await emptyResponse.json(), { ok: true, resumable: false });
+
+  const invalidFake = createFakeSupabase({
+    resumable: {
+      data: [{
+        attempt_id: ATTEMPT,
+        operation_id: OPERATION,
+        status: "prepared",
+        organization_id: WHATSAPP_PIN_RECOVERY_TARGET.organizationId,
+        store_id: WHATSAPP_PIN_RECOVERY_TARGET.storeId,
+        waba_id: WHATSAPP_PIN_RECOVERY_TARGET.wabaId,
+        phone_number_id: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId,
+      }],
+      error: null,
+    },
+  });
+  const invalidResponse = await createWhatsappPinRecoveryGetHandler(baseDeps(invalidFake))();
+  assert.equal(invalidResponse.status, 400);
+  assert.equal((await invalidResponse.json()).error, "WHATSAPP_PIN_RECOVERY_RESUME_RETURN_INVALID");
+
+  const multipleFake = createFakeSupabase({
+    resumable: {
+      data: [
+        {
+          attempt_id: ATTEMPT,
+          operation_id: OPERATION,
+          status: "remote_confirmed",
+          organization_id: WHATSAPP_PIN_RECOVERY_TARGET.organizationId,
+          store_id: WHATSAPP_PIN_RECOVERY_TARGET.storeId,
+          waba_id: WHATSAPP_PIN_RECOVERY_TARGET.wabaId,
+          phone_number_id: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId,
+          created_at: "2026-10-16T19:56:48.585Z",
+          remote_result_at: "2026-10-16T19:57:47.596Z",
+          authorization_expires_at: "2026-10-16T20:01:48.441Z",
+        },
+        {
+          attempt_id: "77777777-7777-4777-8777-777777777777",
+          operation_id: "88888888-8888-4888-8888-888888888888",
+          status: "remote_confirmed",
+          organization_id: WHATSAPP_PIN_RECOVERY_TARGET.organizationId,
+          store_id: WHATSAPP_PIN_RECOVERY_TARGET.storeId,
+          waba_id: WHATSAPP_PIN_RECOVERY_TARGET.wabaId,
+          phone_number_id: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId,
+          created_at: "2026-10-16T19:56:49.585Z",
+          remote_result_at: "2026-10-16T19:57:48.596Z",
+          authorization_expires_at: "2026-10-16T20:01:49.441Z",
+        },
+      ],
+      error: null,
+    },
+  });
+  const multipleResponse = await createWhatsappPinRecoveryGetHandler(baseDeps(multipleFake))();
+  assert.equal(multipleResponse.status, 400);
+  assert.equal((await multipleResponse.json()).error, "WHATSAPP_PIN_RECOVERY_RESUME_RETURN_INVALID");
+});
+
+test("GET authorization failure and RPC failure happen before any recovery operation", async () => {
+  const deniedFake = createFakeSupabase();
+  let deniedRpcCalls = 0;
+  const deniedResponse = await createWhatsappPinRecoveryGetHandler(baseDeps(deniedFake, {
+    resolveAccess: async () => ({ ok: false, httpStatus: 403, payload: { ok: false, error: "ZION_ADMIN_API_FORBIDDEN" } } as never),
+  }))();
+  deniedRpcCalls += deniedFake.calls.length;
+  assert.equal(deniedResponse.status, 403);
+  assert.equal(deniedRpcCalls, 0);
+
+  const failedFake = createFakeSupabase({ rpcErrors: { read_whatsapp_pin_recovery_resumable_attempt_by_system: "ZION_PIN_RECOVERY_READER_FAILED" } });
+  const failedResponse = await createWhatsappPinRecoveryGetHandler(baseDeps(failedFake))();
+  assert.equal(failedResponse.status, 503);
+  assert.equal((await failedResponse.json()).error, "ZION_PIN_RECOVERY_READER_FAILED");
+});
+
 test("disabled feature flag prevents OAuth, PIN decrypt, register, and RPC consumption", async () => {
   const fake = createFakeSupabase();
   let validationCalls = 0;
@@ -288,6 +412,40 @@ test("materialization requires a fresh OAuth token and never returns it", async 
   assert.equal(fake.calls.some((call) => call.name.includes("authorize_")), true);
   assert.equal(fake.calls.some((call) => call.name.includes("materialize_store_")), true);
   assert.equal(fake.calls.some((call) => call.name.includes("finalize_")), true);
+});
+
+test("remote_confirmed can be resumed after initial authorization expiry with fresh OAuth", async () => {
+  const fake = createFakeSupabase({
+    resumable: {
+      data: [{
+        attempt_id: ATTEMPT,
+        operation_id: OPERATION,
+        status: "remote_confirmed",
+        organization_id: WHATSAPP_PIN_RECOVERY_TARGET.organizationId,
+        store_id: WHATSAPP_PIN_RECOVERY_TARGET.storeId,
+        waba_id: WHATSAPP_PIN_RECOVERY_TARGET.wabaId,
+        phone_number_id: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId,
+        created_at: "2026-10-16T19:56:48.585Z",
+        remote_result_at: "2026-10-16T19:57:47.596Z",
+        authorization_expires_at: "2026-10-16T19:58:00.000Z",
+      }],
+      error: null,
+    },
+  });
+  const getResponse = await createWhatsappPinRecoveryGetHandler(baseDeps(fake))();
+  assert.equal(getResponse.status, 200);
+  assert.equal((await getResponse.json()).resumable, true);
+
+  const handler = createWhatsappPinRecoveryPostHandler(baseDeps(fake, {
+    validateOAuth: async () => ({ ...validated(), validatedAt: "2026-10-16T20:02:00.000Z" }),
+  }));
+  const response = await handler(trustedRequest({ action: "materialize", attemptId: ATTEMPT, operationId: OPERATION, oauthCode: "fresh-oauth-code" }));
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "completed");
+  assert.equal(fake.calls.some((call) => call.name.includes("begin_")), false);
+  assert.equal(fake.calls.some((call) => call.name.includes("record_")), false);
+  assert.equal(fake.calls.some((call) => call.name.includes("authorize_")), true);
+  assert.equal(fake.calls.some((call) => call.name.includes("materialize_store_")), true);
 });
 
 test("OAuth validation cannot move the recovery to another WABA or phone", async () => {
