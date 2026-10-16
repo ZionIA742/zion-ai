@@ -18,6 +18,15 @@ import {
   type StoreAccountAccess,
 } from "./first-access-control";
 import { supabase } from "@/lib/supabaseBrowser";
+import {
+  formatAvailableOverviewValue,
+  getOverviewDiagnosticsAvailability,
+  getOverviewAvailabilityLabel,
+  getOverviewOperationalAvailability,
+  getOverviewQueueAvailability,
+  normalizeOverviewDataAvailability,
+  type OverviewDataAvailability,
+} from "./overview-availability";
 
 type OverviewPanelKey =
   | "ia"
@@ -229,6 +238,19 @@ export type ZionAdminOverview = {
     totalOperationalIssues?: number | null;
   };
   countErrors: Record<string, string | null>;
+  dataAvailability?: {
+    ai?: {
+      runs?: OverviewDataAvailability;
+      queue?: OverviewDataAvailability;
+      diagnostics?: OverviewDataAvailability;
+      overall?: OverviewDataAvailability;
+    };
+    commercial?: {
+      queue?: OverviewDataAvailability;
+      diagnostics?: OverviewDataAvailability;
+      overall?: OverviewDataAvailability;
+    };
+  };
   integrity?: {
     orphanStoresCount: number;
     orphanStores: Array<{
@@ -337,6 +359,7 @@ export type ZionAdminStore = {
   createdAt: string | null;
   integrity?: StoreIntegrity | null;
   operationalHealth?: StoreOperationalHealth | null;
+  dataAvailability?: ZionAdminOverview["dataAvailability"];
   settingsReadiness?: StoreSettingsReadiness | null;
   totalLeads?: number | null;
   totalMessages?: number | null;
@@ -376,6 +399,7 @@ export type ZionAdminStore = {
   aiRunQueueErrors?: number | null;
   pendingSalesActions?: number | null;
   salesActionErrors?: number | null;
+  configurationIssues?: number | null;
   pendingWhatsappEvents?: number | null;
   whatsappErrors?: number | null;
   totalOperationalIssues?: number | null;
@@ -444,6 +468,92 @@ function formatNumber(value: number | string | null | undefined) {
   }
 
   return new Intl.NumberFormat("pt-BR").format(parsed);
+}
+
+function formatOverviewMetric(value: unknown, availability: unknown): string {
+  return formatAvailableOverviewValue(value, availability, (current) =>
+    formatNumber(current as number | string | null | undefined),
+  );
+}
+
+function formatOverviewPercent(
+  numerator: unknown,
+  denominator: unknown,
+  availability: unknown,
+): string {
+  return formatAvailableOverviewValue(denominator, availability, () =>
+    formatPercent(
+      numberValue(numerator as number | string | null | undefined),
+      numberValue(denominator as number | string | null | undefined),
+    ),
+  );
+}
+
+function getStoreAiAvailability(
+  store: ZionAdminStore,
+  source: "runs" | "queue" | "diagnostics" | "overall",
+) {
+  if (source === "queue") {
+    return getOverviewQueueAvailability(store.dataAvailability?.ai);
+  }
+  if (source === "diagnostics") {
+    return getOverviewDiagnosticsAvailability(store.dataAvailability?.ai);
+  }
+  return normalizeOverviewDataAvailability(store.dataAvailability?.ai?.[source]);
+}
+
+function getStoreCommercialAvailability(
+  store: ZionAdminStore,
+  source: "queue" | "diagnostics" | "overall",
+) {
+  if (source === "queue") {
+    return getOverviewQueueAvailability(store.dataAvailability?.commercial);
+  }
+  if (source === "diagnostics") {
+    return getOverviewDiagnosticsAvailability(store.dataAvailability?.commercial);
+  }
+  return normalizeOverviewDataAvailability(store.dataAvailability?.commercial?.[source]);
+}
+
+function getGlobalAiAvailability(
+  data: ZionAdminOverview | null,
+  source: "runs" | "queue" | "diagnostics" | "overall",
+) {
+  if (source === "queue") {
+    return getOverviewQueueAvailability(data?.dataAvailability?.ai);
+  }
+  if (source === "diagnostics") {
+    return getOverviewDiagnosticsAvailability(data?.dataAvailability?.ai);
+  }
+  return normalizeOverviewDataAvailability(data?.dataAvailability?.ai?.[source]);
+}
+
+function getStorePendingAvailability(store: ZionAdminStore): OverviewDataAvailability {
+  return getOverviewOperationalAvailability({
+    ai: store.dataAvailability?.ai,
+    commercial: store.dataAvailability?.commercial,
+    hasOtherAreaEvidence:
+      numberValue(store.configurationIssues) > 0 ||
+      numberValue(store.pendingWhatsappEvents) > 0 ||
+      numberValue(store.whatsappErrors) > 0,
+  });
+}
+
+function getGlobalPendingAvailability(
+  data: ZionAdminOverview | null,
+): OverviewDataAvailability {
+  return getOverviewOperationalAvailability({
+    ai: data?.dataAvailability?.ai,
+    commercial: data?.dataAvailability?.commercial,
+    hasOtherAreaEvidence:
+      numberValue(data?.totals.configurationIssues) > 0 ||
+      numberValue(data?.totals.pendingWhatsappEvents) > 0 ||
+      numberValue(data?.totals.whatsappErrors) > 0,
+  });
+}
+
+function availabilityHelp(value: unknown) {
+  return getOverviewAvailabilityLabel(value);
 }
 
 function formatCompactNumber(value: number | string | null | undefined) {
@@ -951,7 +1061,23 @@ function getOperationalSummary(store: ZionAdminStore) {
     pendingSales +
     pendingWhatsapp;
 
+  const operationalAvailability = getStorePendingAvailability(store);
+
   if (total <= 0) {
+    if (operationalAvailability === "unavailable") {
+      return {
+        total,
+        label: "Dados operacionais indisponíveis",
+        details: "Não foi possível confirmar todas as filas monitoradas.",
+      };
+    }
+    if (operationalAvailability === "partial") {
+      return {
+        total,
+        label: "Dados operacionais parciais",
+        details: "A consulta das filas monitoradas não foi concluída integralmente.",
+      };
+    }
     return {
       total,
       label: "Sem pendências operacionais críticas",
@@ -960,13 +1086,37 @@ function getOperationalSummary(store: ZionAdminStore) {
   }
 
   const details = [
-    aiErrors > 0 ? `${aiErrors} erro(s) na fila de IA` : null,
+    getStoreAiAvailability(store, "queue") === "available" && aiErrors > 0
+      ? `${aiErrors} erro(s) na fila de IA`
+      : getStoreAiAvailability(store, "queue") === "partial"
+        ? "Fila de IA parcial"
+        : getStoreAiAvailability(store, "queue") === "unavailable"
+          ? "Fila de IA indisponível"
+          : null,
     whatsappErrors > 0
       ? `${whatsappErrors} erro(s) no WhatsApp de entrada`
       : null,
-    salesErrors > 0 ? `${salesErrors} erro(s) em ações comerciais` : null,
-    pendingAi > 0 ? `${pendingAi} IA pendente` : null,
-    pendingSales > 0 ? `${pendingSales} ação comercial pendente` : null,
+    getStoreCommercialAvailability(store, "diagnostics") === "available" && salesErrors > 0
+      ? `${salesErrors} erro(s) em ações comerciais`
+      : getStoreCommercialAvailability(store, "diagnostics") === "partial"
+        ? "Diagnóstico comercial parcial"
+        : getStoreCommercialAvailability(store, "diagnostics") === "unavailable"
+          ? "Diagnóstico comercial indisponível"
+          : null,
+    getStoreAiAvailability(store, "queue") === "available" && pendingAi > 0
+      ? `${pendingAi} IA pendente`
+      : getStoreAiAvailability(store, "queue") === "partial"
+        ? "Fila de IA parcial"
+        : getStoreAiAvailability(store, "queue") === "unavailable"
+          ? "Fila de IA indisponível"
+          : null,
+    getStoreCommercialAvailability(store, "queue") === "available" && pendingSales > 0
+      ? `${pendingSales} ação comercial pendente`
+      : getStoreCommercialAvailability(store, "queue") === "partial"
+        ? "Fila comercial parcial"
+        : getStoreCommercialAvailability(store, "queue") === "unavailable"
+          ? "Fila comercial indisponível"
+          : null,
     pendingWhatsapp > 0 ? `${pendingWhatsapp} evento WhatsApp pendente` : null,
   ]
     .filter(Boolean)
@@ -975,7 +1125,13 @@ function getOperationalSummary(store: ZionAdminStore) {
   return {
     total,
     label: `${total} ocorrência(s)`,
-    details,
+    details:
+      operationalAvailability === "available"
+        ? details
+        : `${details || "Existem ocorrências conhecidas."} · O total não é definitivo enquanto houver fontes indisponíveis ou parciais.`,
+    ...(operationalAvailability !== "available"
+      ? { label: "Dados operacionais parciais" }
+      : {}),
   };
 }
 
@@ -1312,10 +1468,10 @@ function StoreRowCard({
         <div className="rounded-lg border border-white/10 bg-white/[0.035] p-2 text-[11px]">
           <div className="text-zinc-500">IA</div>
           <div className="mt-1 font-semibold text-zinc-100">
-            {formatNumber(aiRuns)} exec.
+            {formatOverviewMetric(aiRuns, getStoreAiAvailability(store, "runs"))} exec.
           </div>
           <div className="mt-1 text-zinc-500">
-            {formatPercent(successfulRuns, aiRuns)} concluídas
+            {formatOverviewPercent(successfulRuns, aiRuns, getStoreAiAvailability(store, "runs"))} concluídas
           </div>
         </div>
 
@@ -2169,11 +2325,11 @@ function StoreDetailsDrawer({
           <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <DetailItem
               label="Execuções"
-              value={formatNumber(aiRuns)}
-              help={`${formatPercent(successfulRuns, aiRuns)} concluídas`}
+              value={formatOverviewMetric(aiRuns, getStoreAiAvailability(store, "runs"))}
+              help={`${formatOverviewPercent(successfulRuns, aiRuns, getStoreAiAvailability(store, "runs"))} concluídas`}
             />
-            <DetailItem label="Execuções concluídas" value={formatNumber(successfulRuns)} />
-            <DetailItem label="Erros" value={formatNumber(failedRuns)} />
+            <DetailItem label="Execuções concluídas" value={formatOverviewMetric(successfulRuns, getStoreAiAvailability(store, "runs"))} />
+            <DetailItem label="Erros" value={formatOverviewMetric(failedRuns, getStoreAiAvailability(store, "runs"))} />
             <DetailItem
               label="Última IA"
               value={formatDateTime(store.lastAiRunAt)}
@@ -2238,15 +2394,15 @@ function StoreDetailsDrawer({
             <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
               <DetailItem
                 label="IA pendente"
-                value={formatNumber(store.pendingAiRuns)}
+                value={formatOverviewMetric(store.pendingAiRuns, getStoreAiAvailability(store, "queue"))}
               />
               <DetailItem
                 label="Erro fila IA"
-                value={formatNumber(store.aiRunQueueErrors)}
+                value={formatOverviewMetric(store.aiRunQueueErrors, getStoreAiAvailability(store, "queue"))}
               />
               <DetailItem
                 label="Ações pendentes"
-                value={formatNumber(store.pendingSalesActions)}
+                value={formatOverviewMetric(store.pendingSalesActions, getStoreCommercialAvailability(store, "queue"))}
               />
               <DetailItem
                 label="Erro WhatsApp"
@@ -2356,11 +2512,11 @@ export function OverviewDetailsDrawer({
             <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="Execuções"
-                value={formatNumber(aiRuns)}
-                help={`${formatPercent(successfulRuns, aiRuns)} concluídas`}
+              value={formatOverviewMetric(aiRuns, getStoreAiAvailability(selectedAiStore, "runs"))}
+                help={`${formatOverviewPercent(successfulRuns, aiRuns, getStoreAiAvailability(selectedAiStore, "runs"))} concluídas`}
               />
-              <DetailItem label="Execuções concluídas" value={formatNumber(successfulRuns)} />
-              <DetailItem label="Erros" value={formatNumber(failedRuns)} />
+              <DetailItem label="Execuções concluídas" value={formatOverviewMetric(successfulRuns, getStoreAiAvailability(selectedAiStore, "runs"))} />
+              <DetailItem label="Erros" value={formatOverviewMetric(failedRuns, getStoreAiAvailability(selectedAiStore, "runs"))} />
               <DetailItem
                 label="Última IA"
                 value={formatDateTime(selectedAiStore.lastAiRunAt)}
@@ -2380,7 +2536,7 @@ export function OverviewDetailsDrawer({
               />
               <DetailItem
                 label="Execuções comerciais"
-                value={formatNumber(selectedAiStore.totalAiRuns)}
+                value={formatOverviewMetric(selectedAiStore.totalAiRuns, getStoreAiAvailability(selectedAiStore, "runs"))}
                 help="Execuções registradas em ai_runs para esta loja"
               />
             </div>
@@ -2603,19 +2759,19 @@ export function OverviewDetailsDrawer({
             <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="IA pendente"
-                value={formatNumber(selectedPendingStore.pendingAiRuns)}
+                value={formatOverviewMetric(selectedPendingStore.pendingAiRuns, getStoreAiAvailability(selectedPendingStore, "queue"))}
               />
               <DetailItem
                 label="Erro na fila de IA"
-                value={formatNumber(selectedPendingStore.aiRunQueueErrors)}
+                value={formatOverviewMetric(selectedPendingStore.aiRunQueueErrors, getStoreAiAvailability(selectedPendingStore, "queue"))}
               />
               <DetailItem
                 label="Ações comerciais pendentes"
-                value={formatNumber(selectedPendingStore.pendingSalesActions)}
+                value={formatOverviewMetric(selectedPendingStore.pendingSalesActions, getStoreCommercialAvailability(selectedPendingStore, "queue"))}
               />
               <DetailItem
                 label="Erro em ações comerciais"
-                value={formatNumber(selectedPendingStore.salesActionErrors)}
+                value={formatOverviewMetric(selectedPendingStore.salesActionErrors, getStoreCommercialAvailability(selectedPendingStore, "queue"))}
               />
               <DetailItem
                 label="Eventos WhatsApp pendentes"
@@ -2684,8 +2840,8 @@ export function OverviewDetailsDrawer({
       main = formatCompactNumber(store.totalTokens);
       help = `${formatNumber(store.totalTokensPrompt)} entrada · ${formatNumber(store.totalTokensCompletion)} saída`;
     } else if (type === "ia") {
-      main = `${formatNumber(store.totalAiRuns)} execuções`;
-      help = `${formatPercent(store.successfulAiRuns, store.totalAiRuns)} concluídas · ${formatNumber(store.failedAiRuns)} erro(s) · ${formatNumber(store.totalAssistantMessages)} msg assistente`;
+      main = `${formatOverviewMetric(store.totalAiRuns, getStoreAiAvailability(store, "runs"))} execuções`;
+      help = availabilityHelp(getStoreAiAvailability(store, "runs"));
     } else if (type === "messages") {
       main = `${formatNumber(store.totalMessages)} mensagens`;
       help = `${formatNumber(store.totalLeads)} leads relacionados`;
@@ -2726,10 +2882,10 @@ export function OverviewDetailsDrawer({
             <div className="rounded-xl border border-white/10 bg-zinc-950/35 px-3 py-2">
               <div className="text-[11px] text-zinc-500">IA vendedora</div>
               <div className="mt-1 text-sm font-semibold text-zinc-100">
-                {formatNumber(store.totalAiRuns)} execuções
+                {formatOverviewMetric(store.totalAiRuns, getStoreAiAvailability(store, "runs"))} execuções
               </div>
               <div className="mt-0.5 text-xs text-zinc-500">
-                {formatNumber(store.successfulAiRuns)} concluídas · {formatNumber(store.failedAiRuns)} erro(s)
+                {formatOverviewMetric(store.successfulAiRuns, getStoreAiAvailability(store, "runs"))} concluídas · {formatOverviewMetric(store.failedAiRuns, getStoreAiAvailability(store, "runs"))} erro(s)
               </div>
               <div className="mt-0.5 text-xs text-zinc-500">
                 {formatNumber(store.totalSalesAiMessages)} mensagens comerciais
@@ -2797,7 +2953,7 @@ export function OverviewDetailsDrawer({
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <DetailItem
               label="Total de pendências"
-              value={formatNumber(data?.totals.totalOperationalIssues)}
+              value={formatOverviewMetric(data?.totals.totalOperationalIssues, getGlobalPendingAvailability(data))}
               help="Soma das pendências e erros nas filas monitoradas"
             />
             <DetailItem
@@ -3120,11 +3276,11 @@ function OverviewInlineDetails({
                 />
                 <DetailItem
                   label="Erros"
-                  value={formatNumber(selectedStore.failedAiRuns)}
+                  value={formatOverviewMetric(selectedStore.failedAiRuns, getStoreAiAvailability(selectedStore, "runs"))}
                 />
                 <DetailItem
                   label="Pendências"
-                  value={formatNumber(selectedStore.totalOperationalIssues)}
+                  value={formatOverviewMetric(selectedStore.totalOperationalIssues, getStorePendingAvailability(selectedStore))}
                 />
                 <DetailItem
                   label="Custo"
@@ -3218,7 +3374,7 @@ function OverviewInlineDetails({
         <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
           <DetailItem
             label="Total de pendências"
-            value={formatNumber(data?.totals.totalOperationalIssues)}
+            value={formatOverviewMetric(data?.totals.totalOperationalIssues, getGlobalPendingAvailability(data))}
             help="Soma das pendências e erros nas filas monitoradas"
           />
           <DetailItem
@@ -3417,14 +3573,14 @@ function OverviewInlineDetails({
       >
         {selectedAiDetail === "executions" ? (
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-            <DetailItem label="Total" value={formatNumber(totalAiRuns)} />
+            <DetailItem label="Total" value={formatOverviewMetric(totalAiRuns, getGlobalAiAvailability(data, "runs"))} />
             <DetailItem
               label="Taxa concluída"
-              value={formatPercent(successfulAiRuns, totalAiRuns)}
+              value={formatOverviewPercent(successfulAiRuns, totalAiRuns, getGlobalAiAvailability(data, "runs"))}
               help="Percentual de execuções sem erro técnico"
             />
-            <DetailItem label="Concluídas" value={formatNumber(successfulAiRuns)} />
-            <DetailItem label="Erros" value={formatNumber(failedAiRuns)} />
+            <DetailItem label="Concluídas" value={formatOverviewMetric(successfulAiRuns, getGlobalAiAvailability(data, "runs"))} />
+            <DetailItem label="Erros" value={formatOverviewMetric(failedAiRuns, getGlobalAiAvailability(data, "runs"))} />
           </div>
         ) : null}
 
@@ -3433,7 +3589,7 @@ function OverviewInlineDetails({
           <div className="space-y-2.5">
             <DetailItem
               label="Erros"
-              value={formatNumber(failedAiRuns)}
+              value={formatOverviewMetric(failedAiRuns, getGlobalAiAvailability(data, "runs"))}
               help="Execuções registradas com falha técnica"
             />
             <AiRunEventList
@@ -3514,13 +3670,13 @@ function OverviewInlineDetails({
         <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
           <ClickableDetailItem
             label="Execuções"
-            value={formatNumber(totalAiRuns)}
-            help={`${formatPercent(successfulAiRuns, totalAiRuns)} concluídas`}
+            value={formatOverviewMetric(totalAiRuns, getGlobalAiAvailability(data, "runs"))}
+            help={`${formatOverviewPercent(successfulAiRuns, totalAiRuns, getGlobalAiAvailability(data, "runs"))} concluídas`}
             onClick={() => setSelectedAiDetail("executions")}
           />
           <ClickableDetailItem
             label="Erros"
-            value={formatNumber(failedAiRuns)}
+            value={formatOverviewMetric(failedAiRuns, getGlobalAiAvailability(data, "runs"))}
             help="Chamadas de IA com falha"
             onClick={() => setSelectedAiDetail("errors")}
           />
@@ -4497,8 +4653,8 @@ export default function ZionAdminDashboardClient({
   const hasCountErrors = Object.values(countErrors).some(Boolean);
 
   const totalAiRuns = numberValue(data?.totals.aiRuns);
-  const successfulAiRuns = numberValue(data?.totals.successfulAiRuns);
-  const failedAiRuns = numberValue(data?.totals.failedAiRuns);
+  const globalAiRunsAvailability = getGlobalAiAvailability(data, "runs");
+  const globalPendingAvailability = getGlobalPendingAvailability(data);
   const canManageAccounts = useMemo(() => {
     const normalized = String(adminRole || "").trim().toLowerCase();
     return normalized === "owner" || normalized === "admin" || normalized === "super_admin";
@@ -4842,8 +4998,8 @@ export default function ZionAdminDashboardClient({
           <div className="grid gap-3 lg:grid-cols-3">
             <OverviewButton
               label="Trabalho da IA"
-              value={formatNumber(totalAiRuns)}
-              helper={`${formatPercent(successfulAiRuns, totalAiRuns)} concluídas · ${formatNumber(failedAiRuns)} erro(s) · ${formatNumber(data?.totals.salesAiMessages)} msg IA vendedora`}
+              value={formatOverviewMetric(totalAiRuns, globalAiRunsAvailability)}
+              helper={availabilityHelp(globalAiRunsAvailability)}
               active={selectedOverview === "ia"}
               onClick={() =>
                 setSelectedOverview((current) =>
@@ -4864,8 +5020,8 @@ export default function ZionAdminDashboardClient({
             />
             <OverviewButton
               label="Pendências"
-              value={formatNumber(data?.totals.totalOperationalIssues)}
-              helper="Filas e pendências operacionais; configuração é acompanhada separadamente"
+              value={formatOverviewMetric(data?.totals.totalOperationalIssues, globalPendingAvailability)}
+              helper={availabilityHelp(globalPendingAvailability)}
               active={selectedOverview === "pending"}
               onClick={() =>
                 setSelectedOverview((current) =>

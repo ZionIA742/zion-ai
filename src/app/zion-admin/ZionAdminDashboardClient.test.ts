@@ -231,6 +231,56 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "overview indicators fail closed when availability is absent or partial",
+    run: () => {
+      const source = readSource();
+
+      for (const token of [
+        "dataAvailability?:",
+        "formatAvailableOverviewValue",
+        "normalizeOverviewDataAvailability",
+        "getOverviewAvailabilityLabel",
+        'getGlobalAiAvailability(data, "runs")',
+        'getStoreAiAvailability(store, "runs")',
+        'getStoreAiAvailability(store, "queue")',
+        'getStoreCommercialAvailability(store, "queue")',
+      ]) {
+        assert.equal(source.includes(token), true, `missing availability UI token: ${token}`);
+      }
+    },
+  },
+  {
+    name: "overview binds queue counts to queue availability and runs errors to ai runs",
+    run: () => {
+      const source = readSource();
+
+      assert.equal(
+        source.includes('store.aiRunQueueErrors, getStoreAiAvailability(store, "queue")'),
+        true,
+      );
+      assert.equal(
+        source.includes('selectedPendingStore.aiRunQueueErrors, getStoreAiAvailability(selectedPendingStore, "queue")'),
+        true,
+      );
+      assert.equal(
+        source.includes('selectedPendingStore.salesActionErrors, getStoreCommercialAvailability(selectedPendingStore, "queue")'),
+        true,
+      );
+      assert.equal(
+        source.includes('selectedStore.failedAiRuns, getStoreAiAvailability(selectedStore, "runs")'),
+        true,
+      );
+      assert.equal(
+        source.includes('store.aiRunQueueErrors, getStoreAiAvailability(store, "diagnostics")'),
+        false,
+      );
+      assert.equal(
+        source.includes('selectedPendingStore.salesActionErrors, getStoreCommercialAvailability(selectedPendingStore, "diagnostics")'),
+        false,
+      );
+    },
+  },
+  {
     name: "canonical account identity is typed and surfaced separately from access",
     run: () => {
       const source = readSource();
