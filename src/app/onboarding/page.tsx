@@ -25,6 +25,7 @@ import {
   isMetaEmbeddedSignupCancellation,
   type MetaEmbeddedSignupSession,
 } from "@/lib/client/meta-embedded-signup";
+import { formatOfficialWhatsappDisplay } from "./whatsapp-display";
 
 type AnswersMap = Record<string, unknown>;
 
@@ -1901,7 +1902,7 @@ function OnboardingContent() {
                   <div className="rounded-xl border border-white/80 bg-white/80 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Número comercial</p>
                     <p className="mt-1 text-base font-semibold text-gray-900">
-                      {formatWhatsappInput(cleanText(whatsappStatus?.displayPhoneNumber)) || "Não disponível"}
+                      {formatOfficialWhatsappDisplay(whatsappStatus?.displayPhoneNumber) || "Não disponível"}
                     </p>
                   </div>
                 </div>
@@ -2013,7 +2014,7 @@ function OnboardingContent() {
                 />
                 <SummaryRow
                   label="WhatsApp comercial"
-                  value={formatWhatsappInput(cleanText(whatsappStatus?.displayPhoneNumber))}
+                  value={formatOfficialWhatsappDisplay(whatsappStatus?.displayPhoneNumber)}
                 />
               </div>
 
