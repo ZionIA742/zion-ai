@@ -28,6 +28,7 @@ import {
   type OverviewDataAvailability,
 } from "./overview-availability";
 import { selectRecentAiErrors } from "./recent-ai-errors";
+import { classifyAiRunEvent, shouldShowAiRunCause } from "./ai-run-classification";
 
 type OverviewPanelKey =
   | "ia"
@@ -904,11 +905,29 @@ function AiRunEventList({
                 ) : null}
               </div>
 
-              {variant === "error" ? (
-                <div className="mt-2 rounded-xl border border-white/10 bg-zinc-950/40 p-2 text-xs leading-5 text-red-100">
-                  {getReadableAiError(event.error)}
-                </div>
-              ) : null}
+              {(() => {
+                const classification = classifyAiRunEvent(event);
+
+                return (
+                  <div className="mt-2 space-y-2 text-xs">
+                    <div className="rounded-xl border border-white/10 bg-zinc-950/40 p-2 leading-5 text-zinc-200">
+                      <span className="text-zinc-500">Situação observada:</span>{" "}
+                      {classification.situationLabel}
+                    </div>
+                    {shouldShowAiRunCause(classification) ? (
+                      <div className="rounded-xl border border-white/10 bg-zinc-950/40 p-2 leading-5 text-zinc-300">
+                        <span className="text-zinc-500">Causa específica:</span>{" "}
+                        {classification.causeLabel}
+                      </div>
+                    ) : null}
+                    {variant === "error" ? (
+                      <div className="rounded-xl border border-white/10 bg-zinc-950/40 p-2 leading-5 text-red-100">
+                        {getReadableAiError(event.error)}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()}
             </div>
           ))
         )}
