@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
   createSalesAiErrorDiagnostic,
+  createSalesAiSemanticErrorDiagnostic,
   formatSalesAiProcessingError,
 } from "./sales-ai-error-diagnostics";
 
@@ -46,6 +47,60 @@ assert.equal(customPostgresReason.reason, "P19A_I8_EXTERNAL_OPPORTUNITY_REQUIRED
 assert.equal(
   formatSalesAiProcessingError("WRITE_CANONICAL_INTENT_RESOLUTION_FAILED", customPostgresReason),
   "WRITE_CANONICAL_INTENT_RESOLUTION_FAILED;authority=write_commercial_message_intent_resolution_by_system;sqlstate=P0001;constraint=unknown;reason=P19A_I8_EXTERNAL_OPPORTUNITY_REQUIRED",
+);
+
+for (const reason of [
+  "SALES_AI_CMI_OPENAI_EXCEPTION",
+  "SALES_AI_CMI_JSON_MISSING",
+  "SALES_AI_CMI_JSON_INVALID",
+  "SALES_AI_CMI_DECISION_INVALID",
+  "SALES_AI_CMI_EVIDENCE_INVALID",
+] as const) {
+  const semanticDiagnostic = createSalesAiSemanticErrorDiagnostic(
+    reason,
+    reason === "SALES_AI_CMI_OPENAI_EXCEPTION"
+      ? { message: "Bearer secret prompt=private", status: 429 }
+      : undefined,
+  );
+
+  assert.deepEqual(semanticDiagnostic, {
+    authority: "resolve_commercial_message_intent_semantically",
+    sqlstate: null,
+    constraint: null,
+    reason,
+    httpStatus: reason === "SALES_AI_CMI_OPENAI_EXCEPTION" ? 429 : null,
+  });
+  assert.equal(
+    formatSalesAiProcessingError("RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED", semanticDiagnostic),
+    `RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED;authority=resolve_commercial_message_intent_semantically;sqlstate=unknown;constraint=unknown;reason=${reason};http_status=${reason === "SALES_AI_CMI_OPENAI_EXCEPTION" ? 429 : "unknown"}`,
+  );
+}
+
+const semanticPostgresShapedError = createSalesAiSemanticErrorDiagnostic(
+  "SALES_AI_CMI_OPENAI_EXCEPTION",
+  { code: "P0001", constraint: "example_constraint", status: 502 },
+);
+assert.deepEqual(semanticPostgresShapedError, {
+  authority: "resolve_commercial_message_intent_semantically",
+  sqlstate: null,
+  constraint: null,
+  reason: "SALES_AI_CMI_OPENAI_EXCEPTION",
+  httpStatus: 502,
+});
+assert.equal(
+  formatSalesAiProcessingError("RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED", semanticPostgresShapedError),
+  "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED;authority=resolve_commercial_message_intent_semantically;sqlstate=unknown;constraint=unknown;reason=SALES_AI_CMI_OPENAI_EXCEPTION;http_status=502",
+);
+
+assert.equal(
+  formatSalesAiProcessingError(
+    "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+    createSalesAiSemanticErrorDiagnostic(
+      "SALES_AI_CMI_OPENAI_EXCEPTION",
+      { message: "email=customer@example.test", statusCode: 503 },
+    ),
+  ).includes("customer@example.test"),
+  false,
 );
 
 for (const message of [

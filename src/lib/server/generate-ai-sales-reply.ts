@@ -13,6 +13,7 @@ import { buildSalesMethodologyInstructionBlock } from "./ai-sales-methodology";
 import { buildSalesResponseBrain } from "./ai-sales-response-brain";
 import {
   createSalesAiErrorDiagnostic,
+  createSalesAiSemanticErrorDiagnostic,
   type SalesAiErrorDiagnostic,
 } from "./sales-ai-error-diagnostics";
 import {
@@ -10883,10 +10884,11 @@ type SemanticCommercialMessageIntentResolutionResult =
       ok: false;
       error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED";
       message: string;
+      diagnostic?: SalesAiErrorDiagnostic;
       response?: unknown;
     };
 
-async function resolveCommercialMessageIntentSemantically(args: {
+export async function resolveCommercialMessageIntentSemantically(args: {
   openai: CommercialIntentOpenAiClient;
   model: string;
   lastCustomerMessage: string;
@@ -10940,6 +10942,10 @@ ${args.lastCustomerMessage}
     return {
       ok: false,
       error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+      diagnostic: createSalesAiSemanticErrorDiagnostic(
+        "SALES_AI_CMI_OPENAI_EXCEPTION",
+        error,
+      ),
       message:
         error instanceof Error
           ? error.message
@@ -10955,6 +10961,7 @@ ${args.lastCustomerMessage}
     return {
       ok: false,
       error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+      diagnostic: createSalesAiSemanticErrorDiagnostic("SALES_AI_CMI_JSON_MISSING"),
       message: "Resolvedor comercial retornou JSON ausente.",
       response,
     };
@@ -10967,6 +10974,7 @@ ${args.lastCustomerMessage}
     return {
       ok: false,
       error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+      diagnostic: createSalesAiSemanticErrorDiagnostic("SALES_AI_CMI_JSON_INVALID"),
       message: "Resolvedor comercial retornou JSON invÃ¡lido.",
       response,
     };
@@ -10977,6 +10985,7 @@ ${args.lastCustomerMessage}
     return {
       ok: false,
       error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+      diagnostic: createSalesAiSemanticErrorDiagnostic("SALES_AI_CMI_DECISION_INVALID"),
       message: "Resolvedor comercial retornou decision_kind invÃ¡lido.",
       response,
     };
@@ -10996,6 +11005,7 @@ ${args.lastCustomerMessage}
     return {
       ok: false,
       error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+      diagnostic: createSalesAiSemanticErrorDiagnostic("SALES_AI_CMI_EVIDENCE_INVALID"),
       message:
         "Resolvedor comercial nÃ£o apresentou evidÃªncia literal vÃ¡lida da mensagem-Ã¢ncora.",
       response,
@@ -11228,6 +11238,7 @@ async function resolveCanonicalCommercialMessageIntent(args: {
       ok: false,
       error: semanticResult.error,
       message: semanticResult.message,
+      diagnostic: semanticResult.diagnostic,
       semanticResponse: semanticResult.response || null,
     };
   }

@@ -603,6 +603,39 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "persists the safe CMIR semantic diagnostic through queue processing",
+    run: async () => {
+      const recorder = createQueueSupabase([queueRow()]);
+
+      const result = await processDueAiRunQueue({
+        organizationId: "org-1",
+        storeId: "store-1",
+        supabaseClient: recorder.supabase,
+        runAiFlow: async () => ({
+          ok: false,
+          error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+          message: "secret prompt and customer@example.test",
+          diagnostic: {
+            authority: "resolve_commercial_message_intent_semantically" as const,
+            sqlstate: null,
+            constraint: null,
+            reason: "SALES_AI_CMI_OPENAI_EXCEPTION",
+            httpStatus: 429,
+          },
+        }),
+      });
+
+      const persisted = String(recorder.updates[0]?.payload.processing_error || "");
+      assert.equal(result.failed, 1);
+      assert.equal(
+        persisted,
+        "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED;authority=resolve_commercial_message_intent_semantically;sqlstate=unknown;constraint=unknown;reason=SALES_AI_CMI_OPENAI_EXCEPTION;http_status=429",
+      );
+      assert.equal(persisted.includes("customer@example.test"), false);
+      assert.equal(persisted.includes("secret prompt"), false);
+    },
+  },
+  {
     name: "persists safe CMIR RPC diagnostics without raw Supabase details",
     run: async () => {
       const recorder = createQueueSupabase([queueRow()]);

@@ -13,6 +13,7 @@ import {
   describeCanonicalKnownFact,
   detectCustomerCatalogDocumentRequest,
   generateAiSalesReply,
+  resolveCommercialMessageIntentSemantically,
   resolveSalesAiPriceNegotiationStrategy,
   loadCustomerCatalogDocumentsForAiBySystem,
   loadAnchoredCanonicalCommercialContext,
@@ -49,6 +50,80 @@ type ResolveMessagesArgs = Parameters<typeof resolveMessagesWithCommercialContex
 type TestMessage = ResolveMessagesArgs["messages"][number];
 type TestSession = ResolveMessagesArgs["conversationSessions"][number];
 type TestLink = ResolveMessagesArgs["commercialContextLinks"][number];
+
+test("CMIR semantic resolver returns a safe diagnostic for each failure path", async () => {
+  const base = {
+    model: "gpt-test",
+    lastCustomerMessage: "Quero continuar o projeto da piscina.",
+    recentCommercialHistory: "Venda A: piscina residencial.",
+  };
+
+  const cases = [
+    {
+      reason: "SALES_AI_CMI_OPENAI_EXCEPTION",
+      openai: {
+        responses: {
+          create: async () => {
+            throw Object.assign(new Error("secret prompt and customer@example.test"), { status: 429 });
+          },
+        },
+      },
+      httpStatus: 429,
+    },
+    {
+      reason: "SALES_AI_CMI_JSON_MISSING",
+      openai: { responses: { create: async () => ({ output_text: "sem json" }) } },
+      httpStatus: null,
+    },
+    {
+      reason: "SALES_AI_CMI_JSON_INVALID",
+      openai: { responses: { create: async () => ({ output_text: "{invalid}" }) } },
+      httpStatus: null,
+    },
+    {
+      reason: "SALES_AI_CMI_DECISION_INVALID",
+      openai: {
+        responses: {
+          create: async () => ({
+            output_text: JSON.stringify({ decision_kind: "not_allowed", evidence: ["Quero continuar"] }),
+          }),
+        },
+      },
+      httpStatus: null,
+    },
+    {
+      reason: "SALES_AI_CMI_EVIDENCE_INVALID",
+      openai: {
+        responses: {
+          create: async () => ({
+            output_text: JSON.stringify({ decision_kind: "continue_same_intent", evidence: ["texto ausente"] }),
+          }),
+        },
+      },
+      httpStatus: null,
+    },
+  ] as const;
+
+  for (const scenario of cases) {
+    const result = await resolveCommercialMessageIntentSemantically({
+      ...base,
+      openai: scenario.openai,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) continue;
+    assert.equal(result.error, "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED");
+    assert.deepEqual(result.diagnostic, {
+      authority: "resolve_commercial_message_intent_semantically",
+      sqlstate: null,
+      constraint: null,
+      reason: scenario.reason,
+      httpStatus: scenario.httpStatus,
+    });
+    assert.equal(JSON.stringify(result.diagnostic).includes("customer@example.test"), false);
+    assert.equal(JSON.stringify(result.diagnostic).includes("secret prompt"), false);
+  }
+});
 
 test("8.3 runtime strategy adapter covers the commercial scenarios", () => {
   const base = {
