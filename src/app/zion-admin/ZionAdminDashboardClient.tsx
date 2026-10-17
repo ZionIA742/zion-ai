@@ -28,7 +28,7 @@ import {
   type OverviewDataAvailability,
 } from "./overview-availability";
 import { selectRecentAiErrors } from "./recent-ai-errors";
-import { classifyAiRunEvent, shouldShowAiRunCause } from "./ai-run-classification";
+import { classifyAiRunEvent, getAiRunGuidance, shouldShowAiRunCause } from "./ai-run-classification";
 
 type OverviewPanelKey =
   | "ia"
@@ -845,9 +845,7 @@ function AiRunEventList({
   availability?: unknown;
 }) {
   const safeEvents = events ?? [];
-  const availabilityState = availability === undefined
-    ? "available"
-    : normalizeOverviewDataAvailability(availability);
+  const availabilityState = normalizeOverviewDataAvailability(availability);
 
   return (
     <section>
@@ -907,6 +905,7 @@ function AiRunEventList({
 
               {(() => {
                 const classification = classifyAiRunEvent(event);
+                const guidance = getAiRunGuidance(classification, availabilityState);
 
                 return (
                   <div className="mt-2 space-y-2 text-xs">
@@ -920,6 +919,10 @@ function AiRunEventList({
                         {classification.causeLabel}
                       </div>
                     ) : null}
+                    <div className="rounded-xl border border-sky-400/20 bg-sky-500/[0.06] p-2 leading-5 text-sky-100">
+                      <span className="text-sky-200/70">Orientação:</span>{" "}
+                      {guidance.statement}
+                    </div>
                     {variant === "error" ? (
                       <div className="rounded-xl border border-white/10 bg-zinc-950/40 p-2 leading-5 text-red-100">
                         {getReadableAiError(event.error)}

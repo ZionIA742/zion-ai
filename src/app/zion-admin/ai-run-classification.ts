@@ -24,6 +24,11 @@ export type AiRunEvidenceScope = {
   statement: string;
 };
 
+export type AiRunGuidance = {
+  availability: AiRunSourceAvailability;
+  statement: string;
+};
+
 export function shouldShowAiRunCause(classification: AiRunClassification) {
   return classification.observedSituation !== "completed";
 }
@@ -109,5 +114,41 @@ export function classifyAiRunEvidenceScope(value: unknown): AiRunEvidenceScope {
     availability,
     isComplete: false,
     statement: "Fonte de execuções indisponível; não é possível confirmar ausência de falhas.",
+  };
+}
+
+export function getAiRunGuidance(
+  classification: AiRunClassification,
+  availabilityValue: unknown,
+): AiRunGuidance {
+  const scope = classifyAiRunEvidenceScope(availabilityValue);
+
+  if (scope.availability === "unavailable") {
+    return {
+      availability: scope.availability,
+      statement: "A fonte de execuções está indisponível; não é possível oferecer um diagnóstico conclusivo.",
+    };
+  }
+
+  const statementBySituation: Record<AiRunObservedSituation, string> = {
+    failure_recorded:
+      "Confira o impacto operacional desta falha e encaminhe para investigação técnica se necessário.",
+    status_missing:
+      "Verifique a integridade deste registro; não é possível confirmar falha ou sucesso.",
+    status_unrecognized:
+      "Verifique o estado registrado e encaminhe o caso para análise técnica.",
+    status_error_incompatible:
+      "Investigue a inconsistência entre o status de sucesso e o erro registrado; não considere esta execução saudável automaticamente.",
+    completed:
+      "Esta execução foi concluída; esta ocorrência, por si só, não exige intervenção corretiva.",
+  };
+
+  const statement = statementBySituation[classification.observedSituation];
+
+  return {
+    availability: scope.availability,
+    statement: scope.availability === "partial"
+      ? `${statement} A fonte está parcial; outras ocorrências podem não estar nesta lista.`
+      : statement,
   };
 }

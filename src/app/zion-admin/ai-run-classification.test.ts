@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   classifyAiRunEvidenceScope,
   classifyAiRunEvent,
+  getAiRunGuidance,
   shouldShowAiRunCause,
 } from "./ai-run-classification";
 
@@ -69,4 +70,63 @@ test("availability limits the scope of claims", () => {
   assert.equal(classifyAiRunEvidenceScope("unavailable").isComplete, false);
   assert.match(classifyAiRunEvidenceScope("unavailable").statement, /indisponível/);
   assert.equal(classifyAiRunEvidenceScope(undefined).availability, "unavailable");
+});
+
+test("provides safe guidance for every observed situation", () => {
+  const cases = [
+    ["failed", "failure_recorded"],
+    [undefined, "status_missing"],
+    ["paused", "status_unrecognized"],
+    ["succeeded", "status_error_incompatible"],
+    ["succeeded", "completed"],
+  ] as const;
+
+  for (const [status, expectedSituation] of cases) {
+    const classification = classifyAiRunEvent({
+      status,
+      error: expectedSituation === "completed" ? undefined : "Falha operacional na execução da IA.",
+    });
+    const guidance = getAiRunGuidance(classification, "available");
+
+    assert.equal(classification.observedSituation, expectedSituation);
+    assert.equal(guidance.availability, "available");
+    assert.ok(guidance.statement.length > 0);
+    assert.equal(/timeout|provedor|token|conexão|autenticação|retry|reiniciar/i.test(guidance.statement), false);
+
+    if (expectedSituation === "completed") {
+      assert.match(guidance.statement, /não exige intervenção corretiva/);
+    }
+    if (expectedSituation === "failure_recorded") {
+      assert.match(guidance.statement, /impacto operacional/);
+    }
+    if (expectedSituation === "status_error_incompatible") {
+      assert.match(guidance.statement, /inconsistência/);
+    }
+  }
+});
+
+test("limits guidance when the source is partial or unavailable", () => {
+  const classification = classifyAiRunEvent({ status: "failed", error: "Falha operacional na execução da IA." });
+  const partial = getAiRunGuidance(classification, "partial");
+  const unavailable = getAiRunGuidance(classification, "unavailable");
+  const invalid = getAiRunGuidance(classification, { availability: "available" });
+
+  assert.equal(partial.availability, "partial");
+  assert.match(partial.statement, /parcial/);
+  assert.equal(unavailable.availability, "unavailable");
+  assert.match(unavailable.statement, /indisponível/);
+  assert.equal(invalid.availability, "unavailable");
+  assert.match(invalid.statement, /diagnóstico conclusivo/);
+  assert.equal(/não existem problemas|ausência de problemas/i.test(unavailable.statement), false);
+});
+
+test("guidance does not expose event data or prescribe automatic actions", () => {
+  const secret = "Bearer secret-token prompt=private payload=customer@example.test";
+  const guidance = getAiRunGuidance(
+    classifyAiRunEvent({ status: "failed", error: secret }),
+    "available",
+  );
+
+  assert.equal(guidance.statement.includes(secret), false);
+  assert.equal(/secret-token|customer@example.test|prompt|payload|retry|reprocessar|reiniciar|credencial|token/i.test(guidance.statement), false);
 });
