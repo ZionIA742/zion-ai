@@ -72,6 +72,7 @@ async function processInboundSpecialScenario(args: {
   type: "text" | "location" | "contacts" | "reaction" | "sticker" | "unsupported";
   contextMessageId?: string;
   malformed?: boolean;
+  aiFailure?: boolean;
 }) {
   process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
@@ -149,6 +150,13 @@ async function processInboundSpecialScenario(args: {
         aiCalls.push("sales-ai");
         calls.push({ url: "event:sales-ai", method: "CALL", body: "" });
         aiMessages.push(String(insertedPayload?.p_content || ""));
+        if (args.aiFailure) {
+          return {
+            ok: false as const,
+            error: "SALES_AI_REPLY_SET_MATERIALIZATION_FAILED",
+            message: "materialization failed",
+          };
+        }
         return { ok: true, aiText: "ok", context: {}, usage: null, persisted: true, messageId: "ai-1" };
       },
     });
@@ -759,6 +767,57 @@ test("dispatchAiSalesReplyForConversation applies the live status, takeover, ter
   });
   assert.equal(pausedResult.ai_status, "skipped_ai_paused");
   assert.equal(pausedCalls, 0);
+
+  const diagnosticResult = await dispatchAiSalesReplyForConversation({
+    supabase: {
+      from(table: string) {
+        const builder = {
+          select() {
+            return builder;
+          },
+          eq() {
+            return builder;
+          },
+          async maybeSingle() {
+            if (table === "conversations") {
+              return {
+                data: {
+                  id: "conv-1",
+                  organization_id: "org-1",
+                  lead_id: "lead-1",
+                  status: "active",
+                  is_human_active: false,
+                },
+                error: null,
+              };
+            }
+            return { data: null, error: null };
+          },
+        };
+        return builder;
+      },
+    } as never,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    runAiFlow: async () => ({
+      ok: false as const,
+      error: "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED",
+      message: "secret prompt and payload",
+      diagnostic: {
+        authority: "resolve_commercial_message_intent_semantically" as const,
+        sqlstate: null,
+        constraint: null,
+        reason: "SALES_AI_CMI_OPENAI_EXCEPTION" as const,
+        httpStatus: 429,
+      },
+    }),
+  });
+  assert.equal(
+    diagnosticResult.ai_error,
+    "RESOLVE_COMMERCIAL_MESSAGE_INTENT_FAILED;authority=resolve_commercial_message_intent_semantically;sqlstate=unknown;constraint=unknown;reason=SALES_AI_CMI_OPENAI_EXCEPTION;http_status=429",
+  );
+  assert.equal(diagnosticResult.ai_error?.includes("secret"), false);
 });
 
 test("bootstrapCommercialContextBeforeInsert rejects empty, unknown or internally inconsistent RPC rows", async () => {
@@ -853,11 +912,13 @@ test("processor resolves thread then commercial context before insert_message an
   const bootstrapIndex = source.indexOf("await bootstrapCommercialContextBeforeInsert({", threadIndex);
   const insertIndex = source.indexOf("inserted = await insertIncomingMessage({", bootstrapIndex);
   const dispatchIndex = source.indexOf("aiDispatchResult = await dispatchAiSalesReplyForConversation({", insertIndex);
+  const processedIndex = source.indexOf("await markInboxProcessed(supabase, inbox);", dispatchIndex);
 
   assert.equal(threadIndex > -1, true);
   assert.equal(bootstrapIndex > threadIndex, true);
   assert.equal(insertIndex > bootstrapIndex, true);
   assert.equal(dispatchIndex > insertIndex, true);
+  assert.equal(processedIndex > dispatchIndex, true);
 });
 
 test("processor no longer uses latest/first lead or conversation resolution helpers", () => {
@@ -936,6 +997,116 @@ test("text inbound persists context metadata and dispatches Sales AI after inser
   const textPayload = insertedPayload as Record<string, unknown>;
   assert.equal((textPayload.p_metadata as Record<string, unknown>).context_message_id, "quoted-text-1");
   assert.equal(calls.findIndex((call) => call.url.includes("/rpc/insert_message")) < calls.findIndex((call) => call.url === "event:sales-ai"), true);
+});
+
+test("Sales AI failure leaves the inbound retryable and does not claim a response", async () => {
+  const { result, calls, aiCalls } = await processInboundSpecialScenario({
+    type: "text",
+    aiFailure: true,
+  });
+
+  assert.equal(result.succeeded, 0);
+  assert.equal(result.failed, 1);
+  assert.deepEqual(aiCalls, ["sales-ai"]);
+  const failurePatch = calls.find(
+    (call) => call.method === "PATCH" && call.body.includes("processing_error"),
+  );
+  assert.ok(failurePatch);
+  const payload = JSON.parse(failurePatch.body) as Record<string, unknown>;
+  assert.match(String(payload.processing_error), /materialization failed/);
+  assert.equal(Object.prototype.hasOwnProperty.call(payload, "processed_at"), false);
+});
+
+test("Sales AI failure is retried once and then becomes an explicit terminal inbox failure", async () => {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+  const previousFetch = globalThis.fetch;
+  let inboxReads = 0;
+  let messageReads = 0;
+  let processingError: string | null = null;
+  let aiCalls = 0;
+  const patches: Array<Record<string, unknown>> = [];
+  const persisted = {
+    id: "message-retry-1",
+    conversation_id: "conversation-retry-1",
+    lead_id: "lead-retry-1",
+    store_id: "store-1",
+    external_message_id: "external-retry-1",
+    message_type: "text",
+    content: "Continuar atendimento",
+  };
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    const body = typeof init?.body === "string" ? init.body : "";
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "GET") {
+      if (url.includes("status")) return jsonFetchResponse([]);
+      inboxReads += 1;
+      return inboxReads <= 2
+        ? jsonFetchResponse([{
+            id: "inbox-retry-1",
+            organization_id: "org-1",
+            store_id: "store-1",
+            provider: "whatsapp",
+            external_event_id: "event-retry-1",
+            payload: {
+              source: "meta_whatsapp_webhook",
+              event_kind: "message",
+              phone_number_id: "phone-1",
+              message: { id: "external-retry-1", from: "5511999999999", type: "text", text: { body: "Continuar atendimento" } },
+            },
+            received_at: "2026-10-08T12:00:00.000Z",
+            processed_at: null,
+            processing_error: processingError,
+          }])
+        : jsonFetchResponse([]);
+    }
+    if (url.includes("/rest/v1/messages") && method === "GET") {
+      messageReads += 1;
+      return messageReads === 1 ? jsonFetchResponse([]) : jsonFetchResponse([{ ...persisted, metadata: {} }]);
+    }
+    if (url.includes("/rest/v1/store_responsibles") && method === "GET") return jsonFetchResponse([]);
+    if (url.includes("/rest/v1/rpc/resolve_whatsapp_inbound_thread_by_system")) return jsonFetchResponse([{ lead_id: "lead-retry-1", conversation_id: "conversation-retry-1", normalized_whatsapp_identity: "5511999999999", thread_state: "existing_active_thread" }]);
+    if (url.includes("/rest/v1/rpc/bootstrap_first_commercial_context_for_inbound_by_system")) return jsonFetchResponse([{ customer_id: "customer-retry-1", customer_channel_identity_id: "identity-retry-1", customer_store_link_id: "store-link-retry-1", lead_customer_link_id: "lead-link-retry-1", commercial_opportunity_id: "opportunity-retry-1", bootstrap_state: "existing_active_commercial_context" }]);
+    if (url.includes("/rest/v1/rpc/insert_message")) return jsonFetchResponse([{ ...persisted }]);
+    if (url.includes("/rest/v1/conversations") && method === "GET") return jsonFetchResponse([{ id: "conversation-retry-1", organization_id: "org-1", lead_id: "lead-retry-1", status: "active", is_human_active: false }]);
+    if (url.includes("/rest/v1/conversation_ai_window_state") && method === "GET") return jsonFetchResponse([]);
+    if (url.includes("/rest/v1/store_assistant_operational_tasks") && method === "GET") return jsonFetchResponse([]);
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") {
+      const payload = JSON.parse(body) as Record<string, unknown>;
+      patches.push(payload);
+      processingError = typeof payload.processing_error === "string" ? payload.processing_error : null;
+      return jsonFetchResponse([]);
+    }
+    throw new Error(`unexpected retry fetch: ${method} ${url}`);
+  }) as typeof fetch;
+
+  const run = () => processWhatsappInbox({
+    organizationId: "org-1",
+    storeId: "store-1",
+    limit: 1,
+    runAiFlow: async () => {
+      aiCalls += 1;
+      return { ok: false as const, error: "SALES_AI_REPLY_SET_MATERIALIZATION_FAILED", message: "materialization failed" };
+    },
+  });
+
+  try {
+    const first = await run();
+    const second = await run();
+    const third = await run();
+
+    assert.equal(first.failed, 1);
+    assert.equal(second.failed, 1);
+    assert.equal(third.processed, 0);
+    assert.equal(aiCalls, 2);
+    assert.match(String(patches[0]?.processing_error), /^sales_ai_retryable:/);
+    assert.match(String(patches[1]?.processing_error), /^sales_ai_failed_final:/);
+    assert.equal(Object.prototype.hasOwnProperty.call(patches[0] || {}, "processed_at"), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 });
 
 test("media inbound preserves context metadata at insert", async () => {

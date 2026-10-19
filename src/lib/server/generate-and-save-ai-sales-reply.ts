@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
+import { getCanonicalCrmStage } from "@/config/crm";
 import {
   detectPaymentOrClosingSubtype,
   generateAiSalesReply,
@@ -31,6 +32,9 @@ import {
   type SalesAiErrorDiagnostic,
 } from "./sales-ai-error-diagnostics";
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 type ScheduledSalesResumeReason =
   | "sales_ai_after_hours_policy"
   | "fast_lead_delay"
@@ -52,11 +56,18 @@ type ScheduledSalesResumeExecutionContext = {
   styleHint?: string | null;
 };
 
+export type SalesAiWorkerClaimContext = {
+  kind: "inbox" | "ai_run_queue";
+  id: string;
+  token: string;
+};
+
 type GenerateAndSaveAiSalesReplyParams = {
   organizationId: string;
   storeId: string;
   conversationId: string;
   executionContext?: ScheduledSalesResumeExecutionContext;
+  workerClaim?: SalesAiWorkerClaimContext;
 };
 
 type GenerateAndSaveAiSalesReplyResult =
@@ -715,9 +726,9 @@ async function loadCanonicalCommercialOpportunityStage(args: {
     data && typeof data === "object"
       ? (data as CommercialOpportunityStageRow)
       : null;
-  const stage = normalizeText(row?.stage);
+  const stage = getCanonicalCrmStage(row?.stage)?.id ?? null;
 
-  if (!row?.id || !stage) {
+  if (row?.id !== args.commercialOpportunityId || !stage) {
     console.info("[zion-ai-sales-opportunity] canonical stage unavailable", {
       reason: "canonical_stage_not_found",
       commercialOpportunityId: args.commercialOpportunityId,
@@ -3556,9 +3567,22 @@ export async function materializeSalesAiReplySet(args: {
   operationalFollowUpDecision?: OperationalFollowUpDecision | null;
   lastCustomerMessageAt?: string | null;
   lastAiMessageAt?: string | null;
+  workerClaim?: SalesAiWorkerClaimContext;
 }) : Promise<SalesAiReplySetRow> {
+  const workerClaim = args.workerClaim;
+  if (
+    workerClaim &&
+    (!["inbox", "ai_run_queue"].includes(workerClaim.kind) ||
+      !UUID_PATTERN.test(workerClaim.id) ||
+      !UUID_PATTERN.test(workerClaim.token))
+  ) {
+    throw new Error("SALES_AI_WORKER_CLAIM_INVALID");
+  }
+
   const { data, error } = await args.supabase.rpc(
-    "materialize_sales_ai_reply_set_by_system",
+    workerClaim
+      ? "materialize_sales_ai_reply_set_by_worker_by_system"
+      : "materialize_sales_ai_reply_set_by_system",
     {
       p_organization_id: args.organizationId,
       p_store_id: args.storeId,
@@ -3569,6 +3593,13 @@ export async function materializeSalesAiReplySet(args: {
       p_ai_text: args.aiText,
       p_outbound_kind: args.outboundKind,
       p_external_authorized: args.externalAuthorized,
+      ...(workerClaim
+        ? {
+            p_claim_kind: workerClaim.kind,
+            p_claim_id: workerClaim.id,
+            p_claim_token: workerClaim.token,
+          }
+        : {}),
       p_document_actions: args.documentActions.map((action) => ({
         import_file_id: action.importFileId,
         sort_order: action.sortOrder,
@@ -3603,6 +3634,10 @@ export async function materializeSalesAiReplySet(args: {
         error,
       ),
     );
+  }
+
+  if (Array.isArray(data) && data.length !== 1) {
+    throw new Error("SALES_AI_REPLY_SET_MATERIALIZATION_NOT_CONFIRMED");
   }
 
   const row = (Array.isArray(data) ? data[0] : data) as SalesAiReplySetRow | null;
@@ -6218,6 +6253,7 @@ export async function generateAndSaveAiSalesReply(
           lastCustomerMessageAt:
             boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
           lastAiMessageAt: materializationAiMessageTimestamp,
+          workerClaim: params.workerClaim,
         });
         messageId = materializedReplySet.text_message_id;
       } catch (materializationError: any) {

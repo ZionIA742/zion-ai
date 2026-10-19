@@ -6355,6 +6355,8 @@ assert.equal(
       assert.equal(helperSource.includes('.eq("id", args.commercialOpportunityId)'), true);
       assert.equal(helperSource.includes('.eq("organization_id", args.organizationId)'), true);
       assert.equal(helperSource.includes('.eq("store_id", args.storeId)'), true);
+      assert.equal(helperSource.includes("getCanonicalCrmStage(row?.stage)"), true);
+      assert.equal(helperSource.includes("row?.id !== args.commercialOpportunityId"), true);
       assert.equal(helperSource.includes('.order("created_at"'), false);
       assert.equal(helperSource.includes(".limit(1)"), false);
       assert.equal(helperSource.includes("latest"), false);
@@ -7132,6 +7134,137 @@ assert.equal(
       assert.equal(source.includes('? "stop_contact_ack"'), true);
       assert.equal(migration.includes("P19A_I8_STOP_CONTACT_MEDIA_FORBIDDEN"), true);
       assert.equal(migration.includes("v_media_send_external := v_send_external and p_outbound_kind = 'reactive_ai_reply'"), true);
+    },
+  },
+  {
+    name: "I8 materialization rejects zero or multiple RPC rows",
+    run: async () => {
+      for (const data of [[], [{ response_set_id: "set-1" }, { response_set_id: "set-2" }]]) {
+        await assert.rejects(
+          materializeSalesAiReplySet({
+            supabase: {
+              async rpc() {
+                return { data, error: null };
+              },
+            },
+            organizationId: "org-1",
+            storeId: "store-1",
+            conversationId: "conv-1",
+            leadId: "lead-1",
+            anchorMessageId: "anchor-1",
+            commercialOpportunityId: null,
+            aiText: "Resposta",
+            outboundKind: "reactive_ai_reply",
+            externalAuthorized: false,
+            documentActions: [],
+            photoAction: null,
+          }),
+          /SALES_AI_REPLY_SET_MATERIALIZATION_NOT_CONFIRMED/,
+        );
+      }
+    },
+  },
+  {
+    name: "I8 materialization accepts a valid replay and rejects malformed row payloads",
+    run: async () => {
+      const validRow = {
+        response_set_id: "set-replayed",
+        text_message_id: "text-replayed",
+        document_message_ids: [],
+        photo_message_id: null,
+        request_fingerprint: "r".repeat(64),
+        replayed: true,
+      };
+      const result = await materializeSalesAiReplySet({
+        supabase: {
+          async rpc() {
+            return { data: validRow, error: null };
+          },
+        },
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conv-1",
+        leadId: "lead-1",
+        anchorMessageId: "anchor-1",
+        commercialOpportunityId: "opp-1",
+        aiText: "Resposta",
+        outboundKind: "reactive_ai_reply",
+        externalAuthorized: true,
+        documentActions: [],
+        photoAction: null,
+      });
+      assert.equal(result.replayed, true);
+
+      await assert.rejects(
+        materializeSalesAiReplySet({
+          supabase: {
+            async rpc() {
+              return {
+                data: {
+                  ...validRow,
+                  text_message_id: null,
+                },
+                error: null,
+              };
+            },
+          },
+          organizationId: "org-1",
+          storeId: "store-1",
+          conversationId: "conv-1",
+          leadId: "lead-1",
+          anchorMessageId: "anchor-1",
+          commercialOpportunityId: "opp-1",
+          aiText: "Resposta",
+          outboundKind: "reactive_ai_reply",
+          externalAuthorized: true,
+          documentActions: [],
+          photoAction: null,
+        }),
+        /SALES_AI_REPLY_SET_MATERIALIZATION_NOT_CONFIRMED/,
+      );
+    },
+  },
+  {
+    name: "I8 concurrent materialization replay is simulated at the RPC boundary only",
+    run: async () => {
+      let rpcCalls = 0;
+      const supabase = {
+        async rpc() {
+          rpcCalls += 1;
+          return {
+            data: {
+              response_set_id: "set-concurrent",
+              text_message_id: "text-concurrent",
+              document_message_ids: [],
+              photo_message_id: null,
+              request_fingerprint: "c".repeat(64),
+              replayed: rpcCalls > 1,
+            },
+            error: null,
+          };
+        },
+      };
+      const args = {
+        supabase,
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conv-1",
+        leadId: "lead-1",
+        anchorMessageId: "anchor-1",
+        commercialOpportunityId: "opp-1",
+        aiText: "Resposta",
+        outboundKind: "reactive_ai_reply" as const,
+        externalAuthorized: true,
+        documentActions: [],
+        photoAction: null,
+      };
+      const [first, second] = await Promise.all([
+        materializeSalesAiReplySet(args),
+        materializeSalesAiReplySet(args),
+      ]);
+      assert.equal(rpcCalls, 2);
+      assert.equal(first.response_set_id, second.response_set_id);
+      assert.equal(second.replayed, true);
     },
   },
 ];

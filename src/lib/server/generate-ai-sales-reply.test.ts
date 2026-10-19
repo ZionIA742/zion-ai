@@ -14,6 +14,7 @@ import {
   detectCustomerCatalogDocumentRequest,
   generateAiSalesReply,
   resolveCommercialMessageIntentSemantically,
+  normalizeCommercialMessageIntentDecisionForStage,
   resolveSalesAiPriceNegotiationStrategy,
   loadCustomerCatalogDocumentsForAiBySystem,
   loadAnchoredCanonicalCommercialContext,
@@ -122,7 +123,47 @@ test("CMIR semantic resolver returns a safe diagnostic for each failure path", a
     });
     assert.equal(JSON.stringify(result.diagnostic).includes("customer@example.test"), false);
     assert.equal(JSON.stringify(result.diagnostic).includes("secret prompt"), false);
+    assert.equal(result.message.includes("customer@example.test"), false);
+    assert.equal(result.message.includes("secret prompt"), false);
   }
+});
+
+test("CMIR normalizes reopen only for an active canonical pipeline opportunity", () => {
+  assert.equal(
+    normalizeCommercialMessageIntentDecisionForStage({
+      decisionKind: "reopen_same_intent",
+      canonicalOpportunityStage: "novo_lead",
+    }),
+    "continue_same_intent",
+  );
+  assert.equal(
+    normalizeCommercialMessageIntentDecisionForStage({
+      decisionKind: "reopen_same_intent",
+      canonicalOpportunityStage: "perdido",
+    }),
+    "reopen_same_intent",
+  );
+  assert.equal(
+    normalizeCommercialMessageIntentDecisionForStage({
+      decisionKind: "reopen_same_intent",
+      canonicalOpportunityStage: "concluido_sem_mais_acoes",
+    }),
+    "reopen_same_intent",
+  );
+  assert.equal(
+    normalizeCommercialMessageIntentDecisionForStage({
+      decisionKind: "reopen_same_intent",
+      canonicalOpportunityStage: "desconhecido",
+    }),
+    null,
+  );
+  assert.equal(
+    normalizeCommercialMessageIntentDecisionForStage({
+      decisionKind: "reopen_same_intent",
+      canonicalOpportunityStage: null,
+    }),
+    null,
+  );
 });
 
 test("8.3 runtime strategy adapter covers the commercial scenarios", () => {
@@ -1299,6 +1340,54 @@ test("canonical stage reader uses explicit anchored opportunity and wins over le
     { column: "organization_id", value: "org-1" },
     { column: "store_id", value: "store-1" },
   ]);
+});
+
+test("canonical stage reader preserves lost/completed states and fails closed for missing invalid or errored rows", async () => {
+  for (const stage of ["perdido", "concluido_sem_mais_acoes"]) {
+    const result = await loadCanonicalCommercialOpportunityStage({
+      supabase: createCommercialOpportunityStageSupabase({ stage }).client,
+      organizationId: "org-1",
+      storeId: "store-1",
+      commercialOpportunityId: "opp-canonical",
+    });
+    assert.deepEqual(result, { ok: true, stage });
+  }
+
+  const invalid = await loadCanonicalCommercialOpportunityStage({
+    supabase: createCommercialOpportunityStageSupabase({ stage: "unknown" }).client,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-canonical",
+  });
+  assert.deepEqual(invalid, {
+    ok: false,
+    reason: "canonical_stage_not_found",
+    stage: null,
+  });
+
+  const missing = await loadCanonicalCommercialOpportunityStage({
+    supabase: createCommercialOpportunityStageSupabase({ rowMissing: true }).client,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-canonical",
+  });
+  assert.deepEqual(missing, {
+    ok: false,
+    reason: "canonical_stage_not_found",
+    stage: null,
+  });
+
+  const errored = await loadCanonicalCommercialOpportunityStage({
+    supabase: createCommercialOpportunityStageSupabase({ errorMessage: "db down" }).client,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-canonical",
+  });
+  assert.deepEqual(errored, {
+    ok: false,
+    reason: "canonical_stage_lookup_failed",
+    stage: null,
+  });
 });
 
 test("canonical qualification payload scope mismatch is rejected", async () => {

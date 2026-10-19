@@ -6,6 +6,7 @@ import { processDueAiRunQueue } from "@/lib/server/process-ai-run-queue";
 import { processPostTechnicalVisitFollowups } from "@/lib/server/post-technical-visit-followups";
 import { drainResponsibleOperationalApprovalNotifications } from "@/lib/server/assistant/responsible-external-notifications-drainer";
 import { recoverStaleResponsibleWhatsappEvents } from "@/lib/server/assistant/responsible-whatsapp-conversation";
+import { getWhatsappProcessAllHttpStatus } from "@/lib/server/whatsapp-process-all-status";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -217,6 +218,7 @@ export async function GET(req: Request) {
           organizationId: store.organizationId,
           storeId: store.storeId,
           limit: inboxLimit,
+          requireClaim: true,
         });
 
         const recoveredResponsibleEvents = await recoverStaleResponsibleWhatsappEvents({
@@ -236,6 +238,7 @@ export async function GET(req: Request) {
             organizationId: store.organizationId,
             storeId: store.storeId,
             limit: responsibleInboundRecovery.recovered,
+            requireClaim: true,
           });
         }
 
@@ -262,6 +265,7 @@ export async function GET(req: Request) {
           organizationId: store.organizationId,
           storeId: store.storeId,
           limit: aiQueueLimit,
+          requireClaim: true,
         });
 
         processedStores += 1;
@@ -361,7 +365,7 @@ export async function GET(req: Request) {
         aiQueue: aiQueueLimit,
       },
       results,
-    });
+    }, getWhatsappProcessAllHttpStatus(stores.length, storeErrors));
   } catch (error) {
     return buildJsonResponse(
       {

@@ -10888,11 +10888,29 @@ type SemanticCommercialMessageIntentResolutionResult =
       response?: unknown;
     };
 
+export function normalizeCommercialMessageIntentDecisionForStage(args: {
+  decisionKind: CommercialMessageIntentDecisionKind;
+  canonicalOpportunityStage: string | null | undefined;
+}): CommercialMessageIntentDecisionKind | null {
+  if (args.decisionKind !== "reopen_same_intent") return args.decisionKind;
+
+  const canonicalStage = getCanonicalCrmStage(args.canonicalOpportunityStage);
+  if (!canonicalStage) return null;
+
+  if (canonicalStage.area === "pipeline") return "continue_same_intent";
+
+  // Lost opportunities keep the explicit reopen decision so the canonical
+  // writer can require the loss event and its evidence. Completed opportunities
+  // follow their separate writer contract and are never assumed reopenable.
+  return "reopen_same_intent";
+}
+
 export async function resolveCommercialMessageIntentSemantically(args: {
   openai: CommercialIntentOpenAiClient;
   model: string;
   lastCustomerMessage: string;
   recentCommercialHistory: string;
+  canonicalOpportunityStage?: string | null;
 }): Promise<SemanticCommercialMessageIntentResolutionResult> {
   let response: unknown;
 
@@ -10935,8 +10953,11 @@ ${args.recentCommercialHistory || "Sem histÃ³rico comercial adicional."}
 
 MENSAGEM-Ã‚NCORA ATUAL:
 ${args.lastCustomerMessage}
+
+ESTADO CANONICO DA VENDA A:
+${args.canonicalOpportunityStage || "nao informado"}
 `.trim(),
-      max_output_tokens: 180,
+      max_output_tokens: 256,
     });
   } catch (error) {
     return {
@@ -10948,7 +10969,7 @@ ${args.lastCustomerMessage}
       ),
       message:
         error instanceof Error
-          ? error.message
+          ? "Resolvedor comercial indisponivel; a execucao foi bloqueada com seguranca."
           : "Falha inesperada ao resolver a intenÃ§Ã£o comercial.",
     };
   }
@@ -11032,7 +11053,7 @@ type WriteCommercialMessageIntentResolutionResult =
       diagnostic?: SalesAiErrorDiagnostic;
     };
 
-async function writeCanonicalCommercialMessageIntentResolutionBySystem(args: {
+export async function writeCanonicalCommercialMessageIntentResolutionBySystem(args: {
   supabase: any;
   organizationId: string;
   storeId: string;
@@ -11226,11 +11247,28 @@ async function resolveCanonicalCommercialMessageIntent(args: {
     };
   }
 
+  const stageResult = await loadCanonicalCommercialOpportunityStage({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    commercialOpportunityId: arrivalOpportunityId,
+  });
+
+  if (!stageResult.ok || !stageResult.stage) {
+    return {
+      ok: false,
+      error: "LOAD_CANONICAL_INTENT_RESOLUTION_FAILED",
+      message: "Estado canonico da oportunidade indisponivel; CMIR bloqueado.",
+      semanticResponse: null,
+    };
+  }
+
   const semanticResult = await resolveCommercialMessageIntentSemantically({
     openai: args.openai,
     model: args.model,
     lastCustomerMessage: args.lastCustomerMessage,
     recentCommercialHistory: args.recentCommercialHistory,
+    canonicalOpportunityStage: stageResult.stage,
   });
 
   if (!semanticResult.ok) {
@@ -11243,7 +11281,18 @@ async function resolveCanonicalCommercialMessageIntent(args: {
     };
   }
 
-  const decisionKind = semanticResult.decisionKind;
+  const decisionKind = normalizeCommercialMessageIntentDecisionForStage({
+    decisionKind: semanticResult.decisionKind,
+    canonicalOpportunityStage: stageResult.stage,
+  });
+  if (!decisionKind) {
+    return {
+      ok: false,
+      error: "LOAD_CANONICAL_INTENT_RESOLUTION_FAILED",
+      message: "Estagio canonico da oportunidade nao reconhecido; CMIR bloqueado.",
+      semanticResponse: semanticResult.response,
+    };
+  }
   let resolvedOpportunityId: string | null = null;
   let relatedOpportunityId: string | null = null;
 

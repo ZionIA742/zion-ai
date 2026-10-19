@@ -1,5 +1,8 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { generateAndSaveAiSalesReply } from "@/lib/server/generate-and-save-ai-sales-reply";
+import {
+  generateAndSaveAiSalesReply,
+  type SalesAiWorkerClaimContext,
+} from "@/lib/server/generate-and-save-ai-sales-reply";
 import { isSalesAiConversationStatusEligible } from "@/lib/server/conversation-ai-sales-eligibility";
 import { routeIncomingCustomerReplyToOperationalTask } from "@/lib/server/process-assistant-operational-tasks";
 import {
@@ -19,6 +22,17 @@ import { classifyIncomingMediaMessage } from "@/lib/server/media-classification"
 import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
 import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
 import { decideQuoteApprovalFromPersistedInbound } from "@/lib/server/sales-quotes/quote-approval-decision";
+import { formatSalesAiProcessingError } from "@/lib/server/sales-ai-error-diagnostics";
+import {
+  enqueuePersistedSalesAiFailureAlerts,
+  enqueueSalesAiFailureOperationalAlert,
+} from "@/lib/server/sales-ai-failure-operational-alert";
+import {
+  assertWorkerClaimActiveBySystem,
+  claimWhatsappInboxEventsBySystem,
+  finalizeWorkerTaskBySystem,
+  WORKER_MAX_ATTEMPTS,
+} from "@/lib/server/whatsapp-worker-claims";
 
 type Json =
   | string
@@ -38,7 +52,13 @@ type InboxRow = {
   received_at: string | null;
   processed_at: string | null;
   processing_error: string | null;
+  claim_token?: string | null;
+  claim_expires_at?: string | null;
+  attempt_count?: number | null;
 };
+
+const RETRYABLE_AI_INBOX_ERROR_PREFIX = "sales_ai_retryable:";
+const FINAL_AI_INBOX_ERROR_PREFIX = "sales_ai_failed_final:";
 
 type LeadRow = {
   id: string;
@@ -238,6 +258,7 @@ export type ProcessWhatsappInboxInput = {
   storeId: string;
   limit?: number;
   runAiFlow?: typeof generateAndSaveAiSalesReply;
+  requireClaim?: boolean;
 };
 
 type ProcessorStatus = "succeeded" | "failed" | "skipped";
@@ -686,7 +707,18 @@ async function listPendingInboxRows(
   organizationId: string,
   storeId: string,
   limit: number,
+  requireClaim = false,
 ) {
+  if (requireClaim) {
+    const claimed = await claimWhatsappInboxEventsBySystem(supabase, {
+      organizationId,
+      storeId,
+      limit,
+      claimedBy: `whatsapp-process-all:${organizationId}:${storeId}`,
+    });
+    return claimed as unknown as InboxRow[];
+  }
+
   const buildBaseQuery = () =>
     supabase
       .from("channel_whatsapp_inbox")
@@ -696,7 +728,9 @@ async function listPendingInboxRows(
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
       .is("processed_at", null)
-      .is("processing_error", null)
+      .or(
+        `processing_error.is.null,processing_error.like.${RETRYABLE_AI_INBOX_ERROR_PREFIX}%`,
+      )
       .contains("payload", {
         source: "meta_whatsapp_webhook",
       })
@@ -929,8 +963,20 @@ async function updateMessageWhatsappStatus(args: {
 
 async function markInboxProcessed(
   supabase: SupabaseClient,
-  inboxId: string,
+  inbox: InboxRow | string,
 ) {
+  if (typeof inbox !== "string" && inbox.claim_token) {
+    await finalizeWorkerTaskBySystem(supabase, {
+      kind: "inbox",
+      organizationId: inbox.organization_id,
+      storeId: inbox.store_id,
+      id: inbox.id,
+      claimToken: inbox.claim_token,
+      outcome: "processed",
+    });
+    return;
+  }
+  const inboxId = typeof inbox === "string" ? inbox : inbox.id;
   const { error } = await supabase
     .from("channel_whatsapp_inbox")
     .update({
@@ -946,9 +992,22 @@ async function markInboxProcessed(
 
 async function markInboxError(
   supabase: SupabaseClient,
-  inboxId: string,
+  inbox: InboxRow | string,
   errorText: string,
 ) {
+  if (typeof inbox !== "string" && inbox.claim_token) {
+    await finalizeWorkerTaskBySystem(supabase, {
+      kind: "inbox",
+      organizationId: inbox.organization_id,
+      storeId: inbox.store_id,
+      id: inbox.id,
+      claimToken: inbox.claim_token,
+      outcome: "failed_final",
+      errorText,
+    });
+    return;
+  }
+  const inboxId = typeof inbox === "string" ? inbox : inbox.id;
   const { error } = await supabase
     .from("channel_whatsapp_inbox")
     .update({
@@ -959,6 +1018,53 @@ async function markInboxError(
   if (error) {
     throw new Error(`Falha ao marcar erro no inbox: ${error.message}`);
   }
+}
+
+async function markAiInboxFailure(
+  supabase: SupabaseClient,
+  inbox: InboxRow,
+  errorText: string,
+) {
+  const safeError = safeProcessingError(errorText);
+  if (inbox.claim_token) {
+    const retryAlreadyUsed =
+      typeof inbox.processing_error === "string" &&
+      inbox.processing_error.startsWith(RETRYABLE_AI_INBOX_ERROR_PREFIX);
+    const terminal =
+      retryAlreadyUsed || Number(inbox.attempt_count || 0) >= WORKER_MAX_ATTEMPTS;
+    await finalizeWorkerTaskBySystem(supabase, {
+      kind: "inbox",
+      organizationId: inbox.organization_id,
+      storeId: inbox.store_id,
+      id: inbox.id,
+      claimToken: inbox.claim_token,
+      outcome: terminal ? "failed_final" : "retryable",
+      errorText: safeError,
+    });
+    return terminal;
+  }
+  const retryAlreadyUsed =
+    typeof inbox.processing_error === "string" &&
+    inbox.processing_error.startsWith(RETRYABLE_AI_INBOX_ERROR_PREFIX);
+  const prefix = retryAlreadyUsed
+    ? FINAL_AI_INBOX_ERROR_PREFIX
+    : RETRYABLE_AI_INBOX_ERROR_PREFIX;
+
+  const query = supabase
+    .from("channel_whatsapp_inbox")
+    .update({
+      processing_error: `${prefix}${safeError}`,
+    })
+    .eq("id", inbox.id)
+    .is("processed_at", null);
+  const { error } = await (inbox.processing_error
+    ? query.eq("processing_error", inbox.processing_error)
+    : query.is("processing_error", null));
+
+  if (error) {
+    throw new Error(`Falha ao marcar falha recuperável no inbox: ${error.message}`);
+  }
+  return retryAlreadyUsed;
 }
 
 async function findExistingMessageByExternalId(
@@ -1574,6 +1680,7 @@ export async function dispatchAiSalesReplyForConversation(args: {
   messageId?: string | null;
   customerMessage?: string | null;
   runAiFlow?: typeof generateAndSaveAiSalesReply;
+  workerClaim?: SalesAiWorkerClaimContext;
 }) {
   const messageId = String(args.messageId || "").trim();
   const customerMessage = String(args.customerMessage || "").trim();
@@ -1653,6 +1760,7 @@ export async function dispatchAiSalesReplyForConversation(args: {
     organizationId: args.organizationId,
     storeId: args.storeId,
     conversationId: args.conversationId,
+    workerClaim: args.workerClaim,
   });
 
   if (aiResult.ok) {
@@ -1687,7 +1795,9 @@ export async function dispatchAiSalesReplyForConversation(args: {
 
   return {
     ai_status: "failed" as const,
-    ai_error: safeAiError(aiResult.message || aiResult.error || "ai_reply_failed"),
+    ai_error: aiResult.diagnostic
+      ? formatSalesAiProcessingError(aiResult.error, aiResult.diagnostic)
+      : safeAiError(aiResult.message || aiResult.error || "ai_reply_failed"),
     ai_message_id: null,
   };
 }
@@ -1796,7 +1906,7 @@ async function processStatusInboxRow(
 
   if (!extracted.statusId) {
     const detail = buildStatusProcessingError("missing_status_id");
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -1809,7 +1919,7 @@ async function processStatusInboxRow(
     const detail = buildStatusProcessingError(
       extracted.rawStatusValue || "missing_status_value",
     );
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -1827,7 +1937,7 @@ async function processStatusInboxRow(
 
   if (!message?.id) {
     const detail = "status_message_not_found_by_external_message_id";
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -1850,7 +1960,7 @@ async function processStatusInboxRow(
     rawStatusPayload: extracted.rawStatusPayload,
   });
 
-  await markInboxProcessed(supabase, inbox.id);
+  await markInboxProcessed(supabase, inbox);
 
   return {
     inbox_id: inbox.id,
@@ -1867,6 +1977,7 @@ async function processSingleInboxRow(
   supabase: SupabaseClient,
   inbox: InboxRow,
   runAiFlow?: typeof generateAndSaveAiSalesReply,
+  workerClaim?: SalesAiWorkerClaimContext,
 ): Promise<ProcessorResultItem> {
   const payload = isRecord(inbox.payload)
     ? (inbox.payload as StoredInboxPayload)
@@ -1874,7 +1985,7 @@ async function processSingleInboxRow(
 
   if (!inbox.id || !inbox.organization_id || !inbox.store_id || !payload) {
     const detail = "invalid_inbox_row";
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -1887,7 +1998,7 @@ async function processSingleInboxRow(
   const eventKind = asTrimmedString(payload.event_kind);
   if (source !== "meta_whatsapp_webhook") {
     const detail = "unsupported_inbox_payload";
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -1902,7 +2013,7 @@ async function processSingleInboxRow(
 
   if (eventKind !== "message") {
     const detail = "unsupported_inbox_payload";
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -1915,7 +2026,7 @@ async function processSingleInboxRow(
 
   if (!extracted.messageId) {
     const detail = "missing_message_id";
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -1926,7 +2037,7 @@ async function processSingleInboxRow(
 
   if (!extracted.fromPhoneNormalized) {
     const detail = "missing_from";
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -1937,7 +2048,7 @@ async function processSingleInboxRow(
 
   if (!extracted.rawMessageType) {
     const detail = "missing_message_type";
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -1948,7 +2059,7 @@ async function processSingleInboxRow(
 
   if (extracted.rawMessageType === "text" && !extracted.textBody) {
     const detail = "missing_text_body";
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -1959,7 +2070,7 @@ async function processSingleInboxRow(
 
   if (!extracted.phoneNumberId) {
     const detail = "missing_phone_number_id";
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -1978,7 +2089,7 @@ async function processSingleInboxRow(
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : "malformed_known_message";
-    await markInboxError(supabase, inbox.id, detail);
+    await markInboxError(supabase, inbox, detail);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -2001,7 +2112,7 @@ async function processSingleInboxRow(
 
   if (!supportedMessageType) {
     const detail = `unsupported_message_type: ${extracted.rawMessageType}`;
-    await markInboxProcessed(supabase, inbox.id);
+    await markInboxProcessed(supabase, inbox);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -2012,7 +2123,7 @@ async function processSingleInboxRow(
   }
 
   if (extracted.rawMessageType === "reaction" || extracted.rawMessageType === "sticker") {
-    await markInboxProcessed(supabase, inbox.id);
+    await markInboxProcessed(supabase, inbox);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -2023,7 +2134,7 @@ async function processSingleInboxRow(
   }
 
   if (extracted.isGroupMessage || extracted.isSelfOriginated) {
-    await markInboxProcessed(supabase, inbox.id);
+    await markInboxProcessed(supabase, inbox);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -2080,8 +2191,26 @@ async function processSingleInboxRow(
         messageId: existingMessage.id,
         customerMessage: existingMessage.content || "Cliente enviou uma midia.",
         runAiFlow,
+        workerClaim,
       });
-      await markInboxProcessed(supabase, inbox.id);
+      if (mediaAiResult.ai_status === "failed") {
+        await markAiInboxFailure(
+          supabase,
+          inbox,
+          mediaAiResult.ai_error || "ai_dispatch_failed",
+        );
+        return {
+          inbox_id: inbox.id,
+          external_event_id: inbox.external_event_id,
+          status: "failed",
+          detail: mediaAiResult.ai_error || "ai_dispatch_failed",
+          message_id: existingMessage.id,
+          lead_id: existingMessage.lead_id,
+          conversation_id: existingMessage.conversation_id,
+          ...mediaAiResult,
+        };
+      }
+      await markInboxProcessed(supabase, inbox);
       return {
         inbox_id: inbox.id,
         external_event_id: inbox.external_event_id,
@@ -2094,7 +2223,35 @@ async function processSingleInboxRow(
       };
     }
 
-    await markInboxProcessed(supabase, inbox.id);
+    const duplicateAiResult = await dispatchAiSalesReplyForConversation({
+      supabase,
+      organizationId: inbox.organization_id,
+      storeId: inbox.store_id,
+      conversationId: existingMessage.conversation_id,
+      messageId: existingMessage.id,
+      customerMessage: existingMessage.content || "Cliente enviou uma mensagem.",
+      runAiFlow,
+      workerClaim,
+    });
+    if (duplicateAiResult.ai_status === "failed") {
+      await markAiInboxFailure(
+        supabase,
+        inbox,
+        duplicateAiResult.ai_error || "ai_dispatch_failed",
+      );
+      return {
+        inbox_id: inbox.id,
+        external_event_id: inbox.external_event_id,
+        status: "failed",
+        detail: duplicateAiResult.ai_error || "ai_dispatch_failed",
+        message_id: existingMessage.id,
+        lead_id: existingMessage.lead_id,
+        conversation_id: existingMessage.conversation_id,
+        ...duplicateAiResult,
+      };
+    }
+
+    await markInboxProcessed(supabase, inbox);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -2103,7 +2260,7 @@ async function processSingleInboxRow(
       message_id: existingMessage.id,
       lead_id: existingMessage.lead_id,
       conversation_id: existingMessage.conversation_id,
-      ai_status: "skipped_duplicate",
+      ...duplicateAiResult,
     };
   }
 
@@ -2114,7 +2271,7 @@ async function processSingleInboxRow(
     payload,
   });
   if (responsibleInbound.isResponsible) {
-    await markInboxProcessed(supabase, inbox.id);
+    await markInboxProcessed(supabase, inbox);
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -2428,8 +2585,6 @@ async function processSingleInboxRow(
       });
     }
 
-    await markInboxProcessed(supabase, inbox.id);
-
     let aiDispatchResult: Pick<
       ProcessorResultItem,
       "ai_status" | "ai_message_id" | "ai_error"
@@ -2465,6 +2620,7 @@ async function processSingleInboxRow(
                       ? buildContactsContent(canonicalContacts as CanonicalContact[])
                   : ""),
         runAiFlow,
+        workerClaim,
       });
     } catch (aiError) {
       aiDispatchResult = {
@@ -2473,6 +2629,25 @@ async function processSingleInboxRow(
         ai_error: safeAiError(aiError),
       };
     }
+
+    if (aiDispatchResult.ai_status === "failed") {
+      await markAiInboxFailure(
+        supabase,
+        inbox,
+        aiDispatchResult.ai_error || "ai_dispatch_failed",
+      );
+      return {
+        inbox_id: inbox.id,
+        external_event_id: inbox.external_event_id,
+        status: "failed",
+        message_id: inserted.id || null,
+        lead_id: lead.id,
+        conversation_id: conversation.id,
+        ...aiDispatchResult,
+      };
+    }
+
+    await markInboxProcessed(supabase, inbox);
 
     return {
       inbox_id: inbox.id,
@@ -2505,7 +2680,7 @@ async function processSingleInboxRow(
         }
       }
 
-      await markInboxProcessed(supabase, inbox.id);
+      await markInboxProcessed(supabase, inbox);
 
       return {
         inbox_id: inbox.id,
@@ -2555,7 +2730,24 @@ export async function processWhatsappInbox(
     organizationId,
     storeId,
     limit,
+    input.requireClaim === true,
   );
+  if (input.requireClaim === true) {
+    try {
+      await enqueuePersistedSalesAiFailureAlerts(supabase, {
+        organizationId,
+        storeId,
+        source: "inbox",
+      });
+    } catch (error) {
+      console.warn("[sales-ai-worker] failed to enqueue persisted terminal alert", {
+        organizationId,
+        storeId,
+        source: "inbox",
+        error,
+      });
+    }
+  }
 
   const results: ProcessorResultItem[] = [];
   let succeeded = 0;
@@ -2563,8 +2755,33 @@ export async function processWhatsappInbox(
   let skipped = 0;
 
   for (const inbox of inboxRows) {
+    const workerClaim =
+      input.requireClaim === true && inbox.claim_token
+        ? {
+            kind: "inbox" as const,
+            id: inbox.id,
+            token: inbox.claim_token,
+          }
+        : undefined;
     try {
-      const result = await processSingleInboxRow(supabase, inbox, input.runAiFlow);
+      if (input.requireClaim === true && !workerClaim) {
+        throw new Error("WHATSAPP_INBOX_WORKER_CLAIM_MISSING");
+      }
+      if (workerClaim) {
+        await assertWorkerClaimActiveBySystem(supabase, {
+          kind: "inbox",
+          organizationId: inbox.organization_id,
+          storeId: inbox.store_id,
+          id: workerClaim.id,
+          claimToken: workerClaim.token,
+        });
+      }
+      const result = await processSingleInboxRow(
+        supabase,
+        inbox,
+        input.runAiFlow,
+        workerClaim,
+      );
       results.push(result);
 
       if (result.status === "succeeded") succeeded += 1;
@@ -2573,10 +2790,22 @@ export async function processWhatsappInbox(
     } catch (error) {
       const detail = safeProcessingError(error);
 
-      try {
-        await markInboxError(supabase, inbox.id, detail);
-      } catch {
-        // Mantemos o erro principal como resultado e evitamos expor detalhes extras.
+      if (input.requireClaim !== true || workerClaim) {
+        try {
+          const terminal = await markAiInboxFailure(supabase, inbox, detail);
+          if (terminal) {
+            await enqueueSalesAiFailureOperationalAlert(supabase, {
+              source: "inbox",
+              id: inbox.id,
+              organizationId: inbox.organization_id,
+              storeId: inbox.store_id,
+              processingError: `sales_ai_failed_final:${detail}`,
+              externalEventId: inbox.external_event_id,
+            });
+          }
+        } catch {
+          // Mantemos o erro principal como resultado e evitamos expor detalhes extras.
+        }
       }
 
       results.push({

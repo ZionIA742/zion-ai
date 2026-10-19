@@ -1,7 +1,20 @@
 import { createClient } from "@supabase/supabase-js";
-import { generateAndSaveAiSalesReply } from "./generate-and-save-ai-sales-reply";
+import {
+  generateAndSaveAiSalesReply,
+  type SalesAiWorkerClaimContext,
+} from "./generate-and-save-ai-sales-reply";
 import { isSalesAiConversationStatusEligible } from "./conversation-ai-sales-eligibility";
 import { formatSalesAiProcessingError } from "./sales-ai-error-diagnostics";
+import {
+  enqueuePersistedSalesAiFailureAlerts,
+  enqueueSalesAiFailureOperationalAlert,
+} from "./sales-ai-failure-operational-alert";
+import {
+  assertWorkerClaimActiveBySystem,
+  claimAiRunQueueTasksBySystem,
+  finalizeWorkerTaskBySystem,
+  WORKER_MAX_ATTEMPTS,
+} from "./whatsapp-worker-claims";
 
 type AiRunQueueRow = {
   id: string;
@@ -11,6 +24,8 @@ type AiRunQueueRow = {
   lead_id: string | null;
   queue_key: string | null;
   input: Record<string, unknown> | null;
+  claim_token?: string | null;
+  attempt_count?: number | null;
 };
 
 const SUPPORTED_SALES_RESUME_REASONS = new Set([
@@ -37,6 +52,7 @@ type ProcessAiRunQueueInput = {
   limit?: number;
   supabaseClient?: any;
   runAiFlow?: typeof generateAndSaveAiSalesReply;
+  requireClaim?: boolean;
 };
 
 export type ProcessAiRunQueueResult = {
@@ -104,7 +120,20 @@ async function markQueueProcessed(args: {
   organizationId: string;
   storeId: string;
   detail: string | null;
+  claimToken?: string | null;
 }) {
+  if (args.claimToken) {
+    await finalizeWorkerTaskBySystem(args.supabase, {
+      kind: "ai_run_queue",
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      id: args.id,
+      claimToken: args.claimToken,
+      outcome: "processed",
+      errorText: args.detail,
+    });
+    return;
+  }
   const { error } = await args.supabase
     .from("ai_run_queue")
     .update({
@@ -182,15 +211,41 @@ export async function processDueAiRunQueue(
 
   const supabase = input.supabaseClient || getSupabaseAdmin();
   const runAiFlow = input.runAiFlow || generateAndSaveAiSalesReply;
-  const { data, error } = await supabase
-    .from("ai_run_queue")
-    .select("id, organization_id, store_id, conversation_id, lead_id, queue_key, input")
-    .eq("organization_id", organizationId)
-    .eq("store_id", storeId)
-    .is("processed_at", null)
-    .lte("enqueued_at", new Date().toISOString())
-    .order("enqueued_at", { ascending: true })
-    .limit(limit);
+  const claimedRows = input.requireClaim
+    ? await claimAiRunQueueTasksBySystem(supabase, {
+        organizationId,
+        storeId,
+        limit,
+        claimedBy: `whatsapp-process-all:${organizationId}:${storeId}`,
+      })
+    : null;
+  if (input.requireClaim === true) {
+    try {
+      await enqueuePersistedSalesAiFailureAlerts(supabase, {
+        organizationId,
+        storeId,
+        source: "ai_run_queue",
+      });
+    } catch (error) {
+      console.warn("[sales-ai-worker] failed to enqueue persisted terminal alert", {
+        organizationId,
+        storeId,
+        source: "ai_run_queue",
+        error,
+      });
+    }
+  }
+  const { data, error } = claimedRows
+    ? { data: claimedRows, error: null }
+    : await supabase
+        .from("ai_run_queue")
+        .select("id, organization_id, store_id, conversation_id, lead_id, queue_key, input")
+        .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
+        .is("processed_at", null)
+        .lte("enqueued_at", new Date().toISOString())
+        .order("enqueued_at", { ascending: true })
+        .limit(limit);
 
   if (error) {
     throw new Error(`Falha ao carregar ai_run_queue vencida: ${error.message}`);
@@ -202,6 +257,9 @@ export async function processDueAiRunQueue(
   let skipped = 0;
 
   for (const row of (data || []) as AiRunQueueRow[]) {
+    if (input.requireClaim === true && !row.claim_token) {
+      throw new Error("AI_RUN_QUEUE_WORKER_CLAIM_MISSING");
+    }
     if (!isSalesResumeQueueCandidate(row)) continue;
 
     if (!hasValidSalesResumeContract(row)) {
@@ -214,6 +272,7 @@ export async function processDueAiRunQueue(
         organizationId,
         storeId,
         detail: "invalid_resume_contract",
+        claimToken: row.claim_token,
       });
       skipped += 1;
       results.push({
@@ -256,6 +315,7 @@ export async function processDueAiRunQueue(
         organizationId,
         storeId,
         detail: "resume_anchor_missing",
+        claimToken: row.claim_token,
       });
       await consumeMatchingSalesResumeWindowState({
         supabase,
@@ -289,6 +349,7 @@ export async function processDueAiRunQueue(
           organizationId,
           storeId,
           detail: "conversation_not_active",
+          claimToken: row.claim_token,
         });
         await consumeMatchingSalesResumeWindowState({
           supabase,
@@ -315,6 +376,7 @@ export async function processDueAiRunQueue(
           organizationId,
           storeId,
           detail: "human_active",
+          claimToken: row.claim_token,
         });
         await consumeMatchingSalesResumeWindowState({
           supabase,
@@ -329,10 +391,29 @@ export async function processDueAiRunQueue(
         continue;
       }
 
+      if (input.requireClaim === true && row.claim_token) {
+        await assertWorkerClaimActiveBySystem(supabase, {
+          kind: "ai_run_queue",
+          organizationId,
+          storeId,
+          id: queueId,
+          claimToken: row.claim_token,
+        });
+      }
+
       const aiResult = await runAiFlow({
         organizationId,
         storeId,
         conversationId,
+        ...(input.requireClaim === true
+          ? {
+              workerClaim: {
+                kind: "ai_run_queue" as const,
+                id: queueId,
+                token: row.claim_token!,
+              } satisfies SalesAiWorkerClaimContext,
+            }
+          : {}),
         executionContext: {
           kind: "scheduled_resume",
           queueId,
@@ -362,6 +443,7 @@ export async function processDueAiRunQueue(
         organizationId,
         storeId,
         detail,
+        claimToken: row.claim_token,
       });
 
       await consumeMatchingSalesResumeWindowState({
@@ -391,6 +473,39 @@ export async function processDueAiRunQueue(
       }
     } catch (error) {
       const detail = safeError(error);
+      if (row.claim_token) {
+        const terminal = Number(row.attempt_count || 0) >= WORKER_MAX_ATTEMPTS;
+        await finalizeWorkerTaskBySystem(supabase, {
+          kind: "ai_run_queue",
+          organizationId,
+          storeId,
+          id: queueId,
+          claimToken: row.claim_token,
+          outcome: terminal ? "failed_final" : "retryable",
+          errorText: detail,
+        });
+        if (terminal) {
+          try {
+            await enqueueSalesAiFailureOperationalAlert(supabase, {
+              source: "ai_run_queue",
+              id: queueId,
+              organizationId,
+              storeId,
+              processingError: `sales_ai_failed_final:${detail}`,
+              conversationId,
+              leadId: row.lead_id,
+              queueKey,
+            });
+          } catch (alertError) {
+            console.warn("[sales-ai-worker] failed to enqueue terminal alert", {
+              organizationId,
+              storeId,
+              queueId,
+              error: alertError,
+            });
+          }
+        }
+      }
       failed += 1;
       results.push({ queueId, queueKey, status: "failed", detail });
     }
