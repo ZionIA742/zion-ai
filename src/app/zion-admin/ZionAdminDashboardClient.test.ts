@@ -426,12 +426,13 @@ const tests: TestCase[] = [
         "commercial_action_invalid",
         "commercial_action_source_partial",
         "commercial_action_source_unavailable",
-        "A\\u00e7\\u00f5es comerciais",
+        "Ações comerciais",
         "operationalHealth?.commercial?.state ?? \"unknown\"",
         "getOperationalHealthCommercialEvidenceText",
       ]) {
         assert.equal(source.includes(token), true, `missing commercial UI token: ${token}`);
       }
+      assert.equal(source.includes('label="A\\u00e7\\u00f5es comerciais"'), false);
 
       assert.equal(source.includes("processing_error"), true);
       assert.equal(source.includes("retry"), false);

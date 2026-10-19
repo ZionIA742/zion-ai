@@ -2032,7 +2032,7 @@ function StoreDetailsDrawer({
                 ]}
               />
               <DetailItem
-                label="A\u00e7\u00f5es comerciais"
+                label="Ações comerciais"
                 value={STORE_OPERATIONAL_HEALTH_STATE_LABELS[
                   operationalHealth?.commercial?.state ?? "unknown"
                 ]}
