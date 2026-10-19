@@ -3094,31 +3094,7 @@ export async function tryHandleCustomerContractAcceptance(args: {
     });
 
     if (supersededBeforeSend) {
-      return {
-        ok: true,
-        aiText,
-        context: buildCustomerContractAcceptanceContext({
-        contractId: eligibleContract.contractId,
-        contractNumber: eligibleContract.contractNumber,
-        matchedBy: eligibleContract.matchedBy,
-        acceptanceOutcome: acceptanceResult.outcome,
-        replayed: acceptanceResult.replayed,
-        reconciled: acceptanceResult.reconciled,
-        signatureId: acceptanceResult.signatureId,
-        contractStatus: acceptanceResult.contractStatus,
-        versionStatus: acceptanceResult.versionStatus,
-        sideEffects: acceptanceResult.sideEffects || null,
-        triggerMessageId: anchoredCustomerMessage.id,
-        triggerMessageContent: acceptanceText,
-        partialSuccess: true,
-          confirmationPersisted: false,
-          confirmationStatus: "suppressed",
-          confirmationReason: AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE,
-        }),
-        usage: null,
-        persisted: true,
-        messageId: null,
-      };
+      return supersededBeforeSend;
     }
 
     let messageId: string | null = null;
@@ -3133,7 +3109,9 @@ export async function tryHandleCustomerContractAcceptance(args: {
       });
     } catch (sendError: any) {
       return {
-        ok: true,
+        ok: false,
+        error: "PANEL_SEND_MESSAGE_FAILED",
+        message: sendError?.message || "Falha ao enviar resposta da IA.",
         aiText,
         context: buildCustomerContractAcceptanceContext({
           contractId: eligibleContract.contractId,
@@ -3155,9 +3133,6 @@ export async function tryHandleCustomerContractAcceptance(args: {
           confirmationErrorMessage:
             sendError?.message || "Falha ao enviar resposta da IA.",
         }),
-        usage: null,
-        persisted: true,
-        messageId: null,
       };
     }
 
@@ -3165,7 +3140,9 @@ export async function tryHandleCustomerContractAcceptance(args: {
 
     if (!messageId) {
       return {
-        ok: true,
+        ok: false,
+        error: "PANEL_SEND_MESSAGE_FAILED",
+        message: "PANEL_SEND_MESSAGE_NOT_CONFIRMED",
         aiText,
         context: buildCustomerContractAcceptanceContext({
           contractId: eligibleContract.contractId,
@@ -3186,9 +3163,6 @@ export async function tryHandleCustomerContractAcceptance(args: {
           confirmationReason: "PANEL_SEND_MESSAGE_FAILED",
           confirmationErrorMessage: "PANEL_SEND_MESSAGE_NOT_CONFIRMED",
         }),
-        usage: null,
-        persisted: true,
-        messageId: null,
       };
     }
 

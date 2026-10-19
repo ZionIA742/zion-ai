@@ -1764,6 +1764,14 @@ export async function dispatchAiSalesReplyForConversation(args: {
   });
 
   if (aiResult.ok) {
+    if (!String(aiResult.messageId || "").trim()) {
+      return {
+        ai_status: "failed" as const,
+        ai_error: "AI_REPLY_NOT_PERSISTED",
+        ai_message_id: null,
+      };
+    }
+
     return {
       ai_status: "called" as const,
       ai_error: null,

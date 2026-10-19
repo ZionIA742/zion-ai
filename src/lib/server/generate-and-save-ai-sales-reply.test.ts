@@ -2579,37 +2579,14 @@ const tests: TestCase[] = [
         },
       );
 
-      assert.equal(result?.ok, true);
-      if (result?.ok) {
-        assert.equal(result.persisted, true);
-        assert.equal(result.messageId, null);
-        assert.equal(result.aiText, "Contrato assinado com sucesso.");
-        assert.deepEqual(result.context, {
-          flow: "customer_contract_text_acceptance",
-          partialSuccess: true,
-          contractAccepted: true,
-          confirmationPersisted: false,
-          confirmationStatus: "suppressed",
-          confirmationReason: "AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE",
-          contractId: "contract-1",
-          contractNumber: "CTR-001",
-          matchedBy: "conversation_id",
-          acceptanceOutcome: "signed",
-          replayed: false,
-          reconciled: false,
-          signatureId: "signature-1",
-          contractStatus: "customer_signed",
-          versionStatus: "customer_signed",
-          triggerMessageId: "msg-a1",
-          triggerMessageContent: "aceito a proposta A1",
-        });
-      }
+      assert.equal(result?.ok, false);
+      assert.equal(result?.error, "AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE");
       assert.equal(signCalled, true);
       assert.equal(sendCalled, false);
     },
   },
   {
-    name: "single contract send failure returns partial success with failed confirmation",
+    name: "single contract send failure is returned as a failed generation",
     run: async () => {
       const recorder = createAcceptanceSupabase([
         createAcceptanceMessage({
@@ -2677,25 +2654,17 @@ const tests: TestCase[] = [
         },
       );
 
-      assert.equal(result?.ok, true);
-      if (result?.ok) {
-        assert.equal(result.persisted, true);
-        assert.equal(result.messageId, null);
-        assert.equal(result.aiText, "Contrato assinado com sucesso.");
-        assert.equal(result.context?.partialSuccess, true);
-        assert.equal(result.context?.contractAccepted, true);
-        assert.equal(result.context?.confirmationPersisted, false);
-        assert.equal(result.context?.confirmationStatus, "failed");
-        assert.equal(result.context?.confirmationReason, "PANEL_SEND_MESSAGE_FAILED");
-        assert.equal(result.context?.confirmationErrorMessage, "falha tecnica limpa");
-        assert.equal(result.context?.acceptanceOutcome, "signed");
-        assert.equal(result.context?.triggerMessageId, "msg-a1");
-        assert.equal(result.context?.triggerMessageContent, "aceito a proposta A1");
-      }
+      assert.equal(result?.ok, false);
+      assert.equal(result?.error, "PANEL_SEND_MESSAGE_FAILED");
+      assert.equal(result?.message, "falha tecnica limpa");
+      assert.equal(result?.context?.confirmationPersisted, false);
+      assert.equal(result?.context?.confirmationStatus, "failed");
+      assert.equal(result?.context?.confirmationReason, "PANEL_SEND_MESSAGE_FAILED");
+      assert.equal(result?.context?.confirmationErrorMessage, "falha tecnica limpa");
     },
   },
   {
-    name: "single contract null panel message id returns partial success with unconfirmed failure",
+    name: "single contract null panel message id is returned as a failed generation",
     run: async () => {
       const recorder = createAcceptanceSupabase([
         createAcceptanceMessage({
@@ -2757,20 +2726,16 @@ const tests: TestCase[] = [
         },
       );
 
-      assert.equal(result?.ok, true);
-      if (result?.ok) {
-        assert.equal(result.persisted, true);
-        assert.equal(result.messageId, null);
-        assert.equal(result.context?.partialSuccess, true);
-        assert.equal(result.context?.contractAccepted, true);
-        assert.equal(result.context?.confirmationPersisted, false);
-        assert.equal(result.context?.confirmationStatus, "failed");
-        assert.equal(result.context?.confirmationReason, "PANEL_SEND_MESSAGE_FAILED");
-        assert.equal(
-          result.context?.confirmationErrorMessage,
-          "PANEL_SEND_MESSAGE_NOT_CONFIRMED",
-        );
-      }
+      assert.equal(result?.ok, false);
+      assert.equal(result?.error, "PANEL_SEND_MESSAGE_FAILED");
+      assert.equal(result?.message, "PANEL_SEND_MESSAGE_NOT_CONFIRMED");
+      assert.equal(result?.context?.confirmationPersisted, false);
+      assert.equal(result?.context?.confirmationStatus, "failed");
+      assert.equal(result?.context?.confirmationReason, "PANEL_SEND_MESSAGE_FAILED");
+      assert.equal(
+        result?.context?.confirmationErrorMessage,
+        "PANEL_SEND_MESSAGE_NOT_CONFIRMED",
+      );
     },
   },
   {

@@ -719,6 +719,51 @@ test("dispatchAiSalesReplyForConversation applies the live status, takeover, ter
     assert.equal(aiCalls, scenario.expected === "called" ? 1 : 0, scenario.status);
   }
 
+  const unconfirmedResult = await dispatchAiSalesReplyForConversation({
+    supabase: {
+      from(table: string) {
+        const builder = {
+          select() {
+            return builder;
+          },
+          eq() {
+            return builder;
+          },
+          async maybeSingle() {
+            if (table === "conversations") {
+              return {
+                data: {
+                  id: "conv-1",
+                  organization_id: "org-1",
+                  lead_id: "lead-1",
+                  status: "active",
+                  is_human_active: false,
+                },
+                error: null,
+              };
+            }
+            return { data: null, error: null };
+          },
+        };
+        return builder;
+      },
+    } as never,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    runAiFlow: async () => ({
+      ok: true as const,
+      aiText: "resposta não confirmada",
+      context: {},
+      usage: null,
+      persisted: true as const,
+      messageId: null,
+    }),
+  });
+  assert.equal(unconfirmedResult.ai_status, "failed");
+  assert.equal(unconfirmedResult.ai_error, "AI_REPLY_NOT_PERSISTED");
+  assert.equal(unconfirmedResult.ai_message_id, null);
+
   let pausedCalls = 0;
   const pausedSupabase = {
     from(table: string) {
