@@ -2800,6 +2800,7 @@ export async function processWhatsappInbox(
               organizationId: inbox.organization_id,
               storeId: inbox.store_id,
               processingError: `sales_ai_failed_final:${detail}`,
+              eventKind: isRecord(inbox.payload) ? inbox.payload.event_kind : null,
               externalEventId: inbox.external_event_id,
             });
           }

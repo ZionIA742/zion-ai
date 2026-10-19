@@ -43,7 +43,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isMetaInboxRow(row: TerminalFailureRow): boolean {
-  return isRecord(row.payload) && text(row.payload.source) === "meta_whatsapp_webhook";
+  return (
+    isRecord(row.payload) &&
+    text(row.payload.source) === "meta_whatsapp_webhook" &&
+    text(row.payload.event_kind) === "message"
+  );
 }
 
 function eventKey(source: SalesAiFailureSource, id: string): string {
@@ -58,6 +62,7 @@ async function enqueueAlert(
     organizationId: string;
     storeId: string;
     processingError: string;
+    eventKind?: unknown;
     externalEventId?: string | null;
     conversationId?: string | null;
     leadId?: string | null;
@@ -108,6 +113,7 @@ export async function enqueueSalesAiFailureOperationalAlert(
     organizationId: string;
     storeId: string;
     processingError: string;
+    eventKind?: unknown;
     externalEventId?: string | null;
     conversationId?: string | null;
     leadId?: string | null;
@@ -121,6 +127,9 @@ export async function enqueueSalesAiFailureOperationalAlert(
     !text(args.processingError).startsWith(FINAL_FAILURE_PREFIX)
   ) {
     throw new Error("SALES_AI_FAILURE_ALERT_INPUT_INVALID");
+  }
+  if (args.source === "inbox" && text(args.eventKind) !== "message") {
+    throw new Error("SALES_AI_FAILURE_ALERT_INBOX_EVENT_KIND_INVALID");
   }
 
   return enqueueAlert(client as SalesAiFailureAlertClient, {

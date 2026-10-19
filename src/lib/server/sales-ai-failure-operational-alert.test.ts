@@ -34,6 +34,7 @@ test("terminal inbox failure creates a scoped idempotent operational alert", asy
     organizationId: "org-1",
     storeId: "store-1",
     processingError: "sales_ai_failed_final:lease_expired_max_attempts",
+    eventKind: "message",
     externalEventId: "event-1",
   });
 
@@ -52,8 +53,24 @@ test("persisted SQL-terminal inbox failures are discovered without reprocessing"
       organization_id: "org-1",
       store_id: "store-1",
       processing_error: "sales_ai_failed_final:lease_expired_max_attempts",
-      payload: { source: "meta_whatsapp_webhook", message: { id: "wamid-1" } },
+      payload: { source: "meta_whatsapp_webhook", event_kind: "message", message: { id: "wamid-1" } },
       external_event_id: "event-1",
+    },
+    {
+      id: "status-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      processing_error: "sales_ai_failed_final:status_message_not_found_by_external_message_id",
+      payload: { source: "meta_whatsapp_webhook", event_kind: "status", status: { id: "wamid-1" } },
+      external_event_id: "event-status-1",
+    },
+    {
+      id: "missing-kind",
+      organization_id: "org-1",
+      store_id: "store-1",
+      processing_error: "sales_ai_failed_final:missing_event_kind",
+      payload: { source: "meta_whatsapp_webhook", message: { id: "wamid-2" } },
+      external_event_id: "event-missing-kind",
     },
     {
       id: "other-source",
@@ -69,8 +86,26 @@ test("persisted SQL-terminal inbox failures are discovered without reprocessing"
     storeId: "store-1",
     source: "inbox",
   });
-  assert.deepEqual(result, { inspected: 2, created: 1 });
+  assert.deepEqual(result, { inspected: 4, created: 1 });
   assert.equal(fixture.calls[0].args.p_event_key, "sales_ai_failed_final:inbox:inbox-1");
+});
+
+test("immediate inbox alerts reject status and missing event kinds", async () => {
+  const fixture = clientFor([]);
+  for (const eventKind of ["status", undefined, "unknown"]) {
+    await assert.rejects(
+      enqueueSalesAiFailureOperationalAlert(fixture.client, {
+        source: "inbox",
+        id: `inbox-${String(eventKind)}`,
+        organizationId: "org-1",
+        storeId: "store-1",
+        processingError: "sales_ai_failed_final:status_message_not_found_by_external_message_id",
+        eventKind,
+      }),
+      /SALES_AI_FAILURE_ALERT_INBOX_EVENT_KIND_INVALID/,
+    );
+  }
+  assert.equal(fixture.calls.length, 0);
 });
 
 test("non-terminal failures are rejected before notification", async () => {
@@ -82,6 +117,7 @@ test("non-terminal failures are rejected before notification", async () => {
       organizationId: "org-1",
       storeId: "store-1",
       processingError: "sales_ai_retryable:temporary",
+      eventKind: "message",
     }),
     /SALES_AI_FAILURE_ALERT_INPUT_INVALID/,
   );
