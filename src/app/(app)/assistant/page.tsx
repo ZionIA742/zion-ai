@@ -854,6 +854,8 @@ export default function AssistantPage() {
   );
   const assistantScopeKeyRef = useRef<string | null>(assistantScopeKey);
   const assistantLoadRequestSeqRef = useRef(0);
+  const assistantLoadInFlightRef = useRef<{ scopeKey: string; token: number } | null>(null);
+  const assistantLoadTokenRef = useRef(0);
   const assistantPriorityRequestSeqRef = useRef(0);
   const assistantOlderMessagesRequestSeqRef = useRef(0);
 
@@ -1035,85 +1037,97 @@ export default function AssistantPage() {
 
       const scopeKey = assistantScopeKeyRef.current;
       if (!scopeKey) return;
-      const requestSeq = assistantLoadRequestSeqRef.current + 1;
-      assistantLoadRequestSeqRef.current = requestSeq;
-      const isCurrentRequest = () =>
-        isCurrentAssistantScope(scopeKey) &&
-        assistantLoadRequestSeqRef.current === requestSeq;
-      const silent = options?.silent ?? false;
-      const reset = options?.reset ?? false;
-      if (silent) setRefreshing(true);
-      else setLoading(true);
+      if (assistantLoadInFlightRef.current?.scopeKey === scopeKey) return;
 
-      setErrorText(null);
+      const requestToken = assistantLoadTokenRef.current + 1;
+      assistantLoadTokenRef.current = requestToken;
+      assistantLoadInFlightRef.current = { scopeKey, token: requestToken };
 
-      const currentMessages = messagesRef.current;
-      const lastLoadedMessage =
-        !reset && initialMessagesLoadedRef.current && currentMessages.length > 0
-          ? currentMessages[currentMessages.length - 1]
-          : null;
+      try {
+        const requestSeq = assistantLoadRequestSeqRef.current + 1;
+        assistantLoadRequestSeqRef.current = requestSeq;
+        const isCurrentRequest = () =>
+          isCurrentAssistantScope(scopeKey) &&
+          assistantLoadRequestSeqRef.current === requestSeq;
+        const silent = options?.silent ?? false;
+        const reset = options?.reset ?? false;
+        if (silent) setRefreshing(true);
+        else setLoading(true);
 
-      const [{ data: summaryData, error: summaryError }, { data: messagesData, error: messagesError }] =
-        await Promise.all([
-          supabase.rpc("assistant_get_thread_summary", {
-            p_organization_id: organizationId,
-            p_store_id: activeStoreId,
-          }),
-          lastLoadedMessage
-            ? supabase.rpc("assistant_list_messages_paginated", {
-                p_organization_id: organizationId,
-                p_store_id: activeStoreId,
-                p_limit: ASSISTANT_PAGE_MESSAGE_LIMIT,
-                p_after_created_at: lastLoadedMessage.created_at,
-                p_after_id: lastLoadedMessage.id,
-              })
-            : supabase.rpc("assistant_list_messages_paginated", {
-                p_organization_id: organizationId,
-                p_store_id: activeStoreId,
-                p_limit: ASSISTANT_PAGE_MESSAGE_LIMIT,
-              }),
-        ]);
+        setErrorText(null);
 
-      if (!isCurrentRequest()) return;
+        const currentMessages = messagesRef.current;
+        const lastLoadedMessage =
+          !reset && initialMessagesLoadedRef.current && currentMessages.length > 0
+            ? currentMessages[currentMessages.length - 1]
+            : null;
 
-      if (summaryError) {
-        setErrorText(summaryError.message || "Erro ao carregar resumo da assistente.");
-        if (silent) setRefreshing(false);
-        else setLoading(false);
-        return;
-      }
+        const [{ data: summaryData, error: summaryError }, { data: messagesData, error: messagesError }] =
+          await Promise.all([
+            supabase.rpc("assistant_get_thread_summary", {
+              p_organization_id: organizationId,
+              p_store_id: activeStoreId,
+            }),
+            lastLoadedMessage
+              ? supabase.rpc("assistant_list_messages_paginated", {
+                  p_organization_id: organizationId,
+                  p_store_id: activeStoreId,
+                  p_limit: ASSISTANT_PAGE_MESSAGE_LIMIT,
+                  p_after_created_at: lastLoadedMessage.created_at,
+                  p_after_id: lastLoadedMessage.id,
+                })
+              : supabase.rpc("assistant_list_messages_paginated", {
+                  p_organization_id: organizationId,
+                  p_store_id: activeStoreId,
+                  p_limit: ASSISTANT_PAGE_MESSAGE_LIMIT,
+                }),
+          ]);
 
-      if (messagesError) {
-        setErrorText(messagesError.message || "Erro ao carregar mensagens da assistente.");
-        if (silent) setRefreshing(false);
-        else setLoading(false);
-        return;
-      }
+        if (!isCurrentRequest()) return;
 
-      const summaryRow = Array.isArray(summaryData)
-        ? ((summaryData[0] || null) as AssistantThreadSummary | null)
-        : ((summaryData || null) as AssistantThreadSummary | null);
-      const nextMessages = Array.isArray(messagesData)
-        ? (messagesData as AssistantMessage[])
-        : [];
-      const totalMessages = Number(summaryRow?.total_messages || 0);
-
-      if (!isCurrentRequest()) return;
-
-      setSummary(summaryRow);
-
-      if (lastLoadedMessage) {
-        if (nextMessages.length > 0) {
-          setMessages((current) => mergeAssistantMessages(current, nextMessages));
+        if (summaryError) {
+          setErrorText(summaryError.message || "Erro ao carregar resumo da assistente.");
+          if (silent) setRefreshing(false);
+          else setLoading(false);
+          return;
         }
-      } else {
-        setMessages(mergeAssistantMessages([], nextMessages));
-        initialMessagesLoadedRef.current = true;
-        reachedConversationStartRef.current = totalMessages <= nextMessages.length;
-      }
 
-      if (silent) setRefreshing(false);
-      else setLoading(false);
+        if (messagesError) {
+          setErrorText(messagesError.message || "Erro ao carregar mensagens da assistente.");
+          if (silent) setRefreshing(false);
+          else setLoading(false);
+          return;
+        }
+
+        const summaryRow = Array.isArray(summaryData)
+          ? ((summaryData[0] || null) as AssistantThreadSummary | null)
+          : ((summaryData || null) as AssistantThreadSummary | null);
+        const nextMessages = Array.isArray(messagesData)
+          ? (messagesData as AssistantMessage[])
+          : [];
+        const totalMessages = Number(summaryRow?.total_messages || 0);
+
+        if (!isCurrentRequest()) return;
+
+        setSummary(summaryRow);
+
+        if (lastLoadedMessage) {
+          if (nextMessages.length > 0) {
+            setMessages((current) => mergeAssistantMessages(current, nextMessages));
+          }
+        } else {
+          setMessages(mergeAssistantMessages([], nextMessages));
+          initialMessagesLoadedRef.current = true;
+          reachedConversationStartRef.current = totalMessages <= nextMessages.length;
+        }
+
+        if (silent) setRefreshing(false);
+        else setLoading(false);
+      } finally {
+        if (assistantLoadInFlightRef.current?.token === requestToken) {
+          assistantLoadInFlightRef.current = null;
+        }
+      }
     },
     [canLoad, organizationId, activeStoreId, isCurrentAssistantScope]
   );

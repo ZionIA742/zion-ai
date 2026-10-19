@@ -95,6 +95,22 @@ class AssistantStalenessHarness {
   }
 }
 
+class AssistantLoadConcurrencyHarness {
+  current: { scopeKey: string; token: number } | null = null;
+  nextToken = 0;
+
+  begin(scopeKey: string) {
+    if (this.current?.scopeKey === scopeKey) return null;
+    const request = { scopeKey, token: ++this.nextToken };
+    this.current = request;
+    return request;
+  }
+
+  finish(request: { scopeKey: string; token: number }) {
+    if (this.current?.token === request.token) this.current = null;
+  }
+}
+
 class ResponsiblePanelStalenessHarness {
   scopeKey: string | null = null;
   loadSeq = 0;
@@ -245,6 +261,25 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "assistant load allows a new store while fencing the old finally",
+    run: () => {
+      const harness = new AssistantLoadConcurrencyHarness();
+      const storeA = harness.begin("org-a:store-a");
+
+      assert.ok(storeA);
+      assert.equal(harness.begin("org-a:store-a"), null);
+
+      const storeB = harness.begin("org-a:store-b");
+      assert.ok(storeB);
+      harness.finish(storeA);
+      assert.deepEqual(harness.current, storeB);
+
+      harness.finish(storeB);
+      assert.equal(harness.current, null);
+      assert.ok(harness.begin("org-a:store-a"));
+    },
+  },
+  {
     name: "production sources use scope refs and request generations",
     run: () => {
       const assistantSource = readFileSync(
@@ -258,6 +293,16 @@ const tests: TestCase[] = [
 
       assert.equal(assistantSource.includes("assistantScopeKeyRef"), true);
       assert.equal(assistantSource.includes("assistantLoadRequestSeqRef"), true);
+      assert.equal(assistantSource.includes("assistantLoadInFlightRef"), true);
+      assert.equal(assistantSource.includes("assistantLoadTokenRef"), true);
+      assert.equal(
+        assistantSource.includes("assistantLoadInFlightRef.current?.scopeKey === scopeKey"),
+        true,
+      );
+      assert.equal(
+        assistantSource.includes("assistantLoadInFlightRef.current?.token === requestToken"),
+        true,
+      );
       assert.equal(assistantSource.includes("assistantPriorityRequestSeqRef"), true);
       assert.equal(assistantSource.includes("assistantOlderMessagesRequestSeqRef"), true);
       assert.equal(assistantSource.includes("isCurrentAssistantScope(scopeKey)"), true);
