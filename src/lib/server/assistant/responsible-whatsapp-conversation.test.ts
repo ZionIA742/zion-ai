@@ -192,6 +192,11 @@ test("assistant panel exposes all responsible attachment kinds through scoped si
   assert.match(panel, /getAssistantAttachmentLabel/);
   assert.match(panel, /IntersectionObserver/);
   assert.match(panel, /observeAssistantMedia/);
+  assert.match(panel, /assistantMediaUrlsRef/);
+  assert.match(panel, /assistantMediaLoadingRef/);
+  assert.match(panel, /assistantMediaAutoFailedRef/);
+  assert.match(panel, /loadAssistantMedia\(message\.id, \{ manual: true \}\)/);
+  assert.doesNotMatch(panel, /\}, \[assistantMediaLoading, assistantMediaUrls\]\);/);
   assert.match(panel, /root: chatScrollRef\.current/);
   assert.match(panel, /data-assistant-media-message-id/);
   assert.match(panel, /onError=\{\(\) => handleAssistantMediaError\(message\.id\)\}/);

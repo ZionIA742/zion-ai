@@ -815,6 +815,9 @@ export default function AssistantPage() {
   const [assistantMediaUrls, setAssistantMediaUrls] = useState<Record<string, string>>({});
   const [assistantMediaLoading, setAssistantMediaLoading] = useState<Record<string, boolean>>({});
   const [assistantMediaErrors, setAssistantMediaErrors] = useState<Record<string, string>>({});
+  const assistantMediaUrlsRef = useRef<Record<string, string>>({});
+  const assistantMediaLoadingRef = useRef<Record<string, boolean>>({});
+  const assistantMediaAutoFailedRef = useRef<Record<string, boolean>>({});
   const assistantMediaObserverRef = useRef<IntersectionObserver | null>(null);
   const [dismissedApproveActionsByMessage, setDismissedApproveActionsByMessage] = useState<
     Record<string, boolean>
@@ -862,40 +865,56 @@ export default function AssistantPage() {
     return !!scopeKey && assistantScopeKeyRef.current === scopeKey;
   }, []);
 
-  const loadAssistantMedia = useCallback(async (messageId: string) => {
-    if (assistantMediaUrls[messageId] || assistantMediaLoading[messageId]) return;
-
-    setAssistantMediaLoading((current) => ({ ...current, [messageId]: true }));
-    setAssistantMediaErrors((current) => {
-      const next = { ...current };
-      delete next[messageId];
-      return next;
-    });
-    try {
-      const response = await fetch(
-        `/api/assistant/messages/${encodeURIComponent(messageId)}/signed-media-url`,
-        { cache: "no-store" },
-      );
-      const payload = (await response.json()) as {
-        ok?: boolean;
-        signedUrl?: string;
-        message?: string;
-      };
-      if (!response.ok || !payload.ok || !payload.signedUrl) {
-        throw new Error(payload.message || "Nao foi possivel carregar o anexo.");
+  const loadAssistantMedia = useCallback(
+    async (messageId: string, options?: { manual?: boolean }) => {
+      if (
+        assistantMediaUrlsRef.current[messageId] ||
+        assistantMediaLoadingRef.current[messageId] ||
+        (!options?.manual && assistantMediaAutoFailedRef.current[messageId])
+      ) {
+        return;
       }
-      setAssistantMediaUrls((current) => ({ ...current, [messageId]: payload.signedUrl! }));
-    } catch (error) {
-      setAssistantMediaErrors((current) => ({
-        ...current,
-        [messageId]: error instanceof Error ? error.message : "Nao foi possivel carregar o anexo.",
-      }));
-    } finally {
-      setAssistantMediaLoading((current) => ({ ...current, [messageId]: false }));
-    }
-  }, [assistantMediaLoading, assistantMediaUrls]);
+
+      assistantMediaLoadingRef.current[messageId] = true;
+      delete assistantMediaAutoFailedRef.current[messageId];
+      setAssistantMediaLoading((current) => ({ ...current, [messageId]: true }));
+      setAssistantMediaErrors((current) => {
+        const next = { ...current };
+        delete next[messageId];
+        return next;
+      });
+      try {
+        const response = await fetch(
+          `/api/assistant/messages/${encodeURIComponent(messageId)}/signed-media-url`,
+          { cache: "no-store" },
+        );
+        const payload = (await response.json()) as {
+          ok?: boolean;
+          signedUrl?: string;
+          message?: string;
+        };
+        if (!response.ok || !payload.ok || !payload.signedUrl) {
+          throw new Error(payload.message || "Nao foi possivel carregar o anexo.");
+        }
+        assistantMediaUrlsRef.current[messageId] = payload.signedUrl;
+        setAssistantMediaUrls((current) => ({ ...current, [messageId]: payload.signedUrl! }));
+      } catch (error) {
+        assistantMediaAutoFailedRef.current[messageId] = true;
+        setAssistantMediaErrors((current) => ({
+          ...current,
+          [messageId]: error instanceof Error ? error.message : "Nao foi possivel carregar o anexo.",
+        }));
+      } finally {
+        delete assistantMediaLoadingRef.current[messageId];
+        setAssistantMediaLoading((current) => ({ ...current, [messageId]: false }));
+      }
+    },
+    [],
+  );
 
   const handleAssistantMediaError = useCallback((messageId: string) => {
+    delete assistantMediaUrlsRef.current[messageId];
+    assistantMediaAutoFailedRef.current[messageId] = true;
     setAssistantMediaUrls((current) => {
       if (!current[messageId]) return current;
       const next = { ...current };
@@ -910,7 +929,11 @@ export default function AssistantPage() {
 
   const observeAssistantMedia = useCallback(
     (node: HTMLDivElement | null, messageId: string) => {
-      if (!node || assistantMediaUrls[messageId] || typeof IntersectionObserver === "undefined") {
+      if (
+        !node ||
+        assistantMediaUrlsRef.current[messageId] ||
+        typeof IntersectionObserver === "undefined"
+      ) {
         return;
       }
 
@@ -938,7 +961,7 @@ export default function AssistantPage() {
       node.setAttribute("data-assistant-media-message-id", messageId);
       assistantMediaObserverRef.current.observe(node);
     },
-    [assistantMediaUrls, loadAssistantMedia],
+    [loadAssistantMedia],
   );
 
   useEffect(() => {
@@ -973,6 +996,9 @@ export default function AssistantPage() {
     setAssistantMediaUrls({});
     setAssistantMediaLoading({});
     setAssistantMediaErrors({});
+    assistantMediaUrlsRef.current = {};
+    assistantMediaLoadingRef.current = {};
+    assistantMediaAutoFailedRef.current = {};
     assistantMediaObserverRef.current?.disconnect();
     assistantMediaObserverRef.current = null;
     setDismissedApproveActionsByMessage({});
@@ -2146,7 +2172,7 @@ export default function AssistantPage() {
                                 ) : (
                                   <button
                                     type="button"
-                                    onClick={() => void loadAssistantMedia(message.id)}
+                                    onClick={() => void loadAssistantMedia(message.id, { manual: true })}
                                     disabled={mediaLoading}
                                     className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                                   >
