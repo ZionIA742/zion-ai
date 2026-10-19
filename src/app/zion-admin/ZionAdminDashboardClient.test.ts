@@ -476,6 +476,56 @@ const tests: TestCase[] = [
       assert.equal(source.includes("/api/zion-admin/overview"), true);
     },
   },
+  {
+    name: "store drawer uses real tabs and resets to actions for a new store",
+    run: () => {
+      const source = readSource();
+
+      for (const token of [
+        "type StoreDetailTab",
+        'useState<StoreDetailTab>("actions")',
+        'key={selectedStore?.id ?? "closed"}',
+        'aria-label="Seções da loja"',
+        '["actions", "Ações"]',
+        '["health", "Saúde operacional"]',
+        '["settings", "Configurações"]',
+        '["account", "Conta"]',
+        '["usage", "Uso e IA"]',
+        '["pending", "Pendências"]',
+        '["identification", "Identificação"]',
+        'activeStoreTab === tab ? "page" : undefined',
+        'onClick={() => setActiveStoreTab(tab)}',
+        'activeStoreTab === "actions"',
+        'activeStoreTab === "health"',
+        'activeStoreTab === "settings"',
+        'activeStoreTab === "account"',
+        'activeStoreTab === "usage"',
+        'activeStoreTab === "pending"',
+        'activeStoreTab === "identification"',
+      ]) {
+        assert.equal(source.includes(token), true, `missing store tab token: ${token}`);
+      }
+    },
+  },
+  {
+    name: "store PINs use scoped loading and are absent from the global dashboard",
+    run: () => {
+      const source = readSource();
+      const dashboardSource = source.slice(source.indexOf("export default function ZionAdminDashboardClient"));
+
+      for (const token of [
+        "organization_id=${encodeURIComponent(organizationId)}",
+        "store_id=${encodeURIComponent(storeId)}",
+        "key={store.id}",
+        "AbortController",
+        "setRevealedPins",
+      ]) {
+        assert.equal(source.includes(token), true, `missing scoped PIN token: ${token}`);
+      }
+
+      assert.equal(dashboardSource.includes("<WhatsappPinsSection"), false);
+    },
+  },
 ];
 
 async function run() {

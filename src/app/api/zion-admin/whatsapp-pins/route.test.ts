@@ -30,6 +30,8 @@ type HarnessOptions = {
   access: AccessGranted | AccessDenied;
   rpcData?: unknown;
   rpcError?: Error | null;
+  storeLookupData?: unknown;
+  storeLookupError?: Error | null;
   decryptedPin?: string;
   decryptError?: Error;
   request?: Request;
@@ -54,6 +56,7 @@ async function executeRoute(options: HarnessOptions) {
     Request,
     Response,
     Headers,
+    URL,
     setTimeout,
     clearTimeout,
     __calls: calls,
@@ -61,6 +64,22 @@ async function executeRoute(options: HarnessOptions) {
     decryptCalls: 0,
     __run: null,
     __service: {
+      from() {
+        const query = {
+          select() { return query; },
+          eq() { return query; },
+          maybeSingle() {
+            return Promise.resolve({
+              data:
+                options.storeLookupData !== undefined
+                  ? options.storeLookupData
+                  : { id: storeId, organization_id: organizationId },
+              error: options.storeLookupError ?? null,
+            });
+          },
+        };
+        return query;
+      },
       rpc(name: string, args: Record<string, unknown>) {
         calls.push({ name, args });
         return Promise.resolve({ data: options.rpcData ?? [], error: options.rpcError ?? null });
@@ -98,7 +117,7 @@ async function executeRoute(options: HarnessOptions) {
         body: JSON.stringify({ secretId, organizationId, storeId }),
         headers: { "content-type": "application/json" },
       })
-    : new Request("http://zion.test/api/zion-admin/whatsapp-pins");
+    : new Request(`http://zion.test/api/zion-admin/whatsapp-pins?organization_id=${organizationId}&store_id=${storeId}`);
   const response = await (context as { __run: (request?: Request) => Promise<Response> }).__run(
     options.request ?? defaultRequest,
   );
@@ -144,9 +163,20 @@ async function testListAuthorizationAndSecrecy() {
         secret_status: "active",
         can_reveal: true,
       },
+      {
+        secret_id: "55555555-5555-4555-8555-555555555555",
+        organization_id: organizationId,
+        store_id: "66666666-6666-4666-8666-666666666666",
+        store_name: "Outra loja",
+        phone_number_id_masked: "****9999",
+        secret_status: "active",
+        can_reveal: true,
+      },
     ],
   });
   assert.equal(allowed.response.status, 200);
+  assert.equal(allowed.body.pins.length, 1);
+  assert.equal(allowed.body.pins[0].store_id, storeId);
   assert.equal(allowed.calls[0]?.name, "list_zion_admin_whatsapp_pins_by_system");
   assert.equal(allowed.calls[0]?.args.p_actor_user_id, granted.sessionUserId);
   assert.equal("ciphertext" in allowed.body, false);
@@ -167,9 +197,26 @@ async function testListAuthorizationAndSecrecy() {
     routePath: listPath,
     access: granted,
     rpcData: [],
-    request: new Request("http://zion.test/api/zion-admin/whatsapp-pins?actor_user_id=99999999-9999-4999-8999-999999999999"),
+    request: new Request(`http://zion.test/api/zion-admin/whatsapp-pins?organization_id=${organizationId}&store_id=${storeId}&actor_user_id=99999999-9999-4999-8999-999999999999`),
   });
   assert.equal(browserActor.calls[0]?.args.p_actor_user_id, granted.sessionUserId);
+
+  const missingScope = await executeRoute({
+    routePath: listPath,
+    access: granted,
+    request: new Request("http://zion.test/api/zion-admin/whatsapp-pins"),
+  });
+  assert.equal(missingScope.response.status, 400);
+  assert.equal(missingScope.calls.length, 0);
+
+  const mismatchedScope = await executeRoute({
+    routePath: listPath,
+    access: granted,
+    storeLookupData: null,
+    request: new Request(`http://zion.test/api/zion-admin/whatsapp-pins?organization_id=${organizationId}&store_id=${storeId}`),
+  });
+  assert.equal(mismatchedScope.response.status, 404);
+  assert.equal(mismatchedScope.calls.length, 0);
 }
 
 async function testRevealStatesAndFailures() {

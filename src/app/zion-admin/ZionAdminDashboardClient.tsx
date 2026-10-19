@@ -55,6 +55,15 @@ type OverviewPanelKey =
   | "appointments"
   | "assistant";
 
+type StoreDetailTab =
+  | "actions"
+  | "health"
+  | "settings"
+  | "account"
+  | "usage"
+  | "pending"
+  | "identification";
+
 export type StoreIntegrityState = "healthy" | "warning" | "broken" | "unknown";
 export type StoreIntegrityIssueCode =
   | "organization_missing" | "owner_missing" | "owner_ambiguous"
@@ -1866,6 +1875,8 @@ function DrawerShell({
 function StoreDetailsDrawer({
   store,
   canManageAccounts,
+  canManageWhatsappPins,
+  whatsappPinRecoveryMetaEnabled,
   onClose,
   onResendFirstAccess,
   onToggleAccountAccess,
@@ -1876,6 +1887,8 @@ function StoreDetailsDrawer({
 }: {
   store: ZionAdminStore | null;
   canManageAccounts: boolean;
+  canManageWhatsappPins: boolean;
+  whatsappPinRecoveryMetaEnabled: boolean;
   onClose: () => void;
   onResendFirstAccess: (store: ZionAdminStore) => Promise<void>;
   onToggleAccountAccess: (store: ZionAdminStore) => Promise<void>;
@@ -1896,6 +1909,8 @@ function StoreDetailsDrawer({
     success: string | null;
   };
 }) {
+  const [activeStoreTab, setActiveStoreTab] = useState<StoreDetailTab>("actions");
+
   if (!store) return null;
 
   const operational = getOperationalSummary(store);
@@ -1985,8 +2000,38 @@ function StoreDetailsDrawer({
         </span>
       </div>
 
+      <nav
+        aria-label="Seções da loja"
+        className="mb-5 grid grid-cols-2 gap-1.5 rounded-2xl border border-white/10 bg-zinc-950/35 p-1.5 sm:grid-cols-4 lg:grid-cols-7"
+      >
+        {([
+          ["actions", "Ações"],
+          ["health", "Saúde operacional"],
+          ["settings", "Configurações"],
+          ["account", "Conta"],
+          ["usage", "Uso e IA"],
+          ["pending", "Pendências"],
+          ["identification", "Identificação"],
+        ] as const).map(([tab, label]) => (
+          <button
+            key={tab}
+            type="button"
+            aria-current={activeStoreTab === tab ? "page" : undefined}
+            onClick={() => setActiveStoreTab(tab)}
+            className={[
+              "rounded-xl px-2 py-2 text-xs font-semibold transition",
+              activeStoreTab === tab
+                ? "bg-violet-500/20 text-violet-100 ring-1 ring-violet-400/30"
+                : "text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100",
+            ].join(" ")}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
       <div className="space-y-4">
-        <section>
+        {activeStoreTab === "health" ? <section>
           <h4 className="text-sm font-semibold text-zinc-200">Integridade estrutural</h4>
           <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3">
             <div className="text-sm font-semibold text-zinc-100">
@@ -2002,8 +2047,8 @@ function StoreDetailsDrawer({
               </ul>
             ) : null}
           </div>
-        </section>
-        <section>
+        </section> : null}
+        {activeStoreTab === "settings" ? <section>
           <h4 className="text-sm font-semibold text-zinc-200">
             Prontidão das configurações
           </h4>
@@ -2061,8 +2106,8 @@ function StoreDetailsDrawer({
               </ul>
             ) : null}
           </div>
-        </section>
-        <section>
+        </section> : null}
+        {activeStoreTab === "health" ? <section>
           <h4 className="text-sm font-semibold text-zinc-200">
             Saúde operacional
           </h4>
@@ -2177,9 +2222,18 @@ function StoreDetailsDrawer({
               </div>
             </div>
           </div>
-        </section>
-        <section>
+        </section> : null}
+        {activeStoreTab === "actions" ? <section>
           <h3 className="text-sm font-semibold text-zinc-200">Gestão da loja</h3>
+          <div className="mt-3">
+            <WhatsappPinsSection
+              key={store.id}
+              canAccess={canManageWhatsappPins}
+              metaExecutionEnabled={whatsappPinRecoveryMetaEnabled}
+              organizationId={store.organizationId}
+              storeId={store.id}
+            />
+          </div>
           <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
             <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
               <div>
@@ -2378,9 +2432,9 @@ function StoreDetailsDrawer({
 
           </div>
           </div>
-        </section>
+        </section> : null}
 
-        <section>
+        {activeStoreTab === "usage" ? <section>
           <h3 className="text-sm font-semibold text-zinc-200">Uso da loja</h3>
           <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <DetailItem label="Leads" value={formatNumber(store.totalLeads)} />
@@ -2404,9 +2458,9 @@ function StoreDetailsDrawer({
               value={formatNumber(store.totalAppointments)}
             />
           </div>
-        </section>
+        </section> : null}
 
-        <section>
+        {activeStoreTab === "usage" ? <section>
           <h3 className="text-sm font-semibold text-zinc-200">
             Trabalho da IA
           </h3>
@@ -2423,9 +2477,9 @@ function StoreDetailsDrawer({
               value={formatDateTime(store.lastAiRunAt)}
             />
           </div>
-        </section>
+        </section> : null}
 
-        <section>
+        {activeStoreTab === "usage" ? <section>
           <h3 className="text-sm font-semibold text-zinc-200">
             Custo e tokens
           </h3>
@@ -2454,9 +2508,9 @@ function StoreDetailsDrawer({
               />
             </div>
           </div>
-        </section>
+        </section> : null}
 
-        <section>
+        {activeStoreTab === "pending" ? <section>
           <h3 className="text-sm font-semibold text-zinc-200">
             Pendências da loja
           </h3>
@@ -2498,9 +2552,9 @@ function StoreDetailsDrawer({
               />
             </div>
           </div>
-        </section>
+        </section> : null}
 
-        <section>
+        {activeStoreTab === "identification" ? <section>
           <h3 className="text-sm font-semibold text-zinc-200">Identificação</h3>
           <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-zinc-400">
             <div>
@@ -2521,7 +2575,37 @@ function StoreDetailsDrawer({
               </div>
             ) : null}
           </div>
-        </section>
+        </section> : null}
+
+        {activeStoreTab === "account" ? (
+          <section>
+            <h3 className="text-sm font-semibold text-zinc-200">Conta responsável</h3>
+            <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                <DetailItem label="Responsável" value={accountAccess?.responsibleName || "Não informado"} />
+                <DetailItem label="E-mail" value={accountAccess?.emailMasked || "E-mail indisponível"} />
+                <DetailItem
+                  label="Acesso"
+                  value={
+                    accountAccess?.accessState === "blocked"
+                      ? "Acesso bloqueado"
+                      : accountAccess?.accessState === "active"
+                        ? "Acesso ativo"
+                        : accountAccess?.accessStateLabel || "Acesso indisponível"
+                  }
+                />
+                <DetailItem label="Status" value={accountAccess?.statusLabel || "Conta indisponível"} />
+                <DetailItem
+                  label="Primeiro acesso"
+                  value={formatAccountAccessDateTime(accountAccess?.firstAccessCompletedAt, accountAccess?.firstAccessHistoryStatus)}
+                />
+              </div>
+              <p className="mt-3 text-xs leading-5 text-zinc-500">
+                As ações de bloqueio e reativação permanecem na aba Ações.
+              </p>
+            </div>
+          </section>
+        ) : null}
       </div>
     </DrawerShell>
   );
@@ -4541,9 +4625,13 @@ function WhatsappPinRecoverySection({
 function WhatsappPinsSection({
   canAccess,
   metaExecutionEnabled,
+  organizationId,
+  storeId,
 }: {
   canAccess: boolean;
   metaExecutionEnabled: boolean;
+  organizationId: string;
+  storeId: string;
 }) {
   const [pins, setPins] = useState<ZionAdminWhatsappPin[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -4555,12 +4643,15 @@ function WhatsappPinsSection({
     if (!canAccess || loaded) return;
 
     const controller = new AbortController();
-    void fetch("/api/zion-admin/whatsapp-pins", {
+    void fetch(
+      `/api/zion-admin/whatsapp-pins?organization_id=${encodeURIComponent(organizationId)}&store_id=${encodeURIComponent(storeId)}`,
+      {
       method: "GET",
       credentials: "include",
       cache: "no-store",
       signal: controller.signal,
-    })
+      },
+    )
       .then(async (response) => {
         const payload = await response.json().catch(() => null);
         if (!response.ok || !payload?.ok || !Array.isArray(payload.pins)) {
@@ -4579,7 +4670,7 @@ function WhatsappPinsSection({
       });
 
     return () => controller.abort();
-  }, [canAccess, loaded]);
+  }, [canAccess, loaded, organizationId, storeId]);
 
   useEffect(() => {
     const timers = Object.keys(revealedPins).map((secretId) =>
@@ -5193,11 +5284,6 @@ export default function ZionAdminDashboardClient({
           </div>
         ) : null}
 
-        <WhatsappPinsSection
-          canAccess={canManageWhatsappPins}
-          metaExecutionEnabled={whatsappPinRecoveryMetaEnabled}
-        />
-
         {activeGlobalSection === "overview" ? (
         <div id="overview" className="scroll-mt-4">
         {orphanStoresCount > 0 ? (
@@ -5333,8 +5419,11 @@ export default function ZionAdminDashboardClient({
       </div>
 
       <StoreDetailsDrawer
+        key={selectedStore?.id ?? "closed"}
         store={selectedStore}
         canManageAccounts={canManageAccounts}
+        canManageWhatsappPins={canManageWhatsappPins}
+        whatsappPinRecoveryMetaEnabled={whatsappPinRecoveryMetaEnabled}
         onClose={() => setSelectedStore(null)}
         onResendFirstAccess={handleResendFirstAccess}
         onToggleAccountAccess={handleToggleAccountAccess}
