@@ -30,6 +30,11 @@ import {
 } from "./overview-availability";
 import { selectRecentAiErrors } from "./recent-ai-errors";
 import { classifyAiRunEvent, getAiRunGuidance, shouldShowAiRunCause } from "./ai-run-classification";
+import {
+  formatOperationalHealthIssueLabel,
+  getOperationalHealthEmptyGuidance,
+  getOperationalHealthIssueGuidance,
+} from "./operational-health-guidance";
 // Sem pendências operacionais críticas remains represented by the shared operational summary helper.
 import {
   compareOperationalStores,
@@ -1047,13 +1052,7 @@ export function getStoreOperationalHealthIssueLabels(
   health: StoreOperationalHealth | null | undefined,
 ) {
   return (health?.issues ?? []).map((issue) => {
-    const baseLabel =
-      STORE_OPERATIONAL_HEALTH_ISSUE_LABELS[issue.code] ??
-      `Ocorrência operacional não reconhecida: ${issue.code}`;
-
-    return issue.count > 1
-      ? `${baseLabel} (${issue.count})`
-      : baseLabel;
+    return formatOperationalHealthIssueLabel(issue, STORE_OPERATIONAL_HEALTH_ISSUE_LABELS);
   });
 }
 
@@ -2016,7 +2015,29 @@ function StoreDetailsDrawer({
               />
             </div>
 
-            {operationalHealthState === "healthy" ? (
+            {operationalHealthIssueLabels.length > 0 ? (
+              <>
+                <ul className="mt-3 space-y-1 text-xs leading-5 text-zinc-400">
+                  {(operationalHealth?.issues ?? []).map((issue, index) => (
+                    <li key={`${issue.code}-${issue.scope}`}>
+                      <div>
+                        • {operationalHealthIssueLabels[index]}
+                      </div>
+                      {issue.scope === "assistant" && (
+                        <div className="pl-3 text-zinc-500">
+                          {getOperationalHealthIssueGuidance(issue)}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {operationalHealthState === "unknown" && (
+                  <p className="mt-3 text-xs leading-5 text-amber-200">
+                    Não foi possível verificar completamente a saúde operacional desta loja.
+                  </p>
+                )}
+              </>
+            ) : operationalHealthState === "healthy" ? (
               <p className="mt-3 text-xs leading-5 text-zinc-500">
                 Nenhum problema operacional persistido foi detectado nas fontes monitoradas.
               </p>
@@ -2024,13 +2045,14 @@ function StoreDetailsDrawer({
               <p className="mt-3 text-xs leading-5 text-amber-200">
                 Não foi possível verificar completamente a saúde operacional desta loja.
               </p>
-            ) : operationalHealthIssueLabels.length > 0 ? (
-              <ul className="mt-3 space-y-1 text-xs leading-5 text-zinc-400">
-                {operationalHealthIssueLabels.map((issue) => (
-                  <li key={issue}>• {issue}</li>
-                ))}
-              </ul>
-            ) : null}
+            ) : (
+              <p className="mt-3 text-xs leading-5 text-zinc-500">
+                {getOperationalHealthEmptyGuidance({
+                  healthState: operationalHealthState,
+                  assistantState: operationalHealth?.assistant?.state ?? "unknown",
+                })}
+              </p>
+            )}
 
             <div className="mt-3 rounded-xl border border-white/10 bg-zinc-950/35 p-3 text-[11px] leading-5 text-zinc-500">
               <div>
