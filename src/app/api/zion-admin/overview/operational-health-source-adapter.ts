@@ -2,6 +2,7 @@ import type {
   AiLatestRunState,
   StoreOperationalHealthInput,
 } from "./operational-health-resolution";
+import type { CommercialActionClassification } from "./commercial-action-classification";
 
 export type OperationalHealthSourceThresholds = {
   whatsappInboundStaleMs: number;
@@ -81,6 +82,7 @@ export type OperationalHealthSources = {
   responsibleNotificationRows: ResponsibleNotificationHealthRow[] | null;
   appointmentRows: AppointmentHealthRow[] | null;
   postAppointmentFollowupRows: PostAppointmentFollowupHealthRow[] | null;
+  commercialActionClassificationsByStoreId?: ReadonlyMap<string, CommercialActionClassification> | null;
 };
 
 function cleanText(value: unknown) {
@@ -173,6 +175,14 @@ function createEmptyInput(): StoreOperationalHealthInput {
     operations: {
       overdueAppointments: 0,
       overduePostAppointmentFollowups: 0,
+    },
+    commercial: {
+      sourceAvailability: "unavailable",
+      processingErrors: null,
+      pendingUnconfirmed: null,
+      processedRecorded: null,
+      invalid: null,
+      noActionsObserved: false,
     },
   };
 }
@@ -503,6 +513,38 @@ function applyAiRunQueue(args: {
   }
 }
 
+function applyCommercialActions(args: {
+  inputs: Map<string, StoreOperationalHealthInput>;
+  classifications: ReadonlyMap<string, CommercialActionClassification> | null | undefined;
+}) {
+  for (const [storeId, input] of args.inputs) {
+    const classification = args.classifications?.get(storeId);
+
+    if (!classification) {
+      input.commercial = {
+        sourceAvailability: "unavailable",
+        processingErrors: null,
+        pendingUnconfirmed: null,
+        processedRecorded: null,
+        invalid: null,
+        noActionsObserved: false,
+      };
+      continue;
+    }
+
+    input.commercial = {
+      sourceAvailability: classification.availability,
+      processingErrors: classification.observedCounts.processingErrors,
+      pendingUnconfirmed: classification.observedCounts.pendingUnconfirmed,
+      processedRecorded: classification.observedCounts.processedRecorded,
+      invalid: classification.observedCounts.invalid,
+      noActionsObserved: classification.occurrences.some(
+        (occurrence) => occurrence.code === "no_actions_observed",
+      ),
+    };
+  }
+}
+
 function applyAssistantOperationalQueue(args: {
   inputs: Map<string, StoreOperationalHealthInput>;
   rows: AssistantOperationalQueueHealthRow[] | null;
@@ -784,6 +826,11 @@ export function buildStoreOperationalHealthInputs(args: {
     rows: args.sources.aiRunQueueRows,
     nowMs,
     thresholds: args.thresholds,
+  });
+
+  applyCommercialActions({
+    inputs,
+    classifications: args.sources.commercialActionClassificationsByStoreId,
   });
 
   applyAssistantOperationalQueue({

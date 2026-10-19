@@ -29,6 +29,15 @@ const base = (overrides = {}) => ({
     overduePostAppointmentFollowups: 0,
     ...(overrides.operations || {}),
   },
+  commercial: {
+    sourceAvailability: "available",
+    processingErrors: 0,
+    pendingUnconfirmed: 0,
+    processedRecorded: 1,
+    invalid: 0,
+    noActionsObserved: false,
+    ...(overrides.commercial || {}),
+  },
 });
 
 const tests = [
@@ -60,6 +69,11 @@ const tests = [
   ["negative count fails closed", base({ assistant: { failedTasks: -1 } }), "unknown"],
   ["nan count fails closed", base({ operations: { overdueAppointments: Number.NaN } }), "unknown"],
   ["fractional count fails closed", base({ operations: { overdueAppointments: 0.5 } }), "unknown"],
+  ["commercial error is independent from AI", base({ commercial: { processingErrors: 1 } }), "broken"],
+  ["commercial pending is not an error", base({ commercial: { pendingUnconfirmed: 1, processedRecorded: 0 } }), "healthy"],
+  ["commercial empty source is unknown", base({ commercial: { processedRecorded: 0, noActionsObserved: true } }), "unknown"],
+  ["commercial partial source remains unknown", base({ commercial: { sourceAvailability: "partial" } }), "unknown"],
+  ["commercial invalid evidence is not healthy", base({ commercial: { invalid: 1 } }), "unknown"],
 ];
 
 for (const [name, input, expectedState] of tests) {

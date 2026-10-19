@@ -8,6 +8,15 @@ export type StoreAiOperationalState =
   | StoreOperationalHealthState
   | "idle";
 
+export type StoreCommercialOperationalInput = {
+  sourceAvailability: "available" | "partial" | "unavailable";
+  processingErrors: MetricCount;
+  pendingUnconfirmed: MetricCount;
+  processedRecorded: MetricCount;
+  invalid: MetricCount;
+  noActionsObserved: boolean;
+};
+
 export type StoreOperationalHealthIssueCode =
   | "whatsapp_inbound_stale"
   | "whatsapp_inbound_error"
@@ -19,6 +28,10 @@ export type StoreOperationalHealthIssueCode =
   | "assistant_task_failed"
   | "assistant_task_stale_processing"
   | "assistant_task_stale_pending"
+  | "commercial_action_processing_error"
+  | "commercial_action_invalid"
+  | "commercial_action_source_partial"
+  | "commercial_action_source_unavailable"
   | "responsible_notification_failed"
   | "responsible_notification_uncertain"
   | "responsible_notification_stale_processing"
@@ -28,7 +41,7 @@ export type StoreOperationalHealthIssueCode =
 export type StoreOperationalHealthIssue = {
   code: StoreOperationalHealthIssueCode;
   severity: "warning" | "error";
-  scope: "whatsapp" | "ai" | "assistant" | "schedule" | "followup";
+  scope: "whatsapp" | "ai" | "assistant" | "commercial" | "schedule" | "followup";
   count: number;
 };
 
@@ -60,6 +73,7 @@ export type StoreOperationalHealthInput = {
     uncertainResponsibleNotifications: MetricCount;
     staleResponsibleNotifications: MetricCount;
   };
+  commercial: StoreCommercialOperationalInput;
   operations: {
     overdueAppointments: MetricCount;
     overduePostAppointmentFollowups: MetricCount;
@@ -77,6 +91,9 @@ export type StoreOperationalHealth = {
     state: StoreAiOperationalState;
   };
   assistant: StoreOperationalHealthInput["assistant"] & {
+    state: StoreOperationalHealthState;
+  };
+  commercial: StoreOperationalHealthInput["commercial"] & {
     state: StoreOperationalHealthState;
   };
   operations: StoreOperationalHealthInput["operations"] & {
@@ -161,6 +178,28 @@ export function resolveStoreOperationalHealth(
   const aiIssues: StoreOperationalHealthIssue[] = [];
   const assistantIssues: StoreOperationalHealthIssue[] = [];
   const operationsIssues: StoreOperationalHealthIssue[] = [];
+  const commercialIssues: StoreOperationalHealthIssue[] = [];
+
+  pushCountIssue({
+    issues: commercialIssues,
+    count: input.commercial.processingErrors,
+    code: "commercial_action_processing_error",
+    severity: "error",
+    scope: "commercial",
+  });
+  pushCountIssue({
+    issues: commercialIssues,
+    count: input.commercial.invalid,
+    code: "commercial_action_invalid",
+    severity: "warning",
+    scope: "commercial",
+  });
+  if (input.commercial.sourceAvailability === "partial") {
+    commercialIssues.push({ code: "commercial_action_source_partial", severity: "warning", scope: "commercial", count: 1 });
+  }
+  if (input.commercial.sourceAvailability === "unavailable") {
+    commercialIssues.push({ code: "commercial_action_source_unavailable", severity: "warning", scope: "commercial", count: 1 });
+  }
 
   pushCountIssue({
     issues: whatsappIssues,
@@ -315,6 +354,17 @@ export function resolveStoreOperationalHealth(
     input.operations.overduePostAppointmentFollowups,
   ].some(isUnavailableCount);
 
+  const commercialUnavailable =
+    input.commercial.sourceAvailability !== "available" ||
+    input.commercial.noActionsObserved ||
+    (input.commercial.invalid !== null && input.commercial.invalid > 0) ||
+    [
+      input.commercial.processingErrors,
+      input.commercial.pendingUnconfirmed,
+      input.commercial.processedRecorded,
+      input.commercial.invalid,
+    ].some(isUnavailableCount);
+
   const whatsappState = resolveDimensionState({
     issues: whatsappIssues,
     unavailable: whatsappUnavailable,
@@ -340,10 +390,16 @@ export function resolveStoreOperationalHealth(
     unavailable: operationsUnavailable,
   });
 
+  const commercialState = resolveDimensionState({
+    issues: commercialIssues,
+    unavailable: commercialUnavailable,
+  });
+
   const issues = [
     ...whatsappIssues,
     ...aiIssues,
     ...assistantIssues,
+    ...commercialIssues,
     ...operationsIssues,
   ];
 
@@ -352,6 +408,7 @@ export function resolveStoreOperationalHealth(
     whatsappState === "unknown" ||
     aiState === "unknown" ||
     assistantState === "unknown" ||
+    commercialState === "unknown" ||
     operationsState === "unknown";
   const hasWarning = issues.some((issue) => issue.severity === "warning");
 
@@ -376,6 +433,10 @@ export function resolveStoreOperationalHealth(
     assistant: {
       ...input.assistant,
       state: assistantState,
+    },
+    commercial: {
+      ...input.commercial,
+      state: commercialState,
     },
     operations: {
       ...input.operations,

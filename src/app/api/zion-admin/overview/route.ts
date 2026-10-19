@@ -43,6 +43,8 @@ import {
   sanitizeTechnicalPreview,
 } from "./overview-sensitive-data";
 import { appendOverviewDiagnostic } from "./overview-diagnostic-association";
+import { buildCommercialActionEvidenceByStore } from "./commercial-action-evidence";
+import { classifyCommercialActionEvidence } from "./commercial-action-classification";
 
 type StoreRow = {
   id: string;
@@ -1881,6 +1883,24 @@ export async function GET() {
       operationalStores.map((store) => store.id),
     );
 
+    const commercialActionEvidenceByStoreId =
+      buildCommercialActionEvidenceByStore({
+        rows:
+          salesActionQueueIssueRows.error == null
+            ? salesActionQueueIssueRows.rows
+            : [],
+        storeIds: operationalStoreIds,
+        availability: salesActionQueueIssueRows.availability,
+      });
+    const commercialActionClassificationsByStoreId = new Map(
+      Array.from(commercialActionEvidenceByStoreId.entries()).map(
+        ([storeId, summary]) => [
+          storeId,
+          classifyCommercialActionEvidence(summary),
+        ] as const,
+      ),
+    );
+
     const operationalHealthInputsByStoreId =
       buildStoreOperationalHealthInputs({
         storeIds: operationalStores.map((store) => store.id),
@@ -1915,6 +1935,7 @@ export async function GET() {
             postAppointmentFollowupHealthRows.error == null
               ? postAppointmentFollowupHealthRows.rows
               : null,
+          commercialActionClassificationsByStoreId,
         },
       });
 
