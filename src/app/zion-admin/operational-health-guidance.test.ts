@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
   formatOperationalHealthIssueLabel,
+  getOperationalHealthCommercialEvidenceText,
   getOperationalHealthEmptyGuidance,
   getOperationalHealthIssueGuidance,
 } from "./operational-health-guidance";
@@ -35,6 +36,9 @@ const guidanceCases = [
   ["responsible_notification_failed", "notificação", "separadamente"],
   ["responsible_notification_uncertain", "confirmação disponível", "reenvio sem confirmação"],
   ["responsible_notification_stale_processing", "situação atualizada", "bloqueio definitivo"],
+  ["commercial_action_processing_error", "Problema confirmado", "falha definitiva"],
+  ["commercial_action_invalid", "evid", "inv"],
+  ["commercial_action_source_partial", "verifica", "incompleta"],
 ] as const;
 
 for (const [code, expected, expectedAlso] of guidanceCases) {
@@ -62,4 +66,35 @@ for (const [code, expected, expectedAlso] of guidanceCases) {
   assert.doesNotMatch(result, /saúde integral|saudável em todas/);
 }
 
-console.log(`zion-admin-operational-health-guidance: ${guidanceCases.length + 7} tests passed`);
+{
+  const result = getOperationalHealthCommercialEvidenceText({
+    state: "broken",
+    sourceAvailability: "partial",
+    processingErrors: 1,
+    pendingUnconfirmed: 2,
+    processedRecorded: 3,
+    invalid: 1,
+    noActionsObserved: false,
+  });
+  assert.match(result, /observadas/);
+  assert.match(result, /1 com erro/);
+  assert.match(result, /contagens .*observadas/);
+}
+
+{
+  const result = getOperationalHealthCommercialEvidenceText({
+    state: "unknown",
+    sourceAvailability: "available",
+    processingErrors: 0,
+    pendingUnconfirmed: 0,
+    processedRecorded: 0,
+    invalid: 0,
+    noActionsObserved: true,
+  });
+  assert.match(result, /nenhuma .*observada/);
+  assert.match(result, /n.o comprova sa.de comercial/);
+}
+
+assert.match(getOperationalHealthCommercialEvidenceText(undefined), /verifica.*n.o dispon.vel/);
+
+console.log(`zion-admin-operational-health-guidance: ${guidanceCases.length + 10} tests passed`);

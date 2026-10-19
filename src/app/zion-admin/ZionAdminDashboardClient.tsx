@@ -32,6 +32,7 @@ import { selectRecentAiErrors } from "./recent-ai-errors";
 import { classifyAiRunEvent, getAiRunGuidance, shouldShowAiRunCause } from "./ai-run-classification";
 import {
   formatOperationalHealthIssueLabel,
+  getOperationalHealthCommercialEvidenceText,
   getOperationalHealthEmptyGuidance,
   getOperationalHealthIssueGuidance,
 } from "./operational-health-guidance";
@@ -104,8 +105,18 @@ export type StoreAiOperationalHealthState =
 export type StoreOperationalHealthIssue = {
   code: string;
   severity: "warning" | "error";
-  scope: "whatsapp" | "ai" | "assistant" | "schedule" | "followup";
+  scope: "whatsapp" | "ai" | "assistant" | "commercial" | "schedule" | "followup";
   count: number;
+};
+
+export type StoreCommercialOperationalHealth = {
+  state: StoreOperationalHealthState;
+  sourceAvailability: "available" | "partial" | "unavailable";
+  processingErrors: number | null;
+  pendingUnconfirmed: number | null;
+  processedRecorded: number | null;
+  invalid: number | null;
+  noActionsObserved: boolean;
 };
 
 export type StoreOperationalHealth = {
@@ -121,6 +132,7 @@ export type StoreOperationalHealth = {
   assistant: {
     state: StoreOperationalHealthState;
   };
+  commercial?: StoreCommercialOperationalHealth | null;
   operations: {
     state: StoreOperationalHealthState;
   };
@@ -1027,6 +1039,10 @@ const STORE_OPERATIONAL_HEALTH_ISSUE_LABELS: Record<string, string> = {
   assistant_task_stale_pending: "Tarefa da Assistente aguardando além do esperado",
   responsible_notification_failed: "Notificação ao responsável falhou",
   responsible_notification_uncertain: "Notificação ao responsável com resultado incerto",
+  commercial_action_processing_error: "Erro registrado no processamento de a\u00e7\u00e3o comercial",
+  commercial_action_invalid: "Evid\u00eancia inv\u00e1lida de a\u00e7\u00e3o comercial",
+  commercial_action_source_partial: "Verifica\u00e7\u00e3o parcial das a\u00e7\u00f5es comerciais",
+  commercial_action_source_unavailable: "Fonte de a\u00e7\u00f5es comerciais indispon\u00edvel",
   responsible_notification_stale_processing:
     "Notificação ao responsável acima do intervalo monitorado",
   appointment_overdue: "Compromisso permaneceu aberto após o horário previsto",
@@ -1844,6 +1860,8 @@ function StoreDetailsDrawer({
   const operationalHealthState = operationalHealth?.state ?? "unknown";
   const operationalHealthIssueLabels =
     getStoreOperationalHealthIssueLabels(operationalHealth);
+  const commercialEvidenceText =
+    getOperationalHealthCommercialEvidenceText(operationalHealth?.commercial);
   const settingsReadiness = store.settingsReadiness ?? null;
   const settingsReadinessState =
     settingsReadiness?.overall ?? "unknown";
@@ -1990,7 +2008,7 @@ function StoreDetailsDrawer({
               </span>
             </div>
 
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
               <DetailItem
                 label="WhatsApp"
                 value={STORE_OPERATIONAL_HEALTH_STATE_LABELS[
@@ -2013,7 +2031,17 @@ function StoreDetailsDrawer({
                   operationalHealth?.operations?.state ?? "unknown"
                 ]}
               />
+              <DetailItem
+                label="A\u00e7\u00f5es comerciais"
+                value={STORE_OPERATIONAL_HEALTH_STATE_LABELS[
+                  operationalHealth?.commercial?.state ?? "unknown"
+                ]}
+              />
             </div>
+
+            <p className="mt-3 text-xs leading-5 text-zinc-500">
+              {commercialEvidenceText}
+            </p>
 
             {operationalHealthIssueLabels.length > 0 ? (
               <>
@@ -2023,7 +2051,7 @@ function StoreDetailsDrawer({
                       <div>
                         • {operationalHealthIssueLabels[index]}
                       </div>
-                      {issue.scope === "assistant" && (
+                      {(issue.scope === "assistant" || issue.scope === "commercial") && (
                         <div className="pl-3 text-zinc-500">
                           {getOperationalHealthIssueGuidance(issue)}
                         </div>
@@ -2287,9 +2315,9 @@ function StoreDetailsDrawer({
               help="Mensagens comerciais totais da loja"
             />
             <DetailItem
-              label="Mensagens IA vendedora"
+              label="Mensagens da IA registradas"
               value={formatNumber(store.totalSalesAiMessages)}
-              help="Mensagens comerciais enviadas pela IA"
+              help="Mensagens da IA registradas localmente"
             />
             <DetailItem
               label="Mensagens IA assistente"
@@ -2515,9 +2543,9 @@ export function OverviewDetailsDrawer({
             </h3>
             <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
-                label="Mensagens IA vendedora"
+                label="Mensagens da IA registradas"
                 value={formatNumber(selectedAiStore.totalSalesAiMessages)}
-                help="Mensagens comerciais enviadas pela IA para clientes"
+                help="Mensagens da IA registradas localmente"
               />
               <DetailItem
                 label="Execuções comerciais"
@@ -2870,7 +2898,7 @@ export function OverviewDetailsDrawer({
                 {formatOverviewMetric(store.successfulAiRuns, getStoreAiAvailability(store, "runs"))} concluídas · {formatOverviewMetric(store.failedAiRuns, getStoreAiAvailability(store, "runs"))} erro(s)
               </div>
               <div className="mt-0.5 text-xs text-zinc-500">
-                {formatNumber(store.totalSalesAiMessages)} mensagens comerciais
+                {formatNumber(store.totalSalesAiMessages)} mensagens da IA registradas
               </div>
             </div>
             <div className="rounded-xl border border-white/10 bg-zinc-950/35 px-3 py-2">
@@ -3241,7 +3269,7 @@ function OverviewInlineDetails({
 
               <div className="grid grid-cols-2 gap-2">
                 <DetailItem
-                  label="Msg IA vend."
+                  label="Msg IA registradas"
                   value={formatNumber(selectedStore.totalSalesAiMessages)}
                 />
                 <DetailItem
@@ -3604,9 +3632,9 @@ function OverviewInlineDetails({
         {selectedAiDetail === "messages" ? (
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <DetailItem
-              label="IA vendedora"
+              label="IA vendedora (registros)"
               value={formatNumber(data?.totals.salesAiMessages)}
-              help="Mensagens comerciais enviadas pela IA para clientes"
+              help="Mensagens da IA registradas localmente"
             />
             <DetailItem
               label="IA assistente"

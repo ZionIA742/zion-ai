@@ -415,6 +415,30 @@ const tests: TestCase[] = [
       assert.equal(recoveryBlock.includes("window.location"), false);
     },
   },
+  {
+    name: "commercial operational health remains separate and safely labeled",
+    run: () => {
+      const source = readSource();
+
+      for (const token of [
+        'scope: "whatsapp" | "ai" | "assistant" | "commercial"',
+        "commercial_action_processing_error",
+        "commercial_action_invalid",
+        "commercial_action_source_partial",
+        "commercial_action_source_unavailable",
+        "A\\u00e7\\u00f5es comerciais",
+        "operationalHealth?.commercial?.state ?? \"unknown\"",
+        "getOperationalHealthCommercialEvidenceText",
+      ]) {
+        assert.equal(source.includes(token), true, `missing commercial UI token: ${token}`);
+      }
+
+      assert.equal(source.includes("processing_error"), true);
+      assert.equal(source.includes("retry"), false);
+      assert.equal(source.includes("Mensagens comerciais enviadas pela IA"), false);
+      assert.equal(source.includes("Mensagens da IA registradas localmente"), true);
+    },
+  },
 ];
 
 async function run() {
