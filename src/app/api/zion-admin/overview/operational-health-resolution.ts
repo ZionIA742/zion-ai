@@ -231,7 +231,7 @@ export function resolveStoreOperationalHealth(
     issues: assistantIssues,
     count: input.assistant.staleProcessingTasks,
     code: "assistant_task_stale_processing",
-    severity: "error",
+    severity: "warning",
     scope: "assistant",
   });
 
@@ -263,7 +263,7 @@ export function resolveStoreOperationalHealth(
     issues: assistantIssues,
     count: input.assistant.staleResponsibleNotifications,
     code: "responsible_notification_stale_processing",
-    severity: "error",
+    severity: "warning",
     scope: "assistant",
   });
 

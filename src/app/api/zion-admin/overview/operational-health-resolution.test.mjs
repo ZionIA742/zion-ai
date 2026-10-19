@@ -42,11 +42,11 @@ const tests = [
   ["latest ai run failed", base({ ai: { latestRunState: "failed" } }), "broken"],
   ["ai queue stale", base({ ai: { staleQueueItems: 1 } }), "warning"],
   ["assistant task failed", base({ assistant: { failedTasks: 1 } }), "broken"],
-  ["assistant task stale processing", base({ assistant: { staleProcessingTasks: 1 } }), "broken"],
+  ["assistant task stale processing", base({ assistant: { staleProcessingTasks: 1 } }), "warning"],
   ["assistant task stale pending", base({ assistant: { stalePendingTasks: 1 } }), "warning"],
   ["responsible notification failed", base({ assistant: { failedResponsibleNotifications: 1 } }), "broken"],
   ["responsible notification uncertain", base({ assistant: { uncertainResponsibleNotifications: 1 } }), "broken"],
-  ["responsible notification stale processing", base({ assistant: { staleResponsibleNotifications: 1 } }), "broken"],
+  ["responsible notification stale processing", base({ assistant: { staleResponsibleNotifications: 1 } }), "warning"],
 
   ["appointment overdue", base({ operations: { overdueAppointments: 1 } }), "warning"],
   ["post appointment followup overdue", base({ operations: { overduePostAppointmentFollowups: 1 } }), "warning"],

@@ -1018,12 +1018,12 @@ const STORE_OPERATIONAL_HEALTH_ISSUE_LABELS: Record<string, string> = {
   ai_latest_run_failed: "Última execução da IA falhou",
   ai_run_queue_stale: "Execução da IA aguardando além do esperado",
   assistant_task_failed: "Tarefa da Assistente falhou",
-  assistant_task_stale_processing: "Tarefa da Assistente presa em processamento",
+  assistant_task_stale_processing: "Tarefa da Assistente acima do intervalo monitorado",
   assistant_task_stale_pending: "Tarefa da Assistente aguardando além do esperado",
   responsible_notification_failed: "Notificação ao responsável falhou",
   responsible_notification_uncertain: "Notificação ao responsável com resultado incerto",
   responsible_notification_stale_processing:
-    "Notificação ao responsável presa em processamento",
+    "Notificação ao responsável acima do intervalo monitorado",
   appointment_overdue: "Compromisso permaneceu aberto após o horário previsto",
   post_appointment_followup_overdue:
     "Acompanhamento pós-compromisso está atrasado",
@@ -2047,7 +2047,8 @@ function StoreDetailsDrawer({
               </div>
               <div className="mt-1">
                 Este painel identifica problemas pelos registros persistidos e não afirma que
-                serviços externos ou workers estejam online em tempo real.
+                serviços externos ou workers estejam online em tempo real. Os limites de tempo
+                são critérios de monitoramento e não comprovam que uma tarefa esteja travada.
               </div>
             </div>
           </div>

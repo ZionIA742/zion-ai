@@ -322,6 +322,24 @@ tests.push(() => {
 tests.push(() => {
   const input = store(build({
     sources: {
+      assistantOperationalQueueRows: [{
+        store_id: "store-1",
+        status: "future_status",
+        available_at: null,
+        locked_at: null,
+        created_at: "2026-10-06T17:59:00.000Z",
+      }],
+    },
+  }));
+
+  assert.equal(input.assistant.failedTasks, null);
+  assert.equal(input.assistant.staleProcessingTasks, null);
+  assert.equal(input.assistant.stalePendingTasks, null);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
       responsibleNotificationRows: [
         {
           store_id: "store-1",
@@ -345,6 +363,22 @@ tests.push(() => {
   assert.equal(input.assistant.failedResponsibleNotifications, 1);
   assert.equal(input.assistant.uncertainResponsibleNotifications, 1);
   assert.equal(input.assistant.staleResponsibleNotifications, 1);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      responsibleNotificationRows: [{
+        store_id: "store-1",
+        status: "future_status",
+        locked_at: null,
+      }],
+    },
+  }));
+
+  assert.equal(input.assistant.failedResponsibleNotifications, null);
+  assert.equal(input.assistant.uncertainResponsibleNotifications, null);
+  assert.equal(input.assistant.staleResponsibleNotifications, null);
 });
 
 tests.push(() => {

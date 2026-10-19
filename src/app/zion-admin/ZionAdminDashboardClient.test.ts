@@ -158,6 +158,11 @@ const tests: TestCase[] = [
         );
       }
 
+      assert.equal(source.includes("presa em processamento"), false);
+      assert.equal(source.includes("acima do intervalo monitorado"), true);
+      assert.equal(source.includes("critérios de monitoramento"), true);
+      assert.equal(source.includes("não comprovam que uma tarefa esteja travada"), true);
+
       assert.equal(
         source.includes(
           'const operationalHealthState = store.operationalHealth?.state ?? "unknown";',

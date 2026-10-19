@@ -248,6 +248,22 @@ function markAllStoresUnknown(
   }
 }
 
+function markAssistantQueueStateUnknown(input: StoreOperationalHealthInput | null) {
+  if (!input) return;
+
+  input.assistant.failedTasks = null;
+  input.assistant.staleProcessingTasks = null;
+  input.assistant.stalePendingTasks = null;
+}
+
+function markResponsibleNotificationStateUnknown(input: StoreOperationalHealthInput | null) {
+  if (!input) return;
+
+  input.assistant.failedResponsibleNotifications = null;
+  input.assistant.uncertainResponsibleNotifications = null;
+  input.assistant.staleResponsibleNotifications = null;
+}
+
 function isAtOrBefore(value: string | null, cutoffMs: number) {
   const timestamp = parseTimestamp(value);
 
@@ -497,6 +513,12 @@ function applyAssistantOperationalQueue(args: {
       } else if (stale) {
         increment(input, "assistant", "stalePendingTasks");
       }
+
+      continue;
+    }
+
+    if (status !== "cancelled" && status !== "resolved") {
+      markAssistantQueueStateUnknown(input);
     }
   }
 }
@@ -543,6 +565,12 @@ function applyResponsibleNotifications(args: {
       } else if (stale) {
         increment(input, "assistant", "staleResponsibleNotifications");
       }
+
+      continue;
+    }
+
+    if (status !== "ready_to_send" && status !== "materialized" && status !== "sent") {
+      markResponsibleNotificationStateUnknown(input);
     }
   }
 }
