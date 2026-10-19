@@ -223,6 +223,11 @@ function increment(
   target[key] = current + 1;
 }
 
+const unknownEvidenceByInput = new WeakMap<
+  StoreOperationalHealthInput,
+  Set<string>
+>();
+
 function markUnknown(
   input: StoreOperationalHealthInput | null,
   dimension: "whatsapp" | "ai" | "assistant" | "operations",
@@ -232,8 +237,9 @@ function markUnknown(
     return;
   }
 
-  const target = input[dimension] as unknown as Record<string, unknown>;
-  target[key] = null;
+  const unknownKeys = unknownEvidenceByInput.get(input) ?? new Set<string>();
+  unknownKeys.add(`${dimension}.${key}`);
+  unknownEvidenceByInput.set(input, unknownKeys);
 }
 
 function markAllStoresUnknown(
@@ -248,20 +254,43 @@ function markAllStoresUnknown(
   }
 }
 
+function finalizeUnknownEvidence(
+  inputs: Map<string, StoreOperationalHealthInput>,
+) {
+  for (const input of inputs.values()) {
+    const unknownKeys = unknownEvidenceByInput.get(input);
+    if (!unknownKeys) continue;
+
+    for (const key of unknownKeys) {
+      const [dimension, metric] = key.split(".") as [
+        "whatsapp" | "ai" | "assistant" | "operations",
+        string,
+      ];
+      const target = input[dimension] as unknown as Record<string, unknown>;
+
+      if (target[metric] === 0) {
+        target[metric] = null;
+      }
+    }
+
+    unknownEvidenceByInput.delete(input);
+  }
+}
+
 function markAssistantQueueStateUnknown(input: StoreOperationalHealthInput | null) {
   if (!input) return;
 
-  input.assistant.failedTasks = null;
-  input.assistant.staleProcessingTasks = null;
-  input.assistant.stalePendingTasks = null;
+  markUnknown(input, "assistant", "failedTasks");
+  markUnknown(input, "assistant", "staleProcessingTasks");
+  markUnknown(input, "assistant", "stalePendingTasks");
 }
 
 function markResponsibleNotificationStateUnknown(input: StoreOperationalHealthInput | null) {
   if (!input) return;
 
-  input.assistant.failedResponsibleNotifications = null;
-  input.assistant.uncertainResponsibleNotifications = null;
-  input.assistant.staleResponsibleNotifications = null;
+  markUnknown(input, "assistant", "failedResponsibleNotifications");
+  markUnknown(input, "assistant", "uncertainResponsibleNotifications");
+  markUnknown(input, "assistant", "staleResponsibleNotifications");
 }
 
 function isAtOrBefore(value: string | null, cutoffMs: number) {
@@ -334,7 +363,11 @@ function applyWhatsappOutbound(args: {
     const input = getInput(args.inputs, row.store_id);
     if (!input) continue;
 
-    const status = normalizeStatus(row.outbound_delivery_state);
+    // The outbound contract treats a null state as the initial pending state.
+    const status =
+      row.outbound_delivery_state === null
+        ? "pending"
+        : normalizeStatus(row.outbound_delivery_state);
 
     if (status === "failed") {
       increment(input, "whatsapp", "failedOutboundMessages");
@@ -367,7 +400,15 @@ function applyWhatsappOutbound(args: {
       } else if (stale) {
         increment(input, "whatsapp", "staleOutboundMessages");
       }
+
+      continue;
     }
+
+    if (status === "sent") {
+      continue;
+    }
+
+    markUnknown(input, "whatsapp", "staleOutboundMessages");
   }
 }
 
@@ -772,6 +813,8 @@ export function buildStoreOperationalHealthInputs(args: {
     nowMs,
     thresholds: args.thresholds,
   });
+
+  finalizeUnknownEvidence(inputs);
 
   return inputs;
 }

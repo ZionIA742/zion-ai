@@ -494,6 +494,214 @@ tests.push(() => {
   );
 });
 
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      assistantOperationalQueueRows: [
+        { store_id: "store-1", status: "failed", available_at: null, locked_at: null, created_at: NOW.toISOString() },
+        { store_id: "store-1", status: "future_status", available_at: null, locked_at: null, created_at: NOW.toISOString() },
+      ],
+    },
+  }));
+
+  assert.equal(input.assistant.failedTasks, 1);
+  assert.equal(input.assistant.staleProcessingTasks, null);
+  assert.equal(input.assistant.stalePendingTasks, null);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      assistantOperationalQueueRows: [
+        { store_id: "store-1", status: "future_status", available_at: null, locked_at: null, created_at: NOW.toISOString() },
+        { store_id: "store-1", status: "failed", available_at: null, locked_at: null, created_at: NOW.toISOString() },
+      ],
+    },
+  }));
+
+  assert.equal(input.assistant.failedTasks, 1);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      responsibleNotificationRows: [
+        { store_id: "store-1", status: "failed", locked_at: null },
+        { store_id: "store-1", status: "future_status", locked_at: null },
+      ],
+    },
+  }));
+
+  assert.equal(input.assistant.failedResponsibleNotifications, 1);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      responsibleNotificationRows: [
+        { store_id: "store-1", status: "future_status", locked_at: null },
+        { store_id: "store-1", status: "failed", locked_at: null },
+      ],
+    },
+  }));
+
+  assert.equal(input.assistant.failedResponsibleNotifications, 1);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      responsibleNotificationRows: [
+        { store_id: "store-1", status: "uncertain", locked_at: null },
+      ],
+    },
+  }));
+
+  assert.equal(input.assistant.uncertainResponsibleNotifications, 1);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      whatsappOutboundRows: [{
+        store_id: "store-1",
+        outbound_delivery_state: "future_state",
+        outbound_claimed_at: null,
+        outbound_attempt_started_at: null,
+        created_at: NOW.toISOString(),
+      }],
+    },
+  }));
+
+  assert.equal(input.whatsapp.failedOutboundMessages, 0);
+  assert.equal(input.whatsapp.uncertainOutboundMessages, 0);
+  assert.equal(input.whatsapp.staleOutboundMessages, null);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      whatsappOutboundRows: [
+        {
+          store_id: "store-1",
+          outbound_delivery_state: "failed",
+          outbound_claimed_at: null,
+          outbound_attempt_started_at: null,
+          created_at: NOW.toISOString(),
+        },
+        {
+          store_id: "store-1",
+          outbound_delivery_state: "future_state",
+          outbound_claimed_at: null,
+          outbound_attempt_started_at: null,
+          created_at: NOW.toISOString(),
+        },
+      ],
+    },
+  }));
+
+  assert.equal(input.whatsapp.failedOutboundMessages, 1);
+  assert.equal(input.whatsapp.staleOutboundMessages, null);
+});
+
+tests.push(() => {
+  const baseRows = [
+    { store_id: "store-1", outbound_delivery_state: null, outbound_claimed_at: null, outbound_attempt_started_at: null, created_at: NOW.toISOString() },
+    { store_id: "store-1", outbound_delivery_state: "", outbound_claimed_at: null, outbound_attempt_started_at: null, created_at: NOW.toISOString() },
+    { store_id: "store-1", outbound_delivery_state: "   ", outbound_claimed_at: null, outbound_attempt_started_at: null, created_at: NOW.toISOString() },
+  ];
+  const first = store(build({ sources: { whatsappOutboundRows: baseRows } }));
+  const second = store(build({ sources: { whatsappOutboundRows: [...baseRows].reverse() } }));
+
+  assert.equal(first.whatsapp.staleOutboundMessages, null);
+  assert.equal(second.whatsapp.staleOutboundMessages, null);
+  assert.equal(first.ai.latestRunState, "none");
+  assert.equal(second.ai.latestRunState, "none");
+});
+
+tests.push(() => {
+  const rows = [
+    { store_id: "store-1", outbound_delivery_state: "failed", outbound_claimed_at: null, outbound_attempt_started_at: null, created_at: NOW.toISOString() },
+    { store_id: "store-1", outbound_delivery_state: "", outbound_claimed_at: null, outbound_attempt_started_at: null, created_at: NOW.toISOString() },
+  ];
+  const first = store(build({ sources: { whatsappOutboundRows: rows } }));
+  const second = store(build({ sources: { whatsappOutboundRows: [...rows].reverse() } }));
+
+  assert.equal(first.whatsapp.failedOutboundMessages, 1);
+  assert.equal(second.whatsapp.failedOutboundMessages, 1);
+  assert.equal(first.whatsapp.staleOutboundMessages, null);
+  assert.equal(second.whatsapp.staleOutboundMessages, null);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      whatsappOutboundRows: [
+        { store_id: "store-1", outbound_delivery_state: null, outbound_claimed_at: null, outbound_attempt_started_at: null, created_at: "2026-10-06T17:30:00.000Z" },
+        { store_id: "store-1", outbound_delivery_state: "sent", outbound_claimed_at: null, outbound_attempt_started_at: null, created_at: NOW.toISOString() },
+        { store_id: "store-1", outbound_delivery_state: "pending", outbound_claimed_at: null, outbound_attempt_started_at: null, created_at: "2026-10-06T17:30:00.000Z" },
+        { store_id: "store-1", outbound_delivery_state: "processing", outbound_claimed_at: "2026-10-06T17:30:00.000Z", outbound_attempt_started_at: null, created_at: NOW.toISOString() },
+      ],
+    },
+  }));
+
+  assert.equal(input.whatsapp.staleOutboundMessages, 3);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      aiRunRows: [
+        { store_id: "store-1", status: "failed", error: "failure", created_at: "2026-10-06T17:30:00.000Z" },
+        { store_id: "store-1", status: "succeeded", error: null, created_at: "not-a-date" },
+      ],
+    },
+  }));
+
+  assert.equal(input.ai.latestRunState, "unknown");
+});
+
+tests.push(() => {
+  const rows = [
+    { store_id: "store-1", received_at: "not-a-date", processed_at: null, processing_error: null },
+    { store_id: "store-1", received_at: "2026-10-06T17:40:00.000Z", processed_at: null, processing_error: null },
+  ];
+  const first = store(build({ sources: { whatsappInboxRows: rows } }));
+  const second = store(build({ sources: { whatsappInboxRows: [...rows].reverse() } }));
+
+  assert.equal(first.whatsapp.staleInboundEvents, 1);
+  assert.equal(second.whatsapp.staleInboundEvents, 1);
+});
+
+tests.push(() => {
+  const input = store(build({
+    sources: {
+      assistantOperationalQueueRows: null,
+      responsibleNotificationRows: [
+        { store_id: "store-1", status: "failed", locked_at: null },
+      ],
+    },
+  }));
+
+  assert.equal(input.assistant.failedTasks, null);
+  assert.equal(input.assistant.failedResponsibleNotifications, 1);
+});
+
+tests.push(() => {
+  const result = build({
+    storeIds: ["store-1", "store-2"],
+    sources: {
+      assistantOperationalQueueRows: [
+        { store_id: "store-1", status: "failed", available_at: null, locked_at: null, created_at: NOW.toISOString() },
+        { store_id: "store-2", status: "future_status", available_at: null, locked_at: null, created_at: NOW.toISOString() },
+      ],
+    },
+  });
+
+  assert.equal(store(result, "store-1").assistant.failedTasks, 1);
+  assert.equal(store(result, "store-2").assistant.failedTasks, null);
+});
+
 for (let index = 0; index < tests.length; index += 1) {
   tests[index]();
 }
