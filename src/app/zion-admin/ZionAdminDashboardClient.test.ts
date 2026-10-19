@@ -440,6 +440,42 @@ const tests: TestCase[] = [
       assert.equal(source.includes("Mensagens da IA registradas localmente"), true);
     },
   },
+  {
+    name: "global dashboard uses real section selection without removing existing store controls",
+    run: () => {
+      const source = readSource();
+
+      for (const token of [
+        "Centro administrativo",
+        "Seções administrativas",
+        "GlobalAlertsSection",
+        "Nenhuma loja sinalizada neste recorte.",
+        "loja(s) com atenção no recorte",
+        "activeGlobalSection",
+        'activeGlobalSection === section ? "page" : undefined',
+        "setActiveGlobalSection(section)",
+        'activeGlobalSection === "overview"',
+        'activeGlobalSection === "alerts"',
+        'activeGlobalSection === "stores"',
+        'activeGlobalSection === "comparisons"',
+        'type="compare"',
+        "Nova conta",
+        "WhatsappPinsSection",
+        "StoreDetailsDrawer",
+      ]) {
+        assert.equal(source.includes(token), true, `missing global dashboard token: ${token}`);
+      }
+
+      assert.equal(source.includes('href="#overview"'), false);
+      assert.equal(source.includes('href="#alerts"'), false);
+      assert.equal(source.includes('href="#stores"'), false);
+      assert.equal(source.includes('document.getElementById("comparisons")'), false);
+      assert.equal(source.includes("Nenhuma ocorrência crítica observada."), false);
+      assert.equal(source.includes("loja(s) com ocorrência monitorada"), false);
+      assert.equal(source.includes("setInterval("), false);
+      assert.equal(source.includes("/api/zion-admin/overview"), true);
+    },
+  },
 ];
 
 async function run() {

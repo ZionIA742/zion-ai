@@ -965,6 +965,81 @@ function AiRunEventList({
   );
 }
 
+function GlobalAlertsSection({
+  stores,
+  availability,
+}: {
+  stores: ZionAdminStore[];
+  availability?: unknown;
+}) {
+  const storesWithOperationalIssues = stores.filter(
+    (store) => getOperationalSummary(store).hasPotentialPending,
+  );
+
+  return (
+    <section
+      id="alerts"
+      className="scroll-mt-4 rounded-2xl border border-white/10 bg-white/[0.035] p-4"
+    >
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-200/70">
+            Monitoramento
+          </div>
+          <h2 className="mt-1 text-lg font-semibold text-zinc-50">Alertas</h2>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">
+            Ocorrências observadas nas fontes disponíveis, sem inferir causa ou entrega externa.
+          </p>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
+          <span className="font-semibold text-zinc-200">{formatNumber(storesWithOperationalIssues.length)}</span>{" "}
+          loja(s) com atenção no recorte
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
+        <AiRunEventList
+          title="Erros recentes da IA"
+          emptyText="Nenhum erro recente disponível no recorte carregado."
+          events={selectRecentAiErrors(stores)}
+          variant="error"
+          availability={availability}
+        />
+        <div className="rounded-2xl border border-white/10 bg-zinc-950/30 p-3">
+          <h3 className="text-sm font-semibold text-zinc-200">Lojas com atenção</h3>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">
+            A lista preserva o estado consolidado da API e não substitui os detalhes por loja.
+          </p>
+          <div className="mt-3 space-y-2">
+            {storesWithOperationalIssues.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-white/10 p-3 text-xs text-zinc-500">
+                Nenhuma loja sinalizada neste recorte.
+              </div>
+            ) : (
+              storesWithOperationalIssues.slice(0, 6).map((store) => (
+                <div
+                  key={store.id}
+                  className="rounded-xl border border-white/10 bg-white/[0.025] px-3 py-2"
+                >
+                  <div className="truncate text-sm font-semibold text-zinc-100">{store.name}</div>
+                  <div className="mt-0.5 text-xs text-zinc-500">
+                    {getOperationalSummary(store).label}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          {storesWithOperationalIssues.length > 6 ? (
+            <div className="mt-2 text-[11px] text-zinc-500">
+              Mais {storesWithOperationalIssues.length - 6} loja(s) na lista de lojas.
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function normalizeStatus(value: string | null | undefined) {
   return String(value || "")
     .trim()
@@ -4679,6 +4754,9 @@ export default function ZionAdminDashboardClient({
   );
   const [selectedOverview, setSelectedOverview] =
     useState<OverviewPanelKey | null>(null);
+  const [activeGlobalSection, setActiveGlobalSection] = useState<
+    "overview" | "alerts" | "stores" | "comparisons"
+  >("overview");
   const [activeSearch, setActiveSearch] = useState("");
   const [inactiveSearch, setInactiveSearch] = useState("");
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -5022,7 +5100,47 @@ export default function ZionAdminDashboardClient({
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-zinc-950 px-4 py-5 text-zinc-50 sm:px-6 lg:px-8">
-      <div className="mx-auto flex max-w-7xl flex-col gap-3">
+      <div className="mx-auto grid max-w-7xl gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+        <aside className="h-fit rounded-2xl border border-white/10 bg-white/[0.035] p-3 lg:sticky lg:top-4">
+          <div className="px-2 py-2">
+            <div className="text-xs font-semibold uppercase tracking-[0.25em] text-violet-200/70">
+              ZION-ADM
+            </div>
+            <div className="mt-1 text-sm font-semibold text-zinc-100">Centro administrativo</div>
+          </div>
+          <nav aria-label="Seções administrativas" className="mt-3 grid grid-cols-2 gap-1.5 lg:grid-cols-1">
+            {([
+              ["overview", "Visão geral"],
+              ["alerts", "Alertas"],
+              ["stores", "Lojas"],
+              ["comparisons", "Comparações"],
+            ] as const).map(([section, label]) => (
+              <button
+                key={section}
+                type="button"
+                aria-current={activeGlobalSection === section ? "page" : undefined}
+                onClick={() => {
+                  setActiveGlobalSection(section);
+                  if (section !== "comparisons") setSelectedOverview(null);
+                  if (section === "comparisons") setSelectedOverview("compare");
+                }}
+                className={[
+                  "rounded-xl px-3 py-2 text-left text-sm transition",
+                  activeGlobalSection === section
+                    ? "border border-violet-400/30 bg-violet-500/15 font-semibold text-violet-100"
+                    : "text-zinc-300 hover:bg-white/[0.08] hover:text-white",
+                ].join(" ")}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+          <div className="mt-4 border-t border-white/10 px-2 pt-3 text-[11px] leading-5 text-zinc-500">
+            Os detalhes da loja continuam disponíveis ao selecionar uma loja na lista.
+          </div>
+        </aside>
+
+        <div className="flex min-w-0 flex-col gap-3">
         <header className="flex flex-col gap-4 border-b border-white/10 pb-4 md:flex-row md:items-end md:justify-between">
           <div>
             <div className="text-xs font-semibold uppercase tracking-[0.28em] text-zinc-500">
@@ -5080,6 +5198,8 @@ export default function ZionAdminDashboardClient({
           metaExecutionEnabled={whatsappPinRecoveryMetaEnabled}
         />
 
+        {activeGlobalSection === "overview" ? (
+        <div id="overview" className="scroll-mt-4">
         {orphanStoresCount > 0 ? (
           <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
             <div className="font-semibold">
@@ -5134,11 +5254,10 @@ export default function ZionAdminDashboardClient({
               value={formatNumber(stores.length)}
               helper="Escolha duas lojas e compare lado a lado"
               active={selectedOverview === "compare"}
-              onClick={() =>
-                setSelectedOverview((current) =>
-                  current === "compare" ? null : "compare",
-                )
-              }
+              onClick={() => {
+                setActiveGlobalSection("comparisons");
+                setSelectedOverview("compare");
+              }}
             />
             <OverviewButton
               label="Pendências"
@@ -5157,28 +5276,60 @@ export default function ZionAdminDashboardClient({
             type={selectedOverview}
             data={data}
             stores={stores}
-            onClose={() => setSelectedOverview(null)}
+            onClose={() => {
+              setSelectedOverview(null);
+              setActiveGlobalSection("overview");
+            }}
           />
         </section>
 
-        <StoreListSection
-          title="Lojas ativas"
-          stores={activeStores}
-          search={activeSearch}
-          onSearch={setActiveSearch}
-          selectedStoreId={selectedStore?.id}
-          onSelectStore={setSelectedStore}
-        />
+        </div>
+        ) : null}
 
-        <StoreListSection
-          title="Lojas canceladas ou inativas"
-          stores={inactiveStores}
-          search={inactiveSearch}
-          onSearch={setInactiveSearch}
-          selectedStoreId={selectedStore?.id}
-          onSelectStore={setSelectedStore}
-          inactive
-        />
+        {activeGlobalSection === "alerts" ? (
+          <GlobalAlertsSection
+            stores={stores}
+            availability={getGlobalAiAvailability(data, "runs")}
+          />
+        ) : null}
+
+        {activeGlobalSection === "comparisons" ? (
+          <div id="comparisons" className="scroll-mt-4">
+            <OverviewInlineDetails
+              type="compare"
+              data={data}
+              stores={stores}
+              onClose={() => {
+                setSelectedOverview(null);
+                setActiveGlobalSection("overview");
+              }}
+            />
+          </div>
+        ) : null}
+
+        {activeGlobalSection === "stores" ? (
+        <div id="stores" className="scroll-mt-4 space-y-3">
+          <StoreListSection
+            title="Lojas ativas"
+            stores={activeStores}
+            search={activeSearch}
+            onSearch={setActiveSearch}
+            selectedStoreId={selectedStore?.id}
+            onSelectStore={setSelectedStore}
+          />
+
+          <StoreListSection
+            title="Lojas canceladas ou inativas"
+            stores={inactiveStores}
+            search={inactiveSearch}
+            onSearch={setInactiveSearch}
+            selectedStoreId={selectedStore?.id}
+            onSelectStore={setSelectedStore}
+            inactive
+          />
+        </div>
+        ) : null}
+        </div>
       </div>
 
       <StoreDetailsDrawer
