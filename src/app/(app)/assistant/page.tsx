@@ -270,6 +270,12 @@ type AssistantAttachment = {
   mimeType: string | null;
 };
 
+type AssistantExternalLinkPreview = {
+  platform: "YouTube" | "Instagram" | "Facebook";
+  href: string;
+  displayUrl: string;
+};
+
 function getAssistantAttachmentMetadata(
   metadata: AssistantOpportunityMetadata | null,
 ): AssistantAttachment | null {
@@ -285,6 +291,44 @@ function getAssistantAttachmentMetadata(
     fileName: getSafeString(metadata.original_file_name) || null,
     mimeType: getSafeString(metadata.mime_type) || null,
   };
+}
+
+function getAssistantExternalLinkPreview(
+  content: string,
+): AssistantExternalLinkPreview | null {
+  const candidates = content.match(/https?:\/\/[^\s<>"']+/gi) || [];
+
+  for (const candidate of candidates) {
+    try {
+      const url = new URL(candidate.replace(/[),.;!?]+$/, ""));
+      const hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+      const platform = hostname === "youtube.com" || hostname === "youtu.be"
+        ? "YouTube"
+        : hostname === "instagram.com"
+          ? "Instagram"
+          : hostname === "facebook.com" || hostname === "fb.watch"
+            ? "Facebook"
+            : null;
+      if (!platform || (url.protocol !== "http:" && url.protocol !== "https:")) continue;
+
+      return {
+        platform,
+        href: url.toString(),
+        displayUrl: `${url.hostname}${url.pathname}`,
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function getAssistantAttachmentLabel(attachment: AssistantAttachment) {
+  if (attachment.kind === "image") return "Imagem";
+  if (attachment.kind === "audio") return "Áudio";
+  if (attachment.mimeType === "application/pdf") return "PDF";
+  return "Documento";
 }
 
 function senderLabel(message: AssistantMessage) {
@@ -771,6 +815,7 @@ export default function AssistantPage() {
   const [assistantMediaUrls, setAssistantMediaUrls] = useState<Record<string, string>>({});
   const [assistantMediaLoading, setAssistantMediaLoading] = useState<Record<string, boolean>>({});
   const [assistantMediaErrors, setAssistantMediaErrors] = useState<Record<string, string>>({});
+  const assistantMediaObserverRef = useRef<IntersectionObserver | null>(null);
   const [dismissedApproveActionsByMessage, setDismissedApproveActionsByMessage] = useState<
     Record<string, boolean>
   >({});
@@ -850,6 +895,59 @@ export default function AssistantPage() {
     }
   }, [assistantMediaLoading, assistantMediaUrls]);
 
+  const handleAssistantMediaError = useCallback((messageId: string) => {
+    setAssistantMediaUrls((current) => {
+      if (!current[messageId]) return current;
+      const next = { ...current };
+      delete next[messageId];
+      return next;
+    });
+    setAssistantMediaErrors((current) => ({
+      ...current,
+      [messageId]: "O anexo n\u00e3o ficou dispon\u00edvel. Tente abrir novamente.",
+    }));
+  }, []);
+
+  const observeAssistantMedia = useCallback(
+    (node: HTMLDivElement | null, messageId: string) => {
+      if (!node || assistantMediaUrls[messageId] || typeof IntersectionObserver === "undefined") {
+        return;
+      }
+
+      if (!assistantMediaObserverRef.current) {
+        assistantMediaObserverRef.current = new IntersectionObserver(
+          (entries, observer) => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              const visibleMessageId = entry.target.getAttribute(
+                "data-assistant-media-message-id",
+              );
+              if (!visibleMessageId) continue;
+              observer.unobserve(entry.target);
+              void loadAssistantMedia(visibleMessageId);
+            }
+          },
+          {
+            root: chatScrollRef.current,
+            rootMargin: "240px 0px",
+            threshold: 0.01,
+          },
+        );
+      }
+
+      node.setAttribute("data-assistant-media-message-id", messageId);
+      assistantMediaObserverRef.current.observe(node);
+    },
+    [assistantMediaUrls, loadAssistantMedia],
+  );
+
+  useEffect(() => {
+    return () => {
+      assistantMediaObserverRef.current?.disconnect();
+      assistantMediaObserverRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
@@ -872,6 +970,11 @@ export default function AssistantPage() {
     setSending(false);
     setDocumentActionLoadingKeys({});
     setDocumentActionFeedback({});
+    setAssistantMediaUrls({});
+    setAssistantMediaLoading({});
+    setAssistantMediaErrors({});
+    assistantMediaObserverRef.current?.disconnect();
+    assistantMediaObserverRef.current = null;
     setDismissedApproveActionsByMessage({});
     setDismissedStoreSignatureActionsByMessage({});
     setContractWorkflowActionLoadingKeys({});
@@ -1949,6 +2052,7 @@ export default function AssistantPage() {
                           priorityByOpportunity,
                         });
                         const attachment = getAssistantAttachmentMetadata(message.metadata);
+                        const externalLinkPreview = getAssistantExternalLinkPreview(message.content);
                         const mediaUrl = assistantMediaUrls[message.id];
                         const mediaLoading = assistantMediaLoading[message.id] === true;
                         const mediaError = assistantMediaErrors[message.id];
@@ -1992,24 +2096,51 @@ export default function AssistantPage() {
                             </div>
 
                             {attachment ? (
-                              <div className="mt-2 space-y-2">
+                              <div
+                                ref={(node) => observeAssistantMedia(node, message.id)}
+                                className="mt-2 space-y-2"
+                              >
                                 {mediaUrl ? (
                                   attachment.kind === "image" ? (
-                                    <img
-                                      src={mediaUrl}
-                                      alt={attachment.fileName || "Imagem enviada pelo responsavel"}
-                                      className="max-h-80 max-w-full rounded-xl object-contain ring-1 ring-black/10"
-                                    />
+                                    <a
+                                      href={mediaUrl}
+                                      target="_blank"
+                                      rel="noreferrer noopener"
+                                      aria-label={`Ampliar ${attachment.fileName || "imagem"}`}
+                                      className="inline-block max-w-full rounded-xl focus:outline-none focus:ring-2 focus:ring-black/40"
+                                    >
+                                      <img
+                                        src={mediaUrl}
+                                        alt={attachment.fileName || "Imagem enviada pelo responsavel"}
+                                        onError={() => handleAssistantMediaError(message.id)}
+                                        className="max-h-80 max-w-full rounded-xl object-contain ring-1 ring-black/10"
+                                      />
+                                    </a>
                                   ) : attachment.kind === "audio" ? (
-                                    <audio controls src={mediaUrl} className="max-w-full" />
+                                    <audio
+                                      controls
+                                      src={mediaUrl}
+                                      aria-label={attachment.fileName || "Áudio enviado pelo responsavel"}
+                                      onError={() => handleAssistantMediaError(message.id)}
+                                      className="max-w-full"
+                                    />
                                   ) : (
                                     <a
                                       href={mediaUrl}
                                       target="_blank"
-                                      rel="noreferrer"
-                                      className="inline-flex items-center rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                                      rel="noreferrer noopener"
+                                      aria-label={`Abrir ${attachment.fileName || getAssistantAttachmentLabel(attachment)}`}
+                                      className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2.5 text-xs ring-1 ring-black/10 hover:bg-gray-50"
                                     >
-                                      Abrir {attachment.fileName || "documento"}
+                                      <span className="min-w-0">
+                                        <span className="block font-semibold text-gray-900">
+                                          {attachment.fileName || getAssistantAttachmentLabel(attachment)}
+                                        </span>
+                                        <span className="block truncate text-gray-500">
+                                          {attachment.mimeType || getAssistantAttachmentLabel(attachment)}
+                                        </span>
+                                      </span>
+                                      <span className="shrink-0 font-semibold text-gray-700">Abrir</span>
                                     </a>
                                   )
                                 ) : (
@@ -2025,6 +2156,22 @@ export default function AssistantPage() {
                                 {mediaError ? (
                                   <div className="text-xs text-red-700">{mediaError}</div>
                                 ) : null}
+                              </div>
+                            ) : null}
+
+                            {externalLinkPreview ? (
+                              <div className="mt-2 rounded-xl bg-white px-3 py-2.5 ring-1 ring-black/10">
+                                <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                                  Link do {externalLinkPreview.platform}
+                                </div>
+                                <a
+                                  href={externalLinkPreview.href}
+                                  target="_blank"
+                                  rel="noreferrer noopener"
+                                  className="mt-1 block truncate text-xs font-semibold text-gray-900 underline decoration-gray-300 underline-offset-2"
+                                >
+                                  {externalLinkPreview.displayUrl}
+                                </a>
                               </div>
                             ) : null}
 
