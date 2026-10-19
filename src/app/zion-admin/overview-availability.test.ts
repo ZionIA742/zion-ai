@@ -74,6 +74,14 @@ test("operational summary availability is partial for mixed sources and preserve
     getOverviewOperationalAvailability({
       ai: { queue: "available", diagnostics: "available" },
       commercial: { queue: "available", diagnostics: "available" },
+      hasUnverifiedOtherAreas: true,
+    }),
+    "partial",
+  );
+  assert.equal(
+    getOverviewOperationalAvailability({
+      ai: { queue: "available", diagnostics: "available" },
+      commercial: { queue: "available", diagnostics: "available" },
     }),
     "available",
   );

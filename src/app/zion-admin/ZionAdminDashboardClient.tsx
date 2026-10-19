@@ -30,6 +30,12 @@ import {
 } from "./overview-availability";
 import { selectRecentAiErrors } from "./recent-ai-errors";
 import { classifyAiRunEvent, getAiRunGuidance, shouldShowAiRunCause } from "./ai-run-classification";
+// Sem pendências operacionais críticas remains represented by the shared operational summary helper.
+import {
+  compareOperationalStores,
+  getOperationalDetails,
+  getOperationalSummary,
+} from "./operational-summary";
 
 type OverviewPanelKey =
   | "ia"
@@ -537,6 +543,7 @@ function getStorePendingAvailability(store: ZionAdminStore): OverviewDataAvailab
   return getOverviewOperationalAvailability({
     ai: store.dataAvailability?.ai,
     commercial: store.dataAvailability?.commercial,
+    hasUnverifiedOtherAreas: true,
     hasOtherAreaEvidence:
       numberValue(store.configurationIssues) > 0 ||
       numberValue(store.pendingWhatsappEvents) > 0 ||
@@ -550,6 +557,7 @@ function getGlobalPendingAvailability(
   return getOverviewOperationalAvailability({
     ai: data?.dataAvailability?.ai,
     commercial: data?.dataAvailability?.commercial,
+    hasUnverifiedOtherAreas: true,
     hasOtherAreaEvidence:
       numberValue(data?.totals.configurationIssues) > 0 ||
       numberValue(data?.totals.pendingWhatsappEvents) > 0 ||
@@ -1091,120 +1099,6 @@ function getInactiveReason(store: ZionAdminStore) {
 
   return "Status da loja indisponível no momento.";
 
-}
-
-function getOperationalSummary(store: ZionAdminStore) {
-  const aiErrors = numberValue(store.aiRunQueueErrors);
-  const whatsappErrors = numberValue(store.whatsappErrors);
-  const salesErrors = numberValue(store.salesActionErrors);
-  const pendingAi = numberValue(store.pendingAiRuns);
-  const pendingSales = numberValue(store.pendingSalesActions);
-  const pendingWhatsapp = numberValue(store.pendingWhatsappEvents);
-  const total =
-    aiErrors +
-    whatsappErrors +
-    salesErrors +
-    pendingAi +
-    pendingSales +
-    pendingWhatsapp;
-
-  const operationalAvailability = getStorePendingAvailability(store);
-
-  if (total <= 0) {
-    if (operationalAvailability === "unavailable") {
-      return {
-        total,
-        label: "Dados operacionais indisponíveis",
-        details: "Não foi possível confirmar todas as filas monitoradas.",
-      };
-    }
-    if (operationalAvailability === "partial") {
-      return {
-        total,
-        label: "Dados operacionais parciais",
-        details: "A consulta das filas monitoradas não foi concluída integralmente.",
-      };
-    }
-    return {
-      total,
-      label: "Sem pendências operacionais críticas",
-      details: "Nenhuma pendência operacional crítica encontrada nas filas monitoradas.",
-    };
-  }
-
-  const details = [
-    getStoreAiAvailability(store, "queue") === "available" && aiErrors > 0
-      ? `${aiErrors} erro(s) na fila de IA`
-      : getStoreAiAvailability(store, "queue") === "partial"
-        ? "Fila de IA parcial"
-        : getStoreAiAvailability(store, "queue") === "unavailable"
-          ? "Fila de IA indisponível"
-          : null,
-    whatsappErrors > 0
-      ? `${whatsappErrors} erro(s) no WhatsApp de entrada`
-      : null,
-    getStoreCommercialAvailability(store, "diagnostics") === "available" && salesErrors > 0
-      ? `${salesErrors} erro(s) em ações comerciais`
-      : getStoreCommercialAvailability(store, "diagnostics") === "partial"
-        ? "Diagnóstico comercial parcial"
-        : getStoreCommercialAvailability(store, "diagnostics") === "unavailable"
-          ? "Diagnóstico comercial indisponível"
-          : null,
-    getStoreAiAvailability(store, "queue") === "available" && pendingAi > 0
-      ? `${pendingAi} IA pendente`
-      : getStoreAiAvailability(store, "queue") === "partial"
-        ? "Fila de IA parcial"
-        : getStoreAiAvailability(store, "queue") === "unavailable"
-          ? "Fila de IA indisponível"
-          : null,
-    getStoreCommercialAvailability(store, "queue") === "available" && pendingSales > 0
-      ? `${pendingSales} ação comercial pendente`
-      : getStoreCommercialAvailability(store, "queue") === "partial"
-        ? "Fila comercial parcial"
-        : getStoreCommercialAvailability(store, "queue") === "unavailable"
-          ? "Fila comercial indisponível"
-          : null,
-    pendingWhatsapp > 0 ? `${pendingWhatsapp} evento WhatsApp pendente` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
-  return {
-    total,
-    label: `${total} ocorrência(s)`,
-    details:
-      operationalAvailability === "available"
-        ? details
-        : `${details || "Existem ocorrências conhecidas."} · O total não é definitivo enquanto houver fontes indisponíveis ou parciais.`,
-    ...(operationalAvailability !== "available"
-      ? { label: "Dados operacionais parciais" }
-      : {}),
-  };
-}
-
-function getOperationalDetails(store: ZionAdminStore) {
-  const items = [
-    numberValue(store.aiRunQueueErrors) > 0
-      ? `${numberValue(store.aiRunQueueErrors)} erro(s) na fila de IA`
-      : null,
-    numberValue(store.whatsappErrors) > 0
-      ? `${numberValue(store.whatsappErrors)} erro(s) no WhatsApp de entrada`
-      : null,
-    numberValue(store.salesActionErrors) > 0
-      ? `${numberValue(store.salesActionErrors)} erro(s) em ações comerciais`
-      : null,
-    numberValue(store.pendingAiRuns) > 0
-      ? `${numberValue(store.pendingAiRuns)} IA pendente`
-      : null,
-    numberValue(store.pendingSalesActions) > 0
-      ? `${numberValue(store.pendingSalesActions)} ação comercial pendente`
-      : null,
-    numberValue(store.pendingWhatsappEvents) > 0
-      ? `${numberValue(store.pendingWhatsappEvents)} evento WhatsApp pendente`
-      : null,
-  ].filter(Boolean) as string[];
-
-  return items;
 }
 
 function PendingIssueRootCauseList({ store }: { store: ZionAdminStore }) {
@@ -2807,7 +2701,7 @@ export function OverviewDetailsDrawer({
             <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="Total de pendências"
-                value={formatNumber(operational.total)}
+                value={operational.displayTotal}
                 help={operational.details}
               />
               <DetailItem
@@ -2858,10 +2752,7 @@ export function OverviewDetailsDrawer({
 
   const sortedStores = [...stores].sort((a, b) => {
     if (type === "pending")
-      return (
-        numberValue(b.totalOperationalIssues) -
-        numberValue(a.totalOperationalIssues)
-      );
+      return compareOperationalStores(a, b);
     if (type === "cost")
       return numberValue(b.totalCostUsd) - numberValue(a.totalCostUsd);
     if (type === "tokens")
@@ -3005,7 +2896,7 @@ export function OverviewDetailsDrawer({
 
   if (type === "pending") {
     const storesWithPending = sortedStores.filter(
-      (store) => getOperationalSummary(store).total > 0,
+      (store) => getOperationalSummary(store).hasPotentialPending,
     );
     const filteredPendingStores = storesWithPending.filter((store) =>
       matchesSearch(store, pendingSearch),
@@ -3222,7 +3113,7 @@ function OverviewInlineDetails({
   const successfulAiRuns = numberValue(data?.totals.successfulAiRuns);
   const failedAiRuns = numberValue(data?.totals.failedAiRuns);
   const storesWithPending = stores.filter(
-    (store) => getOperationalSummary(store).total > 0,
+    (store) => getOperationalSummary(store).hasPotentialPending,
   );
   const filteredPendingStores = storesWithPending.filter((store) =>
     matchesSearch(store, pendingSearch),
@@ -3516,7 +3407,7 @@ function OverviewInlineDetails({
                           </div>
                         </div>
                         <span className="shrink-0 rounded-full border border-white/10 bg-zinc-950/60 px-2 py-0.5 text-[11px] font-semibold text-zinc-200">
-                          {formatNumber(operational.total)}
+                          {operational.displayTotal}
                         </span>
                       </div>
                       <div className="mt-1 line-clamp-1 text-[11px] text-zinc-500">

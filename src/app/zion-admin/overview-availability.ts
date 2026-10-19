@@ -92,6 +92,7 @@ export function getOverviewOperationalAvailability(args: {
   ai: OverviewAvailabilityPair | null | undefined;
   commercial: OverviewAvailabilityPair | null | undefined;
   hasOtherAreaEvidence?: boolean;
+  hasUnverifiedOtherAreas?: boolean;
 }): OverviewDataAvailability {
   const combined = combineOverviewAvailability(
     args.ai?.queue,
@@ -101,6 +102,10 @@ export function getOverviewOperationalAvailability(args: {
   );
 
   if (combined === "unavailable" && args.hasOtherAreaEvidence) {
+    return "partial";
+  }
+
+  if (combined !== "unavailable" && args.hasUnverifiedOtherAreas) {
     return "partial";
   }
 

@@ -113,7 +113,7 @@ const tests: TestCase[] = [
 
       assert.equal(source.includes('integrity?.state ?? "unknown"'), true);
       assert.equal(source.includes("Integridade estrutural"), true);
-      assert.equal(source.includes("Sem pendências operacionais críticas"), true);
+      assert.equal(source.includes("getOperationalSummary"), true);
       assert.equal(source.includes("getStoreIntegritySummary(stores, integrityOrphanStores)"), true);
       assert.equal(source.includes("integrityOrphanStores.slice(0, 3)"), true);
       assert.equal(source.includes("sem usuario vinculado"), false);
