@@ -281,6 +281,17 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "empty detail presentation does not claim queue absence at either presentation point",
+    run: () => {
+      const source = readSource();
+      const message =
+        "Nenhum detalhe de IA ou comercial foi retornado no recorte consultado. Isso não comprova ausência de pendências nas respectivas filas. O contrato atual não informa disponibilidade individual explícita para WhatsApp e configurações.";
+
+      assert.equal(source.split(message).length - 1, 2);
+      assert.equal(source.includes("Isso confirma ausência apenas nessas fontes disponíveis"), false);
+    },
+  },
+  {
     name: "canonical account identity is typed and surfaced separately from access",
     run: () => {
       const source = readSource();

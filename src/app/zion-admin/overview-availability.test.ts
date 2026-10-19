@@ -7,6 +7,7 @@ import {
   getOverviewAvailabilityLabel,
   getOverviewOperationalAvailability,
   getOverviewQueueAvailability,
+  getPendingDetailsAvailabilityNotices,
   normalizeOverviewDataAvailability,
 } from "./overview-availability";
 
@@ -83,5 +84,44 @@ test("operational summary availability is partial for mixed sources and preserve
       hasOtherAreaEvidence: true,
     }),
     "partial",
+  );
+});
+
+test("details use diagnostics availability independently from queue counts", () => {
+  assert.deepEqual(
+    getPendingDetailsAvailabilityNotices({
+      ai: { queue: "available", diagnostics: "unavailable" },
+      commercial: { queue: "unavailable", diagnostics: "available" },
+    }),
+    [
+      "Detalhes da fila de IA indisponíveis; não é possível confirmar a ausência de pendências de IA.",
+    ],
+  );
+
+  assert.deepEqual(
+    getPendingDetailsAvailabilityNotices({
+      ai: { queue: "unavailable", diagnostics: "available" },
+      commercial: { queue: "available", diagnostics: "partial" },
+    }),
+    ["Detalhes comerciais parciais; o conjunto carregado pode estar incompleto."],
+  );
+});
+
+test("available empty details do not imply that the corresponding queues have no pending items", () => {
+  const ai = { queue: "unavailable", diagnostics: "available" };
+  const commercial = { queue: "unavailable", diagnostics: "available" };
+
+  assert.deepEqual(getPendingDetailsAvailabilityNotices({ ai, commercial }), []);
+  assert.equal(getOverviewQueueAvailability(ai), "unavailable");
+  assert.equal(getOverviewQueueAvailability(commercial), "unavailable");
+});
+
+test("missing detail contracts fail closed without inventing WhatsApp or configuration availability", () => {
+  assert.deepEqual(
+    getPendingDetailsAvailabilityNotices({ ai: undefined, commercial: undefined }),
+    [
+      "Detalhes da fila de IA indisponíveis; não é possível confirmar a ausência de pendências de IA.",
+      "Detalhes comerciais indisponíveis; não é possível confirmar a ausência de pendências comerciais.",
+    ],
   );
 });

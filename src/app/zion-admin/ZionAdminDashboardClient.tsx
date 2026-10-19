@@ -24,6 +24,7 @@ import {
   getOverviewAvailabilityLabel,
   getOverviewOperationalAvailability,
   getOverviewQueueAvailability,
+  getPendingDetailsAvailabilityNotices,
   normalizeOverviewDataAvailability,
   type OverviewDataAvailability,
 } from "./overview-availability";
@@ -1209,20 +1210,33 @@ function getOperationalDetails(store: ZionAdminStore) {
 function PendingIssueRootCauseList({ store }: { store: ZionAdminStore }) {
   const issueDetails = store.pendingIssueDetails ?? [];
   const operationalDetails = getOperationalDetails(store);
+  const detailNotices = getPendingDetailsAvailabilityNotices({
+    ai: store.dataAvailability?.ai,
+    commercial: store.dataAvailability?.commercial,
+  });
 
   if (issueDetails.length === 0) {
     return (
       <section>
         <h3 className="text-sm font-semibold text-zinc-200">
-          Raiz das pendências
+          Detalhes das pendências
         </h3>
 
         <div className="mt-3 space-y-2">
-          {operationalDetails.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">
-              Nenhuma pendência operacional crítica encontrada nas filas monitoradas.
+          {detailNotices.map((notice) => (
+            <div
+              key={notice}
+              className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-50"
+            >
+              {notice}
             </div>
-          ) : (
+          ))}
+          {operationalDetails.length === 0 && detailNotices.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">
+              Nenhum detalhe de IA ou comercial foi retornado no recorte consultado. Isso não comprova ausência de pendências nas respectivas filas. O contrato atual não informa disponibilidade individual explícita para WhatsApp e configurações.
+            </div>
+          ) : null}
+          {operationalDetails.length > 0 ? (
             operationalDetails.map((item) => (
               <div
                 key={item}
@@ -1231,7 +1245,7 @@ function PendingIssueRootCauseList({ store }: { store: ZionAdminStore }) {
                 {item}
               </div>
             ))
-          )}
+          ) : null}
         </div>
       </section>
     );
@@ -1240,10 +1254,18 @@ function PendingIssueRootCauseList({ store }: { store: ZionAdminStore }) {
   return (
     <section>
       <h3 className="text-sm font-semibold text-zinc-200">
-        Raiz das pendências
+        Detalhes das pendências
       </h3>
 
       <div className="mt-3 space-y-2.5">
+        {detailNotices.map((notice) => (
+          <div
+            key={notice}
+            className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-50"
+          >
+            {notice}
+          </div>
+        ))}
         {issueDetails.map((issue) => {
           const identifiers = [
             issue.queueKey ? `Queue key: ${issue.queueKey}` : null,
@@ -3398,6 +3420,13 @@ function OverviewInlineDetails({
       return identifiers;
     }
 
+    const selectedPendingDetailNotices = selectedPendingStore
+      ? getPendingDetailsAvailabilityNotices({
+          ai: selectedPendingStore.dataAvailability?.ai,
+          commercial: selectedPendingStore.dataAvailability?.commercial,
+        })
+      : [];
+
     return (
       <section className="mt-4 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -3518,9 +3547,19 @@ function OverviewInlineDetails({
                 </div>
 
                 <div className="mt-3 max-h-[430px] space-y-2 overflow-y-auto pr-1">
+                  {selectedPendingDetailNotices.map((notice) => (
+                    <div
+                      key={notice}
+                      className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 text-xs text-amber-50"
+                    >
+                      {notice}
+                    </div>
+                  ))}
                   {(selectedPendingStore.pendingIssueDetails ?? []).length === 0 ? (
                     <div className="rounded-xl border border-dashed border-white/10 p-4 text-xs text-zinc-500">
-                      Esta loja tem contagem de pendência, mas não trouxe detalhes técnicos no recorte atual.
+                      {selectedPendingDetailNotices.length > 0
+                        ? "Não é possível confirmar a ausência de detalhes enquanto as fontes correspondentes estiverem indisponíveis ou parciais."
+                        : "Nenhum detalhe de IA ou comercial foi retornado no recorte consultado. Isso não comprova ausência de pendências nas respectivas filas. O contrato atual não informa disponibilidade individual explícita para WhatsApp e configurações."}
                     </div>
                   ) : (
                     (selectedPendingStore.pendingIssueDetails ?? []).map((issue) => {

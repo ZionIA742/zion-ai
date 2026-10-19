@@ -57,6 +57,37 @@ export function getOverviewDiagnosticsAvailability(
   return normalizeOverviewDataAvailability(source?.diagnostics);
 }
 
+export function getPendingDetailsAvailabilityNotices(args: {
+  ai: OverviewAvailabilityPair | null | undefined;
+  commercial: OverviewAvailabilityPair | null | undefined;
+}): string[] {
+  const notices: string[] = [];
+  const aiAvailability = getOverviewDiagnosticsAvailability(args.ai);
+  const commercialAvailability = getOverviewDiagnosticsAvailability(args.commercial);
+
+  if (aiAvailability === "unavailable") {
+    notices.push(
+      "Detalhes da fila de IA indisponíveis; não é possível confirmar a ausência de pendências de IA.",
+    );
+  } else if (aiAvailability === "partial") {
+    notices.push(
+      "Detalhes da fila de IA parciais; o conjunto carregado pode estar incompleto.",
+    );
+  }
+
+  if (commercialAvailability === "unavailable") {
+    notices.push(
+      "Detalhes comerciais indisponíveis; não é possível confirmar a ausência de pendências comerciais.",
+    );
+  } else if (commercialAvailability === "partial") {
+    notices.push(
+      "Detalhes comerciais parciais; o conjunto carregado pode estar incompleto.",
+    );
+  }
+
+  return notices;
+}
+
 export function getOverviewOperationalAvailability(args: {
   ai: OverviewAvailabilityPair | null | undefined;
   commercial: OverviewAvailabilityPair | null | undefined;
