@@ -58,8 +58,8 @@ const tests: TestCase[] = [
     run: () => {
       const source = readSource();
 
-      assert.equal(source.includes("headerActions={"), true);
-      assert.equal(source.includes("flex flex-wrap items-start justify-end gap-2"), true);
+      assert.equal(source.includes("Central da loja"), true);
+      assert.equal(source.includes('className="min-w-0 rounded-2xl border border-[#252b35]'), true);
       assert.equal(source.includes("getFirstAccessControlState({"), true);
       assert.equal(source.includes("title={firstAccessControl.reason || undefined}"), true);
       assert.equal(source.includes("void onResendFirstAccess(store)"), true);
@@ -213,7 +213,7 @@ const tests: TestCase[] = [
         "setOverviewError(null)",
         "setSelectedStore((current) =>",
         "controller.abort()",
-        "{overviewError ? (",
+        "{!selectedStore && overviewError ? (",
       ]) {
         assert.equal(
           source.includes(token),
@@ -360,6 +360,9 @@ const tests: TestCase[] = [
 
       for (const token of [
         "function WhatsappPinRecoverySection",
+        "function isWhatsappPinRecoveryTargetStore",
+        "isWhatsappPinRecoveryTargetStore(store) ?",
+        "nenhuma operaÃ§Ã£o serÃ¡ iniciada",
         "if (!canAccess) return null",
         'wabaId: "1642288770859048"',
         'phoneNumberId: "1322472314288518"',
@@ -446,8 +449,23 @@ const tests: TestCase[] = [
       const source = readSource();
 
       for (const token of [
-        "Centro administrativo",
         "Seções administrativas",
+        "Dashboard de lojas",
+        "Acessos rápidos",
+        "DashboardMetricCard",
+        "Total de lojas",
+        "Lojas ativas",
+        "Config. bloqueada",
+        "2xl:grid-cols-6",
+        'AdminIcon name="warning"',
+        'AdminIcon name="shield"',
+        "Prévia de lojas",
+        "Organização",
+        "Pendências",
+        "AdminIcon",
+        "bg-[#080b10]",
+        "Navegação",
+        "ZION interno",
         "GlobalAlertsSection",
         "Nenhuma loja sinalizada neste recorte.",
         "loja(s) com atenção no recorte",
@@ -462,6 +480,8 @@ const tests: TestCase[] = [
         "Nova conta",
         "WhatsappPinsSection",
         "StoreDetailsDrawer",
+        "Abrir loja",
+        "Regularização do WhatsApp",
       ]) {
         assert.equal(source.includes(token), true, `missing global dashboard token: ${token}`);
       }
@@ -474,12 +494,17 @@ const tests: TestCase[] = [
       assert.equal(source.includes("loja(s) com ocorrência monitorada"), false);
       assert.equal(source.includes("setInterval("), false);
       assert.equal(source.includes("/api/zion-admin/overview"), true);
+      assert.equal(source.includes("Visão geral"), true);
+      assert.equal(source.includes("Comparações"), true);
     },
   },
   {
     name: "store drawer uses real tabs and resets to actions for a new store",
     run: () => {
       const source = readSource();
+      const storeDetailsStart = source.indexOf("function StoreDetailsDrawer");
+      const storeDetailsEnd = source.indexOf("export function OverviewDetailsDrawer", storeDetailsStart);
+      const storeDetailsSource = source.slice(storeDetailsStart, storeDetailsEnd);
 
       for (const token of [
         "type StoreDetailTab",
@@ -505,6 +530,32 @@ const tests: TestCase[] = [
       ]) {
         assert.equal(source.includes(token), true, `missing store tab token: ${token}`);
       }
+
+      assert.equal(storeDetailsSource.includes("Central da loja"), true);
+      assert.equal(storeDetailsSource.includes("Lojas"), true);
+      assert.equal(storeDetailsSource.includes("<DrawerShell"), false);
+      assert.equal(storeDetailsSource.includes("fixed inset-0"), false);
+      assert.equal(storeDetailsSource.includes("xl:grid-cols-4"), true);
+      assert.equal(storeDetailsSource.includes("compact"), true);
+      const actionOrder = [
+        storeDetailsSource.indexOf("Operação da loja"),
+        storeDetailsSource.indexOf("WhatsappPinsSection"),
+        storeDetailsSource.indexOf("Conta responsável"),
+        storeDetailsSource.indexOf("Regularização do WhatsApp"),
+      ];
+      assert.equal(actionOrder.every((index) => index >= 0), true);
+      assert.equal(
+        actionOrder.every((index, position) =>
+          position === 0 || index > actionOrder[position - 1],
+        ),
+        true,
+        `actions must follow the DOM order: ${actionOrder.join(", ")}`,
+      );
+      assert.equal(storeDetailsSource.includes("order-first"), false);
+      assert.equal(storeDetailsSource.includes("xl:order-none"), false);
+      assert.equal(source.includes("!selectedStore && activeGlobalSection === \"stores\""), true);
+      assert.equal(source.includes("setSelectedStore(null);"), true);
+      assert.equal(source.includes("if (section === \"stores\") setSelectedStore(null)"), false);
     },
   },
   {

@@ -1377,6 +1377,60 @@ function OverviewButton({
   );
 }
 
+type AdminIconName =
+  | "overview" | "alerts" | "stores" | "comparisons" | "search" | "plus" | "arrow"
+  | "check" | "warning" | "settings" | "brain" | "whatsapp" | "shield" | "key" | "user" | "info";
+
+function AdminIcon({ name, className = "h-4 w-4" }: { name: AdminIconName; className?: string }) {
+  const paths: Record<AdminIconName, React.ReactNode> = {
+    overview: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
+    alerts: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
+    stores: <><path d="M3 10h18" /><path d="M5 10v10h14V10" /><path d="M3 10 5 4h14l2 6" /><path d="M9 20v-6h6v6" /></>,
+    comparisons: <><path d="M4 19V5" /><path d="M4 19h16" /><path d="m7 15 3-4 3 2 4-6" /></>,
+    search: <><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></>,
+    plus: <><path d="M12 5v14" /><path d="M5 12h14" /></>,
+    arrow: <><path d="M5 12h14" /><path d="m13 6 6 6-6 6" /></>,
+    check: <><path d="m5 12 4 4L19 6" /></>,
+    warning: <><path d="m12 4 9 16H3L12 4Z" /><path d="M12 9v4" /><path d="M12 17h.01" /></>,
+    settings: <><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" /><path d="M4.9 4.9 7 7" /><path d="m17 17 2.1 2.1" /><path d="M4 12H1" /><path d="M23 12h-3" /><path d="m4.9 19.1 2.1-2.1" /><path d="M17 7l2.1-2.1" /></>,
+    brain: <><path d="M9 4a3 3 0 0 0-3 3v1a3 3 0 0 0-2 5.2A3 3 0 0 0 7 18h2V4Z" /><path d="M15 4a3 3 0 0 1 3 3v1a3 3 0 0 1 2 5.2A3 3 0 0 1 17 18h-2V4Z" /><path d="M12 4v16" /></>,
+    whatsapp: <><path d="M20 11.5a8 8 0 0 1-11.8 7L4 20l1.5-4.1A8 8 0 1 1 20 11.5Z" /><path d="M8.5 8.5c.3 2 1.5 3.5 3.5 4.5 1 .5 1.8.7 2.5.4" /></>,
+    shield: <><path d="M12 3 19 6v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3Z" /><path d="m9 12 2 2 4-4" /></>,
+    key: <><circle cx="8" cy="15" r="3" /><path d="m10.5 12.5 8-8" /><path d="m16 6 2 2" /><path d="m14 8 2 2" /></>,
+    user: <><circle cx="12" cy="8" r="3" /><path d="M5 21a7 7 0 0 1 14 0" /></>,
+    info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 8h.01" /></>,
+  };
+
+  return (
+    <svg aria-hidden="true" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      {paths[name]}
+    </svg>
+  );
+}
+
+function DashboardMetricCard({ label, value, helper, tone = "violet", icon = "overview" }: { label: string; value: string; helper: string; tone?: "violet" | "green" | "red" | "amber" | "blue"; icon?: AdminIconName }) {
+  const toneClass = {
+    violet: "text-violet-200",
+    green: "text-emerald-300",
+    red: "text-red-300",
+    amber: "text-amber-300",
+    blue: "text-sky-300",
+  }[tone];
+
+  return (
+    <div className="rounded-2xl border border-[#252b35] bg-[#10141b] p-3.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)]">
+      <div className="flex items-start gap-3">
+        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white/[0.06] ${toneClass}`}>
+          <AdminIcon name={icon} className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8e98aa]">{label}</div>
+      </div>
+      <div className="mt-3 text-2xl font-semibold tracking-tight text-[#f4f6fb]">{value}</div>
+      <div className="mt-1 text-xs leading-4 text-[#8e98aa]">{helper}</div>
+    </div>
+  );
+}
+
 const STORE_SETTINGS_READINESS_STATE_LABELS: Record<
   StoreSettingsReadinessState,
   string
@@ -1459,10 +1513,10 @@ function StoreRowCard({
       type="button"
       onClick={onClick}
       className={[
-        "w-full rounded-xl border p-2.5 text-left transition",
+        "w-full rounded-2xl border p-3 text-left transition",
         selected
-          ? "border-white/35 bg-white/[0.08]"
-          : "border-white/10 bg-zinc-950/35 hover:border-white/25 hover:bg-white/[0.055]",
+          ? "border-violet-400/40 bg-violet-500/[0.08]"
+          : "border-[#252b35] bg-[#10141b] hover:border-violet-400/30 hover:bg-white/[0.04]",
       ].join(" ")}
     >
       <div className="flex flex-col gap-2 xl:grid xl:grid-cols-[1.2fr_0.85fr_0.85fr_0.85fr_1.1fr] xl:items-stretch">
@@ -1555,6 +1609,10 @@ function StoreRowCard({
             {operational.details}
           </div>
         </div>
+      </div>
+      <div className="mt-3 flex items-center justify-end gap-1 text-xs font-semibold text-violet-200">
+        Abrir loja
+        <AdminIcon name="arrow" className="h-3.5 w-3.5" />
       </div>
     </button>
   );
@@ -1958,12 +2016,22 @@ function StoreDetailsDrawer({
   const settingsReadinessIssues = settingsReadiness?.issues ?? [];
 
   return (
-    <DrawerShell
-      title={store.name}
-      subtitle={store.organizationName}
-      onClose={onClose}
-      headerActions={
-        <div className="flex max-w-[260px] flex-col items-end gap-1">
+    <section className="min-w-0 rounded-2xl border border-[#252b35] bg-[#0e1218] shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
+      <div className="border-b border-[#252b35] bg-[#10141b] px-4 py-5 sm:px-6">
+        <div className="mb-3 flex items-center gap-2 text-xs text-[#8e98aa]">
+          <button type="button" onClick={onClose} className="transition hover:text-violet-200">
+            Lojas
+          </button>
+          <span aria-hidden="true">/</span>
+          <span className="truncate text-[#f4f6fb]">{store.name}</span>
+        </div>
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-violet-200/70">Central da loja</div>
+            <h2 className="mt-2 break-words text-2xl font-semibold leading-tight text-[#f4f6fb]">{store.name}</h2>
+            <p className="mt-1 break-words text-sm leading-5 text-[#8e98aa]">{store.organizationName}</p>
+          </div>
+          <div className="flex max-w-[260px] flex-col items-end gap-1">
           <button
             type="button"
             disabled={firstAccessControl.disabled}
@@ -1977,20 +2045,21 @@ function StoreDetailsDrawer({
                 void onResendFirstAccess(store);
               }
             }}
-            className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-xl bg-violet-400 px-4 py-2 text-sm font-semibold text-[#090c11] transition hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {resendState.busyStoreId === store.id
               ? "Enviando..."
               : firstAccessControl.label}
           </button>
           {firstAccessControl.reason ? (
-            <div className="text-right text-[11px] leading-4 text-zinc-500">
+            <div className="text-right text-[11px] leading-4 text-[#8e98aa]">
               {firstAccessControl.reason}
             </div>
           ) : null}
+          </div>
         </div>
-      }
-    >
+      </div>
+      <div className="px-4 py-4 sm:px-6">
       <div className="mb-5 mt-1 flex flex-wrap gap-2">
         <span className="rounded-full border border-white/10 bg-zinc-900 px-3 py-1 text-xs text-zinc-300">
           {getStoreStatusLabel(store.subscriptionStatus)}
@@ -2225,16 +2294,7 @@ function StoreDetailsDrawer({
         </section> : null}
         {activeStoreTab === "actions" ? <section>
           <h3 className="text-sm font-semibold text-zinc-200">Gestão da loja</h3>
-          <div className="mt-3">
-            <WhatsappPinsSection
-              key={store.id}
-              canAccess={canManageWhatsappPins}
-              metaExecutionEnabled={whatsappPinRecoveryMetaEnabled}
-              organizationId={store.organizationId}
-              storeId={store.id}
-            />
-          </div>
-          <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-4">
             <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
               <div>
                 <h4 className="text-sm font-semibold text-zinc-200">Operação da loja</h4>
@@ -2289,6 +2349,17 @@ function StoreDetailsDrawer({
                   : storeActionLabel}
               </button>
             ) : null}
+            </div>
+
+            <div>
+              <WhatsappPinsSection
+                key={store.id}
+                canAccess={canManageWhatsappPins}
+                metaExecutionEnabled={whatsappPinRecoveryMetaEnabled}
+                organizationId={store.organizationId}
+                storeId={store.id}
+                compact
+              />
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
@@ -2430,7 +2501,38 @@ function StoreDetailsDrawer({
               </button>
             ) : null}
 
+            </div>
+            {!isWhatsappPinRecoveryTargetStore(store) ? <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
+              <div className="flex items-start gap-2">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-400/10 text-zinc-300"><AdminIcon name="whatsapp" className="h-4 w-4" /></span>
+                <div>
+                  <h4 className="text-sm font-semibold text-zinc-200">RegularizaÃ§Ã£o do WhatsApp</h4>
+                  <p className="mt-1 text-xs leading-5 text-zinc-500">RecuperaÃ§Ã£o nÃ£o disponÃ­vel para esta loja no contrato autorizado.</p>
+                </div>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-zinc-500">O alvo de recuperaÃ§Ã£o nÃ£o estÃ¡ vinculado a esta loja; nenhuma operaÃ§Ã£o serÃ¡ iniciada.</p>
+            </div> : null}
+            {isWhatsappPinRecoveryTargetStore(store) ? <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
+              <div className="flex items-start gap-2">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-400/10 text-emerald-300"><AdminIcon name="whatsapp" className="h-4 w-4" /></span>
+                <div>
+                  <h4 className="text-sm font-semibold text-zinc-200">Regularização do WhatsApp</h4>
+                  <p className="mt-1 text-xs leading-5 text-zinc-500">Recuperação controlada para o telefone autorizado da loja.</p>
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-2">
+                <DetailItem label="WABA" value={WHATSAPP_PIN_RECOVERY_TARGET.wabaId} />
+                <DetailItem label="Phone ID" value={maskWhatsappRecoveryPhoneNumberId(WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId)} />
+              </div>
+              <details className="mt-3 rounded-xl border border-white/10 bg-zinc-950/30 p-3">
+                <summary className="cursor-pointer text-xs font-semibold text-emerald-200">Preparar recuperação</summary>
+                <WhatsappPinRecoverySection canAccess={canManageWhatsappPins} metaExecutionEnabled={whatsappPinRecoveryMetaEnabled} />
+              </details>
+            </div> : null}
           </div>
+          <div className="mt-3 flex items-start gap-2 rounded-2xl border border-sky-400/20 bg-sky-500/[0.08] p-3 text-xs leading-5 text-sky-100">
+            <AdminIcon name="info" className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" />
+            <div><span className="font-semibold">Importante:</span> ações externas permanecem condicionadas às autorizações e confirmações exibidas pelo backend.</div>
           </div>
         </section> : null}
 
@@ -2607,7 +2709,8 @@ function StoreDetailsDrawer({
           </section>
         ) : null}
       </div>
-    </DrawerShell>
+      </div>
+    </section>
   );
 }
 
@@ -3942,6 +4045,7 @@ function StoreListSection({
   selectedStoreId,
   onSelectStore,
   inactive,
+  preview = false,
 }: {
   title: string;
   stores: ZionAdminStore[];
@@ -3950,49 +4054,75 @@ function StoreListSection({
   selectedStoreId?: string;
   onSelectStore: (store: ZionAdminStore) => void;
   inactive?: boolean;
+  preview?: boolean;
 }) {
   const filteredStores = stores.filter((store) => matchesSearch(store, search));
+  const visibleStores = preview ? filteredStores.slice(0, 5) : filteredStores;
 
   return (
-    <section className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+    <section className="rounded-2xl border border-[#252b35] bg-[#0e1218] p-4 shadow-[0_12px_32px_rgba(0,0,0,0.12)]">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="text-lg font-semibold">{title}</h2>
         </div>
-        <span className="w-fit rounded-full border border-white/10 bg-zinc-950/50 px-3 py-1 text-xs text-zinc-400">
+        <span className="w-fit rounded-full border border-[#252b35] bg-[#080b10] px-3 py-1 text-xs text-[#8e98aa]">
           {formatNumber(stores.length)} loja(s)
         </span>
       </div>
 
-      <div className="mt-4 rounded-xl border border-white/10 bg-zinc-950/40 px-3 py-1.5">
+      <label className="mt-4 flex items-center gap-2 rounded-xl border border-[#252b35] bg-[#080b10] px-3 py-2">
         <div className="flex items-center gap-2">
-          <span className="text-zinc-500">⌕</span>
+          <AdminIcon name="search" className="h-4 w-4 text-[#616b7c]" />
           <input
             value={search}
             onChange={(event) => onSearch(event.target.value)}
             placeholder="Procurar loja por nome, organização ou status"
-            className="w-full bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
+            className="w-full bg-transparent text-sm text-[#f4f6fb] outline-none placeholder:text-[#616b7c]"
           />
         </div>
-      </div>
+      </label>
 
-      <div className="mt-3 max-h-[290px] space-y-2 overflow-y-auto pr-1">
-        {filteredStores.length === 0 ? (
+      <div className="mt-3 overflow-x-auto rounded-xl border border-white/10">
+        {visibleStores.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-white/10 p-6 text-center text-sm text-zinc-500">
             Nenhuma loja encontrada.
           </div>
         ) : (
-          filteredStores.map((store) => (
-            <StoreRowCard
-              key={store.id}
-              store={store}
-              inactive={inactive}
-              selected={selectedStoreId === store.id}
-              onClick={() => onSelectStore(store)}
-            />
-          ))
+          <table className="min-w-[980px] w-full border-collapse text-left text-xs">
+            <thead className="bg-white/[0.035] text-[10px] uppercase tracking-[0.14em] text-zinc-500">
+              <tr>
+                {['Loja', 'Organização', 'Status', 'Saúde', 'Configuração', 'IA', 'Uso', 'Pendências', 'Última IA', 'Ações'].map((heading) => (
+                  <th key={heading} className="border-b border-white/10 px-3 py-2.5 font-semibold">{heading}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {visibleStores.map((store) => {
+                const operational = getOperationalSummary(store);
+                const healthState = store.operationalHealth?.state ?? "unknown";
+                const readinessState = store.settingsReadiness?.overall ?? "unknown";
+                return (
+                  <tr key={store.id} className={selectedStoreId === store.id ? "bg-violet-500/[0.08]" : "hover:bg-white/[0.035]"}>
+                    <td className="border-b border-white/[0.07] px-3 py-3 font-semibold text-zinc-100">
+                      <div className="flex items-center gap-2"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-sky-400/10 text-sky-300"><AdminIcon name="stores" className="h-3.5 w-3.5" /></span><span className="max-w-[150px] truncate">{store.name}</span></div>
+                    </td>
+                    <td className="border-b border-white/[0.07] px-3 py-3 text-zinc-400">{store.organizationName}</td>
+                    <td className="border-b border-white/[0.07] px-3 py-3"><span className="rounded-full border border-white/10 bg-zinc-950/60 px-2 py-1 text-[10px] text-zinc-300">{getStoreStatusLabel(store.subscriptionStatus)}</span></td>
+                    <td className="border-b border-white/[0.07] px-3 py-3"><span className={`rounded-full border px-2 py-1 text-[10px] ${getOperationalHealthStateClassName(healthState)}`}>{getStoreOperationalHealthStateLabel(store.operationalHealth)}</span></td>
+                    <td className="border-b border-white/[0.07] px-3 py-3"><span className={`rounded-full border px-2 py-1 text-[10px] ${getSettingsReadinessStateClassName(readinessState)}`}>{STORE_SETTINGS_READINESS_STATE_LABELS[readinessState]}</span></td>
+                    <td className="border-b border-white/[0.07] px-3 py-3 text-zinc-300">{formatOverviewMetric(store.totalAiRuns, getStoreAiAvailability(store, "runs"))}</td>
+                    <td className="border-b border-white/[0.07] px-3 py-3 text-zinc-300">{formatNumber(store.totalMessages)} msg</td>
+                    <td className="border-b border-white/[0.07] px-3 py-3 text-zinc-300">{operational.label}</td>
+                    <td className="border-b border-white/[0.07] px-3 py-3 text-zinc-400">{formatDateTime(store.lastAiRunAt)}</td>
+                    <td className="border-b border-white/[0.07] px-3 py-3"><button type="button" onClick={() => onSelectStore(store)} className="whitespace-nowrap rounded-lg border border-violet-400/40 px-2.5 py-1.5 text-[10px] font-semibold text-violet-200 transition hover:bg-violet-500/15">Abrir loja <AdminIcon name="arrow" className="ml-1 inline h-3 w-3" /></button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         )}
       </div>
+      {preview && filteredStores.length > visibleStores.length ? <div className="mt-2 text-right text-xs text-zinc-500">Exibindo {visibleStores.length} de {filteredStores.length}. Abra Lojas para ver a tabela completa.</div> : null}
     </section>
   );
 }
@@ -4003,6 +4133,15 @@ const WHATSAPP_PIN_RECOVERY_TARGET = {
   wabaId: "1642288770859048",
   phoneNumberId: "1322472314288518",
 } as const;
+
+function isWhatsappPinRecoveryTargetStore(
+  store: Pick<ZionAdminStore, "organizationId" | "id">,
+) {
+  return (
+    store.organizationId === WHATSAPP_PIN_RECOVERY_TARGET.organizationId &&
+    store.id === WHATSAPP_PIN_RECOVERY_TARGET.storeId
+  );
+}
 
 type WhatsappPinRecoveryPhase =
   | "idle"
@@ -4627,11 +4766,13 @@ function WhatsappPinsSection({
   metaExecutionEnabled,
   organizationId,
   storeId,
+  compact = false,
 }: {
   canAccess: boolean;
   metaExecutionEnabled: boolean;
   organizationId: string;
   storeId: string;
+  compact?: boolean;
 }) {
   const [pins, setPins] = useState<ZionAdminWhatsappPin[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -4723,6 +4864,7 @@ function WhatsappPinsSection({
   const loading = !loaded && !error;
 
   return (
+    <>
     <section className="rounded-2xl border border-violet-400/20 bg-violet-500/[0.06] p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
@@ -4824,11 +4966,17 @@ function WhatsappPinsSection({
         })}
       </div>
 
-      <WhatsappPinRecoverySection
-        canAccess={canAccess}
-        metaExecutionEnabled={metaExecutionEnabled}
-      />
+      {!compact ? (
+        <details className="mt-3 rounded-xl border border-white/10 bg-zinc-950/30 p-3">
+          <summary className="cursor-pointer text-xs font-semibold text-violet-200">Histórico e recuperação</summary>
+          <WhatsappPinRecoverySection
+            canAccess={canAccess}
+            metaExecutionEnabled={metaExecutionEnabled}
+          />
+        </details>
+      ) : null}
     </section>
+    </>
   );
 }
 
@@ -4946,6 +5094,12 @@ export default function ZionAdminDashboardClient({
   const totalAiRuns = numberValue(data?.totals.aiRuns);
   const globalAiRunsAvailability = getGlobalAiAvailability(data, "runs");
   const globalPendingAvailability = getGlobalPendingAvailability(data);
+  const storesWithProblems = stores.filter(
+    (store) => store.operationalHealth?.state === "broken" || store.integrity?.state === "broken",
+  ).length;
+  const storesWithBlockedConfiguration = stores.filter(
+    (store) => store.settingsReadiness?.overall === "blocked",
+  ).length;
   const canManageAccounts = useMemo(() => {
     const normalized = String(adminRole || "").trim().toLowerCase();
     return normalized === "owner" || normalized === "admin" || normalized === "super_admin";
@@ -5190,21 +5344,23 @@ export default function ZionAdminDashboardClient({
   }
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-zinc-950 px-4 py-5 text-zinc-50 sm:px-6 lg:px-8">
-      <div className="mx-auto grid max-w-7xl gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
-        <aside className="h-fit rounded-2xl border border-white/10 bg-white/[0.035] p-3 lg:sticky lg:top-4">
-          <div className="px-2 py-2">
-            <div className="text-xs font-semibold uppercase tracking-[0.25em] text-violet-200/70">
-              ZION-ADM
+    <main className="min-h-screen overflow-x-hidden bg-[#080b10] text-[#f4f6fb]">
+      <div className="mx-auto grid min-h-screen max-w-[1600px] gap-0 lg:grid-cols-[208px_minmax(0,1fr)]">
+        <aside className="border-b border-[#252b35] bg-[#090c11] p-4 lg:sticky lg:top-0 lg:h-screen lg:border-b-0 lg:border-r lg:p-5">
+          <div className="flex items-center gap-3 px-1 py-2">
+            <div className="grid h-9 w-9 place-items-center rounded-xl bg-violet-400 text-sm font-black text-[#090c11]">Z</div>
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-200">ZION</div>
+              <div className="mt-0.5 text-[11px] text-[#8e98aa]">Interno</div>
             </div>
-            <div className="mt-1 text-sm font-semibold text-zinc-100">Centro administrativo</div>
           </div>
-          <nav aria-label="Seções administrativas" className="mt-3 grid grid-cols-2 gap-1.5 lg:grid-cols-1">
+          <div className="mt-8 px-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#616b7c]">Navegação</div>
+          <nav aria-label="Seções administrativas" className="mt-2 grid grid-cols-2 gap-1.5 lg:grid-cols-1">
             {([
-              ["overview", "Visão geral"],
-              ["alerts", "Alertas"],
-              ["stores", "Lojas"],
-              ["comparisons", "Comparações"],
+              ["overview", "Visão geral", "overview"],
+              ["alerts", "Alertas", "alerts"],
+              ["stores", "Lojas", "stores"],
+              ["comparisons", "Comparações", "comparisons"],
             ] as const).map(([section, label]) => (
               <button
                 key={section}
@@ -5212,37 +5368,50 @@ export default function ZionAdminDashboardClient({
                 aria-current={activeGlobalSection === section ? "page" : undefined}
                 onClick={() => {
                   setActiveGlobalSection(section);
+                  setSelectedStore(null);
                   if (section !== "comparisons") setSelectedOverview(null);
                   if (section === "comparisons") setSelectedOverview("compare");
                 }}
                 className={[
-                  "rounded-xl px-3 py-2 text-left text-sm transition",
+                  "flex items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm transition",
                   activeGlobalSection === section
-                    ? "border border-violet-400/30 bg-violet-500/15 font-semibold text-violet-100"
-                    : "text-zinc-300 hover:bg-white/[0.08] hover:text-white",
+                    ? "border border-violet-400/30 bg-violet-500/15 font-semibold text-violet-100 shadow-[0_0_20px_rgba(168,139,255,0.08)]"
+                    : "border border-transparent text-[#a1aabb] hover:bg-white/[0.06] hover:text-white",
                 ].join(" ")}
               >
+                <AdminIcon name={section} className="h-4 w-4 shrink-0" />
                 {label}
               </button>
             ))}
           </nav>
-          <div className="mt-4 border-t border-white/10 px-2 pt-3 text-[11px] leading-5 text-zinc-500">
-            Os detalhes da loja continuam disponíveis ao selecionar uma loja na lista.
+          <div className="mt-8 hidden border-t border-[#252b35] px-1 pt-4 text-[11px] leading-5 text-[#616b7c] lg:block">
+            <div className="font-semibold uppercase tracking-[0.16em] text-[#8e98aa]">ZION interno</div>
+            <div className="mt-1">Administrador</div>
           </div>
         </aside>
 
-        <div className="flex min-w-0 flex-col gap-3">
-        <header className="flex flex-col gap-4 border-b border-white/10 pb-4 md:flex-row md:items-end md:justify-between">
+        <div className="flex min-w-0 flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
+        <header className="flex flex-col gap-4 border-b border-[#252b35] pb-5 md:flex-row md:items-end md:justify-between">
           <div>
-            <div className="text-xs font-semibold uppercase tracking-[0.28em] text-zinc-500">
-              ZION Interno
-            </div>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-              Dashboard interno do ZION
-            </h1>
+            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8e98aa]">ZION interno</div>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight text-[#f4f6fb]">Dashboard de lojas</h1>
+            <p className="mt-1 text-sm text-[#8e98aa]">Visão consolidada da operação, saúde e atividade das lojas.</p>
           </div>
 
           <div className="flex items-center gap-2 self-start md:self-auto">
+            <label className="hidden items-center gap-2 rounded-xl border border-[#252b35] bg-[#10141b] px-3 py-2 text-xs text-[#8e98aa] lg:flex">
+              <AdminIcon name="search" className="h-4 w-4" />
+              <span className="sr-only">Buscar loja</span>
+              <input
+                value={activeSearch}
+                onChange={(event) => {
+                  setActiveSearch(event.target.value);
+                  setActiveGlobalSection("stores");
+                }}
+                placeholder="Buscar loja..."
+                className="w-32 bg-transparent text-[#f4f6fb] outline-none placeholder:text-[#616b7c]"
+              />
+            </label>
             {canManageAccounts ? (
               <button
                 type="button"
@@ -5251,12 +5420,13 @@ export default function ZionAdminDashboardClient({
                   setCreateAccountSuccess(null);
                   setIsCreateAccountOpen(true);
                 }}
-                className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-500/15"
+                className="flex items-center gap-1.5 rounded-xl bg-violet-400 px-3 py-2 text-xs font-semibold text-[#090c11] transition hover:bg-violet-300"
               >
+                <AdminIcon name="plus" className="h-4 w-4" />
                 Nova conta
               </button>
             ) : null}
-            <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-zinc-300">
+            <div className="hidden rounded-xl border border-[#252b35] bg-[#10141b] px-3 py-2 text-xs text-[#a1aabb] sm:block">
               Acesso:{" "}
               <span className="font-semibold text-zinc-50">{adminRole}</span>
             </div>
@@ -5264,28 +5434,28 @@ export default function ZionAdminDashboardClient({
               type="button"
               onClick={() => void handleSignOut()}
               disabled={isSigningOut}
-              className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-zinc-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-xl border border-[#252b35] bg-[#10141b] px-3 py-2 text-xs font-semibold text-[#a1aabb] transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSigningOut ? "Saindo..." : "Sair"}
             </button>
           </div>
         </header>
 
-        {overviewError ? (
+        {!selectedStore && overviewError ? (
           <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-100">
             {overviewError}
           </div>
         ) : null}
 
-        {hasCountErrors ? (
+        {!selectedStore && hasCountErrors ? (
           <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
             Alguns indicadores não puderam ser carregados. A tela mostrou
             somente dados com origem confiável.
           </div>
         ) : null}
 
-        {activeGlobalSection === "overview" ? (
-        <div id="overview" className="scroll-mt-4">
+        {!selectedStore && activeGlobalSection === "overview" ? (
+        <div id="overview" className="space-y-5">
         {orphanStoresCount > 0 ? (
           <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
             <div className="font-semibold">
@@ -5309,8 +5479,8 @@ export default function ZionAdminDashboardClient({
           </div>
         ) : null}
 
-        <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-3 text-xs text-zinc-400">
-          <span className="font-semibold text-zinc-200">Integridade estrutural:</span>{" "}
+        <div className="rounded-2xl border border-[#252b35] bg-[#10141b] p-3 text-xs text-[#8e98aa]">
+          <span className="font-semibold text-[#f4f6fb]">Integridade estrutural:</span>{" "}
           {integritySummary.broken} problema(s) · {integritySummary.warning} atenção · {integritySummary.unknown} não verificada(s) · {integritySummary.healthy} saudável(eis)
         </div>
 
@@ -5323,7 +5493,41 @@ export default function ZionAdminDashboardClient({
             </div>
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+            <DashboardMetricCard label="Total de lojas" value={formatNumber(data?.totals.stores)} helper="Lojas no recorte" icon="stores" tone="blue" />
+            <DashboardMetricCard label="Lojas ativas" value={formatNumber(activeStores.length)} helper="Ativas no recorte" icon="check" tone="green" />
+            <DashboardMetricCard label="Com problema" value={formatNumber(storesWithProblems)} helper="Saúde ou integridade quebrada" icon="warning" tone="red" />
+            <DashboardMetricCard label="Config. bloqueada" value={formatNumber(storesWithBlockedConfiguration)} helper="Prontidão bloqueada" icon="settings" tone="amber" />
+            <DashboardMetricCard label="Incidentes IA" value={formatOverviewMetric(data?.totals.failedAiRuns, globalAiRunsAvailability)} helper="Falhas em execuções registradas" icon="brain" tone="violet" />
+            <DashboardMetricCard label="Incidentes WhatsApp" value={formatNumber(data?.totals.whatsappErrors)} helper="Erros locais observados" icon="whatsapp" tone="green" />
+          </div>
+
+          <div className="mt-4 grid gap-3 xl:grid-cols-[1.35fr_0.65fr]">
+            <section className="flex items-center justify-between gap-4 rounded-2xl border border-amber-400/20 bg-amber-500/[0.07] p-4">
+              <div className="flex min-w-0 items-start gap-3">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-400/10 text-amber-300"><AdminIcon name="warning" className="h-5 w-5" /></span>
+                <div>
+                  <div className="text-sm font-semibold text-zinc-100">Atenção no recorte</div>
+                  <div className="mt-1 text-xs text-zinc-400">{formatNumber(storesWithProblems)} loja(s) sinalizada(s) por saúde ou integridade observada.</div>
+                </div>
+              </div>
+              <button type="button" onClick={() => { setSelectedStore(null); setActiveGlobalSection("alerts"); }} className="shrink-0 rounded-xl border border-amber-300/30 px-3 py-2 text-xs font-semibold text-amber-100 hover:bg-amber-400/10">Ver alertas</button>
+            </section>
+            <section className="rounded-2xl border border-sky-400/20 bg-sky-500/[0.06] p-4">
+              <div className="flex items-center gap-2"><AdminIcon name="shield" className="h-4 w-4 text-sky-300" /><h3 className="text-sm font-semibold text-zinc-100">Integridade estrutural</h3></div>
+              <div className="mt-2 flex items-center gap-2"><span className="rounded-full border border-sky-300/20 bg-sky-400/10 px-2 py-1 text-[10px] text-sky-100">{integritySummary.broken > 0 ? "Atenção" : integritySummary.unknown > 0 ? "Não verificada" : "Observada"}</span><span className="text-xs text-zinc-400">{integritySummary.broken} problema(s) · {integritySummary.unknown} não verificada(s)</span></div>
+              <p className="mt-2 text-xs text-zinc-500">Estruturas órfãs e detalhes continuam disponíveis em Alertas.</p>
+            </section>
+          </div>
+
+          <div className="mt-5 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-[#f4f6fb]">Acessos rápidos</h3>
+              <p className="mt-1 text-xs text-[#8e98aa]">Indicadores detalhados preservando as fontes e disponibilidades atuais.</p>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-3 lg:grid-cols-3">
             <OverviewButton
               label="Trabalho da IA"
               value={formatOverviewMetric(totalAiRuns, globalAiRunsAvailability)}
@@ -5367,19 +5571,29 @@ export default function ZionAdminDashboardClient({
               setActiveGlobalSection("overview");
             }}
           />
+          <div className="mt-5">
+            <StoreListSection
+              title="Prévia de lojas"
+              stores={activeStores}
+              search={activeSearch}
+              onSearch={setActiveSearch}
+              onSelectStore={setSelectedStore}
+              preview
+            />
+          </div>
         </section>
 
         </div>
         ) : null}
 
-        {activeGlobalSection === "alerts" ? (
+        {!selectedStore && activeGlobalSection === "alerts" ? (
           <GlobalAlertsSection
             stores={stores}
             availability={getGlobalAiAvailability(data, "runs")}
           />
         ) : null}
 
-        {activeGlobalSection === "comparisons" ? (
+        {!selectedStore && activeGlobalSection === "comparisons" ? (
           <div id="comparisons" className="scroll-mt-4">
             <OverviewInlineDetails
               type="compare"
@@ -5393,14 +5607,14 @@ export default function ZionAdminDashboardClient({
           </div>
         ) : null}
 
-        {activeGlobalSection === "stores" ? (
+        {!selectedStore && activeGlobalSection === "stores" ? (
         <div id="stores" className="scroll-mt-4 space-y-3">
           <StoreListSection
             title="Lojas ativas"
             stores={activeStores}
             search={activeSearch}
             onSearch={setActiveSearch}
-            selectedStoreId={selectedStore?.id}
+            selectedStoreId={undefined}
             onSelectStore={setSelectedStore}
           />
 
@@ -5409,7 +5623,7 @@ export default function ZionAdminDashboardClient({
             stores={inactiveStores}
             search={inactiveSearch}
             onSearch={setInactiveSearch}
-            selectedStoreId={selectedStore?.id}
+            selectedStoreId={undefined}
             onSelectStore={setSelectedStore}
             inactive
           />
