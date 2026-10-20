@@ -495,6 +495,51 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "normal reply delay is not processed when the canonical AI flow produced no message",
+    run: async () => {
+      const recorder = createQueueSupabase([
+        queueRow({
+          queue_key: "resume:conv-1:normal_reply_delay:202610192057",
+          input: {
+            type: "resume_sales_conversation",
+            reason: "normal_reply_delay",
+            resumeAt: "2020-01-01T00:00:00.000Z",
+            anchorMessageId: "d8f13a51",
+          },
+        }),
+      ]);
+      let calls = 0;
+
+      const result = await processDueAiRunQueue({
+        organizationId: "org-1",
+        storeId: "store-1",
+        supabaseClient: recorder.supabase,
+        runAiFlow: async () => {
+          calls += 1;
+          return {
+            ok: true,
+            aiText: "",
+            context: {},
+            usage: null,
+            persisted: true,
+            messageId: null,
+          };
+        },
+      });
+
+      assert.equal(calls, 1);
+      assert.equal(result.succeeded, 0);
+      assert.equal(result.failed, 1);
+      assert.equal(result.results[0]?.detail, "SALES_AI_REPLY_NOT_PERSISTED");
+      assert.equal(
+        recorder.updates.length,
+        0,
+        "a missing mandatory reply must remain retryable and must not consume the resume window",
+      );
+      assert.equal(recorder.windowUpdates.length, 0);
+    },
+  },
+  {
     name: "invalid resume contract is terminalized instead of remaining invisible",
     run: async () => {
       const recorder = createQueueSupabase([

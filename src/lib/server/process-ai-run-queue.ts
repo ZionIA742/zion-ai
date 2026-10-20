@@ -114,6 +114,17 @@ function isSalesResumeQueueCandidate(row: AiRunQueueRow): boolean {
   );
 }
 
+function hasPersistedAiSalesReply(
+  result: Awaited<ReturnType<typeof generateAndSaveAiSalesReply>>,
+): boolean {
+  return (
+    result.ok === true &&
+    result.persisted === true &&
+    typeof result.messageId === "string" &&
+    result.messageId.trim().length > 0
+  );
+}
+
 async function markQueueProcessed(args: {
   supabase: any;
   id: string;
@@ -433,6 +444,11 @@ export async function processDueAiRunQueue(
           styleHint,
         },
       });
+
+      if (aiResult.ok && !hasPersistedAiSalesReply(aiResult)) {
+        throw new Error("SALES_AI_REPLY_NOT_PERSISTED");
+      }
+
       const detail = aiResult.ok
         ? null
         : formatSalesAiProcessingError(aiResult.error, aiResult.diagnostic);
