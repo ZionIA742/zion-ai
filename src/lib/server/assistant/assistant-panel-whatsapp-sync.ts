@@ -14,11 +14,16 @@ type SupabaseError = {
 type SupabaseAwaitable<T> = PromiseLike<T>;
 type SupabaseQueryLike = {
   eq(column: string, value: unknown): SupabaseQueryLike;
+  gte(column: string, value: unknown): SupabaseQueryLike;
   in(column: string, value: unknown): SupabaseQueryLike;
   contains(column: string, value: unknown): SupabaseQueryLike;
   order(column: string, options: { ascending: boolean }): SupabaseQueryLike;
   limit(value: number): SupabaseQueryLike;
   maybeSingle(): SupabaseAwaitable<{ data: unknown; error: SupabaseError }>;
+};
+type SupabaseUpdateLike = Omit<SupabaseQueryLike, "eq"> & {
+  eq(column: string, value: unknown): SupabaseUpdateLike;
+  select(columns: string): SupabaseQueryLike;
 };
 type SupabaseInsertLike = {
   select(columns: string): SupabaseQueryLike;
@@ -27,6 +32,7 @@ type SupabaseInsertLike = {
 type SupabaseTableLike = {
   select(columns: string): SupabaseQueryLike;
   insert(payload: Record<string, unknown>): SupabaseInsertLike;
+  update(payload: Record<string, unknown>): SupabaseUpdateLike;
 };
 type SupabaseClientLike = {
   from(table: string): SupabaseTableLike;
@@ -77,6 +83,13 @@ function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function activationTimestamp(value: unknown) {
+  const raw = cleanText(value) || cleanText(process.env.ASSISTANT_PANEL_WHATSAPP_SYNC_ACTIVATED_AT);
+  if (!raw) return null;
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
 function extractId(value: unknown): string | null {
   if (Array.isArray(value)) return extractId(value[0]);
   if (!value || typeof value !== "object") return null;
@@ -104,6 +117,16 @@ function isPanelSyncEventDuplicateError(error: SupabaseError) {
 
 function eventKey(messageId: string, kind: "human" | "assistant") {
   return `assistant-panel-whatsapp:${kind}:${messageId}`;
+}
+
+function parsePanelSyncEventKey(value: unknown) {
+  const match = cleanText(value).match(/^assistant-panel-whatsapp:(human|assistant):([^:]+)$/);
+  if (!match) return null;
+
+  return {
+    kind: match[1] as "human" | "assistant",
+    messageId: match[2],
+  };
 }
 
 async function loadPanelMessage(args: {
@@ -389,5 +412,133 @@ export async function syncAssistantPanelMessageToResponsibleWhatsapp(
     status: result.reason === "send_uncertain" ? "uncertain" : "failed",
     notificationId: notification.id,
     reason: result.reason,
+  };
+}
+
+export async function recoverPendingAssistantPanelSyncNotifications(args: {
+  organizationId: string;
+  storeId: string;
+  activationAt?: string | null;
+  limit?: number;
+  supabase?: SupabaseClientLike;
+  send?: SyncDependencies["send"];
+}) {
+  const organizationId = cleanText(args.organizationId);
+  const storeId = cleanText(args.storeId);
+  const limit = Math.max(1, Math.min(Number(args.limit || 20), 100));
+
+  if (!organizationId || !storeId) {
+    return {
+      scanned: 0,
+      sent: 0,
+      failed: 0,
+      uncertain: 0,
+      skipped: 0,
+    };
+  }
+
+  const activatedAt = activationTimestamp(args.activationAt);
+  if (!activatedAt) {
+    return {
+      scanned: 0,
+      sent: 0,
+      failed: 0,
+      uncertain: 0,
+      skipped: 0,
+    };
+  }
+
+  const supabase = args.supabase || getSupabaseAdmin();
+  const pendingQuery = supabase
+    .from("store_assistant_notification_queue")
+    .select("id, organization_id, store_id, notification_type, status, context")
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .eq("notification_type", "assistant_panel_sync")
+    .eq("status", "pending")
+    .gte("created_at", activatedAt)
+    .order("created_at", { ascending: true })
+    .limit(limit);
+  const { data, error } = await (pendingQuery as unknown as SupabaseAwaitable<{
+    data: unknown;
+    error: SupabaseError;
+  }>);
+
+  if (error) {
+    throw new Error(`Falha ao carregar sincronizacoes pendentes do painel: ${error.message}`);
+  }
+
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  let sent = 0;
+  let failed = 0;
+  let uncertain = 0;
+  let skipped = 0;
+
+  for (const rawRow of rows) {
+    const row = rawRow as Record<string, unknown>;
+    const parsed = parsePanelSyncEventKey(
+      (row.context as Record<string, unknown> | null | undefined)?.event_key,
+    );
+    if (!parsed) {
+      skipped += 1;
+      continue;
+    }
+
+    try {
+      const result = await syncAssistantPanelMessageToResponsibleWhatsapp(
+        {
+          organizationId,
+          storeId,
+          messageId: parsed.messageId,
+          kind: parsed.kind,
+          textPrefix:
+            parsed.kind === "human"
+              ? "VocÃª pelo painel: "
+              : "Assistente pelo painel: ",
+        },
+        { supabase, send: args.send },
+      );
+
+      if (result.status === "sent" || result.status === "already_sent") {
+        const now = new Date().toISOString();
+        const { error: updateError } = await supabase
+          .from("store_assistant_notification_queue")
+          .update({
+            status: "sent",
+            processed_at: now,
+            error_text: null,
+            updated_at: now,
+          })
+          .eq("id", String(row.id || ""))
+          .eq("organization_id", organizationId)
+          .eq("store_id", storeId)
+          .eq("notification_type", "assistant_panel_sync")
+          .eq("status", "pending")
+          .select("id")
+          .maybeSingle();
+
+        if (updateError) {
+          throw new Error(`Falha ao marcar sincronizacao do painel como sent: ${updateError.message}`);
+        }
+
+        sent += 1;
+      } else if (result.status === "uncertain") {
+        uncertain += 1;
+      } else if (result.status === "failed") {
+        failed += 1;
+      } else {
+        skipped += 1;
+      }
+    } catch {
+      failed += 1;
+    }
+  }
+
+  return {
+    scanned: rows.length,
+    sent,
+    failed,
+    uncertain,
+    skipped,
   };
 }

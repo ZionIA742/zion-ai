@@ -11,6 +11,7 @@ type FakeOptions = {
 type FakeBuilder = {
   select(): FakeBuilder;
   eq(column: string, value: unknown): FakeBuilder;
+  gte(column: string, value: unknown): FakeBuilder;
   in(column: string, value: unknown): FakeBuilder;
   contains(column: string, value: unknown): FakeBuilder;
   order(): FakeBuilder;
@@ -33,6 +34,10 @@ function createFakeSupabase(options: FakeOptions = {}) {
       },
       eq(column: string, value: unknown) {
         filters[column] = value;
+        return api;
+      },
+      gte(column: string, value: unknown) {
+        filters[`${column}__gte`] = value;
         return api;
       },
       in(column: string, value: unknown) {
@@ -86,9 +91,13 @@ function createFakeSupabase(options: FakeOptions = {}) {
 
         if (table === "store_assistant_notification_queue") {
           const internal = options.internalNotification;
+          const minimumCreatedAt = String(filters.created_at__gte || "");
+          const createdAt = String(internal?.created_at || "");
+          const isAfterActivation = !minimumCreatedAt || createdAt >= minimumCreatedAt;
           const context = filters.context as Row | undefined;
           const matches =
             internal &&
+            isAfterActivation &&
             internal.organization_id === filters.organization_id &&
             internal.store_id === filters.store_id &&
             internal.notification_type === filters.notification_type &&
@@ -131,7 +140,22 @@ function createFakeSupabase(options: FakeOptions = {}) {
           },
         };
       },
+      update(payload: Row) {
+        if (table === "store_assistant_notification_queue" && options.internalNotification) {
+          Object.assign(options.internalNotification, payload);
+        }
+        return api;
+      },
       then(resolve: (value: unknown) => unknown) {
+        if (table === "store_assistant_notification_queue") {
+          const minimumCreatedAt = String(filters.created_at__gte || "");
+          const createdAt = String(options.internalNotification?.created_at || "");
+          const isAfterActivation = !minimumCreatedAt || createdAt >= minimumCreatedAt;
+          return Promise.resolve({
+            data: options.internalNotification && isAfterActivation ? [options.internalNotification] : [],
+            error: null,
+          }).then(resolve);
+        }
         if (table === "store_responsibles") {
           return Promise.resolve({
             data: [
@@ -171,7 +195,10 @@ function createFakeSupabase(options: FakeOptions = {}) {
 const modulePromise = import("./assistant-panel-whatsapp-sync");
 
 void (async () => {
-  const { syncAssistantPanelMessageToResponsibleWhatsapp } = await modulePromise;
+  const {
+    syncAssistantPanelMessageToResponsibleWhatsapp,
+    recoverPendingAssistantPanelSyncNotifications,
+  } = await modulePromise;
   const supabase = createFakeSupabase();
   const sent: Array<{ notificationId: string; input: string }> = [];
 
@@ -457,6 +484,85 @@ void (async () => {
   assert.equal(unrelated.ok, false);
   assert.equal(unrelated.status, "failed");
   assert.match(String(unrelated.reason), /Falha ao criar ledger interno/);
+
+  const pendingInternal = {
+    id: "internal-pending-1",
+    organization_id: "org-1",
+    store_id: "store-1",
+    notification_type: "assistant_panel_sync",
+    status: "pending",
+    created_at: "2026-10-21T10:01:00.000Z",
+    processed_at: null,
+    context: {
+      source: "assistant_panel_whatsapp_sync",
+      event_key: "assistant-panel-whatsapp:human:human-message-1",
+      message_kind: "human",
+    },
+  };
+  const recoveredInternal = createFakeSupabase({
+    internalNotification: pendingInternal,
+  });
+  let pendingRecoverySendCount = 0;
+  const pendingRecovery = await recoverPendingAssistantPanelSyncNotifications(
+    {
+      organizationId: "org-1",
+      storeId: "store-1",
+      limit: 10,
+      supabase: recoveredInternal as never,
+      activationAt: "2026-10-21T10:00:00.000Z",
+      send: async (input) => {
+        pendingRecoverySendCount += 1;
+        return {
+          ok: true,
+          sent: true,
+          notificationId: input.notificationId,
+          externalMessageId: "wamid-pending-recovery-1",
+        };
+      },
+    },
+  );
+  assert.equal(pendingRecovery.scanned, 1);
+  assert.equal(pendingRecovery.sent, 1);
+  assert.equal(pendingRecoverySendCount, 1);
+  assert.equal(pendingInternal.status, "sent");
+  assert.ok(pendingInternal.processed_at);
+
+  const historicalInternal = {
+    ...pendingInternal,
+    id: "internal-historical-1",
+    status: "pending",
+    created_at: "2026-10-20T23:59:59.000Z",
+    processed_at: null,
+  };
+  const historicalSupabase = createFakeSupabase({
+    internalNotification: historicalInternal,
+  });
+  let historicalSendCount = 0;
+  const historicalRecovery = await recoverPendingAssistantPanelSyncNotifications({
+    organizationId: "org-1",
+    storeId: "store-1",
+    activationAt: "2026-10-21T10:00:00.000Z",
+    supabase: historicalSupabase as never,
+    send: async () => {
+      historicalSendCount += 1;
+      throw new Error("historical notification must not be sent");
+    },
+  });
+  assert.equal(historicalRecovery.scanned, 0);
+  assert.equal(historicalSendCount, 0);
+
+  const unconfiguredSupabase = createFakeSupabase({
+    internalNotification: pendingInternal,
+  });
+  const unconfiguredRecovery = await recoverPendingAssistantPanelSyncNotifications({
+    organizationId: "org-1",
+    storeId: "store-1",
+    supabase: unconfiguredSupabase as never,
+    send: async () => {
+      throw new Error("activation marker is required");
+    },
+  });
+  assert.equal(unconfiguredRecovery.scanned, 0);
 
   process.stdout.write("ok - panel WhatsApp sync is scoped, labeled, and idempotent\n");
 })().catch((error) => {
