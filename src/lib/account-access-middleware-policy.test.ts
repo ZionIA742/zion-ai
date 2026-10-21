@@ -114,7 +114,14 @@ const tests: TestCase[] = [
     name: "cron routes remain public",
     run: () => {
       expectNext("/api/cron/assistant-operational-tasks", "anonymous");
+      expectNext("/api/cron/assistant-panel-whatsapp-sync", "anonymous");
       expectNext("/api/cron/whatsapp-process-all", "anonymous");
+      expectRedirect(
+        "/api/cron/assistant-panel-whatsapp-sync/other",
+        "anonymous",
+        "/login",
+        true,
+      );
     },
   },
   {

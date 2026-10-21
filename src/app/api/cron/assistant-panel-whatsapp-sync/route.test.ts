@@ -11,6 +11,10 @@ try {
 
   const unauthorized = await GET(new Request("http://localhost/api/cron/assistant-panel-whatsapp-sync"));
   assert.equal(unauthorized.status, 401);
+  assert.deepEqual(await unauthorized.json(), {
+    ok: false,
+    error: "UNAUTHORIZED_CRON_ROUTE",
+  });
 
   const wrongSecret = await GET(
     new Request("http://localhost/api/cron/assistant-panel-whatsapp-sync", {
@@ -18,6 +22,10 @@ try {
     }),
   );
   assert.equal(wrongSecret.status, 401);
+  assert.deepEqual(await wrongSecret.json(), {
+    ok: false,
+    error: "UNAUTHORIZED_CRON_ROUTE",
+  });
 
   process.env.ASSISTANT_PANEL_WHATSAPP_SYNC_ACTIVATED_AT = "";
   const missingActivation = await GET(
