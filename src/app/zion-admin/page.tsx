@@ -120,6 +120,7 @@ export default async function ZionAdminDashboardPage() {
   const overview = await getZionAdminOverview();
   const pinAccess = await resolveZionAdminApiAccess({
     requiredCapability: "manage_whatsapp_pins",
+    createSupabase: getSupabaseServerClient,
   });
 
   return (
@@ -127,6 +128,8 @@ export default async function ZionAdminDashboardPage() {
       adminRole={String(admin.role || "admin")}
       canManageWhatsappPins={pinAccess.ok}
       whatsappPinRecoveryMetaEnabled={process.env.ZION_WHATSAPP_PIN_RECOVERY_META_ENABLED === "true"}
+      whatsappPinRotationEnabled={process.env.ZION_ADMIN_WHATSAPP_PIN_ROTATION_ENABLED === "true"}
+      whatsappPinRotationExecutionEnabled={process.env.ZION_ADMIN_WHATSAPP_PIN_ROTATION_EXECUTION_ENABLED === "true"}
       initialData={overview.data}
       initialError={overview.error}
     />

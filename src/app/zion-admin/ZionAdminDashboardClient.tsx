@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import ZionAdminPinRotationControls from "./ZionAdminPinRotationControls";
 import {
   ensureFacebookSdkLoaded,
   classifyMetaEmbeddedSignupMessage,
@@ -453,6 +454,8 @@ type Props = {
   adminRole: string;
   canManageWhatsappPins: boolean;
   whatsappPinRecoveryMetaEnabled: boolean;
+  whatsappPinRotationEnabled: boolean;
+  whatsappPinRotationExecutionEnabled: boolean;
   initialData: ZionAdminOverview | null;
   initialError: string | null;
 };
@@ -1935,6 +1938,8 @@ function StoreDetailsDrawer({
   canManageAccounts,
   canManageWhatsappPins,
   whatsappPinRecoveryMetaEnabled,
+  whatsappPinRotationEnabled,
+  whatsappPinRotationExecutionEnabled,
   onClose,
   onResendFirstAccess,
   onToggleAccountAccess,
@@ -1947,6 +1952,8 @@ function StoreDetailsDrawer({
   canManageAccounts: boolean;
   canManageWhatsappPins: boolean;
   whatsappPinRecoveryMetaEnabled: boolean;
+  whatsappPinRotationEnabled: boolean;
+  whatsappPinRotationExecutionEnabled: boolean;
   onClose: () => void;
   onResendFirstAccess: (store: ZionAdminStore) => Promise<void>;
   onToggleAccountAccess: (store: ZionAdminStore) => Promise<void>;
@@ -2356,6 +2363,8 @@ function StoreDetailsDrawer({
                 key={store.id}
                 canAccess={canManageWhatsappPins}
                 metaExecutionEnabled={whatsappPinRecoveryMetaEnabled}
+                rotationEnabled={whatsappPinRotationEnabled}
+                rotationExecutionEnabled={whatsappPinRotationExecutionEnabled}
                 organizationId={store.organizationId}
                 storeId={store.id}
                 compact
@@ -4764,12 +4773,16 @@ function WhatsappPinRecoverySection({
 function WhatsappPinsSection({
   canAccess,
   metaExecutionEnabled,
+  rotationEnabled,
+  rotationExecutionEnabled,
   organizationId,
   storeId,
   compact = false,
 }: {
   canAccess: boolean;
   metaExecutionEnabled: boolean;
+  rotationEnabled: boolean;
+  rotationExecutionEnabled: boolean;
   organizationId: string;
   storeId: string;
   compact?: boolean;
@@ -4859,16 +4872,102 @@ function WhatsappPinsSection({
     }
   }
 
-  if (!canAccess) return null;
+  const [historyOpen, setHistoryOpen] = useState(false);
+  if (!canAccess) {
+    // Mantem o espaco do card sem consultar, revelar ou modificar segredos.
+    // A API continua exigindo manage_whatsapp_pins, independentemente da UI.
+    return compact ? (
+      <section className="flex min-w-0 flex-col rounded-xl border border-[#29313b] bg-[#10141b] p-3 text-zinc-300">
+        <div className="flex items-start gap-2.5">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-amber-400/10 text-amber-300">
+            <AdminIcon name="key" className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <h4 className="text-[12px] font-semibold text-zinc-100">PIN do WhatsApp</h4>
+            <p className="mt-0.5 text-[10px] leading-4 text-[#8e98aa]">Gerencie o PIN para verificação na Meta.</p>
+          </div>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-1.5">
+          <DetailItem label="Status" value="Acesso restrito" />
+          <DetailItem label="Telefone" value="Indisponível" />
+        </div>
+        <p className="mt-2 text-[10px] leading-4 text-[#8e98aa]">
+          A consulta e a revelação exigem autorização administrativa para PINs.
+        </p>
+        <div className="mt-auto flex gap-1.5 pt-3">
+          <button type="button" disabled className="min-w-0 flex-1 rounded-lg bg-[#56C7D8] px-2 py-2 text-[10px] font-semibold text-[#09212a] opacity-50">
+            Revelar PIN
+          </button>
+          <button type="button" disabled className="min-w-0 flex-1 rounded-lg border border-[#397788] bg-[#132d37] px-2 py-2 text-[10px] font-semibold text-[#a6eef3] opacity-50">
+            Histórico de PINs
+          </button>
+        </div>
+      </section>
+    ) : (
+      <section className="rounded-2xl border border-cyan-400/20 bg-cyan-500/[0.06] p-4">
+        <h2 className="text-lg font-semibold text-zinc-100">PINs do WhatsApp</h2>
+        <p className="mt-2 text-xs leading-5 text-zinc-400">
+          A consulta e a revelação exigem autorização administrativa para PINs.
+        </p>
+      </section>
+    );
+  }
 
   const loading = !loaded && !error;
+  const currentPin = pins.find((pin) => pin.secret_status === "active") ?? pins[0] ?? null;
+
+  if (compact) {
+    const revealed = currentPin ? revealedPins[currentPin.secret_id] : null;
+    return (
+      <section className="flex min-w-0 flex-col rounded-xl border border-[#29313b] bg-[#10141b] p-3 text-zinc-300">
+        <div className="flex items-start gap-2.5">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-amber-400/10 text-amber-300"><AdminIcon name="key" className="h-5 w-5" /></span>
+          <div className="min-w-0"><h4 className="text-[12px] font-semibold text-zinc-100">PIN do WhatsApp</h4><p className="mt-0.5 text-[10px] leading-4 text-[#8e98aa]">Gerencie o PIN para verificação na Meta.</p></div>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-1.5">
+          <DetailItem label="Status" value={loading ? "Carregando" : currentPin ? currentPin.secret_status : "Sem PIN"} />
+          <DetailItem label="Telefone" value={currentPin?.phone_number_id_masked || "Indisponível"} />
+        </div>
+        {error ? <p role="alert" className="mt-2 text-[10px] text-red-200">{error}</p> : null}
+        {revealed ? <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-2 py-1.5"><span className="text-[10px] text-amber-200">PIN revelado por 15 segundos</span><code className="text-sm tracking-widest text-white">{revealed}</code></div> : null}
+        <div className="mt-auto flex gap-1.5 pt-3">
+          <button type="button" disabled={!currentPin || currentPin.secret_status === "pending" || !currentPin.can_reveal || revealBusyId !== null}
+            onClick={() => currentPin && (revealed ? setRevealedPins((current) => { const next = { ...current }; delete next[currentPin.secret_id]; return next; }) : void revealPin(currentPin))}
+            className="min-w-0 flex-1 rounded-lg bg-[#56C7D8] px-2 py-2 text-[10px] font-semibold text-[#09212a] hover:bg-[#84E0E8] disabled:cursor-not-allowed disabled:opacity-50">
+            {revealed ? "Ocultar PIN" : revealBusyId ? "Revelando..." : "Revelar PIN"}
+          </button>
+          <button type="button" aria-expanded={historyOpen} onClick={() => setHistoryOpen((value) => !value)}
+            className="min-w-0 flex-1 rounded-lg border border-[#397788] bg-[#132d37] px-2 py-2 text-[10px] font-semibold text-[#a6eef3] hover:bg-[#1c4350]">Histórico de PINs</button>
+        </div>
+        {historyOpen ? <div className="mt-2 max-h-52 space-y-2 overflow-y-auto rounded-lg border border-[#26343d] p-2">
+          {pins.length === 0 ? <p className="text-[10px] text-[#8e98aa]">Nenhum registro encontrado.</p> : pins.map((pin) =>
+            <div key={pin.secret_id} className="rounded-lg border border-[#26343d] bg-[#0b1218] p-2 text-[10px]">
+              <p className="font-semibold text-zinc-200">{pin.secret_status} · {pin.phone_number_id_masked}</p>
+              {pin.secret_status === "invalidated" ? <p className="text-amber-200">PIN invalidado localmente; validade na Meta não confirmada.</p> : null}
+              {revealedPins[pin.secret_id] ? <code className="block py-1 tracking-widest text-white">{revealedPins[pin.secret_id]}</code> : null}
+              <button type="button" disabled={!pin.can_reveal || pin.secret_status === "pending" || revealBusyId !== null}
+                onClick={() => void revealPin(pin)} className="mt-1 rounded-md border border-[#397788] px-2 py-1 text-[#a6eef3] disabled:opacity-50">Revelar PIN</button>
+            </div>)}
+        </div> : null}
+        <ZionAdminPinRotationControls
+          canAccess={canAccess}
+          rotationEnabled={rotationEnabled}
+          executionEnabled={rotationExecutionEnabled}
+          organizationId={organizationId}
+          storeId={storeId}
+          activeSecretId={currentPin?.secret_status === "active" ? currentPin.secret_id : null}
+          onCompleted={() => { setRevealedPins({}); setLoaded(false); }}
+        />
+      </section>
+    );
+  }
 
   return (
     <>
-    <section className="rounded-2xl border border-violet-400/20 bg-violet-500/[0.06] p-4">
+    <section className="rounded-2xl border border-cyan-400/20 bg-cyan-500/[0.06] p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <div className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-200/70">
+          <div className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-200/70">
             Segurança operacional
           </div>
           <h2 className="mt-1 text-lg font-semibold text-zinc-100">PINs</h2>
@@ -4954,7 +5053,7 @@ function WhatsappPinsSection({
                       type="button"
                       disabled={pending || !pin.can_reveal || revealBusyId !== null}
                       onClick={() => void revealPin(pin)}
-                      className="rounded-lg bg-violet-400 px-3 py-2 text-xs font-semibold text-zinc-950 hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-[#56C7D8] px-3 py-2 text-xs font-semibold text-zinc-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {revealBusyId === pin.secret_id ? "Revelando..." : "Revelar PIN"}
                     </button>
@@ -4968,7 +5067,7 @@ function WhatsappPinsSection({
 
       {!compact ? (
         <details className="mt-3 rounded-xl border border-white/10 bg-zinc-950/30 p-3">
-          <summary className="cursor-pointer text-xs font-semibold text-violet-200">Histórico e recuperação</summary>
+          <summary className="cursor-pointer text-xs font-semibold text-cyan-200">Histórico e recuperação</summary>
           <WhatsappPinRecoverySection
             canAccess={canAccess}
             metaExecutionEnabled={metaExecutionEnabled}
@@ -4984,6 +5083,8 @@ export default function ZionAdminDashboardClient({
   adminRole,
   canManageWhatsappPins,
   whatsappPinRecoveryMetaEnabled,
+  whatsappPinRotationEnabled,
+  whatsappPinRotationExecutionEnabled,
   initialData,
   initialError,
 }: Props) {
@@ -5638,6 +5739,8 @@ export default function ZionAdminDashboardClient({
         canManageAccounts={canManageAccounts}
         canManageWhatsappPins={canManageWhatsappPins}
         whatsappPinRecoveryMetaEnabled={whatsappPinRecoveryMetaEnabled}
+        whatsappPinRotationEnabled={whatsappPinRotationEnabled}
+        whatsappPinRotationExecutionEnabled={whatsappPinRotationExecutionEnabled}
         onClose={() => setSelectedStore(null)}
         onResendFirstAccess={handleResendFirstAccess}
         onToggleAccountAccess={handleToggleAccountAccess}

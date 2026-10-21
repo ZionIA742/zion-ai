@@ -579,6 +579,33 @@ const tests: TestCase[] = [
   },
 ];
 
+// Regressao: a central da loja nao pode esconder o card quando o acesso ao PIN for negado.
+const pinVisibilityTests: TestCase[] = [
+  {
+    name: "PIN card remains visible on denied access without exposing secrets",
+    run: () => {
+      const source = readSource();
+      const start = source.indexOf("function WhatsappPinsSection({");
+      const end = source.indexOf("export default function ZionAdminDashboardClient({", start);
+      assert.ok(start !== -1 && end > start);
+      const pins = source.slice(start, end);
+      assert.equal(pins.includes("if (!canAccess) return null;"), false);
+      assert.equal(pins.includes('value="Acesso restrito"'), true);
+      assert.equal(pins.includes('if (!canAccess || loaded) return;'), true);
+      assert.equal(pins.includes('<button type="button" disabled'), true);
+      assert.equal(pins.includes('/api/zion-admin/whatsapp-pins/reveal'), true);
+      assert.equal(pins.includes('Histórico de PINs'), true);
+      // A recuperacao Meta permanece separada e protegida por permissao.
+      const recoveryStart = source.indexOf("function WhatsappPinRecoverySection({");
+      const recovery = source.slice(recoveryStart, start);
+      assert.equal(recovery.includes("if (!canAccess) return null;"), true);
+      assert.equal(recovery.includes("Autorizar na Meta e executar"), true);
+      assert.equal(recovery.includes("Autorizar novamente e materializar"), true);
+    },
+  },
+];
+tests.push(...pinVisibilityTests);
+
 async function run() {
   for (const test of tests) {
     test.run();
