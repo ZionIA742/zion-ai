@@ -4,6 +4,7 @@ import {
   sendResponsibleExternalNotification,
   type SendResponsibleExternalNotificationResult,
 } from "@/lib/server/assistant/responsible-external-notifications-sender";
+import { prepareResponsibleExternalNotification } from "@/lib/server/assistant/responsible-external-notifications";
 
 type SupabaseError = {
   code?: unknown;
@@ -77,7 +78,14 @@ type SyncDependencies = {
   send?: (
     input: Parameters<typeof sendResponsibleExternalNotification>[0],
   ) => Promise<SendResponsibleExternalNotificationResult>;
+  prepare?: typeof prepareResponsibleExternalNotification;
 };
+
+const MAX_PANEL_SYNC_ATTEMPTS = 3;
+const PERMANENT_PANEL_SYNC_FAILURES = new Set([
+  "RESPONSIBLE_WHATSAPP_TEMPLATE_KIND_REQUIRED",
+  "RESPONSIBLE_WHATSAPP_TEMPLATE_CONTEXT_INVALID",
+]);
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -113,6 +121,10 @@ function isPanelSyncEventDuplicateError(error: SupabaseError) {
     .toLowerCase();
 
   return diagnostic.includes("uq_store_assistant_notification_panel_sync_event");
+}
+
+function isPermanentPanelSyncFailure(reason: unknown) {
+  return PERMANENT_PANEL_SYNC_FAILURES.has(cleanText(reason));
 }
 
 function eventKey(messageId: string, kind: "human" | "assistant") {
@@ -163,7 +175,7 @@ async function loadExistingNotification(args: {
 }) {
   const { data, error } = await args.supabase
     .from("store_responsible_external_notifications")
-    .select("id, status, external_message_id, error_text")
+    .select("id, status, external_message_id, error_text, attempts")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("source_event_key", args.sourceEventKey)
@@ -176,7 +188,86 @@ async function loadExistingNotification(args: {
     status: string | null;
     external_message_id: string | null;
     error_text: string | null;
+    attempts?: number | null;
   } | null;
+}
+
+async function confirmExternalNotificationSent(args: {
+  supabase: SupabaseClientLike;
+  organizationId: string;
+  storeId: string;
+  notificationId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_responsible_external_notifications")
+    .select("id, status, external_message_id, error_text")
+    .eq("id", args.notificationId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`Falha ao confirmar envio externo do painel: ${error.message}`);
+
+  const row = data as {
+    status?: string | null;
+    external_message_id?: string | null;
+    error_text?: string | null;
+  } | null;
+  const status = cleanText(row?.status);
+  const externalMessageId = cleanText(row?.external_message_id);
+
+  if (status === "sent" && externalMessageId) {
+    return { confirmed: true as const, externalMessageId };
+  }
+
+  return {
+    confirmed: false as const,
+    status: status === "uncertain" ? "uncertain" as const : status === "processing" ? "already_processing" as const : "failed" as const,
+    reason: cleanText(row?.error_text) || "external_send_not_confirmed",
+  };
+}
+
+async function markInternalNotificationFailed(args: {
+  supabase: SupabaseClientLike;
+  notificationId: string;
+  organizationId: string;
+  storeId: string;
+  reason: string;
+}) {
+  const now = new Date().toISOString();
+  const { error } = await args.supabase
+    .from("store_assistant_notification_queue")
+    .update({
+      status: "failed",
+      processed_at: now,
+      error_text: args.reason,
+      updated_at: now,
+    })
+    .eq("id", args.notificationId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("notification_type", "assistant_panel_sync")
+    .eq("status", "pending")
+    .select("id")
+    .maybeSingle();
+
+  if (error) throw new Error(`Falha ao marcar sincronizacao do painel como failed: ${error.message}`);
+}
+
+async function resolveDeterministicSendFailureReason(args: {
+  supabase: SupabaseClientLike;
+  organizationId: string;
+  storeId: string;
+  sourceEventKey: string;
+  fallback: string;
+}) {
+  try {
+    const latest = await loadExistingNotification(args);
+    return cleanText(latest?.error_text) || args.fallback;
+  } catch {
+    return args.fallback;
+  }
 }
 
 async function loadInternalNotificationId(args: {
@@ -341,9 +432,44 @@ export async function syncAssistantPanelMessageToResponsibleWhatsapp(
     sourceEventKey,
   });
   if (existing?.id) {
-    const status = cleanText(existing.status);
+    let status = cleanText(existing.status);
     if (status === "sent" && existing.external_message_id) {
       return { ok: true, status: "already_sent", notificationId: existing.id, externalMessageId: existing.external_message_id };
+    }
+    if (status === "failed" && isPermanentPanelSyncFailure(existing.error_text)) {
+      return {
+        ok: false,
+        status: "failed",
+        notificationId: existing.id,
+        reason: cleanText(existing.error_text),
+      };
+    }
+    if (status === "materialized" || status === "failed") {
+      if (Number(existing.attempts || 0) >= MAX_PANEL_SYNC_ATTEMPTS) {
+        return {
+          ok: false,
+          status: "already_processing",
+          notificationId: existing.id,
+          reason: "automatic_attempt_limit_reached",
+        };
+      }
+
+      const prepare = dependencies.prepare || prepareResponsibleExternalNotification;
+      const prepared = await prepare({
+        supabase: supabase as never,
+        organizationId,
+        storeId,
+        notificationId: existing.id,
+      });
+      if (!prepared.ok) {
+        return {
+          ok: false,
+          status: "already_processing",
+          notificationId: existing.id,
+          reason: prepared.reason,
+        };
+      }
+      status = "ready_to_send";
     }
     if (status !== "ready_to_send") {
       return { ok: false, status: status === "uncertain" ? "uncertain" : "already_processing", notificationId: existing.id, reason: existing.error_text || status };
@@ -357,13 +483,31 @@ export async function syncAssistantPanelMessageToResponsibleWhatsapp(
       uncertainOnTransportFailure: true,
     });
     if (result.ok) {
-      return { ok: true, status: "sent", notificationId: existing.id, externalMessageId: result.externalMessageId };
+      const confirmation = await confirmExternalNotificationSent({
+        supabase,
+        organizationId,
+        storeId,
+        notificationId: existing.id,
+      });
+      if (!confirmation.confirmed) {
+        return { ok: false, status: confirmation.status, notificationId: existing.id, reason: confirmation.reason };
+      }
+      return { ok: true, status: "sent", notificationId: existing.id, externalMessageId: confirmation.externalMessageId };
     }
     return {
       ok: false,
       status: result.reason === "send_uncertain" ? "uncertain" : "failed",
       notificationId: existing.id,
-      reason: result.reason,
+      reason:
+        result.reason === "send_uncertain"
+          ? result.reason
+          : await resolveDeterministicSendFailureReason({
+              supabase,
+              organizationId,
+              storeId,
+              sourceEventKey,
+              fallback: result.reason,
+            }),
     };
   }
 
@@ -405,13 +549,31 @@ export async function syncAssistantPanelMessageToResponsibleWhatsapp(
   });
 
   if (result.ok) {
-    return { ok: true, status: "sent", notificationId: notification.id, externalMessageId: result.externalMessageId };
+    const confirmation = await confirmExternalNotificationSent({
+      supabase,
+      organizationId,
+      storeId,
+      notificationId: notification.id,
+    });
+    if (!confirmation.confirmed) {
+      return { ok: false, status: confirmation.status, notificationId: notification.id, reason: confirmation.reason };
+    }
+    return { ok: true, status: "sent", notificationId: notification.id, externalMessageId: confirmation.externalMessageId };
   }
   return {
     ok: false,
     status: result.reason === "send_uncertain" ? "uncertain" : "failed",
     notificationId: notification.id,
-    reason: result.reason,
+    reason:
+      result.reason === "send_uncertain"
+        ? result.reason
+        : await resolveDeterministicSendFailureReason({
+            supabase,
+            organizationId,
+            storeId,
+            sourceEventKey,
+            fallback: result.reason,
+          }),
   };
 }
 
@@ -525,6 +687,15 @@ export async function recoverPendingAssistantPanelSyncNotifications(args: {
       } else if (result.status === "uncertain") {
         uncertain += 1;
       } else if (result.status === "failed") {
+        if (isPermanentPanelSyncFailure(result.reason)) {
+          await markInternalNotificationFailed({
+            supabase,
+            notificationId: String(row.id || ""),
+            organizationId,
+            storeId,
+            reason: cleanText(result.reason),
+          });
+        }
         failed += 1;
       } else {
         skipped += 1;

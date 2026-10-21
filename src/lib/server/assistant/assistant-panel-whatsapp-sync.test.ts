@@ -85,7 +85,9 @@ function createFakeSupabase(options: FakeOptions = {}) {
 
         if (table === "store_responsible_external_notifications") {
           const key = String(filters.source_event_key || "");
-          const existing = notifications.find((item) => item.source_event_key === key);
+          const existing = filters.id
+            ? notifications.find((item) => item.id === filters.id)
+            : notifications.find((item) => item.source_event_key === key);
           return { data: existing || null, error: null };
         }
 
@@ -101,7 +103,9 @@ function createFakeSupabase(options: FakeOptions = {}) {
             internal.organization_id === filters.organization_id &&
             internal.store_id === filters.store_id &&
             internal.notification_type === filters.notification_type &&
-            (internal.context as Row | undefined)?.event_key === context?.event_key;
+            (!context || (internal.context as Row | undefined)?.event_key === context.event_key) &&
+            (!filters.id || internal.id === filters.id) &&
+            (!filters.status || internal.status === filters.status);
           return { data: matches ? internal : null, error: null };
         }
 
@@ -273,6 +277,8 @@ void (async () => {
       supabase: readyNotification as never,
       send: async (input) => {
         recoveredReadyCount += 1;
+        readyNotification.notifications[0].status = "sent";
+        readyNotification.notifications[0].external_message_id = "wamid-recovered-1";
         return {
           ok: true,
           sent: true,
@@ -314,6 +320,163 @@ void (async () => {
   );
   assert.equal(processing.status, "already_processing");
   assert.equal(processingSendCount, 0);
+
+  const failedNotification = {
+    id: "external-failed-1",
+    status: "failed",
+    attempts: 1,
+    source_event_key: "assistant-panel-whatsapp:human:human-message-1",
+    external_message_id: null,
+    error_text: "temporary failure",
+  };
+  const failedRecoverySupabase = createFakeSupabase({
+    sharedNotifications: [failedNotification],
+  });
+  let failedPrepareCount = 0;
+  let failedRecoverySendCount = 0;
+  const failedRecovery = await syncAssistantPanelMessageToResponsibleWhatsapp(
+    {
+      organizationId: "org-1",
+      storeId: "store-1",
+      messageId: "human-message-1",
+      kind: "human",
+    },
+    {
+      supabase: failedRecoverySupabase as never,
+      prepare: async ({ notificationId }) => {
+        failedPrepareCount += 1;
+        assert.equal(notificationId, "external-failed-1");
+        failedNotification.status = "ready_to_send";
+        return {
+          ok: true as const,
+          updated: true as const,
+          notificationId,
+          status: "ready_to_send",
+        };
+      },
+      send: async (input) => {
+        failedRecoverySendCount += 1;
+        failedNotification.status = "sent";
+        failedNotification.external_message_id = "wamid-failed-recovery-1";
+        return {
+          ok: true,
+          sent: true,
+          notificationId: input.notificationId,
+          externalMessageId: "wamid-failed-recovery-1",
+        };
+      },
+    },
+  );
+  assert.equal(failedRecovery.status, "sent");
+  assert.equal(failedPrepareCount, 1);
+  assert.equal(failedRecoverySendCount, 1);
+
+  const exhaustedNotification = createFakeSupabase({
+    sharedNotifications: [
+      {
+        ...failedNotification,
+        id: "external-failed-exhausted-1",
+        status: "failed",
+        attempts: 3,
+        external_message_id: null,
+      },
+    ],
+  });
+  let exhaustedPrepareCount = 0;
+  const exhausted = await syncAssistantPanelMessageToResponsibleWhatsapp(
+    {
+      organizationId: "org-1",
+      storeId: "store-1",
+      messageId: "human-message-1",
+      kind: "human",
+    },
+    {
+      supabase: exhaustedNotification as never,
+      prepare: async () => {
+        exhaustedPrepareCount += 1;
+        throw new Error("attempt limit must prevent preparation");
+      },
+      send: async () => {
+        throw new Error("attempt limit must prevent send");
+      },
+    },
+  );
+  assert.equal(exhausted.status, "already_processing");
+  assert.equal(exhausted.reason, "automatic_attempt_limit_reached");
+  assert.equal(exhaustedPrepareCount, 0);
+
+  const permanentTemplateNotification = {
+    id: "external-failed-template-1",
+    status: "failed",
+    attempts: 1,
+    source_event_key: "assistant-panel-whatsapp:human:human-message-1",
+    external_message_id: null,
+    error_text: "RESPONSIBLE_WHATSAPP_TEMPLATE_KIND_REQUIRED",
+  };
+  const permanentTemplateSupabase = createFakeSupabase({
+    sharedNotifications: [permanentTemplateNotification],
+  });
+  let permanentPrepareCount = 0;
+  let permanentSendCount = 0;
+  const permanentTemplate = await syncAssistantPanelMessageToResponsibleWhatsapp(
+    {
+      organizationId: "org-1",
+      storeId: "store-1",
+      messageId: "human-message-1",
+      kind: "human",
+    },
+    {
+      supabase: permanentTemplateSupabase as never,
+      prepare: async () => {
+        permanentPrepareCount += 1;
+        throw new Error("permanent template failure must not be prepared");
+      },
+      send: async () => {
+        permanentSendCount += 1;
+        throw new Error("permanent template failure must not be sent");
+      },
+    },
+  );
+  assert.equal(permanentTemplate.status, "failed");
+  assert.equal(permanentTemplate.reason, "RESPONSIBLE_WHATSAPP_TEMPLATE_KIND_REQUIRED");
+  assert.equal(permanentPrepareCount, 0);
+  assert.equal(permanentSendCount, 0);
+
+  const permanentTemplateInternal = {
+    id: "internal-template-failed-1",
+    organization_id: "org-1",
+    store_id: "store-1",
+    notification_type: "assistant_panel_sync",
+    status: "pending",
+    created_at: "2026-10-21T10:02:00.000Z",
+    processed_at: null,
+    context: {
+      source: "assistant_panel_whatsapp_sync",
+      event_key: "assistant-panel-whatsapp:human:human-message-1",
+      message_kind: "human",
+    },
+  };
+  const permanentTemplateRecoverySupabase = createFakeSupabase({
+    internalNotification: permanentTemplateInternal,
+    sharedNotifications: [permanentTemplateNotification],
+  });
+  let permanentRecoverySendCount = 0;
+  const permanentTemplateRecovery = await recoverPendingAssistantPanelSyncNotifications({
+    organizationId: "org-1",
+    storeId: "store-1",
+    activationAt: "2026-10-21T10:00:00.000Z",
+    supabase: permanentTemplateRecoverySupabase as never,
+    send: async () => {
+      permanentRecoverySendCount += 1;
+      throw new Error("permanent template failure must not be retried");
+    },
+  });
+  assert.equal(permanentTemplateRecovery.scanned, 1);
+  assert.equal(permanentTemplateRecovery.failed, 1);
+  assert.equal(permanentRecoverySendCount, 0);
+  assert.equal(permanentTemplateInternal.status, "failed");
+  assert.equal(permanentTemplateInternal.error_text, "RESPONSIBLE_WHATSAPP_TEMPLATE_KIND_REQUIRED");
+  assert.ok(permanentTemplateInternal.processed_at);
 
   const assistantSupabase = createFakeSupabase();
   const uncertain = await syncAssistantPanelMessageToResponsibleWhatsapp(
@@ -363,6 +526,8 @@ void (async () => {
       supabase: concurrentSupabase as never,
       send: async (input) => {
         concurrentSent.push(input.notificationId);
+        concurrentSupabase.notifications[0].status = "sent";
+        concurrentSupabase.notifications[0].external_message_id = "wamid-race-1";
         return {
           ok: true,
           sent: true,
@@ -512,6 +677,8 @@ void (async () => {
       activationAt: "2026-10-21T10:00:00.000Z",
       send: async (input) => {
         pendingRecoverySendCount += 1;
+        recoveredInternal.notifications[0].status = "sent";
+        recoveredInternal.notifications[0].external_message_id = "wamid-pending-recovery-1";
         return {
           ok: true,
           sent: true,
@@ -526,6 +693,40 @@ void (async () => {
   assert.equal(pendingRecoverySendCount, 1);
   assert.equal(pendingInternal.status, "sent");
   assert.ok(pendingInternal.processed_at);
+
+  const divergentInternal = {
+    ...pendingInternal,
+    id: "internal-divergent-1",
+    status: "pending",
+    processed_at: null,
+  };
+  const divergentExternal = {
+    id: "external-divergent-1",
+    source_event_key: "assistant-panel-whatsapp:human:human-message-1",
+    status: "failed",
+    external_message_id: null,
+    error_text: "RESPONSIBLE_WHATSAPP_TEMPLATE_KIND_REQUIRED",
+  };
+  const divergentSupabase = createFakeSupabase({
+    internalNotification: divergentInternal,
+    sharedNotifications: [divergentExternal],
+  });
+  const divergentRecovery = await recoverPendingAssistantPanelSyncNotifications({
+    organizationId: "org-1",
+    storeId: "store-1",
+    activationAt: "2026-10-21T10:00:00.000Z",
+    supabase: divergentSupabase as never,
+    send: async (input) => ({
+      ok: true,
+      sent: true,
+      notificationId: input.notificationId,
+      externalMessageId: "wamid-misleading-success",
+    }),
+  });
+  assert.equal(divergentRecovery.sent, 0);
+  assert.equal(divergentRecovery.failed, 1);
+  assert.equal(divergentInternal.status, "failed");
+  assert.ok(divergentInternal.processed_at);
 
   const historicalInternal = {
     ...pendingInternal,
