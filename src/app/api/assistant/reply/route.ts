@@ -84,6 +84,7 @@ import {
   type StoreStrategySettingsRow,
 } from "@/lib/store-strategy-settings";
 import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
+import { syncAssistantPanelMessageToResponsibleWhatsapp } from "@/lib/server/assistant/assistant-panel-whatsapp-sync";
 
 export const runtime = "nodejs";
 
@@ -171,7 +172,83 @@ type AssistantReplyRouteDeps = {
     deps?: Partial<ResolveStoreApiAccessDeps>;
   }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
   generateReply: typeof generateAssistantReply;
+  syncPanelMessage: typeof syncAssistantPanelMessageToResponsibleWhatsapp;
+  claimPanelReply: typeof claimAssistantPanelReply;
+  loadConfirmedPanelReply: typeof loadConfirmedPanelReply;
 };
+
+type PanelReplyClaim = {
+  outcome: "claimed";
+  runId: string;
+  claimToken: string;
+};
+
+type PanelReplyClaimResult =
+  | PanelReplyClaim
+  | { outcome: "already_processing"; runId: string }
+  | { outcome: "confirmed"; runId: string; assistantMessageId: string };
+
+function firstRpcRow(data: unknown): Record<string, unknown> | null {
+  if (Array.isArray(data)) {
+    const first = data[0];
+    return first && typeof first === "object" ? first as Record<string, unknown> : null;
+  }
+  return data && typeof data === "object" ? data as Record<string, unknown> : null;
+}
+
+async function claimAssistantPanelReply(args: {
+  organizationId: string;
+  storeId: string;
+  humanMessageId: string;
+}): Promise<PanelReplyClaimResult> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error("Supabase server environment is not configured.");
+
+  const supabase = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  const claimToken = crypto.randomUUID();
+  const { data, error } = await supabase.rpc("claim_assistant_panel_reply_by_system", {
+    p_organization_id: args.organizationId,
+    p_store_id: args.storeId,
+    p_human_message_id: args.humanMessageId,
+    p_claim_token: claimToken,
+    p_lease_seconds: 600,
+  });
+  if (error) throw new Error(error.message);
+
+  const row = firstRpcRow(data);
+  const outcome = typeof row?.outcome === "string" ? row.outcome : "";
+  const runId = typeof row?.run_id === "string" ? row.run_id : "";
+  if (!runId || !["claimed", "already_processing", "confirmed"].includes(outcome)) {
+    throw new Error("Resposta inválida do claim de idempotência do painel.");
+  }
+  if (outcome === "claimed") return { outcome: "claimed", runId, claimToken };
+  if (outcome === "already_processing") return { outcome: "already_processing", runId };
+  const assistantMessageId = typeof row?.assistant_message_id === "string" ? row.assistant_message_id : "";
+  if (!assistantMessageId) throw new Error("Claim confirmado sem mensagem da Assistente.");
+  return { outcome: "confirmed", runId, assistantMessageId };
+}
+
+async function loadConfirmedPanelReply(args: {
+  organizationId: string;
+  storeId: string;
+  assistantMessageId: string;
+}) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error("Supabase server environment is not configured.");
+  const supabase = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { data, error } = await supabase
+    .from("store_assistant_messages")
+    .select("id, content")
+    .eq("id", args.assistantMessageId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle<{ id: string; content: string | null }>();
+  if (error) throw new Error(error.message);
+  if (!data?.content) throw new Error("Resposta confirmada da Assistente não foi encontrada.");
+  return data.content;
+}
 
 function aiRunNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -9306,6 +9383,8 @@ export async function generateAssistantReply(params: {
   organizationId: string;
   storeId: string;
   sourceExternalMessageId?: string | null;
+  panelHumanMessageId?: string | null;
+  panelReplyClaim?: { runId: string; claimToken: string } | null;
 }): Promise<AssistantReplyResult> {
   try {
     const organizationId = String(params.organizationId || "").trim();
@@ -9342,7 +9421,80 @@ export async function generateAssistantReply(params: {
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    Object.defineProperty(supabase, "__assistantPanelHumanMessageId", {
+      value: String(params.panelHumanMessageId || "").trim() || null,
+      configurable: true,
+    });
+    Object.defineProperty(supabase, "__assistantOrganizationId", { value: organizationId, configurable: true });
+    Object.defineProperty(supabase, "__assistantStoreId", { value: storeId, configurable: true });
     const openai = new OpenAI({ apiKey: openaiApiKey });
+
+    const persistAssistantReply = async (input: {
+      content: string;
+      messageType: string;
+      metadata: Record<string, unknown>;
+      relatedLeadId?: string | null;
+      relatedConversationId?: string | null;
+      relatedAppointmentId?: string | null;
+    }) => {
+      if (params.panelReplyClaim) {
+        const { data, error } = await supabase.rpc("finalize_assistant_panel_reply_by_system", {
+          p_run_id: params.panelReplyClaim.runId,
+          p_claim_token: params.panelReplyClaim.claimToken,
+          p_ai_text: input.content,
+          p_message_type: input.messageType,
+          p_metadata: input.metadata,
+          p_related_lead_id: input.relatedLeadId || null,
+          p_related_conversation_id: input.relatedConversationId || null,
+          p_related_appointment_id: input.relatedAppointmentId || null,
+        });
+        if (error) return error;
+        const row = firstRpcRow(data);
+        if (row?.outcome !== "confirmed" || typeof row.assistant_message_id !== "string") {
+          return { message: "Finalização da resposta da Assistente não foi confirmada." };
+        }
+        return null;
+      }
+
+      const { error } = await supabase.rpc("assistant_push_system_message", {
+        p_organization_id: organizationId,
+        p_store_id: storeId,
+        p_content: input.content,
+        p_message_type: input.messageType,
+        p_related_lead_id: input.relatedLeadId || null,
+        p_related_conversation_id: input.relatedConversationId || null,
+        p_related_appointment_id: input.relatedAppointmentId || null,
+        p_metadata: input.metadata,
+      });
+      return error;
+    };
+
+    const sourceExternalMessageId = String(params.sourceExternalMessageId || "").trim();
+    if (sourceExternalMessageId) {
+      const { data: existingReply, error: existingReplyError } = await supabase
+        .from("store_assistant_messages")
+        .select("content")
+        .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
+        .in("sender_role", ["assistant", "assistant_operational"])
+        .contains("metadata", { source_external_message_id: sourceExternalMessageId })
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle<{ content: string | null }>();
+
+      if (existingReplyError) {
+        return {
+          ok: false,
+          error: "LOAD_EXISTING_ASSISTANT_REPLY_FAILED",
+          message: existingReplyError.message,
+        };
+      }
+
+      const existingReplyText = asText(existingReply?.content);
+      if (existingReplyText) {
+        return { ok: true, aiText: existingReplyText };
+      }
+    }
 
     const { data: store, error: storeError } = await supabase
       .from("stores")
@@ -9539,15 +9691,10 @@ export async function generateAssistantReply(params: {
         lastAssistantMessage: contractGenerationResult.reply,
       });
 
-      const { error: saveContractGenerationReplyError } = await supabase.rpc("assistant_push_system_message", {
-        p_organization_id: organizationId,
-        p_store_id: storeId,
-        p_content: contractGenerationResult.reply,
-        p_message_type: "text",
-        p_related_lead_id: null,
-        p_related_conversation_id: null,
-        p_related_appointment_id: null,
-        p_metadata: {
+      const saveContractGenerationReplyError = await persistAssistantReply({
+        content: contractGenerationResult.reply,
+        messageType: "text",
+        metadata: {
           source: "assistant.reply.route",
           source_external_message_id: params.sourceExternalMessageId || null,
           contractGenerationHandled: true,
@@ -9591,15 +9738,10 @@ export async function generateAssistantReply(params: {
         lastAssistantMessage: documentEditResult.reply,
       });
 
-      const { error: saveDocumentEditReplyError } = await supabase.rpc("assistant_push_system_message", {
-        p_organization_id: organizationId,
-        p_store_id: storeId,
-        p_content: documentEditResult.reply,
-        p_message_type: "text",
-        p_related_lead_id: null,
-        p_related_conversation_id: null,
-        p_related_appointment_id: null,
-        p_metadata: {
+      const saveDocumentEditReplyError = await persistAssistantReply({
+        content: documentEditResult.reply,
+        messageType: "text",
+        metadata: {
           source: "assistant.reply.route",
           source_external_message_id: params.sourceExternalMessageId || null,
           documentEditHandled: true,
@@ -10223,15 +10365,10 @@ export async function generateAssistantReply(params: {
             ? "context"
             : "text";
 
-    const { error: saveError } = await supabase.rpc("assistant_push_system_message", {
-      p_organization_id: organizationId,
-      p_store_id: storeId,
-      p_content: aiText,
-      p_message_type: messageType,
-      p_related_lead_id: null,
-      p_related_conversation_id: null,
-      p_related_appointment_id: null,
-      p_metadata: {
+    const saveError = await persistAssistantReply({
+      content: aiText,
+      messageType,
+      metadata: {
         source: "assistant.reply.route",
         source_external_message_id: params.sourceExternalMessageId || null,
         genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage) || nextVisitMode,
@@ -10934,12 +11071,29 @@ export function createAssistantReplyPostHandler(
 ) {
   const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
   const generateReply = deps.generateReply ?? generateAssistantReply;
+  const syncPanelMessage = deps.syncPanelMessage ?? syncAssistantPanelMessageToResponsibleWhatsapp;
+  const claimPanelReply = deps.claimPanelReply ?? claimAssistantPanelReply;
+  const loadConfirmedReply = deps.loadConfirmedPanelReply ?? loadConfirmedPanelReply;
+  const syncPanelMessageSafely = async (
+    params: Parameters<typeof syncAssistantPanelMessageToResponsibleWhatsapp>[0],
+  ) => {
+    try {
+      return await syncPanelMessage(params);
+    } catch (error) {
+      return {
+        ok: false as const,
+        status: "failed" as const,
+        reason: error instanceof Error ? error.message : "PANEL_WHATSAPP_SYNC_FAILED",
+      };
+    }
+  };
 
   return async function POST(request: Request) {
     try {
       const body = (await request.json()) as {
         organizationId?: string;
         storeId?: string;
+        humanMessageId?: string;
       };
 
       const access = await resolveAccess({
@@ -10960,14 +11114,127 @@ export function createAssistantReplyPostHandler(
       void body.storeId;
       void authorizedContext.sessionUserId;
 
+      const humanMessageId = String(body.humanMessageId || "").trim();
+      let panelReplyClaim: PanelReplyClaim | null = null;
+      if (humanMessageId) {
+        let claim: PanelReplyClaimResult;
+        try {
+          claim = await claimPanelReply({
+            organizationId: authorizedContext.organizationId,
+            storeId: authorizedContext.storeId,
+            humanMessageId,
+          });
+        } catch (error) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "PANEL_REPLY_CLAIM_FAILED",
+              message: error instanceof Error ? error.message : "Não foi possível reivindicar a resposta do painel.",
+            },
+            { status: 409 },
+          );
+        }
+
+        if (claim.outcome === "already_processing") {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "PANEL_REPLY_ALREADY_PROCESSING",
+              message: "Esta mensagem já está sendo processada. Aguarde a conclusão ou a recuperação automática.",
+              runId: claim.runId,
+              recoverable: true,
+            },
+            { status: 409 },
+          );
+        }
+
+        if (claim.outcome === "confirmed") {
+          try {
+            const aiText = await loadConfirmedReply({
+              organizationId: authorizedContext.organizationId,
+              storeId: authorizedContext.storeId,
+              assistantMessageId: claim.assistantMessageId,
+            });
+            const panelMessageSync = await syncPanelMessageSafely({
+              organizationId: authorizedContext.organizationId,
+              storeId: authorizedContext.storeId,
+              messageId: humanMessageId,
+              kind: "human",
+              textPrefix: "Você pelo painel: ",
+            });
+            const assistantMessageSync = await syncPanelMessageSafely({
+              organizationId: authorizedContext.organizationId,
+              storeId: authorizedContext.storeId,
+              messageId: humanMessageId,
+              kind: "assistant",
+              textPrefix: "Assistente pelo painel: ",
+            });
+            return NextResponse.json({
+              ok: true,
+              aiText,
+              replay: true,
+              whatsappSync: { panelMessage: panelMessageSync, assistantMessage: assistantMessageSync },
+            });
+          } catch (error) {
+            return NextResponse.json(
+              {
+                ok: false,
+                error: "PANEL_REPLY_CONFIRMED_MESSAGE_UNAVAILABLE",
+                message: error instanceof Error ? error.message : "A resposta confirmada não está disponível.",
+                recoverable: true,
+              },
+              { status: 409 },
+            );
+          }
+        }
+
+        panelReplyClaim = claim;
+      }
+
       const result = await generateReply({
         request,
         organizationId: authorizedContext.organizationId,
         storeId: authorizedContext.storeId,
+        sourceExternalMessageId: humanMessageId ? `panel:${humanMessageId}` : null,
+        panelHumanMessageId: humanMessageId || null,
+        panelReplyClaim,
       });
 
+      let panelMessageSync: unknown = null;
+      if (humanMessageId) {
+        panelMessageSync = await syncPanelMessageSafely({
+          organizationId: authorizedContext.organizationId,
+          storeId: authorizedContext.storeId,
+          messageId: humanMessageId,
+          kind: "human",
+          textPrefix: "Você pelo painel: ",
+        });
+      }
+
       if (!result.ok) {
-        return NextResponse.json(result, { status: 400 });
+        return NextResponse.json(
+          humanMessageId
+            ? { ...result, whatsappSync: { panelMessage: panelMessageSync } }
+            : result,
+          { status: 400 },
+        );
+      }
+
+      if (result.ok && humanMessageId) {
+        const aiText = String((result as { aiText?: unknown }).aiText || "").trim();
+        const assistantSync = aiText
+          ? await syncPanelMessageSafely({
+              organizationId: authorizedContext.organizationId,
+              storeId: authorizedContext.storeId,
+              messageId: humanMessageId,
+              kind: "assistant",
+              textPrefix: "Assistente pelo painel: ",
+            })
+          : { ok: false, status: "not_attempted", reason: "empty_ai_response" };
+        return NextResponse.json({
+          ...result,
+          whatsappSync: { panelMessage: panelMessageSync, assistantMessage: assistantSync },
+        });
       }
 
       return NextResponse.json(result);

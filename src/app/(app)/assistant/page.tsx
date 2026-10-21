@@ -44,6 +44,10 @@ type AssistantReplyApiResponse = {
   error?: string;
   message?: string;
   aiText?: string;
+  whatsappSync?: {
+    panelMessage?: { ok?: boolean; status?: string; reason?: string | null };
+    assistantMessage?: { ok?: boolean; status?: string; reason?: string | null };
+  };
 };
 
 type AssistantDocumentActionId =
@@ -797,6 +801,7 @@ export default function AssistantPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [sending, setSending] = useState(false);
+  const [pendingHumanMessageId, setPendingHumanMessageId] = useState<string | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState("");
@@ -1372,6 +1377,77 @@ export default function AssistantPage() {
     }
   }
 
+  async function requestAssistantReply(humanMessageId: string, scopeKey: string) {
+    if (!organizationId || !activeStoreId) return;
+
+    try {
+      const response = await fetch("/api/assistant/reply", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          organizationId,
+          storeId: activeStoreId,
+          humanMessageId,
+        }),
+      });
+
+      const result = (await response.json()) as AssistantReplyApiResponse;
+
+      if (!isCurrentAssistantScope(scopeKey)) return;
+
+      if (result.error === "PANEL_REPLY_ALREADY_PROCESSING") {
+        setErrorText(null);
+        setStatusText("A resposta está sendo preparada. Você poderá tentar recuperar quando estiver pronta.");
+        setSending(false);
+        await loadAssistant({ silent: true });
+        return;
+      }
+
+      if (!response.ok || !result.ok) {
+        setErrorText(result.message || result.error || "Erro ao gerar resposta da assistente.");
+        setSending(false);
+        await loadAssistant({ silent: true });
+        return;
+      }
+
+      const assistantWhatsappStatus = result.whatsappSync?.assistantMessage?.status;
+      setStatusText(
+        assistantWhatsappStatus === "sent" || assistantWhatsappStatus === "already_sent"
+          ? "Assistente respondeu; envio ao WhatsApp foi aceito pelo sender."
+          : "Assistente respondeu no painel; encaminhamento ao WhatsApp ainda não foi confirmado.",
+      );
+      setPendingHumanMessageId(null);
+      setSending(false);
+      forceScrollToBottomRef.current = true;
+      await loadAssistant({ silent: true });
+      scrollChatToBottom("smooth");
+    } catch (error: unknown) {
+      if (!isCurrentAssistantScope(scopeKey)) return;
+
+      setErrorText(
+        getErrorMessage(error, "Erro inesperado ao gerar resposta da assistente.")
+      );
+      setSending(false);
+      forceScrollToBottomRef.current = true;
+      await loadAssistant({ silent: true });
+      scrollChatToBottom("smooth");
+    }
+  }
+
+  async function recoverAssistantReply() {
+    if (!pendingHumanMessageId || sending) return;
+
+    const scopeKey = assistantScopeKeyRef.current;
+    if (!scopeKey) return;
+
+    setSending(true);
+    setErrorText(null);
+    setStatusText("Tentando recuperar a resposta da assistente...");
+    await requestAssistantReply(pendingHumanMessageId, scopeKey);
+  }
+
   async function sendMessageToAssistant() {
     const text = newMessage.trim();
 
@@ -1393,7 +1469,7 @@ export default function AssistantPage() {
     setErrorText(null);
     setStatusText(null);
 
-    const { error } = await supabase.rpc("assistant_send_human_message", {
+    const { data: persistedMessage, error } = await supabase.rpc("assistant_send_human_message", {
       p_organization_id: organizationId,
       p_store_id: activeStoreId,
       p_content: text,
@@ -1406,51 +1482,26 @@ export default function AssistantPage() {
     }
 
     setNewMessage("");
+    const panelMessageId =
+      persistedMessage && typeof persistedMessage === "object" && !Array.isArray(persistedMessage) && "id" in persistedMessage
+        ? String((persistedMessage as { id?: unknown }).id || "").trim()
+        : Array.isArray(persistedMessage) && persistedMessage[0] && typeof persistedMessage[0] === "object" && "id" in persistedMessage[0]
+          ? String((persistedMessage[0] as { id?: unknown }).id || "").trim()
+          : "";
+    if (!panelMessageId) {
+      setErrorText("A mensagem foi salva, mas não foi possível confirmar seu identificador para o encaminhamento seguro.");
+      setSending(false);
+      await loadAssistant({ silent: true });
+      return;
+    }
+    setPendingHumanMessageId(panelMessageId);
     forceScrollToBottomRef.current = true;
     setStatusText("Mensagem enviada. Gerando resposta da assistente...");
     await loadAssistant({ silent: true });
     if (!isCurrentAssistantScope(scopeKey)) return;
     scrollChatToBottom("smooth");
 
-    try {
-      const response = await fetch("/api/assistant/reply", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          organizationId,
-          storeId: activeStoreId,
-        }),
-      });
-
-      const result = (await response.json()) as AssistantReplyApiResponse;
-
-      if (!isCurrentAssistantScope(scopeKey)) return;
-
-      if (!response.ok || !result.ok) {
-        setErrorText(result.message || result.error || "Erro ao gerar resposta da assistente.");
-        setSending(false);
-        await loadAssistant({ silent: true });
-        return;
-      }
-
-      setStatusText("Assistente respondeu com sucesso.");
-      setSending(false);
-      forceScrollToBottomRef.current = true;
-      await loadAssistant({ silent: true });
-      scrollChatToBottom("smooth");
-    } catch (error: unknown) {
-      if (!isCurrentAssistantScope(scopeKey)) return;
-
-      setErrorText(
-        getErrorMessage(error, "Erro inesperado ao gerar resposta da assistente.")
-      );
-      setSending(false);
-      forceScrollToBottomRef.current = true;
-      await loadAssistant({ silent: true });
-      scrollChatToBottom("smooth");
-    }
+    await requestAssistantReply(panelMessageId, scopeKey);
   }
 
   const groupedMessages = useMemo(() => {
@@ -1927,6 +1978,16 @@ export default function AssistantPage() {
           <div className="mb-2 shrink-0 rounded-xl bg-white px-3 py-2 text-xs text-gray-700 ring-1 ring-black/10">
             {recordingErrorText || statusText}
           </div>
+        ) : null}
+
+        {pendingHumanMessageId && !sending ? (
+          <button
+            type="button"
+            onClick={() => void recoverAssistantReply()}
+            className="mb-2 self-start rounded-lg px-3 py-1.5 text-xs font-medium text-gray-700 ring-1 ring-black/10 hover:bg-white"
+          >
+            Tentar recuperar resposta
+          </button>
         ) : null}
 
         <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white">

@@ -551,6 +551,169 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "panel reply synchronizes human and assistant messages in order",
+    run: async () => {
+      const { createAssistantReplyPostHandler } = await loadRouteModule();
+      const syncCalls: Array<Record<string, unknown>> = [];
+      const events: string[] = [];
+      const handler = createAssistantReplyPostHandler({
+        resolveAccess: async () => createGrantedAccess(),
+        claimPanelReply: async () => ({ outcome: "claimed", runId: "run-1", claimToken: "token-1" }),
+        syncPanelMessage: async (params) => {
+          events.push(`sync:${String((params as { kind?: unknown }).kind || "")}`);
+          syncCalls.push(params as unknown as Record<string, unknown>);
+          return { ok: true, status: "sent", externalMessageId: "wamid-test" };
+        },
+        generateReply: async (params) => {
+          events.push("generate");
+          assert.equal(params.sourceExternalMessageId, "panel:human-message-1");
+          return { ok: true, aiText: "Resposta pronta." };
+        },
+      });
+
+      const response = await handler(
+        buildRequest({ humanMessageId: "human-message-1" }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.deepEqual(
+        syncCalls.map((call) => [call.kind, call.textPrefix]),
+        [
+          ["human", "Você pelo painel: "],
+          ["assistant", "Assistente pelo painel: "],
+        ],
+      );
+      assert.deepEqual(events, ["generate", "sync:human", "sync:assistant"]);
+    },
+  },
+  {
+    name: "panel WhatsApp sync failure does not erase persisted assistant execution",
+    run: async () => {
+      const { createAssistantReplyPostHandler } = await loadRouteModule();
+      let generated = false;
+      const handler = createAssistantReplyPostHandler({
+        resolveAccess: async () => createGrantedAccess(),
+        claimPanelReply: async () => ({ outcome: "claimed", runId: "run-1", claimToken: "token-1" }),
+        syncPanelMessage: async () => {
+          throw new Error("window or transport unavailable");
+        },
+        generateReply: async () => {
+          generated = true;
+          return { ok: true, aiText: "Resposta persistida." };
+        },
+      });
+
+      const response = await handler(buildRequest({ humanMessageId: "human-message-1" }));
+      const body = await parseBody(response);
+      const sync = body.whatsappSync as {
+        panelMessage?: { status?: string };
+        assistantMessage?: { status?: string };
+      };
+
+      assert.equal(response.status, 200);
+      assert.equal(generated, true);
+      assert.equal(sync.panelMessage?.status, "failed");
+      assert.equal(sync.assistantMessage?.status, "failed");
+    },
+  },
+  {
+    name: "persisted panel human message remains eligible when AI generation fails",
+    run: async () => {
+      const { createAssistantReplyPostHandler } = await loadRouteModule();
+      const syncKinds: string[] = [];
+      const handler = createAssistantReplyPostHandler({
+        resolveAccess: async () => createGrantedAccess(),
+        claimPanelReply: async () => ({ outcome: "claimed", runId: "run-1", claimToken: "token-1" }),
+        syncPanelMessage: async (params) => {
+          syncKinds.push(String((params as { kind?: unknown }).kind || ""));
+          return { ok: true, status: "sent", externalMessageId: "wamid-human" };
+        },
+        generateReply: async () => ({
+          ok: false,
+          error: "AI_GENERATION_FAILED",
+          message: "provider unavailable",
+        }),
+      });
+
+      const response = await handler(buildRequest({ humanMessageId: "human-message-1" }));
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 400);
+      assert.equal(body.error, "AI_GENERATION_FAILED");
+      assert.deepEqual(syncKinds, ["human"]);
+      assert.deepEqual(body.whatsappSync, {
+        panelMessage: {
+          ok: true,
+          status: "sent",
+          externalMessageId: "wamid-human",
+        },
+      });
+    },
+  },
+  {
+    name: "panel reply does not generate or synchronize while another claim is active",
+    run: async () => {
+      const { createAssistantReplyPostHandler } = await loadRouteModule();
+      let generated = false;
+      let synchronized = false;
+      const handler = createAssistantReplyPostHandler({
+        resolveAccess: async () => createGrantedAccess(),
+        claimPanelReply: async () => ({ outcome: "already_processing", runId: "run-active" }),
+        generateReply: async () => {
+          generated = true;
+          return { ok: true, aiText: "não deveria gerar" };
+        },
+        syncPanelMessage: async () => {
+          synchronized = true;
+          return { ok: true, status: "sent" };
+        },
+      });
+
+      const response = await handler(buildRequest({ humanMessageId: "human-message-1" }));
+      const body = await parseBody(response);
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "PANEL_REPLY_ALREADY_PROCESSING");
+      assert.equal(body.recoverable, true);
+      assert.equal(generated, false);
+      assert.equal(synchronized, false);
+    },
+  },
+  {
+    name: "confirmed panel reply is replayed without generation or duplicate sync",
+    run: async () => {
+      const { createAssistantReplyPostHandler } = await loadRouteModule();
+      let generated = false;
+      const synchronized: string[] = [];
+      const handler = createAssistantReplyPostHandler({
+        resolveAccess: async () => createGrantedAccess(),
+        claimPanelReply: async () => ({
+          outcome: "confirmed",
+          runId: "run-confirmed",
+          assistantMessageId: "assistant-message-1",
+        }),
+        loadConfirmedPanelReply: async () => "Resposta já confirmada.",
+        generateReply: async () => {
+          generated = true;
+          return { ok: true, aiText: "não deveria gerar" };
+        },
+        syncPanelMessage: async () => {
+          synchronized.push("sync");
+          return { ok: true, status: "sent" };
+        },
+      });
+
+      const response = await handler(buildRequest({ humanMessageId: "human-message-1" }));
+      const body = await parseBody(response);
+      assert.equal(response.status, 200);
+      assert.equal(body.replay, true);
+      assert.equal(body.aiText, "Resposta já confirmada.");
+      assert.equal(generated, false);
+      assert.equal(synchronized.length, 2);
+    },
+  },
+  {
     name: "technical visit opportunity resolution fails closed without explicit opportunity",
     run: async () => {
       const { resolveAuthorizedCommercialOpportunityIdForAssistantTechnicalVisit } =
