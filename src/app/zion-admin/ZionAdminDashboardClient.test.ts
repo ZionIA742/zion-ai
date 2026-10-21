@@ -20,7 +20,7 @@ const tests: TestCase[] = [
       const source = readSource();
 
       assert.equal(source.includes('/api/zion-admin/stores/subscription-state'), true);
-      assert.equal(source.includes("Gestão da loja"), true);
+      assert.equal(source.includes("1. Ações"), true);
       assert.equal(source.includes("Operação da loja"), true);
       assert.equal(source.includes("Gerencie o funcionamento desta loja no ZION."), true);
       assert.equal(source.includes("Conta responsável"), true);
@@ -59,7 +59,7 @@ const tests: TestCase[] = [
       const source = readSource();
 
       assert.equal(source.includes("Central da loja"), true);
-      assert.equal(source.includes('className="min-w-0 rounded-2xl border border-[#252b35]'), true);
+      assert.equal(source.includes('function StoreDetailsDrawer'), true);
       assert.equal(source.includes("getFirstAccessControlState({"), true);
       assert.equal(source.includes("title={firstAccessControl.reason || undefined}"), true);
       assert.equal(source.includes("void onResendFirstAccess(store)"), true);
@@ -85,7 +85,7 @@ const tests: TestCase[] = [
       assert.equal(source.includes('if (normalized === "suspended") return "Desativada";'), true);
       assert.equal(source.includes('if (normalized === "active") return "suspend" as const;'), true);
       assert.equal(source.includes('if (normalized === "suspended") return "reactivate" as const;'), true);
-      assert.equal(source.includes("Lojas canceladas ou inativas"), true);
+      assert.equal(source.includes('"inactive", "Inativas"'), true);
       assert.equal(source.includes("Acesso bloqueado"), true);
       assert.equal(source.includes("Acesso ativo"), true);
     },
@@ -115,16 +115,16 @@ const tests: TestCase[] = [
       assert.equal(source.includes("Integridade estrutural"), true);
       assert.equal(source.includes("getOperationalSummary"), true);
       assert.equal(source.includes("getStoreIntegritySummary(stores, integrityOrphanStores)"), true);
-      assert.equal(source.includes("integrityOrphanStores.slice(0, 3)"), true);
+      assert.equal(source.includes('orphanStores.slice(0,limit).map((orphan)'), true);
       assert.equal(source.includes("sem usuario vinculado"), false);
       assert.equal(source.includes("não entram nas listas nem nos contadores normais"), false);
       assert.equal(
-        source.includes("fora da lista operacional e dos indicadores operacionais") &&
-          source.includes("consideradas no resumo de integridade"),
+        source.includes("estrutura(s) fora da lista operacional") &&
+          source.includes("orphanStores={integrityOrphanStores}"),
         true,
       );
       assert.equal(source.includes("Revisar:"), false);
-      assert.equal(source.includes("e mais ${integrityOrphanStores.length - 3} estrutura(s)."), true);
+      assert.equal(source.includes("Central de alertas"), true);
       assert.equal(source.includes("subscriptionStatus"), true);
       assert.equal(source.includes("accountAccess"), true);
     },
@@ -165,7 +165,7 @@ const tests: TestCase[] = [
 
       assert.equal(
         source.includes(
-          'const operationalHealthState = store.operationalHealth?.state ?? "unknown";',
+          'const operationalHealthState = operationalHealth?.state ?? "unknown";',
         ),
         true,
       );
@@ -362,7 +362,7 @@ const tests: TestCase[] = [
         "function WhatsappPinRecoverySection",
         "function isWhatsappPinRecoveryTargetStore",
         "isWhatsappPinRecoveryTargetStore(store) ?",
-        "nenhuma operaÃ§Ã£o serÃ¡ iniciada",
+        "nenhuma operação será iniciada",
         "if (!canAccess) return null",
         'wabaId: "1642288770859048"',
         'phoneNumberId: "1322472314288518"',
@@ -451,21 +451,20 @@ const tests: TestCase[] = [
       for (const token of [
         "Seções administrativas",
         "Dashboard de lojas",
-        "Acessos rápidos",
         "DashboardMetricCard",
         "Total de lojas",
         "Lojas ativas",
         "Config. bloqueada",
-        "2xl:grid-cols-6",
+        "xl:grid-cols-6",
         'AdminIcon name="warning"',
         'AdminIcon name="shield"',
-        "Prévia de lojas",
+        "title=\"Lojas\"",
         "Organização",
         "Pendências",
         "AdminIcon",
         "bg-[#080b10]",
         "Navegação",
-        "ZION interno",
+        "ZION Administrador",
         "GlobalAlertsSection",
         "Nenhuma loja sinalizada neste recorte.",
         "loja(s) com atenção no recorte",
@@ -496,6 +495,8 @@ const tests: TestCase[] = [
       assert.equal(source.includes("/api/zion-admin/overview"), true);
       assert.equal(source.includes("Visão geral"), true);
       assert.equal(source.includes("Comparações"), true);
+      assert.equal(source.includes("Acessos rápidos"), false);
+      assert.equal(source.includes('"critical" | "ai" | "whatsapp" | "settings" | "structural"'), true);
     },
   },
   {
@@ -555,6 +556,10 @@ const tests: TestCase[] = [
       assert.equal(storeDetailsSource.includes("xl:order-none"), false);
       assert.equal(source.includes("!selectedStore && activeGlobalSection === \"stores\""), true);
       assert.equal(source.includes("setSelectedStore(null);"), true);
+      assert.equal(source.includes('role="button" tabIndex={0}'), true);
+      assert.equal(source.includes('aria-label={`Abrir loja ${store.name}`}'), true);
+      assert.equal(source.includes('event.target === event.currentTarget'), true);
+      assert.equal(source.includes('ZION ADMINISTRADOR'), true);
       assert.equal(source.includes("if (section === \"stores\") setSelectedStore(null)"), false);
     },
   },
@@ -578,6 +583,7 @@ const tests: TestCase[] = [
     },
   },
 ];
+
 
 // Regressao: a central da loja nao pode esconder o card quando o acesso ao PIN for negado.
 const pinVisibilityTests: TestCase[] = [

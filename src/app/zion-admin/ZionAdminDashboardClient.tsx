@@ -980,77 +980,111 @@ function AiRunEventList({
 function GlobalAlertsSection({
   stores,
   availability,
+  orphanStores = [],
 }: {
   stores: ZionAdminStore[];
   availability?: unknown;
+  orphanStores?: NonNullable<ZionAdminOverview["integrity"]>["orphanStores"];
 }) {
-  const storesWithOperationalIssues = stores.filter(
-    (store) => getOperationalSummary(store).hasPotentialPending,
+  const [category, setCategory] = useState<"critical" | "ai" | "whatsapp" | "settings" | "structural">("critical");
+  const [showAll, setShowAll] = useState(false);
+  const storesWithOperationalIssues = stores.filter((store) => getOperationalSummary(store).hasPotentialPending);
+  const aiErrors = selectRecentAiErrors(stores);
+  const whatsappRecords = stores.flatMap((store) =>
+    (store.pendingIssueDetails ?? []).filter((item) => item.source === "channel_whatsapp_inbox")
+      .map((issue) => ({ store, issue })),
   );
+  const whatsappStores = stores.filter((store) => Number(store.whatsappErrors) > 0);
+  const configurationStores = stores.filter((store) => store.settingsReadiness?.overall === "blocked" || store.settingsReadiness?.overall === "attention");
+  const categories = [
+    { key: "critical", label: "Críticos e pendências", count: storesWithOperationalIssues.length },
+    { key: "ai", label: "IA", count: aiErrors.length },
+    { key: "whatsapp", label: "WhatsApp", count: whatsappRecords.length || whatsappStores.length },
+    { key: "settings", label: "Configurações", count: configurationStores.length },
+    { key: "structural", label: "Estruturais", count: orphanStores.length },
+  ] as const;
+  const limit = showAll ? 60 : 5;
 
   return (
-    <section
-      id="alerts"
-      className="scroll-mt-4 rounded-2xl border border-white/10 bg-white/[0.035] p-4"
-    >
-      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-200/70">
-            Monitoramento
+    <section id="alerts" className="space-y-3 scroll-mt-4">
+      <header className="rounded-xl border border-[#2c4654] bg-[#111b24] px-4 py-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#6ddae7]">Monitoramento</p>
+            <h2 className="mt-1 text-lg font-semibold text-white">Central de alertas</h2>
+            <p className="mt-1 text-xs text-[#9bb1bf]">Selecione uma categoria. Abra uma ocorrência para localizar a origem, identificar o problema e ver a orientação disponível.</p>
           </div>
-          <h2 className="mt-1 text-lg font-semibold text-zinc-50">Alertas</h2>
-          <p className="mt-1 text-xs leading-5 text-zinc-500">
-            Ocorrências observadas nas fontes disponíveis, sem inferir causa ou entrega externa.
-          </p>
+          <span className="rounded-lg border border-[#305362] bg-[#142a35] px-3 py-1.5 text-xs text-[#b6e8f0]">{storesWithOperationalIssues.length} loja(s) com atenção no recorte</span>
         </div>
-        <div className="rounded-xl border border-white/10 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
-          <span className="font-semibold text-zinc-200">{formatNumber(storesWithOperationalIssues.length)}</span>{" "}
-          loja(s) com atenção no recorte
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
-        <AiRunEventList
-          title="Erros recentes da IA"
-          emptyText="Nenhum erro recente disponível no recorte carregado."
-          events={selectRecentAiErrors(stores)}
-          variant="error"
-          availability={availability}
-        />
-        <div className="rounded-2xl border border-white/10 bg-zinc-950/30 p-3">
-          <h3 className="text-sm font-semibold text-zinc-200">Lojas com atenção</h3>
-          <p className="mt-1 text-xs leading-5 text-zinc-500">
-            A lista preserva o estado consolidado da API e não substitui os detalhes por loja.
-          </p>
-          <div className="mt-3 space-y-2">
-            {storesWithOperationalIssues.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-white/10 p-3 text-xs text-zinc-500">
-                Nenhuma loja sinalizada neste recorte.
+        <nav aria-label="Categorias de alertas" className="mt-3 flex flex-wrap gap-2">
+          {categories.map((tab)=><button key={tab.key} type="button" aria-pressed={category===tab.key}
+            onClick={()=>{setCategory(tab.key);setShowAll(false);}} className={`rounded-lg border px-3 py-2 text-[11px] font-semibold transition ${category===tab.key?"border-[#4dbed0] bg-[#164651] text-[#baf6ff]":"border-[#304552] bg-[#0b1720] text-[#a1b8c6] hover:border-cyan-400/35"}`}>
+            {tab.label} <span className="ml-1 opacity-70">{tab.count}</span>
+          </button>)}
+        </nav>
+      </header>
+      <div className="rounded-xl border border-[#2d4654] bg-[#101923] p-3">
+        {category === "critical" ? <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-white">Lojas que exigem verificação</h3>
+          <p className="text-[11px] text-[#90a7b5]">Uma pendência não significa necessariamente interrupção. Consulte os registros antes de agir.</p>
+          {storesWithOperationalIssues.length === 0 ? <p className="rounded-lg border border-[#31414d] p-3 text-xs text-[#9bb0bd]">Nenhuma loja sinalizada neste recorte.</p> :
+            storesWithOperationalIssues.slice(0,limit).map((store)=><details key={store.id} className="group rounded-lg border border-[#344550] bg-[#0b151d] p-3">
+              <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 text-xs text-[#e6f5f7]"><span className="font-semibold">{store.name} <span className="font-normal text-[#91a8b5]">· {getOperationalSummary(store).label}</span></span><span className="text-[#6bd1db] group-open:rotate-180">▾</span></summary>
+              <div className="mt-3 space-y-2 border-t border-[#30414d] pt-3 text-xs text-[#a8bfcb]">
+                <p><strong className="text-[#e1eef1]">Local:</strong> {store.organizationName} / loja {store.name}</p>
+                <p><strong className="text-[#e1eef1]">Identificador:</strong> <code className="break-all">{store.id}</code></p>
+                <p><strong className="text-[#e1eef1]">O que foi observado:</strong> {getOperationalSummary(store).details}</p>
+                <p><strong className="text-[#e1eef1]">Saúde:</strong> {getStoreOperationalHealthStateLabel(store.operationalHealth)}</p>
+                <p><strong className="text-[#e1eef1]">Onde verificar:</strong> aba Lojas → abrir esta loja → Saúde operacional ou Pendências.</p>
               </div>
-            ) : (
-              storesWithOperationalIssues.slice(0, 6).map((store) => (
-                <div
-                  key={store.id}
-                  className="rounded-xl border border-white/10 bg-white/[0.025] px-3 py-2"
-                >
-                  <div className="truncate text-sm font-semibold text-zinc-100">{store.name}</div>
-                  <div className="mt-0.5 text-xs text-zinc-500">
-                    {getOperationalSummary(store).label}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-          {storesWithOperationalIssues.length > 6 ? (
-            <div className="mt-2 text-[11px] text-zinc-500">
-              Mais {storesWithOperationalIssues.length - 6} loja(s) na lista de lojas.
+            </details>)}
+        </div> : null}
+        {category === "ai" ? <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-white">Erros registrados nas execuções de IA</h3>
+          {normalizeOverviewDataAvailability(availability) !== "available" ? <p className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-2 text-xs text-amber-200">A consulta pode estar parcial ou indisponível; não é possível concluir que os registros estejam completos.</p> : null}
+          {aiErrors.length === 0 ? <p className="text-xs text-[#96adbb]">Nenhuma ocorrência retornada nas fontes consultadas.</p> : aiErrors.slice(0,limit).map((event)=>{
+            const classification=classifyAiRunEvent(event);
+            const guidance=getAiRunGuidance(classification,normalizeOverviewDataAvailability(availability));
+            return <details key={event.id} className="group rounded-lg border border-red-500/20 bg-red-500/[0.035] p-3">
+              <summary className="flex cursor-pointer list-none flex-wrap justify-between gap-2 text-xs text-[#edf4f7]"><span><span className="font-semibold text-red-200">Falha de IA</span> · {event.storeName || "Loja não identificada"} · {event.model || "modelo não registrado"}</span><span className="text-[#94b8c7]">{formatDateTime(event.createdAt || event.finishedAt)} ▾</span></summary>
+              <div className="mt-3 space-y-2 border-t border-red-500/15 pt-3 text-xs leading-5 text-[#b8cad3]">
+                <p><strong className="text-white">Onde aconteceu:</strong> loja {event.storeName || "não identificada"}, execução <code className="break-all">{event.id}</code></p>
+                <p><strong className="text-white">Qual IA:</strong> {event.model || "modelo não informado"}</p>
+                <p><strong className="text-white">O que aconteceu:</strong> {classification.situationLabel}</p>
+                <p><strong className="text-white">Causa:</strong> {shouldShowAiRunCause(classification) ? classification.causeLabel : "Não identificada pelos dados disponíveis; não é seguro deduzi-la."}</p>
+                <p><strong className="text-white">Detalhe registrado:</strong> {getReadableAiError(event.error)}</p>
+                <p className="rounded-lg border border-[#286278] bg-[#102936] p-2"><strong className="text-cyan-100">O que verificar:</strong> {guidance.statement}</p>
+              </div>
+            </details>;
+          })}
+        </div> : null}
+        {category === "whatsapp" ? <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-white">Ocorrências relacionadas ao WhatsApp</h3>
+          <p className="text-[11px] text-[#90a7b5]">Registros de erros locais; não são prova de falha na entrega externa ou indisponibilidade da Meta.</p>
+          {whatsappRecords.length > 0 ? whatsappRecords.slice(0,limit).map(({store,issue})=><details key={`${store.id}-${issue.id}`} className="group rounded-lg border border-[#305263] bg-[#0b151d] p-3">
+            <summary className="cursor-pointer text-xs text-[#e7f4f7]"><strong>{store.name}</strong> · {issue.label || "Evento WhatsApp com erro"} · {formatDateTime(issue.occurredAt)} ▾</summary>
+            <div className="mt-3 space-y-2 border-t border-[#28414f] pt-3 text-xs text-[#a8bdc9]">
+              <p><strong className="text-white">Origem:</strong> fila de entrada WhatsApp, loja {store.name}, organização {store.organizationName}</p>
+              <p><strong className="text-white">Local técnico:</strong> <code className="break-all">{issue.id}</code>{issue.externalEventId ? ` · evento externo ${issue.externalEventId}` : ""}</p>
+              <p><strong className="text-white">Problema:</strong> {issue.error || "Há ocorrência registrada, sem causa técnica identificada."}</p>
+              <p><strong className="text-white">Ação:</strong> {getPendingIssueResolutionHelp(issue)}</p>
             </div>
-          ) : null}
-        </div>
+          </details>) : whatsappStores.length > 0 ? whatsappStores.slice(0,limit).map((store)=><details key={store.id} className="rounded-lg border border-[#31505d] bg-[#0b151d] p-3"><summary className="cursor-pointer text-xs font-semibold text-[#d8e9ee]">{store.name} · {formatNumber(store.whatsappErrors)} erro(s) locais ▾</summary><p className="mt-2 text-xs text-[#a0b6c2]">Os detalhes individuais não vieram nesta consulta. Abra Lojas → {store.name} → Pendências para verificar a fonte.</p></details>) : <p className="text-xs text-[#9db4c2]">Nenhum erro do WhatsApp retornado neste recorte. A conectividade externa não foi verificada.</p>}
+        </div> : null}
+        {category === "settings" ? <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-white">Configurações que exigem ação</h3>
+          {configurationStores.length === 0 ? <p className="text-xs text-[#9db4c2]">Nenhuma configuração bloqueada ou em atenção nas lojas consultadas.</p> : configurationStores.slice(0,limit).map((store)=><details key={store.id} className="rounded-lg border border-amber-500/20 bg-[#0b151d] p-3"><summary className="cursor-pointer text-xs font-semibold text-[#e8f1f3]">{store.name} · {STORE_SETTINGS_READINESS_STATE_LABELS[store.settingsReadiness?.overall ?? "unknown"]} ▾</summary><div className="mt-2 space-y-1 text-xs text-[#afc3cc]"><p>Loja: {store.organizationName} / {store.name}</p>{(store.settingsReadiness?.issues ?? []).map((item)=><p key={`${item.family}-${item.code}`}>• {STORE_SETTINGS_READINESS_FAMILY_LABELS[item.family]}: {item.message}</p>)}<p>Onde corrigir: Lojas → abrir loja → Configurações.</p></div></details>)}
+        </div> : null}
+        {category === "structural" ? <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-white">Integridade estrutural</h3>
+          <p className="text-[11px] text-[#91a9b6]">Estruturas incompletas permanecem fora dos indicadores operacionais normais, mas são mostradas aqui para investigação.</p>
+          {orphanStores.length === 0 ? <p className="text-xs text-[#9db4c2]">Nenhuma estrutura fora da lista operacional neste recorte.</p> : orphanStores.slice(0,limit).map((orphan)=><details key={orphan.id} className="rounded-lg border border-amber-500/20 bg-[#0b151d] p-3"><summary className="cursor-pointer text-xs text-[#e8f3f5]">{orphan.name} · {getStoreIntegrityStateLabel(orphan.integrity)} ▾</summary><div className="mt-2 space-y-1 text-xs text-[#adbecc]"><p>Organização: {orphan.organizationName}</p><p>Store ID: <code className="break-all">{orphan.id}</code></p><p>Problema(s): {getStoreIntegrityIssueLabels(orphan.integrity).join(" · ") || "A integridade não pôde ser completamente verificada."}</p><p>Ação: confirmar proprietário, organização e assinatura antes de liberar operação.</p></div></details>)}
+        </div> : null}
+        {((category === "ai" && aiErrors.length > 5) || (category === "critical" && storesWithOperationalIssues.length > 5) || (category === "whatsapp" && (whatsappRecords.length || whatsappStores.length) > 5) || (category === "settings" && configurationStores.length > 5) || (category === "structural" && orphanStores.length > 5)) ? <button className="mt-3 rounded-lg border border-[#438a99] bg-[#16404b] px-3 py-2 text-xs font-semibold text-cyan-100" onClick={()=>setShowAll((previous)=>!previous)} type="button">{showAll?"Mostrar menos":"Ver mais ocorrências"}</button>:null}
       </div>
     </section>
   );
 }
+
 
 function normalizeStatus(value: string | null | undefined) {
   return String(value || "")
@@ -1073,10 +1107,6 @@ function getStoreStatusLabel(status: string | null | undefined) {
   return status || "Sem status";
 }
 
-function shouldShowBlockedAccessBadge(store: ZionAdminStore) {
-  return store.accountAccess?.accessState === "blocked";
-}
-
 function getStoreSubscriptionAction(store: ZionAdminStore) {
   const normalized = normalizeStatus(store.subscriptionStatus);
 
@@ -1089,10 +1119,6 @@ function getStoreSubscriptionAction(store: ZionAdminStore) {
 function isStoreActive(store: ZionAdminStore) {
   const normalized = normalizeStatus(store.subscriptionStatus);
   return normalized === "active" || normalized === "trial";
-}
-
-function isStoreCanceledOrInactive(store: ZionAdminStore) {
-  return !isStoreActive(store);
 }
 
 const STORE_OPERATIONAL_HEALTH_STATE_LABELS: Record<
@@ -1345,41 +1371,6 @@ function matchesSearch(store: ZionAdminStore, term: string) {
     .some((value) => String(value).toLowerCase().includes(normalizedTerm));
 }
 
-function OverviewButton({
-  label,
-  value,
-  helper,
-  onClick,
-  active,
-}: {
-  label: string;
-  value: string;
-  helper: string;
-  onClick: () => void;
-  active?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[
-        "min-h-[88px] rounded-2xl border px-4 py-3 text-left transition",
-        active
-          ? "border-white/35 bg-white/[0.09]"
-          : "border-white/10 bg-white/[0.04] hover:border-white/25 hover:bg-white/[0.07]",
-      ].join(" ")}
-    >
-      <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
-        {label}
-      </div>
-      <div className="mt-1.5 text-2xl font-semibold tracking-tight text-zinc-50">
-        {value}
-      </div>
-      <div className="mt-0.5 text-xs leading-4 text-zinc-500">{helper}</div>
-    </button>
-  );
-}
-
 type AdminIconName =
   | "overview" | "alerts" | "stores" | "comparisons" | "search" | "plus" | "arrow"
   | "check" | "warning" | "settings" | "brain" | "whatsapp" | "shield" | "key" | "user" | "info";
@@ -1411,25 +1402,25 @@ function AdminIcon({ name, className = "h-4 w-4" }: { name: AdminIconName; class
   );
 }
 
-function DashboardMetricCard({ label, value, helper, tone = "violet", icon = "overview" }: { label: string; value: string; helper: string; tone?: "violet" | "green" | "red" | "amber" | "blue"; icon?: AdminIconName }) {
-  const toneClass = {
-    violet: "text-violet-200",
-    green: "text-emerald-300",
-    red: "text-red-300",
-    amber: "text-amber-300",
-    blue: "text-sky-300",
+function DashboardMetricCard({ label, value, helper, tone = "cyan", icon = "overview" }: { label: string; value: string; helper: string; tone?: "cyan" | "green" | "red" | "amber" | "blue"; icon?: AdminIconName }) {
+  const tones = {
+    cyan: ["text-[#78D7E2]", "bg-[#12313C]", "border-cyan-400/10"],
+    green: ["text-emerald-300", "bg-emerald-400/10", "border-emerald-400/10"],
+    red: ["text-red-300", "bg-red-400/10", "border-red-400/10"],
+    amber: ["text-amber-300", "bg-amber-400/10", "border-amber-400/10"],
+    blue: ["text-sky-300", "bg-sky-400/10", "border-sky-400/10"],
   }[tone];
 
   return (
-    <div className="rounded-2xl border border-[#252b35] bg-[#10141b] p-3.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)]">
-      <div className="flex items-start gap-3">
-        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white/[0.06] ${toneClass}`}>
-          <AdminIcon name={icon} className="h-4 w-4" />
+    <div className={`min-w-0 rounded-xl border border-[#252b35] bg-[#10141b] px-3 py-2.5 ${tones[2]}`}>
+      <div className="flex items-center gap-2">
+        <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${tones[0]} ${tones[1]}`}>
+          <AdminIcon name={icon} className="h-[19px] w-[19px]" />
         </span>
-        <div className="min-w-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8e98aa]">{label}</div>
+        <div className="min-w-0 text-[10px] font-medium leading-3 text-[#b7c4d2]">{label}</div>
       </div>
-      <div className="mt-3 text-2xl font-semibold tracking-tight text-[#f4f6fb]">{value}</div>
-      <div className="mt-1 text-xs leading-4 text-[#8e98aa]">{helper}</div>
+      <div className="mt-1 text-[22px] font-bold leading-6 tracking-tight text-[#f4f6fb]">{value}</div>
+      <div className="mt-1 truncate text-[10px] leading-3 text-[#8e98aa]" title={helper}>{helper}</div>
     </div>
   );
 }
@@ -1492,135 +1483,6 @@ function getSettingsReadinessFamilyState(
     "unknown"
   );
 }
-function StoreRowCard({
-  store,
-  selected,
-  onClick,
-  inactive,
-}: {
-  store: ZionAdminStore;
-  selected: boolean;
-  onClick: () => void;
-  inactive?: boolean;
-}) {
-  const operational = getOperationalSummary(store);
-  const aiRuns = numberValue(store.totalAiRuns);
-  const successfulRuns = numberValue(store.successfulAiRuns);
-  const integrityState = store.integrity?.state ?? "unknown";
-  const integrityIssues = getStoreIntegrityIssueLabels(store.integrity);
-  const operationalHealthState = store.operationalHealth?.state ?? "unknown";
-  const settingsReadinessState = store.settingsReadiness?.overall ?? "unknown";
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[
-        "w-full rounded-2xl border p-3 text-left transition",
-        selected
-          ? "border-violet-400/40 bg-violet-500/[0.08]"
-          : "border-[#252b35] bg-[#10141b] hover:border-violet-400/30 hover:bg-white/[0.04]",
-      ].join(" ")}
-    >
-      <div className="flex flex-col gap-2 xl:grid xl:grid-cols-[1.2fr_0.85fr_0.85fr_0.85fr_1.1fr] xl:items-stretch">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="truncate text-sm font-semibold text-zinc-50">
-              {store.name}
-            </h3>
-            <span className="rounded-full border border-white/10 bg-zinc-950/60 px-2 py-0.5 text-[10px] text-zinc-400">
-              {getStoreStatusLabel(store.subscriptionStatus)}
-            </span>
-            {shouldShowBlockedAccessBadge(store) ? (
-              <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-200">
-                Acesso bloqueado
-              </span>
-            ) : null}
-            <span className="rounded-full border border-white/10 bg-zinc-950/60 px-2 py-0.5 text-[10px] text-zinc-400">
-              Integridade: {getStoreIntegrityStateLabel(store.integrity)}
-            </span>
-            <span
-              className={[
-                "rounded-full border px-2 py-0.5 text-[10px]",
-                getOperationalHealthStateClassName(operationalHealthState),
-              ].join(" ")}
-            >
-              Saúde: {getStoreOperationalHealthStateLabel(store.operationalHealth)}
-            </span>
-            <span
-              className={[
-                "rounded-full border px-2 py-0.5 text-[10px]",
-                getSettingsReadinessStateClassName(settingsReadinessState),
-              ].join(" ")}
-            >
-              Configuração: {STORE_SETTINGS_READINESS_STATE_LABELS[settingsReadinessState]}
-            </span>
-          </div>
-          <div className="mt-0.5 truncate text-xs text-zinc-400">
-            {store.organizationName}
-          </div>
-          <div className="mt-0.5 truncate text-[11px] text-zinc-600">{store.id}</div>
-          {inactive ? (
-            <div className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-500">
-              {getInactiveReason(store)}
-            </div>
-          ) : null}
-          {integrityState !== "healthy" ? (
-            <div className="mt-1 truncate text-[11px] text-amber-200/80">
-              {integrityIssues[0] || "Verificação estrutural incompleta"}
-              {integrityIssues.length > 1 ? ` (+${integrityIssues.length - 1})` : ""}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="rounded-lg border border-white/10 bg-white/[0.035] p-2 text-[11px]">
-          <div className="text-zinc-500">Uso</div>
-          <div className="mt-1 font-semibold text-zinc-100">
-            {formatNumber(store.totalMessages)} msg
-          </div>
-          <div className="mt-1 text-zinc-500">
-            {formatNumber(store.totalSalesAiMessages)} msg IA · {formatNumber(store.totalLeads)} leads
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-white/10 bg-white/[0.035] p-2 text-[11px]">
-          <div className="text-zinc-500">IA</div>
-          <div className="mt-1 font-semibold text-zinc-100">
-            {formatOverviewMetric(aiRuns, getStoreAiAvailability(store, "runs"))} exec.
-          </div>
-          <div className="mt-1 text-zinc-500">
-            {formatOverviewPercent(successfulRuns, aiRuns, getStoreAiAvailability(store, "runs"))} concluídas
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-white/10 bg-white/[0.035] p-2 text-[11px]">
-          <div className="text-zinc-500">Custo</div>
-          <div className="mt-1 font-semibold text-zinc-100">
-            {formatUsd(store.totalCostUsd)}
-          </div>
-          <div className="mt-1 text-zinc-500">
-            {formatCompactNumber(store.totalTokens)} tokens
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-white/10 bg-white/[0.035] p-2 text-[11px]">
-          <div className="text-zinc-500">Pendências</div>
-          <div className="mt-1 font-semibold text-zinc-100">
-            {operational.label}
-          </div>
-          <div className="mt-1 line-clamp-2 text-zinc-500">
-            {operational.details}
-          </div>
-        </div>
-      </div>
-      <div className="mt-3 flex items-center justify-end gap-1 text-xs font-semibold text-violet-200">
-        Abrir loja
-        <AdminIcon name="arrow" className="h-3.5 w-3.5" />
-      </div>
-    </button>
-  );
-}
-
 function DetailItem({
   label,
   value,
@@ -1898,7 +1760,7 @@ function DrawerShell({
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <div className="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500">
-                ZION Interno
+                ZION Administrador
               </div>
               <h2 className="mt-2 break-words text-xl font-semibold leading-tight">
                 {title}
@@ -2023,10 +1885,10 @@ function StoreDetailsDrawer({
   const settingsReadinessIssues = settingsReadiness?.issues ?? [];
 
   return (
-    <section className="min-w-0 rounded-2xl border border-[#252b35] bg-[#0e1218] shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
-      <div className="border-b border-[#252b35] bg-[#10141b] px-4 py-5 sm:px-6">
+    <section className="min-w-0">
+      <div className="pb-2">
         <div className="mb-3 flex items-center gap-2 text-xs text-[#8e98aa]">
-          <button type="button" onClick={onClose} className="transition hover:text-violet-200">
+          <button type="button" onClick={onClose} className="transition hover:text-cyan-200">
             Lojas
           </button>
           <span aria-hidden="true">/</span>
@@ -2034,9 +1896,9 @@ function StoreDetailsDrawer({
         </div>
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-violet-200/70">Central da loja</div>
-            <h2 className="mt-2 break-words text-2xl font-semibold leading-tight text-[#f4f6fb]">{store.name}</h2>
-            <p className="mt-1 break-words text-sm leading-5 text-[#8e98aa]">{store.organizationName}</p>
+            <div className="sr-only">Central da loja</div>
+            <h2 className="mt-1 flex items-center gap-2 break-words text-[21px] font-semibold leading-tight text-[#f4f6fb]"><AdminIcon name="stores" className="h-5 w-5 text-[#67D5E1]" />{store.name}<span className="text-[11px] font-normal text-[#8e98aa]">{store.organizationName}</span></h2>
+
           </div>
           <div className="flex max-w-[260px] flex-col items-end gap-1">
           <button
@@ -2052,7 +1914,7 @@ function StoreDetailsDrawer({
                 void onResendFirstAccess(store);
               }
             }}
-            className="rounded-xl bg-violet-400 px-4 py-2 text-sm font-semibold text-[#090c11] transition hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-xl bg-[#56C7D8] px-4 py-2 text-sm font-semibold text-[#090c11] transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {resendState.busyStoreId === store.id
               ? "Enviando..."
@@ -2066,8 +1928,8 @@ function StoreDetailsDrawer({
           </div>
         </div>
       </div>
-      <div className="px-4 py-4 sm:px-6">
-      <div className="mb-5 mt-1 flex flex-wrap gap-2">
+      <div className="pt-1">
+      <div className="mb-2 mt-0 flex flex-wrap gap-2">
         <span className="rounded-full border border-white/10 bg-zinc-900 px-3 py-1 text-xs text-zinc-300">
           {getStoreStatusLabel(store.subscriptionStatus)}
         </span>
@@ -2078,7 +1940,7 @@ function StoreDetailsDrawer({
 
       <nav
         aria-label="Seções da loja"
-        className="mb-5 grid grid-cols-2 gap-1.5 rounded-2xl border border-white/10 bg-zinc-950/35 p-1.5 sm:grid-cols-4 lg:grid-cols-7"
+        className="mb-3 grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-7"
       >
         {([
           ["actions", "Ações"],
@@ -2095,10 +1957,10 @@ function StoreDetailsDrawer({
             aria-current={activeStoreTab === tab ? "page" : undefined}
             onClick={() => setActiveStoreTab(tab)}
             className={[
-              "rounded-xl px-2 py-2 text-xs font-semibold transition",
+              "rounded-lg border px-2 py-2 text-[11px] font-medium transition",
               activeStoreTab === tab
-                ? "bg-violet-500/20 text-violet-100 ring-1 ring-violet-400/30"
-                : "text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100",
+                ? "border-[#56C7D8]/45 bg-[#173843] text-[#a6eef3]"
+                : "border-[#29323a] bg-[#10151c] text-[#b3c0cc] hover:bg-[#1a2932] hover:text-zinc-100",
             ].join(" ")}
           >
             {label}
@@ -2300,14 +2162,16 @@ function StoreDetailsDrawer({
           </div>
         </section> : null}
         {activeStoreTab === "actions" ? <section>
-          <h3 className="text-sm font-semibold text-zinc-200">Gestão da loja</h3>
-          <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-4">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
-              <div>
-                <h4 className="text-sm font-semibold text-zinc-200">Operação da loja</h4>
+          <h3 className="text-[16px] font-semibold text-zinc-100">1. Ações</h3>
+          <p className="mt-0.5 text-[11px] text-[#8e98aa]">Ações administrativas e operações importantes para esta loja.</p>
+          <div className="mt-3 grid grid-cols-1 items-stretch gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="flex min-w-0 flex-col rounded-xl border border-[#29313b] bg-[#10141b] p-3 text-sm text-zinc-300">
+              <div className="flex items-start gap-2.5">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#143540] text-[#67D5E1]"><AdminIcon name="stores" className="h-5 w-5" /></span>
+                <div><h4 className="text-[12px] font-semibold text-zinc-100">Operação da loja</h4>
                 <p className="mt-1 text-xs leading-5 text-zinc-500">
                   Gerencie o funcionamento desta loja no ZION.
-                </p>
+                </p></div>
               </div>
               <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 <DetailItem
@@ -2347,7 +2211,7 @@ function StoreDetailsDrawer({
                     void onToggleStoreSubscription(store);
                   }
                 }}
-                className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-auto w-full rounded-lg border border-red-500/30 bg-red-600/75 px-3 py-2 text-[11px] font-semibold text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {storeState.busyStoreId === store.id
                   ? storeAction === "suspend"
@@ -2371,14 +2235,17 @@ function StoreDetailsDrawer({
               />
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
-              <div>
-                <h4 className="text-sm font-semibold text-zinc-200">Conta responsável</h4>
-                <p className="mt-1 text-xs leading-5 text-zinc-500">
-                  Gerencie o acesso do responsável à loja.
-                </p>
+            <div className="flex min-w-0 flex-col rounded-xl border border-[#29313b] bg-[#10141b] p-3 text-sm text-zinc-300">
+              <div className="flex items-start gap-2.5">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#18313c] text-[#7bd9e2]"><AdminIcon name="user" className="h-[19px] w-[19px]" /></span>
+                <div><h4 className="text-[12px] font-semibold text-zinc-100">Conta responsável</h4><p className="mt-0.5 text-[10px] leading-4 text-[#8e98aa]">Gerencie o acesso do responsável à loja.</p></div>
               </div>
-
+              <div className="mt-3 grid grid-cols-2 gap-1.5">
+                <DetailItem label="Acesso" value={accountAccess?.accessState === "active" ? "Ativo" : accountAccess?.accessState === "blocked" ? "Bloqueado" : "Indisponível"} />
+                <DetailItem label="Responsável" value={accountAccess?.responsibleName || "Não informado"} />
+              </div>
+              <details className="my-2 rounded-lg border border-[#26343d] bg-[#0b1218] px-2 py-1.5">
+                <summary className="cursor-pointer text-[10px] text-[#9bcbd3]">Detalhes da identidade e do acesso</summary>
               <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.025] p-3">
                 <div className="text-sm font-semibold text-zinc-200">Identidade da conta</div>
                 <p className="mt-1 text-xs leading-5 text-zinc-500">
@@ -2487,6 +2354,7 @@ function StoreDetailsDrawer({
               </div>
             ) : null}
 
+              </details>
             {accessAction ? (
               <button
                 type="button"
@@ -2500,7 +2368,7 @@ function StoreDetailsDrawer({
                     void onToggleAccountAccess(store);
                   }
                 }}
-                className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-auto w-full rounded-lg border border-red-500/30 bg-red-600/75 px-3 py-2 text-[11px] font-semibold text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {accessState.busyMembershipId === accountAccess?.membershipId
                   ? accessAction === "block"
@@ -2511,17 +2379,17 @@ function StoreDetailsDrawer({
             ) : null}
 
             </div>
-            {!isWhatsappPinRecoveryTargetStore(store) ? <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
+            {!isWhatsappPinRecoveryTargetStore(store) ? <div className="flex min-w-0 flex-col rounded-xl border border-[#29313b] bg-[#10141b] p-3 text-sm text-zinc-300">
               <div className="flex items-start gap-2">
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-400/10 text-zinc-300"><AdminIcon name="whatsapp" className="h-4 w-4" /></span>
                 <div>
-                  <h4 className="text-sm font-semibold text-zinc-200">RegularizaÃ§Ã£o do WhatsApp</h4>
-                  <p className="mt-1 text-xs leading-5 text-zinc-500">RecuperaÃ§Ã£o nÃ£o disponÃ­vel para esta loja no contrato autorizado.</p>
+                  <h4 className="text-sm font-semibold text-zinc-200">Regularização do WhatsApp</h4>
+                  <p className="mt-1 text-xs leading-5 text-zinc-500">Recuperação não disponível para esta loja no contrato autorizado.</p>
                 </div>
               </div>
-              <p className="mt-3 text-xs leading-5 text-zinc-500">O alvo de recuperaÃ§Ã£o nÃ£o estÃ¡ vinculado a esta loja; nenhuma operaÃ§Ã£o serÃ¡ iniciada.</p>
+              <p className="mt-3 text-xs leading-5 text-zinc-500">O alvo de recuperação não está vinculado a esta loja; nenhuma operação será iniciada.</p>
             </div> : null}
-            {isWhatsappPinRecoveryTargetStore(store) ? <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
+            {isWhatsappPinRecoveryTargetStore(store) ? <div className="flex min-w-0 flex-col rounded-xl border border-[#29313b] bg-[#10141b] p-3 text-sm text-zinc-300">
               <div className="flex items-start gap-2">
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-400/10 text-emerald-300"><AdminIcon name="whatsapp" className="h-4 w-4" /></span>
                 <div>
@@ -2529,11 +2397,16 @@ function StoreDetailsDrawer({
                   <p className="mt-1 text-xs leading-5 text-zinc-500">Recuperação controlada para o telefone autorizado da loja.</p>
                 </div>
               </div>
-              <div className="mt-3 grid grid-cols-1 gap-2">
+              <div className="mt-3 grid grid-cols-2 gap-1.5">
+                <DetailItem label="WABA do contrato" value="Vinculada" />
+                <DetailItem label="Phone ID do contrato" value="Vinculado" />
+              </div>
+              <details className="mt-2 rounded-lg border border-[#26343d] bg-[#0b1218] px-2 py-1.5">
+                <summary className="cursor-pointer text-[10px] text-[#9bcbd3]">Ver detalhes do telefone autorizado</summary>
                 <DetailItem label="WABA" value={WHATSAPP_PIN_RECOVERY_TARGET.wabaId} />
                 <DetailItem label="Phone ID" value={maskWhatsappRecoveryPhoneNumberId(WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId)} />
-              </div>
-              <details className="mt-3 rounded-xl border border-white/10 bg-zinc-950/30 p-3">
+              </details>
+              <details className="mt-auto rounded-lg border border-[#325d68] bg-[#153440] px-2 py-1.5">
                 <summary className="cursor-pointer text-xs font-semibold text-emerald-200">Preparar recuperação</summary>
                 <WhatsappPinRecoverySection canAccess={canManageWhatsappPins} metaExecutionEnabled={whatsappPinRecoveryMetaEnabled} />
               </details>
@@ -2541,7 +2414,7 @@ function StoreDetailsDrawer({
           </div>
           <div className="mt-3 flex items-start gap-2 rounded-2xl border border-sky-400/20 bg-sky-500/[0.08] p-3 text-xs leading-5 text-sky-100">
             <AdminIcon name="info" className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" />
-            <div><span className="font-semibold">Importante:</span> ações externas permanecem condicionadas às autorizações e confirmações exibidas pelo backend.</div>
+            <div><span className="font-semibold">Importante</span><p className="mt-0.5 text-[10px] text-sky-100/80">As ações acima afetam diretamente a operação desta loja. Utilize apenas quando necessário.</p></div>
           </div>
         </section> : null}
 
@@ -3478,12 +3351,12 @@ function OverviewInlineDetails({
       }
 
       return (
-        <div className="rounded-xl border border-white/10 bg-zinc-950/35 p-2.5">
-          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+        <div className="rounded-xl border border-[#2c5261] bg-[#101d26] p-3">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-200/80">
             {side === "left" ? "Loja A" : "Loja B"}
           </div>
 
-          <div className="mt-2 rounded-xl border border-white/10 bg-zinc-950/70 px-3 py-2">
+          <div className="mt-2 rounded-lg border border-[#345665] bg-[#09151e] px-3 py-2">
             <div className="flex items-center gap-2">
               <span className="text-zinc-500">⌕</span>
               <input
@@ -3498,7 +3371,7 @@ function OverviewInlineDetails({
             </div>
           </div>
 
-          <div className="mt-2 h-28 space-y-1 overflow-y-auto rounded-xl border border-white/10 bg-black/10 p-1 pr-1">
+          <div className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-lg border border-[#304553] bg-[#0c1720] p-1">
             {filteredOptions.length === 0 ? (
               <div className="rounded-xl border border-dashed border-white/10 px-3 py-2 text-xs text-zinc-500">
                 Nenhuma loja encontrada.
@@ -3512,8 +3385,8 @@ function OverviewInlineDetails({
                   className={[
                     "w-full rounded-xl border px-3 py-2 text-left text-xs transition",
                     selectedId === option.id
-                      ? "border-white/30 bg-white/[0.08]"
-                      : "border-white/10 bg-white/[0.025] hover:border-white/25 hover:bg-white/[0.055]",
+                      ? "border-cyan-400/40 bg-[#174551] text-cyan-100"
+                      : "border-[#293b45] bg-[#121d26] hover:border-cyan-400/35 hover:bg-[#19323d]",
                   ].join(" ")}
                 >
                   <div className="truncate font-semibold text-zinc-100">
@@ -3528,7 +3401,7 @@ function OverviewInlineDetails({
           </div>
 
           {selectedStore ? (
-            <div className="mt-3 max-h-[310px] space-y-2 overflow-y-auto pr-1">
+            <div className="mt-3 space-y-2">
               <div>
                 <div className="text-sm font-semibold text-zinc-100">
                   {selectedStore.name}
@@ -3591,11 +3464,11 @@ function OverviewInlineDetails({
     }
 
     return (
-      <section className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+      <section className="mt-3 rounded-xl border border-[#315060] bg-[#101b24] p-4">
         <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
           <div>
-            <h3 className="text-lg font-semibold text-zinc-50">Comparar lojas</h3>
-            <p className="mt-0.5 text-xs leading-5 text-zinc-500">
+            <h3 className="text-lg font-semibold text-[#e7f9fc]">Comparar lojas</h3>
+            <p className="mt-0.5 text-xs leading-5 text-[#98b1bf]">
               Procure duas lojas pelo nome e compare os dados lado a lado.
             </p>
           </div>
@@ -3603,7 +3476,7 @@ function OverviewInlineDetails({
           <button
             type="button"
             onClick={onClose}
-            className="w-fit rounded-xl border border-white/10 bg-zinc-950/50 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-white/[0.06]"
+            className="w-fit rounded-lg border border-[#3c7b89] bg-[#123a45] px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:bg-[#1c4b55]"
           >
             Ocultar
           </button>
@@ -3987,56 +3860,6 @@ function OverviewInlineDetails({
           />
         </div>
 
-        <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
-          <section className="rounded-2xl border border-white/10 bg-zinc-950/30 p-3">
-            <div>
-              <h4 className="text-sm font-semibold text-zinc-200">
-                Custo da IA
-              </h4>
-              <p className="mt-0.5 text-[11px] leading-4 text-zinc-500">
-                Hoje, semana, mês e origem do gasto.
-              </p>
-            </div>
-            <div className="mt-3">
-              <CostPeriodBlocks
-                today={data?.totals.costUsdToday}
-                week={data?.totals.costUsdLast7Days}
-                month={data?.totals.costUsdMonth}
-              />
-            </div>
-            <div className="mt-3">
-              <CostBreakdownGrid breakdown={data?.totals.costBreakdownTotal} />
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-white/10 bg-zinc-950/30 p-3">
-            <div>
-              <h4 className="text-sm font-semibold text-zinc-200">
-                Tokens usados
-              </h4>
-              <p className="mt-0.5 text-[11px] leading-4 text-zinc-500">
-                Entrada, saída, período e origem do uso.
-              </p>
-            </div>
-            <div className="mt-3">
-              <TokenPeriodBlocks
-                today={data?.totals.tokensToday}
-                week={data?.totals.tokensLast7Days}
-                month={data?.totals.tokensMonth}
-                todayPrompt={data?.totals.tokensPromptToday}
-                todayCompletion={data?.totals.tokensCompletionToday}
-                weekPrompt={data?.totals.tokensPromptLast7Days}
-                weekCompletion={data?.totals.tokensCompletionLast7Days}
-                monthPrompt={data?.totals.tokensPromptMonth}
-                monthCompletion={data?.totals.tokensCompletionMonth}
-              />
-            </div>
-            <div className="mt-3">
-              <TokenBreakdownGrid breakdown={data?.totals.tokenBreakdownTotal} />
-            </div>
-          </section>
-        </div>
-
         {detailModal}
       </section>
     );
@@ -4046,14 +3869,14 @@ function OverviewInlineDetails({
 }
 
 
+type StoreListFilter = "all" | "active" | "problem" | "blocked" | "inactive";
+
 function StoreListSection({
   title,
   stores,
   search,
   onSearch,
-  selectedStoreId,
   onSelectStore,
-  inactive,
   preview = false,
 }: {
   title: string;
@@ -4065,73 +3888,113 @@ function StoreListSection({
   inactive?: boolean;
   preview?: boolean;
 }) {
-  const filteredStores = stores.filter((store) => matchesSearch(store, search));
-  const visibleStores = preview ? filteredStores.slice(0, 5) : filteredStores;
+  const [filter, setFilter] = useState<StoreListFilter>("all");
+  const [organizationId, setOrganizationId] = useState("");
+  const [subscriptionStatus, setSubscriptionStatus] = useState("");
+  const hasProblem = (store: ZionAdminStore) => store.operationalHealth?.state === "broken" || store.integrity?.state === "broken";
+  const isBlocked = (store: ZionAdminStore) => store.settingsReadiness?.overall === "blocked";
+  const availableOrganizations = Array.from(new Map(stores.map((store) => [store.organizationId, store.organizationName])).entries());
+  const availableStatuses = Array.from(new Set(stores.map((store) => store.subscriptionStatus))).filter(Boolean);
+  const counts: Record<StoreListFilter, number> = {
+    all: stores.length,
+    active: stores.filter(isStoreActive).length,
+    problem: stores.filter(hasProblem).length,
+    blocked: stores.filter(isBlocked).length,
+    inactive: stores.filter((store) => !isStoreActive(store)).length,
+  };
+  const filteredStores = stores.filter((store) =>
+    matchesSearch(store, search) &&
+    (!organizationId || store.organizationId === organizationId) &&
+    (!subscriptionStatus || store.subscriptionStatus === subscriptionStatus) &&
+    (filter === "all" ||
+      (filter === "active" && isStoreActive(store)) ||
+      (filter === "problem" && hasProblem(store)) ||
+      (filter === "blocked" && isBlocked(store)) ||
+      (filter === "inactive" && !isStoreActive(store)))
+  );
+  const visibleStores = preview ? filteredStores.slice(0, 6) : filteredStores;
+  const filters: Array<[StoreListFilter, string]> = [
+    ["all", "Todas"], ["active", "Ativas"], ["problem", "Com problema"],
+    ["blocked", "Bloqueadas"], ["inactive", "Inativas"],
+  ];
 
   return (
-    <section className="rounded-2xl border border-[#252b35] bg-[#0e1218] p-4 shadow-[0_12px_32px_rgba(0,0,0,0.12)]">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold">{title}</h2>
-        </div>
-        <span className="w-fit rounded-full border border-[#252b35] bg-[#080b10] px-3 py-1 text-xs text-[#8e98aa]">
-          {formatNumber(stores.length)} loja(s)
-        </span>
+    <section className="min-w-0 overflow-hidden rounded-[13px] border border-[#252b35] bg-[#0e1218]">
+      <div className="flex flex-wrap items-center gap-3 px-4 pt-3">
+        <h2 className="text-[16px] font-semibold text-[#f4f6fb]">{title}</h2>
+        <span className="rounded-full border border-[#303943] bg-[#151a22] px-2 py-0.5 text-[10px] text-[#b7c4d2]">{formatNumber(stores.length)} lojas</span>
       </div>
-
-      <label className="mt-4 flex items-center gap-2 rounded-xl border border-[#252b35] bg-[#080b10] px-3 py-2">
-        <div className="flex items-center gap-2">
-          <AdminIcon name="search" className="h-4 w-4 text-[#616b7c]" />
-          <input
-            value={search}
-            onChange={(event) => onSearch(event.target.value)}
-            placeholder="Procurar loja por nome, organização ou status"
-            className="w-full bg-transparent text-sm text-[#f4f6fb] outline-none placeholder:text-[#616b7c]"
-          />
+      <div className="flex flex-col gap-3 px-4 pb-3 pt-3 lg:flex-row lg:items-center lg:justify-between">
+        <div role="group" aria-label="Filtrar lojas" className="flex flex-wrap gap-1.5">
+          {filters.map(([id, label]) => (
+            <button type="button" key={id} aria-pressed={filter === id} onClick={() => setFilter(id)}
+              className={`rounded-lg border px-2.5 py-[7px] text-[10px] font-medium transition ${filter === id
+                ? "border-[#56C7D8]/50 bg-[#173843] text-[#a6eef3]"
+                : "border-[#29313a] bg-[#12171e] text-[#b2bbc8] hover:border-[#56C7D8]/35 hover:text-white"}`}>
+              {label} ({counts[id]})
+            </button>
+          ))}
         </div>
-      </label>
-
-      <div className="mt-3 overflow-x-auto rounded-xl border border-white/10">
-        {visibleStores.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-white/10 p-6 text-center text-sm text-zinc-500">
-            Nenhuma loja encontrada.
-          </div>
-        ) : (
-          <table className="min-w-[980px] w-full border-collapse text-left text-xs">
-            <thead className="bg-white/[0.035] text-[10px] uppercase tracking-[0.14em] text-zinc-500">
-              <tr>
-                {['Loja', 'Organização', 'Status', 'Saúde', 'Configuração', 'IA', 'Uso', 'Pendências', 'Última IA', 'Ações'].map((heading) => (
-                  <th key={heading} className="border-b border-white/10 px-3 py-2.5 font-semibold">{heading}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {visibleStores.map((store) => {
-                const operational = getOperationalSummary(store);
-                const healthState = store.operationalHealth?.state ?? "unknown";
-                const readinessState = store.settingsReadiness?.overall ?? "unknown";
-                return (
-                  <tr key={store.id} className={selectedStoreId === store.id ? "bg-violet-500/[0.08]" : "hover:bg-white/[0.035]"}>
-                    <td className="border-b border-white/[0.07] px-3 py-3 font-semibold text-zinc-100">
-                      <div className="flex items-center gap-2"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-sky-400/10 text-sky-300"><AdminIcon name="stores" className="h-3.5 w-3.5" /></span><span className="max-w-[150px] truncate">{store.name}</span></div>
-                    </td>
-                    <td className="border-b border-white/[0.07] px-3 py-3 text-zinc-400">{store.organizationName}</td>
-                    <td className="border-b border-white/[0.07] px-3 py-3"><span className="rounded-full border border-white/10 bg-zinc-950/60 px-2 py-1 text-[10px] text-zinc-300">{getStoreStatusLabel(store.subscriptionStatus)}</span></td>
-                    <td className="border-b border-white/[0.07] px-3 py-3"><span className={`rounded-full border px-2 py-1 text-[10px] ${getOperationalHealthStateClassName(healthState)}`}>{getStoreOperationalHealthStateLabel(store.operationalHealth)}</span></td>
-                    <td className="border-b border-white/[0.07] px-3 py-3"><span className={`rounded-full border px-2 py-1 text-[10px] ${getSettingsReadinessStateClassName(readinessState)}`}>{STORE_SETTINGS_READINESS_STATE_LABELS[readinessState]}</span></td>
-                    <td className="border-b border-white/[0.07] px-3 py-3 text-zinc-300">{formatOverviewMetric(store.totalAiRuns, getStoreAiAvailability(store, "runs"))}</td>
-                    <td className="border-b border-white/[0.07] px-3 py-3 text-zinc-300">{formatNumber(store.totalMessages)} msg</td>
-                    <td className="border-b border-white/[0.07] px-3 py-3 text-zinc-300">{operational.label}</td>
-                    <td className="border-b border-white/[0.07] px-3 py-3 text-zinc-400">{formatDateTime(store.lastAiRunAt)}</td>
-                    <td className="border-b border-white/[0.07] px-3 py-3"><button type="button" onClick={() => onSelectStore(store)} className="whitespace-nowrap rounded-lg border border-violet-400/40 px-2.5 py-1.5 text-[10px] font-semibold text-violet-200 transition hover:bg-violet-500/15">Abrir loja <AdminIcon name="arrow" className="ml-1 inline h-3 w-3" /></button></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <label className="flex min-w-[155px] flex-1 items-center gap-1.5 rounded-lg border border-[#29313a] bg-[#0b1016] px-2.5 py-1.5 lg:w-[190px] lg:flex-none">
+            <AdminIcon name="search" className="h-3.5 w-3.5 shrink-0 text-[#8e98aa]" />
+            <input aria-label="Buscar lojas" value={search} onChange={(event) => onSearch(event.target.value)}
+              placeholder="Buscar lojas..." className="w-full min-w-0 bg-transparent text-[11px] text-[#f4f6fb] outline-none placeholder:text-[#7e8b9e]" />
+          </label>
+          <select aria-label="Filtrar organização" value={organizationId} onChange={(event) => setOrganizationId(event.target.value)}
+            className="max-w-[145px] rounded-lg border border-[#29313a] bg-[#12171e] px-2 py-[7px] text-[11px] text-[#bac6d3]">
+            <option value="">Organização</option>
+            {availableOrganizations.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+          </select>
+          <select aria-label="Filtrar status" value={subscriptionStatus} onChange={(event) => setSubscriptionStatus(event.target.value)}
+            className="max-w-[120px] rounded-lg border border-[#29313a] bg-[#12171e] px-2 py-[7px] text-[11px] text-[#bac6d3]">
+            <option value="">Status</option>
+            {availableStatuses.map((status) => <option key={status} value={status}>{getStoreStatusLabel(status)}</option>)}
+          </select>
+        </div>
       </div>
-      {preview && filteredStores.length > visibleStores.length ? <div className="mt-2 text-right text-xs text-zinc-500">Exibindo {visibleStores.length} de {filteredStores.length}. Abra Lojas para ver a tabela completa.</div> : null}
+      <div className="w-full overflow-x-auto">
+        <table className="w-full min-w-[950px] border-collapse text-left text-[11px]">
+          <thead className="bg-[#151920] text-[9px] uppercase tracking-[0.08em] text-[#8e98aa]">
+            <tr>{["Loja", "Organização", "Status", "Saúde", "Configuração", "IA", "Uso", "Pendências", "Última IA", "Ações"].map((heading) =>
+              <th key={heading} className="border-y border-[#252b35] px-2.5 py-2 font-medium">{heading}</th>)}</tr>
+          </thead>
+          <tbody>
+            {visibleStores.map((store) => {
+              const operational = getOperationalSummary(store);
+              const healthState = store.operationalHealth?.state ?? "unknown";
+              const readinessState = store.settingsReadiness?.overall ?? "unknown";
+              return (
+                <tr key={store.id} role="button" tabIndex={0} aria-label={`Abrir loja ${store.name}`}
+                  onClick={() => onSelectStore(store)}
+                  onKeyDown={(event) => {
+                    if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+                      event.preventDefault();
+                      onSelectStore(store);
+                    }
+                  }}
+                  className="group cursor-pointer border-b border-[#222a33] transition last:border-0 hover:bg-[#12303a]/65 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#56C7D8]">
+                  <td className="px-2.5 py-2 font-semibold text-[#f4f6fb]">
+                    <span className="flex min-w-0 items-center gap-2"><span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-[#12313c] text-[#6bd1de]"><AdminIcon name="stores" className="h-3.5 w-3.5" /></span><span className="max-w-[138px] truncate" title={store.name}>{store.name}</span></span>
+                  </td>
+                  <td className="max-w-[120px] truncate px-2.5 py-2 text-[#b0bccb]" title={store.organizationName}>{store.organizationName}</td>
+                  <td className="px-2.5 py-2"><span className={`whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[10px] ${isStoreActive(store) ? "border-emerald-500/25 bg-emerald-500/[0.08] text-emerald-200" : "border-[#424b56] bg-[#252b33] text-[#bac4d0]"}`}>{getStoreStatusLabel(store.subscriptionStatus)}</span></td>
+                  <td className="px-2.5 py-2"><span className={`inline-block max-w-[120px] rounded-md border px-1.5 py-0.5 text-[10px] leading-4 ${getOperationalHealthStateClassName(healthState)}`}>{getStoreOperationalHealthStateLabel(store.operationalHealth)}</span></td>
+                  <td className="px-2.5 py-2"><span className={`whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[10px] ${getSettingsReadinessStateClassName(readinessState)}`}>{STORE_SETTINGS_READINESS_STATE_LABELS[readinessState]}</span></td>
+                  <td className="whitespace-nowrap px-2.5 py-2 text-[#d8e0e9]">{formatOverviewMetric(store.totalAiRuns, getStoreAiAvailability(store, "runs"))}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 text-[#d8e0e9]">{formatNumber(store.totalMessages)} msg</td>
+                  <td className="max-w-[130px] px-2.5 py-2 text-[#b7c4d2]"><span className="line-clamp-2" title={operational.label}>{operational.label}</span></td>
+                  <td className="max-w-[114px] px-2.5 py-2 text-[10px] text-[#a7b6c8]">{formatDateTime(store.lastAiRunAt)}</td>
+                  <td className="px-2.5 py-2"><button type="button" onClick={(event) => { event.stopPropagation(); onSelectStore(store); }}
+                    className="whitespace-nowrap rounded-md border border-[#397788] bg-[#132d37] px-2.5 py-1.5 text-[10px] font-semibold text-[#a6eef3] transition group-hover:bg-[#1c4350] hover:border-[#56C7D8]">Abrir loja <AdminIcon name="arrow" className="ml-1 inline h-3 w-3" /></button></td>
+                </tr>
+              );
+            })}
+            {visibleStores.length === 0 ? <tr><td colSpan={10} className="px-4 py-5 text-center text-xs text-[#8e98aa]">Nenhuma loja encontrada neste filtro.</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+      {preview && filteredStores.length > visibleStores.length ? <div className="px-4 py-2 text-right text-[10px] text-[#8e98aa]">Exibindo {visibleStores.length} de {filteredStores.length}. Acesse Lojas para ver todas.</div> : null}
     </section>
   );
 }
@@ -4724,7 +4587,7 @@ function WhatsappPinRecoverySection({
                 type="button"
                 disabled={recoveryBusy}
                 onClick={() => void startRecoveryOAuth("execute")}
-                className="rounded-lg bg-violet-400 px-3 py-2 text-xs font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg bg-[#56C7D8] px-3 py-2 text-xs font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Autorizar na Meta e executar
               </button>
@@ -5092,13 +4955,10 @@ export default function ZionAdminDashboardClient({
   const [selectedStore, setSelectedStore] = useState<ZionAdminStore | null>(
     null,
   );
-  const [selectedOverview, setSelectedOverview] =
-    useState<OverviewPanelKey | null>(null);
   const [activeGlobalSection, setActiveGlobalSection] = useState<
     "overview" | "alerts" | "stores" | "comparisons"
   >("overview");
   const [activeSearch, setActiveSearch] = useState("");
-  const [inactiveSearch, setInactiveSearch] = useState("");
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [isCreateAccountOpen, setIsCreateAccountOpen] = useState(false);
   const [isCreatingAccount, setIsCreatingAccount] = useState(false);
@@ -5184,7 +5044,6 @@ export default function ZionAdminDashboardClient({
 
   const stores = data?.stores ?? [];
   const activeStores = stores.filter(isStoreActive);
-  const inactiveStores = stores.filter(isStoreCanceledOrInactive);
   const integrityOrphanStores = data?.integrity?.orphanStores ?? [];
   const orphanStoresCount = data?.integrity?.orphanStoresCount ?? 0;
   const integritySummary = getStoreIntegritySummary(stores, integrityOrphanStores);
@@ -5192,9 +5051,7 @@ export default function ZionAdminDashboardClient({
   const countErrors = data?.countErrors ?? {};
   const hasCountErrors = Object.values(countErrors).some(Boolean);
 
-  const totalAiRuns = numberValue(data?.totals.aiRuns);
   const globalAiRunsAvailability = getGlobalAiAvailability(data, "runs");
-  const globalPendingAvailability = getGlobalPendingAvailability(data);
   const storesWithProblems = stores.filter(
     (store) => store.operationalHealth?.state === "broken" || store.integrity?.state === "broken",
   ).length;
@@ -5446,17 +5303,17 @@ export default function ZionAdminDashboardClient({
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-[#080b10] text-[#f4f6fb]">
-      <div className="mx-auto grid min-h-screen max-w-[1600px] gap-0 lg:grid-cols-[208px_minmax(0,1fr)]">
-        <aside className="border-b border-[#252b35] bg-[#090c11] p-4 lg:sticky lg:top-0 lg:h-screen lg:border-b-0 lg:border-r lg:p-5">
-          <div className="flex items-center gap-3 px-1 py-2">
-            <div className="grid h-9 w-9 place-items-center rounded-xl bg-violet-400 text-sm font-black text-[#090c11]">Z</div>
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-200">ZION</div>
-              <div className="mt-0.5 text-[11px] text-[#8e98aa]">Interno</div>
+      <div className="mx-auto grid min-h-screen max-w-none gap-0 lg:grid-cols-[190px_minmax(0,1fr)]">
+        <aside className="border-b border-[#252b35] bg-[#090c11] p-4 lg:sticky lg:top-0 lg:h-screen lg:border-b-0 lg:border-r lg:px-2 lg:py-4">
+          <div className="flex items-center gap-2.5 px-2 py-1">
+            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-[#123240] text-[#67D5E1] ring-1 ring-cyan-300/20"><AdminIcon name="stores" className="h-5 w-5" /></span>
+            <div className="min-w-0">
+              <div className="text-[13px] font-bold tracking-[0.04em] text-[#f4f6fb]">ZION ADM</div>
+              <div className="mt-0.5 text-[9px] text-[#8e98aa]">Administrador</div>
             </div>
           </div>
-          <div className="mt-8 px-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#616b7c]">Navegação</div>
-          <nav aria-label="Seções administrativas" className="mt-2 grid grid-cols-2 gap-1.5 lg:grid-cols-1">
+          <div className="mt-5 px-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#616b7c]">Navegação</div>
+          <nav aria-label="Seções administrativas" className="mt-2 grid grid-cols-2 gap-1 lg:grid-cols-1">
             {([
               ["overview", "Visão geral", "overview"],
               ["alerts", "Alertas", "alerts"],
@@ -5470,13 +5327,11 @@ export default function ZionAdminDashboardClient({
                 onClick={() => {
                   setActiveGlobalSection(section);
                   setSelectedStore(null);
-                  if (section !== "comparisons") setSelectedOverview(null);
-                  if (section === "comparisons") setSelectedOverview("compare");
                 }}
                 className={[
-                  "flex items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm transition",
+                  "flex items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] transition",
                   activeGlobalSection === section
-                    ? "border border-violet-400/30 bg-violet-500/15 font-semibold text-violet-100 shadow-[0_0_20px_rgba(168,139,255,0.08)]"
+                    ? "border border-cyan-400/30 bg-cyan-500/15 font-semibold text-cyan-100 shadow-[0_0_20px_rgba(86,199,216,0.09)]"
                     : "border border-transparent text-[#a1aabb] hover:bg-white/[0.06] hover:text-white",
                 ].join(" ")}
               >
@@ -5485,18 +5340,18 @@ export default function ZionAdminDashboardClient({
               </button>
             ))}
           </nav>
-          <div className="mt-8 hidden border-t border-[#252b35] px-1 pt-4 text-[11px] leading-5 text-[#616b7c] lg:block">
-            <div className="font-semibold uppercase tracking-[0.16em] text-[#8e98aa]">ZION interno</div>
-            <div className="mt-1">Administrador</div>
+          <div className="mt-5 hidden border-t border-[#252b35] px-3 pt-3 text-[11px] leading-5 text-[#616b7c] lg:block">
+            <div className="font-semibold tracking-[0.08em] text-[#8e98aa]">ZION Administrador</div>
+            <div className="mt-1">Painel administrativo</div>
           </div>
         </aside>
 
-        <div className="flex min-w-0 flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
-        <header className="flex flex-col gap-4 border-b border-[#252b35] pb-5 md:flex-row md:items-end md:justify-between">
+        <div className="flex min-w-0 flex-col gap-3 px-4 py-4 sm:px-5 lg:px-[22px] lg:py-[18px]">
+        {!selectedStore ? <header className="flex flex-col gap-3 pb-2 md:flex-row md:items-center md:justify-between">
           <div>
-            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8e98aa]">ZION interno</div>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight text-[#f4f6fb]">Dashboard de lojas</h1>
-            <p className="mt-1 text-sm text-[#8e98aa]">Visão consolidada da operação, saúde e atividade das lojas.</p>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.25em] text-[#8e98aa]">ZION ADMINISTRADOR</div>
+            <h1 className="mt-1 text-[21px] font-semibold leading-tight tracking-tight text-[#f4f6fb]">Dashboard de lojas</h1>
+            <p className="mt-1 text-[11px] text-[#8e98aa]">Visão geral da operação de todas as lojas do ZION</p>
           </div>
 
           <div className="flex items-center gap-2 self-start md:self-auto">
@@ -5509,8 +5364,8 @@ export default function ZionAdminDashboardClient({
                   setActiveSearch(event.target.value);
                   setActiveGlobalSection("stores");
                 }}
-                placeholder="Buscar loja..."
-                className="w-32 bg-transparent text-[#f4f6fb] outline-none placeholder:text-[#616b7c]"
+                placeholder="Buscar loja por nome ou organização..."
+                className="w-[220px] bg-transparent text-[#f4f6fb] outline-none placeholder:text-[#616b7c]"
               />
             </label>
             {canManageAccounts ? (
@@ -5521,7 +5376,7 @@ export default function ZionAdminDashboardClient({
                   setCreateAccountSuccess(null);
                   setIsCreateAccountOpen(true);
                 }}
-                className="flex items-center gap-1.5 rounded-xl bg-violet-400 px-3 py-2 text-xs font-semibold text-[#090c11] transition hover:bg-violet-300"
+                className="flex items-center gap-1.5 rounded-xl bg-[#56C7D8] px-3 py-2 text-xs font-semibold text-[#090c11] transition hover:bg-cyan-300"
               >
                 <AdminIcon name="plus" className="h-4 w-4" />
                 Nova conta
@@ -5540,7 +5395,7 @@ export default function ZionAdminDashboardClient({
               {isSigningOut ? "Saindo..." : "Sair"}
             </button>
           </div>
-        </header>
+        </header> : null}
 
         {!selectedStore && overviewError ? (
           <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-100">
@@ -5557,131 +5412,47 @@ export default function ZionAdminDashboardClient({
 
         {!selectedStore && activeGlobalSection === "overview" ? (
         <div id="overview" className="space-y-5">
-        {orphanStoresCount > 0 ? (
-          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
-            <div className="font-semibold">
-              {orphanStoresCount} estrutura(s) fora da lista operacional
-            </div>
-            <div className="mt-1 text-xs text-amber-100/80">
-              Estas estruturas ficam fora da lista operacional e dos indicadores operacionais,
-              mas são consideradas no resumo de integridade.
-              {integrityOrphanStores.slice(0, 3).map((store) => (
-                <div key={store.id}>
-                  {store.name}: {getStoreIntegrityStateLabel(store.integrity)}
-                  {getStoreIntegrityIssueLabels(store.integrity).length > 0
-                    ? ` — ${getStoreIntegrityIssueLabels(store.integrity).join(", ")}`
-                    : ""}
-                </div>
-              ))}
-              {integrityOrphanStores.length > 3
-                ? ` e mais ${integrityOrphanStores.length - 3} estrutura(s).`
-                : ""}
-            </div>
-          </div>
-        ) : null}
+                <section>
 
-        <div className="rounded-2xl border border-[#252b35] bg-[#10141b] p-3 text-xs text-[#8e98aa]">
-          <span className="font-semibold text-[#f4f6fb]">Integridade estrutural:</span>{" "}
-          {integritySummary.broken} problema(s) · {integritySummary.warning} atenção · {integritySummary.unknown} não verificada(s) · {integritySummary.healthy} saudável(eis)
-        </div>
 
-        <section>
-          <div className="mb-3 flex flex-col gap-1 md:flex-row md:items-end md:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">
-                Visão geral de todas as lojas
-              </h2>
-            </div>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+          <div className="grid gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
             <DashboardMetricCard label="Total de lojas" value={formatNumber(data?.totals.stores)} helper="Lojas no recorte" icon="stores" tone="blue" />
             <DashboardMetricCard label="Lojas ativas" value={formatNumber(activeStores.length)} helper="Ativas no recorte" icon="check" tone="green" />
             <DashboardMetricCard label="Com problema" value={formatNumber(storesWithProblems)} helper="Saúde ou integridade quebrada" icon="warning" tone="red" />
             <DashboardMetricCard label="Config. bloqueada" value={formatNumber(storesWithBlockedConfiguration)} helper="Prontidão bloqueada" icon="settings" tone="amber" />
-            <DashboardMetricCard label="Incidentes IA" value={formatOverviewMetric(data?.totals.failedAiRuns, globalAiRunsAvailability)} helper="Falhas em execuções registradas" icon="brain" tone="violet" />
+            <DashboardMetricCard label="Incidentes IA" value={formatOverviewMetric(data?.totals.failedAiRuns, globalAiRunsAvailability)} helper="Falhas em execuções registradas" icon="brain" tone="cyan" />
             <DashboardMetricCard label="Incidentes WhatsApp" value={formatNumber(data?.totals.whatsappErrors)} helper="Erros locais observados" icon="whatsapp" tone="green" />
           </div>
 
-          <div className="mt-4 grid gap-3 xl:grid-cols-[1.35fr_0.65fr]">
-            <section className="flex items-center justify-between gap-4 rounded-2xl border border-amber-400/20 bg-amber-500/[0.07] p-4">
+          <div className="mt-3 grid gap-2.5 xl:grid-cols-[1.35fr_0.65fr]">
+            <section className="flex min-h-[59px] items-center justify-between gap-3 rounded-xl border border-red-400/25 bg-red-500/[0.07] px-3 py-2">
               <div className="flex min-w-0 items-start gap-3">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-400/10 text-amber-300"><AdminIcon name="warning" className="h-5 w-5" /></span>
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-400/10 text-amber-300"><AdminIcon name="warning" className="h-5 w-5" /></span>
                 <div>
-                  <div className="text-sm font-semibold text-zinc-100">Atenção no recorte</div>
-                  <div className="mt-1 text-xs text-zinc-400">{formatNumber(storesWithProblems)} loja(s) sinalizada(s) por saúde ou integridade observada.</div>
+                  <div className="text-[12px] font-semibold text-red-200">{storesWithProblems} loja(s) com problema observado</div>
+                  <div className="mt-0.5 text-[10px] text-[#aebcca]">{orphanStoresCount > 0 ? `${orphanStoresCount} estrutura(s) fora da lista operacional; detalhes em Alertas.` : "Veja as evidências e a situação das lojas."}</div>
                 </div>
               </div>
-              <button type="button" onClick={() => { setSelectedStore(null); setActiveGlobalSection("alerts"); }} className="shrink-0 rounded-xl border border-amber-300/30 px-3 py-2 text-xs font-semibold text-amber-100 hover:bg-amber-400/10">Ver alertas</button>
+              <button type="button" onClick={() => { setSelectedStore(null); setActiveGlobalSection("alerts"); }} className="shrink-0 rounded-lg border border-red-400/35 px-3 py-1.5 text-[10px] font-semibold text-red-200 hover:bg-red-500/10">Ver alertas</button>
             </section>
-            <section className="rounded-2xl border border-sky-400/20 bg-sky-500/[0.06] p-4">
+            <section className="flex min-h-[59px] flex-col justify-center rounded-xl border border-[#29343a] bg-[#111920] px-3 py-2">
               <div className="flex items-center gap-2"><AdminIcon name="shield" className="h-4 w-4 text-sky-300" /><h3 className="text-sm font-semibold text-zinc-100">Integridade estrutural</h3></div>
-              <div className="mt-2 flex items-center gap-2"><span className="rounded-full border border-sky-300/20 bg-sky-400/10 px-2 py-1 text-[10px] text-sky-100">{integritySummary.broken > 0 ? "Atenção" : integritySummary.unknown > 0 ? "Não verificada" : "Observada"}</span><span className="text-xs text-zinc-400">{integritySummary.broken} problema(s) · {integritySummary.unknown} não verificada(s)</span></div>
-              <p className="mt-2 text-xs text-zinc-500">Estruturas órfãs e detalhes continuam disponíveis em Alertas.</p>
+              <div className="mt-1 flex items-center gap-2"><span className="rounded-full border border-sky-300/20 bg-sky-400/10 px-2 py-1 text-[10px] text-sky-100">{integritySummary.broken > 0 ? "Atenção" : integritySummary.unknown > 0 ? "Não verificada" : "Observada"}</span><span className="text-xs text-zinc-400">{integritySummary.broken} problema(s) · {integritySummary.unknown} não verificada(s)</span></div>
+
             </section>
           </div>
 
-          <div className="mt-5 flex items-center justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-semibold text-[#f4f6fb]">Acessos rápidos</h3>
-              <p className="mt-1 text-xs text-[#8e98aa]">Indicadores detalhados preservando as fontes e disponibilidades atuais.</p>
-            </div>
-          </div>
-
-          <div className="mt-3 grid gap-3 lg:grid-cols-3">
-            <OverviewButton
-              label="Trabalho da IA"
-              value={formatOverviewMetric(totalAiRuns, globalAiRunsAvailability)}
-              helper={availabilityHelp(globalAiRunsAvailability)}
-              active={selectedOverview === "ia"}
-              onClick={() =>
-                setSelectedOverview((current) =>
-                  current === "ia" ? null : "ia",
-                )
-              }
-            />
-            <OverviewButton
-              label="Comparar lojas"
-              value={formatNumber(stores.length)}
-              helper="Escolha duas lojas e compare lado a lado"
-              active={selectedOverview === "compare"}
-              onClick={() => {
-                setActiveGlobalSection("comparisons");
-                setSelectedOverview("compare");
-              }}
-            />
-            <OverviewButton
-              label="Pendências"
-              value={formatOverviewMetric(data?.totals.totalOperationalIssues, globalPendingAvailability)}
-              helper={availabilityHelp(globalPendingAvailability)}
-              active={selectedOverview === "pending"}
-              onClick={() =>
-                setSelectedOverview((current) =>
-                  current === "pending" ? null : "pending",
-                )
-              }
-            />
-          </div>
-
-          <OverviewInlineDetails
-            type={selectedOverview}
-            data={data}
-            stores={stores}
-            onClose={() => {
-              setSelectedOverview(null);
-              setActiveGlobalSection("overview");
-            }}
-          />
-          <div className="mt-5">
+          <div className="mt-3">
             <StoreListSection
-              title="Prévia de lojas"
-              stores={activeStores}
+              title="Lojas"
+              stores={stores}
               search={activeSearch}
               onSearch={setActiveSearch}
               onSelectStore={setSelectedStore}
               preview
             />
           </div>
+
         </section>
 
         </div>
@@ -5691,6 +5462,7 @@ export default function ZionAdminDashboardClient({
           <GlobalAlertsSection
             stores={stores}
             availability={getGlobalAiAvailability(data, "runs")}
+            orphanStores={integrityOrphanStores}
           />
         ) : null}
 
@@ -5701,7 +5473,6 @@ export default function ZionAdminDashboardClient({
               data={data}
               stores={stores}
               onClose={() => {
-                setSelectedOverview(null);
                 setActiveGlobalSection("overview");
               }}
             />
@@ -5709,30 +5480,16 @@ export default function ZionAdminDashboardClient({
         ) : null}
 
         {!selectedStore && activeGlobalSection === "stores" ? (
-        <div id="stores" className="scroll-mt-4 space-y-3">
-          <StoreListSection
-            title="Lojas ativas"
-            stores={activeStores}
-            search={activeSearch}
-            onSearch={setActiveSearch}
-            selectedStoreId={undefined}
-            onSelectStore={setSelectedStore}
-          />
-
-          <StoreListSection
-            title="Lojas canceladas ou inativas"
-            stores={inactiveStores}
-            search={inactiveSearch}
-            onSearch={setInactiveSearch}
-            selectedStoreId={undefined}
-            onSelectStore={setSelectedStore}
-            inactive
-          />
-        </div>
+          <div id="stores" className="min-w-0">
+            <StoreListSection
+              title="Lojas"
+              stores={stores}
+              search={activeSearch}
+              onSearch={setActiveSearch}
+              onSelectStore={setSelectedStore}
+            />
+          </div>
         ) : null}
-        </div>
-      </div>
-
       <StoreDetailsDrawer
         key={selectedStore?.id ?? "closed"}
         store={selectedStore}
@@ -5761,6 +5518,10 @@ export default function ZionAdminDashboardClient({
           success: storeActionSuccess,
         }}
       />
+        </div>
+      </div>
+
+
 
       {isCreateAccountOpen ? (
         <AdminCreateAccountModal
