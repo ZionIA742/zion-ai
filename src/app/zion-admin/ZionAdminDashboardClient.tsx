@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import ZionAdminCostsSection from "./ZionAdminCostsSection";
 import ZionAdminPinRotationControls from "./ZionAdminPinRotationControls";
 import {
   ensureFacebookSdkLoaded,
@@ -1372,11 +1373,12 @@ function matchesSearch(store: ZionAdminStore, term: string) {
 }
 
 type AdminIconName =
-  | "overview" | "alerts" | "stores" | "comparisons" | "search" | "plus" | "arrow"
+  | "overview" | "costs" | "alerts" | "stores" | "comparisons" | "search" | "plus" | "arrow"
   | "check" | "warning" | "settings" | "brain" | "whatsapp" | "shield" | "key" | "user" | "info";
 
 function AdminIcon({ name, className = "h-4 w-4" }: { name: AdminIconName; className?: string }) {
   const paths: Record<AdminIconName, React.ReactNode> = {
+    costs: <><rect x="4" y="6" width="16" height="14" rx="2" /><path d="M4 10h16" /><path d="M15 15h2" /></>,
     overview: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
     alerts: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
     stores: <><path d="M3 10h18" /><path d="M5 10v10h14V10" /><path d="M3 10 5 4h14l2 6" /><path d="M9 20v-6h6v6" /></>,
@@ -4956,7 +4958,7 @@ export default function ZionAdminDashboardClient({
     null,
   );
   const [activeGlobalSection, setActiveGlobalSection] = useState<
-    "overview" | "alerts" | "stores" | "comparisons"
+    "overview" | "costs" | "alerts" | "stores" | "comparisons"
   >("overview");
   const [activeSearch, setActiveSearch] = useState("");
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -5316,6 +5318,7 @@ export default function ZionAdminDashboardClient({
           <nav aria-label="Seções administrativas" className="mt-2 grid grid-cols-2 gap-1 lg:grid-cols-1">
             {([
               ["overview", "Visão geral", "overview"],
+              ["costs", "Custos", "costs"],
               ["alerts", "Alertas", "alerts"],
               ["stores", "Lojas", "stores"],
               ["comparisons", "Comparações", "comparisons"],
@@ -5457,6 +5460,8 @@ export default function ZionAdminDashboardClient({
 
         </div>
         ) : null}
+
+        {!selectedStore && activeGlobalSection === "costs" ? <ZionAdminCostsSection /> : null}
 
         {!selectedStore && activeGlobalSection === "alerts" ? (
           <GlobalAlertsSection

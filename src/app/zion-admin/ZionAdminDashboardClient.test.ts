@@ -451,6 +451,8 @@ const tests: TestCase[] = [
       for (const token of [
         "Seções administrativas",
         "Dashboard de lojas",
+        "Custos",
+        "ZionAdminCostsSection",
         "DashboardMetricCard",
         "Total de lojas",
         "Lojas ativas",
@@ -496,6 +498,8 @@ const tests: TestCase[] = [
       assert.equal(source.includes("Visão geral"), true);
       assert.equal(source.includes("Comparações"), true);
       assert.equal(source.includes("Acessos rápidos"), false);
+      assert.equal(source.includes('activeGlobalSection === "costs"'), true);
+      assert.equal(source.includes('"costs", "Custos", "costs"'), true);
       assert.equal(source.includes('"critical" | "ai" | "whatsapp" | "settings" | "structural"'), true);
     },
   },
