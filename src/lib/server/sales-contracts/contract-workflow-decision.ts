@@ -229,6 +229,19 @@ export function evaluateContractWorkflowDecision(
     });
   }
 
+  if (trigger === "human_explicit_request") {
+    return buildBaseResult({
+      allowed: true,
+      needsHumanConfirmation: false,
+      reasonCode: "HUMAN_EXPLICIT_REQUEST_ALLOWED",
+      reasonMessage: "A solicitacao humana explicita permite iniciar o fluxo contratual.",
+      warnings: hasHumanConfirmation
+        ? []
+        : ["A origem ja foi tratada como comando humano explicito."],
+      recommendedNextAction: "create_contract_from_quote",
+    });
+  }
+
   const requiresTechnicalVisitBeforeContract =
     input.storeSettings?.requiresTechnicalVisitBeforeContract === true;
   if (
@@ -244,19 +257,6 @@ export function evaluateContractWorkflowDecision(
         "Nao encontrei visita tecnica concluida ou confirmada para liberar o fluxo contratual.",
       ],
       recommendedNextAction: "confirm_or_complete_technical_visit_before_contract",
-    });
-  }
-
-  if (trigger === "human_explicit_request") {
-    return buildBaseResult({
-      allowed: true,
-      needsHumanConfirmation: false,
-      reasonCode: "HUMAN_EXPLICIT_REQUEST_ALLOWED",
-      reasonMessage: "A solicitacao humana explicita permite iniciar o fluxo contratual.",
-      warnings: hasHumanConfirmation
-        ? []
-        : ["A origem ja foi tratada como comando humano explicito."],
-      recommendedNextAction: "create_contract_from_quote",
     });
   }
 

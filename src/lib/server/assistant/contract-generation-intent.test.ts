@@ -137,6 +137,7 @@ const tests: TestCase[] = [
         supabase: createSalesContractsSupabaseMock(),
         organizationId: "org-1",
         storeId: "store-1",
+        authority: "authenticated_crm_action",
         quoteId: "quote-1",
         quoteVersionId: "version-presented-v1",
         quoteNumber: "ORC-1",
@@ -206,6 +207,7 @@ const tests: TestCase[] = [
         supabase: createSalesContractsSupabaseMock(),
         organizationId: "org-1",
         storeId: "store-1",
+        authority: "authenticated_crm_action",
         quoteId: "quote-1",
         quoteNumber: "ORC-1",
         source: "assistant_contract_workflow_button_v1",
@@ -245,7 +247,30 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "text intent with explicit number uses current commercial proposal quote version",
+    name: "contract generation executor requires authenticated CRM authority",
+    run: async () => {
+      let internalCallCount = 0;
+      const result = await executeAssistantContractGeneration({
+        request: new Request("https://app.test/api/assistant"),
+        supabase: createSalesContractsSupabaseMock(),
+        organizationId: "org-1",
+        storeId: "store-1",
+        quoteId: "quote-1",
+        quoteVersionId: "version-presented-v1",
+        callInternalJson: async () => {
+          internalCallCount += 1;
+          return { ok: true, status: 200, body: { ok: true } };
+        },
+      } as Parameters<typeof executeAssistantContractGeneration>[0]);
+
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 403);
+      assert.equal(result.metadata.reasonCode, "CRM_AUTHORITY_REQUIRED");
+      assert.equal(internalCallCount, 0);
+    },
+  },
+  {
+    name: "text intent with explicit number is redirected to the CRM",
     run: async () => {
       const mock = createTextIntentSupabaseMock();
       const executions: Array<Record<string, unknown>> = [];
@@ -274,9 +299,8 @@ const tests: TestCase[] = [
       });
 
       assert.equal(result.handled, true);
-      assert.equal(executions.length, 1);
-      assert.equal(executions[0]?.quoteId, "quote-1");
-      assert.equal(executions[0]?.quoteVersionId, "version-presented-v1");
+      assert.equal(executions.length, 0);
+      assert.equal(result.metadata?.reasonCode, "ASSISTANT_CONTRACT_OPERATION_REQUIRES_CRM");
       assert.deepEqual(mock.rpcCalls, [
         {
           fn: "read_current_commercial_proposal_by_system",
@@ -290,12 +314,12 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "text intent ignores sales_quotes current_version_id",
+    name: "text intent keeps current proposal validation without executing contract work",
     run: async () => {
       const mock = createTextIntentSupabaseMock();
       const executions: Array<Record<string, unknown>> = [];
 
-      await handleAssistantContractGenerationRequest({
+      const result = await handleAssistantContractGenerationRequest({
         request: new Request("https://app.test/api/assistant"),
         supabase: mock.supabase,
         organizationId: "org-1",
@@ -313,7 +337,8 @@ const tests: TestCase[] = [
         },
       });
 
-      assert.equal(executions[0]?.quoteVersionId, "version-presented-v1");
+      assert.equal(result.metadata?.reasonCode, "ASSISTANT_CONTRACT_OPERATION_REQUIRES_CRM");
+      assert.equal(executions.length, 0);
       assert.equal(
         mock.quoteSelects.some((selection) => selection.includes("current_version_id")),
         false,
@@ -491,7 +516,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "text intent recent document context uses current proposal version only",
+    name: "text intent recent document context does not execute contract work",
     run: async () => {
       const mock = createTextIntentSupabaseMock({
         proposalRows: [
@@ -507,7 +532,7 @@ const tests: TestCase[] = [
       });
       const executions: Array<Record<string, unknown>> = [];
 
-      await handleAssistantContractGenerationRequest({
+      const result = await handleAssistantContractGenerationRequest({
         request: new Request("https://app.test/api/assistant"),
         supabase: mock.supabase,
         organizationId: "org-1",
@@ -535,10 +560,8 @@ const tests: TestCase[] = [
         },
       });
 
-      assert.equal(executions.length, 1);
-      assert.equal(executions[0]?.quoteId, "quote-1");
-      assert.equal(executions[0]?.quoteVersionId, "version-current-proposal");
-      assert.notEqual(executions[0]?.quoteVersionId, "version-document-old");
+      assert.equal(result.metadata?.reasonCode, "ASSISTANT_CONTRACT_OPERATION_REQUIRES_CRM");
+      assert.equal(executions.length, 0);
     },
   },
   {

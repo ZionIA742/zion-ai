@@ -4,7 +4,6 @@ import {
   QuoteAccessError,
   resolveAuthorizedExistingQuote,
 } from "@/lib/server/sales-quotes/quote-auth";
-import { executeAssistantContractGeneration } from "@/lib/server/assistant/contract-generation-intent";
 
 export type AssistantContractWorkflowAction =
   | "generate_contract"
@@ -38,7 +37,6 @@ type ContractWorkflowActionDeps = {
   ensureAuthenticatedUser: typeof ensureAuthenticatedUser;
   loadAuthorizedContractWorkflowMessage: typeof loadAuthorizedContractWorkflowMessage;
   resolveAuthorizedExistingQuote: typeof resolveAuthorizedExistingQuote;
-  executeAssistantContractGeneration: typeof executeAssistantContractGeneration;
   pushAssistantActionResultMessage: typeof pushAssistantActionResultMessage;
 };
 
@@ -170,11 +168,9 @@ async function pushAssistantActionResultMessage(args: {
 }
 
 async function generateContractFromWorkflowCard(
-  request: Request,
   workflowMessageId: string,
   deps: Pick<
     ContractWorkflowActionDeps,
-    | "executeAssistantContractGeneration"
     | "loadAuthorizedContractWorkflowMessage"
     | "pushAssistantActionResultMessage"
     | "resolveAuthorizedExistingQuote"
@@ -272,16 +268,8 @@ async function generateContractFromWorkflowCard(
     };
   }
 
-  const execution = await deps.executeAssistantContractGeneration({
-    request,
-    supabase: messageScope.supabase,
-    organizationId: messageOrganizationId,
-    storeId: messageStoreId,
-    quoteId,
-    quoteVersionId,
-    quoteNumber,
-    source: "assistant_contract_workflow_button_v1",
-  });
+  const guidanceMessage =
+    "Posso orientar sobre o contrato, mas a criacao, o preenchimento, a geracao do PDF e o envio devem ser realizados manualmente no CRM por um responsavel autorizado.";
 
   await deps.pushAssistantActionResultMessage({
     supabase: messageScope.supabase,
@@ -289,7 +277,7 @@ async function generateContractFromWorkflowCard(
     storeId: messageStoreId,
     leadId: messageLeadId,
     conversationId: messageConversationId,
-    content: execution.reply,
+    content: guidanceMessage,
     metadata: {
       source: "assistant_contract_workflow_button_v1",
       kind: "contract_workflow_action_result",
@@ -298,18 +286,18 @@ async function generateContractFromWorkflowCard(
       quote_id: quoteId,
       quote_version_id: quoteVersionId,
       quote_number: quoteNumber,
-      contract_id: execution.contractId || null,
-      result_ok: execution.ok,
-      reason_code: cleanText(execution.metadata.reasonCode),
+      contract_id: null,
+      result_ok: false,
+      reason_code: "ASSISTANT_CONTRACT_OPERATION_REQUIRES_CRM",
       trigger: "human_explicit_request",
     },
   });
 
   return {
-    ok: execution.ok,
-    status: execution.status,
-    error: execution.ok ? undefined : cleanText(execution.metadata.reasonCode) || "CONTRACT_WORKFLOW_ACTION_FAILED",
-    message: execution.reply,
+    ok: false as const,
+    status: 409,
+    error: "ASSISTANT_CONTRACT_OPERATION_REQUIRES_CRM",
+    message: guidanceMessage,
   };
 }
 
@@ -478,7 +466,6 @@ export async function executeAssistantContractWorkflowAction(
     ensureAuthenticatedUser,
     loadAuthorizedContractWorkflowMessage,
     resolveAuthorizedExistingQuote,
-    executeAssistantContractGeneration,
     pushAssistantActionResultMessage,
     ...deps,
   };
@@ -499,7 +486,7 @@ export async function executeAssistantContractWorkflowAction(
     const result =
       args.action === "confirm_customer_acceptance"
         ? await confirmCustomerAcceptanceFromWorkflowCard(args.messageId, resolvedDeps)
-        : await generateContractFromWorkflowCard(args.request, args.messageId, resolvedDeps);
+        : await generateContractFromWorkflowCard(args.messageId, resolvedDeps);
 
     return {
       ok: result.ok,

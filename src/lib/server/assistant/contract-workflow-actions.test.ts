@@ -110,9 +110,8 @@ async function runAcceptanceAction(options: {
 
 const tests: TestCase[] = [
   {
-    name: "generate contract action forwards exact card quoteVersionId",
+    name: "generate contract card only guides the responsible to the CRM",
     run: async () => {
-      const generationArgs: Array<Record<string, unknown>> = [];
       const resultMessages: Array<Record<string, unknown>> = [];
 
       const result = await executeAssistantContractWorkflowAction(
@@ -125,35 +124,28 @@ const tests: TestCase[] = [
           ensureAuthenticatedUser: async () => ({ ok: true, userId: "user-1" }),
           loadAuthorizedContractWorkflowMessage: async () => createMessageScope(),
           resolveAuthorizedExistingQuote: async () => createQuoteScope(),
-          executeAssistantContractGeneration: async (args: any) => {
-            generationArgs.push(args);
-            return {
-              ok: true,
-              status: 200,
-              reply: "Contrato gerado para revisao.",
-              metadata: {
-                reasonCode: "HUMAN_EXPLICIT_REQUEST_ALLOWED",
-              },
-              quoteId: "quote-1",
-              quoteVersionId: args.quoteVersionId,
-              contractId: "contract-1",
-            };
-          },
           pushAssistantActionResultMessage: async (args: any) => {
             resultMessages.push(args);
           },
         },
       );
 
-      assert.equal(result.ok, true);
-      assert.equal(generationArgs.length, 1);
-      assert.equal(generationArgs[0]?.quoteId, "quote-1");
-      assert.equal(generationArgs[0]?.quoteVersionId, "version-card-v1");
-      assert.equal(generationArgs[0]?.source, "assistant_contract_workflow_button_v1");
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 409);
+      assert.equal(result.error, "ASSISTANT_CONTRACT_OPERATION_REQUIRES_CRM");
+      assert.match(result.message, /manualmente no CRM/);
       assert.equal(resultMessages.length, 1);
       assert.equal(
         (resultMessages[0]?.metadata as Record<string, unknown>)?.quote_version_id,
         "version-card-v1",
+      );
+      assert.equal(
+        (resultMessages[0]?.metadata as Record<string, unknown>)?.contract_id,
+        null,
+      );
+      assert.equal(
+        (resultMessages[0]?.metadata as Record<string, unknown>)?.reason_code,
+        "ASSISTANT_CONTRACT_OPERATION_REQUIRES_CRM",
       );
     },
   },
@@ -161,7 +153,6 @@ const tests: TestCase[] = [
     name: "missing card quoteVersionId fails before quote resolution or generation",
     run: async () => {
       let quoteResolutionCount = 0;
-      let generationCount = 0;
       let resultMessageCount = 0;
 
       const result = await executeAssistantContractWorkflowAction(
@@ -178,15 +169,6 @@ const tests: TestCase[] = [
             quoteResolutionCount += 1;
             return createQuoteScope();
           },
-          executeAssistantContractGeneration: async () => {
-            generationCount += 1;
-            return {
-              ok: true,
-              status: 200,
-              reply: "Contrato gerado.",
-              metadata: {},
-            };
-          },
           pushAssistantActionResultMessage: async () => {
             resultMessageCount += 1;
           },
@@ -197,7 +179,6 @@ const tests: TestCase[] = [
       assert.equal(result.status, 409);
       assert.equal(result.error, "QUOTE_VERSION_REFERENCE_MISSING");
       assert.equal(quoteResolutionCount, 0);
-      assert.equal(generationCount, 0);
       assert.equal(resultMessageCount, 0);
     },
   },

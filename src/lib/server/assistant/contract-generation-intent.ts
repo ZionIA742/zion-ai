@@ -32,6 +32,7 @@ export type ExecuteAssistantContractGenerationArgs = {
   supabase: any;
   organizationId: string;
   storeId: string;
+  authority: "authenticated_crm_action";
   quoteId: string;
   quoteVersionId?: string | null;
   quoteNumber?: string | null;
@@ -457,6 +458,20 @@ export async function executeAssistantContractGeneration(
   const quoteVersionId = cleanText(args.quoteVersionId);
 
   try {
+    if (args.authority !== "authenticated_crm_action") {
+      return {
+        ok: false,
+        status: 403,
+        reply: "A criacao e o envio do contrato devem ser realizados manualmente no CRM por um responsavel autorizado.",
+        metadata: {
+          source,
+          contractGenerationHandled: true,
+          reasonCode: "CRM_AUTHORITY_REQUIRED",
+          trigger: "human_explicit_request",
+        },
+      };
+    }
+
     if (!quoteVersionId) {
       return {
         ok: false,
@@ -758,24 +773,19 @@ export async function handleAssistantContractGenerationRequest(
       return currentProposalResolution.result;
     }
 
-    const executeContractGeneration =
-      args.executeAssistantContractGeneration ?? executeAssistantContractGeneration;
-
-    const execution = await executeContractGeneration({
-      request: args.request,
-      supabase: args.supabase,
-      organizationId: args.organizationId,
-      storeId: args.storeId,
-      quoteId: currentProposalResolution.quoteId,
-      quoteVersionId: currentProposalResolution.quoteVersionId,
-      quoteNumber: currentProposalResolution.quoteNumber,
-      source: "assistant_contract_generation_workflow_v1",
-    });
-
     return {
       handled: true,
-      reply: execution.reply,
-      metadata: execution.metadata,
+      reply: "Posso orientar sobre o contrato, mas a criacao, o preenchimento, a geracao do PDF e o envio devem ser realizados manualmente no CRM por um responsavel autorizado.",
+      metadata: {
+        source: "assistant_contract_generation_workflow_v1",
+        contractGenerationHandled: true,
+        reasonCode: "ASSISTANT_CONTRACT_OPERATION_REQUIRES_CRM",
+        quoteId: currentProposalResolution.quoteId,
+        quoteNumber: currentProposalResolution.quoteNumber,
+        commercialOpportunityId: currentProposalResolution.commercialOpportunityId,
+        quoteVersionId: currentProposalResolution.quoteVersionId,
+        trigger: "human_explicit_request",
+      },
     };
   } catch (error) {
     return {
