@@ -19,6 +19,7 @@ import {
   loadCustomerCatalogDocumentsForAiBySystem,
   loadAnchoredCanonicalCommercialContext,
   loadCanonicalCommercialOpportunityStage,
+  loadEffectiveReplyCommercialOpportunityId,
   loadCanonicalQualificationSnapshotBySystem,
   loadCommercialSnapshotBatch,
   materializeCommercialOpportunityProfileFromQualificationBySystem,
@@ -297,6 +298,11 @@ class FakeQuery {
 
   in(field: string, values: unknown[]) {
     this.filters.push((row) => values.includes(row[field]));
+    return this;
+  }
+
+  is(field: string, value: unknown) {
+    this.filters.push((row) => row[field] === value);
     return this;
   }
 
@@ -806,6 +812,16 @@ function createGenerateAiSalesReplySupabase(args?: {
   crossSellStatusWriterResponse?: RpcMockEntry;
   cmirWriterResponse?: RpcMockEntry;
   commercialOpportunityStage?: string;
+  commercialOpportunityLifecycleCycle?: number | null;
+  commercialOpportunityLostAt?: string | null;
+  commercialOpportunityCurrentLossEventId?: string | null;
+  contextLinkStatus?: string;
+  contextLinkUnlinkedAt?: string | null;
+  sessionStatus?: string;
+  leadCustomerLinkStatus?: string;
+  leadCustomerLinkUnlinkedAt?: string | null;
+  opportunityOriginLeadId?: string | null;
+  opportunityPrimaryConversationId?: string | null;
   cmirReopenTargetStage?: string;
   currentIntentDecisionKind?: CommercialMessageIntentDecisionKind;
   currentIntentResolvedOpportunityId?: string | null;
@@ -844,7 +860,22 @@ function createGenerateAiSalesReplySupabase(args?: {
             id: commercialOpportunityId,
             organization_id: "org-1",
             store_id: "store-1",
+            origin_lead_id:
+              args?.opportunityOriginLeadId === undefined
+                ? "lead-1"
+                : args.opportunityOriginLeadId,
+            primary_conversation_id:
+              args?.opportunityPrimaryConversationId === undefined
+                ? "conv-1"
+                : args.opportunityPrimaryConversationId,
             stage: args?.commercialOpportunityStage ?? "qualificacao",
+            lifecycle_cycle:
+              args?.commercialOpportunityLifecycleCycle === undefined
+                ? 1
+                : args.commercialOpportunityLifecycleCycle,
+            lost_at: args?.commercialOpportunityLostAt ?? null,
+            current_loss_event_id:
+              args?.commercialOpportunityCurrentLossEventId ?? null,
           },
         ]
       : []),
@@ -907,7 +938,7 @@ function createGenerateAiSalesReplySupabase(args?: {
               organization_id: "org-1",
               store_id: "store-1",
               conversation_id: "conv-1",
-              status: "active",
+              status: args?.sessionStatus ?? "active",
             },
           ]
         : [],
@@ -921,7 +952,21 @@ function createGenerateAiSalesReplySupabase(args?: {
               customer_id: "customer-1",
               commercial_opportunity_id: commercialOpportunityId,
               lead_customer_link_id: "lead-customer-link-1",
-              status: "active",
+              status: args?.contextLinkStatus ?? "active",
+              unlinked_at: args?.contextLinkUnlinkedAt ?? null,
+            },
+          ]
+        : [],
+      lead_customer_links: commercialOpportunityId
+        ? [
+            {
+              id: "lead-customer-link-1",
+              organization_id: "org-1",
+              store_id: "store-1",
+              customer_id: "customer-1",
+              lead_id: "lead-1",
+              status: args?.leadCustomerLinkStatus ?? "active",
+              unlinked_at: args?.leadCustomerLinkUnlinkedAt ?? null,
             },
           ]
         : [],
@@ -985,6 +1030,10 @@ function createGenerateAiSalesReplySupabase(args?: {
           data: null,
           error: null,
         },
+      read_store_discount_counterpart_policy_scoped: {
+        data: null,
+        error: null,
+      },
       read_store_customer_catalog_files_for_ai_by_system:
         args?.customerCatalogDocumentsReaderResponse ?? {
           data: [],
@@ -5962,6 +6011,10 @@ test("customer catalog system reader uses exact store scope and normalizes order
     {},
     {},
     {
+      read_store_discount_counterpart_policy_scoped: {
+        data: null,
+        error: null,
+      },
       read_store_customer_catalog_files_for_ai_by_system: {
         data: [
           {
@@ -10453,6 +10506,10 @@ test("CMIR new independent opportunity keeps arrival A historical and routes can
     result.context.responseAnchorCommercialContext?.commercialOpportunityId,
     arrivalOpportunityId,
   );
+  assert.equal(
+    result.context.effectiveReplyCommercialOpportunityId,
+    resolvedOpportunityId,
+  );
   assert.equal(result.context.resolvedCommercialOpportunityId, resolvedOpportunityId);
   assert.equal(
     result.context.commercialMessageIntentResolution?.decisionKind,
@@ -10463,6 +10520,8 @@ test("CMIR new independent opportunity keeps arrival A historical and routes can
     resolvedOpportunityId,
   );
   assert.equal(result.context.commercialMessageIntentResolution?.source, "writer");
+  assert.equal(result.context.catalogPhotoAction, null);
+  assert.deepEqual(result.context.customerCatalogDocumentActions, []);
 
   const cmirWriterCalls = supabase.rpcCalls.filter(
     (call) => call.fn === "write_commercial_message_intent_resolution_by_system",
@@ -10567,6 +10626,10 @@ test("CMIR ambiguity stays fail-closed and never qualifies the arrival opportuni
     result.context.responseAnchorCommercialContext?.commercialOpportunityId,
     arrivalOpportunityId,
   );
+  assert.equal(
+    result.context.effectiveReplyCommercialOpportunityId,
+    arrivalOpportunityId,
+  );
   assert.equal(result.context.resolvedCommercialOpportunityId, null);
   assert.equal(
     result.context.commercialMessageIntentResolution?.decisionKind,
@@ -10603,17 +10666,18 @@ test("CMIR ambiguity stays fail-closed and never qualifies the arrival opportuni
       "write_commercial_opportunity_qualification_fact_by_system",
   );
 
-  assert.equal(qualificationReaderCalls.length, 0);
+  assert.equal(qualificationReaderCalls.length, 1);
   assert.equal(qualificationWriterCalls.length, 0);
 
   assert.equal(
-    supabase.rpcCalls.some(
-      (call) =>
-        call.payload.p_commercial_opportunity_id === arrivalOpportunityId &&
-        (call.fn ===
-          "read_commercial_opportunity_qualification_facts_by_system" ||
-          call.fn ===
-            "write_commercial_opportunity_qualification_fact_by_system"),
+    qualificationReaderCalls.some(
+      (call) => call.payload.p_commercial_opportunity_id === arrivalOpportunityId,
+    ),
+    true,
+  );
+  assert.equal(
+    qualificationWriterCalls.some(
+      (call) => call.payload.p_commercial_opportunity_id === arrivalOpportunityId,
     ),
     false,
   );
@@ -10626,6 +10690,163 @@ test("CMIR ambiguity stays fail-closed and never qualifies the arrival opportuni
   assert.equal(result.usage.tokensPrompt, 14);
   assert.equal(result.usage.tokensCompletion, 7);
   assert.equal(result.usage.totalTokens, 21);
+});
+
+test("effective reply opportunity requires current canonical identity proof", async () => {
+  const responseAnchorCommercialContext = {
+    messageId: "msg-anchor",
+    captureState: "captured" as const,
+    historicalContextStatus: "captured" as const,
+    conversationSessionId: "session-1",
+    commercialSessionContextLinkId: "context-1",
+    customerId: "customer-1",
+    commercialOpportunityId: "opp-1",
+    leadCustomerLinkId: "lead-customer-link-1",
+  };
+  const commercialContextLinks = [
+    {
+      id: "context-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      conversation_session_id: "session-1",
+      customer_id: "customer-1",
+      commercial_opportunity_id: "opp-1",
+      lead_customer_link_id: "lead-customer-link-1",
+      status: "active",
+      unlinked_at: null,
+    },
+  ];
+
+  const validSupabase = createGenerateAiSalesReplySupabase();
+  assert.equal(
+    await loadEffectiveReplyCommercialOpportunityId({
+      supabase: validSupabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+      anchorMessageId: "msg-anchor",
+      responseAnchorCommercialContext,
+      commercialContextLinks,
+    }),
+    "opp-1",
+  );
+
+  const invalidLinkSupabase = createGenerateAiSalesReplySupabase({
+    contextLinkStatus: "inactive",
+  });
+  assert.equal(
+    await loadEffectiveReplyCommercialOpportunityId({
+      supabase: invalidLinkSupabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+      anchorMessageId: "msg-anchor",
+      responseAnchorCommercialContext,
+      commercialContextLinks,
+    }),
+    null,
+  );
+
+  const invalidLeadLinkSupabase = createGenerateAiSalesReplySupabase({
+    leadCustomerLinkStatus: "inactive",
+  });
+  assert.equal(
+    await loadEffectiveReplyCommercialOpportunityId({
+      supabase: invalidLeadLinkSupabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+      anchorMessageId: "msg-anchor",
+      responseAnchorCommercialContext,
+      commercialContextLinks,
+    }),
+    null,
+  );
+
+  const inactiveSessionSupabase = createGenerateAiSalesReplySupabase({
+    sessionStatus: "closed",
+  });
+  assert.equal(
+    await loadEffectiveReplyCommercialOpportunityId({
+      supabase: inactiveSessionSupabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+      anchorMessageId: "msg-anchor",
+      responseAnchorCommercialContext,
+      commercialContextLinks,
+    }),
+    null,
+  );
+
+  const closedOpportunitySupabase = createGenerateAiSalesReplySupabase({
+    commercialOpportunityStage: "perdido",
+  });
+  assert.equal(
+    await loadEffectiveReplyCommercialOpportunityId({
+      supabase: closedOpportunitySupabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+      anchorMessageId: "msg-anchor",
+      responseAnchorCommercialContext,
+      commercialContextLinks,
+    }),
+    null,
+  );
+
+  const invalidCycleSupabase = createGenerateAiSalesReplySupabase({
+    commercialOpportunityLifecycleCycle: null,
+  });
+  assert.equal(
+    await loadEffectiveReplyCommercialOpportunityId({
+      supabase: invalidCycleSupabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+      anchorMessageId: "msg-anchor",
+      responseAnchorCommercialContext,
+      commercialContextLinks,
+    }),
+    null,
+  );
+
+  const reopenedOrLostProjectionSupabase = createGenerateAiSalesReplySupabase({
+    commercialOpportunityCurrentLossEventId: "loss-event-1",
+  });
+  assert.equal(
+    await loadEffectiveReplyCommercialOpportunityId({
+      supabase: reopenedOrLostProjectionSupabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+      anchorMessageId: "msg-anchor",
+      responseAnchorCommercialContext,
+      commercialContextLinks,
+    }),
+    null,
+  );
+
+  assert.equal(
+    await loadEffectiveReplyCommercialOpportunityId({
+      supabase: validSupabase,
+      organizationId: "other-org",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+      anchorMessageId: "msg-anchor",
+      responseAnchorCommercialContext,
+      commercialContextLinks,
+    }),
+    null,
+  );
 });
 test("CMIR structural ambiguity stays fail-closed and does not mutate arrival A", async () => {
   const arrivalOpportunityId = "opp-1";

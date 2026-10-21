@@ -113,6 +113,9 @@ type LeadRow = {
 type CommercialOpportunityStageRow = {
   id: string;
   stage: string | null;
+  lifecycle_cycle?: number | null;
+  lost_at?: string | null;
+  current_loss_event_id?: string | null;
 };
 
 type MessageRow = {
@@ -149,6 +152,7 @@ type CommercialSessionContextLinkRow = {
   commercial_opportunity_id: string | null;
   lead_customer_link_id: string | null;
   status: string | null;
+  unlinked_at?: string | null;
 };
 
 export type HistoricalContextStatus =
@@ -228,6 +232,20 @@ type SupabaseQueryChainLike = {
 
 type SupabaseBatchClientLike = {
   from(table: string): unknown;
+};
+
+type EffectiveReplyQueryLike = {
+  select(columns: string): EffectiveReplyQueryLike;
+  eq(field: string, value: unknown): EffectiveReplyQueryLike;
+  is(field: string, value: unknown): EffectiveReplyQueryLike;
+  maybeSingle(): Promise<{
+    data: Record<string, unknown> | null;
+    error: QueryErrorLike | null;
+  }>;
+};
+
+type EffectiveReplySupabaseLike = {
+  from(table: string): EffectiveReplyQueryLike;
 };
 
 type StoreRow = {
@@ -869,6 +887,7 @@ export type GenerateAiSalesReplyResult =
         catalogPhotoAction: CatalogPhotoActionContext | null;
         customerCatalogDocumentActions: CustomerCatalogDocumentActionContext[];
         resolvedCommercialOpportunityId: string | null;
+        effectiveReplyCommercialOpportunityId: string | null;
         commercialMessageIntentResolution: CommercialMessageIntentResolutionContext | null;
         responseAnchorCommercialContext: ResponseAnchorCommercialContext | null;
         salesAiOperatingWindowContext: SalesAiOperatingWindowContext | null;
@@ -2836,6 +2855,173 @@ export async function loadAnchoredCanonicalCommercialContext(args: {
   };
 }
 
+export async function loadEffectiveReplyCommercialOpportunityId(args: {
+  supabase: EffectiveReplySupabaseLike;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  anchorMessageId: string;
+  responseAnchorCommercialContext: ResponseAnchorCommercialContext | null;
+  commercialContextLinks: CommercialSessionContextLinkRow[];
+}): Promise<string | null> {
+  const anchor = args.responseAnchorCommercialContext;
+  const opportunityId = cleanCommercialIntentText(anchor?.commercialOpportunityId);
+  const sessionId = cleanCommercialIntentText(anchor?.conversationSessionId);
+  const contextLinkId = cleanCommercialIntentText(
+    anchor?.commercialSessionContextLinkId,
+  );
+  const customerId = cleanCommercialIntentText(anchor?.customerId);
+  const leadCustomerLinkId = cleanCommercialIntentText(anchor?.leadCustomerLinkId);
+  const leadId = cleanCommercialIntentText(args.leadId);
+
+  if (
+    !anchor ||
+    anchor.messageId !== args.anchorMessageId ||
+    anchor.captureState !== "captured" ||
+    anchor.historicalContextStatus !== "captured" ||
+    !opportunityId ||
+    !sessionId ||
+    !contextLinkId ||
+    !customerId ||
+    !leadCustomerLinkId ||
+    !leadId
+  ) {
+    return null;
+  }
+
+  const loadedLink = args.commercialContextLinks.find(
+    (link) => link.id === contextLinkId,
+  );
+  if (
+    !loadedLink ||
+    loadedLink.organization_id !== args.organizationId ||
+    loadedLink.store_id !== args.storeId ||
+    loadedLink.conversation_session_id !== sessionId ||
+    loadedLink.customer_id !== customerId ||
+    loadedLink.commercial_opportunity_id !== opportunityId ||
+    loadedLink.lead_customer_link_id !== leadCustomerLinkId ||
+    loadedLink.status !== "active"
+  ) {
+    return null;
+  }
+
+  const { data: sessionRow, error: sessionError } = await args.supabase
+    .from("conversation_sessions")
+    .select("id, organization_id, store_id, conversation_id, status")
+    .eq("id", sessionId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (
+    sessionError ||
+    !sessionRow ||
+    sessionRow.id !== sessionId ||
+    sessionRow.organization_id !== args.organizationId ||
+    sessionRow.store_id !== args.storeId ||
+    sessionRow.conversation_id !== args.conversationId ||
+    sessionRow.status !== "active"
+  ) {
+    return null;
+  }
+
+  const { data: linkRow, error: linkError } = await args.supabase
+    .from("commercial_session_context_links")
+    .select(
+      "id, organization_id, store_id, conversation_session_id, customer_id, commercial_opportunity_id, lead_customer_link_id, status, unlinked_at",
+    )
+    .eq("id", contextLinkId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_session_id", sessionId)
+    .eq("customer_id", customerId)
+    .eq("commercial_opportunity_id", opportunityId)
+    .eq("lead_customer_link_id", leadCustomerLinkId)
+    .eq("status", "active")
+    .is("unlinked_at", null)
+    .maybeSingle();
+
+  if (
+    linkError ||
+    !linkRow ||
+    linkRow.id !== contextLinkId ||
+    linkRow.organization_id !== args.organizationId ||
+    linkRow.store_id !== args.storeId ||
+    linkRow.conversation_session_id !== sessionId ||
+    linkRow.customer_id !== customerId ||
+    linkRow.commercial_opportunity_id !== opportunityId ||
+    linkRow.lead_customer_link_id !== leadCustomerLinkId ||
+    linkRow.status !== "active" ||
+    linkRow.unlinked_at != null
+  ) {
+    return null;
+  }
+
+  const { data: leadCustomerLink, error: leadCustomerLinkError } =
+    await args.supabase
+      .from("lead_customer_links")
+      .select("id, organization_id, store_id, customer_id, lead_id, status, unlinked_at")
+      .eq("id", leadCustomerLinkId)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("customer_id", customerId)
+      .eq("lead_id", leadId)
+      .eq("status", "active")
+      .is("unlinked_at", null)
+      .maybeSingle();
+
+  if (
+    leadCustomerLinkError ||
+    !leadCustomerLink ||
+    leadCustomerLink.id !== leadCustomerLinkId ||
+    leadCustomerLink.organization_id !== args.organizationId ||
+    leadCustomerLink.store_id !== args.storeId ||
+    leadCustomerLink.customer_id !== customerId ||
+    leadCustomerLink.lead_id !== leadId ||
+    leadCustomerLink.status !== "active" ||
+    leadCustomerLink.unlinked_at != null
+  ) {
+    return null;
+  }
+
+  const { data: opportunity, error: opportunityError } = await args.supabase
+    .from("commercial_opportunities")
+    .select(
+      "id, organization_id, store_id, origin_lead_id, primary_conversation_id, stage, lifecycle_cycle, lost_at, current_loss_event_id",
+    )
+    .eq("id", opportunityId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("origin_lead_id", leadId)
+    .eq("primary_conversation_id", args.conversationId)
+    .maybeSingle();
+
+  if (
+    opportunityError ||
+    !opportunity ||
+    opportunity.id !== opportunityId ||
+    opportunity.organization_id !== args.organizationId ||
+    opportunity.store_id !== args.storeId ||
+    opportunity.origin_lead_id !== leadId ||
+    opportunity.primary_conversation_id !== args.conversationId ||
+    getCanonicalCrmStage(
+      typeof opportunity.stage === "string" ? opportunity.stage : null,
+    )?.area !== "pipeline" ||
+    typeof opportunity.lifecycle_cycle !== "number" ||
+    !Number.isInteger(opportunity.lifecycle_cycle) ||
+    opportunity.lifecycle_cycle < 1 ||
+    opportunity.lost_at != null ||
+    opportunity.current_loss_event_id != null
+  ) {
+    return null;
+  }
+
+  return opportunityId;
+}
+
 type CanonicalQualificationWriterRow = {
   commercial_opportunity_id: string | null;
   fact_key: string | null;
@@ -3820,7 +4006,7 @@ export async function loadCommercialSnapshotBatch(args: {
       "commercial_session_context_links"
     ) as SupabaseQueryChainLike;
     const selectedLinkQuery = linkQuery.select(
-      "id, organization_id, store_id, conversation_session_id, customer_id, commercial_opportunity_id, lead_customer_link_id, status"
+      "id, organization_id, store_id, conversation_session_id, customer_id, commercial_opportunity_id, lead_customer_link_id, status, unlinked_at"
     ) as SupabaseQueryChainLike;
     const filteredLinkQuery = selectedLinkQuery.in(
       "id",
@@ -12697,14 +12883,49 @@ export async function generateAiSalesReply(
     const resolvedCommercialOpportunityId =
       commercialMessageIntentResolution.resolvedCommercialOpportunityId;
 
-    const canonicalCommercialContextResult =
+    let effectiveReplyCommercialOpportunityId = resolvedCommercialOpportunityId;
+    if (
+      !effectiveReplyCommercialOpportunityId &&
+      commercialMessageIntentResolution.decisionKind === "needs_clarification"
+    ) {
+      effectiveReplyCommercialOpportunityId =
+        await loadEffectiveReplyCommercialOpportunityId({
+          supabase,
+          organizationId,
+          storeId: resolvedStoreId,
+          conversationId,
+          leadId: lead.id || null,
+          anchorMessageId,
+          responseAnchorCommercialContext,
+          commercialContextLinks: commercialSnapshotBatch.commercialContextLinks,
+        });
+    }
+
+    let canonicalCommercialContextResult =
       await loadAnchoredCanonicalCommercialContext({
         supabase,
         organizationId,
         storeId: resolvedStoreId,
         leadState: lead.state,
-        anchoredCommercialOpportunityId: resolvedCommercialOpportunityId,
+        anchoredCommercialOpportunityId: effectiveReplyCommercialOpportunityId,
       });
+
+    if (
+      canonicalCommercialContextResult.ok &&
+      effectiveReplyCommercialOpportunityId &&
+      effectiveReplyCommercialOpportunityId !== resolvedCommercialOpportunityId &&
+      (canonicalCommercialContextResult.canonicalQualificationSnapshot?.conflicts.length || 0) > 0
+    ) {
+      effectiveReplyCommercialOpportunityId = resolvedCommercialOpportunityId;
+      canonicalCommercialContextResult =
+        await loadAnchoredCanonicalCommercialContext({
+          supabase,
+          organizationId,
+          storeId: resolvedStoreId,
+          leadState: lead.state,
+          anchoredCommercialOpportunityId: effectiveReplyCommercialOpportunityId,
+        });
+    }
 
     if (!canonicalCommercialContextResult.ok) {
       return {
@@ -13932,6 +14153,8 @@ export async function generateAiSalesReply(
         salesBrain.snapshot.hasCanonicalVisitLocation,
 
     });
+    const isNeedsClarification =
+      commercialMessageIntentResolution.decisionKind === "needs_clarification";
     const operationalFollowUpDecision: OperationalFollowUpDecision =
       params.scheduledResumeContext
         ? {
@@ -13959,14 +14182,20 @@ export async function generateAiSalesReply(
     const shouldUseHumanReplyOverride = Boolean(
       humanHandoff?.replyOverride
     );
-    const effectiveCustomerCatalogDocumentActions = shouldUseHumanReplyOverride
-      ? []
-      : customerCatalogDocumentActions;
-    const effectiveCustomerCatalogDocumentReplyOverride = shouldUseHumanReplyOverride
+    const effectiveCustomerCatalogDocumentActions =
+      shouldUseHumanReplyOverride || isNeedsClarification
+        ? []
+        : customerCatalogDocumentActions;
+    const effectiveCustomerCatalogDocumentReplyOverride =
+      shouldUseHumanReplyOverride || isNeedsClarification
+        ? null
+        : customerCatalogDocumentReplyOverride;
+    const effectiveCatalogPhotoAction = isNeedsClarification
       ? null
-      : customerCatalogDocumentReplyOverride;
+      : catalogPhotoAction;
     const shouldUseCommercialReplyOverride = Boolean(
-      commercialHandoff?.replyOverride &&
+      !isNeedsClarification &&
+        commercialHandoff?.replyOverride &&
         commercialHandoff.shouldCreateTask &&
         !(
           (
@@ -13983,12 +14212,12 @@ export async function generateAiSalesReply(
       ? String(humanHandoff?.replyOverride || "").trim()
       : effectiveCustomerCatalogDocumentReplyOverride
         ? effectiveCustomerCatalogDocumentReplyOverride
-        : catalogPhotoAction
-      ? `Sim, temos foto d${catalogPhotoAction.targetType === "pool" ? "a" : "o"} ${
-          catalogPhotoAction.targetType === "pool"
-            ? catalogPhotoAction.poolName || "modelo"
-            : catalogPhotoAction.catalogItemName ||
-              catalogPhotoAction.catalogItemSku ||
+        : effectiveCatalogPhotoAction
+      ? `Sim, temos foto d${effectiveCatalogPhotoAction.targetType === "pool" ? "a" : "o"} ${
+          effectiveCatalogPhotoAction.targetType === "pool"
+            ? effectiveCatalogPhotoAction.poolName || "modelo"
+            : effectiveCatalogPhotoAction.catalogItemName ||
+              effectiveCatalogPhotoAction.catalogItemSku ||
               "item"
         }.`
       : shouldUseCommercialReplyOverride
@@ -14045,9 +14274,10 @@ export async function generateAiSalesReply(
         operationalFollowUpDecision,
         humanHandoff,
         commercialHandoff,
-        catalogPhotoAction,
+        catalogPhotoAction: effectiveCatalogPhotoAction,
         customerCatalogDocumentActions: effectiveCustomerCatalogDocumentActions,
         resolvedCommercialOpportunityId,
+        effectiveReplyCommercialOpportunityId,
         commercialMessageIntentResolution,
         responseAnchorCommercialContext,
         salesAiOperatingWindowContext: params.salesAiOperatingWindowContext || null,

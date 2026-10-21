@@ -4677,7 +4677,11 @@ const tests: TestCase[] = [
       assert.equal(source.includes('"stop_contact_ack"'), true);
       assert.equal(source.includes('"reactive_ai_reply"'), true);
       assert.equal(source.includes("source_message_id: generationAnchorMessageId"), true);
-      assert.equal(source.includes("commercial_opportunity_id: generationResolvedCommercialOpportunityId"), true);
+      assert.equal(
+        source.includes("commercial_opportunity_id:") &&
+          source.includes("generationEffectiveReplyCommercialOpportunityId"),
+        true,
+      );
       assert.equal(sendBlock.includes("SALES_AI_EXTERNAL_WHATSAPP_METADATA_REQUIRED"), true);
       assert.equal(sendBlock.includes("metadata: args.salesAiExternalMetadata"), true);
       assert.equal(source.includes("mark_commercial_opportunity_lost"), false);
@@ -7230,6 +7234,104 @@ assert.equal(
       assert.equal(rpcCalls, 2);
       assert.equal(first.response_set_id, second.response_set_id);
       assert.equal(second.replayed, true);
+    },
+  },
+  {
+    name: "I8-001 carries effective clarification context without changing CMIR authority",
+    run: async () => {
+      let materializerArgs: Record<string, unknown> | null = null;
+      const supabase = createAiWindowScopeSupabase();
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+          },
+          {
+            createSupabaseClient: () => supabase.client as never,
+            ...createScopeAwareReplyDeps({
+              generateAiSalesReply: async () =>
+                ({
+                  ok: true,
+                  aiText: "Voce fala desta compra atual ou de um novo projeto?",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    operationalFollowUpDecision: {
+                      kind: "none",
+                      reason: "none",
+                    },
+                    customerCatalogDocumentActions: [
+                      {
+                        shouldSend: true,
+                        reason: "explicit_customer_catalog_file_request",
+                        organizationId: "org-canonical",
+                        storeId: "store-canonical",
+                        importFileId: "file-clarification",
+                        sortOrder: 1,
+                        originalFileName: "catalogo.pdf",
+                        mimeType: "application/pdf",
+                        extension: "pdf",
+                        storageBucket: "ignored",
+                        storagePath: "ignored",
+                        caption: "Catalogo",
+                      },
+                    ],
+                    catalogPhotoAction: {
+                      shouldSend: true,
+                      reason: "explicit_strong_product_photo_request",
+                      targetType: "pool",
+                      poolId: "pool-clarification",
+                      poolName: "Piscina",
+                      catalogItemId: null,
+                      catalogItemName: null,
+                      catalogItemSku: null,
+                      organizationId: "org-canonical",
+                      storeId: "store-canonical",
+                      source: "pool_photos",
+                      bucket: null,
+                      storagePath: null,
+                      publicUrl: null,
+                      caption: "Foto",
+                    },
+                    commercialHandoff: { shouldCreateTask: true },
+                    resolvedCommercialOpportunityId: null,
+                    effectiveReplyCommercialOpportunityId: "opp-effective",
+                    commercialMessageIntentResolution: {
+                      decisionKind: "needs_clarification",
+                      reasonCode: "ambiguous_customer_message",
+                      resolvedCommercialOpportunityId: null,
+                      relatedCommercialOpportunityId: null,
+                      relationType: null,
+                      source: "writer",
+                    },
+                  },
+                }) as never,
+              materializeSalesAiReplySet: async (args: Record<string, unknown>) => {
+                materializerArgs = args;
+                return {
+                  response_set_id: "set-effective",
+                  text_message_id: "msg-ai-effective",
+                  document_message_ids: [],
+                  photo_message_id: null,
+                  request_fingerprint: "e".repeat(64),
+                  replayed: false,
+                };
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true);
+      });
+
+      assert.equal(materializerArgs?.commercialOpportunityId, "opp-effective");
+      assert.equal(materializerArgs?.externalAuthorized, true);
+      assert.equal(materializerArgs?.outboundKind, "reactive_ai_reply");
+      assert.deepEqual(materializerArgs?.documentActions, []);
+      assert.equal(materializerArgs?.photoAction, null);
     },
   },
 ];

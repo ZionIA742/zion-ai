@@ -5644,6 +5644,12 @@ export async function generateAndSaveAiSalesReply(
       String(
         generationResult.context?.resolvedCommercialOpportunityId || "",
       ).trim() || null;
+    const generationEffectiveReplyCommercialOpportunityId =
+      String(
+        generationResult.context?.effectiveReplyCommercialOpportunityId ||
+          generationResolvedCommercialOpportunityId ||
+          "",
+      ).trim() || null;
     const rawCustomerCatalogDocumentActions =
       generationResult.context?.customerCatalogDocumentActions;
     const customerCatalogDocumentActions =
@@ -5781,9 +5787,12 @@ export async function generateAndSaveAiSalesReply(
 
     const requestedHumanHandoff =
       generationResult.context?.humanHandoff || null;
+    const generationNeedsClarification =
+      generationResult.context?.commercialMessageIntentResolution?.decisionKind ===
+      "needs_clarification";
 
     const requestedCommercialHandoff =
-      requestedHumanHandoff?.shouldCreateTask === true
+      generationNeedsClarification || requestedHumanHandoff?.shouldCreateTask === true
         ? null
         : generationResult.context?.commercialHandoff || null;
     let validatedCommercialHandoff = requestedCommercialHandoff;
@@ -5990,14 +5999,15 @@ export async function generateAndSaveAiSalesReply(
       }
     }
 
-    const salesAiExternalMetadata = generationResolvedCommercialOpportunityId
+    const salesAiExternalMetadata = generationEffectiveReplyCommercialOpportunityId
       ? {
           outbound_kind:
             operationalFollowUpDecisionKind === "stop_contact"
               ? "stop_contact_ack"
               : "reactive_ai_reply",
           source_message_id: generationAnchorMessageId,
-          commercial_opportunity_id: generationResolvedCommercialOpportunityId,
+          commercial_opportunity_id:
+            generationEffectiveReplyCommercialOpportunityId,
         }
       : null;
     const outboundKind =
@@ -6025,10 +6035,13 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    const replyDocumentActions = suppressCommercialMedia
+    const replyDocumentActions = suppressCommercialMedia || generationNeedsClarification
       ? []
       : customerCatalogDocumentActions;
-    const replyPhotoAction = suppressCommercialMedia ? null : catalogPhotoAction;
+    const replyPhotoAction =
+      suppressCommercialMedia || generationNeedsClarification
+        ? null
+        : catalogPhotoAction;
 
     let customerCatalogDocumentSendExternal = false;
 
@@ -6216,7 +6229,8 @@ export async function generateAndSaveAiSalesReply(
           conversationId: canonicalConversationId,
           leadId: normalizedConversation.lead_id || "",
           anchorMessageId: generationAnchorMessageId,
-          commercialOpportunityId: generationResolvedCommercialOpportunityId,
+          commercialOpportunityId:
+            generationEffectiveReplyCommercialOpportunityId,
           aiText,
           outboundKind,
           externalAuthorized,
