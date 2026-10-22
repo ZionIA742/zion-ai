@@ -2226,6 +2226,12 @@ export default function LeadPage() {
     void loadSelectedOpportunityPayment({ openModal: true });
   }
 
+  function openContractPanel() {
+    setCommercialActionsOpen(false);
+    setActiveGeneratedPdfTab("contracts");
+    setActiveDetailsTab("pdfs");
+  }
+
   function closePaymentModal() {
     if (paymentSubmitting) {
       return;
@@ -5134,6 +5140,15 @@ export default function LeadPage() {
 
                       <button
                         type="button"
+                        onClick={openContractPanel}
+                        disabled={working || refreshing || simulatingCustomer}
+                        className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-gray-900 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
+                      >
+                        Contrato
+                      </button>
+
+                      <button
+                        type="button"
                         onClick={() => {
                           setCommercialActionsOpen(false);
                           openGoogleMapsRoute(
@@ -5905,6 +5920,37 @@ export default function LeadPage() {
 
                       {activeGeneratedPdfTab === "contracts" ? (
                         <div>
+                          <section className="rounded-2xl border border-gray-200 bg-white p-4 ring-1 ring-black/5">
+                            <div className="text-sm font-semibold text-gray-900">
+                              Dados do comprador para consulta
+                            </div>
+                            <div className="mt-1 text-xs leading-5 text-gray-500">
+                              Consulte apenas os dados realmente disponiveis durante o preenchimento manual. Nenhuma informacao e presumida ou salva por este painel.
+                            </div>
+
+                            <div className="mt-3 grid gap-3 md:grid-cols-2">
+                              <InfoCard label="Nome" value={lead.name?.trim() || "Nao informado"} />
+                              <InfoCard label="CPF" value="Nao informado" help="Ainda nao ha CPF disponivel no cadastro desta conversa." />
+                              <InfoCard label="Telefone" value={lead.phone?.trim() || "Nao informado"} />
+                              <InfoCard
+                                label="Endereco disponivel"
+                                value={selectedRouteDestinationAddress || "Nao informado"}
+                                help={
+                                  selectedRouteDestinationAddress
+                                    ? "Endereco registrado para atendimento."
+                                    : "Nenhum endereco de atendimento foi identificado."
+                                }
+                              />
+                            </div>
+
+                            <div className="mt-3 grid gap-3 md:grid-cols-2">
+                              <InfoCard label="Necessidade identificada" value={needSummaryDisplay.value} help={needSummaryDisplay.help} />
+                              <InfoCard label="Produto de interesse" value={productReferenceDisplay.value} help={productReferenceDisplay.help} />
+                              <InfoCard label="Localizacao informada" value={locationTextDisplay.value} help={locationTextDisplay.help} />
+                              <InfoCard label="Preferencias do cliente" value={customerPreferencesDisplay.value} help={customerPreferencesDisplay.help} />
+                            </div>
+                          </section>
+
                           <div className="text-sm font-semibold text-gray-900">
                             Contratos
                           </div>
