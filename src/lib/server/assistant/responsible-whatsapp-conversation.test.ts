@@ -34,6 +34,24 @@ test("responsible WhatsApp bridge uses the canonical assistant thread and sender
   assert.match(source, /storeId/);
 });
 
+test("CONTINUAR remains scoped to the responsible Assistant flow", () => {
+  const processor = readFileSync(
+    "src/lib/server/whatsapp-inbox-processor.ts",
+    "utf8",
+  );
+  const sync = readFileSync(
+    "src/lib/server/assistant/assistant-panel-whatsapp-sync.ts",
+    "utf8",
+  );
+
+  assert.match(processor, /buttonId === "CONTINUAR"/);
+  assert.match(processor, /cancelPendingAssistantPanelTemplateNotifications/);
+  assert.match(processor, /content: "CONTINUAR"/);
+  assert.match(sync, /assistant_operational_pending/);
+  assert.match(sync, /status: "cancelled"/);
+  assert.match(sync, /external_message_id/);
+});
+
 test("a canonical quote decision terminates the assistant bridge before generation or outbound", () => {
   const source = readFileSync(
     "src/lib/server/assistant/responsible-whatsapp-conversation.ts",

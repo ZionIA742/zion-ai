@@ -26,6 +26,30 @@ test("responsible decision hook returns its canonical result to stop assistant h
   assert.match(hook, /return decideQuoteApprovalFromPersistedInbound\(/);
 });
 
+test("extracts the responsible WhatsApp quick reply without exposing it to customer routing", () => {
+  const extracted = extractIncomingMessage({
+    source: "meta_whatsapp_webhook",
+    event_kind: "message",
+    phone_number_id: "phone-1",
+    message: {
+      id: "wamid-continue-1",
+      from: "5511999999999",
+      type: "interactive",
+      interactive: {
+        type: "button_reply",
+        button_reply: { id: "CONTINUAR", title: "CONTINUAR" },
+      },
+    },
+  } as never);
+
+  assert.equal(extracted.rawMessageType, "interactive");
+  assert.equal(extracted.interactiveButtonId, "CONTINUAR");
+  assert.equal(extracted.interactiveButtonTitle, "CONTINUAR");
+  const source = readProcessorSource();
+  assert.match(source, /responsible_quick_reply: "CONTINUAR"/);
+  assert.match(source, /interactive_message_not_supported_for_customer/);
+});
+
 function jsonFetchResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,

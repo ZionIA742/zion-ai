@@ -1,10 +1,17 @@
 import { createClient } from "@supabase/supabase-js";
-import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
+import {
+  loadCanonicalActivePrimaryStoreResponsible,
+  normalizeResponsibleWhatsappDestination,
+} from "@/lib/server/store-responsibles";
 import {
   sendResponsibleExternalNotification,
   type SendResponsibleExternalNotificationResult,
 } from "@/lib/server/assistant/responsible-external-notifications-sender";
 import { prepareResponsibleExternalNotification } from "@/lib/server/assistant/responsible-external-notifications";
+import {
+  isAssistantPanelWhatsappTemplateEnabled,
+  RESPONSIBLE_WHATSAPP_WINDOW_MS,
+} from "@/lib/server/assistant/responsible-whatsapp-outbound-policy";
 
 type SupabaseError = {
   code?: unknown;
@@ -17,6 +24,7 @@ type SupabaseQueryLike = {
   eq(column: string, value: unknown): SupabaseQueryLike;
   gte(column: string, value: unknown): SupabaseQueryLike;
   in(column: string, value: unknown): SupabaseQueryLike;
+  is(column: string, value: unknown): SupabaseQueryLike;
   contains(column: string, value: unknown): SupabaseQueryLike;
   order(column: string, options: { ascending: boolean }): SupabaseQueryLike;
   limit(value: number): SupabaseQueryLike;
@@ -35,7 +43,7 @@ type SupabaseTableLike = {
   insert(payload: Record<string, unknown>): SupabaseInsertLike;
   update(payload: Record<string, unknown>): SupabaseUpdateLike;
 };
-type SupabaseClientLike = {
+export type SupabaseClientLike = {
   from(table: string): SupabaseTableLike;
   rpc(name: string, args: Record<string, unknown>): SupabaseAwaitable<{ data: unknown; error: SupabaseError }>;
 };
@@ -86,6 +94,13 @@ const PERMANENT_PANEL_SYNC_FAILURES = new Set([
   "RESPONSIBLE_WHATSAPP_TEMPLATE_KIND_REQUIRED",
   "RESPONSIBLE_WHATSAPP_TEMPLATE_CONTEXT_INVALID",
 ]);
+const ASSISTANT_OPERATIONAL_TASK_OPEN_STATUSES = [
+  "open",
+  "waiting_user_choice",
+  "waiting_customer_response",
+  "ready_to_execute",
+  "in_progress",
+];
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -175,7 +190,7 @@ async function loadExistingNotification(args: {
 }) {
   const { data, error } = await args.supabase
     .from("store_responsible_external_notifications")
-    .select("id, status, external_message_id, error_text, attempts")
+    .select("id, status, external_message_id, error_text, attempts, context")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("source_event_key", args.sourceEventKey)
@@ -189,7 +204,87 @@ async function loadExistingNotification(args: {
     external_message_id: string | null;
     error_text: string | null;
     attempts?: number | null;
+    context?: Record<string, unknown> | null;
   } | null;
+}
+
+async function resolveAssistantPanelTemplateGate(args: {
+  supabase: SupabaseClientLike;
+  organizationId: string;
+  storeId: string;
+  message: AssistantPanelMessage;
+  kind: "human" | "assistant";
+}) {
+  if (args.kind !== "assistant") {
+    return { defer: false as const, operationalPending: false as const };
+  }
+
+  const responsible = await loadCanonicalActivePrimaryStoreResponsible({
+    supabase: args.supabase as never,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+  });
+  if (!responsible.ok) {
+    return { defer: true as const, reason: responsible.reason };
+  }
+
+  const { data: inbound, error: inboundError } = await args.supabase
+    .from("store_assistant_messages")
+    .select("id, created_at, metadata")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("sender_role", "store_responsible")
+    .eq("direction", "incoming")
+    .contains("metadata", {
+      origin: "whatsapp",
+      responsible_id: responsible.responsible.id,
+    })
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (inboundError) throw new Error(`Falha ao verificar janela WhatsApp do responsavel: ${inboundError.message}`);
+
+  const inboundRow = inbound as { created_at?: unknown; metadata?: Record<string, unknown> | null } | null;
+  const metadata = inboundRow?.metadata || {};
+  const inboundPhone = normalizeResponsibleWhatsappDestination(String(metadata.from_phone || ""));
+  const inboundAt = Date.parse(String(inboundRow?.created_at || ""));
+  const windowOpen = Boolean(
+    inboundPhone === responsible.responsible.whatsappNumber &&
+      String(metadata.external_message_id || "").trim() &&
+      Number.isFinite(inboundAt) &&
+      Date.now() - inboundAt >= 0 &&
+      Date.now() - inboundAt <= RESPONSIBLE_WHATSAPP_WINDOW_MS,
+  );
+  if (windowOpen) return { defer: false as const, operationalPending: false as const };
+
+  if (!isAssistantPanelWhatsappTemplateEnabled()) {
+    return { defer: true as const, reason: "RESPONSIBLE_ASSISTANT_PANEL_TEMPLATE_DISABLED" };
+  }
+
+  const { data: tasks, error: taskError } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("id, task_type, status")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("thread_id", args.message.thread_id || "")
+    .in("status", ASSISTANT_OPERATIONAL_TASK_OPEN_STATUSES)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (taskError) throw new Error(`Falha ao verificar pendencia operacional da Assistente: ${taskError.message}`);
+
+  const task = tasks && typeof tasks === "object" ? (tasks as Record<string, unknown>) : null;
+  if (!task?.id) {
+    return { defer: true as const, reason: "ASSISTANT_OPERATIONAL_PENDING_NOT_FOUND" };
+  }
+
+  return {
+    defer: false as const,
+    operationalPending: true as const,
+    operationalTaskId: String(task.id),
+    operationalTaskType: cleanText(task.task_type) || null,
+  };
 }
 
 async function confirmExternalNotificationSent(args: {
@@ -304,6 +399,8 @@ async function ensureNotification(args: {
   sourceEventKey: string;
   message: string;
   kind: "human" | "assistant";
+  operationalTaskId?: string | null;
+  operationalTaskType?: string | null;
 }) {
   const existing = await loadExistingNotification(args);
   if (existing?.id) return existing;
@@ -321,6 +418,13 @@ async function ensureNotification(args: {
         source: "assistant_panel_whatsapp_sync",
         event_key: args.sourceEventKey,
         message_kind: args.kind,
+        ...(args.operationalTaskId
+          ? {
+              assistant_operational_pending: true,
+              operational_task_id: args.operationalTaskId,
+              operational_task_type: args.operationalTaskType,
+            }
+          : {}),
       },
       p_related_lead_id: null,
       p_related_conversation_id: null,
@@ -375,6 +479,13 @@ async function ensureNotification(args: {
         source: "assistant_panel_whatsapp_sync",
         event_key: args.sourceEventKey,
         message_kind: args.kind,
+        ...(args.operationalTaskId
+          ? {
+              assistant_operational_pending: true,
+              operational_task_id: args.operationalTaskId,
+              operational_task_type: args.operationalTaskType,
+            }
+          : {}),
       },
       source_event_key: args.sourceEventKey,
     })
@@ -392,6 +503,61 @@ async function ensureNotification(args: {
     external_message_id: string | null;
     error_text: string | null;
   } | null;
+}
+
+export async function cancelPendingAssistantPanelTemplateNotifications(args: {
+  supabase: SupabaseClientLike;
+  organizationId: string;
+  storeId: string;
+  responsibleId: string;
+}) {
+  let cancelled = 0;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const { data, error } = await args.supabase
+      .from("store_responsible_external_notifications")
+      .select("id, status")
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("responsible_id", args.responsibleId)
+      .eq("channel", "whatsapp_responsible")
+      .contains("context", {
+        source: "assistant_panel_whatsapp_sync",
+        assistant_operational_pending: true,
+      })
+      .in("status", ["materialized", "ready_to_send", "failed"])
+      .eq("external_message_id", null)
+      .eq("sent_at", null)
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(`Falha ao localizar templates pendentes da Assistente: ${error.message}`);
+
+    const row = data as { id?: unknown; status?: unknown } | null;
+    const id = cleanText(row?.id);
+    const status = cleanText(row?.status);
+    if (!id || !status) break;
+    const now = new Date().toISOString();
+    const { data: updated, error: updateError } = await args.supabase
+      .from("store_responsible_external_notifications")
+      .update({
+        status: "cancelled",
+        processed_at: now,
+        updated_at: now,
+        locked_at: null,
+        locked_by: null,
+      })
+      .eq("id", id)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("status", status)
+      .eq("external_message_id", null)
+      .eq("sent_at", null)
+      .select("id")
+      .maybeSingle();
+    if (updateError) throw new Error(`Falha ao cancelar template pendente da Assistente: ${updateError.message}`);
+    if ((updated as { id?: unknown } | null)?.id) cancelled += 1;
+    else break;
+  }
+  return { cancelled };
 }
 
 export async function syncAssistantPanelMessageToResponsibleWhatsapp(
@@ -431,6 +597,53 @@ export async function syncAssistantPanelMessageToResponsibleWhatsapp(
     storeId,
     sourceEventKey,
   });
+  const existingStatus = cleanText(existing?.status);
+  if (existing?.id && existingStatus === "sent" && existing.external_message_id) {
+    return {
+      ok: true,
+      status: "already_sent",
+      notificationId: existing.id,
+      externalMessageId: existing.external_message_id,
+    };
+  }
+  if (existing?.id && existingStatus === "uncertain") {
+    return { ok: false, status: "uncertain", notificationId: existing.id, reason: existing.error_text || "uncertain" };
+  }
+  if (existing?.id && existingStatus === "processing") {
+    return { ok: false, status: "already_processing", notificationId: existing.id, reason: existing.error_text || "processing" };
+  }
+  if (existing?.id && existingStatus === "failed" && isPermanentPanelSyncFailure(existing.error_text)) {
+    return { ok: false, status: "failed", notificationId: existing.id, reason: cleanText(existing.error_text) };
+  }
+  const templateGate = dependencies.send
+    ? { defer: false as const, operationalPending: false as const }
+    : await resolveAssistantPanelTemplateGate({
+        supabase,
+        organizationId,
+        storeId,
+        message,
+        kind: args.kind,
+      });
+  if (templateGate.defer) {
+    return {
+      ok: false,
+      status: "already_processing",
+      notificationId: existing?.id || null,
+      reason: templateGate.reason,
+    };
+  }
+  if (
+    existing?.id &&
+    templateGate.operationalPending &&
+    existing.context?.assistant_operational_pending !== true
+  ) {
+    return {
+      ok: false,
+      status: "already_processing",
+      notificationId: existing.id,
+      reason: "ASSISTANT_OPERATIONAL_PENDING_CONTEXT_MISSING",
+    };
+  }
   if (existing?.id) {
     let status = cleanText(existing.status);
     if (status === "sent" && existing.external_message_id) {
@@ -530,6 +743,12 @@ export async function syncAssistantPanelMessageToResponsibleWhatsapp(
       sourceEventKey,
       message: messageToSend,
       kind: args.kind,
+      operationalTaskId: templateGate.operationalPending
+        ? templateGate.operationalTaskId
+        : null,
+      operationalTaskType: templateGate.operationalPending
+        ? templateGate.operationalTaskType
+        : null,
     });
   } catch (error) {
     return {

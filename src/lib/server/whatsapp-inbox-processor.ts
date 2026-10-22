@@ -14,6 +14,7 @@ import {
 } from "@/lib/server/post-technical-visit-followups";
 import { runPostTechnicalVisitRuntime } from "@/lib/server/post-technical-visit-runtime";
 import { routeResponsibleWhatsappToAssistant } from "@/lib/server/assistant/responsible-whatsapp-conversation";
+import { cancelPendingAssistantPanelTemplateNotifications } from "@/lib/server/assistant/assistant-panel-whatsapp-sync";
 import {
   loadCanonicalActivePrimaryStoreResponsible,
   normalizeResponsibleWhatsappDestination,
@@ -395,6 +396,11 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
   const audioNode = isRecord(message?.audio) ? message?.audio : null;
   const videoNode = isRecord(message?.video) ? message?.video : null;
   const documentNode = isRecord(message?.document) ? message?.document : null;
+  const buttonNode = isRecord(message?.button) ? message?.button : null;
+  const interactiveNode = isRecord(message?.interactive) ? message?.interactive : null;
+  const buttonReplyNode = isRecord(interactiveNode?.button_reply)
+    ? interactiveNode.button_reply
+    : null;
   const locationNode = isRecord(message?.location) ? message?.location : null;
   const contactsPayload = message?.contacts;
   const contextNode = isRecord(message?.context) ? message?.context : null;
@@ -433,6 +439,10 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
     isSelfOriginated,
     rawMessageType,
     textBody,
+    interactiveButtonId:
+      asTrimmedString(buttonReplyNode?.id) || asTrimmedString(buttonNode?.payload),
+    interactiveButtonTitle:
+      asTrimmedString(buttonReplyNode?.title) || asTrimmedString(buttonNode?.text),
     imageMediaId: asTrimmedString(imageNode?.id),
     imageMimeType: asTrimmedString(imageNode?.mime_type),
     imageSha256: asTrimmedString(imageNode?.sha256),
@@ -570,6 +580,45 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
   );
   if (!incoming || incoming !== responsible.responsible.whatsappNumber) {
     return { isResponsible: false as const };
+  }
+
+  const buttonId = (asTrimmedString(args.extracted.interactiveButtonId) || "").toUpperCase();
+  const buttonTitle = (asTrimmedString(args.extracted.interactiveButtonTitle) || "").toUpperCase();
+  const isContinue =
+    buttonId === "CONTINUAR" ||
+    buttonTitle === "CONTINUAR";
+  if (isContinue) {
+    await cancelPendingAssistantPanelTemplateNotifications({
+      supabase: args.supabase as never,
+      organizationId: args.inbox.organization_id,
+      storeId: args.inbox.store_id,
+      responsibleId: responsible.responsible.id,
+    });
+
+    const assistantResult = await routeResponsibleWhatsappToAssistant({
+      supabase: args.supabase,
+      organizationId: args.inbox.organization_id,
+      storeId: args.inbox.store_id,
+      responsibleId: responsible.responsible.id,
+      externalMessageId: args.extracted.messageId || args.inbox.external_event_id,
+      fromPhone: args.extracted.fromPhoneRaw || "",
+      phoneNumberId: args.extracted.phoneNumberId || "",
+      content: "CONTINUAR",
+      messageType: "text",
+      metadata: {
+        source: "meta_whatsapp_webhook",
+        event_kind: args.payload.event_kind || null,
+        context_message_id: args.extracted.contextMessageId,
+        inbox_id: args.inbox.id,
+        external_event_id: args.inbox.external_event_id,
+        responsible_quick_reply: "CONTINUAR",
+      },
+      onInboundPersisted: async () => null,
+    });
+    return {
+      isResponsible: true as const,
+      result: { correlationStatus: assistantResult.status, ...assistantResult },
+    };
   }
 
   if (args.extracted.rawMessageType === "text") {
@@ -2116,7 +2165,9 @@ async function processSingleInboxRow(
     extracted.rawMessageType === "location" ||
     extracted.rawMessageType === "contacts" ||
     extracted.rawMessageType === "reaction" ||
-    extracted.rawMessageType === "sticker";
+    extracted.rawMessageType === "sticker" ||
+    extracted.rawMessageType === "button" ||
+    extracted.rawMessageType === "interactive";
 
   if (!supportedMessageType) {
     const detail = `unsupported_message_type: ${extracted.rawMessageType}`;
@@ -2150,6 +2201,17 @@ async function processSingleInboxRow(
       detail: extracted.isGroupMessage
         ? "group_message_not_supported"
         : "self_originated_or_echo_not_ai_input",
+      ai_status: "skipped_not_text",
+    };
+  }
+
+  if (extracted.rawMessageType === "button" || extracted.rawMessageType === "interactive") {
+    await markInboxProcessed(supabase, inbox);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "skipped",
+      detail: "interactive_message_not_supported_for_customer",
       ai_status: "skipped_not_text",
     };
   }

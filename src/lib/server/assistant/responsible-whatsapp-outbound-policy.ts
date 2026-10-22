@@ -4,6 +4,9 @@ import {
   normalizeResponsibleWhatsappDestination,
   type CanonicalStoreResponsible,
 } from "@/lib/server/store-responsibles";
+import {
+  readAssistantPanelTemplateStatus,
+} from "@/lib/server/assistant/assistant-panel-template-status";
 
 export const RESPONSIBLE_WHATSAPP_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RESPONSIBLE_WHATSAPP_TEMPLATE_LANGUAGE = "pt_BR";
@@ -12,7 +15,8 @@ export type ResponsibleWhatsappTemplateKind =
   | "operational_approval"
   | "human_help"
   | "responsible_action"
-  | "commitment_decision";
+  | "commitment_decision"
+  | "assistant_operational_pending";
 
 export type ResponsibleWhatsappTemplateContext = {
   templateKind?: string | null;
@@ -42,6 +46,10 @@ type TemplatePayload = {
   }>;
 };
 
+export function isAssistantPanelWhatsappTemplateEnabled() {
+  return process.env.ASSISTANT_PANEL_WHATSAPP_TEMPLATE_ENABLED !== "false";
+}
+
 export type ResponsibleWhatsappOutboundPolicy =
   | {
       ok: true;
@@ -70,6 +78,7 @@ type PolicyDependencies = {
     storeId: string;
     context: ResponsibleWhatsappTemplateContext;
   }) => Promise<string | null>;
+  readAssistantPanelTemplateStatus?: typeof readAssistantPanelTemplateStatus;
   now?: () => Date;
 };
 
@@ -121,6 +130,8 @@ function resolveTemplateKind(
     zion_acao_do_responsavel: "responsible_action",
     commitment_decision: "commitment_decision",
     zion_decisao_sobre_compromisso: "commitment_decision",
+    assistant_operational_pending: "assistant_operational_pending",
+    zion_assistente_pendencia_operacional: "assistant_operational_pending",
   };
   if (explicitMap[explicit]) return explicitMap[explicit];
 
@@ -139,6 +150,14 @@ function resolveTemplateKind(
   if (notificationKeys.some((key) => key.includes("action") || key.includes("signed"))) {
     return "responsible_action";
   }
+  if (
+    notificationType === "assistant_panel_sync" &&
+    normalizeKey(contextValue(context.context, "source")) === "assistant_panel_whatsapp_sync" &&
+    normalizeKey(contextValue(context.context, "message_kind")) === "assistant" &&
+    context.context?.assistant_operational_pending === true
+  ) {
+    return "assistant_operational_pending";
+  }
   return null;
 }
 
@@ -149,6 +168,13 @@ function buildTemplate(args: {
   context: ResponsibleWhatsappTemplateContext;
 }): TemplatePayload | null {
   const rawContext = args.context.context;
+  if (args.kind === "assistant_operational_pending") {
+    return {
+      name: "zion_assistente_pendencia_operacional",
+      language: { code: RESPONSIBLE_WHATSAPP_TEMPLATE_LANGUAGE },
+      components: [],
+    };
+  }
   const situation = contextValue(rawContext, "situation", "current_situation", "objective_situation") ||
     cleanText(args.context.body);
   const decision = contextValue(rawContext, "decision", "exact_decision", "requested_decision");
@@ -343,14 +369,44 @@ export async function resolveResponsibleWhatsappOutboundPolicy(args: {
   }
   const kind = resolveTemplateKind(templateContext);
   if (!kind) return { ok: false, reason: "RESPONSIBLE_WHATSAPP_TEMPLATE_KIND_REQUIRED" };
+  if (
+    kind === "assistant_operational_pending" &&
+    !(
+      normalizeKey(templateContext.notificationType) === "assistant_panel_sync" &&
+      normalizeKey(contextValue(templateContext.context, "source")) ===
+        "assistant_panel_whatsapp_sync" &&
+      normalizeKey(contextValue(templateContext.context, "message_kind")) ===
+        "assistant" &&
+      templateContext.context?.assistant_operational_pending === true
+    )
+  ) {
+    return { ok: false, reason: "RESPONSIBLE_WHATSAPP_TEMPLATE_CONTEXT_INVALID" };
+  }
+  if (kind === "assistant_operational_pending" && !isAssistantPanelWhatsappTemplateEnabled()) {
+    return { ok: false, reason: "RESPONSIBLE_ASSISTANT_PANEL_TEMPLATE_DISABLED" };
+  }
+  if (kind === "assistant_operational_pending") {
+    const templateStatus = await (dependencies.readAssistantPanelTemplateStatus || readAssistantPanelTemplateStatus)({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+    });
+    if (!templateStatus.ok) {
+      return {
+        ok: false,
+        reason: `RESPONSIBLE_ASSISTANT_PANEL_TEMPLATE_NOT_APPROVED:${templateStatus.reason}`,
+      };
+    }
+  }
 
-  const loadCustomerName = dependencies.loadCustomerName || defaultLoadCustomerName;
-  const customerName = await loadCustomerName({
-    supabase: args.supabase,
-    organizationId: args.organizationId,
-    storeId: args.storeId,
-    context: templateContext,
-  });
+  const customerName = kind === "assistant_operational_pending"
+    ? ""
+    : await (dependencies.loadCustomerName || defaultLoadCustomerName)({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        context: templateContext,
+      });
   const template = buildTemplate({
     kind,
     responsibleName: responsibleResult.responsible.name || "",

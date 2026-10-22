@@ -42,6 +42,12 @@ function inbound(createdAt: string, fromPhone = "5511999999999") {
 const dependencies = {
   loadResponsible: async () => ({ ok: true as const, responsible }),
   loadCustomerName: async () => "Cliente Exemplo",
+  readAssistantPanelTemplateStatus: async () => ({
+    ok: true as const,
+    status: "APPROVED" as const,
+    wabaId: "waba-1",
+    phoneNumberId: "phone-1",
+  }),
   now: () => new Date("2026-10-01T12:00:00.000Z"),
 };
 
@@ -89,6 +95,35 @@ async function main() {
     assert.equal(result.template.language.code, "pt_BR");
     assert.equal(result.template.components[0]?.parameters.length, parameterCount);
   }
+
+  const previousAssistantTemplateFlag = process.env.ASSISTANT_PANEL_WHATSAPP_TEMPLATE_ENABLED;
+  const assistantTemplateContext: ResponsibleWhatsappTemplateContext = {
+    notificationType: "assistant_panel_sync",
+    body: "A Assistente aguarda uma decisão operacional.",
+    context: {
+      source: "assistant_panel_whatsapp_sync",
+      message_kind: "assistant",
+      assistant_operational_pending: true,
+      operational_task_id: "task-1",
+    },
+  };
+  delete process.env.ASSISTANT_PANEL_WHATSAPP_TEMPLATE_ENABLED;
+  const assistantTemplate = await resolve(assistantTemplateContext);
+  assert.equal(assistantTemplate.ok, true);
+  if (assistantTemplate.ok) {
+    assert.equal(assistantTemplate.mode, "template_required");
+    assert.equal(assistantTemplate.template.name, "zion_assistente_pendencia_operacional");
+    assert.equal(assistantTemplate.template.language.code, "pt_BR");
+    assert.deepEqual(assistantTemplate.template.components, []);
+  }
+  process.env.ASSISTANT_PANEL_WHATSAPP_TEMPLATE_ENABLED = "false";
+  const disabledAssistantTemplate = await resolve(assistantTemplateContext);
+  assert.deepEqual(disabledAssistantTemplate, {
+    ok: false,
+    reason: "RESPONSIBLE_ASSISTANT_PANEL_TEMPLATE_DISABLED",
+  });
+  if (previousAssistantTemplateFlag === undefined) delete process.env.ASSISTANT_PANEL_WHATSAPP_TEMPLATE_ENABLED;
+  else process.env.ASSISTANT_PANEL_WHATSAPP_TEMPLATE_ENABLED = previousAssistantTemplateFlag;
 
   const generic = await resolve({
     ...common,
