@@ -1086,6 +1086,9 @@ type ContractExperienceDraftState = {
   formats: string[];
   signed_before: string[];
   signed_before_other: string;
+  buyer_data_fields_configured: boolean;
+  buyer_data_fields: string[];
+  buyer_data_other: string;
   notes: string;
 };
 
@@ -1131,6 +1134,9 @@ function createEmptyContractExperienceDraft(): ContractExperienceDraftState {
     formats: [],
     signed_before: [],
     signed_before_other: "",
+    buyer_data_fields_configured: false,
+    buyer_data_fields: [],
+    buyer_data_other: "",
     notes: "",
   };
 }
@@ -1191,6 +1197,9 @@ const CONTRACT_EXPERIENCE_KEYS: Array<keyof ContractExperienceDraftState> = [
   "formats",
   "signed_before",
   "signed_before_other",
+  "buyer_data_fields_configured",
+  "buyer_data_fields",
+  "buyer_data_other",
   "notes",
 ];
 
@@ -1314,6 +1323,9 @@ function normalizeContractUsageDraft(
       formats: [],
       signed_before: [],
       signed_before_other: "",
+      buyer_data_fields_configured: false,
+      buyer_data_fields: [],
+      buyer_data_other: "",
       notes: "",
     };
   }
@@ -1332,6 +1344,18 @@ function normalizeContractUsageDraft(
 
   const signedBefore = uniqueCleanStrings(draft.signed_before).filter((value) =>
     validSignedBefore.has(value),
+  );
+  const validBuyerDataFields = new Set([
+    "full_name",
+    "cpf",
+    "rg",
+    "address",
+    "phone",
+    "email",
+    "other",
+  ]);
+  const buyerDataFields = uniqueCleanStrings(draft.buyer_data_fields).filter((value) =>
+    validBuyerDataFields.has(value),
   );
 
   return {
@@ -1352,6 +1376,11 @@ function normalizeContractUsageDraft(
       signedBefore.includes("outro")
         ? cleanText(draft.signed_before_other)
         : "",
+    buyer_data_fields_configured: draft.buyer_data_fields_configured === true,
+    buyer_data_fields: buyerDataFields,
+    buyer_data_other: buyerDataFields.includes("other")
+      ? cleanText(draft.buyer_data_other).slice(0, 500)
+      : "",
     notes: cleanText(draft.notes),
   };
 }
@@ -1967,6 +1996,16 @@ const CONTRACT_SIGNED_BEFORE_OPTIONS: Option[] = [
   { value: "entrega", label: "Liberar entrega" },
   { value: "retirada", label: "Liberar retirada" },
   { value: "outro", label: "Outro momento" },
+];
+
+const CONTRACT_BUYER_DATA_OPTIONS: Option[] = [
+  { value: "full_name", label: "Nome completo" },
+  { value: "cpf", label: "CPF" },
+  { value: "rg", label: "RG" },
+  { value: "address", label: "Endereço completo" },
+  { value: "phone", label: "Telefone" },
+  { value: "email", label: "E-mail" },
+  { value: "other", label: "Outro dado" },
 ];
 
 const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
@@ -12380,7 +12419,7 @@ export default function ConfiguracoesPage() {
   }, []);
 
   const toggleContractExperienceArrayValue = useCallback((
-    key: "applicability_cases" | "formats" | "signed_before",
+    key: "applicability_cases" | "formats" | "signed_before" | "buyer_data_fields",
     value: string,
   ) => {
     setContractExperienceDraft((current) => {
@@ -12390,6 +12429,9 @@ export default function ConfiguracoesPage() {
         [key]: currentValues.includes(value)
           ? currentValues.filter((item) => item !== value)
           : [...currentValues, value],
+        ...(key === "buyer_data_fields"
+          ? { buyer_data_fields_configured: true }
+          : {}),
       };
     });
   }, []);
@@ -12441,6 +12483,11 @@ export default function ConfiguracoesPage() {
       }
       if (draft.signed_before.includes("outro") && !cleanText(draft.signed_before_other)) {
         setErrorText("Explique o outro momento em que o contrato precisa estar assinado.");
+        setSuccessText(null);
+        return;
+      }
+      if (draft.buyer_data_fields.includes("other") && !cleanText(draft.buyer_data_other)) {
+        setErrorText("Descreva qual outro dado a loja solicita ao comprador.");
         setSuccessText(null);
         return;
       }
@@ -14967,6 +15014,15 @@ export default function ConfiguracoesPage() {
                       ) : null}
                     </div>
 
+                    <div>
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quais dados sua loja solicita ao comprador para preparar o contrato?</div>
+                      <p className="mb-2 text-xs leading-5 text-gray-500">Selecione somente os dados que a loja realmente precisa. Essa configuração orientará uma coleta futura e não impede operações manuais do responsável.</p>
+                      <MultiSelectBoxGroup values={contractExperienceDraft.buyer_data_fields} onToggle={(value) => toggleContractExperienceArrayValue("buyer_data_fields", value)} options={CONTRACT_BUYER_DATA_OPTIONS} />
+                      {contractExperienceDraft.buyer_data_fields.includes("other") ? (
+                        <RequiredOperationDetailField label="Qual outro dado deve ser solicitado?" value={contractExperienceDraft.buyer_data_other} onChange={(value) => updateContractExperienceDraft("buyer_data_other", value)} placeholder="Ex.: número do cadastro municipal" />
+                      ) : null}
+                    </div>
+
                     <label className="block space-y-1.5">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações sobre o uso do contrato</span>
                       <textarea value={contractExperienceDraft.notes} onChange={(event) => updateContractExperienceDraft("notes", event.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="Opcional. Registre somente particularidades reais da loja que não estejam cobertas acima." />
@@ -14979,6 +15035,7 @@ export default function ConfiguracoesPage() {
               { label: "Quando usa", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.applicability_mode ? optionLabel(savedContractExperience.applicability_mode, [{ value: "sempre", label: "Obrigatório em todas as vendas" }, { value: "depende", label: "É obrigatório apenas em algumas vendas" }, { value: "opcional", label: "Opcional" }]) : "Não definido") : savedContractExperience.enabled === "Não" ? "Não se aplica" : "Não definido" },
               { label: "Formatos", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.formats.length ? joinSelectedLabels(savedContractExperience.formats, CONTRACT_FORMAT_OPTIONS) : "Não definidos") : savedContractExperience.enabled === "Não" ? "Não se aplica" : "Não definido" },
               { label: "Precisa estar assinado antes de", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.signed_before.length ? joinSelectedLabels(savedContractExperience.signed_before, CONTRACT_SIGNED_BEFORE_OPTIONS, savedContractExperience.signed_before_other) : "Não definido") : savedContractExperience.enabled === "Não" ? "Não se aplica" : "Não definido" },
+              { label: "Dados solicitados do comprador", value: savedContractExperience.enabled === "Sim" ? (savedContractExperience.buyer_data_fields_configured ? (savedContractExperience.buyer_data_fields.length ? joinSelectedLabels(savedContractExperience.buyer_data_fields, CONTRACT_BUYER_DATA_OPTIONS, savedContractExperience.buyer_data_other) : "Nenhum dado adicional") : "Não configurados") : savedContractExperience.enabled === "Não" ? "Não se aplica" : "Não definido" },
             ])} />}
           </SectionBlock>
 

@@ -1,5 +1,13 @@
 export type ContractUsageApplicabilityMode = "sempre" | "depende" | "opcional";
 export type ContractUsageFormat = "digital" | "fisico";
+export type ContractBuyerDataField =
+  | "full_name"
+  | "cpf"
+  | "rg"
+  | "address"
+  | "phone"
+  | "email"
+  | "other";
 export type ContractUsageSignedBefore =
   | "encomendar"
   | "agendar_instalacao"
@@ -18,6 +26,9 @@ export type StoreContractUsagePolicy = {
   formats: ContractUsageFormat[];
   signedBefore: ContractUsageSignedBefore[];
   signedBeforeOther: string | null;
+  buyerDataFieldsConfigured: boolean;
+  buyerDataFields: ContractBuyerDataField[];
+  buyerDataOther: string | null;
   notes: string | null;
 };
 
@@ -42,6 +53,15 @@ const SIGNED_BEFORE = new Set<ContractUsageSignedBefore>([
   "entrega",
   "retirada",
   "outro",
+]);
+const BUYER_DATA_FIELDS = new Set<ContractBuyerDataField>([
+  "full_name",
+  "cpf",
+  "rg",
+  "address",
+  "phone",
+  "email",
+  "other",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -68,6 +88,9 @@ function emptyPolicy(state: StoreContractUsagePolicy["state"]): StoreContractUsa
     formats: [],
     signedBefore: [],
     signedBeforeOther: null,
+    buyerDataFieldsConfigured: false,
+    buyerDataFields: [],
+    buyerDataOther: null,
     notes: null,
   };
 }
@@ -89,6 +112,25 @@ export function normalizeStoreContractUsagePolicy(value: unknown): StoreContract
   const signedBefore = Array.isArray(value.signed_before)
     ? value.signed_before.filter((item): item is ContractUsageSignedBefore => typeof item === "string" && SIGNED_BEFORE.has(item as ContractUsageSignedBefore))
     : [];
+  const buyerDataFieldsConfigured = value.buyer_data_fields_configured === true;
+  const rawBuyerDataFields = value.buyer_data_fields;
+  const buyerDataFields = Array.isArray(rawBuyerDataFields)
+    ? Array.from(new Set(rawBuyerDataFields.filter((item): item is ContractBuyerDataField => typeof item === "string" && BUYER_DATA_FIELDS.has(item as ContractBuyerDataField))))
+    : [];
+  const buyerDataOtherText = text(value.buyer_data_other);
+  const hasInvalidBuyerDataField =
+    buyerDataFieldsConfigured &&
+    (!Array.isArray(rawBuyerDataFields) ||
+      rawBuyerDataFields.some(
+        (item) => typeof item !== "string" || !BUYER_DATA_FIELDS.has(item as ContractBuyerDataField),
+      ) ||
+      (buyerDataOtherText !== null && buyerDataOtherText.length > 500) ||
+      (buyerDataFields.includes("other") && !buyerDataOtherText));
+  const buyerDataOther = buyerDataFields.includes("other")
+    ? buyerDataOtherText?.slice(0, 500) || null
+    : null;
+
+  if (hasInvalidBuyerDataField) return emptyPolicy("incomplete");
   const applicabilityOther = text(value.applicability_other);
   const highValueAmount = text(value.high_value_amount);
   const signedBeforeOther = text(value.signed_before_other);
@@ -115,6 +157,9 @@ export function normalizeStoreContractUsagePolicy(value: unknown): StoreContract
     formats,
     signedBefore,
     signedBeforeOther,
+    buyerDataFieldsConfigured,
+    buyerDataFields,
+    buyerDataOther,
     notes: text(value.notes),
   };
 }

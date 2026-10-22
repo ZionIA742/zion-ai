@@ -896,6 +896,13 @@ test("contract usage policy normalizes hidden fields and uses canonical complete
   );
 });
 
+test("contract buyer data policy is allowlisted and presence-aware", () => {
+  assert.equal(pageSource.includes("const CONTRACT_BUYER_DATA_OPTIONS: Option[]"), true);
+  assert.equal(pageSource.includes("buyer_data_fields_configured: boolean"), true);
+  assert.equal(pageSource.includes('toggleContractExperienceArrayValue("buyer_data_fields"'), true);
+  assert.equal(pageSource.includes("buyer_data_other"), true);
+});
+
 test("digital contract readiness requires a valid scoped active store version", () => {
   const digitalUsageBlock = blockBetween(
     "function usesDigitalContractUsage(",
