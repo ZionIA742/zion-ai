@@ -562,6 +562,19 @@ export async function executeAssistantDocumentAction(
     };
   }
 
+  if (args.documentType === "contract" && args.action === "approve_and_send") {
+    return {
+      ok: false,
+      status: 409,
+      documentType: args.documentType,
+      documentId: args.documentId,
+      action: args.action,
+      error: "ASSISTANT_CONTRACT_OPERATION_REQUIRES_CRM",
+      message:
+        "A aprovacao e o envio de contratos devem ser realizados manualmente no CRM por um responsavel autenticado.",
+    };
+  }
+
   if (args.action === "review") {
     const result =
       args.documentType === "quote"

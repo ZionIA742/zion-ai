@@ -1191,6 +1191,24 @@ export async function handleAssistantDocumentEditRequest(
     }
 
     const candidate = contextResult.candidate;
+    if (candidate.documentType === "contract") {
+      return {
+        handled: true,
+        reply:
+          "A Assistente nao pode criar, preencher, editar ou gerar PDF de contratos. Use a funcionalidade Contrato no CRM com um responsavel autenticado.",
+        metadata: {
+          source: "assistant_document_edit_workflow_v1",
+          threadId: args.threadId,
+          contextDocumentType: candidate.documentType,
+          contextDocumentId: candidate.documentId,
+          contextDocumentNumber: candidate.documentNumber,
+          contextDocumentStatus: candidate.documentStatus,
+          patchMode: patch.mode,
+          documentEditMode: "contract_operation_requires_crm",
+        },
+      };
+    }
+
     const handledResult =
       candidate.documentType === "quote"
         ? await handleQuoteEdit({
