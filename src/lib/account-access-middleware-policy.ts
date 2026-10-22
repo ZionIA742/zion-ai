@@ -25,6 +25,7 @@ const PUBLIC_PATHS = new Set([
   "/api/webhooks/whatsapp",
   "/api/cron/assistant-operational-tasks",
   "/api/cron/assistant-panel-whatsapp-sync",
+  "/api/cron/assistant-reports",
   "/api/cron/whatsapp-process-all",
 ]);
 
