@@ -560,6 +560,17 @@ type SignedContractPdfUrlResponse = {
   message?: string;
 };
 
+type ContractTemplateSourceResponse = {
+  ok: boolean;
+  available?: boolean;
+  signedUrl?: string | null;
+  originalFilename?: string | null;
+  mimeType?: string | null;
+  expiresIn?: number;
+  error?: string;
+  message?: string;
+};
+
 type SignedMediaState = {
   signedUrl: string;
   mimeType: string | null;
@@ -1478,6 +1489,10 @@ export default function LeadPage() {
   const [contractActionError, setContractActionError] = useState<string | null>(null);
   const [contractActionSuccess, setContractActionSuccess] = useState<string | null>(null);
   const [hasLoadedGeneratedContracts, setHasLoadedGeneratedContracts] = useState(false);
+  const [contractTemplateSource, setContractTemplateSource] =
+    useState<ContractTemplateSourceResponse | null>(null);
+  const [contractTemplateSourceLoading, setContractTemplateSourceLoading] = useState(false);
+  const [contractTemplateSourceError, setContractTemplateSourceError] = useState<string | null>(null);
   const leadDetailsScopeRef = useRef<string | null>(null);
   const documentScopeRef = useRef<string | null>(null);
   const paymentScopeRef = useRef<string | null>(null);
@@ -2970,6 +2985,65 @@ export default function LeadPage() {
     }
   }
 
+  async function fetchContractTemplateSource(
+    options?: { silent?: boolean },
+  ): Promise<ContractTemplateSourceResponse | null> {
+    const scopedLeadId = leadId;
+    const scopedOpportunityId = selectedDocumentOpportunityId;
+    const scopedDocumentKey = documentScopeKey;
+
+    if (!scopedLeadId || !scopedOpportunityId || !scopedDocumentKey) {
+      setContractTemplateSource(null);
+      setContractTemplateSourceError(null);
+      setContractTemplateSourceLoading(false);
+      return null;
+    }
+
+    documentScopeRef.current = scopedDocumentKey;
+
+    if (!options?.silent) {
+      setContractTemplateSourceLoading(true);
+    }
+    setContractTemplateSourceError(null);
+
+    try {
+      const params = new URLSearchParams({
+        leadId: scopedLeadId,
+        commercialOpportunityId: scopedOpportunityId,
+      });
+      const response = await fetch(
+        `/api/sales-contracts/template-source?${params.toString()}`,
+        { method: "GET", cache: "no-store" },
+      );
+      const result = (await response.json()) as ContractTemplateSourceResponse;
+
+      if (documentScopeRef.current !== scopedDocumentKey) {
+        return null;
+      }
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel carregar o modelo de contrato.");
+      }
+
+      setContractTemplateSource(result);
+      return result;
+    } catch (error: any) {
+      if (documentScopeRef.current !== scopedDocumentKey) {
+        return null;
+      }
+
+      setContractTemplateSource(null);
+      setContractTemplateSourceError(
+        error?.message || "Nao foi possivel carregar o modelo de contrato.",
+      );
+      return null;
+    } finally {
+      if (documentScopeRef.current === scopedDocumentKey) {
+        setContractTemplateSourceLoading(false);
+      }
+    }
+  }
+
   async function refreshCurrentScreenSnapshot() {
     await fetchLeadConversationAndMessages({ silent: true });
 
@@ -2977,6 +3051,7 @@ export default function LeadPage() {
       await Promise.all([
         fetchGeneratedQuotes({ silent: true }),
         fetchGeneratedContracts({ silent: true }),
+        fetchContractTemplateSource({ silent: true }),
       ]);
     }
   }
@@ -4723,6 +4798,9 @@ export default function LeadPage() {
     setContractActionError(null);
     setContractActionSuccess(null);
     setHasLoadedGeneratedContracts(false);
+    setContractTemplateSource(null);
+    setContractTemplateSourceError(null);
+    setContractTemplateSourceLoading(false);
   }, [documentScopeKey]);
 
   useEffect(() => {
@@ -4738,6 +4816,7 @@ export default function LeadPage() {
 
     void fetchGeneratedQuotes();
     void fetchGeneratedContracts();
+    void fetchContractTemplateSource();
   }, [activeDetailsTab, documentScopeKey]);
 
   useEffect(() => {
@@ -5949,6 +6028,62 @@ export default function LeadPage() {
                               <InfoCard label="Localizacao informada" value={locationTextDisplay.value} help={locationTextDisplay.help} />
                               <InfoCard label="Preferencias do cliente" value={customerPreferencesDisplay.value} help={customerPreferencesDisplay.help} />
                             </div>
+                          </section>
+
+                          <section className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 ring-1 ring-sky-900/5">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <div className="text-sm font-semibold text-gray-900">
+                                  Modelo original da loja
+                                </div>
+                                <div className="mt-1 text-xs leading-5 text-gray-600">
+                                  Arquivo armazenado pela loja para consulta. Este acesso nao edita,
+                                  reconstrói ou gera um novo contrato.
+                                </div>
+                              </div>
+                              {contractTemplateSource?.available && contractTemplateSource.signedUrl ? (
+                                <a
+                                  href={contractTemplateSource.signedUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="rounded-xl bg-sky-700 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-800"
+                                >
+                                  Abrir arquivo original
+                                </a>
+                              ) : null}
+                            </div>
+
+                            {contractTemplateSourceLoading ? (
+                              <div className="mt-3 text-xs text-gray-600">
+                                Carregando modelo original...
+                              </div>
+                            ) : null}
+
+                            {contractTemplateSourceError ? (
+                              <div className="mt-3 rounded-xl bg-red-100 p-3 text-xs text-red-800">
+                                {contractTemplateSourceError}
+                              </div>
+                            ) : null}
+
+                            {!contractTemplateSourceLoading && !contractTemplateSourceError ? (
+                              contractTemplateSource?.available ? (
+                                <div className="mt-3 text-xs text-gray-700">
+                                  <span className="font-semibold">
+                                    {contractTemplateSource.originalFilename || "Arquivo sem nome"}
+                                  </span>
+                                  {contractTemplateSource.mimeType ? (
+                                    <span className="ml-2 text-gray-500">
+                                      {contractTemplateSource.mimeType}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              ) : (
+                                <div className="mt-3 text-xs text-gray-600">
+                                  {contractTemplateSource?.message ||
+                                    "Nenhum modelo de contrato ativo foi configurado para esta loja."}
+                                </div>
+                              )
+                            ) : null}
                           </section>
 
                           <div className="text-sm font-semibold text-gray-900">

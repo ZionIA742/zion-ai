@@ -14,6 +14,12 @@ assert.equal(source.includes('label="Nome" value={lead.name?.trim() || "Nao info
 assert.equal(source.includes('label="CPF" value="Nao informado"'), true);
 assert.equal(source.includes('label="Telefone" value={lead.phone?.trim() || "Nao informado"}'), true);
 assert.equal(source.includes("selectedRouteDestinationAddress || \"Nao informado\""), true);
+assert.equal(source.includes("/api/sales-contracts/template-source?"), true);
+assert.equal(source.includes("Modelo original da loja"), true);
+assert.equal(source.includes("Abrir arquivo original"), true);
+assert.equal(source.includes("contractTemplateSource.originalFilename"), true);
+assert.equal(source.includes("contractTemplateSource.mimeType"), true);
+assert.equal(source.includes("reconstrói"), true);
 
 const contractAction = source.slice(
   source.indexOf("function openContractPanel()"),
