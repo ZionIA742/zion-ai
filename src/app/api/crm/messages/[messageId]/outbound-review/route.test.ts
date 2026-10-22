@@ -18,20 +18,46 @@ function access(overrides: Record<string, unknown> = {}) {
   return {
     ok: true as const,
     sessionUserId: actorId,
-    organizationId: "org-a",
-    storeId: "store-a",
+    resolution: {
+      domain: "zion_admin",
+      status: "zion_admin_allowed",
+      apiDecision: "allow",
+      reasonCode: "zion_admin_allowed",
+      message: "ok",
+      safeHtmlDestination: "/zion-admin",
+      organizationResolution: "none",
+      storeResolution: "none",
+      organizationId: null,
+      storeId: null,
+      commercialAccess: "unknown",
+      role: "admin",
+      capabilities: ["manage_accounts"],
+    },
     ...overrides,
   } as never;
 }
 
-function rpcClient(result: unknown, error: { message?: string } | null = null) {
+function rpcClient(
+  result: unknown,
+  error: { message?: string } | null = null,
+  scope: { organization_id?: unknown; store_id?: unknown } | null = {
+    organization_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    store_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  },
+) {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const scopeQuery = {
+    select: () => scopeQuery,
+    eq: () => scopeQuery,
+    maybeSingle: async () => ({ data: scope, error: null }),
+  };
   return {
     calls,
     rpc: async (name: string, args: Record<string, unknown>) => {
       calls.push({ name, args });
       return { data: result, error };
     },
+    from: () => scopeQuery,
   };
 }
 
@@ -64,9 +90,28 @@ async function main() {
   assert.equal(first.body.review.result, "recorded");
   assert.equal(first.body.review.message_retried, false);
   assert.equal(recorded.calls[0].args.p_actor_user_id, actorId);
-  assert.equal(recorded.calls[0].args.p_organization_id, "org-a");
-  assert.equal(recorded.calls[0].args.p_store_id, "store-a");
+  assert.equal(recorded.calls[0].args.p_organization_id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+  assert.equal(recorded.calls[0].args.p_store_id, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
   assert.equal("provider_message_id" in recorded.calls[0].args, false);
+
+  const clientScopeCannotAuthorize = rpcClient({
+    review_id: reviewId,
+    result: "recorded",
+    outbound_delivery_state: "uncertain",
+    message_state_changed: false,
+    message_retried: false,
+  });
+  const clientScopeResponse = await read(await createHandler({
+    resolveAccess: async () => access(),
+    createServiceClient: () => clientScopeCannotAuthorize,
+  })(request({
+    ...validBody,
+    organization_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    store_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+  }), { params: Promise.resolve({ messageId }) }));
+  assert.equal(clientScopeResponse.status, 200);
+  assert.equal(clientScopeCannotAuthorize.calls[0].args.p_organization_id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+  assert.equal(clientScopeCannotAuthorize.calls[0].args.p_store_id, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
 
   const defaultEvidence = rpcClient({
     review_id: reviewId,
@@ -102,6 +147,14 @@ async function main() {
   })(request(validBody), { params: Promise.resolve({ messageId }) }));
   assert.equal(denied.status, 401);
 
+  for (const status of [403, 409]) {
+    const nonAdmin = await read(await createHandler({
+      resolveAccess: async () => ({ ok: false, httpStatus: status, payload: { ok: false, error: "ZION_ADMIN_API_FORBIDDEN" } } as never),
+      createServiceClient: () => { throw new Error("must not call RPC"); },
+    })(request(validBody), { params: Promise.resolve({ messageId }) }));
+    assert.equal(nonAdmin.status, status);
+  }
+
   const crossScope = await read(await createHandler({
     resolveAccess: async () => ({
       ok: false,
@@ -111,6 +164,14 @@ async function main() {
     createServiceClient: () => { throw new Error("must not call RPC"); },
   })(request(validBody), { params: Promise.resolve({ messageId }) }));
   assert.equal(crossScope.status, 403);
+
+  const missingMessageClient = rpcClient(null, null, null);
+  const missingMessage = await read(await createHandler({
+    resolveAccess: async () => access(),
+    createServiceClient: () => missingMessageClient,
+  })(request(validBody), { params: Promise.resolve({ messageId }) }));
+  assert.equal(missingMessage.status, 404);
+  assert.equal(missingMessageClient.calls.length, 0);
 
   const invalidId = await read(await handler(request(validBody), { params: Promise.resolve({ messageId: "not-a-uuid" }) }));
   assert.equal(invalidId.status, 400);

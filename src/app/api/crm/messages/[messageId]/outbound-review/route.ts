@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import {
-  resolveStoreApiAccess,
-  type ResolveStoreApiAccessDeps,
-  type StoreApiAccessDenied,
-  type StoreApiAccessGranted,
-} from "@/lib/server/store-api-access";
-import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
+  resolveZionAdminApiAccess,
+  type ResolveZionAdminApiAccessDeps,
+  type ZionAdminApiAccessDenied,
+  type ZionAdminApiAccessGranted,
+} from "@/lib/server/zion-admin-api-access";
+import {
+  createZionAdminApiDeniedResponse,
+  createZionAdminApiJsonResponse,
+} from "@/lib/server/zion-admin-api-response";
 import { createServiceSupabaseClient } from "@/lib/server/zion-account-provisioning";
 
 export const runtime = "nodejs";
@@ -49,12 +52,32 @@ type ReviewRpcClient = {
   }>;
 };
 
+type ReviewMessageScope = {
+  organization_id?: unknown;
+  store_id?: unknown;
+};
+
+type ReviewMessageScopeFilter = {
+  maybeSingle: () => PromiseLike<{
+    data: ReviewMessageScope | null;
+    error: { message?: string | null } | null;
+  }>;
+};
+
+type ReviewServiceClient = ReviewRpcClient & {
+  from: (table: string) => {
+    select: (columns: string) => {
+      eq: (column: string, value: unknown) => ReviewMessageScopeFilter;
+    };
+  };
+};
+
 type RouteDeps = {
   resolveAccess: (params: {
-    requirement: "active";
-    deps?: Partial<ResolveStoreApiAccessDeps>;
-  }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
-  createServiceClient: () => ReviewRpcClient;
+    requiredCapability: "manage_accounts";
+    deps?: Partial<ResolveZionAdminApiAccessDeps>;
+  }) => Promise<ZionAdminApiAccessGranted | ZionAdminApiAccessDenied>;
+  createServiceClient: () => ReviewServiceClient;
 };
 
 function text(value: unknown) {
@@ -69,7 +92,7 @@ function json(body: unknown, status = 200) {
 }
 
 function invalidField(field: string) {
-  return json(
+  return createZionAdminApiJsonResponse(
     { ok: false, error: "INVALID_REVIEW_INPUT", field },
     400,
   );
@@ -118,6 +141,33 @@ function parseReviewBody(body: ReviewBody | null) {
   return { ok: true as const, values };
 }
 
+async function readMessageScope(
+  serviceClient: ReviewServiceClient,
+  messageId: string,
+) {
+  const result = await serviceClient
+    .from("messages")
+    .select("organization_id,store_id")
+    .eq("id", messageId)
+    .maybeSingle();
+
+  if (
+    result.error ||
+    !result.data ||
+    typeof result.data.organization_id !== "string" ||
+    typeof result.data.store_id !== "string" ||
+    !UUID_RE.test(result.data.organization_id) ||
+    !UUID_RE.test(result.data.store_id)
+  ) {
+    return null;
+  }
+
+  return {
+    organizationId: result.data.organization_id,
+    storeId: result.data.store_id,
+  };
+}
+
 function normalizeRpcResult(data: unknown): ReviewResult | null {
   const row = Array.isArray(data) ? (data.length === 1 ? data[0] : null) : data;
   if (!row || typeof row !== "object") return null;
@@ -141,13 +191,29 @@ function normalizeRpcResult(data: unknown): ReviewResult | null {
   };
 }
 
+function createReviewServiceClient(): ReviewServiceClient {
+  const serviceClient = createServiceSupabaseClient();
+  return {
+    rpc: (name, args) => serviceClient.rpc(name, args),
+    from: (table) => ({
+      select: (columns) => ({
+        eq: (column, value) => ({
+          maybeSingle: () => serviceClient.from(table).select(columns).eq(column, value).maybeSingle(),
+        }),
+      }),
+    }),
+  };
+}
+
 function createHandler(deps: RouteDeps) {
   return async function POST(
     request: Request,
     context: { params: Promise<{ messageId: string }> },
   ) {
-    const access = await deps.resolveAccess({ requirement: "active" });
-    if (!access.ok) return createStoreApiDeniedResponse(access);
+    const access = await deps.resolveAccess({
+      requiredCapability: "manage_accounts",
+    });
+    if (!access.ok) return createZionAdminApiDeniedResponse(access);
 
     const { messageId: rawMessageId } = await context.params;
     const messageId = text(rawMessageId);
@@ -161,9 +227,18 @@ function createHandler(deps: RouteDeps) {
     if (!parsed.ok) return parsed.response;
 
     try {
-      const result = await deps.createServiceClient().rpc(REVIEW_RPC, {
-        p_organization_id: access.organizationId,
-        p_store_id: access.storeId,
+      const serviceClient = deps.createServiceClient();
+      const scope = await readMessageScope(serviceClient, messageId);
+      if (!scope) {
+        return createZionAdminApiJsonResponse(
+          { ok: false, error: "UNCERTAIN_REVIEW_MESSAGE_NOT_FOUND" },
+          404,
+        );
+      }
+
+      const result = await serviceClient.rpc(REVIEW_RPC, {
+        p_organization_id: scope.organizationId,
+        p_store_id: scope.storeId,
         p_message_id: messageId,
         p_actor_user_id: access.sessionUserId,
         p_operation_key: parsed.values.operationKey,
@@ -174,7 +249,7 @@ function createHandler(deps: RouteDeps) {
       });
 
       if (result.error) {
-        return json(
+        return createZionAdminApiJsonResponse(
           { ok: false, error: "UNCERTAIN_REVIEW_REJECTED", message: result.error.message || "A revisao nao foi registrada." },
           409,
         );
@@ -182,23 +257,26 @@ function createHandler(deps: RouteDeps) {
 
       const review = normalizeRpcResult(result.data);
       if (!review) {
-        return json({ ok: false, error: "UNCERTAIN_REVIEW_INVALID_RESULT" }, 502);
+        return createZionAdminApiJsonResponse({ ok: false, error: "UNCERTAIN_REVIEW_INVALID_RESULT" }, 502);
       }
 
-      return json({
-        ok: true,
-        review,
-        messageWasNotRetried: review.message_retried === false,
-      });
+      return createZionAdminApiJsonResponse(
+        {
+          ok: true,
+          review,
+          messageWasNotRetried: review.message_retried === false,
+        },
+        200,
+      );
     } catch {
-      return json({ ok: false, error: "UNCERTAIN_REVIEW_FAILED" }, 500);
+      return createZionAdminApiJsonResponse({ ok: false, error: "UNCERTAIN_REVIEW_FAILED" }, 500);
     }
   };
 }
 
 export const POST = createHandler({
-  resolveAccess: resolveStoreApiAccess,
-  createServiceClient: createServiceSupabaseClient,
+  resolveAccess: resolveZionAdminApiAccess,
+  createServiceClient: createReviewServiceClient,
 });
 
-export { createHandler, normalizeRpcResult, parseReviewBody };
+export { createHandler, normalizeRpcResult, parseReviewBody, readMessageScope };
