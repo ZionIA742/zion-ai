@@ -13,6 +13,14 @@ function readPageSource() {
   return readFileSync(pagePath, "utf8");
 }
 
+function getContractActivationBlock(source: string) {
+  const start = source.indexOf("function canApproveStoreContractVersion(");
+  assert.equal(start > -1, true, "contract activation helper not found");
+  const end = source.indexOf("function resolveContractRuleGroupLabel(", start);
+  assert.equal(end > start, true, "contract activation helper end not found");
+  return source.slice(start, end);
+}
+
 function getUpsertConfigAnswersBlock(source: string) {
   const start = source.indexOf("  const upsertConfigAnswers = useCallback(");
   assert.equal(start > -1, true, "upsertConfigAnswers not found");
@@ -1465,6 +1473,25 @@ const tests: TestCase[] = [
         block.includes('discount_explanation: safeDiscountExplanation'),
         true,
       );
+    },
+  },
+  {
+    name: "contract activation is manual and independent from clause analysis",
+    run: () => {
+      const source = readPageSource();
+      const block = getContractActivationBlock(source);
+
+      assert.equal(block.includes('return ["uploaded", "analyzed", "awaiting_review"].includes(normalizedStatus);'), true);
+      assert.equal(block.includes("!version.store_file_id"), true);
+      assert.equal(block.includes("versionRules.length"), false);
+      assert.equal(block.includes("isFinalContractRuleReviewStatus"), false);
+      assert.equal(source.includes('isApproveBusy ? "Ativando..." : "Ativar modelo"'), true);
+      assert.equal(source.includes("Modelo de contrato ativado com sucesso."), true);
+      assert.equal(source.includes("Envie e ative manualmente o documento original da loja."), true);
+      assert.equal(source.includes("/api/store-contract-templates/${encodeURIComponent(versionId)}/download?storeId="), true);
+      assert.equal(source.includes('link.download = cleanText(result.originalFilename) || "contrato-da-loja"'), true);
+      assert.equal(source.includes('"Baixar contrato"'), true);
+      assert.equal(source.includes("const canDownload = Boolean(version.store_file_id)"), true);
     },
   },
 ];

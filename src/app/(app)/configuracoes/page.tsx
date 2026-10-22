@@ -310,9 +310,6 @@ type StoreContractTemplateApiResponse = {
   message?: string;
 };
 
-type ContractRuleReviewStatus = "pending" | "approved" | "rejected" | "edited";
-
-
 type OnboardingRow = {
   id?: string;
   store_id: string;
@@ -2402,16 +2399,8 @@ function resolveContractRuleStatus(status: string | null | undefined) {
   return { label: "Aguardando revisao", tone: "amber" as const };
 }
 
-function normalizeContractReviewStatus(status: string | null | undefined) {
-  return cleanText(status).toLowerCase();
-}
-
 function normalizeContractVersionStatusValue(status: string | null | undefined) {
   return cleanText(status).toLowerCase();
-}
-
-function isFinalContractRuleReviewStatus(status: string): status is ContractRuleReviewStatus {
-  return status === "approved" || status === "rejected" || status === "edited";
 }
 
 function isMutableStoreContractVersion({
@@ -2476,23 +2465,16 @@ function canReviewRulesForStoreContractVersion({
 
 function canApproveStoreContractVersion({
   version,
-  versionRules,
   isActiveVersion,
 }: {
   version: StoreContractTemplateVersionRow | null | undefined;
-  versionRules: StoreContractTemplateExtractedRuleRow[];
   isActiveVersion: boolean;
 }) {
   if (!version) return false;
 
   const normalizedStatus = normalizeContractVersionStatusValue(version.status);
-  if (isActiveVersion || normalizedStatus === "rejected" || version.rejected_at) return false;
-  if (!["analyzed", "awaiting_review"].includes(normalizedStatus)) return false;
-  if (versionRules.length === 0) return false;
-
-  return versionRules.every((rule) =>
-    isFinalContractRuleReviewStatus(normalizeContractReviewStatus(rule.review_status))
-  );
+  if (isActiveVersion || version.rejected_at || !version.store_file_id) return false;
+  return ["uploaded", "analyzed", "awaiting_review"].includes(normalizedStatus);
 }
 
 function resolveContractRuleGroupLabel(group: string | null | undefined) {
@@ -4444,7 +4426,7 @@ export default function ConfiguracoesPage() {
   const [uploadingContractBase, setUploadingContractBase] = useState(false);
   const [contractActionVersionId, setContractActionVersionId] = useState<string | null>(null);
   const [contractActionType, setContractActionType] = useState<
-    "analyze" | "approve" | "reject" | "extract-rules" | null
+    "analyze" | "approve" | "reject" | "extract-rules" | "download" | null
   >(null);
   const [contractRejectReasonDrafts, setContractRejectReasonDrafts] = useState<Record<string, string>>({});
   const [contractsErrorText, setContractsErrorText] = useState<string | null>(null);
@@ -4746,16 +4728,68 @@ export default function ConfiguracoesPage() {
     };
   }
 
+  async function handleDownloadContractVersion(versionId: string) {
+    if (!activeStoreId) {
+      setContractsErrorText("Nenhuma loja ativa foi encontrada para baixar essa versao.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    const versionAccess = resolveStoreContractVersionAccess(versionId);
+    if (!versionAccess.version?.store_file_id) {
+      setContractsErrorText("Essa versao nao possui arquivo original disponivel para baixar.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    setContractActionVersionId(versionId);
+    setContractActionType("download");
+    setContractsErrorText(null);
+    setContractsSuccessText(null);
+
+    try {
+      const response = await fetch(
+        `/api/store-contract-templates/${encodeURIComponent(versionId)}/download?storeId=${encodeURIComponent(activeStoreId)}`,
+        { method: "GET", cache: "no-store", credentials: "include" },
+      );
+      const result = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        signedUrl?: string | null;
+        originalFilename?: string | null;
+        message?: string;
+      } | null;
+
+      if (!response.ok || !result?.ok || !result.signedUrl) {
+        throw new Error(result?.message || "Nao foi possivel baixar o contrato original.");
+      }
+
+      const link = document.createElement("a");
+      link.href = result.signedUrl;
+      link.download = cleanText(result.originalFilename) || "contrato-da-loja";
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setContractsSuccessText("Download do contrato original iniciado.");
+    } catch (error: any) {
+      setContractsErrorText(error?.message || "Erro ao baixar o contrato original.");
+    } finally {
+      setContractActionVersionId(null);
+      setContractActionType(null);
+    }
+  }
+
   async function handleApproveContractVersion(versionId: string) {
     if (!activeStoreId) {
-      setContractsErrorText("Nenhuma loja ativa foi encontrada para aprovar essa versao.");
+      setContractsErrorText("Nenhuma loja ativa foi encontrada para ativar essa versao.");
       setContractsSuccessText(null);
       return;
     }
 
     const versionAccess = resolveStoreContractVersionAccess(versionId);
     if (!canApproveStoreContractVersion(versionAccess)) {
-      setContractsErrorText("Essa versao ainda nao pode ser aprovada.");
+      setContractsErrorText("Essa versao ainda nao pode ser ativada.");
       setContractsSuccessText(null);
       return;
     }
@@ -4784,9 +4818,9 @@ export default function ConfiguracoesPage() {
       }
 
       applyStoreContractTemplateResponse(result);
-      setContractsSuccessText("Contrato base aprovado com sucesso.");
+      setContractsSuccessText("Modelo de contrato ativado com sucesso.");
     } catch (error: any) {
-      setContractsErrorText(error?.message || "Erro ao aprovar essa versao.");
+      setContractsErrorText(error?.message || "Erro ao ativar essa versao.");
     } finally {
       setContractActionVersionId(null);
       setContractActionType(null);
@@ -15041,7 +15075,7 @@ export default function ConfiguracoesPage() {
 
           <SectionBlock
             title="Contrato padrão da loja"
-            description="Envie, revise e aprove o contrato base oficial da loja. O ZION mantém uma única versão ativa por vez e preserva as versões anteriores no histórico."
+            description="Envie e ative manualmente o documento original da loja. O ZION mantém uma única versão ativa por vez e preserva as versões anteriores no histórico."
             tone={storeContractCardTone}
             status={storeContractCardStatus}
             actions={<button type="button" onClick={() => setIsContractsEditing((current) => !current)} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">{isContractsEditing ? "Fechar" : "Gerenciar contrato"}</button>}
@@ -15165,6 +15199,7 @@ export default function ConfiguracoesPage() {
                           const isExtractRulesBusy = busy && contractActionType === "extract-rules";
                           const isApproveBusy = busy && contractActionType === "approve";
                           const isRejectBusy = busy && contractActionType === "reject";
+                          const isDownloadBusy = busy && contractActionType === "download";
                           const versionRules = storeContractExtractedRules.filter((rule) => rule.template_version_id === version.id);
                           const canAnalyze = canAnalyzeStoreContractVersion({
                             version,
@@ -15179,9 +15214,9 @@ export default function ConfiguracoesPage() {
                           });
                           const canApprove = canApproveStoreContractVersion({
                             version,
-                            versionRules,
                             isActiveVersion,
                           });
+                          const canDownload = Boolean(version.store_file_id);
                           const canReject = isMutableStoreContractVersion({
                             version,
                             isActiveVersion,
@@ -15218,6 +15253,16 @@ export default function ConfiguracoesPage() {
                                 </div>
 
                                 <div className="flex w-full flex-col gap-2 xl:w-52">
+                                  {canDownload ? (
+                                    <button
+                                      type="button"
+                                      disabled={busy || uploadingContractBase || contractsLoading}
+                                      onClick={() => void handleDownloadContractVersion(version.id)}
+                                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                      {isDownloadBusy ? "Preparando download..." : "Baixar contrato"}
+                                    </button>
+                                  ) : null}
                                   {canAnalyze ? (
                                     <button
                                       type="button"
@@ -15269,7 +15314,7 @@ export default function ConfiguracoesPage() {
                                       onClick={() => void handleApproveContractVersion(version.id)}
                                       className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
                                     >
-                                      {isApproveBusy ? "Aprovando..." : "Aprovar versão"}
+                                      {isApproveBusy ? "Ativando..." : "Ativar modelo"}
                                     </button>
                                   ) : null}
                                   {canReject ? (
