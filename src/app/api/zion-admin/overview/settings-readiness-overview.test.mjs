@@ -9,6 +9,8 @@ const marker = "2026-10-07T12:00:00.000Z";
 function createClient(overrides = {}) {
   const rpcData = {
     read_store_operation_execution_policies_by_system: {
+      organization_id: organizationId,
+      store_id: storeId,
       technical_visit_configured_at: marker,
       installation_configured_at: marker,
       pool_replacement_configured_at: marker,
@@ -121,6 +123,172 @@ const blocked = await loadStoreSettingsReadiness({
 });
 assert.equal(blocked.families.find((family) => family.family === "operation").state, "blocked");
 
+const emptyComposite = await loadStoreSettingsReadiness({
+  supabase: createClient({
+    tables: readyTables,
+    rpcData: {
+      read_store_operation_execution_policies_by_system: {
+        organization_id: null,
+        store_id: null,
+        technical_visit_configured_at: null,
+        installation_configured_at: null,
+        pool_replacement_configured_at: null,
+        delivery_configured_at: null,
+        pickup_configured_at: null,
+        technical_services_configured_at: null,
+      },
+    },
+  }),
+  organizationId,
+  storeId,
+});
+assert.equal(emptyComposite.families.find((family) => family.family === "operation").state, "blocked");
+assert.deepEqual(
+  emptyComposite.families
+    .find((family) => family.family === "operation")
+    .issues.map((issue) => issue.code),
+  ["operation_execution_policies_not_configured"],
+);
+
+const malformedEmptyComposite = await loadStoreSettingsReadiness({
+  supabase: createClient({
+    tables: readyTables,
+    rpcData: {
+      read_store_operation_execution_policies_by_system: {
+        technical_visit_configured_at: null,
+        installation_configured_at: null,
+      },
+    },
+  }),
+  organizationId,
+  storeId,
+});
+assert.equal(
+  malformedEmptyComposite.families.find((family) => family.family === "operation").state,
+  "unknown",
+);
+
+const emptyArray = await loadStoreSettingsReadiness({
+  supabase: createClient({
+    tables: readyTables,
+    rpcData: { read_store_operation_execution_policies_by_system: [] },
+  }),
+  organizationId,
+  storeId,
+});
+assert.equal(emptyArray.families.find((family) => family.family === "operation").state, "blocked");
+
+const organizationMismatch = await loadStoreSettingsReadiness({
+  supabase: createClient({
+    tables: readyTables,
+    rpcData: {
+      read_store_operation_execution_policies_by_system: {
+        organization_id: "other-org",
+        store_id: storeId,
+        technical_visit_configured_at: marker,
+      },
+    },
+  }),
+  organizationId,
+  storeId,
+});
+assert.equal(organizationMismatch.families.find((family) => family.family === "operation").state, "unknown");
+
+const storeMismatch = await loadStoreSettingsReadiness({
+  supabase: createClient({
+    tables: readyTables,
+    rpcData: {
+      read_store_operation_execution_policies_by_system: {
+        organization_id: organizationId,
+        store_id: "other-store",
+        technical_visit_configured_at: marker,
+      },
+    },
+  }),
+  organizationId,
+  storeId,
+});
+assert.equal(storeMismatch.families.find((family) => family.family === "operation").state, "unknown");
+
+const nullScopeWithData = await loadStoreSettingsReadiness({
+  supabase: createClient({
+    tables: readyTables,
+    rpcData: {
+      read_store_operation_execution_policies_by_system: {
+        organization_id: null,
+        store_id: null,
+        technical_visit_configured_at: marker,
+      },
+    },
+  }),
+  organizationId,
+  storeId,
+});
+assert.equal(nullScopeWithData.families.find((family) => family.family === "operation").state, "unknown");
+
+const missingScopeWithData = await loadStoreSettingsReadiness({
+  supabase: createClient({
+    tables: readyTables,
+    rpcData: {
+      read_store_operation_execution_policies_by_system: {
+        technical_visit_configured_at: marker,
+      },
+    },
+  }),
+  organizationId,
+  storeId,
+});
+assert.equal(
+  missingScopeWithData.families.find((family) => family.family === "operation").state,
+  "unknown",
+);
+
+const correctScopedData = await loadStoreSettingsReadiness({
+  supabase: createClient({
+    tables: readyTables,
+    rpcData: {
+      read_store_operation_execution_policies_by_system: {
+        organization_id: organizationId,
+        store_id: storeId,
+        technical_visit_configured_at: marker,
+        installation_configured_at: marker,
+        pool_replacement_configured_at: marker,
+        delivery_configured_at: marker,
+        pickup_configured_at: marker,
+        technical_services_configured_at: marker,
+      },
+    },
+  }),
+  organizationId,
+  storeId,
+});
+assert.equal(correctScopedData.families.find((family) => family.family === "operation").state, "ready");
+
+for (const [rpcName, familyName] of [
+  ["read_store_payment_settings_by_system", "payment"],
+  ["read_store_channel_settings_by_system", "channel"],
+  ["read_store_strategy_settings_by_system", "strategy"],
+]) {
+  const nullCompositeForOtherFamily = await loadStoreSettingsReadiness({
+    supabase: createClient({
+      tables: readyTables,
+      rpcData: {
+        [rpcName]: {
+          accepted_payment_methods: null,
+          commercial_channel_name: null,
+          service_region_configured_at: null,
+        },
+      },
+    }),
+    organizationId,
+    storeId,
+  });
+  assert.equal(
+    nullCompositeForOtherFamily.families.find((family) => family.family === familyName).state,
+    "blocked",
+  );
+}
+
 const isolatedFailure = await loadStoreSettingsReadiness({
   supabase: createClient({
     rpcErrors: { read_store_payment_settings_by_system: "payment unavailable" },
@@ -143,4 +311,4 @@ const scopeFailure = await loadStoreSettingsReadiness({
 });
 assert.equal(scopeFailure.families.find((family) => family.family === "commercial_ai").state, "unknown");
 
-console.log("zion-admin-settings-readiness-overview: 4 tests passed");
+console.log("zion-admin-settings-readiness-overview: 10 tests passed");

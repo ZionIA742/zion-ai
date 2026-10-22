@@ -36,12 +36,35 @@ function sourceError(error: unknown) {
   return message.trim() || "Settings source unavailable.";
 }
 
-function normalizeReaderRow<T>(value: unknown): T | null {
+function normalizeReaderRow<T>(
+  value: unknown,
+  options: { emptyCompositeMeansAbsent?: boolean } = {},
+): T | null {
   const rows = value == null ? [] : Array.isArray(value) ? value : [value];
-  return rows.length === 1 ? (rows[0] as T) : null;
+  const row = rows.length === 1 ? rows[0] : null;
+
+  if (
+    options.emptyCompositeMeansAbsent === true &&
+    row &&
+    typeof row === "object" &&
+    !Array.isArray(row) &&
+    Object.prototype.hasOwnProperty.call(row, "organization_id") &&
+    Object.prototype.hasOwnProperty.call(row, "store_id") &&
+    Object.keys(row).length > 0 &&
+    Object.values(row).every((field) => field === null)
+  ) {
+    return null;
+  }
+
+  return row as T | null;
 }
 
-function scopeError(row: unknown, organizationId: string, storeId: string) {
+function scopeError(
+  row: unknown,
+  organizationId: string,
+  storeId: string,
+  options: { requireCompleteScope?: boolean } = {},
+) {
   if (row == null || typeof row !== "object" || Array.isArray(row)) {
     return null;
   }
@@ -50,6 +73,13 @@ function scopeError(row: unknown, organizationId: string, storeId: string) {
     organization_id?: unknown;
     store_id?: unknown;
   };
+
+  if (
+    options.requireCompleteScope === true &&
+    (candidate.organization_id !== organizationId || candidate.store_id !== storeId)
+  ) {
+    return "Settings source organization/store scope mismatch.";
+  }
 
   if (
     candidate.organization_id !== undefined &&
@@ -70,6 +100,8 @@ async function safeRpcSource<T>(args: {
   name: string;
   organizationId: string;
   storeId: string;
+  emptyCompositeMeansAbsent?: boolean;
+  requireCompleteScope?: boolean;
 }): Promise<SettingsReadinessSource<T>> {
   try {
     const result = await args.supabase.rpc(args.name, {
@@ -81,8 +113,12 @@ async function safeRpcSource<T>(args: {
       return { ok: false, error: sourceError(result.error.message) };
     }
 
-    const row = normalizeReaderRow<T>(result.data);
-    const mismatch = scopeError(row, args.organizationId, args.storeId);
+    const row = normalizeReaderRow<T>(result.data, {
+      emptyCompositeMeansAbsent: args.emptyCompositeMeansAbsent,
+    });
+    const mismatch = scopeError(row, args.organizationId, args.storeId, {
+      requireCompleteScope: args.requireCompleteScope,
+    });
     return mismatch
       ? { ok: false, error: mismatch }
       : { ok: true, data: row };
@@ -155,6 +191,8 @@ export async function loadStoreSettingsReadiness(args: {
       safeRpcSource<OperationExecutionPoliciesReadinessRow>({
         ...args,
         name: "read_store_operation_execution_policies_by_system",
+        emptyCompositeMeansAbsent: true,
+        requireCompleteScope: true,
       }),
       safeRpcSource<PaymentSettingsReadinessRow>({
         ...args,
