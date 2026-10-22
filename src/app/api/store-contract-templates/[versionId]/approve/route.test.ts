@@ -75,6 +75,7 @@ function createFakeSupabase(args: {
     organization_id: "org-1",
     store_id: "store-1",
     status: "analyzed",
+    store_file_id: "file-1",
     rejected_at: null,
   };
   const template = args.template ?? {
@@ -86,9 +87,11 @@ function createFakeSupabase(args: {
   };
   const rules = args.rules ?? [{ id: "rule-1", review_status: "approved" }];
   const rpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const events: Array<{ type: string; table?: string; name?: string }> = [];
   let activated = false;
 
   function query(table: string) {
+    events.push({ type: "from", table });
     const filters: Record<string, unknown> = {};
     const chain = {
       select() { return chain; },
@@ -99,7 +102,12 @@ function createFakeSupabase(args: {
       async maybeSingle() {
         if (table === "stores") return { data: { id: "store-1", organization_id: "org-1", name: "Loja" }, error: null };
         if (table === "store_contract_template_versions") {
-          const found = version && (!filters.id || filters.id === version.id) ? version : null;
+          const found = version &&
+            (!filters.id || filters.id === version.id) &&
+            (!filters.organization_id || filters.organization_id === version.organization_id) &&
+            (!filters.store_id || filters.store_id === version.store_id)
+            ? version
+            : null;
           return { data: found, error: null };
         }
         if (table === "store_contract_templates") {
@@ -123,6 +131,7 @@ function createFakeSupabase(args: {
   const client = {
     from(table: string) { return query(table); },
     async rpc(name: string, rpcArgs: Record<string, unknown>) {
+      events.push({ type: "rpc", name });
       rpcCalls.push({ name, args: rpcArgs });
       if (args.activationError) return { data: null, error: args.activationError };
       activated = true;
@@ -136,6 +145,7 @@ function createFakeSupabase(args: {
   return {
     client,
     rpcCalls,
+    events,
     getVersion: () => version,
     getTemplate: () => template,
     isActivated: () => activated,
@@ -311,27 +321,157 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "unapprovable, rejected, no rules and pending rules call no activation RPC",
+    name: "activation accepts uploaded and unreviewed versions but blocks invalid states",
     run: async () => {
-      const baseVersion = { id: "version-1", template_id: "template-1", organization_id: "org-1", store_id: "store-1" };
-      const cases = [
-        { version: { ...baseVersion, status: "uploaded", rejected_at: null }, rules: [{ review_status: "approved" }], code: "TEMPLATE_VERSION_NOT_APPROVABLE" },
-        { version: { ...baseVersion, status: "analyzed", rejected_at: "2026-01-01" }, rules: [{ review_status: "approved" }], code: "TEMPLATE_VERSION_NOT_APPROVABLE" },
-        { version: { ...baseVersion, status: "analyzed", rejected_at: null }, rules: [], code: "TEMPLATE_VERSION_HAS_NO_RULES" },
-        { version: { ...baseVersion, status: "awaiting_review", rejected_at: null }, rules: [{ review_status: "pending" }], code: "TEMPLATE_VERSION_HAS_PENDING_RULES" },
-      ];
-      for (const item of cases) {
-        const fake = createFakeSupabase({ version: item.version, rules: item.rules });
+      const baseVersion = {
+        id: "version-1",
+        template_id: "template-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        store_file_id: "file-1",
+        rejected_at: null,
+      };
+      for (const item of [
+        { status: "uploaded", rules: [] },
+        { status: "analyzed", rules: [] },
+        { status: "awaiting_review", rules: [{ review_status: "pending" }] },
+      ]) {
+        const fake = createFakeSupabase({
+          version: { ...baseVersion, status: item.status },
+          rules: item.rules,
+        });
+        await approveStoreContractTemplateVersionForAuthorizedStoreScope(
+          { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" },
+          "version-1",
+          { createServiceSupabaseClient: () => fake.client as never },
+        );
+        assert.equal(fake.rpcCalls.length, 1);
+      }
+
+      for (const status of ["failed", "rejected", "archived"]) {
+        const fake = createFakeSupabase({
+          version: { ...baseVersion, status },
+          rules: [{ review_status: "approved" }],
+        });
         await assert.rejects(
           () => approveStoreContractTemplateVersionForAuthorizedStoreScope(
             { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" },
             "version-1",
             { createServiceSupabaseClient: () => fake.client as never },
           ),
-          (error: unknown) => error instanceof StoreContractTemplateAccessError && error.code === item.code,
+          (error: unknown) => error instanceof StoreContractTemplateAccessError && error.code === "TEMPLATE_VERSION_NOT_APPROVABLE",
         );
         assert.equal(fake.rpcCalls.length, 0);
       }
+
+      const rejected = createFakeSupabase({
+        version: { ...baseVersion, status: "analyzed", rejected_at: "2026-01-01" },
+      });
+      await assert.rejects(
+        () => approveStoreContractTemplateVersionForAuthorizedStoreScope(
+          { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" },
+          "version-1",
+          { createServiceSupabaseClient: () => rejected.client as never },
+        ),
+        (error: unknown) => error instanceof StoreContractTemplateAccessError && error.code === "TEMPLATE_VERSION_NOT_APPROVABLE",
+      );
+      assert.equal(rejected.rpcCalls.length, 0);
+
+      const withoutFile = createFakeSupabase({
+        version: { ...baseVersion, status: "uploaded", store_file_id: null },
+      });
+      await assert.rejects(
+        () => approveStoreContractTemplateVersionForAuthorizedStoreScope(
+          { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" },
+          "version-1",
+          { createServiceSupabaseClient: () => withoutFile.client as never },
+        ),
+        (error: unknown) => error instanceof StoreContractTemplateAccessError && error.code === "TEMPLATE_VERSION_SOURCE_FILE_REQUIRED",
+      );
+      assert.equal(withoutFile.rpcCalls.length, 0);
+    },
+  },
+  {
+    name: "organization and store divergence are rejected before activation",
+    run: async () => {
+      for (const field of ["organization_id", "store_id"]) {
+        const fake = createFakeSupabase({
+          version: {
+            id: "version-1",
+            template_id: "template-1",
+            organization_id: field === "organization_id" ? "org-foreign" : "org-1",
+            store_id: field === "store_id" ? "store-foreign" : "store-1",
+            status: "uploaded",
+            store_file_id: "file-1",
+            rejected_at: null,
+          },
+        });
+        await assert.rejects(
+          () => approveStoreContractTemplateVersionForAuthorizedStoreScope(
+            { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" },
+            "version-1",
+            { createServiceSupabaseClient: () => fake.client as never },
+          ),
+          (error: unknown) => error instanceof StoreContractTemplateAccessError && error.code === "TEMPLATE_VERSION_NOT_FOUND",
+        );
+        assert.equal(fake.rpcCalls.length, 0);
+      }
+    },
+  },
+  {
+    name: "activation does not analyze clauses before calling the RPC",
+    run: async () => {
+      const fake = createFakeSupabase({
+        version: {
+          id: "version-1",
+          template_id: "template-1",
+          organization_id: "org-1",
+          store_id: "store-1",
+          status: "uploaded",
+          store_file_id: "file-1",
+          rejected_at: null,
+        },
+        rules: [],
+      });
+      await approveStoreContractTemplateVersionForAuthorizedStoreScope(
+        { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" },
+        "version-1",
+        { createServiceSupabaseClient: () => fake.client as never },
+      );
+      const rpcIndex = fake.events.findIndex((event) => event.type === "rpc");
+      assert.ok(rpcIndex >= 0);
+      assert.equal(
+        fake.events.slice(0, rpcIndex).some(
+          (event) => event.table === "store_contract_template_extracted_rules",
+        ),
+        false,
+      );
+    },
+  },
+  {
+    name: "unapprovable rejected version calls no activation RPC",
+    run: async () => {
+      const fake = createFakeSupabase({
+        version: {
+          id: "version-1",
+          template_id: "template-1",
+          organization_id: "org-1",
+          store_id: "store-1",
+          status: "analyzed",
+          store_file_id: "file-1",
+          rejected_at: "2026-01-01",
+        },
+        rules: [{ review_status: "approved" }],
+      });
+      await assert.rejects(
+        () => approveStoreContractTemplateVersionForAuthorizedStoreScope(
+          { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" },
+          "version-1",
+          { createServiceSupabaseClient: () => fake.client as never },
+        ),
+        (error: unknown) => error instanceof StoreContractTemplateAccessError && error.code === "TEMPLATE_VERSION_NOT_APPROVABLE",
+      );
+      assert.equal(fake.rpcCalls.length, 0);
     },
   },
   {
@@ -360,7 +500,15 @@ const tests: TestCase[] = [
     name: "exact replay still reaches activation RPC",
     run: async () => {
       const fake = createFakeSupabase({
-        version: { id: "version-1", template_id: "template-1", status: "active", rejected_at: null },
+        version: {
+          id: "version-1",
+          template_id: "template-1",
+          organization_id: "org-1",
+          store_id: "store-1",
+          status: "active",
+          store_file_id: "file-1",
+          rejected_at: null,
+        },
         template: { id: "template-1", status: "active", active_version_id: "version-1" },
         rules: [],
       });

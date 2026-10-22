@@ -25,10 +25,10 @@ const REVIEWABLE_TEMPLATE_VERSION_STATUSES = new Set([
   "awaiting_review",
 ]);
 
-const FINAL_TEMPLATE_RULE_REVIEW_STATUSES = new Set([
-  "approved",
-  "rejected",
-  "edited",
+const ACTIVATABLE_TEMPLATE_VERSION_STATUSES = new Set([
+  "uploaded",
+  "analyzed",
+  "awaiting_review",
 ]);
 
 const ALLOWED_TEMPLATE_MIME_TYPES = new Set([
@@ -1039,7 +1039,7 @@ async function approveStoreContractTemplateVersionWithResolvedScope(
 
   if (!isExactReplay) {
     if (
-      !REVIEWABLE_TEMPLATE_VERSION_STATUSES.has(normalizedStatus) ||
+      !ACTIVATABLE_TEMPLATE_VERSION_STATUSES.has(normalizedStatus) ||
       version.rejected_at
     ) {
       throw new StoreContractTemplateAccessError(
@@ -1049,33 +1049,11 @@ async function approveStoreContractTemplateVersionWithResolvedScope(
       );
     }
 
-    const versionRules = await loadTemplateExtractedRules({
-      supabase: scope.supabase,
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
-      templateVersionIds: [version.id],
-    });
-
-    if (versionRules.length === 0) {
+    if (!version.store_file_id) {
       throw new StoreContractTemplateAccessError(
         409,
-        "TEMPLATE_VERSION_HAS_NO_RULES",
-        "Essa versao precisa ter regras extraidas antes da aprovacao."
-      );
-    }
-
-    const hasPendingRule = versionRules.some(
-      (rule) =>
-        !FINAL_TEMPLATE_RULE_REVIEW_STATUSES.has(
-          String(rule.review_status || "").trim().toLowerCase()
-        )
-    );
-
-    if (hasPendingRule) {
-      throw new StoreContractTemplateAccessError(
-        409,
-        "TEMPLATE_VERSION_HAS_PENDING_RULES",
-        "Revise todas as regras antes de aprovar essa versao."
+        "TEMPLATE_VERSION_SOURCE_FILE_REQUIRED",
+        "Essa versao precisa ter um arquivo armazenado antes da ativacao."
       );
     }
   }
