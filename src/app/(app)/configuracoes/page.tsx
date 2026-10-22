@@ -2311,11 +2311,11 @@ function resolveResponsibleChannelLabel(value: string | null | undefined) {
 function resolveContractVersionStatus(status: string | null | undefined) {
   const normalized = String(status || "").trim().toLowerCase();
   if (normalized === "draft") return { label: "Sem envio", tone: "gray" as const };
-  if (normalized === "uploaded") return { label: "Enviado", tone: "gray" as const };
+  if (normalized === "uploaded") return { label: "Aguardando ativa\u00e7\u00e3o", tone: "amber" as const };
   if (normalized === "analyzing") return { label: "Analisando", tone: "amber" as const };
-  if (normalized === "analyzed") return { label: "Analisado", tone: "gray" as const };
+  if (normalized === "analyzed") return { label: "Aguardando ativa\u00e7\u00e3o", tone: "amber" as const };
   if (normalized === "awaiting_review") {
-    return { label: "Aguardando revisao", tone: "amber" as const };
+    return { label: "Aguardando ativa\u00e7\u00e3o", tone: "amber" as const };
   }
   if (normalized === "approved") return { label: "Aprovado", tone: "green" as const };
   if (normalized === "active") return { label: "Ativo", tone: "green" as const };
@@ -15088,7 +15088,7 @@ export default function ConfiguracoesPage() {
               <div className="grid gap-4 lg:grid-cols-2">
                 <div className="rounded-2xl border border-gray-200 bg-white p-4">
                   <div className="text-sm font-semibold text-gray-950">Enviar contrato base</div>
-                  <p className="mt-1 text-xs leading-5 text-gray-500">Formatos aceitos: PDF, DOC e DOCX. O envio cria uma nova versão para revisão; ele não substitui silenciosamente a versão ativa.</p>
+                  <p className="mt-1 text-xs leading-5 text-gray-500">Formatos aceitos: PDF, DOC e DOCX. O arquivo original permanece intacto; cada envio cria uma nova versão para ativação manual.</p>
                   <input
                     ref={contractBaseInputRef}
                     type="file"
@@ -15142,7 +15142,7 @@ export default function ConfiguracoesPage() {
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <div className="text-sm font-semibold text-gray-950">Versões enviadas</div>
-                        <p className="mt-1 text-xs leading-5 text-gray-500">Analise, revise as regras encontradas e aprove somente a versão correta.</p>
+                        <p className="mt-1 text-xs leading-5 text-gray-500">Consulte os documentos enviados, baixe uma versão quando precisar revisá-la e ative manualmente o modelo escolhido.</p>
                       </div>
                       <div className="flex flex-wrap items-center justify-end gap-2">
   <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-semibold text-gray-700">
@@ -15193,25 +15193,10 @@ export default function ConfiguracoesPage() {
                           const normalizedStatus = normalizeContractVersionStatusValue(version.status);
                           const isActiveVersion =
                             storeContractActiveVersion?.id === version.id || normalizedStatus === "active";
-                          const hasReadText = Boolean(cleanText(version.raw_extracted_text));
                           const busy = contractActionVersionId === version.id;
-                          const isAnalyzeBusy = busy && contractActionType === "analyze";
-                          const isExtractRulesBusy = busy && contractActionType === "extract-rules";
                           const isApproveBusy = busy && contractActionType === "approve";
                           const isRejectBusy = busy && contractActionType === "reject";
                           const isDownloadBusy = busy && contractActionType === "download";
-                          const versionRules = storeContractExtractedRules.filter((rule) => rule.template_version_id === version.id);
-                          const canAnalyze = canAnalyzeStoreContractVersion({
-                            version,
-                            isActiveVersion,
-                            hasReadText,
-                          });
-                          const canExtractRules = canExtractRulesForStoreContractVersion({
-                            version,
-                            versionRules,
-                            isActiveVersion,
-                            hasReadText,
-                          });
                           const canApprove = canApproveStoreContractVersion({
                             version,
                             isActiveVersion,
@@ -15221,11 +15206,6 @@ export default function ConfiguracoesPage() {
                             version,
                             isActiveVersion,
                           });
-                          const pendingRules = versionRules.filter((rule) => !cleanText(rule.review_status) || rule.review_status === "pending").length;
-                          const approvedRules = versionRules.filter((rule) => rule.review_status === "approved").length;
-                          const rejectedRules = versionRules.filter((rule) => rule.review_status === "rejected").length;
-                          const editedRules = versionRules.filter((rule) => rule.review_status === "edited").length;
-
                           return (
                             <div key={version.id} className="rounded-2xl border border-gray-200 bg-gray-50/70 p-4">
                               <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -15242,14 +15222,6 @@ export default function ConfiguracoesPage() {
                                     {version.approved_at ? <span className="rounded-full border border-gray-200 bg-white px-2 py-1">Aprovado em {formatImportDate(version.approved_at)}</span> : null}
                                   </div>
 
-                                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                                    <CompactMetric label="Aguardando revisão" value={String(pendingRules)} tone={pendingRules > 0 ? "amber" : "green"} />
-                                    <CompactMetric label="Aprovadas" value={String(approvedRules)} tone="green" />
-                                    <CompactMetric label="Ignoradas" value={String(rejectedRules)} tone={rejectedRules > 0 ? "gray" : "green"} />
-                                    <CompactMetric label="Ajustadas" value={String(editedRules)} tone={editedRules > 0 ? "blue" : "gray"} />
-                                  </div>
-
-                                  {cleanText(version.analysis_summary) ? <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3 text-xs leading-5 text-gray-700"><span className="font-semibold">Resumo da análise:</span> {maskSensitiveContractPreview(cleanText(version.analysis_summary))}</div> : null}
                                 </div>
 
                                 <div className="flex w-full flex-col gap-2 xl:w-52">
@@ -15261,50 +15233,6 @@ export default function ConfiguracoesPage() {
                                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
                                     >
                                       {isDownloadBusy ? "Preparando download..." : "Baixar contrato"}
-                                    </button>
-                                  ) : null}
-                                  {canAnalyze ? (
-                                    <button
-                                      type="button"
-                                      disabled={busy || uploadingContractBase || contractsLoading}
-                                      onClick={() => void handleAnalyzeContractVersion(version.id)}
-                                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
-                                    >
-                                      {isAnalyzeBusy ? "Lendo arquivo..." : "Analisar contrato"}
-                                    </button>
-                                  ) : null}
-                                  {hasReadText ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setContractContentSearchIndex(0);
-                                        setContractContentModal({ type: "text", versionId: version.id });
-                                      }}
-                                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
-                                    >
-                                      Ver texto lido
-                                    </button>
-                                  ) : null}
-                                  {canExtractRules ? (
-                                    <button
-                                      type="button"
-                                      disabled={busy || uploadingContractBase || contractsLoading}
-                                      onClick={() => void handleExtractContractRules(version.id)}
-                                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
-                                    >
-                                      {isExtractRulesBusy ? "Buscando regras..." : "Encontrar regras do contrato"}
-                                    </button>
-                                  ) : null}
-                                  {versionRules.length > 0 ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setContractContentSearchIndex(0);
-                                        setContractContentModal({ type: "rules", versionId: version.id });
-                                      }}
-                                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
-                                    >
-                                      Ver regras encontradas
                                     </button>
                                   ) : null}
                                   {canApprove ? (
@@ -15355,17 +15283,6 @@ export default function ConfiguracoesPage() {
                     <div className="mt-3 space-y-2">
                       <CompactMetric label="Versões enviadas" value={String(storeContractVersions.length)} tone={storeContractVersions.length > 0 ? "green" : "gray"} />
                       <CompactMetric label="Status atual" value={storeContractActiveVersion ? "Ativo" : "Sem versão ativa"} tone={storeContractActiveVersion ? "green" : "amber"} />
-                      <CompactMetric
-                        label="Regras da versao ativa"
-                        value={String(
-                          storeContractActiveVersion
-                            ? storeContractExtractedRules.filter(
-                                (rule) => rule.template_version_id === storeContractActiveVersion.id
-                              ).length
-                            : 0
-                        )}
-                        tone={storeContractActiveVersion ? "blue" : "gray"}
-                      />
                     </div>
                   </div>
                 </div>
@@ -15374,7 +15291,6 @@ export default function ConfiguracoesPage() {
                   { label: "Arquivo ativo", value: cleanText(storeContractActiveVersion?.original_filename) || "Nenhum contrato ativo" },
                   { label: "Status", value: storeContractActiveVersion ? resolveContractVersionStatus(storeContractActiveVersion.status).label : "Sem versão ativa" },
                   { label: "Versões enviadas", value: String(storeContractVersions.length) },
-                  { label: "Regras extraídas", value: String(storeContractExtractedRules.length) },
                 ])} />
               )}
             </div>

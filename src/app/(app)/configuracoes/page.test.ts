@@ -21,6 +21,14 @@ function getContractActivationBlock(source: string) {
   return source.slice(start, end);
 }
 
+function getContractSectionBlock(source: string) {
+  const start = source.indexOf('title="Contrato padr');
+  assert.equal(start > -1, true, "contract settings section not found");
+  const end = source.indexOf('{activeTab === "canais-integracoes"', start);
+  assert.equal(end > start, true, "contract settings section end not found");
+  return source.slice(start, end).replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+}
+
 function getUpsertConfigAnswersBlock(source: string) {
   const start = source.indexOf("  const upsertConfigAnswers = useCallback(");
   assert.equal(start > -1, true, "upsertConfigAnswers not found");
@@ -1492,6 +1500,33 @@ const tests: TestCase[] = [
       assert.equal(source.includes('link.download = cleanText(result.originalFilename) || "contrato-da-loja"'), true);
       assert.equal(source.includes('"Baixar contrato"'), true);
       assert.equal(source.includes("const canDownload = Boolean(version.store_file_id)"), true);
+    },
+  },
+  {
+    name: "contract settings keep the simplified manual document workflow",
+    run: () => {
+      const source = readPageSource();
+      const block = getContractSectionBlock(source);
+
+      assert.equal(source.includes("useState(false)"), true);
+      assert.equal(block.includes("storeContractActiveVersion"), true);
+      assert.equal(block.includes("handleDownloadContractVersion"), true);
+      assert.equal(block.includes("canDownload"), true);
+      assert.equal(block.includes("canApprove"), true);
+      assert.equal(block.includes("showContractVersionHistory"), true);
+      assert.equal(block.includes("Ativar modelo"), true);
+      assert.equal(block.includes("Analisar contrato"), false);
+      assert.equal(block.includes("Ver texto lido"), false);
+      assert.equal(block.includes("Encontrar regras do contrato"), false);
+      assert.equal(block.includes("Ver regras encontradas"), false);
+      assert.equal(block.includes("Resumo da"), false);
+      assert.equal(block.includes("Regras extra"), false);
+      assert.equal(block.includes("analysis_summary"), false);
+      assert.equal(source.includes('return { label: "Aguardando ativa\\u00e7\\u00e3o"'), true);
+      assert.equal(block.includes("pendingRules"), false);
+      assert.equal(block.includes("approvedRules"), false);
+      assert.equal(block.includes("rejectedRules"), false);
+      assert.equal(block.includes("editedRules"), false);
     },
   },
 ];
