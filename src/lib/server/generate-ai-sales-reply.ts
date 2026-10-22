@@ -70,6 +70,7 @@ import {
   buildSalesAiOperatingWindowPromptBlock,
   type SalesAiOperatingWindowContext,
 } from "./sales-ai-operating-window";
+import { readStoreContractUsagePolicyBySystem } from "./store-contract-usage-policy";
 import { materializeCommercialOpportunityChecklistAndProgress } from "./commercial-action-readiness";
 import {
   buildSalesAiAppointmentPromptBlock,
@@ -12661,6 +12662,19 @@ export async function generateAiSalesReply(
     });
     const canonicalCommercialAiSettings =
       (commercialAiSettings ?? null) as StoreCommercialAiSettingsRow | null;
+    const contractUsagePolicyResult = await readStoreContractUsagePolicyBySystem({
+      supabase,
+      organizationId,
+      storeId: resolvedStoreId,
+    });
+    if (!contractUsagePolicyResult.ok) {
+      return {
+        ok: false,
+        error: "LOAD_CONTRACT_USAGE_POLICY_FAILED",
+        message: contractUsagePolicyResult.error,
+      };
+    }
+    const contractUsagePolicy = contractUsagePolicyResult.policy;
     const canonicalPaymentSettings =
       (paymentSettings ?? null) as StorePaymentSettingsRow | null;
     const canonicalOperationSettings =
@@ -12672,6 +12686,7 @@ export async function generateAiSalesReply(
       discountSettings: canonicalDiscountSettings,
       highValueDiscountSettings: canonicalHighValueDiscountSettings,
       counterpartPolicy: counterpartPolicyResult.policy,
+      contractUsagePolicy,
     });
     const salesAiBehaviorContractBlock =
       buildSalesAiBehaviorContractPromptBlock(salesAiBehaviorContract);

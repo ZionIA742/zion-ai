@@ -798,6 +798,7 @@ function createGenerateAiSalesReplySupabase(args?: {
   strategySettingsReaderResponse?: RpcMockEntry;
   channelSettingsReaderResponse?: RpcMockEntry;
   operationExecutionPoliciesReaderResponse?: RpcMockEntry;
+  contractUsagePolicyReaderResponse?: RpcMockEntry;
   customerCatalogDocumentsReaderResponse?: RpcMockEntry;
   canonicalReaderResponses?: Array<{ data: unknown; error: { message: string } | null }>;
   writerResponse?: RpcMockEntry;
@@ -1027,6 +1028,11 @@ function createGenerateAiSalesReplySupabase(args?: {
         },
       read_store_operation_execution_policies_by_system:
         args?.operationExecutionPoliciesReaderResponse ?? {
+          data: null,
+          error: null,
+        },
+      read_store_settings_experience_policies_scoped:
+        args?.contractUsagePolicyReaderResponse ?? {
           data: null,
           error: null,
         },

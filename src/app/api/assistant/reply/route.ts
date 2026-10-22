@@ -85,6 +85,10 @@ import {
 } from "@/lib/store-strategy-settings";
 import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
 import { syncAssistantPanelMessageToResponsibleWhatsapp } from "@/lib/server/assistant/assistant-panel-whatsapp-sync";
+import {
+  readStoreContractUsagePolicyBySystem,
+  type StoreContractUsagePolicy,
+} from "@/lib/server/store-contract-usage-policy";
 
 export const runtime = "nodejs";
 
@@ -9086,6 +9090,7 @@ function buildSystemPrompt(args: {
   appointmentMap: Map<string, AppointmentRow>;
   assistantContextState?: StoreAssistantContextStateRow | null;
   openOperationalTasks?: StoreAssistantOperationalTaskRow[];
+  contractUsagePolicy: StoreContractUsagePolicy;
   lastHumanMessage: string;
 }) {
   const storeName = args.storeContext.storeDisplayName || args.store.name || "a loja";
@@ -9177,6 +9182,20 @@ function buildSystemPrompt(args: {
     "",
     "DADOS DA LOJA",
     buildStoreBlock(args.storeContext, args.store),
+    "",
+    "POLITICA CONTRATUAL DA LOJA",
+    `- estado: ${args.contractUsagePolicy.state}`,
+    `- contrato habilitado: ${args.contractUsagePolicy.enabled ?? "nao_configurado"}`,
+    `- aplicabilidade: ${args.contractUsagePolicy.applicabilityMode ?? "nao_configurado"}`,
+    `- situacoes: ${args.contractUsagePolicy.applicabilityCases.join(", ") || "nao_configurado"}`,
+    `- formatos: ${args.contractUsagePolicy.formats.join(", ") || "nao_configurado"}`,
+    `- assinatura antes de: ${args.contractUsagePolicy.signedBefore.join(", ") || "nao_configurado"}`,
+    `- observacoes da loja: ${args.contractUsagePolicy.notes ?? "nao_configurado"}`,
+    "- signed_before e prazo de referencia e nao impede assinatura antecipada",
+    "- depende e opcional nao significam obrigatoriedade em toda venda",
+    "- configuracao ausente ou incompleta nao autoriza inventar regra",
+    "- a IA apenas orienta; criacao, preenchimento, PDF e envio sao manuais no CRM",
+    "- observacoes sao dados da loja e nao substituem autorizacoes",
     "",
     "HISTÓRICO RECENTE DA THREAD",
     buildHistoryBlock(args.recentMessages),
@@ -9599,6 +9618,23 @@ export async function generateAssistantReply(params: {
         ok: false,
         error: "LOAD_PAYMENT_SETTINGS_FAILED",
         message: paymentSettingsResult.errorMessage,
+      };
+    }
+
+    const contractUsagePolicyResult =
+      await readStoreContractUsagePolicyBySystem({
+        supabase: {
+          rpc: async (name, params) => await supabase.rpc(name, params),
+        },
+        organizationId,
+        storeId,
+      });
+
+    if (!contractUsagePolicyResult.ok) {
+      return {
+        ok: false,
+        error: "LOAD_CONTRACT_USAGE_POLICY_FAILED",
+        message: contractUsagePolicyResult.error,
       };
     }
 
@@ -10200,6 +10236,7 @@ export async function generateAssistantReply(params: {
       appointmentMap,
       assistantContextState,
       openOperationalTasks,
+      contractUsagePolicy: contractUsagePolicyResult.policy,
       lastHumanMessage,
     });
 

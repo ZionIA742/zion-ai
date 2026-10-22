@@ -12,6 +12,7 @@ import {
   normalizeStoreDiscountCounterpartPolicyRow,
   type StoreDiscountCounterpartPolicyRow,
 } from "../store-discount-counterpart-policy";
+import type { StoreContractUsagePolicy } from "./store-contract-usage-policy";
 
 export type SalesAiBehaviorState =
   | "allowed"
@@ -25,6 +26,7 @@ export type SalesAiBehaviorDecision = {
 };
 
 export type SalesAiBehaviorContract = {
+  contract: StoreContractUsagePolicy;
   payment: {
     methods: Record<StorePaymentMethod, SalesAiBehaviorDecision>;
     pix: SalesAiBehaviorDecision;
@@ -369,6 +371,7 @@ export function buildSalesAiBehaviorContract(args: {
   discountSettings: StoreDiscountSettingsRow | null;
   highValueDiscountSettings: StoreHighValueDiscountSettingsRow | null;
   counterpartPolicy?: StoreDiscountCounterpartPolicyRow | null;
+  contractUsagePolicy?: StoreContractUsagePolicy;
 }): SalesAiBehaviorContract {
   const paymentSettings = args.paymentSettings;
   const paymentMethods = resolvePaymentMethods(paymentSettings);
@@ -472,6 +475,18 @@ export function buildSalesAiBehaviorContract(args: {
   });
 
   return {
+    contract: args.contractUsagePolicy ?? {
+      state: "unconfigured",
+      enabled: null,
+      applicabilityMode: null,
+      applicabilityCases: [],
+      applicabilityOther: null,
+      highValueAmount: null,
+      formats: [],
+      signedBefore: [],
+      signedBeforeOther: null,
+      notes: null,
+    },
     payment: {
       methods: paymentMethods.methods,
       pix,
@@ -645,6 +660,19 @@ export function buildSalesAiBehaviorContractPromptBlock(
     "- unconfigured: nao existe autoridade suficiente para compromisso automatico; nao presuma permissao",
     "- false e proibicao real quando a authority canonica usa booleano; nunca converta false em talvez",
     "- none representa ausencia de regra configurada; nunca converta none em permissao",
+    "CONTRATO - POLITICA ORIENTADORA DA LOJA",
+    "- a IA pode explicar a politica e orientar o responsavel ou comprador, mas nunca cria, preenche, edita, gera PDF ou envia contrato",
+    `- contract.state: ${contract.contract.state}`,
+    `- contract.enabled: ${contract.contract.enabled ?? "not_configured"}`,
+    `- contract.applicability_mode: ${contract.contract.applicabilityMode ?? "not_configured"}`,
+    `- contract.applicability_cases: ${contract.contract.applicabilityCases.join(", ") || "not_configured"}`,
+    `- contract.formats: ${contract.contract.formats.join(", ") || "not_configured"}`,
+    `- contract.signed_before: ${contract.contract.signedBefore.join(", ") || "not_configured"}`,
+    `- contract.notes: ${contract.contract.notes ?? "not_configured"}`,
+    "- signed_before e apenas prazo de referencia; nunca proibe assinatura antecipada",
+    "- applicability_mode depende ou opcional nao torna o contrato obrigatorio em toda venda",
+    "- estado incomplete ou unconfigured nao autoriza inventar obrigatoriedade, formato ou momento",
+    "- notes sao observacoes da loja e nao substituem regras de autorizacao",
     ...STORE_PAYMENT_METHOD_VALUES.map((method) =>
       formatBehaviorDecisionLine(
         `payment.method.${method}`,

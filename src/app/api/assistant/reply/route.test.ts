@@ -447,6 +447,9 @@ const tests: TestCase[] = [
       const paymentIndex = block.indexOf(
         '.rpc("read_store_payment_settings_by_system"',
       );
+      const contractPolicyIndex = block.indexOf(
+        'readStoreContractUsagePolicyBySystem({',
+      );
       const responsibleIndex = block.indexOf("loadCanonicalActivePrimaryStoreResponsible({");
       const contextIndex = block.indexOf("const runtimeStoreContext = buildRuntimeStoreContext({");
       const promptIndex = block.indexOf("const systemPrompt = buildSystemPrompt({");
@@ -454,6 +457,7 @@ const tests: TestCase[] = [
       assert.equal(strategyIndex > -1, true);
       assert.equal(operationIndex > -1, true);
       assert.equal(paymentIndex > -1, true);
+      assert.equal(contractPolicyIndex > -1, true);
       assert.equal(block.includes('.from("store_strategy_settings")'), false);
       assert.equal(block.includes('.from("store_payment_settings")'), false);
       assert.equal(block.includes("normalizeSystemReaderRow(strategySettingsRows)"), true);
@@ -462,9 +466,11 @@ const tests: TestCase[] = [
       assert.equal(contextIndex > strategyIndex, true);
       assert.equal(contextIndex > operationIndex, true);
       assert.equal(contextIndex > paymentIndex, true);
+      assert.equal(contractPolicyIndex > paymentIndex, true);
       assert.equal(contextIndex > responsibleIndex, true);
       assert.equal(promptIndex > contextIndex, true);
       assert.equal(block.includes("storeContext: runtimeStoreContext"), true);
+      assert.equal(block.includes("contractUsagePolicy: contractUsagePolicyResult.policy"), true);
     },
   },
   {

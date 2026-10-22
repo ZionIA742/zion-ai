@@ -105,6 +105,18 @@ const discountBase = {
       threshold_amount_cents: 5000000,
       discount_percent: 20,
     },
+    contractUsagePolicy: {
+      state: "enabled",
+      enabled: true,
+      applicabilityMode: "depende",
+      applicabilityCases: ["instalacao"],
+      applicabilityOther: null,
+      highValueAmount: null,
+      formats: ["digital", "fisico"],
+      signedBefore: ["agendar_instalacao"],
+      signedBeforeOther: null,
+      notes: "Regra da loja",
+    },
   });
 
   const block = buildSalesAiBehaviorContractPromptBlock(contract);
@@ -116,6 +128,9 @@ const discountBase = {
   assert.match(block, /false e proibicao real/);
   assert.match(block, /none representa ausencia de regra configurada/);
   assert.match(block, /12345678000199/);
+  assert.match(block, /contract\.formats: digital, fisico/);
+  assert.match(block, /signed_before e apenas prazo de referencia/);
+  assert.match(block, /nunca cria, preenche, edita, gera PDF ou envia contrato/);
 }
 
-console.log("sales AI behavior contract policy: 5 tests passed");
+console.log("sales AI behavior contract policy: 6 tests passed");
