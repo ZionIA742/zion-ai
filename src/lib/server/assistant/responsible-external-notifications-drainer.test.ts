@@ -33,6 +33,22 @@ function candidate(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function reportCandidate(overrides: Record<string, unknown> = {}) {
+  return candidate({
+    notification_type: "morning_report",
+    status: "materialized",
+    context: {
+      source: "assistant_automatic_reports",
+      report_type: "morning_report",
+      local_date: "2026-10-22",
+      target_iso: "2026-10-22T11:00:00.000Z",
+      event_key: "assistant-automatic-report:org-1:store-1:2026-10-22:morning_report",
+    },
+    created_at: new Date().toISOString(),
+    ...overrides,
+  });
+}
+
 function successfulDeps(rows: any[], calls: string[]) {
   return {
     supabase: {},
@@ -57,6 +73,15 @@ function successfulDeps(rows: any[], calls: string[]) {
         updated: true as const,
         notificationId: args.notificationId,
         status: "ready_to_send",
+      };
+    },
+    cancel: async (args: any) => {
+      calls.push(`cancel:${args.notificationId}`);
+      return {
+        ok: true as const,
+        updated: true as const,
+        notificationId: args.notificationId,
+        status: "cancelled",
       };
     },
     send: async (args: any) => {
@@ -114,7 +139,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "candidate query applies operational approval allowlist before limit",
+    name: "candidate query loads supported types before the in-process allowlist",
     run: () => {
       const source = fs.readFileSync(
         path.join(
@@ -136,26 +161,15 @@ const tests: TestCase[] = [
       assert.ok(loaderEnd > loaderStart);
 
       const loaderBlock = source.slice(loaderStart, loaderEnd);
-      const contextFilterIndex = loaderBlock.indexOf(
-        '.contains("context", {',
+      const typeFilterIndex = loaderBlock.indexOf(
+        '.in("notification_type", ["important_alert", ...AUTOMATIC_REPORT_TYPES])',
       );
       const limitIndex = loaderBlock.indexOf(".limit(args.limit)");
 
-      assert.ok(contextFilterIndex >= 0);
-      assert.ok(limitIndex > contextFilterIndex);
-      assert.match(
-        loaderBlock,
-        /source:\s*OPERATIONAL_APPROVAL_SOURCE/,
-      );
-      assert.match(
-        loaderBlock,
-        /reason:\s*OPERATIONAL_APPROVAL_REASON/,
-      );
-      assert.match(
-        loaderBlock,
-        /classification:\s*OPERATIONAL_APPROVAL_CLASSIFICATION/,
-      );
-      assert.match(loaderBlock, /suggested_available:\s*true/);
+      assert.ok(typeFilterIndex >= 0);
+      assert.ok(limitIndex > typeFilterIndex);
+      assert.match(source, /isResponsibleOperationalApprovalAutoDrainCandidate/);
+      assert.match(source, /isAutomaticReportCandidate/);
     },
   },
   {
@@ -176,6 +190,21 @@ const tests: TestCase[] = [
               suggested_available: true,
             },
           }) as any,
+        ),
+        false,
+      );
+    },
+  },
+  {
+    name: "allowlist accepts only canonical automatic report provenance",
+    run: () => {
+      assert.equal(
+        isResponsibleOperationalApprovalAutoDrainCandidate(reportCandidate() as any),
+        true,
+      );
+      assert.equal(
+        isResponsibleOperationalApprovalAutoDrainCandidate(
+          reportCandidate({ context: { source: "assistant_automatic_reports", report_type: "evening_report" } }) as any,
         ),
         false,
       );
@@ -309,6 +338,24 @@ const tests: TestCase[] = [
 
       assert.equal(result.uncertain, 1);
       assert.equal(result.failed, 0);
+    },
+  },
+  {
+    name: "old automatic reports are cancelled instead of sent after a later window opens",
+    run: async () => {
+      const calls: string[] = [];
+      const deps = successfulDeps([reportCandidate({ created_at: "2026-10-20T10:00:00.000Z" })], calls);
+      deps.cancel = async (args: any) => {
+        calls.push(`cancel:${args.notificationId}`);
+        return { ok: true as const, updated: true as const, notificationId: args.notificationId, status: "cancelled" };
+      };
+      const result = await drainResponsibleOperationalApprovalNotifications(
+        { organizationId: "org-1", storeId: "store-1", now: new Date("2026-10-22T11:00:00.000Z") },
+        deps as any,
+      );
+      assert.deepEqual(calls, ["materialize", "load", "cancel:external-1"]);
+      assert.equal(result.sent, 0);
+      assert.equal(result.skippedReasons.automatic_report_expired, 1);
     },
   },
   {

@@ -178,6 +178,17 @@ async function main() {
     "utf8",
   );
   assert.match(followupSource, /uncertainOnTransportFailure:\s*true/);
+
+  const senderSource = fs.readFileSync(
+    path.join(
+      process.cwd(),
+      "src/lib/server/assistant/responsible-external-notifications-sender.ts",
+    ),
+    "utf8",
+  );
+  assert.match(senderSource, /isAutomaticReportNotification\(claimedNotification\)/);
+  assert.match(senderSource, /policy\.mode !== "free_form"/);
+  assert.match(senderSource, /AUTOMATIC_REPORT_WHATSAPP_WINDOW_CLOSED/);
   console.log("responsible-external-notifications-sender: focused uncertainty tests passed");
 }
 

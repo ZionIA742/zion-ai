@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import {
+  cancelResponsibleExternalNotification,
   enqueueResponsibleExternalNotificationFromAssistantNotification,
   prepareResponsibleExternalNotification,
   unlockStuckResponsibleExternalNotificationProcessing,
@@ -13,6 +14,9 @@ const OPERATIONAL_APPROVAL_SOURCE = "assistant_operational_task_worker";
 const OPERATIONAL_APPROVAL_CLASSIFICATION = "suggested_other_time";
 const MAX_AUTOMATIC_SEND_ATTEMPTS = 3;
 const DEFAULT_LIMIT = 20;
+const AUTOMATIC_REPORT_TYPES = ["morning_report", "evening_report"] as const;
+const AUTOMATIC_REPORT_SOURCE = "assistant_automatic_reports";
+const AUTOMATIC_REPORT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 type ResponsibleOperationalApprovalOutboxRow = {
   id: string;
@@ -32,6 +36,7 @@ type DrainerDependencies = {
   supabase?: any;
   materialize?: typeof materializeResponsibleOperationalApprovalNotifications;
   prepare?: typeof prepareResponsibleExternalNotification;
+  cancel?: typeof cancelResponsibleExternalNotification;
   send?: typeof sendResponsibleExternalNotification;
   loadCandidates?: (args: {
     supabase: any;
@@ -88,7 +93,7 @@ export function isResponsibleOperationalApprovalAutoDrainCandidate(
 ) {
   const context = isRecord(row.context) ? row.context : {};
 
-  return (
+  const operationalApproval = (
     cleanText(row.channel) === RESPONSIBLE_CHANNEL &&
     normalizeText(row.notification_type) === "important_alert" &&
     normalizeText(context.source) === OPERATIONAL_APPROVAL_SOURCE &&
@@ -96,6 +101,37 @@ export function isResponsibleOperationalApprovalAutoDrainCandidate(
     normalizeText(context.classification) === OPERATIONAL_APPROVAL_CLASSIFICATION &&
     context.suggested_available === true
   );
+
+  if (operationalApproval) return true;
+
+  const reportType = normalizeText(row.notification_type);
+  const localDate = cleanText(context.local_date);
+  return Boolean(
+    cleanText(row.channel) === RESPONSIBLE_CHANNEL &&
+      AUTOMATIC_REPORT_TYPES.includes(reportType as (typeof AUTOMATIC_REPORT_TYPES)[number]) &&
+      normalizeText(context.source) === AUTOMATIC_REPORT_SOURCE &&
+      normalizeText(context.report_type) === reportType &&
+      cleanText(context.event_key) === `assistant-automatic-report:${cleanText(row.organization_id)}:${cleanText(row.store_id)}:${localDate}:${reportType}` &&
+      localDate &&
+      Number.isFinite(Date.parse(cleanText(context.target_iso))),
+  );
+}
+
+function isAutomaticReportCandidate(row: ResponsibleOperationalApprovalOutboxRow) {
+  const context = isRecord(row.context) ? row.context : {};
+  const reportType = normalizeText(row.notification_type);
+  return (
+    AUTOMATIC_REPORT_TYPES.includes(reportType as (typeof AUTOMATIC_REPORT_TYPES)[number]) &&
+    normalizeText(context.source) === AUTOMATIC_REPORT_SOURCE
+  );
+}
+
+function isAutomaticReportStale(row: ResponsibleOperationalApprovalOutboxRow, now: Date) {
+  const context = isRecord(row.context) ? row.context : {};
+  const createdAt = Date.parse(cleanText(row.created_at));
+  const targetAt = Date.parse(cleanText(context.target_iso));
+  const reference = Number.isFinite(createdAt) ? createdAt : targetAt;
+  return Number.isFinite(reference) && now.getTime() - reference > AUTOMATIC_REPORT_MAX_AGE_MS;
 }
 
 async function loadResponsibleOperationalApprovalCandidates(args: {
@@ -112,14 +148,8 @@ async function loadResponsibleOperationalApprovalCandidates(args: {
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("channel", RESPONSIBLE_CHANNEL)
-    .eq("notification_type", "important_alert")
+    .in("notification_type", ["important_alert", ...AUTOMATIC_REPORT_TYPES])
     .in("status", ["materialized", "ready_to_send", "failed", "processing"])
-    .contains("context", {
-      source: OPERATIONAL_APPROVAL_SOURCE,
-      reason: OPERATIONAL_APPROVAL_REASON,
-      classification: OPERATIONAL_APPROVAL_CLASSIFICATION,
-      suggested_available: true,
-    })
     .is("external_message_id", null)
     .is("sent_at", null)
     .order("created_at", { ascending: true })
@@ -167,8 +197,7 @@ async function materializeResponsibleOperationalApprovalNotifications(args: {
     )
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
-    .eq("notification_type", "important_alert")
-    .in("priority", ["high", "urgent"])
+    .in("notification_type", ["important_alert", ...AUTOMATIC_REPORT_TYPES])
     .neq("status", "cancelled")
     .order("created_at", { ascending: false })
     .limit(args.limit);
@@ -187,7 +216,7 @@ async function materializeResponsibleOperationalApprovalNotifications(args: {
   const skippedReasons: Record<string, number> = {};
 
   for (const notification of notifications) {
-    if (!isOperationalApprovalInternalNotification(notification)) {
+    if (!isOperationalApprovalInternalNotification(notification) && !isAutomaticReportInternalNotification(notification)) {
       skipped += 1;
       incrementReason(
         skippedReasons,
@@ -243,11 +272,27 @@ function isOperationalApprovalInternalNotification(
   );
 }
 
+function isAutomaticReportInternalNotification(
+  notification: OperationalApprovalInternalNotificationRow,
+) {
+  const context = isRecord(notification.context) ? notification.context : {};
+  const notificationType = normalizeText(notification.notification_type);
+  return Boolean(
+    AUTOMATIC_REPORT_TYPES.includes(notificationType as (typeof AUTOMATIC_REPORT_TYPES)[number]) &&
+      normalizeText(context.source) === AUTOMATIC_REPORT_SOURCE &&
+      normalizeText(context.report_type) === notificationType &&
+      cleanText(context.event_key) &&
+      cleanText(context.local_date) &&
+      cleanText(context.target_iso),
+  );
+}
+
 export async function drainResponsibleOperationalApprovalNotifications(
   args: {
     organizationId: string;
     storeId: string;
     limit?: number;
+    now?: Date;
   },
   deps: DrainerDependencies = {},
 ): Promise<DrainResponsibleOperationalApprovalNotificationsResult> {
@@ -269,6 +314,8 @@ export async function drainResponsibleOperationalApprovalNotifications(
     deps.materialize || materializeResponsibleOperationalApprovalNotifications;
   const prepare =
     deps.prepare || prepareResponsibleExternalNotification;
+  const cancel =
+    deps.cancel || cancelResponsibleExternalNotification;
   const send =
     deps.send || sendResponsibleExternalNotification;
   const loadCandidates =
@@ -304,6 +351,18 @@ export async function drainResponsibleOperationalApprovalNotifications(
     }
 
     eligible += 1;
+
+    if (isAutomaticReportCandidate(row) && isAutomaticReportStale(row, args.now || new Date())) {
+      await cancel({
+        supabase,
+        organizationId,
+        storeId,
+        notificationId: cleanText(row.id),
+      });
+      skipped += 1;
+      incrementReason(skippedReasons, "automatic_report_expired");
+      continue;
+    }
 
     const attempts = Math.max(0, Number(row.attempts || 0));
     if (attempts >= MAX_AUTOMATIC_SEND_ATTEMPTS) {

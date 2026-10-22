@@ -105,6 +105,9 @@ const WHATSAPP_GRAPH_API_VERSION =
   process.env.WHATSAPP_GRAPH_API_VERSION || "v23.0";
 const RESPONSIBLE_CHANNEL = "whatsapp_responsible";
 const RESPONSIBLE_SEND_LOCKED_BY = "responsible_external_send_route";
+const AUTOMATIC_REPORT_TYPES = ["morning_report", "evening_report"] as const;
+const AUTOMATIC_REPORT_SOURCE = "assistant_automatic_reports";
+const AUTOMATIC_REPORT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function getSupabaseAdmin() {
   if (!SUPABASE_URL) {
@@ -136,6 +139,27 @@ function cleanText(value: unknown) {
 
 function normalizeText(value: unknown) {
   return cleanText(value).toLowerCase();
+}
+
+function isAutomaticReportNotification(notification: ResponsibleExternalNotificationRow) {
+  const context = notification.context || {};
+  const notificationType = normalizeText(notification.notification_type);
+  const localDate = cleanText(context.local_date);
+  return Boolean(
+    AUTOMATIC_REPORT_TYPES.includes(notificationType as (typeof AUTOMATIC_REPORT_TYPES)[number]) &&
+      normalizeText(context.source) === AUTOMATIC_REPORT_SOURCE &&
+      normalizeText(context.report_type) === notificationType &&
+      cleanText(context.event_key) === `assistant-automatic-report:${cleanText(notification.organization_id)}:${cleanText(notification.store_id)}:${localDate}:${notificationType}` &&
+      localDate &&
+      Number.isFinite(Date.parse(cleanText(context.target_iso))),
+  );
+}
+
+function isAutomaticReportStale(notification: ResponsibleExternalNotificationRow) {
+  const createdAt = Date.parse(cleanText(notification.created_at));
+  const targetAt = Date.parse(cleanText(notification.context?.target_iso));
+  const reference = Number.isFinite(createdAt) ? createdAt : targetAt;
+  return Number.isFinite(reference) && Date.now() - reference > AUTOMATIC_REPORT_MAX_AGE_MS;
 }
 
 function safeErrorText(value: unknown) {
@@ -503,6 +527,15 @@ function validateNotificationBeforeSend(
     };
   }
 
+  if (isAutomaticReportNotification(notification) && isAutomaticReportStale(notification)) {
+    return {
+      ok: false,
+      sent: false,
+      reason: "automatic_report_expired",
+      notificationId: notification.id,
+    };
+  }
+
   const status = normalizeText(notification.status);
   if (status === "materialized") {
     return {
@@ -715,6 +748,9 @@ export async function sendResponsibleExternalNotification(
       } satisfies ResponsibleWhatsappTemplateContext,
     });
     if (!policy.ok) throw new Error(policy.reason);
+    if (isAutomaticReportNotification(claimedNotification) && policy.mode !== "free_form") {
+      throw new Error("AUTOMATIC_REPORT_WHATSAPP_WINDOW_CLOSED");
+    }
 
     const integration = await getResponsibleSendWhatsappIntegration({
       supabase,

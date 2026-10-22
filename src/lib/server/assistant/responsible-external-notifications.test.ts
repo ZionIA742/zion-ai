@@ -313,6 +313,39 @@ const tests: TestCase[] = [
       assert.equal(result.reason, "needs_human_action_false");
     },
   },
+  {
+    name: "automatic reports use the canonical responsible outbox without paid template eligibility",
+    run: async () => {
+      const {
+        shouldEnqueueResponsibleExternalNotification,
+        enqueueResponsibleExternalNotificationFromAssistantNotification,
+      } = await modulePromise;
+      const report = {
+        ...createMandatoryNotification(),
+        notification_type: "morning_report",
+        priority: "normal",
+        title: "Relatorio da manha",
+        body: "Resumo da loja.",
+        context: {
+          source: "assistant_automatic_reports",
+          report_type: "morning_report",
+          local_date: "2026-10-19",
+          target_iso: "2026-10-19T11:00:00.000Z",
+          event_key: "assistant-automatic-report:org-1:store-1:2026-10-19:morning_report",
+        },
+      };
+      const eligibility = shouldEnqueueResponsibleExternalNotification(report);
+      assert.equal(eligibility.eligible, true);
+      const supabase = createSupabaseRecorder();
+      const result = await enqueueResponsibleExternalNotificationFromAssistantNotification({
+        supabase: supabase.client as never,
+        internalNotification: report,
+      });
+      assert.equal(result.created, true);
+      assert.equal(supabase.insertCalls[0]?.payload.notification_type, "morning_report");
+      assert.equal(supabase.insertCalls[0]?.payload.source_event_key, report.context.event_key);
+    },
+  },
 ];
 
 void (async () => {

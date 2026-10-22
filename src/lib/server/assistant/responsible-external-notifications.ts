@@ -106,6 +106,8 @@ export type ResponsibleExternalNotificationListItem = {
 
 const RESPONSIBLE_CHANNEL = "whatsapp_responsible";
 const DEFAULT_LIMIT = 50;
+const AUTOMATIC_REPORT_TYPES = ["morning_report", "evening_report"] as const;
+const AUTOMATIC_REPORT_SOURCE = "assistant_automatic_reports";
 
 function getSupabaseAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -145,6 +147,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isTruthyAnswer(value: unknown) {
   if (value === true) return true;
   return normalizeText(value) === "true";
+}
+
+function isAutomaticReportType(value: unknown): value is (typeof AUTOMATIC_REPORT_TYPES)[number] {
+  return AUTOMATIC_REPORT_TYPES.includes(normalizeText(value) as (typeof AUTOMATIC_REPORT_TYPES)[number]);
+}
+
+function isAutomaticReportNotification(notification: InternalAssistantNotificationRow) {
+  const context = isRecord(notification.context) ? notification.context : null;
+  const notificationType = normalizeText(notification.notification_type);
+  const reportType = normalizeText(context?.report_type);
+  const eventKey = cleanText(context?.event_key);
+  const localDate = cleanText(context?.local_date);
+  return Boolean(
+    isAutomaticReportType(notificationType) &&
+      reportType === notificationType &&
+      normalizeText(context?.source) === AUTOMATIC_REPORT_SOURCE &&
+      eventKey === `assistant-automatic-report:${cleanText(notification.organization_id)}:${cleanText(notification.store_id)}:${localDate}:${notificationType}` &&
+      localDate &&
+      cleanText(context?.target_iso),
+  );
 }
 
 function isUuidLike(value: string | null | undefined) {
@@ -227,6 +249,16 @@ export function shouldEnqueueResponsibleExternalNotification(
   const context = isRecord(internalNotification.context)
     ? internalNotification.context
     : null;
+
+  if (isAutomaticReportNotification(internalNotification)) {
+    if (status === "cancelled") {
+      return { eligible: false as const, reason: "notification_cancelled" };
+    }
+    return {
+      eligible: true as const,
+      requiresResponsibleNotification: true as const,
+    };
+  }
 
   if (notificationType !== "important_alert") {
     return { eligible: false as const, reason: "notification_type_not_supported" };
@@ -537,8 +569,7 @@ export async function materializeResponsibleExternalNotifications(args: {
     )
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
-    .eq("notification_type", "important_alert")
-    .in("priority", ["high", "urgent"])
+    .in("notification_type", ["important_alert", ...AUTOMATIC_REPORT_TYPES])
     .neq("status", "cancelled")
     .order("created_at", { ascending: false })
     .limit(limit);
