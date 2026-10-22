@@ -12,7 +12,10 @@ import {
   normalizeStoreDiscountCounterpartPolicyRow,
   type StoreDiscountCounterpartPolicyRow,
 } from "../store-discount-counterpart-policy";
-import type { StoreContractUsagePolicy } from "./store-contract-usage-policy";
+import {
+  normalizeStoreContractUsagePolicy,
+  type StoreContractUsagePolicy,
+} from "./store-contract-usage-policy";
 
 export type SalesAiBehaviorState =
   | "allowed"
@@ -475,18 +478,8 @@ export function buildSalesAiBehaviorContract(args: {
   });
 
   return {
-    contract: args.contractUsagePolicy ?? {
-      state: "unconfigured",
-      enabled: null,
-      applicabilityMode: null,
-      applicabilityCases: [],
-      applicabilityOther: null,
-      highValueAmount: null,
-      formats: [],
-      signedBefore: [],
-      signedBeforeOther: null,
-      notes: null,
-    },
+    contract:
+      args.contractUsagePolicy ?? normalizeStoreContractUsagePolicy(null),
     payment: {
       methods: paymentMethods.methods,
       pix,

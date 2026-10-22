@@ -115,6 +115,9 @@ const discountBase = {
       formats: ["digital", "fisico"],
       signedBefore: ["agendar_instalacao"],
       signedBeforeOther: null,
+      buyerDataFieldsConfigured: false,
+      buyerDataFields: [],
+      buyerDataOther: null,
       notes: "Regra da loja",
     },
   });
