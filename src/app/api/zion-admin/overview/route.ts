@@ -2286,6 +2286,7 @@ export async function GET() {
           }),
         operationalHealth,
         dataAvailability: {
+          whatsapp: whatsappQueueRows.availability,
           ai: {
             runs: aiRunRows.availability,
             queue: aiRunQueueRows.availability,
@@ -2543,6 +2544,7 @@ export async function GET() {
         storeCatalogConfig: catalogConfigRows.error,
       },
       dataAvailability: {
+        whatsapp: whatsappQueueRows.availability,
         ai: {
           runs: aiRunRows.availability,
           queue: aiRunQueueRows.availability,

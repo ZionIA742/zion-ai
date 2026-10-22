@@ -276,6 +276,7 @@ export type ZionAdminOverview = {
   };
   countErrors: Record<string, string | null>;
   dataAvailability?: {
+    whatsapp?: OverviewDataAvailability;
     ai?: {
       runs?: OverviewDataAvailability;
       queue?: OverviewDataAvailability;
@@ -554,6 +555,10 @@ function getStoreCommercialAvailability(
     return getOverviewDiagnosticsAvailability(store.dataAvailability?.commercial);
   }
   return normalizeOverviewDataAvailability(store.dataAvailability?.commercial?.[source]);
+}
+
+function getStoreWhatsappAvailability(store: ZionAdminStore) {
+  return normalizeOverviewDataAvailability(store.dataAvailability?.whatsapp);
 }
 
 function getGlobalAiAvailability(
@@ -2534,7 +2539,7 @@ function StoreDetailsDrawer({
               />
               <DetailItem
                 label="Erro WhatsApp"
-                value={formatNumber(store.whatsappErrors)}
+                value={formatOverviewMetric(store.whatsappErrors, getStoreWhatsappAvailability(store))}
               />
             </div>
           </div>
@@ -2934,11 +2939,11 @@ export function OverviewDetailsDrawer({
               />
               <DetailItem
                 label="Eventos WhatsApp pendentes"
-                value={formatNumber(selectedPendingStore.pendingWhatsappEvents)}
+                value={formatOverviewMetric(selectedPendingStore.pendingWhatsappEvents, getStoreWhatsappAvailability(selectedPendingStore))}
               />
               <DetailItem
                 label="Erros no WhatsApp"
-                value={formatNumber(selectedPendingStore.whatsappErrors)}
+                value={formatOverviewMetric(selectedPendingStore.whatsappErrors, getStoreWhatsappAvailability(selectedPendingStore))}
               />
             </div>
           </section>

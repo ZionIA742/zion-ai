@@ -545,11 +545,23 @@ const tests: TestCase[] = [
 
       assert.equal(
         source.match(
-          /dataAvailability:\s*\{\s*ai:\s*\{\s*runs:\s*aiRunRows\.availability/g,
+          /dataAvailability:\s*\{\s*(?:whatsapp:\s*whatsappQueueRows\.availability,\s*)?ai:\s*\{\s*runs:\s*aiRunRows\.availability/g,
         )?.length,
         2,
       );
       assert.equal(source.match(/overall: worstOverviewAvailability\(/g)?.length, 4);
+    },
+  },
+  {
+    name: "WhatsApp queue availability is exposed independently for pending indicators",
+    run: () => {
+      const source = readSource(routePath);
+
+      assert.equal(
+        source.match(/whatsapp:\s*whatsappQueueRows\.availability/g)?.length,
+        2,
+      );
+      assert.equal(source.includes('loadQueueRows(serviceSupabase, "channel_whatsapp_inbox")'), true);
     },
   },
   {

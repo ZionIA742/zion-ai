@@ -62,6 +62,13 @@ test("unavailable AI runs never render failed runs as confirmed zero", () => {
   );
 });
 
+test("available, partial, and unavailable sources preserve WhatsApp count semantics", () => {
+  assert.equal(formatAvailableOverviewValue(0, "available", format), "valor:0");
+  assert.equal(formatAvailableOverviewValue(3, "available", format), "valor:3");
+  assert.equal(formatAvailableOverviewValue(3, "partial", format), "Parcial");
+  assert.notEqual(formatAvailableOverviewValue(0, "unavailable", format), "valor:0");
+});
+
 test("operational summary availability is partial for mixed sources and preserves zero when all are available", () => {
   assert.equal(
     getOverviewOperationalAvailability({

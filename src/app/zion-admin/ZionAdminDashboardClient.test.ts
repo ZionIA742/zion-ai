@@ -249,6 +249,10 @@ const tests: TestCase[] = [
         'getStoreAiAvailability(store, "runs")',
         'getStoreAiAvailability(store, "queue")',
         'getStoreCommercialAvailability(store, "queue")',
+        "getStoreWhatsappAvailability(store)",
+        "formatOverviewMetric(store.whatsappErrors, getStoreWhatsappAvailability(store))",
+        "formatOverviewMetric(selectedPendingStore.pendingWhatsappEvents, getStoreWhatsappAvailability(selectedPendingStore))",
+        "formatOverviewMetric(selectedPendingStore.whatsappErrors, getStoreWhatsappAvailability(selectedPendingStore))",
       ]) {
         assert.equal(source.includes(token), true, `missing availability UI token: ${token}`);
       }
