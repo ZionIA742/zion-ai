@@ -4567,33 +4567,27 @@ export function detectCustomerCatalogDocumentRequest(
   };
 }
 
-function isAffirmativeReply(text: string): boolean {
-  const t = normalizeText(text);
+export function isAffirmativeReply(text: string): boolean {
+  const normalized = normalizeText(text)
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  return [
-    "sim",
-    "pode",
-    "pode sim",
-    "quero",
-    "manda",
-    "mande",
-    "me manda",
-    "me mande",
-    "mostra",
-    "me mostra",
-    "quero ver",
-    "quero sim",
-    "pode mostrar",
-    "manda ai",
-    "manda aí",
-    "manda as opcoes",
-    "manda as opções",
-    "pode ser",
-    "isso",
-    "ok",
-    "beleza",
-    "blz",
-  ].some((signal) => t === signal || t.includes(signal));
+  if (!normalized || /\bnao\b/.test(normalized)) return false;
+
+  const affirmativeVocabulary = new Set([
+    "sim", "pode", "quero", "manda", "mande", "me", "mostra", "ver",
+    "mostrar", "as", "opcoes", "ai", "ser", "isso", "ok", "beleza", "blz",
+  ]);
+  const tokens = normalized.split(" ");
+  const firstToken = tokens[0];
+
+  if (!["sim", "pode", "quero", "manda", "mande", "mostra", "me", "isso", "ok", "beleza", "blz"].includes(firstToken)) {
+    return false;
+  }
+  if (firstToken === "me" && !["manda", "mande", "mostra"].includes(tokens[1] || "")) return false;
+
+  return tokens.every((token) => affirmativeVocabulary.has(token));
 }
 
 function looksLikePoolRecommendationRequest(text: string): boolean {

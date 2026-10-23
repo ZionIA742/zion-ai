@@ -36,7 +36,29 @@ import {
   selectCustomerCatalogDocumentsForRequest,
   summarizeCanonicalKnownFacts,
   selectMessagesForCurrentCommercialInference,
+  isAffirmativeReply,
 } from "./generate-ai-sales-reply.js";
+
+test("isAffirmativeReply accepts explicit confirmations without substring false positives", () => {
+  for (const text of ["sim", "Sim!", "sim, pode ser", "pode ser", "pode mostrar", "me manda as opções", "ok"]) {
+    assert.equal(isAffirmativeReply(text), true, text);
+  }
+
+  for (const text of [
+    "quero algo simples",
+    "esse modelo é simples",
+    "assim fica melhor?",
+    "simulação de orçamento",
+    "não",
+    "não quero",
+    "não, obrigado",
+    "sim, não quero",
+    "me",
+    "tenho interesse, mas preciso pensar",
+  ]) {
+    assert.equal(isAffirmativeReply(text), false, text);
+  }
+});
 
 const strategyDiscountSettings = {
   organization_id: "org-1",
