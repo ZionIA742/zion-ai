@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildAutomaticEveningReport, buildAutomaticMorningReport, processAutomaticAssistantReports, resolveAutomaticReportDue } from "./automatic-reports";
+import { buildAutomaticEveningReport, buildAutomaticMorningReport, compareMorningSnapshot, processAutomaticAssistantReports, resolveAutomaticReportDue } from "./automatic-reports";
 
 const base = {
   organization_id: "org-1", store_id: "11111111-1111-4111-8111-111111111112", timezone_name: "America/Sao_Paulo",
@@ -12,13 +12,71 @@ const tests = [
   () => { const result = resolveAutomaticReportDue({ settings: base, now: new Date("2026-10-19T11:00:00Z") }); assert.deepEqual(result.map((item) => item.reason), ["due", "not_due"]); },
   () => { const result = resolveAutomaticReportDue({ settings: base, now: new Date("2026-10-18T11:00:00Z") }); assert.deepEqual(result.map((item) => item.reason), ["due", "not_due"]); },
   () => { const settings = { ...base, ai_after_hours_enabled: false }; const result = resolveAutomaticReportDue({ settings, now: new Date("2026-10-18T11:00:00Z") }); assert.deepEqual(result.map((item) => item.reason), ["not_authorized", "not_authorized"]); },
-  () => { const result = resolveAutomaticReportDue({ settings: base, now: new Date("2026-10-19T20:00:00Z") }); assert.deepEqual(result.map((item) => item.targetIso), ["2026-10-19T11:00:00.000Z", "2026-10-19T20:00:00.000Z"]); },
+  () => { const result = resolveAutomaticReportDue({ settings: base, now: new Date("2026-10-19T20:50:00Z") }); assert.deepEqual(result.map((item) => item.targetIso), ["2026-10-19T11:00:00.000Z", "2026-10-19T20:50:00.000Z"]); },
   () => { const result = resolveAutomaticReportDue({ settings: base, holidayBlocks: [{ block_type: "holiday", start_at: "2026-10-18T03:00:00Z", end_at: "2026-10-19T03:00:00Z" }], now: new Date("2026-10-18T11:00:00Z") }); assert.deepEqual(result.map((item) => item.reason), ["due", "not_due"]); },
   () => { const settings = { ...base, ai_attends_holidays: false }; const result = resolveAutomaticReportDue({ settings, holidayBlocks: [{ block_type: "holiday", start_at: "2026-10-18T03:00:00Z", end_at: "2026-10-19T03:00:00Z" }], now: new Date("2026-10-18T11:00:00Z") }); assert.deepEqual(result.map((item) => item.reason), ["not_authorized", "not_authorized"]); },
   () => { const settings = { ...base, ai_after_hours_mode: "specific_window", ai_after_hours_start: "09:00", ai_after_hours_end: "19:00" }; const result = resolveAutomaticReportDue({ settings, now: new Date("2026-10-18T11:00:00Z") }); assert.deepEqual(result.map((item) => item.reason), ["not_authorized", "not_due"]); },
   () => { const settings = { ...base, operating_days: ["segunda", "terca"], operating_hours: { segunda: { start: "08:00", end: "18:00" }, terca: { start: "09:00", end: "17:00" } } }; const result = resolveAutomaticReportDue({ settings, now: new Date("2026-10-18T11:00:00Z") }); assert.deepEqual(result.map((item) => item.reason), ["ambiguous_hours", "ambiguous_hours"]); },
   () => { const result = buildAutomaticMorningReport({ appointmentCount: 0, openAppointmentCount: 0, completedAppointmentCount: 0, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 0, pendingTaskCount: 0 }); assert.match(result, /não há compromissos/); },
   () => { const result = buildAutomaticEveningReport({ appointmentCount: 2, openAppointmentCount: 1, completedAppointmentCount: 1, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 1, pendingTaskCount: 2 }); assert.match(result, /concluídos: 1/); },
+  () => {
+    const appointments = Array.from({ length: 5 }, (_, index) => ({
+      id: `appointment-${index}`,
+      title: `Visita ${index}`,
+      appointment_type: "technical_visit",
+      status: index === 0 ? "completed" : "open",
+      scheduled_start: `2026-10-19T${String(10 + index).padStart(2, "0")}:00:00Z`,
+      scheduled_end: `2026-10-19T${String(10 + index).padStart(2, "0")}:30:00Z`,
+      customer_name: `Cliente ${index}`,
+      customer_phone: index === 1 ? null : `55119999999${index}`,
+      address_text: index === 2 ? null : `Rua ${index}`,
+      created_at: "2026-10-18T12:00:00Z",
+    }));
+    const result = buildAutomaticMorningReport({ appointmentCount: 5, openAppointmentCount: 4, completedAppointmentCount: 1, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 1, pendingTaskCount: 1, appointments, pendingItems: [{ id: "old", title: "Retorno pendente", body: null, related_appointment_id: null, created_at: "2026-10-18T12:00:00Z", kind: "task" }], planningSnapshotAvailable: false, reportLocalDate: "2026-10-19" });
+    assert.match(result, /Cliente 0/);
+    assert.match(result, /contato:/);
+    assert.match(result, /local:/);
+    assert.match(result, /pendencia anterior/);
+  },
+  () => {
+    const result = buildAutomaticEveningReport({ appointmentCount: 3, openAppointmentCount: 1, completedAppointmentCount: 1, cancelledAppointmentCount: 1, overdueAppointmentCount: 0, pendingNotificationCount: 0, pendingTaskCount: 1, appointments: [
+      { id: "done", title: null, appointment_type: "visit", status: "completed", scheduled_start: "2026-10-19T12:00:00Z", scheduled_end: null, customer_name: "Cliente", customer_phone: null, address_text: null, created_at: null },
+      { id: "cancelled", title: null, appointment_type: "visit", status: "cancelled", scheduled_start: "2026-10-19T13:00:00Z", scheduled_end: null, customer_name: null, customer_phone: null, address_text: null, created_at: null },
+      { id: "open", title: null, appointment_type: "visit", status: "rescheduled", scheduled_start: "2026-10-19T14:00:00Z", scheduled_end: null, customer_name: null, customer_phone: null, address_text: null, created_at: null },
+    ], pendingItems: [], planningSnapshotAvailable: false, reportLocalDate: "2026-10-19" });
+    assert.match(result, /resultado operacional não inferido/);
+    assert.match(result, /cancelado no cadastro/);
+    assert.match(result, /remarcado no cadastro/);
+    assert.match(result, /snapshot historico nao persistido/);
+  },
+  () => {
+    const current = Array.from({ length: 6 }, (_, index) => ({
+      id: `appointment-${index}`,
+      title: null,
+      appointment_type: "visit",
+      status: index === 0 || index === 1 ? "completed" : index === 2 ? "open" : index === 3 ? "cancelled" : "open",
+      scheduled_start: index === 2 ? "2026-10-19T16:00:00Z" : `2026-10-19T${String(10 + index).padStart(2, "0")}:00:00Z`,
+      scheduled_end: null,
+      customer_name: null,
+      customer_phone: null,
+      address_text: null,
+      created_at: index === 5 ? "2026-10-19T15:00:00Z" : "2026-10-18T12:00:00Z",
+    }));
+    const comparison = compareMorningSnapshot({
+      version: 1,
+      local_date: "2026-10-19",
+      appointments: current.slice(0, 5).map((appointment, index) => ({ id: appointment.id, scheduled_start: index === 2 ? "2026-10-19T12:00:00Z" : appointment.scheduled_start, status: "open" })),
+      pending_items: [],
+    }, { appointmentCount: 6, openAppointmentCount: 3, completedAppointmentCount: 2, cancelledAppointmentCount: 1, overdueAppointmentCount: 0, pendingNotificationCount: 0, pendingTaskCount: 0, appointments: current, pendingItems: [], planningSnapshotAvailable: true, reportLocalDate: "2026-10-19" });
+    assert.equal(comparison.planned.length, 5);
+    assert.match(comparison.planned[0]?.outcome || "", /concluido/);
+    assert.match(comparison.planned[2]?.outcome || "", /remarcado/);
+    assert.match(comparison.planned[3]?.outcome || "", /cancelado/);
+    assert.match(comparison.planned[4]?.outcome || "", /situacao atual/);
+    assert.deepEqual(comparison.newAppointments, ["appointment-5"]);
+    const missing = compareMorningSnapshot({ version: 1, local_date: "2026-10-19", appointments: [{ id: "missing", scheduled_start: null, status: "open" }], pending_items: [] }, { appointmentCount: 0, openAppointmentCount: 0, completedAppointmentCount: 0, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 0, pendingTaskCount: 0, appointments: [], pendingItems: [], planningSnapshotAvailable: true, reportLocalDate: "2026-10-19" });
+    assert.match(missing.planned[0]?.outcome || "", /nao localizado/);
+  },
 ];
 
 for (const test of tests) test();
@@ -34,6 +92,7 @@ function createReportSupabaseMock(options: {
   materializeError?: string;
   failResult?: boolean;
   holidayBlocks?: unknown[];
+  morningSnapshot?: unknown;
   schedule?: Partial<typeof base>;
   schedules?: Array<Partial<typeof base>>;
 } = {}) {
@@ -45,7 +104,11 @@ function createReportSupabaseMock(options: {
     ? { data: allowedStoreIds ? schedules.filter((schedule) => allowedStoreIds.includes(schedule.store_id)) : schedules, error: null }
     : table === "store_schedule_blocks"
       ? { data: options.holidayBlocks || [], error: null }
-    : table === "store_appointments"
+    : table === "store_assistant_automatic_report_claims"
+      ? { data: options.morningSnapshot ? [{ message_id: "morning-message", status: "completed" }] : [], error: null }
+      : table === "store_assistant_messages"
+        ? { data: options.morningSnapshot ? [{ metadata: { automatic_report_snapshot: options.morningSnapshot } }] : [], error: null }
+        : table === "store_appointments"
       ? { data: options.appointmentError ? null : [{ status: "open", scheduled_end: "2026-10-19T12:00:00Z" }], error: options.appointmentError ? { message: options.appointmentError } : null }
       : { data: [], error: null };
   const supabase = {
@@ -91,6 +154,23 @@ async function runIntegrationTests() {
   assert.equal(generated.calls[0]?.args.p_report_type, "morning_report");
   assert.equal(generated.calls[1]?.args.p_report_type, "morning_report");
   assert.equal((generated.calls[1]?.args.p_metadata as Record<string, unknown>).report_key, "assistant-automatic-report:org-1:11111111-1111-4111-8111-111111111112:2026-10-19:morning_report");
+  const generatedSnapshot = (generated.calls[1]?.args.p_metadata as Record<string, unknown>).automatic_report_snapshot as Record<string, unknown>;
+  assert.equal(generatedSnapshot.version, 1);
+  assert.equal(generatedSnapshot.local_date, "2026-10-19");
+  assert.ok(Array.isArray(generatedSnapshot.appointments));
+  assert.ok(Array.isArray(generatedSnapshot.pending_items));
+
+  const eveningSnapshot = {
+    version: 1,
+    local_date: "2026-10-19",
+    appointments: [{ id: "appointment-1", scheduled_start: "2026-10-19T11:00:00Z", status: "open" }],
+    pending_items: [],
+  };
+  const evening = createReportSupabaseMock({ morningSnapshot: eveningSnapshot });
+  const eveningResult = await processAutomaticAssistantReports({ now: new Date("2026-10-19T20:50:00Z"), supabase: evening.supabase });
+  assert.equal(eveningResult.results[0]?.type, "evening_report");
+  const eveningMaterialization = evening.calls.find((call) => call.name === "assistant_materialize_automatic_report");
+  assert.match(String(eveningMaterialization?.args.p_content), /Comparacao por ID canonico/);
 
   const sunday = createReportSupabaseMock();
   const sundayResult = await processAutomaticAssistantReports({ now: new Date("2026-10-18T11:00:00Z"), supabase: sunday.supabase });
