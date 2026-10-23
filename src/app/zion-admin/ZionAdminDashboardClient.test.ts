@@ -1,7 +1,10 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { formatAvailableOverviewValue } from "./overview-availability";
+import {
+  formatAvailableOverviewValue,
+  normalizeOverviewDataAvailability,
+} from "./overview-availability";
 
 type TestCase = {
   name: string;
@@ -35,6 +38,53 @@ function loadFormatAiUsageValue() {
     completeness: string | null | undefined,
     formatter: (value: number | string | null | undefined) => string,
   ) => string;
+}
+
+function loadFormatOverviewPercent() {
+  const source = readSource();
+  const functionStart = source.indexOf("export function formatOverviewPercent(");
+  const bodyStart = source.indexOf("{", functionStart) + 1;
+  const functionEnd = source.indexOf("\n}\n\nfunction getStoreAiAvailability", bodyStart);
+
+  assert.notEqual(functionStart, -1, "formatOverviewPercent must exist");
+  assert.notEqual(functionEnd, -1, "formatOverviewPercent body must be bounded");
+
+  const implementation = new Function(
+    "numerator",
+    "denominator",
+    "availability",
+    "safeNumber",
+    "normalizeOverviewDataAvailability",
+    "formatPercent",
+    source.slice(bodyStart, functionEnd),
+  ) as (
+    numerator: number | string | null | undefined,
+    denominator: number | string | null | undefined,
+    availability: string | undefined,
+    safeNumber: (value: number | string | null | undefined) => number | null,
+    normalizeOverviewDataAvailability: (value: unknown) => string,
+    formatPercent: (part: number, total: number) => string,
+  ) => string;
+
+  return (
+    numerator: number | string | null | undefined,
+    denominator: number | string | null | undefined,
+    availability: string | undefined,
+  ) => implementation(
+    numerator,
+    denominator,
+    availability,
+    (value) => {
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (typeof value === "string" && value.trim() !== "") {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+      return null;
+    },
+    normalizeOverviewDataAvailability,
+    (part, total) => `${Math.round((part / total) * 100)}%`,
+  );
 }
 
 const tests: TestCase[] = [
@@ -376,6 +426,30 @@ const tests: TestCase[] = [
       ]) {
         assert.equal(source.includes(unguarded), false, `unguarded count presentation remains: ${unguarded}`);
       }
+    },
+  },
+  {
+    name: "completion rate distinguishes no activity from a true zero and preserves availability states",
+    run: () => {
+      const formatOverviewPercent = loadFormatOverviewPercent();
+      const run = (numerator: number, denominator: number, availability: string | undefined) =>
+        formatOverviewPercent(numerator, denominator, availability);
+
+      assert.equal(run(0, 0, "available"), "Sem atividade");
+      assert.equal(run(0, 1, "available"), "0%");
+      assert.equal(run(1, 1, "available"), "100%");
+      assert.equal(run(303, 320, "available"), "95%");
+      assert.equal(run(1, 0, "available"), "Indisponível");
+      assert.equal(run(-1, 0, "available"), "Indisponível");
+      assert.equal(run(0, -1, "available"), "Indisponível");
+      assert.equal(run(2, 1, "available"), "Indisponível");
+      assert.equal(run(0.5, 1, "available"), "Indisponível");
+      assert.equal(run(1, 0.5, "available"), "Indisponível");
+      assert.equal(run(0, 0, "partial"), "Parcial");
+      assert.equal(run(0, 0, "unavailable"), "Indisponível");
+      assert.equal(run(0, 0, undefined), "Indisponível");
+      assert.equal(run(0, 0, "invalid"), "Indisponível");
+      assert.equal(formatOverviewPercent(0, " ", "available"), "Indisponível");
     },
   },
   {

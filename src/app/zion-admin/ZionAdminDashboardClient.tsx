@@ -542,17 +542,34 @@ function formatOverviewMetric(value: unknown, availability: unknown): string {
   );
 }
 
-function formatOverviewPercent(
-  numerator: unknown,
-  denominator: unknown,
+export function formatOverviewPercent(
+  numerator: number | string | null | undefined,
+  denominator: number | string | null | undefined,
   availability: unknown,
 ): string {
-  return formatAvailableOverviewValue(denominator, availability, () =>
-    formatPercent(
-      numberValue(numerator as number | string | null | undefined),
-      numberValue(denominator as number | string | null | undefined),
-    ),
-  );
+  const state = normalizeOverviewDataAvailability(availability);
+  if (state === "partial") return "Parcial";
+  if (state === "unavailable") return "Indisponível";
+
+  const parsedNumerator = safeNumber(numerator);
+  const parsedDenominator = safeNumber(denominator);
+  if (parsedNumerator == null || parsedDenominator == null) {
+    return "Indisponível";
+  }
+  if (
+    !Number.isInteger(parsedNumerator) ||
+    !Number.isInteger(parsedDenominator) ||
+    parsedNumerator < 0 ||
+    parsedDenominator < 0 ||
+    parsedNumerator > parsedDenominator
+  ) {
+    return "Indisponível";
+  }
+  if (parsedDenominator === 0) {
+    return parsedNumerator === 0 ? "Sem atividade" : "Indisponível";
+  }
+
+  return formatPercent(parsedNumerator, parsedDenominator);
 }
 
 function getStoreAiAvailability(
