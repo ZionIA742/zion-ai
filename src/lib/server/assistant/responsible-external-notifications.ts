@@ -153,6 +153,13 @@ function isAutomaticReportType(value: unknown): value is (typeof AUTOMATIC_REPOR
   return AUTOMATIC_REPORT_TYPES.includes(normalizeText(value) as (typeof AUTOMATIC_REPORT_TYPES)[number]);
 }
 
+function isAutomaticReportSource(context: Record<string, unknown> | null) {
+  if (!context) return false;
+  return [context.source, context.report_source].some(
+    (value) => normalizeText(value) === AUTOMATIC_REPORT_SOURCE,
+  );
+}
+
 function isAutomaticReportNotification(notification: InternalAssistantNotificationRow) {
   const context = isRecord(notification.context) ? notification.context : null;
   const notificationType = normalizeText(notification.notification_type);
@@ -162,7 +169,7 @@ function isAutomaticReportNotification(notification: InternalAssistantNotificati
   return Boolean(
     isAutomaticReportType(notificationType) &&
       reportType === notificationType &&
-      normalizeText(context?.source) === AUTOMATIC_REPORT_SOURCE &&
+      isAutomaticReportSource(context) &&
       eventKey === `assistant-automatic-report:${cleanText(notification.organization_id)}:${cleanText(notification.store_id)}:${localDate}:${notificationType}` &&
       localDate &&
       cleanText(context?.target_iso),

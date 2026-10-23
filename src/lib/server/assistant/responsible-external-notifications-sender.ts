@@ -141,13 +141,19 @@ function normalizeText(value: unknown) {
   return cleanText(value).toLowerCase();
 }
 
+function isAutomaticReportSource(context: Record<string, unknown>) {
+  return [context.source, context.report_source].some(
+    (value) => normalizeText(value) === AUTOMATIC_REPORT_SOURCE,
+  );
+}
+
 function isAutomaticReportNotification(notification: ResponsibleExternalNotificationRow) {
   const context = notification.context || {};
   const notificationType = normalizeText(notification.notification_type);
   const localDate = cleanText(context.local_date);
   return Boolean(
     AUTOMATIC_REPORT_TYPES.includes(notificationType as (typeof AUTOMATIC_REPORT_TYPES)[number]) &&
-      normalizeText(context.source) === AUTOMATIC_REPORT_SOURCE &&
+      isAutomaticReportSource(context) &&
       normalizeText(context.report_type) === notificationType &&
       cleanText(context.event_key) === `assistant-automatic-report:${cleanText(notification.organization_id)}:${cleanText(notification.store_id)}:${localDate}:${notificationType}` &&
       localDate &&

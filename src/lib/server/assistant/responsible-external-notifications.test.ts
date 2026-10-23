@@ -65,7 +65,10 @@ function createMandatoryNotification() {
   };
 }
 
-function createSupabaseRecorder(options?: { existingExternalNotificationId?: string | null }) {
+function createSupabaseRecorder(options?: {
+  existingExternalNotificationId?: string | null;
+  responsibleAvailable?: boolean;
+}) {
   const insertCalls: Array<{ table: string; payload: Record<string, unknown> }> = [];
   let onboardingPreferenceWasRead = false;
 
@@ -113,14 +116,16 @@ function createSupabaseRecorder(options?: { existingExternalNotificationId?: str
               ) {
                 if (table === "store_responsibles") {
                   return Promise.resolve({
-                    data: [
-                      {
-                        id: "responsible-1",
-                        name: "Maria",
-                        role: "owner",
-                        whatsapp_number: "11999999999",
-                      },
-                    ],
+                    data: options?.responsibleAvailable === false
+                      ? []
+                      : [
+                          {
+                            id: "responsible-1",
+                            name: "Maria",
+                            role: "owner",
+                            whatsapp_number: "11999999999",
+                          },
+                        ],
                     error: null,
                   }).then(onFulfilled ?? undefined, onRejected ?? undefined);
                 }
@@ -344,6 +349,118 @@ const tests: TestCase[] = [
       assert.equal(result.created, true);
       assert.equal(supabase.insertCalls[0]?.payload.notification_type, "morning_report");
       assert.equal(supabase.insertCalls[0]?.payload.source_event_key, report.context.event_key);
+    },
+  },
+  {
+    name: "pending automatic report accepts report_source when source is the enqueue provenance",
+    run: async () => {
+      const {
+        shouldEnqueueResponsibleExternalNotification,
+        enqueueResponsibleExternalNotificationFromAssistantNotification,
+      } = await modulePromise;
+      const report = {
+        ...createMandatoryNotification(),
+        id: "19fff8a1-45a6-4a70-86b3-d9efbff3ed38",
+        notification_type: "evening_report",
+        priority: "normal",
+        status: "pending",
+        title: "Relatorio da tarde",
+        body: "Resumo da loja.",
+        context: {
+          source: "assistant_enqueue_internal_notification",
+          report_source: "assistant_automatic_reports",
+          report_type: "evening_report",
+          local_date: "2026-10-23",
+          target_iso: "2026-10-23T20:00:00.000Z",
+          event_key:
+            "assistant-automatic-report:org-1:store-1:2026-10-23:evening_report",
+        },
+      };
+
+      const eligibility = shouldEnqueueResponsibleExternalNotification(report);
+      assert.deepEqual(eligibility, {
+        eligible: true,
+        requiresResponsibleNotification: true,
+      });
+
+      const firstSupabase = createSupabaseRecorder();
+      const first = await enqueueResponsibleExternalNotificationFromAssistantNotification({
+        supabase: firstSupabase.client as never,
+        internalNotification: report,
+      });
+      assert.equal(first.created, true);
+      assert.equal(firstSupabase.insertCalls.length, 1);
+      assert.equal(firstSupabase.insertCalls[0]?.payload.status, "materialized");
+      assert.equal(
+        firstSupabase.insertCalls[0]?.payload.source_event_key,
+        report.context.event_key,
+      );
+
+      const secondSupabase = createSupabaseRecorder({
+        existingExternalNotificationId: "external-report-1",
+      });
+      const second = await enqueueResponsibleExternalNotificationFromAssistantNotification({
+        supabase: secondSupabase.client as never,
+        internalNotification: report,
+      });
+      assert.equal(second.created, false);
+      assert.equal(second.rowId, "external-report-1");
+      assert.equal(secondSupabase.insertCalls.length, 0);
+    },
+  },
+  {
+    name: "unknown automatic report source and type remain blocked",
+    run: async () => {
+      const { shouldEnqueueResponsibleExternalNotification } = await modulePromise;
+      const base = {
+        ...createMandatoryNotification(),
+        notification_type: "evening_report",
+        context: {
+          source: "assistant_enqueue_internal_notification",
+          report_source: "unknown",
+          report_type: "evening_report",
+          local_date: "2026-10-23",
+          target_iso: "2026-10-23T20:00:00.000Z",
+          event_key:
+            "assistant-automatic-report:org-1:store-1:2026-10-23:evening_report",
+        },
+      };
+      assert.equal(shouldEnqueueResponsibleExternalNotification(base).eligible, false);
+      assert.equal(
+        shouldEnqueueResponsibleExternalNotification({
+          ...base,
+          notification_type: "other_report",
+        }).eligible,
+        false,
+      );
+    },
+  },
+  {
+    name: "automatic report fails closed when no active responsible exists",
+    run: async () => {
+      const { enqueueResponsibleExternalNotificationFromAssistantNotification } =
+        await modulePromise;
+      const report = {
+        ...createMandatoryNotification(),
+        notification_type: "evening_report",
+        priority: "normal",
+        status: "pending",
+        context: {
+          source: "assistant_enqueue_internal_notification",
+          report_source: "assistant_automatic_reports",
+          report_type: "evening_report",
+          local_date: "2026-10-23",
+          target_iso: "2026-10-23T20:00:00.000Z",
+          event_key:
+            "assistant-automatic-report:org-1:store-1:2026-10-23:evening_report",
+        },
+      };
+      const result = await enqueueResponsibleExternalNotificationFromAssistantNotification({
+        supabase: createSupabaseRecorder({ responsibleAvailable: false }).client as never,
+        internalNotification: report,
+      });
+      assert.equal(result.created, false);
+      assert.equal(result.skippedReason, "responsible_primary_not_configured");
     },
   },
 ];

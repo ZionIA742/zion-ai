@@ -187,6 +187,8 @@ async function main() {
     "utf8",
   );
   assert.match(senderSource, /isAutomaticReportNotification\(claimedNotification\)/);
+  assert.match(senderSource, /context\.report_source/);
+  assert.match(senderSource, /context\.source/);
   assert.match(senderSource, /policy\.mode !== "free_form"/);
   assert.match(senderSource, /AUTOMATIC_REPORT_WHATSAPP_WINDOW_CLOSED/);
   console.log("responsible-external-notifications-sender: focused uncertainty tests passed");
