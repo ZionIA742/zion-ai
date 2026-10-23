@@ -2477,6 +2477,28 @@ function canApproveStoreContractVersion({
   return ["uploaded", "analyzed", "awaiting_review"].includes(normalizedStatus);
 }
 
+export function getContractSimpleVersionState(input: {
+  status: string | null | undefined;
+  isActiveVersion: boolean;
+  hasDocument: boolean;
+  isRejected: boolean;
+  mimeType: string | null | undefined;
+}) {
+  const normalizedStatus = String(input.status || "").trim().toLowerCase();
+  const canActivate =
+    !input.isActiveVersion &&
+    !input.isRejected &&
+    input.hasDocument &&
+    ["uploaded", "analyzed", "awaiting_review"].includes(normalizedStatus);
+
+  return {
+    canDownload: input.hasDocument,
+    canView: input.hasDocument && String(input.mimeType || "").trim().toLowerCase() === "application/pdf",
+    canActivate,
+    isHistorical: !input.isActiveVersion && !canActivate,
+  };
+}
+
 function resolveContractRuleGroupLabel(group: string | null | undefined) {
   const normalized = String(group || "").trim().toLowerCase();
   if (normalized === "partes") return "Partes";
@@ -4375,7 +4397,6 @@ export default function ConfiguracoesPage() {
   const [isContractPolicyEditing, setIsContractPolicyEditing] = useState(false);
   const [contractExperienceDraft, setContractExperienceDraft] = useState<ContractExperienceDraftState>(createEmptyContractExperienceDraft());
   const [savedContractExperience, setSavedContractExperience] = useState<ContractExperienceDraftState>(createEmptyContractExperienceDraft());
-  const [isContractsEditing, setIsContractsEditing] = useState(false);
   const [commercialWhatsappDraft, setCommercialWhatsappDraft] = useState("");
   const [isCommercialWhatsappEditing, setIsCommercialWhatsappEditing] = useState(false);
   const [primaryResponsibleDraft, setPrimaryResponsibleDraft] = useState<ResponsiblePersonDraft>(createEmptyResponsibleDraft(true));
@@ -4426,7 +4447,7 @@ export default function ConfiguracoesPage() {
   const [uploadingContractBase, setUploadingContractBase] = useState(false);
   const [contractActionVersionId, setContractActionVersionId] = useState<string | null>(null);
   const [contractActionType, setContractActionType] = useState<
-    "analyze" | "approve" | "reject" | "extract-rules" | "download" | null
+    "analyze" | "approve" | "reject" | "extract-rules" | "download" | "view" | null
   >(null);
   const [contractRejectReasonDrafts, setContractRejectReasonDrafts] = useState<Record<string, string>>({});
   const [contractsErrorText, setContractsErrorText] = useState<string | null>(null);
@@ -4821,6 +4842,35 @@ export default function ConfiguracoesPage() {
       setContractsSuccessText("Modelo de contrato ativado com sucesso.");
     } catch (error: any) {
       setContractsErrorText(error?.message || "Erro ao ativar essa versao.");
+    } finally {
+      setContractActionVersionId(null);
+      setContractActionType(null);
+    }
+  }
+
+  async function handleViewContractVersion(versionId: string) {
+    if (!activeStoreId) {
+      setContractsErrorText("Nenhuma loja ativa foi encontrada para visualizar essa versao.");
+      setContractsSuccessText(null);
+      return;
+    }
+    const versionAccess = resolveStoreContractVersionAccess(versionId);
+    if (!versionAccess.version?.store_file_id || cleanText(versionAccess.version.mime_type).toLowerCase() !== "application/pdf") {
+      setContractsErrorText("A visualizacao direta esta disponivel apenas para o PDF original.");
+      setContractsSuccessText(null);
+      return;
+    }
+    setContractActionVersionId(versionId);
+    setContractActionType("view");
+    setContractsErrorText(null);
+    setContractsSuccessText(null);
+    try {
+      const response = await fetch(`/api/store-contract-templates/${encodeURIComponent(versionId)}/download?storeId=${encodeURIComponent(activeStoreId)}`, { method: "GET", cache: "no-store", credentials: "include" });
+      const result = (await response.json().catch(() => null)) as { ok?: boolean; signedUrl?: string | null; message?: string } | null;
+      if (!response.ok || !result?.ok || !result.signedUrl) throw new Error(result?.message || "Nao foi possivel abrir o contrato original.");
+      if (!window.open(result.signedUrl, "_blank", "noopener,noreferrer")) throw new Error("O navegador bloqueou a abertura do contrato. Permita pop-ups e tente novamente.");
+    } catch (error: any) {
+      setContractsErrorText(error?.message || "Erro ao abrir o contrato original.");
     } finally {
       setContractActionVersionId(null);
       setContractActionType(null);
@@ -15078,7 +15128,6 @@ export default function ConfiguracoesPage() {
             description="Envie e ative manualmente o documento original da loja. O ZION mantém uma única versão ativa por vez e preserva as versões anteriores no histórico."
             tone={storeContractCardTone}
             status={storeContractCardStatus}
-            actions={<button type="button" onClick={() => setIsContractsEditing((current) => !current)} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">{isContractsEditing ? "Fechar" : "Gerenciar contrato"}</button>}
           >
             <div className="space-y-4">
               {contractsLoading ? <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-600">Carregando contratos da loja...</div> : null}
@@ -15087,7 +15136,7 @@ export default function ConfiguracoesPage() {
 
               <div className="grid gap-4 lg:grid-cols-2">
                 <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="text-sm font-semibold text-gray-950">Enviar contrato base</div>
+                  <div className="text-sm font-semibold text-gray-950">Atualizar contrato</div>
                   <p className="mt-1 text-xs leading-5 text-gray-500">Formatos aceitos: PDF, DOC e DOCX. O arquivo original permanece intacto; cada envio cria uma nova versão para ativação manual.</p>
                   <input
                     ref={contractBaseInputRef}
@@ -15117,43 +15166,45 @@ export default function ConfiguracoesPage() {
                       disabled={!hasValidStoreContext || !selectedContractBaseFile || uploadingContractBase || contractsLoading}
                       className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      {uploadingContractBase ? "Enviando contrato base..." : "Enviar contrato base"}
+                      {uploadingContractBase ? "Enviando nova versão..." : "Enviar nova versão"}
                     </button>
                   </div>
                   <div className="mt-3 text-sm text-gray-700"><span className="font-semibold">Arquivo selecionado:</span> {selectedContractBaseFile?.name || "Nenhum arquivo selecionado"}</div>
                 </div>
 
-                <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="text-sm font-semibold text-gray-950">Contrato base ativo</div>
+                <div className="order-first rounded-2xl border border-gray-200 bg-white p-4">
+                  <div className="text-sm font-semibold text-gray-950">Contrato atual</div>
                   {storeContractActiveVersion ? (
                     <div className="mt-3 space-y-2 text-sm text-gray-700">
                       <div><span className="font-semibold">Arquivo:</span> {cleanText(storeContractActiveVersion.original_filename) || "Sem nome"}</div>
                       <div><span className="font-semibold">Versão:</span> {storeContractActiveVersion.version_number ?? "?"}</div>
-                      <div><span className="font-semibold">Status:</span> {resolveContractVersionStatus(storeContractActiveVersion.status).label}</div>
-                      <div><span className="font-semibold">Aprovado em:</span> {formatImportDate(storeContractActiveVersion.approved_at)}</div>
+                      <div><span className="font-semibold">Formato:</span> {cleanText(storeContractActiveVersion.mime_type) || "Não informado"}</div>
+                      <div className="flex flex-wrap gap-2 pt-2">
+                        {cleanText(storeContractActiveVersion.mime_type).toLowerCase() === "application/pdf" ? <button type="button" onClick={() => void handleViewContractVersion(storeContractActiveVersion.id)} className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold">Visualizar</button> : null}
+                        {storeContractActiveVersion.store_file_id ? <button type="button" onClick={() => void handleDownloadContractVersion(storeContractActiveVersion.id)} className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold">Baixar</button> : null}
+                      </div>
                     </div>
                   ) : <div className="mt-3 text-sm text-gray-500">Nenhuma versão aprovada está ativa no momento.</div>}
                 </div>
               </div>
 
-              {isContractsEditing ? (
-                <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+                <div className="space-y-4">
                   <div className="rounded-2xl border border-gray-200 bg-white p-4">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <div className="text-sm font-semibold text-gray-950">Versões enviadas</div>
-                        <p className="mt-1 text-xs leading-5 text-gray-500">Consulte os documentos enviados, baixe uma versão quando precisar revisá-la e ative manualmente o modelo escolhido.</p>
+                        <div className="text-sm font-semibold text-gray-950">Versões disponíveis</div>
+                        <p className="mt-1 text-xs leading-5 text-gray-500">Escolha manualmente qual versão elegível deve se tornar o modelo ativo.</p>
                       </div>
                       <div className="flex flex-wrap items-center justify-end gap-2">
   <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-semibold text-gray-700">
     {storeContractVersions.length} versão(ões)
   </span>
 
-  {storeContractVersions.some((version) =>
-    ["archived", "rejected"].includes(
-      normalizeContractVersionStatusValue(version.status)
-    )
-  ) ? (
+  {storeContractVersions.some((version) => {
+    const status = normalizeContractVersionStatusValue(version.status);
+    const isActiveVersion = storeContractActiveVersion?.id === version.id || status === "active";
+    return !isActiveVersion && !canApproveStoreContractVersion({ version, isActiveVersion });
+  }) ? (
     <button
       type="button"
       onClick={() =>
@@ -15164,9 +15215,10 @@ export default function ConfiguracoesPage() {
       {showContractVersionHistory
         ? "Ocultar histórico de versões"
         : `Ver histórico de versões (${storeContractVersions.filter((version) =>
-            ["archived", "rejected"].includes(
-              normalizeContractVersionStatusValue(version.status)
-            )
+            !canApproveStoreContractVersion({
+              version,
+              isActiveVersion: storeContractActiveVersion?.id === version.id || normalizeContractVersionStatusValue(version.status) === "active",
+            }) && storeContractActiveVersion?.id !== version.id
           ).length})`}
     </button>
   ) : null}
@@ -15182,11 +15234,10 @@ export default function ConfiguracoesPage() {
     const normalizedStatus =
       normalizeContractVersionStatusValue(version.status);
 
-    const isHistoricalVersion =
-      normalizedStatus === "archived" ||
-      normalizedStatus === "rejected";
+    const isActiveVersion = storeContractActiveVersion?.id === version.id || normalizedStatus === "active";
+    const isHistoricalVersion = !isActiveVersion && !canApproveStoreContractVersion({ version, isActiveVersion });
 
-    return showContractVersionHistory || !isHistoricalVersion;
+    return !isActiveVersion && (canApproveStoreContractVersion({ version, isActiveVersion }) || (showContractVersionHistory && isHistoricalVersion));
   })
   .map((version) => {
                           const status = resolveContractVersionStatus(version.status);
@@ -15195,17 +15246,18 @@ export default function ConfiguracoesPage() {
                             storeContractActiveVersion?.id === version.id || normalizedStatus === "active";
                           const busy = contractActionVersionId === version.id;
                           const isApproveBusy = busy && contractActionType === "approve";
-                          const isRejectBusy = busy && contractActionType === "reject";
                           const isDownloadBusy = busy && contractActionType === "download";
-                          const canApprove = canApproveStoreContractVersion({
-                            version,
+                          const isViewBusy = busy && contractActionType === "view";
+                          const simpleVersionState = getContractSimpleVersionState({
+                            status: version.status,
                             isActiveVersion,
+                            hasDocument: Boolean(version.store_file_id),
+                            isRejected: Boolean(version.rejected_at),
+                            mimeType: version.mime_type,
                           });
-                          const canDownload = Boolean(version.store_file_id);
-                          const canReject = isMutableStoreContractVersion({
-                            version,
-                            isActiveVersion,
-                          });
+                          const canApprove = simpleVersionState.canActivate;
+                          const canDownload = simpleVersionState.canDownload;
+                          const canView = simpleVersionState.canView;
                           return (
                             <div key={version.id} className="rounded-2xl border border-gray-200 bg-gray-50/70 p-4">
                               <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -15235,6 +15287,16 @@ export default function ConfiguracoesPage() {
                                       {isDownloadBusy ? "Preparando download..." : "Baixar contrato"}
                                     </button>
                                   ) : null}
+                                  {canView ? (
+                                    <button
+                                      type="button"
+                                      disabled={busy || uploadingContractBase || contractsLoading}
+                                      onClick={() => void handleViewContractVersion(version.id)}
+                                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                      {isViewBusy ? "Abrindo PDF..." : "Visualizar PDF"}
+                                    </button>
+                                  ) : null}
                                   {canApprove ? (
                                     <button
                                       type="button"
@@ -15245,30 +15307,6 @@ export default function ConfiguracoesPage() {
                                       {isApproveBusy ? "Ativando..." : "Ativar modelo"}
                                     </button>
                                   ) : null}
-                                  {canReject ? (
-                                    <>
-                                      <button
-                                        type="button"
-                                        disabled={busy || uploadingContractBase || contractsLoading}
-                                        onClick={() => void handleRejectContractVersion(version.id)}
-                                        className="rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 disabled:cursor-not-allowed disabled:opacity-40"
-                                      >
-                                        {isRejectBusy ? "Rejeitando..." : "Rejeitar versão"}
-                                      </button>
-                                      <textarea
-                                        value={contractRejectReasonDrafts[version.id] || ""}
-                                        onChange={(event) =>
-                                          setContractRejectReasonDrafts((current) => ({
-                                            ...current,
-                                            [version.id]: event.target.value,
-                                          }))
-                                        }
-                                        rows={2}
-                                        placeholder="Motivo da rejeição (opcional)"
-                                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                                      />
-                                    </>
-                                  ) : null}
                                 </div>
                               </div>
                             </div>
@@ -15278,21 +15316,7 @@ export default function ConfiguracoesPage() {
                     )}
                   </div>
 
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="text-sm font-semibold text-gray-950">Resumo rápido</div>
-                    <div className="mt-3 space-y-2">
-                      <CompactMetric label="Versões enviadas" value={String(storeContractVersions.length)} tone={storeContractVersions.length > 0 ? "green" : "gray"} />
-                      <CompactMetric label="Status atual" value={storeContractActiveVersion ? "Ativo" : "Sem versão ativa"} tone={storeContractActiveVersion ? "green" : "amber"} />
-                    </div>
-                  </div>
                 </div>
-              ) : (
-                <SummaryList items={buildBulletRows([
-                  { label: "Arquivo ativo", value: cleanText(storeContractActiveVersion?.original_filename) || "Nenhum contrato ativo" },
-                  { label: "Status", value: storeContractActiveVersion ? resolveContractVersionStatus(storeContractActiveVersion.status).label : "Sem versão ativa" },
-                  { label: "Versões enviadas", value: String(storeContractVersions.length) },
-                ])} />
-              )}
             </div>
           </SectionBlock>
         </div>

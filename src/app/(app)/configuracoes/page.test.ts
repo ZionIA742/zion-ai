@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 
 type TestCase = {
   name: string;
@@ -27,6 +28,25 @@ function getContractSectionBlock(source: string) {
   const end = source.indexOf('{activeTab === "canais-integracoes"', start);
   assert.equal(end > start, true, "contract settings section end not found");
   return source.slice(start, end).replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+}
+
+function loadContractSimpleVersionState(source: string) {
+  const start = source.indexOf("export function getContractSimpleVersionState(");
+  assert.equal(start > -1, true, "contract presentation helper not found");
+  const end = source.indexOf("function resolveContractRuleGroupLabel(", start);
+  assert.equal(end > start, true, "contract presentation helper end not found");
+  const compiled = transpileModule(source.slice(start, end), {
+    compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 },
+  });
+  const module = { exports: {} as Record<string, unknown> };
+  new Function("exports", "module", compiled.outputText)(module.exports, module);
+  return module.exports.getContractSimpleVersionState as (input: {
+    status: string | null | undefined;
+    isActiveVersion: boolean;
+    hasDocument: boolean;
+    isRejected: boolean;
+    mimeType: string | null | undefined;
+  }) => { canDownload: boolean; canView: boolean; canActivate: boolean; isHistorical: boolean };
 }
 
 function getUpsertConfigAnswersBlock(source: string) {
@@ -1484,6 +1504,37 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "simple contract presentation keeps activation manual and history safe",
+    run: () => {
+      const stateFor = loadContractSimpleVersionState(readPageSource());
+
+      assert.deepEqual(
+        stateFor({ status: "active", isActiveVersion: true, hasDocument: true, isRejected: false, mimeType: "application/pdf" }),
+        { canDownload: true, canView: true, canActivate: false, isHistorical: false },
+      );
+      assert.deepEqual(
+        stateFor({ status: "uploaded", isActiveVersion: false, hasDocument: true, isRejected: false, mimeType: "application/pdf" }),
+        { canDownload: true, canView: true, canActivate: true, isHistorical: false },
+      );
+      assert.deepEqual(
+        stateFor({ status: "awaiting_review", isActiveVersion: false, hasDocument: true, isRejected: false, mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }),
+        { canDownload: true, canView: false, canActivate: true, isHistorical: false },
+      );
+
+      for (const status of ["failed", "rejected", "archived"]) {
+        assert.deepEqual(
+          stateFor({ status, isActiveVersion: false, hasDocument: true, isRejected: status === "rejected", mimeType: "application/pdf" }),
+          { canDownload: true, canView: true, canActivate: false, isHistorical: true },
+        );
+      }
+
+      assert.deepEqual(
+        stateFor({ status: "uploaded", isActiveVersion: false, hasDocument: false, isRejected: false, mimeType: "application/pdf" }),
+        { canDownload: false, canView: false, canActivate: false, isHistorical: true },
+      );
+    },
+  },
+  {
     name: "contract activation is manual and independent from clause analysis",
     run: () => {
       const source = readPageSource();
@@ -1499,7 +1550,9 @@ const tests: TestCase[] = [
       assert.equal(source.includes("/api/store-contract-templates/${encodeURIComponent(versionId)}/download?storeId="), true);
       assert.equal(source.includes('link.download = cleanText(result.originalFilename) || "contrato-da-loja"'), true);
       assert.equal(source.includes('"Baixar contrato"'), true);
-      assert.equal(source.includes("const canDownload = Boolean(version.store_file_id)"), true);
+      assert.equal(source.includes("handleViewContractVersion"), true);
+      assert.equal(source.includes('window.open(result.signedUrl, "_blank", "noopener,noreferrer")'), true);
+      assert.equal(source.includes("const canDownload = simpleVersionState.canDownload"), true);
     },
   },
   {
@@ -1511,10 +1564,16 @@ const tests: TestCase[] = [
       assert.equal(source.includes("useState(false)"), true);
       assert.equal(block.includes("storeContractActiveVersion"), true);
       assert.equal(block.includes("handleDownloadContractVersion"), true);
+      assert.equal(block.includes("handleViewContractVersion"), true);
       assert.equal(block.includes("canDownload"), true);
       assert.equal(block.includes("canApprove"), true);
       assert.equal(block.includes("showContractVersionHistory"), true);
       assert.equal(block.includes("Ativar modelo"), true);
+      assert.equal(block.includes("Contrato atual"), true);
+      assert.equal(block.includes("Atualizar contrato"), true);
+      assert.equal(block.includes("Versões disponíveis"), true);
+      assert.equal(block.includes("Resumo rápido"), false);
+      assert.equal(block.includes("Rejeitar versão"), false);
       assert.equal(block.includes("Analisar contrato"), false);
       assert.equal(block.includes("Ver texto lido"), false);
       assert.equal(block.includes("Encontrar regras do contrato"), false);
