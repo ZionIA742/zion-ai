@@ -768,7 +768,7 @@ function CostPeriodBlocks({
       <DetailItem
         label="Últimos 7 dias"
         value={formatAiCost(week, availability, weekCompleteness)}
-        help="De segunda-feira até hoje"
+        help="Janela móvel: hoje e os seis dias anteriores"
       />
       <DetailItem label="Mês" value={formatAiCost(month, availability, monthCompleteness)} help="Do dia 1 até hoje" />
     </div>
@@ -2573,7 +2573,7 @@ function StoreDetailsDrawer({
             <DetailItem
               label="Mensagens"
               value={formatOverviewMetric(store.totalMessages, getStoreCountAvailability(store, "messages"))}
-              help="Mensagens comerciais totais da loja"
+              help="Total de registros ativos em messages"
             />
             <DetailItem
               label="Mensagens da IA registradas"
@@ -2619,7 +2619,7 @@ function StoreDetailsDrawer({
             <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
               <DetailItem label="Hoje" value={formatAiCost(store.costUsdToday, getStoreAiAvailability(store, "runs"), store.costCompletenessToday)} />
               <DetailItem
-                label="7 dias"
+                label="Últimos 7 dias"
                 value={formatAiCost(store.costUsdLast7Days, getStoreAiAvailability(store, "runs"), store.costCompletenessLast7Days)}
               />
               <DetailItem label="Mês" value={formatAiCost(store.costUsdMonth, getStoreAiAvailability(store, "runs"), store.costCompletenessMonth)} />

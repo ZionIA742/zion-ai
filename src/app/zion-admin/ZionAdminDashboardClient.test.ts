@@ -502,8 +502,12 @@ const tests: TestCase[] = [
       const source = readSource();
 
       assert.equal(source.includes('label="Últimos 7 dias"'), true);
+      assert.equal(source.includes('label="7 dias"'), false);
+      assert.equal(source.includes('help="Janela móvel: hoje e os seis dias anteriores"'), true);
       assert.equal(source.includes("· últimos 7 dias"), true);
       assert.equal(source.includes('messages: "Mensagens registradas"'), true);
+      assert.equal(source.includes('help="Mensagens comerciais totais da loja"'), false);
+      assert.equal(source.includes('help="Total de registros ativos em messages"'), true);
       assert.equal(source.includes('messages: "Mensagens ativas registradas por loja."'), true);
       assert.equal(source.includes("mensagens registradas`"), true);
       assert.equal(source.includes("mensagens comerciais por loja"), false);
