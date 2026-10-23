@@ -333,6 +333,16 @@ function normalizePhone(value: string): string {
   return value.replace(/[^\d]/g, "");
 }
 
+export function isLikelyResponsibleAssistantQuestion(value: unknown) {
+  const text = String(value || "").trim().toLocaleLowerCase("pt-BR");
+  if (!text) return false;
+  if (/\b(visita|visitas|t[eé]cnic\w*|instala[cç][aã]o\w*|servi[cç]o\w*|resultado\w*|realizad\w*|conclu[ií]d\w*|cancelad\w*|remarcad\w*|agendament\w*|compromisso\w*|atendimento t[eé]cnico)\b/.test(text)) {
+    return false;
+  }
+  if (text.includes("?")) return true;
+  return /^(o que|qual|quais|como|quando|onde|por que|porque|temos|voc[eê]s? (podem|conseguem|sabem)|me diga|pode me dizer)\b/.test(text);
+}
+
 function truncateText(value: string, maxLength: number): string {
   if (value.length <= maxLength) {
     return value;
@@ -622,28 +632,46 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
   }
 
   if (args.extracted.rawMessageType === "text") {
-    const result = await recordPostTechnicalVisitResponsibleInbound({
-      organizationId: args.inbox.organization_id,
-      storeId: args.inbox.store_id,
-      responsibleId: responsible.responsible.id,
-      inboundExternalMessageId: args.extracted.messageId || args.inbox.external_event_id,
-      repliedToExternalMessageId: args.extracted.contextMessageId,
-      rawContent: args.extracted.textBody,
-      metadata: {
-        source: "meta_whatsapp_webhook",
-        event_kind: args.payload.event_kind || null,
-        message_type: args.extracted.rawMessageType,
-        context_message_id: args.extracted.contextMessageId,
-        inbox_id: args.inbox.id,
-        external_event_id: args.inbox.external_event_id,
-        media_ids: {
-          image: args.extracted.imageMediaId,
-          audio: args.extracted.audioMediaId,
-          video: args.extracted.videoMediaId,
-          document: args.extracted.documentMediaId,
+    let result: Awaited<ReturnType<typeof recordPostTechnicalVisitResponsibleInbound>>;
+    try {
+      result = await recordPostTechnicalVisitResponsibleInbound({
+        organizationId: args.inbox.organization_id,
+        storeId: args.inbox.store_id,
+        responsibleId: responsible.responsible.id,
+        inboundExternalMessageId: args.extracted.messageId || args.inbox.external_event_id,
+        repliedToExternalMessageId: args.extracted.contextMessageId,
+        rawContent: args.extracted.textBody,
+        metadata: {
+          source: "meta_whatsapp_webhook",
+          event_kind: args.payload.event_kind || null,
+          message_type: args.extracted.rawMessageType,
+          context_message_id: args.extracted.contextMessageId,
+          inbox_id: args.inbox.id,
+          external_event_id: args.inbox.external_event_id,
+          media_ids: {
+            image: args.extracted.imageMediaId,
+            audio: args.extracted.audioMediaId,
+            video: args.extracted.videoMediaId,
+            document: args.extracted.documentMediaId,
+          },
         },
-      },
-    });
+      });
+    } catch (error) {
+      if (args.extracted.contextMessageId || !isLikelyResponsibleAssistantQuestion(args.extracted.textBody)) {
+        throw error;
+      }
+      console.error("P9 follow-up processing failed before Assistant fallback", {
+        organizationId: args.inbox.organization_id,
+        storeId: args.inbox.store_id,
+        inboxId: args.inbox.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      result = { handled: false, correlationStatus: "p9_error_assistant_fallback", responseId: null };
+    }
+
+    if (result.correlationStatus === "responsible_primary_invalid") {
+      throw new Error("P9_RESPONSIBLE_IDENTITY_INVALID");
+    }
 
     if (result.handled) {
       if (!result.responseId) {

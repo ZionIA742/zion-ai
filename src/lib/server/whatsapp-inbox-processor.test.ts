@@ -9,6 +9,7 @@ import {
   extractIncomingMessage,
   processWhatsappInbox,
   resolveWhatsappInboundThreadBySystem,
+  isLikelyResponsibleAssistantQuestion,
 } from "./whatsapp-inbox-processor.js";
 
 function readProcessorSource() {
@@ -24,6 +25,21 @@ test("responsible decision hook returns its canonical result to stop assistant h
   assert.ok(hookStart >= 0);
   const hook = source.slice(hookStart, hookStart + 1_200);
   assert.match(hook, /return decideQuoteApprovalFromPersistedInbound\(/);
+});
+
+test("common responsible questions can use the Assistant fallback without weakening P9 identity gates", () => {
+  assert.equal(isLikelyResponsibleAssistantQuestion("O que temos pra hoje?"), true);
+  assert.equal(isLikelyResponsibleAssistantQuestion("Qual horario de atendimento?"), true);
+  assert.equal(isLikelyResponsibleAssistantQuestion("Visita concluida, tudo certo"), false);
+  assert.equal(isLikelyResponsibleAssistantQuestion("A visita foi concluída?"), false);
+  assert.equal(isLikelyResponsibleAssistantQuestion("Qual o status do agendamento?"), false);
+  assert.equal(isLikelyResponsibleAssistantQuestion("sim"), false);
+  const source = readProcessorSource();
+  assert.match(source, /contextMessageId \|\| !isLikelyResponsibleAssistantQuestion/);
+  assert.match(source, /P9_RESPONSIBLE_IDENTITY_INVALID/);
+  assert.match(source, /P9 follow-up processing failed before Assistant fallback/);
+  assert.match(source, /p9_error_assistant_fallback/);
+  assert.match(source, /routeResponsibleWhatsappToAssistant/);
 });
 
 test("extracts the responsible WhatsApp quick reply without exposing it to customer routing", () => {
