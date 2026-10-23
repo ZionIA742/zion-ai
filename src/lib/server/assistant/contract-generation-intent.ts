@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { evaluateContractWorkflowDecision } from "@/lib/server/sales-contracts/contract-workflow-decision";
 import { resolveAuthorizedExistingQuote } from "@/lib/server/sales-quotes/quote-auth";
 
@@ -12,6 +13,7 @@ type HandleAssistantContractGenerationArgs = {
   supabase: any;
   organizationId: string;
   storeId: string;
+  panelHumanMessageId?: string | null;
   recentMessages: AssistantRecentMessage[];
   lastHumanMessage: string;
   executeAssistantContractGeneration?: typeof executeAssistantContractGeneration;
@@ -33,6 +35,7 @@ export type ExecuteAssistantContractGenerationArgs = {
   organizationId: string;
   storeId: string;
   authority: "authenticated_crm_action";
+  panelHumanMessageId?: string | null;
   quoteId: string;
   quoteVersionId?: string | null;
   quoteNumber?: string | null;
@@ -41,6 +44,13 @@ export type ExecuteAssistantContractGenerationArgs = {
   evaluateContractWorkflowDecision?: typeof evaluateContractWorkflowDecision;
   resolveAuthorizedExistingQuote?: typeof resolveAuthorizedExistingQuote;
 };
+
+function buildPanelContractOperationId(panelHumanMessageId: string, effect: string, targetId: string) {
+  const digest = createHash("sha256")
+    .update(`zion-assistant-panel:${panelHumanMessageId}:${effect}:${targetId}`)
+    .digest("hex");
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-${((parseInt(digest.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, "0")}${digest.slice(18, 20)}-${digest.slice(20, 32)}`;
+}
 
 export type ExecuteAssistantContractGenerationResult = {
   ok: boolean;
@@ -630,6 +640,15 @@ export async function executeAssistantContractGeneration(
       `/api/sales-contracts/${encodeURIComponent(contractId)}/generate-pdf`,
       {
         method: "POST",
+        headers: args.panelHumanMessageId
+          ? {
+              "x-zion-contract-operation-id": buildPanelContractOperationId(
+                args.panelHumanMessageId,
+                "contract-generation-pdf",
+                contractId,
+              ),
+            }
+          : undefined,
       }
     );
 

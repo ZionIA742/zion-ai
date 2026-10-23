@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AssistantMessageRow, StoreAssistantContextStateRow } from "@/lib/server/assistant/types";
 import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/document-review-messages";
 import { registerContractBusinessEvent } from "@/lib/server/sales-contracts/contract-events";
@@ -80,10 +81,18 @@ type HandleDocumentEditArgs = {
   organizationId: string;
   storeId: string;
   threadId: string;
+  panelHumanMessageId?: string | null;
   assistantContextState?: StoreAssistantContextStateRow | null;
   recentMessages: AssistantDocumentMessageRow[];
   lastHumanMessage: string;
 };
+
+function buildPanelContractOperationId(panelHumanMessageId: string, effect: string, targetId: string) {
+  const digest = createHash("sha256")
+    .update(`zion-assistant-panel:${panelHumanMessageId}:${effect}:${targetId}`)
+    .digest("hex");
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-${((parseInt(digest.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, "0")}${digest.slice(18, 20)}-${digest.slice(20, 32)}`;
+}
 
 type HandleDocumentEditResult =
   | {
@@ -966,6 +975,7 @@ async function registerContractEditAuditEventSafely(args: {
 
 async function handleContractEdit(args: {
   request: Request;
+  panelHumanMessageId?: string | null;
   candidate: DocumentContextCandidate;
   patch: DocumentEditPatch;
   lastHumanMessage: string;
@@ -1043,7 +1053,18 @@ async function handleContractEdit(args: {
       const generateResult = await callInternalJson(
         args.request,
         `/api/sales-contracts/${encodeURIComponent(scope.contract.id)}/generate-pdf`,
-        { method: "POST" }
+        {
+          method: "POST",
+          headers: args.panelHumanMessageId
+            ? {
+                "x-zion-contract-operation-id": buildPanelContractOperationId(
+                  args.panelHumanMessageId,
+                  "document-edit-pdf",
+                  scope.contract.id,
+                ),
+              }
+            : undefined,
+        }
       );
 
       if (generateResult.ok) {
@@ -1222,6 +1243,7 @@ export async function handleAssistantDocumentEditRequest(
           })
         : await handleContractEdit({
             request: args.request,
+            panelHumanMessageId: args.panelHumanMessageId || null,
             candidate,
             patch,
             lastHumanMessage: args.lastHumanMessage,

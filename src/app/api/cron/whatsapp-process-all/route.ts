@@ -5,6 +5,7 @@ import { processWhatsappPendingMessages } from "@/lib/server/whatsapp-external-s
 import { processDueAiRunQueue } from "@/lib/server/process-ai-run-queue";
 import { processPostTechnicalVisitFollowups } from "@/lib/server/post-technical-visit-followups";
 import { drainResponsibleOperationalApprovalNotifications } from "@/lib/server/assistant/responsible-external-notifications-drainer";
+import { recoverPendingAssistantPanelSyncNotifications } from "@/lib/server/assistant/assistant-panel-whatsapp-sync";
 import { resumeEligiblePersistedResponsibleWhatsappEvents } from "@/lib/server/assistant/responsible-whatsapp-conversation";
 import { getWhatsappProcessAllHttpStatus } from "@/lib/server/whatsapp-process-all-status";
 
@@ -47,6 +48,13 @@ type StoreExecutionSummary = {
     scanned: number;
     eligible: number;
     prepared: number;
+    sent: number;
+    failed: number;
+    uncertain: number;
+    skipped: number;
+  };
+  assistantPanelSync?: {
+    scanned: number;
     sent: number;
     failed: number;
     uncertain: number;
@@ -171,6 +179,10 @@ export async function GET(req: Request) {
       process.env.WHATSAPP_CRON_RESPONSIBLE_OPERATIONAL_APPROVAL_LIMIT,
       10,
     );
+    const assistantPanelSyncLimit = parseEnvLimit(
+      process.env.WHATSAPP_CRON_ASSISTANT_PANEL_SYNC_LIMIT,
+      10,
+    );
     const aiQueueLimit = parseEnvLimit(process.env.WHATSAPP_CRON_AI_QUEUE_LIMIT, 10);
     const stores = await listActiveWhatsappStores();
 
@@ -241,6 +253,13 @@ export async function GET(req: Request) {
             limit: responsibleOperationalApprovalLimit,
           });
 
+        const assistantPanelSyncResult =
+          await recoverPendingAssistantPanelSyncNotifications({
+            organizationId: store.organizationId,
+            storeId: store.storeId,
+            limit: assistantPanelSyncLimit,
+          });
+
         const pendingResult = await processWhatsappPendingMessages({
           organizationId: store.organizationId,
           storeId: store.storeId,
@@ -284,6 +303,7 @@ export async function GET(req: Request) {
           },
           postAppointmentFollowups: postAppointmentFollowupResult,
           responsibleOperationalApprovals: responsibleOperationalApprovalResult,
+          assistantPanelSync: assistantPanelSyncResult,
           aiQueue: {
             processed: aiQueueResult.processed,
             succeeded: aiQueueResult.succeeded,
@@ -339,6 +359,22 @@ export async function GET(req: Request) {
         (total, item) => total + (item.responsibleOperationalApprovals?.uncertain || 0),
         0,
       ),
+      assistantPanelSyncScanned: results.reduce(
+        (total, item) => total + (item.assistantPanelSync?.scanned || 0),
+        0,
+      ),
+      assistantPanelSyncSent: results.reduce(
+        (total, item) => total + (item.assistantPanelSync?.sent || 0),
+        0,
+      ),
+      assistantPanelSyncFailed: results.reduce(
+        (total, item) => total + (item.assistantPanelSync?.failed || 0),
+        0,
+      ),
+      assistantPanelSyncUncertain: results.reduce(
+        (total, item) => total + (item.assistantPanelSync?.uncertain || 0),
+        0,
+      ),
       aiQueueProcessed,
       aiQueueSucceeded,
       aiQueueFailed,
@@ -348,6 +384,7 @@ export async function GET(req: Request) {
         pending: pendingLimit,
         postAppointmentFollowups: postAppointmentFollowupLimit,
         responsibleOperationalApprovals: responsibleOperationalApprovalLimit,
+        assistantPanelSync: assistantPanelSyncLimit,
         aiQueue: aiQueueLimit,
       },
       results,

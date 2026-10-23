@@ -130,7 +130,7 @@ const tests: TestCase[] = [
     name: "contract generation posts exact quoteVersionId to create-from-quote",
     run: async () => {
       const decisions: Array<Record<string, unknown>> = [];
-      const internalCalls: Array<{ path: string; body: Record<string, unknown> | null }> = [];
+      const internalCalls: Array<{ path: string; body: Record<string, unknown> | null; operationId: string | null }> = [];
 
       const result = await executeAssistantContractGeneration({
         request: new Request("https://app.test/api/assistant"),
@@ -138,6 +138,7 @@ const tests: TestCase[] = [
         organizationId: "org-1",
         storeId: "store-1",
         authority: "authenticated_crm_action",
+        panelHumanMessageId: "11111111-1111-4111-8111-111111111111",
         quoteId: "quote-1",
         quoteVersionId: "version-presented-v1",
         quoteNumber: "ORC-1",
@@ -159,6 +160,7 @@ const tests: TestCase[] = [
           internalCalls.push({
             path,
             body: init?.body ? JSON.parse(String(init.body)) : null,
+            operationId: new Headers(init?.headers || {}).get("x-zion-contract-operation-id"),
           });
 
           if (path === "/api/sales-contracts/create-from-quote") {
@@ -189,6 +191,44 @@ const tests: TestCase[] = [
         "version-presented-v1",
       );
       assert.equal(internalCalls[0]?.path, "/api/sales-contracts/create-from-quote");
+      assert.equal(internalCalls[0]?.operationId, null);
+      assert.equal(internalCalls[1]?.path, "/api/sales-contracts/contract-1/generate-pdf");
+      assert.match(
+        internalCalls[1]?.operationId || "",
+        /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+
+      const replayCalls: string[] = [];
+      await executeAssistantContractGeneration({
+        request: new Request("https://app.test/api/assistant"),
+        supabase: createSalesContractsSupabaseMock(),
+        organizationId: "org-1",
+        storeId: "store-1",
+        authority: "authenticated_crm_action",
+        panelHumanMessageId: "11111111-1111-4111-8111-111111111111",
+        quoteId: "quote-1",
+        quoteVersionId: "version-presented-v1",
+        quoteNumber: "ORC-1",
+        source: "assistant_contract_workflow_button_v1",
+        resolveAuthorizedExistingQuote: async () => createQuoteScope(),
+        evaluateContractWorkflowDecision: () => ({
+          allowed: true,
+          needsHumanConfirmation: false,
+          reasonCode: "HUMAN_EXPLICIT_REQUEST_ALLOWED",
+          reasonMessage: "Ok",
+          missingRequirements: [],
+          warnings: [],
+          recommendedNextAction: "generate_contract",
+        }),
+        callInternalJson: async (_request: Request, path: string, init?: RequestInit) => {
+          const operationId = new Headers(init?.headers || {}).get("x-zion-contract-operation-id");
+          if (path.endsWith("generate-pdf")) replayCalls.push(operationId || "");
+          return path.endsWith("create-from-quote")
+            ? { ok: true, status: 200, body: { ok: true, contract: { id: "contract-1" } } }
+            : { ok: true, status: 200, body: { ok: true } };
+        },
+      });
+      assert.equal(replayCalls[0], internalCalls[1]?.operationId);
       assert.deepEqual(internalCalls[0]?.body, {
         quoteId: "quote-1",
         quoteVersionId: "version-presented-v1",
