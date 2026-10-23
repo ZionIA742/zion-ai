@@ -8,6 +8,10 @@ import {
   parseCostPeriod,
   type CostVersion,
   type AiCostCategory,
+  type CostSourceAvailability,
+  type CostCompleteness,
+  classifyCostCompleteness,
+  toKnownCostNumber,
 } from "@/lib/server/zion-admin-costs";
 
 export const dynamic = "force-dynamic";
@@ -18,9 +22,9 @@ type AiRun = {
   id: string;
   created_at: string;
   status: string | null;
-  cost_usd: number | string | null;
-  tokens_prompt: number | null;
-  tokens_completion: number | null;
+  cost_usd: unknown;
+  tokens_prompt: unknown;
+  tokens_completion: unknown;
   input: unknown;
   output: unknown;
   conversation_id: string | null;
@@ -162,24 +166,27 @@ export async function GET(request: Request) {
     const closures = (closureResult.data ?? []) as Closure[];
     const months = enumerateMonths(range.startMonth,range.endMonthExclusive < nextMonth(todayMonth) ? range.endMonthExclusive : nextMonth(todayMonth));
     const byMonth = Object.fromEntries(months.map((month) => [month, {
-      costUsd: 0, runs: 0, unpriced: 0, tokens: 0,
-      categories: Object.fromEntries(TYPES.map((type) => [type, { usd: 0, tokens: 0, runs: 0 }])),
-    }])) as Record<string, { costUsd: number; runs: number; unpriced: number; tokens: number; categories: Record<AiCostCategory, { usd: number; tokens: number; runs: number }> }>;
+      costUsd: 0, runs: 0, unpriced: 0, tokens: 0, costValuesKnown: true, tokenValuesKnown: true,
+      categories: Object.fromEntries(TYPES.map((type) => [type, { usd: 0, tokens: 0, runs: 0, costValuesKnown: true, tokenValuesKnown: true }])),
+    }])) as Record<string, { costUsd: number; runs: number; unpriced: number; tokens: number; costValuesKnown: boolean; tokenValuesKnown: boolean; categories: Record<AiCostCategory, { usd: number; tokens: number; runs: number; costValuesKnown: boolean; tokenValuesKnown: boolean }> }>;
     for (const run of runs) {
       const month = readMonthOf(run.created_at);
       const slot = byMonth[month];
       if (!slot) continue;
-      const rawCost = run.cost_usd;
-      const value = Number(rawCost);
-      const priced = rawCost != null && Number.isFinite(value) && value >= 0;
-      const tokens = Math.max(0, Number(run.tokens_prompt) || 0) + Math.max(0, Number(run.tokens_completion) || 0);
+      const value = toKnownCostNumber(run.cost_usd);
+      const promptTokens = toKnownCostNumber(run.tokens_prompt);
+      const completionTokens = toKnownCostNumber(run.tokens_completion);
+      const priced = value != null;
+      const tokensKnown = promptTokens != null && completionTokens != null;
+      const tokens = tokensKnown ? promptTokens + completionTokens : 0;
       const category = classifyCostRun(run);
       slot.runs += 1;
-      slot.tokens += tokens;
       slot.categories[category].runs += 1;
-      slot.categories[category].tokens += tokens;
+      if (tokensKnown) slot.categories[category].tokens += tokens;
       if (priced) { slot.costUsd += value; slot.categories[category].usd += value; }
-      else slot.unpriced += 1;
+      else { slot.unpriced += 1; slot.costValuesKnown = false; slot.categories[category].costValuesKnown = false; }
+      if (tokensKnown) slot.tokens += tokens;
+      else { slot.tokenValuesKnown = false; slot.categories[category].tokenValuesKnown = false; }
     }
     const closureByMonth = new Map(closures.map((value) => [value.month, value]));
     let fxRates: Record<string, number> = {};
@@ -188,7 +195,7 @@ export async function GET(request: Request) {
       try { fxRates = await loadPtaxMonths(months[0],months[months.length - 1]); }
       catch { fxUnavailable = true; }
     }
-    const breakdown = TYPES.reduce((obj,type) => ({ ...obj, [type]: { usd: 0, tokens: 0, runs: 0 } }), {} as Record<AiCostCategory, { usd: number; tokens: number; runs: number }>);
+    const breakdown = TYPES.reduce((obj,type) => ({ ...obj, [type]: { usd: 0, tokens: 0, runs: 0, costValuesKnown: true, tokenValuesKnown: true } }), {} as Record<AiCostCategory, { usd: number; tokens: number; runs: number; costValuesKnown: boolean; tokenValuesKnown: boolean }>);
     const rows = months.map((month) => {
       const local = byMonth[month];
       const closure = closureByMonth.get(month);
@@ -215,19 +222,48 @@ export async function GET(request: Request) {
         breakdown[type].usd += local.categories[type].usd;
         breakdown[type].tokens += local.categories[type].tokens;
         breakdown[type].runs += local.categories[type].runs;
+        breakdown[type].costValuesKnown = breakdown[type].costValuesKnown && local.categories[type].costValuesKnown;
+        breakdown[type].tokenValuesKnown = breakdown[type].tokenValuesKnown && local.categories[type].tokenValuesKnown;
       }
+      const closureComplete = Boolean(closure && period !== "day" && period !== "week"
+        && toKnownCostNumber(closure.ai_usd) != null
+        && toKnownCostNumber(closure.variable_brl_cents) != null
+        && toKnownCostNumber(closure.total_brl_cents) != null);
+      const costCompleteness = closureComplete ? "complete" : classifyCostCompleteness(local.runs, "available", local.costValuesKnown);
+      const tokenCompleteness = classifyCostCompleteness(local.runs, "available", local.tokenValuesKnown);
       return {
         month, closed: Boolean(closure) && period !== "day" && period !== "week", fixedCents,
-        aiCostUsd: usd, fxRate: fx, variableCents: brlCents, totalCents: cost,
+        aiCostUsd: closureComplete ? toKnownCostNumber(closure?.ai_usd) : costCompleteness === "complete" ? usd : null,
+        fxRate: fx, variableCents: costCompleteness === "complete" ? brlCents : null, totalCents: costCompleteness === "complete" ? cost : null,
         executions: closure && period !== "day" && period !== "week" ? Number(closure.ai_runs) : local.runs,
-        unpriced: local.unpriced, tokens: local.tokens,
+        unpriced: local.unpriced, tokens: tokenCompleteness === "complete" ? local.tokens : null,
+        costCompleteness, tokenCompleteness,
       };
     });
     // Previous monthly totals take the frozen values, never a recalculation of modified cost policies.
     const fixedTotal = rows.reduce((n,r) => n + r.fixedCents, 0);
-    const aiCostUsd = rows.reduce((n,r) => n + r.aiCostUsd, 0);
-    const variableTotal = rows.every((r) => r.variableCents != null) ? rows.reduce((n,r) => n + (r.variableCents ?? 0), 0) : null;
+    const totalRuns = runs.length;
+    const allCostsKnown = totalRuns > 0 && runs.every((run) => toKnownCostNumber(run.cost_usd) != null);
+    const allTokensKnown = totalRuns > 0 && runs.every((run) => toKnownCostNumber(run.tokens_prompt) != null && toKnownCostNumber(run.tokens_completion) != null);
+    const hasFrozenCost = rows.some((row) => row.closed && row.costCompleteness === "complete");
+    const aiCostCompleteness: CostCompleteness = totalRuns === 0 && hasFrozenCost
+      ? "complete"
+      : classifyCostCompleteness(totalRuns, "available", allCostsKnown);
+    const tokenCompleteness: CostCompleteness = classifyCostCompleteness(totalRuns, "available", allTokensKnown);
+    const aiCostUsd = aiCostCompleteness === "complete" ? rows.reduce((n,r) => n + (r.aiCostUsd ?? 0), 0) : null;
+    const variableTotal = aiCostCompleteness === "complete" && rows.every((r) => r.variableCents != null) ? rows.reduce((n,r) => n + (r.variableCents ?? 0), 0) : null;
     const grandTotal = variableTotal == null ? null : fixedTotal + variableTotal;
+    const ptaxUnavailable = fxUnavailable || rows.some((row) => !row.closed && row.fxRate == null);
+    const breakdownPayload = Object.fromEntries(TYPES.map((type) => {
+      const item = breakdown[type];
+      return [type, {
+        usd: item.costValuesKnown && item.runs > 0 ? item.usd : null,
+        tokens: item.tokenValuesKnown && item.runs > 0 ? item.tokens : null,
+        runs: item.runs,
+        costCompleteness: classifyCostCompleteness(item.runs, "available", item.costValuesKnown),
+        tokenCompleteness: classifyCostCompleteness(item.runs, "available", item.tokenValuesKnown),
+      }];
+    }));
     const configured = [...new Set(versions.map((r) => r.cost_id))].map((id) => {
       const history = versions.filter((r) => r.cost_id === id);
       const latest = history[history.length - 1];
@@ -243,10 +279,18 @@ export async function GET(request: Request) {
       source: "ai_runs.cost_usd", fxSource: "Banco Central do Brasil — PTAX venda (última cotação disponível de cada mês)",
       fxUnavailable, historicalClosures: closures, closeCandidates: candidateMonths,
       selectedMonth, months: rows, fixedCosts: configured, activeFixedCosts: applicableFixedCosts(versions,todayMonth),
+      dataAvailability: {
+        aiRuns: "available" as CostSourceAvailability,
+        fixedCosts: "available" as CostSourceAvailability,
+        ptax: ptaxUnavailable ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
+        messagesSales: salesMessages == null ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
+        messagesAssistant: assistantMessages == null ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
+      },
       totals: { fixedCents: fixedTotal, variableCents: variableTotal, totalCents: grandTotal, aiCostUsd,
-        executions: runs.length, unpricedExecutions: runs.filter((run)=>run.cost_usd == null).length,
-        tokens: runs.reduce((n,r)=>n + (Number(r.tokens_prompt)||0) + (Number(r.tokens_completion)||0),0),
-        messagesSales: salesMessages, messagesAssistant: assistantMessages, breakdown,
+        costCompleteness: aiCostCompleteness, tokenCompleteness,
+        executions: runs.length, unpricedExecutions: runs.filter((run)=>toKnownCostNumber(run.cost_usd) == null).length,
+        tokens: tokenCompleteness === "complete" ? runs.reduce((n,r)=>n + (toKnownCostNumber(r.tokens_prompt) ?? 0) + (toKnownCostNumber(r.tokens_completion) ?? 0),0) : null,
+        messagesSales: salesMessages, messagesAssistant: assistantMessages, breakdown: breakdownPayload,
       },
       note: "Valores variáveis em BRL são estimados pela PTAX venda, não pela fatura do cartão. Meses fechados permanecem congelados.",
     }, 200);

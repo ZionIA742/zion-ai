@@ -74,6 +74,44 @@ export function parseCostPeriod(period: string, anchor: string) {
 }
 
 export type AiCostCategory = "sales" | "assistant" | "images" | "catalog" | "unclassified";
+export type CostSourceAvailability = "available" | "partial" | "unavailable";
+export type CostCompleteness = "complete" | "incomplete" | "no_runs";
+
+export function normalizeCostSourceAvailability(value: unknown): CostSourceAvailability {
+  return value === "available" || value === "partial" || value === "unavailable" ? value : "unavailable";
+}
+
+/** Converts only finite, non-negative accounting values; blank strings never become zero. */
+export function toKnownCostNumber(value: unknown): number | null {
+  if (value == null) return null;
+  if (typeof value === "string" && value.trim() === "") return null;
+  const numberValue = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numberValue) && numberValue >= 0 ? numberValue : null;
+}
+
+export function classifyCostCompleteness(
+  runCount: number,
+  sourceAvailability: CostSourceAvailability,
+  allValuesKnown: boolean,
+): CostCompleteness {
+  if (runCount === 0) return "no_runs";
+  return sourceAvailability === "available" && allValuesKnown ? "complete" : "incomplete";
+}
+
+export function formatCostMetric(
+  value: number | null | undefined,
+  availability: CostSourceAvailability | unknown,
+  completeness: CostCompleteness | unknown,
+  format: (value: number) => string,
+): string {
+  const source = normalizeCostSourceAvailability(availability);
+  if (source === "unavailable") return "Indisponível";
+  if (source === "partial") return "Parcial";
+  if (completeness === "no_runs") return "Sem execuções";
+  if (completeness !== "complete" || value == null || !Number.isFinite(value)) return "Incompleto";
+  return format(value);
+}
+
 export function classifyCostRun(row: { input?: unknown; output?: unknown; conversation_id?: string | null; lead_id?: string | null }): AiCostCategory {
   const value = JSON.stringify([row.input ?? null, row.output ?? null]).toLowerCase();
   if (["pool_image_generation", "image_generation", "geracao_imagem", "geração de imagem", "montagem", "piscina instalada"].some((v) => value.includes(v))) return "images";

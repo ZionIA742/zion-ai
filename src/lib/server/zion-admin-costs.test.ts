@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-const { monthlyAllocation, applicableFixedCosts, parseCostPeriod, classifyCostRun, monthlyAccrual } = await import(
+const { monthlyAllocation, applicableFixedCosts, parseCostPeriod, classifyCostRun, monthlyAccrual, toKnownCostNumber, classifyCostCompleteness, formatCostMetric } = await import(
   new URL("./zion-admin-costs.ts", import.meta.url).href
 ) as typeof import("./zion-admin-costs");
 assert.equal(Array.from({length:12},(_,i)=>monthlyAllocation(4000,"annual",i+1)).reduce((a,b)=>a+b,0),4000);
@@ -19,6 +19,24 @@ assert.equal(parseCostPeriod("year","2026-10-20").end,"2027-01-01T03:00:00.000Z"
 assert.equal(classifyCostRun({input:{source:"assistant_chat"}}),"assistant");
 assert.equal(classifyCostRun({input:{source:"ai_sales"}}),"sales");
 assert.equal(classifyCostRun({input:{source:"unknown"}}),"unclassified");
+assert.equal(toKnownCostNumber(null), null);
+assert.equal(toKnownCostNumber(""), null);
+assert.equal(toKnownCostNumber("   "), null);
+assert.equal(toKnownCostNumber("invalid"), null);
+assert.equal(toKnownCostNumber(Infinity), null);
+assert.equal(toKnownCostNumber(0), 0);
+assert.equal(toKnownCostNumber("0"), 0);
+assert.equal(toKnownCostNumber("1.25"), 1.25);
+assert.equal(classifyCostCompleteness(0, "available", true), "no_runs");
+assert.equal(classifyCostCompleteness(1, "available", true), "complete");
+assert.equal(classifyCostCompleteness(1, "available", false), "incomplete");
+assert.equal(classifyCostCompleteness(1, "partial", true), "incomplete");
+assert.equal(formatCostMetric(0, "available", "complete", (value) => `USD ${value}`), "USD 0");
+assert.equal(formatCostMetric(0, "available", "no_runs", (value) => `USD ${value}`), "Sem execuções");
+assert.equal(formatCostMetric(0, "available", "incomplete", (value) => `USD ${value}`), "Incompleto");
+assert.equal(formatCostMetric(0, "partial", "complete", (value) => `USD ${value}`), "Parcial");
+assert.equal(formatCostMetric(0, "unavailable", "complete", (value) => `USD ${value}`), "Indisponível");
+assert.equal(formatCostMetric(0, undefined, "complete", (value) => `USD ${value}`), "Indisponível");
 console.log("zion-admin-costs: accounting tests passed");
 
 // Initial expenses begin on Nov 23, but November recognizes the FULL monthly amount.
