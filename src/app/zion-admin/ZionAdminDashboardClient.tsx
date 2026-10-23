@@ -572,6 +572,15 @@ export function formatOverviewPercent(
   return formatPercent(parsedNumerator, parsedDenominator);
 }
 
+export function formatOverviewCompletionLabel(
+  numerator: number | string | null | undefined,
+  denominator: number | string | null | undefined,
+  availability: unknown,
+): string {
+  const value = formatOverviewPercent(numerator, denominator, availability);
+  return value.endsWith("%") ? `${value} concluídas` : value;
+}
+
 function getStoreAiAvailability(
   store: ZionAdminStore,
   source: "runs" | "queue" | "diagnostics" | "overall",
@@ -2591,7 +2600,7 @@ function StoreDetailsDrawer({
             <DetailItem
               label="Execuções"
               value={formatOverviewMetric(aiRuns, getStoreAiAvailability(store, "runs"))}
-              help={`${formatOverviewPercent(successfulRuns, aiRuns, getStoreAiAvailability(store, "runs"))} concluídas`}
+              help={formatOverviewCompletionLabel(successfulRuns, aiRuns, getStoreAiAvailability(store, "runs"))}
             />
             <DetailItem label="Execuções concluídas" value={formatOverviewMetric(successfulRuns, getStoreAiAvailability(store, "runs"))} />
             <DetailItem label="Erros" value={formatOverviewMetric(failedRuns, getStoreAiAvailability(store, "runs"))} />
@@ -2809,7 +2818,7 @@ export function OverviewDetailsDrawer({
               <DetailItem
                 label="Execuções"
               value={formatOverviewMetric(aiRuns, getStoreAiAvailability(selectedAiStore, "runs"))}
-                help={`${formatOverviewPercent(successfulRuns, aiRuns, getStoreAiAvailability(selectedAiStore, "runs"))} concluídas`}
+                help={formatOverviewCompletionLabel(successfulRuns, aiRuns, getStoreAiAvailability(selectedAiStore, "runs"))}
               />
               <DetailItem label="Execuções concluídas" value={formatOverviewMetric(successfulRuns, getStoreAiAvailability(selectedAiStore, "runs"))} />
               <DetailItem label="Erros" value={formatOverviewMetric(failedRuns, getStoreAiAvailability(selectedAiStore, "runs"))} />
@@ -4030,7 +4039,7 @@ function OverviewInlineDetails({
           <ClickableDetailItem
             label="Execuções"
             value={formatOverviewMetric(totalAiRuns, getGlobalAiAvailability(data, "runs"))}
-            help={`${formatOverviewPercent(successfulAiRuns, totalAiRuns, getGlobalAiAvailability(data, "runs"))} concluídas`}
+            help={formatOverviewCompletionLabel(successfulAiRuns, totalAiRuns, getGlobalAiAvailability(data, "runs"))}
             onClick={() => setSelectedAiDetail("executions")}
           />
           <ClickableDetailItem

@@ -44,7 +44,7 @@ function loadFormatOverviewPercent() {
   const source = readSource();
   const functionStart = source.indexOf("export function formatOverviewPercent(");
   const bodyStart = source.indexOf("{", functionStart) + 1;
-  const functionEnd = source.indexOf("\n}\n\nfunction getStoreAiAvailability", bodyStart);
+  const functionEnd = source.indexOf("\n}\n\nexport function formatOverviewCompletionLabel", bodyStart);
 
   assert.notEqual(functionStart, -1, "formatOverviewPercent must exist");
   assert.notEqual(functionEnd, -1, "formatOverviewPercent body must be bounded");
@@ -85,6 +85,36 @@ function loadFormatOverviewPercent() {
     normalizeOverviewDataAvailability,
     (part, total) => `${Math.round((part / total) * 100)}%`,
   );
+}
+
+function loadFormatOverviewCompletionLabel() {
+  const source = readSource();
+  const functionStart = source.indexOf("export function formatOverviewCompletionLabel(");
+  const bodyStart = source.indexOf("{", functionStart) + 1;
+  const functionEnd = source.indexOf("\n}\n\nfunction getStoreAiAvailability", bodyStart);
+
+  assert.notEqual(functionStart, -1, "formatOverviewCompletionLabel must exist");
+  assert.notEqual(functionEnd, -1, "formatOverviewCompletionLabel body must be bounded");
+
+  const implementation = new Function(
+    "numerator",
+    "denominator",
+    "availability",
+    "formatOverviewPercent",
+    source.slice(bodyStart, functionEnd),
+  ) as (
+    numerator: number | string | null | undefined,
+    denominator: number | string | null | undefined,
+    availability: string | undefined,
+    formatOverviewPercent: (
+      numerator: number | string | null | undefined,
+      denominator: number | string | null | undefined,
+      availability: string | undefined,
+    ) => string,
+  ) => string;
+
+  return (numerator: number, denominator: number, availability: string | undefined) =>
+    implementation(numerator, denominator, availability, loadFormatOverviewPercent());
 }
 
 const tests: TestCase[] = [
@@ -450,6 +480,20 @@ const tests: TestCase[] = [
       assert.equal(run(0, 0, undefined), "Indisponível");
       assert.equal(run(0, 0, "invalid"), "Indisponível");
       assert.equal(formatOverviewPercent(0, " ", "available"), "Indisponível");
+    },
+  },
+  {
+    name: "completion presentation adds the suffix only to confirmed percentages",
+    run: () => {
+      const formatOverviewCompletionLabel = loadFormatOverviewCompletionLabel();
+
+      assert.equal(formatOverviewCompletionLabel(0, 0, "available"), "Sem atividade");
+      assert.equal(formatOverviewCompletionLabel(0, 1, "available"), "0% concluídas");
+      assert.equal(formatOverviewCompletionLabel(1, 1, "available"), "100% concluídas");
+      assert.equal(formatOverviewCompletionLabel(303, 320, "available"), "95% concluídas");
+      assert.equal(formatOverviewCompletionLabel(0, 0, "partial"), "Parcial");
+      assert.equal(formatOverviewCompletionLabel(0, 0, "unavailable"), "Indisponível");
+      assert.equal(formatOverviewCompletionLabel(0, 0, undefined), "Indisponível");
     },
   },
   {
