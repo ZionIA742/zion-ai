@@ -236,6 +236,8 @@ type TokenUsageBreakdown = {
   unclassifiedTokens: number;
 };
 
+export type AiUsageCompleteness = "complete" | "incomplete" | "no_runs";
+
 type StoreOverviewMetrics = {
   totalLeads: number;
   totalMessages: number;
@@ -270,6 +272,14 @@ type StoreOverviewMetrics = {
   costBreakdownToday: AiUsageBreakdown;
   costBreakdownLast7Days: AiUsageBreakdown;
   costBreakdownMonth: AiUsageBreakdown;
+  costCompletenessTotal: AiUsageCompleteness;
+  costCompletenessToday: AiUsageCompleteness;
+  costCompletenessLast7Days: AiUsageCompleteness;
+  costCompletenessMonth: AiUsageCompleteness;
+  tokenCompletenessTotal: AiUsageCompleteness;
+  tokenCompletenessToday: AiUsageCompleteness;
+  tokenCompletenessLast7Days: AiUsageCompleteness;
+  tokenCompletenessMonth: AiUsageCompleteness;
   lastAiRunAt: string | null;
   recentAiErrors: AiRunEvent[];
   recentAiSuccesses: AiRunEvent[];
@@ -368,9 +378,49 @@ async function getActiveMessagesExactCount(
   };
 }
 
-function toNumber(value: number | string | null | undefined) {
-  const parsed = typeof value === "string" ? Number(value) : (value ?? 0);
-  return Number.isFinite(parsed) ? Number(parsed) : 0;
+export function toKnownNumber(value: number | string | null | undefined) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+
+    if (trimmed === "") {
+      return null;
+    }
+
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return Number.isFinite(value) ? value : null;
+}
+
+export function updateAiUsageCompleteness(
+  current: AiUsageCompleteness,
+  isComplete: boolean,
+): AiUsageCompleteness {
+  if (!isComplete) {
+    return "incomplete";
+  }
+
+  return current === "no_runs" ? "complete" : current;
+}
+
+export function mergeAiUsageCompleteness(
+  current: AiUsageCompleteness,
+  source: AiUsageCompleteness,
+): AiUsageCompleteness {
+  if (current === "incomplete" || source === "incomplete") {
+    return "incomplete";
+  }
+
+  if (current === "no_runs") {
+    return source;
+  }
+
+  return current;
 }
 
 function createEmptyAiUsageBreakdown(): AiUsageBreakdown {
@@ -496,6 +546,14 @@ function createEmptyStoreMetrics(): StoreOverviewMetrics {
     costBreakdownToday: createEmptyAiUsageBreakdown(),
     costBreakdownLast7Days: createEmptyAiUsageBreakdown(),
     costBreakdownMonth: createEmptyAiUsageBreakdown(),
+    costCompletenessTotal: "no_runs",
+    costCompletenessToday: "no_runs",
+    costCompletenessLast7Days: "no_runs",
+    costCompletenessMonth: "no_runs",
+    tokenCompletenessTotal: "no_runs",
+    tokenCompletenessToday: "no_runs",
+    tokenCompletenessLast7Days: "no_runs",
+    tokenCompletenessMonth: "no_runs",
     lastAiRunAt: null,
     recentAiErrors: [],
     recentAiSuccesses: [],
@@ -2035,9 +2093,15 @@ export async function GET() {
         continue;
       }
 
-      const promptTokens = toNumber(row.tokens_prompt);
-      const completionTokens = toNumber(row.tokens_completion);
-      const costUsd = toNumber(row.cost_usd);
+      const promptTokensKnown = toKnownNumber(row.tokens_prompt);
+      const completionTokensKnown = toKnownNumber(row.tokens_completion);
+      const costUsdKnown = toKnownNumber(row.cost_usd);
+      const promptTokens = promptTokensKnown ?? 0;
+      const completionTokens = completionTokensKnown ?? 0;
+      const costUsd = costUsdKnown ?? 0;
+      const tokensComplete =
+        promptTokensKnown !== null && completionTokensKnown !== null;
+      const costComplete = costUsdKnown !== null;
       const normalizedStatus = String(row.status || "")
         .trim()
         .toLowerCase();
@@ -2047,6 +2111,14 @@ export async function GET() {
       metrics.totalTokensCompletion += completionTokens;
       metrics.totalTokens += promptTokens + completionTokens;
       metrics.totalCostUsd += costUsd;
+      metrics.costCompletenessTotal = updateAiUsageCompleteness(
+        metrics.costCompletenessTotal,
+        costComplete,
+      );
+      metrics.tokenCompletenessTotal = updateAiUsageCompleteness(
+        metrics.tokenCompletenessTotal,
+        tokensComplete,
+      );
 
       const usageCategory = classifyAiRunUsage(row);
       const totalTokensForRun = promptTokens + completionTokens;
@@ -2058,6 +2130,14 @@ export async function GET() {
         metrics.tokensPromptToday += promptTokens;
         metrics.tokensCompletionToday += completionTokens;
         metrics.tokensToday += totalTokensForRun;
+        metrics.costCompletenessToday = updateAiUsageCompleteness(
+          metrics.costCompletenessToday,
+          costComplete,
+        );
+        metrics.tokenCompletenessToday = updateAiUsageCompleteness(
+          metrics.tokenCompletenessToday,
+          tokensComplete,
+        );
         addCostToBreakdown(metrics.costBreakdownToday, usageCategory, costUsd);
         addTokensToBreakdown(metrics.tokenBreakdownToday, usageCategory, totalTokensForRun);
       }
@@ -2067,6 +2147,14 @@ export async function GET() {
         metrics.tokensPromptLast7Days += promptTokens;
         metrics.tokensCompletionLast7Days += completionTokens;
         metrics.tokensLast7Days += totalTokensForRun;
+        metrics.costCompletenessLast7Days = updateAiUsageCompleteness(
+          metrics.costCompletenessLast7Days,
+          costComplete,
+        );
+        metrics.tokenCompletenessLast7Days = updateAiUsageCompleteness(
+          metrics.tokenCompletenessLast7Days,
+          tokensComplete,
+        );
         addCostToBreakdown(metrics.costBreakdownLast7Days, usageCategory, costUsd);
         addTokensToBreakdown(metrics.tokenBreakdownLast7Days, usageCategory, totalTokensForRun);
       }
@@ -2076,6 +2164,14 @@ export async function GET() {
         metrics.tokensPromptMonth += promptTokens;
         metrics.tokensCompletionMonth += completionTokens;
         metrics.tokensMonth += totalTokensForRun;
+        metrics.costCompletenessMonth = updateAiUsageCompleteness(
+          metrics.costCompletenessMonth,
+          costComplete,
+        );
+        metrics.tokenCompletenessMonth = updateAiUsageCompleteness(
+          metrics.tokenCompletenessMonth,
+          tokensComplete,
+        );
         addCostToBreakdown(metrics.costBreakdownMonth, usageCategory, costUsd);
         addTokensToBreakdown(metrics.tokenBreakdownMonth, usageCategory, totalTokensForRun);
       }
@@ -2249,6 +2345,14 @@ export async function GET() {
         costBreakdownToday: roundAiUsageBreakdown(metrics.costBreakdownToday),
         costBreakdownLast7Days: roundAiUsageBreakdown(metrics.costBreakdownLast7Days),
         costBreakdownMonth: roundAiUsageBreakdown(metrics.costBreakdownMonth),
+        costCompletenessTotal: metrics.costCompletenessTotal,
+        costCompletenessToday: metrics.costCompletenessToday,
+        costCompletenessLast7Days: metrics.costCompletenessLast7Days,
+        costCompletenessMonth: metrics.costCompletenessMonth,
+        tokenCompletenessTotal: metrics.tokenCompletenessTotal,
+        tokenCompletenessToday: metrics.tokenCompletenessToday,
+        tokenCompletenessLast7Days: metrics.tokenCompletenessLast7Days,
+        tokenCompletenessMonth: metrics.tokenCompletenessMonth,
         lastAiRunAt: metrics.lastAiRunAt,
         accountAccess:
           accountAccessByStoreId.get(store.id) ?? {
@@ -2390,6 +2494,38 @@ export async function GET() {
         sumTokenUsageBreakdown(acc.tokenBreakdownToday, store.tokenBreakdownToday);
         sumTokenUsageBreakdown(acc.tokenBreakdownLast7Days, store.tokenBreakdownLast7Days);
         sumTokenUsageBreakdown(acc.tokenBreakdownMonth, store.tokenBreakdownMonth);
+        acc.costCompletenessTotal = mergeAiUsageCompleteness(
+          acc.costCompletenessTotal,
+          store.costCompletenessTotal,
+        );
+        acc.costCompletenessToday = mergeAiUsageCompleteness(
+          acc.costCompletenessToday,
+          store.costCompletenessToday,
+        );
+        acc.costCompletenessLast7Days = mergeAiUsageCompleteness(
+          acc.costCompletenessLast7Days,
+          store.costCompletenessLast7Days,
+        );
+        acc.costCompletenessMonth = mergeAiUsageCompleteness(
+          acc.costCompletenessMonth,
+          store.costCompletenessMonth,
+        );
+        acc.tokenCompletenessTotal = mergeAiUsageCompleteness(
+          acc.tokenCompletenessTotal,
+          store.tokenCompletenessTotal,
+        );
+        acc.tokenCompletenessToday = mergeAiUsageCompleteness(
+          acc.tokenCompletenessToday,
+          store.tokenCompletenessToday,
+        );
+        acc.tokenCompletenessLast7Days = mergeAiUsageCompleteness(
+          acc.tokenCompletenessLast7Days,
+          store.tokenCompletenessLast7Days,
+        );
+        acc.tokenCompletenessMonth = mergeAiUsageCompleteness(
+          acc.tokenCompletenessMonth,
+          store.tokenCompletenessMonth,
+        );
         acc.totalCostUsd += store.totalCostUsd;
         acc.costUsdToday += store.costUsdToday;
         acc.costUsdLast7Days += store.costUsdLast7Days;
@@ -2443,6 +2579,14 @@ export async function GET() {
         costBreakdownToday: createEmptyAiUsageBreakdown(),
         costBreakdownLast7Days: createEmptyAiUsageBreakdown(),
         costBreakdownMonth: createEmptyAiUsageBreakdown(),
+        costCompletenessTotal: "no_runs" as AiUsageCompleteness,
+        costCompletenessToday: "no_runs" as AiUsageCompleteness,
+        costCompletenessLast7Days: "no_runs" as AiUsageCompleteness,
+        costCompletenessMonth: "no_runs" as AiUsageCompleteness,
+        tokenCompletenessTotal: "no_runs" as AiUsageCompleteness,
+        tokenCompletenessToday: "no_runs" as AiUsageCompleteness,
+        tokenCompletenessLast7Days: "no_runs" as AiUsageCompleteness,
+        tokenCompletenessMonth: "no_runs" as AiUsageCompleteness,
         lastAiRunAt: null as string | null,
         configurationIssues: 0,
         pendingAiRuns: 0,
@@ -2502,6 +2646,14 @@ export async function GET() {
         costBreakdownToday: roundAiUsageBreakdown(aiUsageTotals.costBreakdownToday),
         costBreakdownLast7Days: roundAiUsageBreakdown(aiUsageTotals.costBreakdownLast7Days),
         costBreakdownMonth: roundAiUsageBreakdown(aiUsageTotals.costBreakdownMonth),
+        costCompletenessTotal: aiUsageTotals.costCompletenessTotal,
+        costCompletenessToday: aiUsageTotals.costCompletenessToday,
+        costCompletenessLast7Days: aiUsageTotals.costCompletenessLast7Days,
+        costCompletenessMonth: aiUsageTotals.costCompletenessMonth,
+        tokenCompletenessTotal: aiUsageTotals.tokenCompletenessTotal,
+        tokenCompletenessToday: aiUsageTotals.tokenCompletenessToday,
+        tokenCompletenessLast7Days: aiUsageTotals.tokenCompletenessLast7Days,
+        tokenCompletenessMonth: aiUsageTotals.tokenCompletenessMonth,
         configurationIssues: aiUsageTotals.configurationIssues,
         pendingAiRuns: aiUsageTotals.pendingAiRuns,
         aiRunQueueErrors: aiUsageTotals.aiRunQueueErrors,

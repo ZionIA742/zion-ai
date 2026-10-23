@@ -11,6 +11,11 @@ import {
   OVERVIEW_MAX_PAGES,
 } from "./overview-pagination";
 import { resolveStoreAccountIdentity } from "./store-account-identity-resolution";
+import {
+  mergeAiUsageCompleteness,
+  toKnownNumber,
+  updateAiUsageCompleteness,
+} from "./route";
 
 type TestCase = {
   name: string;
@@ -655,6 +660,71 @@ const tests: TestCase[] = [
       for (const token of required) {
         assert.equal(source.includes(token), true, `missing deterministic ordering evidence: ${token}`);
       }
+    },
+  },
+  {
+    name: "AI usage preserves cost and token completeness",
+    run: () => {
+      const source = readSource(routePath);
+      const required = [
+        'type AiUsageCompleteness = "complete" | "incomplete" | "no_runs"',
+        "function toKnownNumber(",
+        "costCompletenessTotal",
+        "costCompletenessToday",
+        "tokenCompletenessTotal",
+        "tokenCompletenessToday",
+        "metrics.costCompletenessTotal = updateAiUsageCompleteness(",
+        "metrics.tokenCompletenessTotal = updateAiUsageCompleteness(",
+        "costCompletenessTotal: aiUsageTotals.costCompletenessTotal",
+        "tokenCompletenessTotal: aiUsageTotals.tokenCompletenessTotal",
+      ];
+
+      for (const token of required) {
+        assert.equal(source.includes(token), true, `missing completeness contract: ${token}`);
+      }
+    },
+  },
+  {
+    name: "AI usage keeps real zero and rejects null, whitespace, and invalid numbers",
+    run: () => {
+      assert.equal(toKnownNumber(null), null);
+      assert.equal(toKnownNumber(undefined), null);
+      assert.equal(toKnownNumber(""), null);
+      assert.equal(toKnownNumber("   \t"), null);
+      assert.equal(toKnownNumber(0), 0);
+      assert.equal(toKnownNumber("0"), 0);
+      assert.equal(toKnownNumber(12.5), 12.5);
+      assert.equal(toKnownNumber(" 12.5 "), 12.5);
+      assert.equal(toKnownNumber(Number.NaN), null);
+      assert.equal(toKnownNumber(Number.POSITIVE_INFINITY), null);
+      assert.equal(toKnownNumber("Infinity"), null);
+      assert.equal(toKnownNumber("not-a-number"), null);
+    },
+  },
+  {
+    name: "AI usage completeness keeps periods and stores independent while failing closed",
+    run: () => {
+      const completeStore = updateAiUsageCompleteness("no_runs", true);
+      const incompleteStore = updateAiUsageCompleteness("no_runs", false);
+
+      assert.equal(completeStore, "complete");
+      assert.equal(incompleteStore, "incomplete");
+      assert.equal(updateAiUsageCompleteness(completeStore, false), "incomplete");
+
+      assert.equal(mergeAiUsageCompleteness("no_runs", "no_runs"), "no_runs");
+      assert.equal(mergeAiUsageCompleteness("no_runs", completeStore), "complete");
+      assert.equal(mergeAiUsageCompleteness("complete", incompleteStore), "incomplete");
+
+      const todayCompleteness = mergeAiUsageCompleteness("no_runs", completeStore);
+      const lastSevenDaysCompleteness = "no_runs";
+      assert.equal(todayCompleteness, "complete");
+      assert.equal(lastSevenDaysCompleteness, "no_runs");
+
+      const consolidatedStores = [completeStore, incompleteStore].reduce(
+        mergeAiUsageCompleteness,
+        "no_runs",
+      );
+      assert.equal(consolidatedStores, "incomplete");
     },
   },
 ];

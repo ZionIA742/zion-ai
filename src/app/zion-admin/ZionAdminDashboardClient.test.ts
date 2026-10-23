@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 type TestCase = {
   name: string;
-  run: () => void;
+  run: () => void | Promise<void>;
 };
 
 const clientPath = join(process.cwd(), "src/app/zion-admin/ZionAdminDashboardClient.tsx");
@@ -13,7 +13,82 @@ function readSource() {
   return readFileSync(clientPath, "utf8");
 }
 
+function loadFormatAiUsageValue() {
+  const source = readSource();
+  const functionStart = source.indexOf("export function formatAiUsageValue(");
+  const bodyStart = source.indexOf(") {", functionStart) + 3;
+  const functionEnd = source.indexOf("\n}\n\nfunction formatAiCost", bodyStart);
+
+  assert.notEqual(functionStart, -1, "formatAiUsageValue must exist");
+  assert.notEqual(functionEnd, -1, "formatAiUsageValue body must be bounded");
+
+  return new Function(
+    "value",
+    "availability",
+    "completeness",
+    "formatter",
+    source.slice(bodyStart, functionEnd),
+  ) as (
+    value: number | string | null | undefined,
+    availability: string | undefined,
+    completeness: string | null | undefined,
+    formatter: (value: number | string | null | undefined) => string,
+  ) => string;
+}
+
 const tests: TestCase[] = [
+  {
+    name: "AI cost and token indicators distinguish unavailable and incomplete data",
+    run: () => {
+      const source = readSource();
+      for (const token of [
+        'type AiUsageCompleteness = "complete" | "incomplete" | "no_runs"',
+        'if (availability === "unavailable")',
+        'if (availability === "partial")',
+        'if (completeness === "no_runs")',
+        'if (completeness === "incomplete")',
+        "formatAiCost(",
+        "formatAiTokens(",
+        "costCompletenessTotal",
+        "tokenCompletenessTotal",
+      ]) {
+        assert.equal(source.includes(token), true, `missing usage completeness UI contract: ${token}`);
+      }
+      assert.equal(source.includes('value={formatUsd(store.totalCostUsd)}'), false);
+      assert.equal(source.includes('value={formatCompactNumber(store.totalTokens)}'), false);
+    },
+  },
+  {
+    name: "AI usage values only confirm numbers for complete available data",
+    run: () => {
+      const formatAiUsageValue = loadFormatAiUsageValue();
+      const formatter = (value: number | string | null | undefined) => `confirmed:${value}`;
+
+      assert.equal(formatAiUsageValue(0, "available", "complete", formatter), "confirmed:0");
+      assert.equal(formatAiUsageValue(12.5, "available", "complete", formatter), "confirmed:12.5");
+      assert.equal(formatAiUsageValue(0, "available", "no_runs", formatter), "Sem execu\u00e7\u00f5es");
+      assert.equal(formatAiUsageValue(0, "available", "incomplete", formatter), "Incompleto");
+      assert.equal(formatAiUsageValue(0, "available", undefined, formatter), "Incompleto");
+      assert.equal(formatAiUsageValue(0, "available", "unexpected", formatter), "Incompleto");
+      assert.equal(formatAiUsageValue(12.5, "partial", "complete", formatter), "Parcial");
+      assert.equal(formatAiUsageValue(12.5, "unavailable", "complete", formatter), "Indispon\u00edvel");
+
+      let formatterCalls = 0;
+      const guardedFormatter = (value: number | string | null | undefined) => {
+        formatterCalls += 1;
+        return `confirmed:${value}`;
+      };
+
+      assert.equal(formatAiUsageValue(12.5, undefined, "complete", guardedFormatter), "Indispon\u00edvel");
+      assert.equal(formatAiUsageValue(12.5, "unexpected", "complete", guardedFormatter), "Indispon\u00edvel");
+      assert.equal(formatAiUsageValue(12.5, "partial", "complete", guardedFormatter), "Parcial");
+      assert.equal(formatAiUsageValue(12.5, "unavailable", "complete", guardedFormatter), "Indispon\u00edvel");
+      assert.equal(formatterCalls, 0);
+
+      assert.equal(formatAiUsageValue(12.5, "available", "complete", guardedFormatter), "confirmed:12.5");
+      assert.equal(formatterCalls, 1);
+    },
+  },
   {
     name: "store subscription action uses dedicated Zion Admin endpoint",
     run: () => {
@@ -622,7 +697,7 @@ tests.push(...pinVisibilityTests);
 
 async function run() {
   for (const test of tests) {
-    test.run();
+    await test.run();
   }
 
   console.log(`zion-admin-dashboard-client: ${tests.length} tests passed`);

@@ -265,6 +265,14 @@ export type ZionAdminOverview = {
     costBreakdownToday?: AiUsageBreakdown | null;
     costBreakdownLast7Days?: AiUsageBreakdown | null;
     costBreakdownMonth?: AiUsageBreakdown | null;
+    costCompletenessTotal?: AiUsageCompleteness;
+    costCompletenessToday?: AiUsageCompleteness;
+    costCompletenessLast7Days?: AiUsageCompleteness;
+    costCompletenessMonth?: AiUsageCompleteness;
+    tokenCompletenessTotal?: AiUsageCompleteness;
+    tokenCompletenessToday?: AiUsageCompleteness;
+    tokenCompletenessLast7Days?: AiUsageCompleteness;
+    tokenCompletenessMonth?: AiUsageCompleteness;
     pendingAiRuns?: number | null;
     aiRunQueueErrors?: number | null;
     pendingSalesActions?: number | null;
@@ -356,6 +364,8 @@ type TokenUsageBreakdown = {
   unclassifiedTokens?: number | string | null;
 };
 
+export type AiUsageCompleteness = "complete" | "incomplete" | "no_runs";
+
 export type StoreSettingsReadinessState =
   | "ready"
   | "attention"
@@ -434,6 +444,14 @@ export type ZionAdminStore = {
   costBreakdownToday?: AiUsageBreakdown | null;
   costBreakdownLast7Days?: AiUsageBreakdown | null;
   costBreakdownMonth?: AiUsageBreakdown | null;
+  costCompletenessTotal?: AiUsageCompleteness;
+  costCompletenessToday?: AiUsageCompleteness;
+  costCompletenessLast7Days?: AiUsageCompleteness;
+  costCompletenessMonth?: AiUsageCompleteness;
+  tokenCompletenessTotal?: AiUsageCompleteness;
+  tokenCompletenessToday?: AiUsageCompleteness;
+  tokenCompletenessLast7Days?: AiUsageCompleteness;
+  tokenCompletenessMonth?: AiUsageCompleteness;
   lastAiRunAt?: string | null;
   pendingAiRuns?: number | null;
   aiRunQueueErrors?: number | null;
@@ -632,56 +650,121 @@ function formatUsd(value: number | string | null | undefined) {
   }).format(parsed);
 }
 
+export function formatAiUsageValue(
+  value: number | string | null | undefined,
+  availability: OverviewDataAvailability | string | null | undefined,
+  completeness: AiUsageCompleteness | string | null | undefined,
+  formatter: (current: number | string | null | undefined) => string,
+) {
+  if (availability === "unavailable") {
+    return "Indisponível";
+  }
+
+  if (availability === "partial") {
+    return "Parcial";
+  }
+
+  if (availability !== "available") {
+    return "Indisponível";
+  }
+
+  if (completeness === "no_runs") {
+    return "Sem execuções";
+  }
+
+  if (completeness === "incomplete") {
+    return "Incompleto";
+  }
+
+  if (completeness === "complete") {
+    return formatter(value);
+  }
+
+  return "Incompleto";
+}
+
+function formatAiCost(
+  value: number | string | null | undefined,
+  availability: OverviewDataAvailability,
+  completeness: AiUsageCompleteness | undefined,
+) {
+  return formatAiUsageValue(value, availability, completeness, formatUsd);
+}
+
+function formatAiTokens(
+  value: number | string | null | undefined,
+  availability: OverviewDataAvailability,
+  completeness: AiUsageCompleteness | undefined,
+) {
+  return formatAiUsageValue(value, availability, completeness, formatCompactNumber);
+}
+
 function CostPeriodBlocks({
   today,
   week,
   month,
+  availability,
+  todayCompleteness,
+  weekCompleteness,
+  monthCompleteness,
 }: {
   today: number | string | null | undefined;
   week: number | string | null | undefined;
   month: number | string | null | undefined;
+  availability: OverviewDataAvailability;
+  todayCompleteness?: AiUsageCompleteness;
+  weekCompleteness?: AiUsageCompleteness;
+  monthCompleteness?: AiUsageCompleteness;
 }) {
   return (
     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-      <DetailItem label="Hoje" value={formatUsd(today)} help="Gasto do dia atual" />
+      <DetailItem label="Hoje" value={formatAiCost(today, availability, todayCompleteness)} help="Gasto do dia atual" />
       <DetailItem
         label="Semana"
-        value={formatUsd(week)}
+        value={formatAiCost(week, availability, weekCompleteness)}
         help="De segunda-feira até hoje"
       />
-      <DetailItem label="Mês" value={formatUsd(month)} help="Do dia 1 até hoje" />
+      <DetailItem label="Mês" value={formatAiCost(month, availability, monthCompleteness)} help="Do dia 1 até hoje" />
     </div>
   );
 }
 
-function CostBreakdownGrid({ breakdown }: { breakdown?: AiUsageBreakdown | null }) {
+function CostBreakdownGrid({
+  breakdown,
+  availability,
+  completeness,
+}: {
+  breakdown?: AiUsageBreakdown | null;
+  availability: OverviewDataAvailability;
+  completeness?: AiUsageCompleteness;
+}) {
   const safeBreakdown = breakdown ?? {};
 
   return (
     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
       <DetailItem
         label="IA vendedora"
-        value={formatUsd(safeBreakdown.salesChatUsd)}
+        value={formatAiCost(safeBreakdown.salesChatUsd, availability, completeness)}
         help="Atendimento comercial e decisões de venda identificadas"
       />
       <DetailItem
         label="IA assistente"
-        value={formatUsd(safeBreakdown.assistantChatUsd)}
+        value={formatAiCost(safeBreakdown.assistantChatUsd, availability, completeness)}
         help="Chat operacional identificado"
       />
       <DetailItem
         label="Geração de imagem"
-        value={formatUsd(safeBreakdown.imageGenerationUsd)}
+        value={formatAiCost(safeBreakdown.imageGenerationUsd, availability, completeness)}
         help="Montagem visual / foto do local quando houver base"
       />
       <DetailItem
         label="Catálogo visual"
-        value={formatUsd(safeBreakdown.visualCatalogUsd)}
+        value={formatAiCost(safeBreakdown.visualCatalogUsd, availability, completeness)}
         help="Leitura visual de documentos/catálogos"
       />
       <DetailItem
         label="Outros / não classificado"
-        value={formatUsd(safeBreakdown.unclassifiedUsd)}
+        value={formatAiCost(safeBreakdown.unclassifiedUsd, availability, completeness)}
         help="Custo sem marcação confiável de origem"
       />
     </div>
@@ -698,6 +781,10 @@ function TokenPeriodBlocks({
   weekCompletion,
   monthPrompt,
   monthCompletion,
+  availability,
+  todayCompleteness,
+  weekCompleteness,
+  monthCompleteness,
 }: {
   today: number | string | null | undefined;
   week: number | string | null | undefined;
@@ -708,23 +795,27 @@ function TokenPeriodBlocks({
   weekCompletion?: number | string | null | undefined;
   monthPrompt?: number | string | null | undefined;
   monthCompletion?: number | string | null | undefined;
+  availability: OverviewDataAvailability;
+  todayCompleteness?: AiUsageCompleteness;
+  weekCompleteness?: AiUsageCompleteness;
+  monthCompleteness?: AiUsageCompleteness;
 }) {
   return (
     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
       <DetailItem
         label="Hoje"
-        value={formatCompactNumber(today)}
-        help={`${formatNumber(todayPrompt)} entrada · ${formatNumber(todayCompletion)} saída`}
+        value={formatAiTokens(today, availability, todayCompleteness)}
+        help={`${formatAiTokens(todayPrompt, availability, todayCompleteness)} entrada · ${formatAiTokens(todayCompletion, availability, todayCompleteness)} saída`}
       />
       <DetailItem
         label="Semana"
-        value={formatCompactNumber(week)}
-        help={`${formatNumber(weekPrompt)} entrada · ${formatNumber(weekCompletion)} saída`}
+        value={formatAiTokens(week, availability, weekCompleteness)}
+        help={`${formatAiTokens(weekPrompt, availability, weekCompleteness)} entrada · ${formatAiTokens(weekCompletion, availability, weekCompleteness)} saída`}
       />
       <DetailItem
         label="Mês"
-        value={formatCompactNumber(month)}
-        help={`${formatNumber(monthPrompt)} entrada · ${formatNumber(monthCompletion)} saída`}
+        value={formatAiTokens(month, availability, monthCompleteness)}
+        help={`${formatAiTokens(monthPrompt, availability, monthCompleteness)} entrada · ${formatAiTokens(monthCompletion, availability, monthCompleteness)} saída`}
       />
     </div>
   );
@@ -732,8 +823,12 @@ function TokenPeriodBlocks({
 
 function TokenBreakdownGrid({
   breakdown,
+  availability,
+  completeness,
 }: {
   breakdown?: TokenUsageBreakdown | null;
+  availability: OverviewDataAvailability;
+  completeness?: AiUsageCompleteness;
 }) {
   const safeBreakdown = breakdown ?? {};
 
@@ -741,27 +836,27 @@ function TokenBreakdownGrid({
     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
       <DetailItem
         label="IA vendedora"
-        value={formatCompactNumber(safeBreakdown.salesChatTokens)}
+        value={formatAiTokens(safeBreakdown.salesChatTokens, availability, completeness)}
         help="Tokens do atendimento comercial e decisões de venda"
       />
       <DetailItem
         label="IA assistente"
-        value={formatCompactNumber(safeBreakdown.assistantChatTokens)}
+        value={formatAiTokens(safeBreakdown.assistantChatTokens, availability, completeness)}
         help="Tokens do chat operacional quando houver marcação"
       />
       <DetailItem
         label="Geração de imagem"
-        value={formatCompactNumber(safeBreakdown.imageGenerationTokens)}
+        value={formatAiTokens(safeBreakdown.imageGenerationTokens, availability, completeness)}
         help="Tokens/imagem quando o módulo registrar uso confiável"
       />
       <DetailItem
         label="Catálogo visual"
-        value={formatCompactNumber(safeBreakdown.visualCatalogTokens)}
+        value={formatAiTokens(safeBreakdown.visualCatalogTokens, availability, completeness)}
         help="Leitura visual de documentos e catálogos"
       />
       <DetailItem
         label="Outros / não classificado"
-        value={formatCompactNumber(safeBreakdown.unclassifiedTokens)}
+        value={formatAiTokens(safeBreakdown.unclassifiedTokens, availability, completeness)}
         help="Uso sem marcação confiável de origem"
       />
     </div>
@@ -2476,26 +2571,26 @@ function StoreDetailsDrawer({
           </h3>
           <div className="mt-3 grid grid-cols-1 gap-3">
             <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-              <DetailItem label="Hoje" value={formatUsd(store.costUsdToday)} />
+              <DetailItem label="Hoje" value={formatAiCost(store.costUsdToday, getStoreAiAvailability(store, "runs"), store.costCompletenessToday)} />
               <DetailItem
                 label="7 dias"
-                value={formatUsd(store.costUsdLast7Days)}
+                value={formatAiCost(store.costUsdLast7Days, getStoreAiAvailability(store, "runs"), store.costCompletenessLast7Days)}
               />
-              <DetailItem label="Mês" value={formatUsd(store.costUsdMonth)} />
+              <DetailItem label="Mês" value={formatAiCost(store.costUsdMonth, getStoreAiAvailability(store, "runs"), store.costCompletenessMonth)} />
             </div>
             <DetailItem
               label="Custo total registrado"
-              value={formatUsd(store.totalCostUsd)}
+              value={formatAiCost(store.totalCostUsd, getStoreAiAvailability(store, "runs"), store.costCompletenessTotal)}
               help="Custo real em dólar salvo em ai_runs para execuções monitoradas."
             />
             <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="Tokens totais"
-                value={formatCompactNumber(store.totalTokens)}
+                value={formatAiTokens(store.totalTokens, getStoreAiAvailability(store, "runs"), store.tokenCompletenessTotal)}
               />
               <DetailItem
                 label="Entrada / saída"
-                value={`${formatCompactNumber(store.totalTokensPrompt)} / ${formatCompactNumber(store.totalTokensCompletion)}`}
+                value={`${formatAiTokens(store.totalTokensPrompt, getStoreAiAvailability(store, "runs"), store.tokenCompletenessTotal)} / ${formatAiTokens(store.totalTokensCompletion, getStoreAiAvailability(store, "runs"), store.tokenCompletenessTotal)}`}
               />
             </div>
           </div>
@@ -2723,12 +2818,12 @@ export function OverviewDetailsDrawer({
               />
               <DetailItem
                 label="Custo identificado"
-                value={formatUsd(selectedAiStore.costBreakdownTotal?.assistantChatUsd)}
+                value={formatAiCost(selectedAiStore.costBreakdownTotal?.assistantChatUsd, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessTotal)}
                 help="Só aparece quando o fluxo da assistente registrar custo com marcação confiável"
               />
               <DetailItem
                 label="Tokens identificados"
-                value={formatCompactNumber(selectedAiStore.tokenBreakdownTotal?.assistantChatTokens)}
+                value={formatAiTokens(selectedAiStore.tokenBreakdownTotal?.assistantChatTokens, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.tokenCompletenessTotal)}
                 help="Só aparece quando o fluxo da assistente registrar tokens com marcação confiável"
               />
             </div>
@@ -2741,13 +2836,13 @@ export function OverviewDetailsDrawer({
             <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="Custo total"
-                value={formatUsd(selectedAiStore.totalCostUsd)}
-                help={`Hoje ${formatUsd(selectedAiStore.costUsdToday)} · semana ${formatUsd(selectedAiStore.costUsdLast7Days)} · mês ${formatUsd(selectedAiStore.costUsdMonth)}`}
+                value={formatAiCost(selectedAiStore.totalCostUsd, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessTotal)}
+                help={`Hoje ${formatAiCost(selectedAiStore.costUsdToday, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessToday)} · semana ${formatAiCost(selectedAiStore.costUsdLast7Days, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessLast7Days)} · mês ${formatAiCost(selectedAiStore.costUsdMonth, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessMonth)}`}
               />
               <DetailItem
                 label="Tokens"
-                value={formatCompactNumber(selectedAiStore.totalTokens)}
-                help={`${formatNumber(selectedAiStore.totalTokensPrompt)} entrada · ${formatNumber(selectedAiStore.totalTokensCompletion)} saída`}
+                value={formatAiTokens(selectedAiStore.totalTokens, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.tokenCompletenessTotal)}
+                help={`${formatAiTokens(selectedAiStore.totalTokensPrompt, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.tokenCompletenessTotal)} entrada · ${formatAiTokens(selectedAiStore.totalTokensCompletion, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.tokenCompletenessTotal)} saída`}
               />
             </div>
           </section>
@@ -2782,6 +2877,10 @@ export function OverviewDetailsDrawer({
                 today={selectedAiStore.costUsdToday}
                 week={selectedAiStore.costUsdLast7Days}
                 month={selectedAiStore.costUsdMonth}
+                availability={getStoreAiAvailability(selectedAiStore, "runs")}
+                todayCompleteness={selectedAiStore.costCompletenessToday}
+                weekCompleteness={selectedAiStore.costCompletenessLast7Days}
+                monthCompleteness={selectedAiStore.costCompletenessMonth}
               />
             </div>
           </section>
@@ -2794,7 +2893,11 @@ export function OverviewDetailsDrawer({
               A separação usa as marcações registradas em ai_runs. O que ainda não tiver marcação confiável aparece como não classificado.
             </p>
             <div className="mt-3">
-              <CostBreakdownGrid breakdown={selectedAiStore.costBreakdownTotal} />
+              <CostBreakdownGrid
+                breakdown={selectedAiStore.costBreakdownTotal}
+                availability={getStoreAiAvailability(selectedAiStore, "runs")}
+                completeness={selectedAiStore.costCompletenessTotal}
+              />
             </div>
           </section>
 
@@ -2803,8 +2906,8 @@ export function OverviewDetailsDrawer({
               Resumo de uso ligado ao custo
             </h3>
             <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              <DetailItem label="Custo total" value={formatUsd(selectedAiStore.totalCostUsd)} />
-              <DetailItem label="Tokens" value={formatCompactNumber(selectedAiStore.totalTokens)} help={`${formatNumber(selectedAiStore.totalTokensPrompt)} entrada · ${formatNumber(selectedAiStore.totalTokensCompletion)} saída`} />
+              <DetailItem label="Custo total" value={formatAiCost(selectedAiStore.totalCostUsd, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessTotal)} />
+              <DetailItem label="Tokens" value={formatAiTokens(selectedAiStore.totalTokens, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.tokenCompletenessTotal)} help={`${formatAiTokens(selectedAiStore.totalTokensPrompt, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.tokenCompletenessTotal)} entrada · ${formatAiTokens(selectedAiStore.totalTokensCompletion, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.tokenCompletenessTotal)} saída`} />
               <DetailItem label="Execuções" value={formatNumber(selectedAiStore.totalAiRuns)} />
               <DetailItem label="Erros" value={formatNumber(selectedAiStore.failedAiRuns)} />
             </div>
@@ -2846,6 +2949,10 @@ export function OverviewDetailsDrawer({
                 weekCompletion={selectedAiStore.tokensCompletionLast7Days}
                 monthPrompt={selectedAiStore.tokensPromptMonth}
                 monthCompletion={selectedAiStore.tokensCompletionMonth}
+                availability={getStoreAiAvailability(selectedAiStore, "runs")}
+                todayCompleteness={selectedAiStore.tokenCompletenessToday}
+                weekCompleteness={selectedAiStore.tokenCompletenessLast7Days}
+                monthCompleteness={selectedAiStore.tokenCompletenessMonth}
               />
             </div>
           </section>
@@ -2858,7 +2965,11 @@ export function OverviewDetailsDrawer({
               A separação usa a mesma marcação confiável do custo em ai_runs. O que ainda não tiver origem clara aparece como não classificado.
             </p>
             <div className="mt-3">
-              <TokenBreakdownGrid breakdown={selectedAiStore.tokenBreakdownTotal} />
+              <TokenBreakdownGrid
+                breakdown={selectedAiStore.tokenBreakdownTotal}
+                availability={getStoreAiAvailability(selectedAiStore, "runs")}
+                completeness={selectedAiStore.tokenCompletenessTotal}
+              />
             </div>
           </section>
 
@@ -2867,9 +2978,9 @@ export function OverviewDetailsDrawer({
               Entrada e saída
             </h3>
             <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              <DetailItem label="Total" value={formatCompactNumber(selectedAiStore.totalTokens)} />
-              <DetailItem label="Entrada" value={formatNumber(selectedAiStore.totalTokensPrompt)} />
-              <DetailItem label="Saída" value={formatNumber(selectedAiStore.totalTokensCompletion)} />
+              <DetailItem label="Total" value={formatAiTokens(selectedAiStore.totalTokens, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.tokenCompletenessTotal)} />
+              <DetailItem label="Entrada" value={formatAiTokens(selectedAiStore.totalTokensPrompt, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.tokenCompletenessTotal)} />
+              <DetailItem label="Saída" value={formatAiTokens(selectedAiStore.totalTokensCompletion, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.tokenCompletenessTotal)} />
               <DetailItem label="Execuções" value={formatNumber(selectedAiStore.totalAiRuns)} />
             </div>
           </section>
@@ -2995,11 +3106,11 @@ export function OverviewDetailsDrawer({
           ? operationalDetails.join(" · ")
           : operational.details;
     } else if (type === "cost") {
-      main = formatUsd(store.totalCostUsd);
-      help = `Hoje ${formatUsd(store.costUsdToday)} · semana ${formatUsd(store.costUsdLast7Days)} · mês ${formatUsd(store.costUsdMonth)}`;
+      main = formatAiCost(store.totalCostUsd, getStoreAiAvailability(store, "runs"), store.costCompletenessTotal);
+      help = `Hoje ${formatAiCost(store.costUsdToday, getStoreAiAvailability(store, "runs"), store.costCompletenessToday)} · semana ${formatAiCost(store.costUsdLast7Days, getStoreAiAvailability(store, "runs"), store.costCompletenessLast7Days)} · mês ${formatAiCost(store.costUsdMonth, getStoreAiAvailability(store, "runs"), store.costCompletenessMonth)}`;
     } else if (type === "tokens") {
-      main = formatCompactNumber(store.totalTokens);
-      help = `${formatNumber(store.totalTokensPrompt)} entrada · ${formatNumber(store.totalTokensCompletion)} saída`;
+      main = formatAiTokens(store.totalTokens, getStoreAiAvailability(store, "runs"), store.tokenCompletenessTotal);
+      help = `${formatAiTokens(store.totalTokensPrompt, getStoreAiAvailability(store, "runs"), store.tokenCompletenessTotal)} entrada · ${formatAiTokens(store.totalTokensCompletion, getStoreAiAvailability(store, "runs"), store.tokenCompletenessTotal)} saída`;
     } else if (type === "ia") {
       main = `${formatOverviewMetric(store.totalAiRuns, getStoreAiAvailability(store, "runs"))} execuções`;
       help = availabilityHelp(getStoreAiAvailability(store, "runs"));
@@ -3230,6 +3341,10 @@ export function OverviewDetailsDrawer({
                 today={data?.totals.costUsdToday}
                 week={data?.totals.costUsdLast7Days}
                 month={data?.totals.costUsdMonth}
+                availability={getGlobalAiAvailability(data, "runs")}
+                todayCompleteness={data?.totals.costCompletenessToday}
+                weekCompleteness={data?.totals.costCompletenessLast7Days}
+                monthCompleteness={data?.totals.costCompletenessMonth}
               />
             </div>
           </section>
@@ -3238,7 +3353,11 @@ export function OverviewDetailsDrawer({
               No que o ZION está gastando IA
             </h3>
             <div className="mt-3">
-              <CostBreakdownGrid breakdown={data?.totals.costBreakdownTotal} />
+              <CostBreakdownGrid
+                breakdown={data?.totals.costBreakdownTotal}
+                availability={getGlobalAiAvailability(data, "runs")}
+                completeness={data?.totals.costCompletenessTotal}
+              />
             </div>
           </section>
         </div>
@@ -3261,6 +3380,10 @@ export function OverviewDetailsDrawer({
                 weekCompletion={data?.totals.tokensCompletionLast7Days}
                 monthPrompt={data?.totals.tokensPromptMonth}
                 monthCompletion={data?.totals.tokensCompletionMonth}
+                availability={getGlobalAiAvailability(data, "runs")}
+                todayCompleteness={data?.totals.tokenCompletenessToday}
+                weekCompleteness={data?.totals.tokenCompletenessLast7Days}
+                monthCompleteness={data?.totals.tokenCompletenessMonth}
               />
             </div>
           </section>
@@ -3269,7 +3392,11 @@ export function OverviewDetailsDrawer({
               No que o ZION está usando tokens
             </h3>
             <div className="mt-3">
-              <TokenBreakdownGrid breakdown={data?.totals.tokenBreakdownTotal} />
+              <TokenBreakdownGrid
+                breakdown={data?.totals.tokenBreakdownTotal}
+                availability={getGlobalAiAvailability(data, "runs")}
+                completeness={data?.totals.tokenCompletenessTotal}
+              />
             </div>
           </section>
         </div>
@@ -3445,11 +3572,11 @@ function OverviewInlineDetails({
                 />
                 <DetailItem
                   label="Custo"
-                  value={formatUsd(selectedStore.totalCostUsd)}
+                  value={formatAiCost(selectedStore.totalCostUsd, getStoreAiAvailability(selectedStore, "runs"), selectedStore.costCompletenessTotal)}
                 />
                 <DetailItem
                   label="Tokens"
-                  value={formatCompactNumber(selectedStore.totalTokens)}
+                  value={formatAiTokens(selectedStore.totalTokens, getStoreAiAvailability(selectedStore, "runs"), selectedStore.tokenCompletenessTotal)}
                 />
                 <DetailItem
                   label="Leads"
@@ -3801,8 +3928,16 @@ function OverviewInlineDetails({
               today={data?.totals.costUsdToday}
               week={data?.totals.costUsdLast7Days}
               month={data?.totals.costUsdMonth}
+              availability={getGlobalAiAvailability(data, "runs")}
+              todayCompleteness={data?.totals.costCompletenessToday}
+              weekCompleteness={data?.totals.costCompletenessLast7Days}
+              monthCompleteness={data?.totals.costCompletenessMonth}
             />
-            <CostBreakdownGrid breakdown={data?.totals.costBreakdownTotal} />
+            <CostBreakdownGrid
+              breakdown={data?.totals.costBreakdownTotal}
+              availability={getGlobalAiAvailability(data, "runs")}
+              completeness={data?.totals.costCompletenessTotal}
+            />
           </div>
         ) : null}
 
@@ -3818,8 +3953,16 @@ function OverviewInlineDetails({
               weekCompletion={data?.totals.tokensCompletionLast7Days}
               monthPrompt={data?.totals.tokensPromptMonth}
               monthCompletion={data?.totals.tokensCompletionMonth}
+              availability={getGlobalAiAvailability(data, "runs")}
+              todayCompleteness={data?.totals.tokenCompletenessToday}
+              weekCompleteness={data?.totals.tokenCompletenessLast7Days}
+              monthCompleteness={data?.totals.tokenCompletenessMonth}
             />
-            <TokenBreakdownGrid breakdown={data?.totals.tokenBreakdownTotal} />
+            <TokenBreakdownGrid
+              breakdown={data?.totals.tokenBreakdownTotal}
+              availability={getGlobalAiAvailability(data, "runs")}
+              completeness={data?.totals.tokenCompletenessTotal}
+            />
           </div>
         ) : null}
       </DetailModal>
