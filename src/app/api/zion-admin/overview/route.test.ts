@@ -544,13 +544,26 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "count availability is exposed from the loaded source rows",
+    run: () => {
+      const source = readSource(routePath);
+
+      assert.equal(source.includes("const countAvailability = {"), true);
+      assert.equal(source.includes("leads: leadRows.availability"), true);
+      assert.equal(source.includes("assistantMessages: assistantMessageRows.availability"), true);
+      assert.equal(source.includes("appointments: appointmentRows.availability"), true);
+      assert.equal(source.includes("messages: worstOverviewAvailability("), true);
+      assert.equal(source.match(/counts: countAvailability/g)?.length, 2);
+    },
+  },
+  {
     name: "store availability exposes conservative overall states",
     run: () => {
       const source = readSource(routePath);
 
       assert.equal(
         source.match(
-          /dataAvailability:\s*\{\s*(?:whatsapp:\s*whatsappQueueRows\.availability,\s*)?ai:\s*\{\s*runs:\s*aiRunRows\.availability/g,
+          /dataAvailability:\s*\{\s*(?:counts:\s*countAvailability,\s*)?(?:whatsapp:\s*whatsappQueueRows\.availability,\s*)?ai:\s*\{\s*runs:\s*aiRunRows\.availability/g,
         )?.length,
         2,
       );

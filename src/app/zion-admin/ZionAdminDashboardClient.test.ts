@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { formatAvailableOverviewValue } from "./overview-availability";
 
 type TestCase = {
   name: string;
@@ -330,6 +331,50 @@ const tests: TestCase[] = [
         "formatOverviewMetric(selectedPendingStore.whatsappErrors, getStoreWhatsappAvailability(selectedPendingStore))",
       ]) {
         assert.equal(source.includes(token), true, `missing availability UI token: ${token}`);
+      }
+    },
+  },
+  {
+    name: "count presentations bind every scoped indicator to its corresponding availability",
+    run: () => {
+      const source = readSource();
+      const format = (value: unknown) => `confirmed:${String(value)}`;
+
+      assert.equal(formatAvailableOverviewValue(0, "available", format), "confirmed:0");
+      assert.equal(formatAvailableOverviewValue(23, "available", format), "confirmed:23");
+      assert.equal(formatAvailableOverviewValue(0, "partial", format), "Parcial");
+      assert.equal(formatAvailableOverviewValue(0, "unavailable", format), "Indisponível");
+      assert.equal(formatAvailableOverviewValue(0, undefined, format), "Indisponível");
+      assert.equal(formatAvailableOverviewValue(0, "invalid", format), "Indisponível");
+
+      for (const token of [
+        'store.totalLeads, getStoreCountAvailability(store, "leads")',
+        'store.totalMessages, getStoreCountAvailability(store, "messages")',
+        'store.totalSalesAiMessages, getStoreCountAvailability(store, "messages")',
+        'store.totalAssistantMessages, getStoreCountAvailability(store, "assistantMessages")',
+        'store.totalAppointments, getStoreCountAvailability(store, "appointments")',
+        'selectedStore.totalLeads, getStoreCountAvailability(selectedStore, "leads")',
+        'selectedStore.totalSalesAiMessages, getStoreCountAvailability(selectedStore, "messages")',
+        'selectedStore.totalAssistantMessages, getStoreCountAvailability(selectedStore, "assistantMessages")',
+        'selectedStore.totalAppointments, getStoreCountAvailability(selectedStore, "appointments")',
+        'data?.totals.salesAiMessages, getGlobalCountAvailability(data, "messages")',
+        'data?.totals.assistantMessages, getGlobalCountAvailability(data, "assistantMessages")',
+      ]) {
+        assert.equal(source.includes(token), true, `missing count availability binding: ${token}`);
+      }
+
+      for (const unguarded of [
+        'formatNumber(store.totalSalesAiMessages)',
+        'formatNumber(store.totalAssistantMessages)',
+        'formatNumber(selectedStore.totalSalesAiMessages)',
+        'formatNumber(selectedStore.totalAssistantMessages)',
+        'formatNumber(selectedStore.totalLeads)',
+        'formatNumber(selectedStore.totalAppointments)',
+        'formatNumber(data?.totals.salesAiMessages)',
+        'formatNumber(data?.totals.assistantMessages)',
+        'formatNumber(store.totalMessages)} msg',
+      ]) {
+        assert.equal(source.includes(unguarded), false, `unguarded count presentation remains: ${unguarded}`);
       }
     },
   },

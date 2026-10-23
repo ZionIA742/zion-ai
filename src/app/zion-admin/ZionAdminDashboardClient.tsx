@@ -284,6 +284,12 @@ export type ZionAdminOverview = {
   };
   countErrors: Record<string, string | null>;
   dataAvailability?: {
+    counts?: {
+      leads?: OverviewDataAvailability;
+      messages?: OverviewDataAvailability;
+      assistantMessages?: OverviewDataAvailability;
+      appointments?: OverviewDataAvailability;
+    };
     whatsapp?: OverviewDataAvailability;
     ai?: {
       runs?: OverviewDataAvailability;
@@ -577,6 +583,20 @@ function getStoreCommercialAvailability(
 
 function getStoreWhatsappAvailability(store: ZionAdminStore) {
   return normalizeOverviewDataAvailability(store.dataAvailability?.whatsapp);
+}
+
+function getStoreCountAvailability(
+  store: ZionAdminStore,
+  source: "leads" | "messages" | "assistantMessages" | "appointments",
+) {
+  return normalizeOverviewDataAvailability(store.dataAvailability?.counts?.[source]);
+}
+
+function getGlobalCountAvailability(
+  data: ZionAdminOverview | null,
+  source: "leads" | "messages" | "assistantMessages" | "appointments",
+) {
+  return normalizeOverviewDataAvailability(data?.dataAvailability?.counts?.[source]);
 }
 
 function getGlobalAiAvailability(
@@ -2523,25 +2543,25 @@ function StoreDetailsDrawer({
         {activeStoreTab === "usage" ? <section>
           <h3 className="text-sm font-semibold text-zinc-200">Uso da loja</h3>
           <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-            <DetailItem label="Leads" value={formatNumber(store.totalLeads)} />
+            <DetailItem label="Leads" value={formatOverviewMetric(store.totalLeads, getStoreCountAvailability(store, "leads"))} />
             <DetailItem
               label="Mensagens"
-              value={formatNumber(store.totalMessages)}
+              value={formatOverviewMetric(store.totalMessages, getStoreCountAvailability(store, "messages"))}
               help="Mensagens comerciais totais da loja"
             />
             <DetailItem
               label="Mensagens da IA registradas"
-              value={formatNumber(store.totalSalesAiMessages)}
+              value={formatOverviewMetric(store.totalSalesAiMessages, getStoreCountAvailability(store, "messages"))}
               help="Mensagens da IA registradas localmente"
             />
             <DetailItem
               label="Mensagens IA assistente"
-              value={formatNumber(store.totalAssistantMessages)}
+              value={formatOverviewMetric(store.totalAssistantMessages, getStoreCountAvailability(store, "assistantMessages"))}
               help="Mensagens do chat operacional interno"
             />
             <DetailItem
               label="Compromissos"
-              value={formatNumber(store.totalAppointments)}
+              value={formatOverviewMetric(store.totalAppointments, getStoreCountAvailability(store, "appointments"))}
             />
           </div>
         </section> : null}
@@ -2790,7 +2810,7 @@ export function OverviewDetailsDrawer({
             <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="Mensagens da IA registradas"
-                value={formatNumber(selectedAiStore.totalSalesAiMessages)}
+                value={formatOverviewMetric(selectedAiStore.totalSalesAiMessages, getStoreCountAvailability(selectedAiStore, "messages"))}
                 help="Mensagens da IA registradas localmente"
               />
               <DetailItem
@@ -2813,7 +2833,7 @@ export function OverviewDetailsDrawer({
               />
               <DetailItem
                 label="Mensagens da assistente"
-                value={formatNumber(selectedAiStore.totalAssistantMessages)}
+                value={formatOverviewMetric(selectedAiStore.totalAssistantMessages, getStoreCountAvailability(selectedAiStore, "assistantMessages"))}
                 help="Mensagens trocadas no chat operacional"
               />
               <DetailItem
@@ -3115,16 +3135,16 @@ export function OverviewDetailsDrawer({
       main = `${formatOverviewMetric(store.totalAiRuns, getStoreAiAvailability(store, "runs"))} execuções`;
       help = availabilityHelp(getStoreAiAvailability(store, "runs"));
     } else if (type === "messages") {
-      main = `${formatNumber(store.totalMessages)} mensagens`;
-      help = `${formatNumber(store.totalLeads)} leads relacionados`;
+      main = `${formatOverviewMetric(store.totalMessages, getStoreCountAvailability(store, "messages"))} mensagens`;
+      help = `${formatOverviewMetric(store.totalLeads, getStoreCountAvailability(store, "leads"))} leads relacionados`;
     } else if (type === "leads") {
-      main = `${formatNumber(store.totalLeads)} leads`;
-      help = `${formatNumber(store.totalMessages)} mensagens comerciais`;
+      main = `${formatOverviewMetric(store.totalLeads, getStoreCountAvailability(store, "leads"))} leads`;
+      help = `${formatOverviewMetric(store.totalMessages, getStoreCountAvailability(store, "messages"))} mensagens comerciais`;
     } else if (type === "appointments") {
-      main = `${formatNumber(store.totalAppointments)} compromissos`;
+      main = `${formatOverviewMetric(store.totalAppointments, getStoreCountAvailability(store, "appointments"))} compromissos`;
       help = "Visitas, instalações, medições e outros agendamentos.";
     } else if (type === "assistant") {
-      main = `${formatNumber(store.totalAssistantMessages)} mensagens`;
+      main = `${formatOverviewMetric(store.totalAssistantMessages, getStoreCountAvailability(store, "assistantMessages"))} mensagens`;
       help = `${formatNumber(store.totalAssistantThreads)} conversa(s) internas`;
     } else {
       main = `${formatNumber(data?.totals.conversations)} conversas`;
@@ -3160,13 +3180,13 @@ export function OverviewDetailsDrawer({
                 {formatOverviewMetric(store.successfulAiRuns, getStoreAiAvailability(store, "runs"))} concluídas · {formatOverviewMetric(store.failedAiRuns, getStoreAiAvailability(store, "runs"))} erro(s)
               </div>
               <div className="mt-0.5 text-xs text-zinc-500">
-                {formatNumber(store.totalSalesAiMessages)} mensagens da IA registradas
+                {formatOverviewMetric(store.totalSalesAiMessages, getStoreCountAvailability(store, "messages"))} mensagens da IA registradas
               </div>
             </div>
             <div className="rounded-xl border border-white/10 bg-zinc-950/35 px-3 py-2">
               <div className="text-[11px] text-zinc-500">IA assistente</div>
               <div className="mt-1 text-sm font-semibold text-zinc-100">
-                {formatNumber(store.totalAssistantMessages)} mensagens
+                {formatOverviewMetric(store.totalAssistantMessages, getStoreCountAvailability(store, "assistantMessages"))} mensagens
               </div>
               <div className="mt-0.5 text-xs text-zinc-500">
                 {formatNumber(store.totalAssistantThreads)} conversa(s) internas
@@ -3548,11 +3568,11 @@ function OverviewInlineDetails({
               <div className="grid grid-cols-2 gap-2">
                 <DetailItem
                   label="Msg IA registradas"
-                  value={formatNumber(selectedStore.totalSalesAiMessages)}
+                  value={formatOverviewMetric(selectedStore.totalSalesAiMessages, getStoreCountAvailability(selectedStore, "messages"))}
                 />
                 <DetailItem
                   label="Msg assist."
-                  value={formatNumber(selectedStore.totalAssistantMessages)}
+                  value={formatOverviewMetric(selectedStore.totalAssistantMessages, getStoreCountAvailability(selectedStore, "assistantMessages"))}
                 />
                 <DetailItem
                   label="Execuções"
@@ -3580,11 +3600,11 @@ function OverviewInlineDetails({
                 />
                 <DetailItem
                   label="Leads"
-                  value={formatNumber(selectedStore.totalLeads)}
+                  value={formatOverviewMetric(selectedStore.totalLeads, getStoreCountAvailability(selectedStore, "leads"))}
                 />
                 <DetailItem
                   label="Compromissos"
-                  value={formatNumber(selectedStore.totalAppointments)}
+                  value={formatOverviewMetric(selectedStore.totalAppointments, getStoreCountAvailability(selectedStore, "appointments"))}
                 />
               </div>
             </div>
@@ -3911,12 +3931,12 @@ function OverviewInlineDetails({
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <DetailItem
               label="IA vendedora (registros)"
-              value={formatNumber(data?.totals.salesAiMessages)}
+              value={formatOverviewMetric(data?.totals.salesAiMessages, getGlobalCountAvailability(data, "messages"))}
               help="Mensagens da IA registradas localmente"
             />
             <DetailItem
               label="IA assistente"
-              value={formatNumber(data?.totals.assistantMessages)}
+              value={formatOverviewMetric(data?.totals.assistantMessages, getGlobalCountAvailability(data, "assistantMessages"))}
               help="Mensagens do chat operacional interno"
             />
           </div>
@@ -4004,7 +4024,7 @@ function OverviewInlineDetails({
           />
           <ClickableDetailItem
             label="Mensagens por IA"
-            value={`${formatNumber(data?.totals.salesAiMessages)} / ${formatNumber(data?.totals.assistantMessages)}`}
+            value={`${formatOverviewMetric(data?.totals.salesAiMessages, getGlobalCountAvailability(data, "messages"))} / ${formatOverviewMetric(data?.totals.assistantMessages, getGlobalCountAvailability(data, "assistantMessages"))}`}
             help="Vendedora / assistente"
             onClick={() => setSelectedAiDetail("messages")}
           />
@@ -4132,7 +4152,7 @@ function StoreListSection({
                   <td className="px-2.5 py-2"><span className={`inline-block max-w-[120px] rounded-md border px-1.5 py-0.5 text-[10px] leading-4 ${getOperationalHealthStateClassName(healthState)}`}>{getStoreOperationalHealthStateLabel(store.operationalHealth)}</span></td>
                   <td className="px-2.5 py-2"><span className={`whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[10px] ${getSettingsReadinessStateClassName(readinessState)}`}>{STORE_SETTINGS_READINESS_STATE_LABELS[readinessState]}</span></td>
                   <td className="whitespace-nowrap px-2.5 py-2 text-[#d8e0e9]">{formatOverviewMetric(store.totalAiRuns, getStoreAiAvailability(store, "runs"))}</td>
-                  <td className="whitespace-nowrap px-2.5 py-2 text-[#d8e0e9]">{formatNumber(store.totalMessages)} msg</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 text-[#d8e0e9]">{formatOverviewMetric(store.totalMessages, getStoreCountAvailability(store, "messages"))} msg</td>
                   <td className="max-w-[130px] px-2.5 py-2 text-[#b7c4d2]"><span className="line-clamp-2" title={operational.label}>{operational.label}</span></td>
                   <td className="max-w-[114px] px-2.5 py-2 text-[10px] text-[#a7b6c8]">{formatDateTime(store.lastAiRunAt)}</td>
                   <td className="px-2.5 py-2"><button type="button" onClick={(event) => { event.stopPropagation(); onSelectStore(store); }}

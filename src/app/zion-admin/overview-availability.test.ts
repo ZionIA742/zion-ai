@@ -18,6 +18,20 @@ test("available preserves confirmed zero and positive values", () => {
   assert.equal(formatAvailableOverviewValue(12, "available", format), "valor:12");
 });
 
+test("independent count sources never turn failed data into confirmed zero", () => {
+  const sources = {
+    leads: "available",
+    messages: "partial",
+    assistantMessages: "unavailable",
+    appointments: "available",
+  } as const;
+
+  assert.equal(formatAvailableOverviewValue(0, sources.leads, format), "valor:0");
+  assert.equal(formatAvailableOverviewValue(7, sources.appointments, format), "valor:7");
+  assert.equal(formatAvailableOverviewValue(0, sources.messages, format), "Parcial");
+  assert.equal(formatAvailableOverviewValue(0, sources.assistantMessages, format), "Indisponível");
+});
+
 test("unavailable and partial never render numeric values", () => {
   assert.equal(formatAvailableOverviewValue(0, "unavailable", format), "Indisponível");
   assert.equal(formatAvailableOverviewValue(0, "partial", format), "Parcial");

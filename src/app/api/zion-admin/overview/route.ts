@@ -1940,6 +1940,15 @@ export async function GET() {
     const operationalStoreIds = new Set(
       operationalStores.map((store) => store.id),
     );
+    const countAvailability = {
+      leads: leadRows.availability,
+      messages: worstOverviewAvailability(
+        messageRows.availability,
+        salesAiMessageRows.availability,
+      ),
+      assistantMessages: assistantMessageRows.availability,
+      appointments: appointmentRows.availability,
+    };
 
     const commercialActionEvidenceByStoreId =
       buildCommercialActionEvidenceByStore({
@@ -2390,6 +2399,7 @@ export async function GET() {
           }),
         operationalHealth,
         dataAvailability: {
+          counts: countAvailability,
           whatsapp: whatsappQueueRows.availability,
           ai: {
             runs: aiRunRows.availability,
@@ -2696,6 +2706,7 @@ export async function GET() {
         storeCatalogConfig: catalogConfigRows.error,
       },
       dataAvailability: {
+        counts: countAvailability,
         whatsapp: whatsappQueueRows.availability,
         ai: {
           runs: aiRunRows.availability,
