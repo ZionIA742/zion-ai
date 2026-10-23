@@ -10,9 +10,10 @@ assert.equal(source.includes('setActiveGeneratedPdfTab("contracts")'), true);
 assert.equal(source.includes('setActiveDetailsTab("pdfs")'), true);
 assert.equal(/Contrato\s*<\/button>/.test(source), true);
 assert.equal(source.includes('Dados do comprador para consulta'), true);
-assert.equal(source.includes('label="Nome" value={lead.name?.trim() || "Nao informado"}'), true);
-assert.equal(source.includes('label="CPF" value="Nao informado"'), true);
-assert.equal(source.includes('label="Telefone" value={lead.phone?.trim() || "Nao informado"}'), true);
+assert.equal(source.includes("function CompactInfoList("), true);
+assert.equal(source.includes('label: "Nome", value: lead.name?.trim() || "Nao informado"'), true);
+assert.equal(source.includes('label: "CPF", value: "Nao informado"'), true);
+assert.equal(source.includes('label: "Telefone", value: lead.phone?.trim() || "Nao informado"'), true);
 assert.equal(source.includes("selectedRouteDestinationAddress || \"Nao informado\""), true);
 assert.equal(source.includes("/api/sales-contracts/template-source?"), true);
 assert.equal(source.includes("Modelo original da loja"), true);
@@ -20,6 +21,16 @@ assert.equal(source.includes("Abrir arquivo original"), true);
 assert.equal(source.includes("contractTemplateSource.originalFilename"), true);
 assert.equal(source.includes("contractTemplateSource.mimeType"), true);
 assert.equal(source.includes("reconstrói"), true);
+
+assert.equal(source.includes("contractPreview"), true);
+assert.equal(source.includes("Visualizacao segura do PDF especifico deste comprador."), true);
+assert.equal(source.includes('setContractPreview({ contractId: safeContractId, signedUrl: result.signedUrl })'), true);
+assert.equal(source.includes('sendGeneratedContractToCustomer(contract.id, contract.status)'), true);
+assert.equal(source.includes('normalizedStatus === "approved"'), true);
+assert.equal(source.includes('activeDetailsTab === "pdfs" ? "max-w-[96vw] lg:h-[96vh]"'), true);
+assert.equal(source.includes("lg:grid-cols-[minmax(0,7fr)_minmax(250px,3fr)]"), true);
+assert.equal(source.includes("lg:col-start-2 lg:row-start-1"), true);
+assert.equal(source.includes("lg:col-start-1 lg:row-start-1"), true);
 
 const contractAction = source.slice(
   source.indexOf("function openContractPanel()"),

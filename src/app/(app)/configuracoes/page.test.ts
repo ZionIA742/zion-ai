@@ -1568,6 +1568,7 @@ const tests: TestCase[] = [
       assert.equal(block.includes("canDownload"), true);
       assert.equal(block.includes("canApprove"), true);
       assert.equal(block.includes("showContractVersionHistory"), true);
+      assert.equal(block.includes("Ver todas as opções"), true);
       assert.equal(block.includes("Ativar modelo"), true);
       assert.equal(block.includes("Contrato atual"), true);
       assert.equal(block.includes("Atualizar contrato"), true);

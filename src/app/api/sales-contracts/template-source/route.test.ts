@@ -124,6 +124,7 @@ test("returns a temporary URL for the active original template in the authorized
   const access = createAccess(baseRows());
   const handler = createContractTemplateSourceGetHandler({
     resolveAccess: async () => access as never,
+    createServiceClient: () => access.supabase as never,
   });
 
   const response = await handler(request());
@@ -158,6 +159,7 @@ test("does not cross the store boundary when the opportunity is outside the sess
   const access = createAccess(rows);
   const handler = createContractTemplateSourceGetHandler({
     resolveAccess: async () => access as never,
+    createServiceClient: () => access.supabase as never,
   });
 
   const response = await handler(request());
@@ -174,6 +176,7 @@ test("reports an absent active template without inventing a file", async () => {
   const access = createAccess(rows);
   const handler = createContractTemplateSourceGetHandler({
     resolveAccess: async () => access as never,
+    createServiceClient: () => access.supabase as never,
   });
 
   const response = await handler(request());
@@ -193,6 +196,7 @@ test("preserves the original PDF metadata and never exposes extracted text", asy
   const access = createAccess(rows);
   const handler = createContractTemplateSourceGetHandler({
     resolveAccess: async () => access as never,
+    createServiceClient: () => access.supabase as never,
   });
 
   const body = await (await handler(request())).json();

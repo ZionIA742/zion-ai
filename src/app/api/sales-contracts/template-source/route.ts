@@ -6,6 +6,7 @@ import {
   type StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
+import { createServiceSupabaseClient } from "@/lib/server/store-contract-templates/template-management";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +24,7 @@ type ContractTemplateSourceGetDeps = {
     requirement: "active";
     deps?: Partial<ResolveStoreApiAccessDeps>;
   }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+  createServiceClient: typeof createServiceSupabaseClient;
 };
 
 type TemplateRow = {
@@ -105,6 +107,7 @@ export function createContractTemplateSourceGetHandler(
   deps: Partial<ContractTemplateSourceGetDeps> = {},
 ) {
   const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
+  const createServiceClient = deps.createServiceClient ?? createServiceSupabaseClient;
 
   return async function GET(request: Request) {
     const access = await resolveAccess({ requirement: "active" });
@@ -174,7 +177,12 @@ export function createContractTemplateSourceGetHandler(
         );
       }
 
-      const { data: template, error: templateError } = await access.supabase
+      // The access client proves the tenant/store scope above. Contract
+      // templates and their files are private system data, so read them with
+      // the service client rather than relying on end-user table grants.
+      const privateSupabase = createServiceClient();
+
+      const { data: template, error: templateError } = await privateSupabase
         .from("store_contract_templates")
         .select("id, organization_id, store_id, status, active_version_id")
         .eq("organization_id", access.organizationId)
@@ -197,7 +205,7 @@ export function createContractTemplateSourceGetHandler(
         return missingTemplateResponse();
       }
 
-      const { data: version, error: versionError } = await access.supabase
+      const { data: version, error: versionError } = await privateSupabase
         .from("store_contract_template_versions")
         .select(
           "id, template_id, organization_id, store_id, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type",
@@ -224,7 +232,7 @@ export function createContractTemplateSourceGetHandler(
         );
       }
 
-      const { data: storeFile, error: storeFileError } = await access.supabase
+      const { data: storeFile, error: storeFileError } = await privateSupabase
         .from("store_files")
         .select(
           "id, organization_id, store_id, file_kind, storage_bucket, storage_path, original_filename, mime_type",
@@ -253,7 +261,7 @@ export function createContractTemplateSourceGetHandler(
         );
       }
 
-      const { data: signedData, error: signedError } = await access.supabase.storage
+      const { data: signedData, error: signedError } = await privateSupabase.storage
         .from(storeFile.storage_bucket)
         .createSignedUrl(storeFile.storage_path, SIGNED_URL_EXPIRATION_SECONDS);
 

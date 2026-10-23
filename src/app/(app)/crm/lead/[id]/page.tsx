@@ -1359,6 +1359,26 @@ function InfoCard({
   );
 }
 
+function CompactInfoList({
+  items,
+}: {
+  items: Array<{ label: string; value: string; help?: string | null }>;
+}) {
+  return (
+    <dl className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white text-xs">
+      {items.map((item) => (
+        <div key={item.label} className="grid gap-1 px-3 py-2 sm:grid-cols-[minmax(7rem,auto)_minmax(0,1fr)] sm:items-start">
+          <dt className="font-medium text-gray-500">{item.label}</dt>
+          <dd className="min-w-0 break-words font-semibold text-gray-900">
+            {item.value}
+            {item.help ? <span className="mt-0.5 block font-normal text-gray-500">{item.help}</span> : null}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 function EmptyState({ text }: { text: string }) {
   return (
     <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
@@ -1482,6 +1502,10 @@ export default function LeadPage() {
   const [generatedContractsLoading, setGeneratedContractsLoading] = useState(false);
   const [generatedContractsError, setGeneratedContractsError] = useState<string | null>(null);
   const [openingGeneratedContractId, setOpeningGeneratedContractId] = useState<string | null>(null);
+  const [contractPreview, setContractPreview] = useState<{
+    contractId: string;
+    signedUrl: string;
+  } | null>(null);
   const [contractActionLoadingId, setContractActionLoadingId] = useState<string | null>(null);
   const [contractActionLoadingType, setContractActionLoadingType] = useState<
     "create" | "generate_pdf" | "approve" | "send" | "customer_sign" | "store_sign" | null
@@ -3211,7 +3235,7 @@ export default function LeadPage() {
         throw new Error(result?.message || "Nao foi possivel abrir o PDF deste contrato.");
       }
 
-      window.open(result.signedUrl, "_blank", "noopener,noreferrer");
+      setContractPreview({ contractId: safeContractId, signedUrl: result.signedUrl });
     } catch (error: any) {
       setGeneratedContractsError(
         error?.message || "Nao foi possivel abrir o PDF deste contrato."
@@ -5374,7 +5398,9 @@ export default function LeadPage() {
 
           {activeDetailsTab ? (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-3 py-3 lg:px-6 lg:py-5">
-              <div className="max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
+              <div className={`flex max-h-[96vh] w-full flex-col overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10 ${
+                activeDetailsTab === "pdfs" ? "max-w-[96vw] lg:h-[96vh]" : "max-w-6xl"
+              }`}>
                 <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-white/50">
@@ -5397,7 +5423,7 @@ export default function LeadPage() {
                   </button>
                 </div>
 
-                <div className="max-h-[80vh] overflow-y-auto p-5 lg:p-7">
+                <div className="min-h-0 flex-1 overflow-y-auto p-5 lg:p-7">
                   {activeDetailsTab === "summary" ? (
                     <div className="space-y-5">
                       <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-gray-50 p-2 ring-1 ring-black/5">
@@ -5998,8 +6024,8 @@ export default function LeadPage() {
                       ) : null}
 
                       {activeGeneratedPdfTab === "contracts" ? (
-                        <div>
-                          <section className="rounded-2xl border border-gray-200 bg-white p-4 ring-1 ring-black/5">
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,7fr)_minmax(250px,3fr)]">
+                          <section className="rounded-2xl border border-gray-200 bg-white p-4 ring-1 ring-black/5 lg:col-start-2 lg:row-start-1">
                             <div className="text-sm font-semibold text-gray-900">
                               Dados do comprador para consulta
                             </div>
@@ -6007,34 +6033,58 @@ export default function LeadPage() {
                               Consulte apenas os dados realmente disponiveis durante o preenchimento manual. Nenhuma informacao e presumida ou salva por este painel.
                             </div>
 
-                            <div className="mt-3 grid gap-3 md:grid-cols-2">
-                              <InfoCard label="Nome" value={lead.name?.trim() || "Nao informado"} />
-                              <InfoCard label="CPF" value="Nao informado" help="Ainda nao ha CPF disponivel no cadastro desta conversa." />
-                              <InfoCard label="Telefone" value={lead.phone?.trim() || "Nao informado"} />
-                              <InfoCard
-                                label="Endereco disponivel"
-                                value={selectedRouteDestinationAddress || "Nao informado"}
-                                help={
-                                  selectedRouteDestinationAddress
+                            <CompactInfoList
+                              items={[
+                                { label: "Nome", value: lead.name?.trim() || "Nao informado" },
+                                { label: "CPF", value: "Nao informado", help: "Ainda nao ha CPF disponivel no cadastro desta conversa." },
+                                { label: "Telefone", value: lead.phone?.trim() || "Nao informado" },
+                                {
+                                  label: "Endereco",
+                                  value: selectedRouteDestinationAddress || "Nao informado",
+                                  help: selectedRouteDestinationAddress
                                     ? "Endereco registrado para atendimento."
-                                    : "Nenhum endereco de atendimento foi identificado."
-                                }
-                              />
-                            </div>
-
-                            <div className="mt-3 grid gap-3 md:grid-cols-2">
-                              <InfoCard label="Necessidade identificada" value={needSummaryDisplay.value} help={needSummaryDisplay.help} />
-                              <InfoCard label="Produto de interesse" value={productReferenceDisplay.value} help={productReferenceDisplay.help} />
-                              <InfoCard label="Localizacao informada" value={locationTextDisplay.value} help={locationTextDisplay.help} />
-                              <InfoCard label="Preferencias do cliente" value={customerPreferencesDisplay.value} help={customerPreferencesDisplay.help} />
-                            </div>
+                                    : "Nenhum endereco de atendimento foi identificado.",
+                                },
+                                { label: "Necessidade", value: needSummaryDisplay.value, help: needSummaryDisplay.help },
+                                { label: "Produto de interesse", value: productReferenceDisplay.value, help: productReferenceDisplay.help },
+                                { label: "Localizacao", value: locationTextDisplay.value, help: locationTextDisplay.help },
+                                { label: "Preferencias", value: customerPreferencesDisplay.value, help: customerPreferencesDisplay.help },
+                              ]}
+                            />
                           </section>
 
-                          <section className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 ring-1 ring-sky-900/5">
+                          <div className="min-w-0 lg:col-start-1 lg:row-start-1">
+                          {contractPreview ? (
+                            <section className="mb-4 overflow-hidden rounded-2xl border border-gray-200 bg-white ring-1 ring-black/5">
+                              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 px-4 py-3">
+                                <div>
+                                  <div className="text-sm font-semibold text-gray-900">Contrato da oportunidade</div>
+                                  <div className="text-xs text-gray-500">Visualizacao segura do PDF especifico deste comprador.</div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setContractPreview(null)}
+                                  className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-200"
+                                >
+                                  Fechar visualizacao
+                                </button>
+                              </div>
+                              <iframe
+                                title={`Visualizacao do contrato ${contractPreview.contractId}`}
+                                src={contractPreview.signedUrl}
+                                className="h-[52vh] min-h-[24rem] w-full bg-gray-100"
+                              />
+                            </section>
+                          ) : (
+                            <div className="mb-4 rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-5 text-sm text-gray-600">
+                              Selecione <span className="font-semibold text-gray-900">Abrir PDF</span> em um contrato da oportunidade para visualizar o documento aqui.
+                            </div>
+                          )}
+                          <section className="mt-0 rounded-2xl border border-sky-200 bg-sky-50 p-4 ring-1 ring-sky-900/5">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                               <div>
                                 <div className="text-sm font-semibold text-gray-900">
-                                  Modelo original da loja
+                                  Modelo original da loja (referencia)
                                 </div>
                                 <div className="mt-1 text-xs leading-5 text-gray-600">
                                   Arquivo armazenado pela loja para consulta. Este acesso nao edita,
@@ -6291,6 +6341,7 @@ export default function LeadPage() {
                               })}
                             </div>
                           ) : null}
+                        </div>
                         </div>
                       ) : null}
                     </div>

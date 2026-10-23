@@ -15203,7 +15203,7 @@ export default function ConfiguracoesPage() {
   {storeContractVersions.some((version) => {
     const status = normalizeContractVersionStatusValue(version.status);
     const isActiveVersion = storeContractActiveVersion?.id === version.id || status === "active";
-    return !isActiveVersion && !canApproveStoreContractVersion({ version, isActiveVersion });
+    return !isActiveVersion;
   }) ? (
     <button
       type="button"
@@ -15213,8 +15213,8 @@ export default function ConfiguracoesPage() {
       className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-semibold text-gray-700 transition hover:bg-gray-50"
     >
       {showContractVersionHistory
-        ? "Ocultar histórico de versões"
-        : `Ver histórico de versões (${storeContractVersions.filter((version) =>
+        ? "Ocultar versões"
+        : `Ver todas as opções (${storeContractVersions.filter((version) =>
             !canApproveStoreContractVersion({
               version,
               isActiveVersion: storeContractActiveVersion?.id === version.id || normalizeContractVersionStatusValue(version.status) === "active",
@@ -15237,7 +15237,7 @@ export default function ConfiguracoesPage() {
     const isActiveVersion = storeContractActiveVersion?.id === version.id || normalizedStatus === "active";
     const isHistoricalVersion = !isActiveVersion && !canApproveStoreContractVersion({ version, isActiveVersion });
 
-    return !isActiveVersion && (canApproveStoreContractVersion({ version, isActiveVersion }) || (showContractVersionHistory && isHistoricalVersion));
+    return showContractVersionHistory && !isActiveVersion && (canApproveStoreContractVersion({ version, isActiveVersion }) || isHistoricalVersion);
   })
   .map((version) => {
                           const status = resolveContractVersionStatus(version.status);
