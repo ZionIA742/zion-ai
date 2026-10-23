@@ -43,6 +43,54 @@ type Closure = {
   closed_at: string;
 };
 
+type VariableExpenseRow = {
+  id: string;
+  idempotency_key: string;
+  name: string;
+  category: string;
+  description: string | null;
+  amount_minor: number | string;
+  currency: "BRL" | "USD";
+  expense_date: string;
+  competence_month: string;
+  source: "manual";
+  status: "active" | "cancelled";
+  created_at: string;
+  updated_at: string;
+  cancelled_at: string | null;
+};
+
+const VARIABLE_MUTATION_ACTIONS = ["add_variable", "edit_variable", "cancel_variable"] as const;
+type VariableMutationAction = (typeof VARIABLE_MUTATION_ACTIONS)[number];
+
+export function isUuid(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+export function parseMinorAmount(value: unknown): number | null {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0 ? value : null;
+  if (typeof value !== "string" || !/^\d+(?:\.\d{1,2})?$/.test(value.trim())) return null;
+  const [whole, fraction = ""] = value.trim().split(".");
+  const minor = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  return Number.isSafeInteger(minor) && minor > 0 && minor <= 100000000000 ? minor : null;
+}
+
+export function parseDate(value: unknown): string | null {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value ? value : null;
+}
+
+export function mapVariableExpenseRpcError(message: string) {
+  if (/CLOSED|ALREADY_CLOSED|MONTH_ALREADY_CLOSED/i.test(message)) return [409, "A competência financeira já está fechada."] as const;
+  if (/STALE_VERSION|VERSION_OR_MONTH|CHANGED_DURING_OPERATION/i.test(message)) return [409, "O lançamento foi alterado; recarregue os dados e tente novamente."] as const;
+  if (/OPERATION_KEY_REUSED/i.test(message)) return [409, "A chave de idempotência já foi usada com outros dados."] as const;
+  if (/NOT_FOUND/i.test(message)) return [404, "Despesa variável não encontrada."] as const;
+  if (/PERMISSION|AUTH|ACTOR/i.test(message)) return [403, "Operação administrativa não autorizada."] as const;
+  if (/INVALID|REQUIRED|ACTIVE/i.test(message)) return [400, "Dados da despesa variável inválidos."] as const;
+  return [503, "Não foi possível confirmar a operação da despesa variável."] as const;
+}
+
 function createServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -149,13 +197,19 @@ export async function GET(request: Request) {
     const tomorrowIso = tomorrow.toISOString().slice(0, 10);
     const effectiveEnd = new Date(`${tomorrowIso}T03:00:00Z`).toISOString() < range.end
       ? new Date(`${tomorrowIso}T03:00:00Z`).toISOString() : range.end;
-    const [versionsResult, itemsResult, closureResult, runs, salesMessages, assistantMessages] = await Promise.all([
+    const [versionsResult, itemsResult, closureResult, runs, salesMessages, assistantMessages, variableExpensesResult] = await Promise.all([
       db.from("zion_admin_fixed_cost_versions").select("item_id,effective_month,name,amount_cents,frequency,enabled").order("effective_month", { ascending: true }),
       db.from("zion_admin_fixed_cost_items").select("id,starts_on"),
       db.from("zion_admin_monthly_closures").select("month,fixed_brl_cents,ai_usd,fx_usd_brl,variable_brl_cents,total_brl_cents,fixed_items,ai_runs,closed_at").order("month", { ascending: false }),
       loadAllRuns(db,range.start,effectiveEnd),
       countMessages(db,"messages",range.start,effectiveEnd,true),
       countMessages(db,"store_assistant_messages",range.start,effectiveEnd),
+      db.from("zion_admin_variable_expenses")
+        .select("id,idempotency_key,name,category,description,amount_minor,currency,expense_date,competence_month,source,status,created_at,updated_at,cancelled_at")
+        .gte("expense_date", range.startDate)
+        .lt("expense_date", range.endDate)
+        .order("expense_date", { ascending: false })
+        .order("id", { ascending: true }),
     ]);
     if (versionsResult.error || itemsResult.error || closureResult.error) throw new Error("COST_LEDGER_MIGRATION_REQUIRED");
     const startedOnById = new Map<string, string>((itemsResult.data ?? []).map((item) => [String(item.id), String(item.starts_on)] as const));
@@ -285,6 +339,7 @@ export async function GET(request: Request) {
         ptax: ptaxUnavailable ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
         messagesSales: salesMessages == null ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
         messagesAssistant: assistantMessages == null ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
+        variableExpenses: variableExpensesResult.error ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
       },
       totals: { fixedCents: fixedTotal, variableCents: variableTotal, totalCents: grandTotal, aiCostUsd,
         costCompleteness: aiCostCompleteness, tokenCompleteness,
@@ -292,6 +347,7 @@ export async function GET(request: Request) {
         tokens: tokenCompleteness === "complete" ? runs.reduce((n,r)=>n + (toKnownCostNumber(r.tokens_prompt) ?? 0) + (toKnownCostNumber(r.tokens_completion) ?? 0),0) : null,
         messagesSales: salesMessages, messagesAssistant: assistantMessages, breakdown: breakdownPayload,
       },
+      variableExpenses: variableExpensesResult.error ? null : (variableExpensesResult.data as VariableExpenseRow[]),
       note: "Valores variáveis em BRL são estimados pela PTAX venda, não pela fatura do cartão. Meses fechados permanecem congelados.",
     }, 200);
   } catch (error) {
@@ -310,6 +366,63 @@ export async function POST(request: Request) {
   let payload: Record<string, unknown>;
   try { payload = await request.json(); } catch { return createZionAdminApiJsonResponse({error:"Corpo inválido."},400); }
   const action = String(payload.action ?? "");
+  if (!["add", "edit", "remove", "close", ...VARIABLE_MUTATION_ACTIONS].includes(action)) return createZionAdminApiJsonResponse({error:"Ação inválida."},400);
+  if ((VARIABLE_MUTATION_ACTIONS as readonly string[]).includes(action)) {
+    const variableAction = action as VariableMutationAction;
+    const operationKey = typeof payload.operationKey === "string" ? payload.operationKey.trim() : "";
+    const id = payload.id == null ? null : String(payload.id);
+    const name = typeof payload.name === "string" ? payload.name.trim() : "";
+    const category = typeof payload.category === "string" ? payload.category.trim() : "";
+    const description = payload.description == null ? null : String(payload.description);
+    const currency = payload.currency === "BRL" || payload.currency === "USD" ? payload.currency : null;
+    const expenseDate = parseDate(payload.expenseDate);
+    const competenceMonth = parseDate(payload.competenceMonth);
+    const amountMinor = variableAction === "cancel_variable"
+      ? null
+      : parseMinorAmount(payload.amountMinor !== undefined ? payload.amountMinor : payload.amount);
+    const expectedUpdatedAt = payload.expectedUpdatedAt == null ? null : String(payload.expectedUpdatedAt);
+    const reason = payload.reason == null ? null : String(payload.reason);
+    const validCommon = operationKey.length >= 8 && operationKey.length <= 200;
+    const validId = variableAction === "add_variable" ? id === null : isUuid(id);
+    const validFields = variableAction === "cancel_variable"
+      ? Boolean(reason == null || reason.trim().length <= 2000)
+      : name.length >= 1 && name.length <= 100 && category.length >= 1 && category.length <= 80
+        && (description === null || description.length <= 2000) && amountMinor !== null && currency !== null
+        && expenseDate !== null && competenceMonth !== null
+        && competenceMonth === `${expenseDate.slice(0, 7)}-01`
+        && (variableAction === "add_variable" || expectedUpdatedAt !== null);
+    if (!isUuid(access.sessionUserId)) {
+      return createZionAdminApiJsonResponse({ error: "Identidade administrativa inválida." }, 403);
+    }
+    if (!validCommon || !validId || !validFields) {
+      return createZionAdminApiJsonResponse({ error: "Dados da despesa variável inválidos." }, 400);
+    }
+    try {
+      const db = createServiceClient();
+      const { data, error } = await db.rpc("zion_admin_mutate_variable_expense", {
+        p_action: variableAction === "add_variable" ? "created" : variableAction === "edit_variable" ? "edited" : "cancelled",
+        p_operation_key: operationKey,
+        p_expense_id: id,
+        p_name: variableAction === "cancel_variable" ? null : name,
+        p_category: variableAction === "cancel_variable" ? null : category,
+        p_description: variableAction === "cancel_variable" ? null : description,
+        p_amount_minor: amountMinor,
+        p_currency: variableAction === "cancel_variable" ? null : currency,
+        p_expense_date: variableAction === "cancel_variable" ? null : expenseDate,
+        p_competence_month: variableAction === "cancel_variable" ? null : competenceMonth,
+        p_expected_updated_at: expectedUpdatedAt,
+        p_reason: reason,
+        p_actor_id: access.sessionUserId,
+      });
+      if (error) {
+        const [status, message] = mapVariableExpenseRpcError(error.message || "RPC_FAILED");
+        return createZionAdminApiJsonResponse({ error: message }, status);
+      }
+      return createZionAdminApiJsonResponse({ ok: true, ...(data && typeof data === "object" ? data : { result: data }) }, 200);
+    } catch {
+      return createZionAdminApiJsonResponse({ error: "Não foi possível confirmar a operação da despesa variável." }, 503);
+    }
+  }
   if (!["add", "edit", "remove", "close"].includes(action)) return createZionAdminApiJsonResponse({error:"Ação inválida."},400);
   try {
     const db = createServiceClient();
