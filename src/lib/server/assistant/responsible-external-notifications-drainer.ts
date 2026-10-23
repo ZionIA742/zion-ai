@@ -70,6 +70,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function isAutomaticReportSource(context: Record<string, unknown>) {
+  return [context.source, context.report_source].some(
+    (value) => normalizeText(value) === AUTOMATIC_REPORT_SOURCE,
+  );
+}
+
 function getSupabaseAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -109,7 +115,7 @@ export function isResponsibleOperationalApprovalAutoDrainCandidate(
   return Boolean(
     cleanText(row.channel) === RESPONSIBLE_CHANNEL &&
       AUTOMATIC_REPORT_TYPES.includes(reportType as (typeof AUTOMATIC_REPORT_TYPES)[number]) &&
-      normalizeText(context.source) === AUTOMATIC_REPORT_SOURCE &&
+      isAutomaticReportSource(context) &&
       normalizeText(context.report_type) === reportType &&
       cleanText(context.event_key) === `assistant-automatic-report:${cleanText(row.organization_id)}:${cleanText(row.store_id)}:${localDate}:${reportType}` &&
       localDate &&
@@ -122,7 +128,7 @@ function isAutomaticReportCandidate(row: ResponsibleOperationalApprovalOutboxRow
   const reportType = normalizeText(row.notification_type);
   return (
     AUTOMATIC_REPORT_TYPES.includes(reportType as (typeof AUTOMATIC_REPORT_TYPES)[number]) &&
-    normalizeText(context.source) === AUTOMATIC_REPORT_SOURCE
+    isAutomaticReportSource(context)
   );
 }
 
@@ -272,14 +278,14 @@ function isOperationalApprovalInternalNotification(
   );
 }
 
-function isAutomaticReportInternalNotification(
+export function isAutomaticReportInternalNotification(
   notification: OperationalApprovalInternalNotificationRow,
 ) {
   const context = isRecord(notification.context) ? notification.context : {};
   const notificationType = normalizeText(notification.notification_type);
   return Boolean(
     AUTOMATIC_REPORT_TYPES.includes(notificationType as (typeof AUTOMATIC_REPORT_TYPES)[number]) &&
-      normalizeText(context.source) === AUTOMATIC_REPORT_SOURCE &&
+      isAutomaticReportSource(context) &&
       normalizeText(context.report_type) === notificationType &&
       cleanText(context.event_key) &&
       cleanText(context.local_date) &&

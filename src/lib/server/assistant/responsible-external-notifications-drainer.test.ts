@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   drainResponsibleOperationalApprovalNotifications,
+  isAutomaticReportInternalNotification,
   isResponsibleOperationalApprovalAutoDrainCandidate,
 } from "./responsible-external-notifications-drainer";
 
@@ -10,6 +11,10 @@ type TestCase = {
   name: string;
   run: () => Promise<void> | void;
 };
+
+type InternalNotification = Parameters<typeof isAutomaticReportInternalNotification>[0];
+type OutboxCandidate = Parameters<typeof isResponsibleOperationalApprovalAutoDrainCandidate>[0];
+type DrainDependencies = Parameters<typeof drainResponsibleOperationalApprovalNotifications>[1];
 
 function candidate(overrides: Record<string, unknown> = {}) {
   return {
@@ -209,6 +214,67 @@ const tests: TestCase[] = [
         ),
         false,
       );
+    },
+  },
+  {
+    name: "canonical report_source accepts pending morning and evening reports",
+    run: async () => {
+      for (const reportType of ["morning_report", "evening_report"] as const) {
+        const context = {
+          report_source: "assistant_automatic_reports",
+          report_type: reportType,
+          local_date: "2026-10-23",
+          target_iso: "2026-10-23T11:00:00.000Z",
+          event_key: `assistant-automatic-report:org-1:store-1:2026-10-23:${reportType}`,
+        };
+        assert.equal(
+          isAutomaticReportInternalNotification({
+            id: "notification-1",
+            organization_id: "org-1",
+            store_id: "store-1",
+            notification_type: reportType,
+            priority: "normal",
+            status: "pending",
+            title: "Relatório",
+            body: "Resumo",
+            context,
+            related_lead_id: null,
+            related_conversation_id: null,
+            related_appointment_id: null,
+            created_at: "2026-10-23T10:58:00.000Z",
+          } as InternalNotification),
+          true,
+        );
+        const calls: string[] = [];
+        const result = await drainResponsibleOperationalApprovalNotifications(
+          { organizationId: "org-1", storeId: "store-1" },
+          successfulDeps([reportCandidate({ notification_type: reportType, context, created_at: "2026-10-23T10:58:00.000Z" })], calls) as DrainDependencies,
+        );
+        assert.equal(result.sent, 1);
+        assert.deepEqual(calls, ["materialize", "load", "prepare:external-1", "send:external-1"]);
+      }
+    },
+  },
+  {
+    name: "legacy source remains accepted while unknown source and types remain rejected",
+    run: () => {
+      assert.equal(isAutomaticReportInternalNotification({
+        id: "notification-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        notification_type: "morning_report",
+        priority: "normal",
+        status: "pending",
+        title: "Relatório",
+        body: "Resumo",
+        context: reportCandidate().context,
+        related_lead_id: null,
+        related_conversation_id: null,
+        related_appointment_id: null,
+        created_at: "2026-10-23T10:58:00.000Z",
+      } as InternalNotification), true);
+      assert.equal(isResponsibleOperationalApprovalAutoDrainCandidate(reportCandidate({ context: { report_source: "unknown", report_type: "morning_report", local_date: "2026-10-23", target_iso: "2026-10-23T11:00:00.000Z", event_key: "key" } }) as OutboxCandidate), false);
+      assert.equal(isResponsibleOperationalApprovalAutoDrainCandidate(reportCandidate({ notification_type: "other_report", context: { report_source: "assistant_automatic_reports", report_type: "other_report", local_date: "2026-10-23", target_iso: "2026-10-23T11:00:00.000Z", event_key: "key" } }) as OutboxCandidate), false);
     },
   },
   {
