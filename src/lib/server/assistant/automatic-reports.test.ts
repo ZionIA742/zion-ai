@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { buildAutomaticEveningReport, buildAutomaticMorningReport, processAutomaticAssistantReports, resolveAutomaticReportDue } from "./automatic-reports";
 
 const base = {
-  organization_id: "org-1", store_id: "store-1", timezone_name: "America/Sao_Paulo",
+  organization_id: "org-1", store_id: "11111111-1111-4111-8111-111111111112", timezone_name: "America/Sao_Paulo",
   operating_days: ["segunda", "terca", "quarta", "quinta", "sexta"],
   operating_hours: { segunda: { start: "08:00", end: "18:00" }, terca: { start: "08:00", end: "18:00" }, quarta: { start: "08:00", end: "18:00" }, quinta: { start: "08:00", end: "18:00" }, sexta: { start: "08:00", end: "18:00" } },
   ai_after_hours_enabled: true, ai_after_hours_mode: "all_closed_hours", ai_after_hours_configured_at: "2026-10-01T00:00:00Z", ai_attends_holidays: true, holiday_mode: "closed",
@@ -35,12 +35,14 @@ function createReportSupabaseMock(options: {
   failResult?: boolean;
   holidayBlocks?: unknown[];
   schedule?: Partial<typeof base>;
+  schedules?: Array<Partial<typeof base>>;
 } = {}) {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const inCalls: Array<{ column: string; values: unknown[] }> = [];
   const claims = [...(options.claims || [{ result: "claimed", claim_id: claimId, claim_token: claimToken, attempt_count: 1 }])];
-  const schedule = { ...base, ...options.schedule, ai_after_hours_mode: "all_closed_hours" };
-  const responseFor = (table: string) => table === "store_schedule_settings"
-    ? { data: [schedule], error: null }
+  const schedules = (options.schedules || [{ ...base, ...options.schedule }]).map((schedule) => ({ ...base, ...schedule, ai_after_hours_mode: "all_closed_hours" }));
+  const responseFor = (table: string, allowedStoreIds?: unknown[]) => table === "store_schedule_settings"
+    ? { data: allowedStoreIds ? schedules.filter((schedule) => allowedStoreIds.includes(schedule.store_id)) : schedules, error: null }
     : table === "store_schedule_blocks"
       ? { data: options.holidayBlocks || [], error: null }
     : table === "store_appointments"
@@ -48,7 +50,7 @@ function createReportSupabaseMock(options: {
       : { data: [], error: null };
   const supabase = {
     from(table: string) {
-      const response = responseFor(table);
+      let allowedStoreIds: unknown[] | undefined;
       const query = {
         select: () => query,
         eq: () => query,
@@ -56,8 +58,12 @@ function createReportSupabaseMock(options: {
         lte: () => query,
         gt: () => query,
         lt: () => query,
-        in: () => query,
-        then: (onfulfilled?: (value: typeof response) => unknown, onrejected?: (reason: unknown) => unknown) => Promise.resolve(response).then(onfulfilled, onrejected),
+        in: (column: string, values: unknown[]) => {
+          inCalls.push({ column, values });
+          if (table === "store_schedule_settings" && column === "store_id") allowedStoreIds = values;
+          return query;
+        },
+        then: (onfulfilled?: (value: ReturnType<typeof responseFor>) => unknown, onrejected?: (reason: unknown) => unknown) => Promise.resolve(responseFor(table, allowedStoreIds)).then(onfulfilled, onrejected),
       };
       return query;
     },
@@ -72,7 +78,7 @@ function createReportSupabaseMock(options: {
       throw new Error(`unexpected rpc ${name}`);
     },
   } as unknown as TestSupabase;
-  return { supabase, calls };
+  return { supabase, calls, inCalls };
 }
 
 const reportNow = new Date("2026-10-19T11:00:00Z");
@@ -84,7 +90,7 @@ async function runIntegrationTests() {
   assert.deepEqual(generated.calls.map((call) => call.name), ["assistant_claim_automatic_report", "assistant_materialize_automatic_report"]);
   assert.equal(generated.calls[0]?.args.p_report_type, "morning_report");
   assert.equal(generated.calls[1]?.args.p_report_type, "morning_report");
-  assert.equal((generated.calls[1]?.args.p_metadata as Record<string, unknown>).report_key, "assistant-automatic-report:org-1:store-1:2026-10-19:morning_report");
+  assert.equal((generated.calls[1]?.args.p_metadata as Record<string, unknown>).report_key, "assistant-automatic-report:org-1:11111111-1111-4111-8111-111111111112:2026-10-19:morning_report");
 
   const sunday = createReportSupabaseMock();
   const sundayResult = await processAutomaticAssistantReports({ now: new Date("2026-10-18T11:00:00Z"), supabase: sunday.supabase });
@@ -141,6 +147,7 @@ async function runIntegrationTests() {
 }
 
 const previousEnabledFlag = process.env.ASSISTANT_AUTOMATIC_REPORTS_ENABLED;
+const previousAllowedStoreIds = process.env.ASSISTANT_AUTOMATIC_REPORTS_ALLOWED_STORE_IDS;
 try {
   for (const value of [undefined, "false", "TRUE", "1"]) {
     if (value === undefined) delete process.env.ASSISTANT_AUTOMATIC_REPORTS_ENABLED;
@@ -155,12 +162,51 @@ try {
   }
 
   process.env.ASSISTANT_AUTOMATIC_REPORTS_ENABLED = "true";
+  delete process.env.ASSISTANT_AUTOMATIC_REPORTS_ALLOWED_STORE_IDS;
+  const missingAllowlist = createReportSupabaseMock();
+  assert.deepEqual(await processAutomaticAssistantReports({ now: reportNow, supabase: missingAllowlist.supabase }), {
+    ok: true, enabled: true, processed: 0, results: [],
+  });
+  assert.equal(missingAllowlist.inCalls.length, 0);
+
+  process.env.ASSISTANT_AUTOMATIC_REPORTS_ALLOWED_STORE_IDS = "  ";
+  const emptyAllowlist = createReportSupabaseMock();
+  assert.deepEqual(await processAutomaticAssistantReports({ now: reportNow, supabase: emptyAllowlist.supabase }), {
+    ok: true, enabled: true, processed: 0, results: [],
+  });
+  assert.equal(emptyAllowlist.inCalls.length, 0);
+
+  process.env.ASSISTANT_AUTOMATIC_REPORTS_ALLOWED_STORE_IDS = `${base.store_id},not-a-uuid`;
+  const invalidAllowlist = createReportSupabaseMock();
+  assert.deepEqual(await processAutomaticAssistantReports({ now: reportNow, supabase: invalidAllowlist.supabase }), {
+    ok: true, enabled: true, processed: 0, results: [],
+  });
+  assert.equal(invalidAllowlist.inCalls.length, 0);
+
+  process.env.ASSISTANT_AUTOMATIC_REPORTS_ALLOWED_STORE_IDS = base.store_id;
   await runIntegrationTests();
-  console.log(`automatic-reports: ${tests.length + 10}/${tests.length + 10} PASS`);
+
+  const nonAllowed = createReportSupabaseMock({ schedule: { store_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } });
+  assert.equal((await processAutomaticAssistantReports({ now: reportNow, supabase: nonAllowed.supabase })).processed, 0);
+  assert.equal(nonAllowed.calls.length, 0);
+
+  const selectedBeforeLimit = createReportSupabaseMock({ schedules: [
+    ...Array.from({ length: 100 }, (_, index) => ({ store_id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, "0")}` })),
+    { store_id: base.store_id },
+  ] });
+  const selectedBeforeLimitResult = await processAutomaticAssistantReports({ now: reportNow, supabase: selectedBeforeLimit.supabase });
+  assert.equal(selectedBeforeLimitResult.processed, 1);
+  assert.deepEqual(selectedBeforeLimit.inCalls[0], { column: "store_id", values: [base.store_id] });
+  console.log(`automatic-reports: ${tests.length + 16}/${tests.length + 16} PASS`);
 } finally {
   if (previousEnabledFlag === undefined) {
     delete process.env.ASSISTANT_AUTOMATIC_REPORTS_ENABLED;
   } else {
     process.env.ASSISTANT_AUTOMATIC_REPORTS_ENABLED = previousEnabledFlag;
+  }
+  if (previousAllowedStoreIds === undefined) {
+    delete process.env.ASSISTANT_AUTOMATIC_REPORTS_ALLOWED_STORE_IDS;
+  } else {
+    process.env.ASSISTANT_AUTOMATIC_REPORTS_ALLOWED_STORE_IDS = previousAllowedStoreIds;
   }
 }

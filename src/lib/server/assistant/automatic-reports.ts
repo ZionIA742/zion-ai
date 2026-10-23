@@ -63,6 +63,8 @@ type AutomaticReportClaimResult =
 
 const AUTOMATIC_REPORT_LEASE_SECONDS = 300;
 const AUTOMATIC_REPORTS_ENABLED_ENV = "ASSISTANT_AUTOMATIC_REPORTS_ENABLED";
+const AUTOMATIC_REPORTS_ALLOWED_STORE_IDS_ENV = "ASSISTANT_AUTOMATIC_REPORTS_ALLOWED_STORE_IDS";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DAY_KEYS = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
 const REPORT_DUE_WINDOW_MS = 2 * 60 * 1000;
@@ -71,6 +73,15 @@ export function isAutomaticAssistantReportsEnabled(
   value = process.env[AUTOMATIC_REPORTS_ENABLED_ENV],
 ) {
   return value === "true";
+}
+
+export function getAutomaticAssistantReportsAllowedStoreIds(
+  value = process.env[AUTOMATIC_REPORTS_ALLOWED_STORE_IDS_ENV],
+) {
+  if (!value || !value.trim()) return [];
+  const storeIds = value.split(",").map((item) => item.trim());
+  if (!storeIds.length || storeIds.some((storeId) => !UUID_PATTERN.test(storeId))) return [];
+  return Array.from(new Set(storeIds));
 }
 
 function cleanText(value: unknown) {
@@ -340,9 +351,19 @@ export async function processAutomaticAssistantReports(args: { now?: Date; limit
     };
   }
 
+  const allowedStoreIds = getAutomaticAssistantReportsAllowedStoreIds();
+  if (allowedStoreIds.length === 0) {
+    return {
+      ok: true as const,
+      enabled: true as const,
+      processed: 0,
+      results: [] as Array<Record<string, unknown>>,
+    };
+  }
+
   const supabase = args.supabase || getSupabaseAdmin();
   const now = args.now || new Date();
-  const { data, error } = await supabase.from("store_schedule_settings").select("organization_id, store_id, operating_days, operating_hours, timezone_name, holiday_mode, holiday_open_time, holiday_close_time, attends_holidays, ai_after_hours_enabled, ai_after_hours_mode, ai_after_hours_start, ai_after_hours_end, ai_attends_holidays, ai_after_hours_configured_at");
+  const { data, error } = await supabase.from("store_schedule_settings").select("organization_id, store_id, operating_days, operating_hours, timezone_name, holiday_mode, holiday_open_time, holiday_close_time, attends_holidays, ai_after_hours_enabled, ai_after_hours_mode, ai_after_hours_start, ai_after_hours_end, ai_attends_holidays, ai_after_hours_configured_at").in("store_id", allowedStoreIds);
   if (error) throw new Error(`AUTOMATIC_REPORT_SCHEDULE_LOAD_FAILED: ${error.message || "unknown"}`);
   const results: Array<Record<string, unknown>> = [];
   for (const settings of ((data || []) as AutomaticReportScheduleSettings[]).slice(0, args.limit || 100)) {
