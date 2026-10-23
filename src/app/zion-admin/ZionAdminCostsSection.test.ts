@@ -32,4 +32,17 @@ assert.equal(source.includes("Mensagens IA vendedora"), false);
 assert.equal(source.includes("Mensagens IA assistente"), false);
 assert.equal(source.includes("Consumo em dólares"), false);
 
+assert.equal(source.includes("Custos fixos"), true);
+assert.equal(source.includes("Custos variáveis"), true);
+assert.equal(source.includes("add_variable"), true);
+assert.equal(source.includes("edit_variable"), true);
+assert.equal(source.includes("cancel_variable"), true);
+assert.equal(source.includes("operationKey"), true);
+assert.equal(source.includes("expectedUpdatedAt"), true);
+assert.equal(source.includes("data.variableExpenses===null"), true);
+assert.equal(source.includes("Nenhuma despesa manual encontrada"), true);
+assert.equal(source.includes("O lançamento continuará disponível no histórico"), true);
+assert.equal(source.includes("Não entram automaticamente no total consolidado"), true);
+assert.equal(source.includes("IA variável"), true);
+
 console.log("zion-admin-costs-ui: consolidated total and availability tests passed");
