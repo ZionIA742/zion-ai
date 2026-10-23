@@ -766,7 +766,7 @@ function CostPeriodBlocks({
     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
       <DetailItem label="Hoje" value={formatAiCost(today, availability, todayCompleteness)} help="Gasto do dia atual" />
       <DetailItem
-        label="Semana"
+        label="Últimos 7 dias"
         value={formatAiCost(week, availability, weekCompleteness)}
         help="De segunda-feira até hoje"
       />
@@ -854,7 +854,7 @@ function TokenPeriodBlocks({
         help={`${formatAiTokens(todayPrompt, availability, todayCompleteness)} entrada · ${formatAiTokens(todayCompletion, availability, todayCompleteness)} saída`}
       />
       <DetailItem
-        label="Semana"
+        label="Últimos 7 dias"
         value={formatAiTokens(week, availability, weekCompleteness)}
         help={`${formatAiTokens(weekPrompt, availability, weekCompleteness)} entrada · ${formatAiTokens(weekCompletion, availability, weekCompleteness)} saída`}
       />
@@ -2770,7 +2770,7 @@ export function OverviewDetailsDrawer({
     pending: "Pendências gerais",
     compare: "Comparar lojas",
     conversations: "Conversas",
-    messages: "Mensagens",
+    messages: "Mensagens registradas",
     leads: "Leads",
     appointments: "Compromissos",
     assistant: "Assistente operacional",
@@ -2784,7 +2784,7 @@ export function OverviewDetailsDrawer({
     compare: "Comparação lado a lado entre duas lojas.",
     conversations:
       "Visão de conversas comerciais por loja quando houver base confiável.",
-    messages: "Mensagens comerciais por loja.",
+    messages: "Mensagens ativas registradas por loja.",
     leads: "Leads cadastrados por loja.",
     appointments: "Compromissos na agenda por loja.",
     assistant: "Uso da IA assistente operacional por loja.",
@@ -2883,7 +2883,7 @@ export function OverviewDetailsDrawer({
               <DetailItem
                 label="Custo total"
                 value={formatAiCost(selectedAiStore.totalCostUsd, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessTotal)}
-                help={`Hoje ${formatAiCost(selectedAiStore.costUsdToday, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessToday)} · semana ${formatAiCost(selectedAiStore.costUsdLast7Days, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessLast7Days)} · mês ${formatAiCost(selectedAiStore.costUsdMonth, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessMonth)}`}
+              help={`Hoje ${formatAiCost(selectedAiStore.costUsdToday, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessToday)} · últimos 7 dias ${formatAiCost(selectedAiStore.costUsdLast7Days, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessLast7Days)} · mês ${formatAiCost(selectedAiStore.costUsdMonth, getStoreAiAvailability(selectedAiStore, "runs"), selectedAiStore.costCompletenessMonth)}`}
               />
               <DetailItem
                 label="Tokens"
@@ -3153,7 +3153,7 @@ export function OverviewDetailsDrawer({
           : operational.details;
     } else if (type === "cost") {
       main = formatAiCost(store.totalCostUsd, getStoreAiAvailability(store, "runs"), store.costCompletenessTotal);
-      help = `Hoje ${formatAiCost(store.costUsdToday, getStoreAiAvailability(store, "runs"), store.costCompletenessToday)} · semana ${formatAiCost(store.costUsdLast7Days, getStoreAiAvailability(store, "runs"), store.costCompletenessLast7Days)} · mês ${formatAiCost(store.costUsdMonth, getStoreAiAvailability(store, "runs"), store.costCompletenessMonth)}`;
+      help = `Hoje ${formatAiCost(store.costUsdToday, getStoreAiAvailability(store, "runs"), store.costCompletenessToday)} · últimos 7 dias ${formatAiCost(store.costUsdLast7Days, getStoreAiAvailability(store, "runs"), store.costCompletenessLast7Days)} · mês ${formatAiCost(store.costUsdMonth, getStoreAiAvailability(store, "runs"), store.costCompletenessMonth)}`;
     } else if (type === "tokens") {
       main = formatAiTokens(store.totalTokens, getStoreAiAvailability(store, "runs"), store.tokenCompletenessTotal);
       help = `${formatAiTokens(store.totalTokensPrompt, getStoreAiAvailability(store, "runs"), store.tokenCompletenessTotal)} entrada · ${formatAiTokens(store.totalTokensCompletion, getStoreAiAvailability(store, "runs"), store.tokenCompletenessTotal)} saída`;
@@ -3165,7 +3165,7 @@ export function OverviewDetailsDrawer({
       help = `${formatOverviewMetric(store.totalLeads, getStoreCountAvailability(store, "leads"))} leads relacionados`;
     } else if (type === "leads") {
       main = `${formatOverviewMetric(store.totalLeads, getStoreCountAvailability(store, "leads"))} leads`;
-      help = `${formatOverviewMetric(store.totalMessages, getStoreCountAvailability(store, "messages"))} mensagens comerciais`;
+      help = `${formatOverviewMetric(store.totalMessages, getStoreCountAvailability(store, "messages"))} mensagens registradas`;
     } else if (type === "appointments") {
       main = `${formatOverviewMetric(store.totalAppointments, getStoreCountAvailability(store, "appointments"))} compromissos`;
       help = "Visitas, instalações, medições e outros agendamentos.";

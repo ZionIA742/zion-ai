@@ -15,6 +15,7 @@ import {
   mergeAiUsageCompleteness,
   toKnownNumber,
   updateAiUsageCompleteness,
+  getPeriodBoundaries,
 } from "./route";
 
 type TestCase = {
@@ -738,6 +739,38 @@ const tests: TestCase[] = [
         "no_runs",
       );
       assert.equal(consolidatedStores, "incomplete");
+    },
+  },
+  {
+    name: "last seven days uses today plus the previous six Sao Paulo dates",
+    run: () => {
+      const boundaries = getPeriodBoundaries(new Date("2026-10-23T15:00:00.000Z"));
+
+      assert.equal(boundaries.startOfLast7Days.toISOString(), "2026-10-17T03:00:00.000Z");
+      assert.equal(boundaries.startOfToday.toISOString(), "2026-10-23T03:00:00.000Z");
+      assert.equal(boundaries.startOfMonth.toISOString(), "2026-10-01T03:00:00.000Z");
+    },
+  },
+  {
+    name: "last seven days crosses week and month boundaries without becoming a weekly period",
+    run: () => {
+      const monday = getPeriodBoundaries(new Date("2026-11-02T12:00:00.000Z"));
+
+      assert.equal(monday.startOfLast7Days.toISOString(), "2026-10-27T03:00:00.000Z");
+      assert.equal(monday.startOfToday.toISOString(), "2026-11-02T03:00:00.000Z");
+      assert.equal(monday.startOfMonth.toISOString(), "2026-11-01T03:00:00.000Z");
+    },
+  },
+  {
+    name: "total messages follows the active messages source without an invented commercial filter",
+    run: () => {
+      const source = readSource(routePath);
+
+      assert.equal(source.includes('function getActiveMessagesExactCount('), true);
+      assert.equal(source.includes('.from("messages")'), true);
+      assert.equal(source.includes('.is("deleted_at", null)'), true);
+      assert.equal(source.includes('function loadActiveMessageRows('), true);
+      assert.equal(source.includes('loadActiveMessageRows(serviceSupabase)'), true);
     },
   },
 ];

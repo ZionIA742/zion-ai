@@ -497,6 +497,19 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "overview labels last seven days and all-message totals truthfully",
+    run: () => {
+      const source = readSource();
+
+      assert.equal(source.includes('label="Últimos 7 dias"'), true);
+      assert.equal(source.includes("· últimos 7 dias"), true);
+      assert.equal(source.includes('messages: "Mensagens registradas"'), true);
+      assert.equal(source.includes('messages: "Mensagens ativas registradas por loja."'), true);
+      assert.equal(source.includes("mensagens registradas`"), true);
+      assert.equal(source.includes("mensagens comerciais por loja"), false);
+    },
+  },
+  {
     name: "overview binds queue counts to queue availability and runs errors to ai runs",
     run: () => {
       const source = readSource();

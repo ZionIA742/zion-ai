@@ -951,30 +951,24 @@ function addDaysToSaoPauloDate(
   return getSaoPauloDateParts(date);
 }
 
-function getPeriodBoundaries() {
-  const nowParts = getSaoPauloDateParts(new Date());
+export function getPeriodBoundaries(now: Date = new Date()) {
+  const nowParts = getSaoPauloDateParts(now);
   const startOfToday = startOfSaoPauloDateUtc(
     nowParts.year,
     nowParts.month,
     nowParts.day,
   );
 
-  const noonForDay = new Date(
-    Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day, 12, 0, 0, 0),
-  );
-  const dayOfWeek = noonForDay.getUTCDay();
-  const mondayOffset = (dayOfWeek + 6) % 7;
-  const weekParts = addDaysToSaoPauloDate(
+  const last7DaysParts = addDaysToSaoPauloDate(
     nowParts.year,
     nowParts.month,
     nowParts.day,
-    -mondayOffset,
+    -6,
   );
-
   const startOfLast7Days = startOfSaoPauloDateUtc(
-    weekParts.year,
-    weekParts.month,
-    weekParts.day,
+    last7DaysParts.year,
+    last7DaysParts.month,
+    last7DaysParts.day,
   );
   const startOfMonth = startOfSaoPauloDateUtc(nowParts.year, nowParts.month, 1);
 
