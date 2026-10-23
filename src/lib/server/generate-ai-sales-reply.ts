@@ -1254,8 +1254,7 @@ const INTENT_RULES: Array<{
   {
     intent: "region",
     patterns: [
-      /\batende\b/i,
-      /\batendem\b/i,
+      /\batende(?:m)?\s+(?:em|na|no)\s+[a-z]/i,
       /\bminha cidade\b/i,
       /\bminha regiao\b/i,
       /\bminha região\b/i,
@@ -1945,7 +1944,7 @@ function includesAnyPattern(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
 
-function detectIntents(text: string): DetectedIntent[] {
+export function detectIntents(text: string): DetectedIntent[] {
   return INTENT_RULES
     .filter((rule) => includesAnyPattern(text, rule.patterns))
     .map((rule) => rule.intent);

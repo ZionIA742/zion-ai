@@ -434,11 +434,15 @@ function buildCustomerRescheduleMessage(args: {
   return `Oi, ${customerName}. Passando aqui porque preciso remarcar a sua ${appointmentTypeLabel}, que estava prevista para ${scheduledDate} às ${scheduledTime}. Me fala qual dia e horário ficam melhores para você que eu vou organizando por aqui.`;
 }
 
-async function sendAiMessageToCustomerConversation(args: {
+export async function sendAiMessageToCustomerConversation(args: {
   supabase: any;
+  organizationId?: string | null;
+  storeId?: string | null;
   conversationId: string;
   text: string;
   target: CommercialTargetForSideEffect | null;
+  panelHumanMessageId?: string | null;
+  effectKind?: string | null;
 }): Promise<SendAiMessageToCustomerConversationResult> {
   const conversationId = String(args.conversationId || '').trim();
   const text = String(args.text || '').trim();
@@ -458,6 +462,87 @@ async function sendAiMessageToCustomerConversation(args: {
 
   if (!text) {
     return { ok: false, error: 'TEXT_MISSING' };
+  }
+
+  const panelHumanMessageId = String(
+    args.panelHumanMessageId ||
+      (args.supabase as { __assistantPanelHumanMessageId?: unknown }).__assistantPanelHumanMessageId ||
+      '',
+  ).trim();
+  if (panelHumanMessageId) {
+    const organizationId = String(
+      args.organizationId ||
+        (args.supabase as { __assistantOrganizationId?: unknown }).__assistantOrganizationId ||
+        '',
+    ).trim();
+    const storeId = String(
+      args.storeId ||
+        (args.supabase as { __assistantStoreId?: unknown }).__assistantStoreId ||
+        '',
+    ).trim();
+    const effectKind = String(args.effectKind || '').trim();
+    if (!organizationId || !storeId || !effectKind) {
+      return { ok: false, error: 'PANEL_SEND_IDENTITY_INCOMPLETE' };
+    }
+
+    let canonicalTargetId = targetConversationId;
+    if (effectKind === 'block_day_customer_reschedule_notice') {
+      const appointmentId = String(args.target.appointmentId || '').trim();
+      if (!appointmentId) {
+        return { ok: false, error: 'PANEL_SEND_APPOINTMENT_ID_MISSING' };
+      }
+
+      const { data: appointment, error: appointmentError } = await args.supabase
+        .from('store_appointments')
+        .select('id, conversation_id')
+        .eq('id', appointmentId)
+        .eq('organization_id', organizationId)
+        .eq('store_id', storeId)
+        .maybeSingle();
+
+      if (appointmentError) {
+        return { ok: false, error: appointmentError.message };
+      }
+
+      if (
+        !appointment ||
+        String(appointment.id || '').trim() !== appointmentId ||
+        String(appointment.conversation_id || '').trim() !== conversationId
+      ) {
+        return { ok: false, error: 'PANEL_SEND_APPOINTMENT_SCOPE_MISMATCH' };
+      }
+
+      canonicalTargetId = appointmentId;
+    }
+
+    const { data, error } = await args.supabase.rpc('assistant_send_panel_customer_message_by_system', {
+      p_organization_id: organizationId,
+      p_store_id: storeId,
+      p_human_message_id: panelHumanMessageId,
+      p_conversation_id: conversationId,
+      p_effect_kind: effectKind,
+      p_canonical_target_id: canonicalTargetId,
+      p_text: text,
+      p_metadata: {
+        source: 'assistant.reply.route',
+        panel_human_message_id: panelHumanMessageId,
+        effect_kind: effectKind,
+        canonical_target_id: canonicalTargetId,
+      },
+    });
+
+    if (error) return { ok: false, error: error.message };
+
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row || typeof row !== 'object') {
+      return { ok: false, error: 'PANEL_SEND_RETURN_INVALID' };
+    }
+    const messageId = typeof row.message_id === 'string' ? row.message_id : null;
+    if (!messageId || typeof row.outbound_idempotency_key !== 'string' || typeof row.outbound_delivery_state !== 'string' || typeof row.replayed !== 'boolean') {
+      return { ok: false, error: 'PANEL_SEND_RETURN_INVALID' };
+    }
+
+    return { ok: true, messageId };
   }
 
   const { data, error } = await args.supabase.rpc('panel_send_message', {
@@ -784,6 +869,86 @@ function resolveSpecificScheduleQueryDateParts(text: string, now: Date) {
   if (!dateParts) return null;
 
   return dateParts;
+}
+
+function hasExplicitAppointmentAvailabilityCue(text: string) {
+  const t = normalizeText(text);
+  return hasAnyTerm(t, [
+    "compromisso",
+    "compromissos",
+    "agendamento",
+    "agendamentos",
+    "agenda",
+    "horario disponivel",
+    "horarios disponiveis",
+    "disponibilidade",
+    "agendar",
+    "marcar",
+  ]);
+}
+
+export function isStoreOpeningHoursQuery(text: string) {
+  const t = normalizeText(text);
+  if (!t || hasExplicitAppointmentAvailabilityCue(t)) return false;
+
+  return (
+    hasAnyTerm(t, [
+      "horario de funcionamento",
+      "horarios de funcionamento",
+      "horario de atendimento",
+      "horarios de atendimento",
+      "que horas a loja abre",
+      "que horas a loja fecha",
+      "que horas abre",
+      "que horas fecha",
+      "que horas fecham",
+      "que horas voces abre",
+      "que horas voces fecham",
+      "loja abre",
+      "loja fecha",
+      "funciona hoje",
+      "funciona amanha",
+      "funcionam hoje",
+      "funcionam amanha",
+      "atendem hoje",
+      "atendem amanha",
+    ]) ||
+    (hasAnyTerm(t, ["abre", "fecha", "funciona", "funcionam", "atendimento", "atendem"]) &&
+      Boolean(parseScheduleDateFromText(text, new Date())))
+  );
+}
+
+function getDayKeyFromDateParts(dateParts: { day: number; month: number; year: number }) {
+  const day = new Date(Date.UTC(dateParts.year, dateParts.month, dateParts.day)).getUTCDay();
+  return ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"][day];
+}
+
+export function buildStoreOpeningHoursReply(args: {
+  text: string;
+  now: Date;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+  holidayBlocks?: StoreScheduleBlockRow[];
+}) {
+  const settings = args.scheduleSettings || null;
+  const dateParts = parseScheduleDateFromText(args.text, args.now) ||
+    getLocalDatePartsForSchedule(settings, args.now);
+  const dateLabel = formatDatePartsForHuman(dateParts);
+  const dayKey = getDayKeyFromDateParts(dateParts);
+  const holiday = (args.holidayBlocks || []).some((block) => normalizeText(block.block_type) === "holiday");
+
+  if (holiday) return `No dia ${dateLabel}, a loja não tem atendimento presencial por causa do feriado.`;
+  if (!settings || !Array.isArray(settings.operating_days) || !settings.operating_hours) {
+    return `Não encontrei o horário de funcionamento da loja para ${dateLabel}.`;
+  }
+
+  const operatingDays = settings.operating_days.map((day) => normalizeText(day));
+  const hours = settings.operating_hours[dayKey];
+  if (!operatingDays.includes(dayKey) || !hours?.start || !hours?.end) {
+    return `No dia ${dateLabel}, não há horário de atendimento presencial configurado para a loja.`;
+  }
+
+  const timezone = getScheduleTimezone(settings);
+  return `No dia ${dateLabel}, a loja funciona das ${hours.start} às ${hours.end} (horário local: ${timezone}).`;
 }
 
 function shouldIncludeScheduleBlocksInSpecificDayQuery(text: string) {
@@ -1916,6 +2081,7 @@ async function resolvePostAppointmentActionReply(args: {
           reasonText: null,
         }),
         target: buildCommercialTargetFromAppointment(cancelledAppointment, "post_appointment_cancel_followup"),
+        effectKind: "post_appointment_cancel_followup",
       });
 
       if (sendResult.ok) {
@@ -3015,7 +3181,7 @@ async function startCustomerAppointmentCancelDecision(args: { supabase: any; org
   return prompt;
 }
 
-async function executeConfirmedCustomerAppointmentCancellation(args: { supabase: any; organizationId: string; storeId: string; threadId?: string | null; assistantContextState?: StoreAssistantContextStateRow | null; lastHumanMessage: string; appointment: AppointmentRow; scheduleSettings?: StoreScheduleSettingsRow | null; reasonText?: string | null; }) {
+async function executeConfirmedCustomerAppointmentCancellation(args: { supabase: any; organizationId: string; storeId: string; threadId?: string | null; assistantContextState?: StoreAssistantContextStateRow | null; lastHumanMessage: string; appointment: AppointmentRow; scheduleSettings?: StoreScheduleSettingsRow | null; reasonText?: string | null; panelHumanMessageId?: string | null; }) {
   const appointment = args.appointment;
   const targetAssertion = assertCommercialTargetForSideEffect({
     target: buildCommercialTargetFromAppointment(appointment, "confirmed_customer_appointment_cancellation"),
@@ -3035,6 +3201,10 @@ async function executeConfirmedCustomerAppointmentCancellation(args: { supabase:
       conversationId: appointment.conversation_id,
       text: buildCustomerCancellationMessage({ appointment, scheduleSettings: args.scheduleSettings || null, reasonText: args.reasonText || null }),
       target: buildCommercialTargetFromAppointment(appointment, "confirmed_customer_appointment_cancellation"),
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      panelHumanMessageId: args.panelHumanMessageId,
+      effectKind: "confirmed_customer_appointment_cancellation",
     });
     customerMessageSent = sendResult.ok;
     customerMessageError = sendResult.ok ? null : sendResult.error;
@@ -3182,6 +3352,7 @@ async function handlePendingCustomerCancelDecision(args: { supabase: any; organi
             conversationId: appointment.conversation_id,
             text: customerMessage,
             target: buildCommercialTargetFromAppointment(appointment, "pending_customer_cancel_decision_reschedule"),
+            effectKind: "pending_customer_cancel_decision_reschedule",
           });
           customerMessageSent = sendResult.ok;
         }
@@ -4608,6 +4779,7 @@ export async function resolveSuggestedTimeApprovalReply(args: { supabase: any; o
         conversationId: appointment.conversation_id,
         text: buildCustomerConfirmationTextForSuggestedTime({ appointment, suggestedStartIso, timezoneName }),
         target: appointmentTarget || taskTarget,
+        effectKind: "suggested_time_approval_customer_confirmation",
       })
     : null;
   if (!customerMessageResult?.ok) {
@@ -5457,6 +5629,7 @@ async function resolveCustomerAvailabilityRequestFromContext(args: {
         conversationId: appointment.conversation_id,
         text: customerMessage,
         target: buildCommercialTargetFromAppointment(appointment, "customer_availability_request"),
+        effectKind: "customer_availability_request",
       });
       customerMessageSent = sendResult.ok;
     }
@@ -5990,6 +6163,7 @@ export async function executeCreateAppointmentWithSafeIdentity(args: {
       conversationId: commercialConversationId,
       text: customerMessage,
       target: canonicalTarget,
+      effectKind: "appointment_create_with_customer",
     });
     const taskUpdate = await updateAssistantOperationalTaskAfterCustomerContact({
       supabase: args.supabase,
@@ -7043,6 +7217,7 @@ export async function resolveAppointmentActionReply(args: {
               conversationId: selectedAppointment.conversation_id,
               text: customerMessage,
               target: selectedAppointmentTarget,
+              effectKind: "selected_appointment_customer_availability",
             });
             customerMessageSent = sendResult.ok;
           }
@@ -7192,6 +7367,7 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
             conversationId: selectedAppointment.conversation_id,
             text: customerMessage,
             target: selectedAppointmentTarget,
+            effectKind: "selected_appointment_reschedule",
           });
 
       if (!sendResult.ok) {
@@ -9638,15 +9814,15 @@ export async function generateAssistantReply(params: {
       };
     }
 
-    const primaryResponsibleResult =
+    const primaryResponsibleLookup =
       await loadCanonicalActivePrimaryStoreResponsible({
         supabase,
         organizationId,
         storeId,
       });
 
-    const primaryResponsibleName = primaryResponsibleResult.ok
-      ? primaryResponsibleResult.responsible.name || ""
+    const primaryResponsibleName = primaryResponsibleLookup.ok
+      ? primaryResponsibleLookup.responsible.name || ""
       : "";
 
     const runtimeStoreContext = buildRuntimeStoreContext({
@@ -9712,6 +9888,7 @@ export async function generateAssistantReply(params: {
       supabase,
       organizationId,
       storeId,
+      panelHumanMessageId: params.panelHumanMessageId || null,
       recentMessages: recentMessages as Array<AssistantMessageRow & { metadata?: Record<string, unknown> | null }>,
       lastHumanMessage,
     });
@@ -9759,6 +9936,7 @@ export async function generateAssistantReply(params: {
       storeId,
       threadId: assistantThreadId,
       assistantContextState,
+      panelHumanMessageId: params.panelHumanMessageId || null,
       recentMessages: recentMessages as Array<AssistantMessageRow & { metadata?: Record<string, unknown> | null }>,
       lastHumanMessage,
     });
@@ -9817,6 +9995,32 @@ export async function generateAssistantReply(params: {
     const scheduleSettings = (scheduleSettingsData || null) as StoreScheduleSettingsRow | null;
     const now = new Date();
     const todayRange = buildStoreLocalDayRangeIso(scheduleSettings, now);
+    const storeOpeningHoursMode = isStoreOpeningHoursQuery(lastHumanMessage);
+    let storeOpeningHolidayBlocks: StoreScheduleBlockRow[] = [];
+
+    if (storeOpeningHoursMode) {
+      const openingDateParts = parseScheduleDateFromText(lastHumanMessage, now) || getLocalDatePartsForSchedule(scheduleSettings, now);
+      const openingDayRange = buildLocalDayQueryRange(openingDateParts, getScheduleTimezone(scheduleSettings));
+      const { data: openingHolidayBlocks, error: openingHolidayBlocksError } = await supabase
+        .from("store_schedule_blocks")
+        .select("id, title, block_type, start_at, end_at, source, notes")
+        .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
+        .eq("block_type", "holiday")
+        .lt("start_at", openingDayRange.endIso)
+        .gt("end_at", openingDayRange.startIso)
+        .limit(20);
+
+      if (openingHolidayBlocksError) {
+        return {
+          ok: false,
+          error: "LOAD_OPENING_HOLIDAY_BLOCKS_FAILED",
+          message: openingHolidayBlocksError.message,
+        };
+      }
+
+      storeOpeningHolidayBlocks = (openingHolidayBlocks || []) as StoreScheduleBlockRow[];
+    }
 
     const { data: todayAppointmentsData, error: todayAppointmentsError } = await supabase
       .from("store_appointments")
@@ -10269,6 +10473,13 @@ export async function generateAssistantReply(params: {
       aiText = customerAvailabilityContextReply;
     } else if (scheduleActionReply) {
       aiText = scheduleActionReply;
+    } else if (storeOpeningHoursMode) {
+      aiText = buildStoreOpeningHoursReply({
+        text: lastHumanMessage,
+        now,
+        scheduleSettings,
+        holidayBlocks: storeOpeningHolidayBlocks,
+      });
     } else if (specificDayScheduleMode && specificScheduleQueryDateParts) {
       aiText = buildDeterministicSpecificDayScheduleReply({
         dateParts: specificScheduleQueryDateParts,
@@ -11041,6 +11252,7 @@ async function resolveBlockDayReply(args: {
       conversationId,
       text: customerMessage,
       target: buildCommercialTargetFromAppointment(appointment, "block_day_customer_reschedule_notice"),
+      effectKind: "block_day_customer_reschedule_notice",
     });
 
     if (sendResult.ok) {

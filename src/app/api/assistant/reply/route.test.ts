@@ -414,6 +414,345 @@ function readProjectFile(relativePath: string) {
 
 const tests: TestCase[] = [
   {
+    name: "opening-hours questions use store schedule and do not enter appointment lookup",
+    run: async () => {
+      const { buildStoreOpeningHoursReply, isStoreOpeningHoursQuery } = await loadRouteModule();
+      const settings = {
+        operating_days: ["segunda", "terca", "quarta", "quinta", "sexta"],
+        operating_hours: { segunda: { start: "08:00", end: "18:00" }, terca: { start: "08:00", end: "18:00" }, quarta: { start: "08:00", end: "18:00" }, quinta: { start: "08:00", end: "18:00" }, sexta: { start: "08:00", end: "18:00" } },
+        timezone_name: "America/Sao_Paulo",
+      };
+      const now = new Date("2026-10-23T12:00:00.000Z");
+
+      for (const text of [
+        "Qual horário de atendimento da loja hoje?",
+        "Que horas a loja abre?",
+        "Que horas vocês fecham?",
+        "Vocês funcionam amanhã?",
+        "Qual o horário de funcionamento?",
+      ]) {
+        assert.equal(isStoreOpeningHoursQuery(text), true, text);
+      }
+
+      for (const text of [
+        "Tenho algum compromisso hoje?",
+        "Quais são meus agendamentos de hoje?",
+        "Tem horário disponível para agendar?",
+      ]) {
+        assert.equal(isStoreOpeningHoursQuery(text), false, text);
+      }
+
+      assert.match(
+        buildStoreOpeningHoursReply({ text: "Qual horário de atendimento da loja hoje?", now, scheduleSettings: settings }),
+        /08:00 às 18:00/,
+      );
+    },
+  },
+  {
+    name: "opening-hours reply fails closed for closed days, missing settings, timezone and holiday",
+    run: async () => {
+      const { buildStoreOpeningHoursReply } = await loadRouteModule();
+      const now = new Date("2026-10-24T12:00:00.000Z");
+      const settings = {
+        operating_days: ["segunda"],
+        operating_hours: { segunda: { start: "08:00", end: "18:00" }, sabado: { start: "09:00", end: "13:00" } },
+        timezone_name: "America/Sao_Paulo",
+      };
+      const closed = buildStoreOpeningHoursReply({ text: "Vocês funcionam hoje?", now, scheduleSettings: settings });
+      assert.match(closed, /não há horário de atendimento presencial/);
+
+      const missing = buildStoreOpeningHoursReply({ text: "Qual o horário de funcionamento?", now, scheduleSettings: null });
+      assert.match(missing, /Não encontrei o horário de funcionamento/);
+      const timezoneSettings = { ...settings, operating_days: ["sabado"] };
+      assert.match(
+        buildStoreOpeningHoursReply({ text: "Qual horario de atendimento da loja hoje?", now, scheduleSettings: timezoneSettings }),
+        /America\/Sao_Paulo/,
+      );
+
+      settings.operating_days = ["sabado"];
+      const holiday = buildStoreOpeningHoursReply({
+        text: "Qual horário de atendimento da loja hoje?",
+        now,
+        scheduleSettings: { ...settings, operating_days: ["sabado"] },
+        holidayBlocks: [{ id: "holiday-1", title: "Feriado", block_type: "holiday", start_at: "2026-10-24T00:00:00Z", end_at: "2026-10-25T00:00:00Z", source: "system", notes: null }],
+      });
+      assert.match(holiday, /feriado/);
+      assert.match(buildStoreOpeningHoursReply({ text: "Qual horário de atendimento da loja hoje?", now, scheduleSettings: { ...settings, timezone_name: "America/Sao_Paulo" } }), /America\/Sao_Paulo/);
+    },
+  },
+  {
+    name: "panel customer send replays through the planned RPC without fallback",
+    run: async () => {
+      const { sendAiMessageToCustomerConversation } = await loadRouteModule();
+      const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+      const result = await sendAiMessageToCustomerConversation({
+        supabase: {
+          rpc: async (name: string, args: Record<string, unknown>) => {
+            calls.push({ name, args });
+            return {
+              data: {
+                message_id: "message-1",
+                outbound_idempotency_key: "panel:human-1:effect-a:conversation-1",
+                outbound_delivery_state: "sent",
+                replayed: true,
+              },
+              error: null,
+            };
+          },
+        },
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conversation-1",
+        text: "Oi",
+        target: { source: "test", conversationId: "conversation-1" },
+        panelHumanMessageId: "human-1",
+        effectKind: "effect-a",
+      });
+
+      assert.deepEqual(result, { ok: true, messageId: "message-1" });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].name, "assistant_send_panel_customer_message_by_system");
+      assert.equal(calls[0].args.p_organization_id, "org-1");
+      assert.equal(calls[0].args.p_store_id, "store-1");
+      assert.equal(calls[0].args.p_conversation_id, "conversation-1");
+      assert.equal(calls[0].args.p_human_message_id, "human-1");
+      assert.equal(calls[0].args.p_effect_kind, "effect-a");
+      assert.equal(calls[0].args.p_canonical_target_id, "conversation-1");
+    },
+  },
+  {
+    name: "panel customer send keeps two legitimate effects distinct",
+    run: async () => {
+      const { sendAiMessageToCustomerConversation } = await loadRouteModule();
+      const effectKinds: unknown[] = [];
+      const supabase = {
+        rpc: async (_name: string, args: Record<string, unknown>) => {
+          effectKinds.push(args.p_effect_kind);
+          return {
+            data: {
+              message_id: `message-${String(args.p_effect_kind)}`,
+              outbound_idempotency_key: `key-${String(args.p_effect_kind)}`,
+              outbound_delivery_state: "queued",
+              replayed: false,
+            },
+            error: null,
+          };
+        },
+      };
+      const common = {
+        supabase,
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conversation-1",
+        text: "Oi",
+        target: { source: "test", conversationId: "conversation-1" },
+        panelHumanMessageId: "human-1",
+      };
+
+      await sendAiMessageToCustomerConversation({ ...common, effectKind: "appointment-create" });
+      await sendAiMessageToCustomerConversation({ ...common, effectKind: "appointment-reschedule" });
+      assert.deepEqual(effectKinds, ["appointment-create", "appointment-reschedule"]);
+    },
+  },
+  {
+    name: "panel block-day notices use distinct canonical appointment targets in one conversation",
+    run: async () => {
+      const { sendAiMessageToCustomerConversation } = await loadRouteModule();
+      const canonicalTargets: unknown[] = [];
+      const supabase = {
+        from: (table: string) => {
+          assert.equal(table, "store_appointments");
+          return {
+            select: () => ({
+              eq: (_column: string, value: string) => ({
+                eq: (_nextColumn: string, nextValue: string) => ({
+                  eq: (_lastColumn: string, lastValue: string) => ({
+                    maybeSingle: async () => ({
+                      data: {
+                        id: value,
+                        conversation_id: lastValue === "store-1" ? "conversation-1" : "conversation-1",
+                      },
+                      error: null,
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        },
+        rpc: async (_name: string, args: Record<string, unknown>) => {
+          canonicalTargets.push(args.p_canonical_target_id);
+          return {
+            data: {
+              message_id: `message-${String(args.p_canonical_target_id)}`,
+              outbound_idempotency_key: `key-${String(args.p_canonical_target_id)}`,
+              outbound_delivery_state: "queued",
+              replayed: false,
+            },
+            error: null,
+          };
+        },
+      };
+      const common = {
+        supabase,
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conversation-1",
+        text: "Aviso",
+        panelHumanMessageId: "human-1",
+        effectKind: "block_day_customer_reschedule_notice",
+      };
+
+      await sendAiMessageToCustomerConversation({
+        ...common,
+        target: { source: "test", conversationId: "conversation-1", appointmentId: "appointment-1" },
+      });
+      await sendAiMessageToCustomerConversation({
+        ...common,
+        target: { source: "test", conversationId: "conversation-1", appointmentId: "appointment-2" },
+      });
+
+      assert.deepEqual(canonicalTargets, ["appointment-1", "appointment-2"]);
+    },
+  },
+  {
+    name: "panel block-day replay keeps the same appointment canonical target",
+    run: async () => {
+      const { sendAiMessageToCustomerConversation } = await loadRouteModule();
+      const canonicalTargets: unknown[] = [];
+      const supabase = {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: { id: "appointment-1", conversation_id: "conversation-1" },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }),
+        rpc: async (_name: string, args: Record<string, unknown>) => {
+          canonicalTargets.push(args.p_canonical_target_id);
+          return {
+            data: {
+              message_id: "message-1",
+              outbound_idempotency_key: "same-key",
+              outbound_delivery_state: "sent",
+              replayed: canonicalTargets.length === 2,
+            },
+            error: null,
+          };
+        },
+      };
+      const input = {
+        supabase,
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conversation-1",
+        text: "Aviso",
+        target: { source: "test", conversationId: "conversation-1", appointmentId: "appointment-1" },
+        panelHumanMessageId: "human-1",
+        effectKind: "block_day_customer_reschedule_notice",
+      };
+
+      const first = await sendAiMessageToCustomerConversation(input);
+      const replay = await sendAiMessageToCustomerConversation(input);
+
+      assert.deepEqual(first, { ok: true, messageId: "message-1" });
+      assert.deepEqual(replay, { ok: true, messageId: "message-1" });
+      assert.deepEqual(canonicalTargets, ["appointment-1", "appointment-1"]);
+    },
+  },
+  {
+    name: "panel block-day rejects an appointment from another conversation",
+    run: async () => {
+      const { sendAiMessageToCustomerConversation } = await loadRouteModule();
+      const names: string[] = [];
+      const result = await sendAiMessageToCustomerConversation({
+        supabase: {
+          from: () => ({
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  eq: () => ({
+                    maybeSingle: async () => ({
+                      data: { id: "appointment-1", conversation_id: "conversation-other" },
+                      error: null,
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+          rpc: async (name: string) => {
+            names.push(name);
+            return { data: null, error: null };
+          },
+        },
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conversation-1",
+        text: "Aviso",
+        target: { source: "test", conversationId: "conversation-1", appointmentId: "appointment-1" },
+        panelHumanMessageId: "human-1",
+        effectKind: "block_day_customer_reschedule_notice",
+      });
+
+      assert.deepEqual(result, { ok: false, error: "PANEL_SEND_APPOINTMENT_SCOPE_MISMATCH" });
+      assert.deepEqual(names, []);
+    },
+  },
+  {
+    name: "panel RPC failure does not call legacy panel_send_message",
+    run: async () => {
+      const { sendAiMessageToCustomerConversation } = await loadRouteModule();
+      const names: string[] = [];
+      const result = await sendAiMessageToCustomerConversation({
+        supabase: {
+          rpc: async (name: string) => {
+            names.push(name);
+            return { data: null, error: { message: "planned RPC unavailable" } };
+          },
+        },
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conversation-1",
+        text: "Oi",
+        target: { source: "test", conversationId: "conversation-1" },
+        panelHumanMessageId: "human-1",
+        effectKind: "effect-a",
+      });
+
+      assert.deepEqual(result, { ok: false, error: "planned RPC unavailable" });
+      assert.deepEqual(names, ["assistant_send_panel_customer_message_by_system"]);
+    },
+  },
+  {
+    name: "legacy customer send still uses panel_send_message without panel origin",
+    run: async () => {
+      const { sendAiMessageToCustomerConversation } = await loadRouteModule();
+      const calls: string[] = [];
+      const result = await sendAiMessageToCustomerConversation({
+        supabase: {
+          rpc: async (name: string) => {
+            calls.push(name);
+            return { data: { id: "legacy-message" }, error: null };
+          },
+        },
+        conversationId: "conversation-1",
+        text: "Oi",
+        target: { source: "test", conversationId: "conversation-1" },
+      });
+
+      assert.deepEqual(result, { ok: true, messageId: "legacy-message" });
+      assert.deepEqual(calls, ["panel_send_message"]);
+    },
+  },
+  {
     name: "assistant runtime store block uses canonical settings context instead of onboarding answers for canonical fields",
     run: () => {
       const source = readRouteSource();

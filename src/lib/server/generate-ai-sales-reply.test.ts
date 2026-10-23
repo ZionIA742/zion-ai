@@ -11,6 +11,7 @@ import {
   buildCustomerCatalogDocumentActions,
   buildCanonicalTechnicalServicesPolicyPromptBlock,
   describeCanonicalKnownFact,
+  detectIntents,
   detectCustomerCatalogDocumentRequest,
   generateAiSalesReply,
   resolveCommercialMessageIntentSemantically,
@@ -2753,6 +2754,13 @@ test("customer geography asks city first for regional, visit, and installation i
     assert.equal(decision.askNow, true);
     assert.equal(decision.targetGroup, null);
   }
+});
+
+test("opening-hour wording is not misclassified as region while geographic service remains regional", () => {
+  assert.deepEqual(detectIntents("Qual horário vocês atendem?"), []);
+  assert.deepEqual(detectIntents("Vocês atendem hoje?"), []);
+  assert.equal(detectIntents("Vocês atendem em Sorocaba?").includes("region"), true);
+  assert.equal(detectIntents("Vocês fazem instalação na minha cidade?").includes("installation"), true);
 });
 
 test("generic opening does not ask geography when city and UF are absent", () => {
@@ -6017,10 +6025,6 @@ test("customer catalog system reader uses exact store scope and normalizes order
     {},
     {},
     {
-      read_store_discount_counterpart_policy_scoped: {
-        data: null,
-        error: null,
-      },
       read_store_customer_catalog_files_for_ai_by_system: {
         data: [
           {
