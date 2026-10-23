@@ -5,6 +5,7 @@ import {
   type StoreApiAccessResult,
 } from "@/lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
+import { createServiceSupabaseClient } from "@/lib/server/store-contract-templates/template-management";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,6 +16,7 @@ type ContractTemplateDownloadDeps = {
   resolveAccess: (args: {
     requirement: "active_or_onboarding";
   }) => Promise<StoreApiAccessResult>;
+  createServiceSupabase: typeof createServiceSupabaseClient;
 };
 
 type TemplateRow = {
@@ -61,6 +63,8 @@ export function createContractTemplateDownloadGetHandler(
   deps: Partial<ContractTemplateDownloadDeps> = {},
 ) {
   const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
+  const createServiceSupabase =
+    deps.createServiceSupabase ?? createServiceSupabaseClient;
 
   return async function GET(
     request: Request,
@@ -86,7 +90,12 @@ export function createContractTemplateDownloadGetHandler(
         return errorResponse(403, "STORE_FORBIDDEN", "Loja nao encontrada ou fora do escopo do usuario.");
       }
 
-      const { data: template, error: templateError } = await access.supabase
+      // The session client proves the requester identity and store scope. Contract
+      // tables are intentionally inaccessible to authenticated; read the scoped
+      // resource only through the server service client after that proof.
+      const supabase = createServiceSupabase();
+
+      const { data: template, error: templateError } = await supabase
         .from("store_contract_templates")
         .select("id, organization_id, store_id")
         .eq("organization_id", access.organizationId)
@@ -106,7 +115,7 @@ export function createContractTemplateDownloadGetHandler(
         return errorResponse(403, "CONTRACT_TEMPLATE_SCOPE_MISMATCH", "O modelo esta fora do escopo autorizado.");
       }
 
-      const { data: version, error: versionError } = await access.supabase
+      const { data: version, error: versionError } = await supabase
         .from("store_contract_template_versions")
         .select("id, template_id, organization_id, store_id, store_file_id, storage_bucket, storage_path, original_filename, mime_type")
         .eq("id", versionId)
@@ -133,7 +142,7 @@ export function createContractTemplateDownloadGetHandler(
         return errorResponse(422, "CONTRACT_TEMPLATE_FILE_MISSING", "Essa versao nao possui arquivo original armazenado.");
       }
 
-      const { data: storeFile, error: storeFileError } = await access.supabase
+      const { data: storeFile, error: storeFileError } = await supabase
         .from("store_files")
         .select("id, organization_id, store_id, file_kind, storage_bucket, storage_path, original_filename, mime_type")
         .eq("id", version.store_file_id)
@@ -158,7 +167,7 @@ export function createContractTemplateDownloadGetHandler(
         return errorResponse(403, "CONTRACT_TEMPLATE_FILE_SCOPE_MISMATCH", "O arquivo original esta fora do escopo autorizado.");
       }
 
-      const { data: signedData, error: signedError } = await access.supabase.storage
+      const { data: signedData, error: signedError } = await supabase.storage
         .from(storeFile.storage_bucket)
         .createSignedUrl(storeFile.storage_path, SIGNED_URL_EXPIRATION_SECONDS);
 

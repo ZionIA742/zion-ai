@@ -16,6 +16,14 @@ function granted(supabase: unknown) {
   };
 }
 
+function forbiddenSessionClient() {
+  return {
+    from() {
+      throw new Error("session client must not read contract tables");
+    },
+  };
+}
+
 function createFake(args: {
   version?: Version;
   file?: Version;
@@ -131,7 +139,8 @@ const tests = [
     run: async () => {
       const fake = createFake({});
       const response = await createContractTemplateDownloadGetHandler({
-        resolveAccess: async () => granted(fake.client),
+        resolveAccess: async () => granted(forbiddenSessionClient()),
+        createServiceSupabase: () => fake.client as never,
       })(request(), context());
       const body = await response.json();
       assert.equal(response.status, 200);
@@ -140,6 +149,26 @@ const tests = [
       assert.equal(body.expiresIn, 900);
       assert.equal(response.headers.get("Cache-Control"), "no-store");
       assert.deepEqual(fake.storageCalls, ["zion-store-files:org-1/store-1/file-1.pdf:900"]);
+    },
+  },
+  {
+    name: "active and candidate versions of the authorized store use the scoped service reader",
+    run: async () => {
+      for (const status of ["active", "uploaded"]) {
+        const fake = createFake({
+          version: {
+            id: "version-1", template_id: "template-1", organization_id: "org-1", store_id: "store-1",
+            status, store_file_id: "file-1", storage_bucket: "zion-store-files", storage_path: "org-1/store-1/file-1.pdf",
+            original_filename: "contrato.pdf", mime_type: "application/pdf",
+          },
+        });
+        const response = await createContractTemplateDownloadGetHandler({
+          resolveAccess: async () => granted(forbiddenSessionClient()),
+          createServiceSupabase: () => fake.client as never,
+        })(request(), context());
+        assert.equal(response.status, 200, `status ${status} must remain downloadable`);
+        assert.equal((await response.json()).ok, true);
+      }
     },
   },
   {
@@ -158,7 +187,8 @@ const tests = [
         },
       });
       const response = await createContractTemplateDownloadGetHandler({
-        resolveAccess: async () => granted(fake.client),
+        resolveAccess: async () => granted(forbiddenSessionClient()),
+        createServiceSupabase: () => fake.client as never,
       })(request(), context());
       const body = await response.json();
       assert.equal(response.status, 200);
@@ -172,12 +202,14 @@ const tests = [
       const foreign = createFake({});
       const foreignResponse = await createContractTemplateDownloadGetHandler({
         resolveAccess: async () => granted(foreign.client),
+        createServiceSupabase: () => foreign.client as never,
       })(request("store-foreign"), context());
       assert.equal(foreignResponse.status, 403);
 
       const missingVersion = createFake({ version: null });
       const missingVersionResponse = await createContractTemplateDownloadGetHandler({
-        resolveAccess: async () => granted(missingVersion.client),
+        resolveAccess: async () => granted(forbiddenSessionClient()),
+        createServiceSupabase: () => missingVersion.client as never,
       })(request(), context());
       assert.equal(missingVersionResponse.status, 404);
 
@@ -188,7 +220,8 @@ const tests = [
         },
       });
       const noFileResponse = await createContractTemplateDownloadGetHandler({
-        resolveAccess: async () => granted(noFile.client),
+        resolveAccess: async () => granted(forbiddenSessionClient()),
+        createServiceSupabase: () => noFile.client as never,
       })(request(), context());
       assert.equal(noFileResponse.status, 422);
     },
@@ -203,14 +236,16 @@ const tests = [
         },
       });
       const mismatchResponse = await createContractTemplateDownloadGetHandler({
-        resolveAccess: async () => granted(mismatch.client),
+        resolveAccess: async () => granted(forbiddenSessionClient()),
+        createServiceSupabase: () => mismatch.client as never,
       })(request(), context());
       assert.equal(mismatchResponse.status, 403);
       assert.equal(mismatch.storageCalls.length, 0);
 
       const storageFailure = createFake({ signedUrl: null });
       const storageResponse = await createContractTemplateDownloadGetHandler({
-        resolveAccess: async () => granted(storageFailure.client),
+        resolveAccess: async () => granted(forbiddenSessionClient()),
+        createServiceSupabase: () => storageFailure.client as never,
       })(request(), context());
       assert.equal(storageResponse.status, 500);
       assert.equal(storageFailure.storageCalls.length, 1);
