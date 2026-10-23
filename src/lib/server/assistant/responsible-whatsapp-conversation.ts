@@ -11,12 +11,43 @@ import type { QuoteApprovalDecisionResult } from "@/lib/server/sales-quotes/quot
 
 type ResponsibleWhatsappEvent = {
   id: string;
+  organization_id?: string | null;
+  store_id?: string | null;
+  responsible_id?: string | null;
+  destination?: string | null;
+  external_message_id?: string | null;
   status: string;
   claim_token: string | null;
   inbound_message_id?: string | null;
   assistant_message_id?: string | null;
   attempts?: number | null;
+  max_attempts?: number | null;
   outbound_status?: string | null;
+  outbound_started_at?: string | null;
+  external_response_id?: string | null;
+  error_text?: string | null;
+  created_at?: string | null;
+};
+
+type PersistedInboundMessage = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  thread_id: string | null;
+  content: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+const RESPONSIBLE_EVENT_RECOVERY_MAX_AGE_MS = 23 * 60 * 60 * 1000;
+const RESPONSIBLE_EVENT_RECOVERY_MAX_LIMIT = 10;
+
+export type PersistedResponsibleWhatsappEventResumeResult =
+  | { status: "resumed"; eventId: string }
+  | { status: "skipped"; eventId: string; reason: string };
+
+type ResumePersistedResponsibleWhatsappEventDeps = {
+  loadResponsible: typeof loadCanonicalActivePrimaryStoreResponsible;
+  resumeRoute: typeof routeResponsibleWhatsappToAssistant;
 };
 
 type ResponsibleWhatsappMedia = {
@@ -160,6 +191,239 @@ export async function recoverStaleResponsibleWhatsappEvents(args: {
     status: "received" | "uncertain" | "failed";
     action: string;
   }>;
+}
+
+async function loadPersistedResponsibleWhatsappEvent(args: {
+  supabase: SupabaseClient;
+  eventId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_responsible_whatsapp_events")
+    .select("id, organization_id, store_id, responsible_id, destination, external_message_id, status, claim_token, inbound_message_id, assistant_message_id, attempts, max_attempts, outbound_status, outbound_started_at, external_response_id, error_text, created_at")
+    .eq("id", args.eventId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data || null) as ResponsibleWhatsappEvent | null;
+}
+
+async function loadPersistedResponsibleWhatsappInbound(args: {
+  supabase: SupabaseClient;
+  event: ResponsibleWhatsappEvent;
+  organizationId: string;
+  storeId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_messages")
+    .select("id, organization_id, store_id, thread_id, content, metadata")
+    .eq("id", args.event.inbound_message_id || "")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("sender_role", "store_responsible")
+    .eq("direction", "incoming")
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data || null) as PersistedInboundMessage | null;
+}
+
+async function hasPersistedResponsibleWhatsappReply(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  threadId: string;
+  externalMessageId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_messages")
+    .select("id")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("thread_id", args.threadId)
+    .in("sender_role", ["assistant", "assistant_operational"])
+    .contains("metadata", { source_external_message_id: args.externalMessageId })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return Boolean(data?.id);
+}
+
+function recoverySkip(eventId: string, reason: string): PersistedResponsibleWhatsappEventResumeResult {
+  return { status: "skipped", eventId, reason };
+}
+
+export async function resumePersistedResponsibleWhatsappEvent(args: {
+  supabase?: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  eventId: string;
+  now?: Date;
+  deps?: Partial<ResumePersistedResponsibleWhatsappEventDeps>;
+}): Promise<PersistedResponsibleWhatsappEventResumeResult> {
+  const organizationId = clean(args.organizationId);
+  const storeId = clean(args.storeId);
+  const eventId = clean(args.eventId);
+  const now = args.now || new Date();
+  const supabase = args.supabase || getSupabaseAdmin();
+
+  if (!organizationId || !storeId || !eventId || Number.isNaN(now.getTime())) {
+    throw new Error("INVALID_RESPONSIBLE_ASSISTANT_RECOVERY_INPUT");
+  }
+
+  const event = await loadPersistedResponsibleWhatsappEvent({ supabase, eventId });
+  if (!event) return recoverySkip(eventId, "event_not_found");
+  if (event.organization_id !== organizationId || event.store_id !== storeId) {
+    return recoverySkip(event.id, "event_scope_mismatch");
+  }
+  if (event.status !== "received") return recoverySkip(event.id, "event_not_received");
+
+  const attempts = Number(event.attempts || 0);
+  const maxAttempts = Number(event.max_attempts || 3);
+  if (!Number.isInteger(attempts) || !Number.isInteger(maxAttempts) || attempts < 0 || maxAttempts < 1 || attempts >= maxAttempts) {
+    return recoverySkip(event.id, "attempt_limit_reached");
+  }
+  if (!clean(event.error_text)) return recoverySkip(event.id, "recovery_error_missing");
+  if (
+    clean(event.assistant_message_id) ||
+    clean(event.external_response_id) ||
+    clean(event.outbound_started_at) ||
+    !["", "failed"].includes(clean(event.outbound_status).toLowerCase())
+  ) {
+    return recoverySkip(event.id, "outbound_or_reply_already_started");
+  }
+
+  const createdAt = new Date(String(event.created_at || ""));
+  if (
+    Number.isNaN(createdAt.getTime()) ||
+    createdAt.getTime() > now.getTime() ||
+    now.getTime() - createdAt.getTime() > RESPONSIBLE_EVENT_RECOVERY_MAX_AGE_MS
+  ) {
+    return recoverySkip(event.id, "recovery_window_expired");
+  }
+
+  const externalMessageId = clean(event.external_message_id);
+  const responsibleId = clean(event.responsible_id);
+  if (!externalMessageId || !responsibleId || !clean(event.inbound_message_id)) {
+    return recoverySkip(event.id, "event_identity_incomplete");
+  }
+
+  const inbound = await loadPersistedResponsibleWhatsappInbound({
+    supabase,
+    event,
+    organizationId,
+    storeId,
+  });
+  const metadata = inbound?.metadata || {};
+  if (
+    !inbound?.thread_id ||
+    clean(metadata.origin) !== "whatsapp" ||
+    clean(metadata.external_message_id) !== externalMessageId ||
+    clean(metadata.responsible_id) !== responsibleId ||
+    !clean(inbound.content)
+  ) {
+    return recoverySkip(event.id, "persisted_inbound_mismatch");
+  }
+
+  if (await hasPersistedResponsibleWhatsappReply({
+    supabase,
+    organizationId,
+    storeId,
+    threadId: inbound.thread_id,
+    externalMessageId,
+  })) {
+    return recoverySkip(event.id, "assistant_reply_already_persisted");
+  }
+
+  const loadResponsible = args.deps?.loadResponsible ?? loadCanonicalActivePrimaryStoreResponsible;
+  const responsible = await loadResponsible({ supabase, organizationId, storeId });
+  if (
+    !responsible.ok ||
+    responsible.responsible.id !== responsibleId ||
+    clean(responsible.responsible.whatsappNumber) !== clean(event.destination)
+  ) {
+    return recoverySkip(event.id, "responsible_scope_mismatch");
+  }
+
+  const resumeRoute = args.deps?.resumeRoute ?? routeResponsibleWhatsappToAssistant;
+  const result = await resumeRoute({
+    supabase,
+    organizationId,
+    storeId,
+    responsibleId,
+    externalMessageId,
+    fromPhone: clean(metadata.from_phone),
+    phoneNumberId: clean(metadata.phone_number_id),
+    content: clean(inbound.content),
+    messageType: "text",
+    metadata: {
+      origin: "whatsapp",
+      channel: "whatsapp",
+      responsible_id: responsibleId,
+      external_message_id: externalMessageId,
+    },
+  });
+
+  if (result.duplicate) return recoverySkip(event.id, "claim_not_acquired");
+  return { status: "resumed", eventId: event.id };
+}
+
+export async function resumeEligiblePersistedResponsibleWhatsappEvents(args: {
+  supabase?: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  limit?: number;
+  now?: Date;
+}) {
+  const organizationId = clean(args.organizationId);
+  const storeId = clean(args.storeId);
+  const now = args.now || new Date();
+  const supabase = args.supabase || getSupabaseAdmin();
+  const limit = Math.max(1, Math.min(Number(args.limit || RESPONSIBLE_EVENT_RECOVERY_MAX_LIMIT), RESPONSIBLE_EVENT_RECOVERY_MAX_LIMIT));
+  const cutoff = new Date(now.getTime() - RESPONSIBLE_EVENT_RECOVERY_MAX_AGE_MS).toISOString();
+
+  const { data, error } = await supabase
+    .from("store_assistant_responsible_whatsapp_events")
+    .select("id")
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .eq("status", "received")
+    .not("error_text", "is", null)
+    .not("inbound_message_id", "is", null)
+    .is("assistant_message_id", null)
+    .is("outbound_started_at", null)
+    .is("external_response_id", null)
+    .or("outbound_status.is.null,outbound_status.eq.failed")
+    .gte("created_at", cutoff)
+    .order("created_at", { ascending: true })
+    .limit(limit);
+  if (error) throw new Error(`RESPONSIBLE_ASSISTANT_RECOVERY_CANDIDATES_FAILED: ${error.message}`);
+
+  const results: Array<PersistedResponsibleWhatsappEventResumeResult | { status: "failed"; eventId: string; reason: string }> = [];
+  for (const row of (data || []) as Array<{ id?: string | null }>) {
+    const eventId = clean(row.id);
+    if (!eventId) continue;
+    try {
+      results.push(await resumePersistedResponsibleWhatsappEvent({
+        supabase,
+        organizationId,
+        storeId,
+        eventId,
+        now,
+      }));
+    } catch (error) {
+      results.push({
+        status: "failed",
+        eventId,
+        reason: error instanceof Error ? error.message : "responsible_assistant_recovery_failed",
+      });
+    }
+  }
+
+  return {
+    scanned: results.length,
+    resumed: results.filter((result) => result.status === "resumed").length,
+    skipped: results.filter((result) => result.status === "skipped").length,
+    failed: results.filter((result) => result.status === "failed").length,
+    results,
+  };
 }
 
 export async function routeResponsibleWhatsappToAssistant(args: {

@@ -1,6 +1,166 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { resumePersistedResponsibleWhatsappEvent } from "./responsible-whatsapp-conversation";
+
+const recoveryNow = new Date("2026-10-23T11:00:00.000Z");
+
+function createResumeHarness(overrides: {
+  event?: Record<string, unknown>;
+  inbound?: Record<string, unknown> | null;
+  reply?: Record<string, unknown> | null;
+} = {}) {
+  const event = {
+    id: "event-1",
+    organization_id: "org-1",
+    store_id: "store-1",
+    responsible_id: "responsible-1",
+    destination: "5511999999999",
+    external_message_id: "wamid.resume-1",
+    status: "received",
+    claim_token: null,
+    inbound_message_id: "inbound-1",
+    assistant_message_id: null,
+    attempts: 1,
+    max_attempts: 3,
+    outbound_status: "failed",
+    outbound_started_at: null,
+    external_response_id: null,
+    error_text: "READ_STORE_SETTINGS_FAILED",
+    created_at: "2026-10-23T10:00:00.000Z",
+    ...overrides.event,
+  };
+  const inbound = overrides.inbound === undefined
+    ? {
+        id: "inbound-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        thread_id: "thread-1",
+        content: "O que temos pra hoje?",
+        metadata: {
+          origin: "whatsapp",
+          external_message_id: "wamid.resume-1",
+          responsible_id: "responsible-1",
+          from_phone: "5511999999999",
+          phone_number_id: "phone-1",
+        },
+      }
+    : overrides.inbound;
+  const reply = overrides.reply === undefined ? null : overrides.reply;
+
+  const supabase = {
+    from(table: string) {
+      const filters: Record<string, unknown> = {};
+      let senderRoles: unknown[] | null = null;
+      const chain = {
+        select() { return chain; },
+        eq(column: string, value: unknown) { filters[column] = value; return chain; },
+        in(_column: string, values: unknown[]) { senderRoles = values; return chain; },
+        contains() { return chain; },
+        limit() { return chain; },
+        async maybeSingle() {
+          if (table === "store_assistant_responsible_whatsapp_events") {
+            return { data: event, error: null };
+          }
+          if (table === "store_assistant_messages" && filters.id) {
+            return { data: inbound, error: null };
+          }
+          if (table === "store_assistant_messages" && senderRoles) {
+            return { data: reply, error: null };
+          }
+          return { data: null, error: null };
+        },
+      };
+      return chain;
+    },
+  };
+
+  return { supabase, event, inbound };
+}
+
+async function resumeWithHarness(
+  harness: ReturnType<typeof createResumeHarness>,
+  resumeRoute: (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
+) {
+  return resumePersistedResponsibleWhatsappEvent({
+    supabase: harness.supabase as never,
+    organizationId: "org-1",
+    storeId: "store-1",
+    eventId: "event-1",
+    now: recoveryNow,
+    deps: {
+      loadResponsible: async () => ({
+        ok: true as const,
+        responsible: { id: "responsible-1", whatsappNumber: "5511999999999" },
+      }) as never,
+      resumeRoute: resumeRoute as never,
+    },
+  });
+}
+
+test("persisted responsible WhatsApp recovery reuses only the inbound and does not invoke commercial work", async () => {
+  const harness = createResumeHarness();
+  const routeInputs: Record<string, unknown>[] = [];
+  const result = await resumeWithHarness(harness, async (input) => {
+    routeInputs.push(input);
+    return { handled: true, duplicate: false, status: "sent" };
+  });
+
+  assert.deepEqual(result, { status: "resumed", eventId: "event-1" });
+  assert.equal(routeInputs[0]?.externalMessageId, "wamid.resume-1");
+  assert.equal("onInboundPersisted" in (routeInputs[0] || {}), false);
+});
+
+test("persisted responsible WhatsApp recovery fails closed for scope, replies, attempts, outbound and age", async () => {
+  const cases = [
+    createResumeHarness({ event: { store_id: "store-foreign" } }),
+    createResumeHarness({ reply: { id: "assistant-1" } }),
+    createResumeHarness({ inbound: null }),
+    createResumeHarness({ event: { attempts: 3, max_attempts: 3 } }),
+    createResumeHarness({ event: { outbound_status: "sending", outbound_started_at: "2026-10-23T10:01:00.000Z" } }),
+    createResumeHarness({ event: { outbound_status: "uncertain" } }),
+    createResumeHarness({ event: { created_at: "2026-10-22T10:00:00.000Z" } }),
+  ];
+  let routeCalls = 0;
+  for (const harness of cases) {
+    const result = await resumeWithHarness(harness, async () => {
+      routeCalls += 1;
+      return { handled: true, duplicate: false, status: "sent" };
+    });
+    assert.equal(result.status, "skipped");
+  }
+  assert.equal(routeCalls, 0);
+});
+
+test("persisted responsible WhatsApp recovery respects a concurrent claim", async () => {
+  const result = await resumeWithHarness(createResumeHarness(), async () => ({
+    handled: true,
+    duplicate: true,
+    status: "processing",
+  }));
+  assert.deepEqual(result, { status: "skipped", eventId: "event-1", reason: "claim_not_acquired" });
+});
+
+test("assistant recovery cron selects only recent failed received events and never reopens the inbox", () => {
+  const bridge = readFileSync(
+    "src/lib/server/assistant/responsible-whatsapp-conversation.ts",
+    "utf8",
+  );
+  const cron = readFileSync(
+    "src/app/api/cron/whatsapp-process-all/route.ts",
+    "utf8",
+  );
+
+  assert.match(bridge, /\.eq\("status", "received"\)/);
+  assert.match(bridge, /\.not\("error_text", "is", null\)/);
+  assert.match(bridge, /\.not\("inbound_message_id", "is", null\)/);
+  assert.match(bridge, /\.is\("assistant_message_id", null\)/);
+  assert.match(bridge, /\.is\("outbound_started_at", null\)/);
+  assert.match(bridge, /\.gte\("created_at", cutoff\)/);
+  assert.match(cron, /resumeEligiblePersistedResponsibleWhatsappEvents/);
+  assert.doesNotMatch(cron, /recoverStaleResponsibleWhatsappEvents/);
+  assert.doesNotMatch(cron, /responsibleInboundRecovery/);
+});
 
 test("responsible WhatsApp bridge accepts real Meta wamid punctuation", () => {
   const source = readFileSync(

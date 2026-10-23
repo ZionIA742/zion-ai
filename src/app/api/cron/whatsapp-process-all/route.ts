@@ -5,7 +5,7 @@ import { processWhatsappPendingMessages } from "@/lib/server/whatsapp-external-s
 import { processDueAiRunQueue } from "@/lib/server/process-ai-run-queue";
 import { processPostTechnicalVisitFollowups } from "@/lib/server/post-technical-visit-followups";
 import { drainResponsibleOperationalApprovalNotifications } from "@/lib/server/assistant/responsible-external-notifications-drainer";
-import { recoverStaleResponsibleWhatsappEvents } from "@/lib/server/assistant/responsible-whatsapp-conversation";
+import { resumeEligiblePersistedResponsibleWhatsappEvents } from "@/lib/server/assistant/responsible-whatsapp-conversation";
 import { getWhatsappProcessAllHttpStatus } from "@/lib/server/whatsapp-process-all-status";
 
 export const runtime = "nodejs";
@@ -25,9 +25,10 @@ type StoreExecutionSummary = {
     failed: number;
     skipped: number;
   };
-  responsibleInboundRecovery?: {
-    recovered: number;
-    uncertain: number;
+  responsibleAssistantRecovery?: {
+    scanned: number;
+    resumed: number;
+    skipped: number;
     failed: number;
   };
   pending?: {
@@ -221,26 +222,11 @@ export async function GET(req: Request) {
           requireClaim: true,
         });
 
-        const recoveredResponsibleEvents = await recoverStaleResponsibleWhatsappEvents({
+        const responsibleAssistantRecovery = await resumeEligiblePersistedResponsibleWhatsappEvents({
           organizationId: store.organizationId,
           storeId: store.storeId,
-          limit: inboxLimit,
+          limit: Math.min(inboxLimit, 10),
         });
-
-        const responsibleInboundRecovery = {
-          recovered: recoveredResponsibleEvents.filter((item) => item.status === "received").length,
-          uncertain: recoveredResponsibleEvents.filter((item) => item.status === "uncertain").length,
-          failed: recoveredResponsibleEvents.filter((item) => item.status === "failed").length,
-        };
-
-        if (responsibleInboundRecovery.recovered > 0) {
-          await processWhatsappInbox({
-            organizationId: store.organizationId,
-            storeId: store.storeId,
-            limit: responsibleInboundRecovery.recovered,
-            requireClaim: true,
-          });
-        }
 
         const postAppointmentFollowupResult = await processPostTechnicalVisitFollowups({
           organizationId: store.organizationId,
@@ -290,7 +276,7 @@ export async function GET(req: Request) {
             failed: inboxResult.failed,
             skipped: inboxResult.skipped,
           },
-          responsibleInboundRecovery,
+          responsibleAssistantRecovery,
           pending: {
             processed: pendingResult.processed,
             sent: pendingResult.sent,

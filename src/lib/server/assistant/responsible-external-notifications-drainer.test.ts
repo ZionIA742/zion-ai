@@ -134,8 +134,9 @@ const tests: TestCase[] = [
       assert.ok(p9Index > inboxIndex);
       assert.ok(approvalIndex > p9Index);
       assert.ok(pendingIndex > approvalIndex);
-      assert.match(source, /recoverStaleResponsibleWhatsappEvents/);
-      assert.match(source, /responsibleInboundRecovery/);
+      assert.match(source, /resumeEligiblePersistedResponsibleWhatsappEvents/);
+      assert.match(source, /responsibleAssistantRecovery/);
+      assert.doesNotMatch(source, /recoverStaleResponsibleWhatsappEvents/);
     },
   },
   {
