@@ -30,6 +30,7 @@ import {
   buildStoreAddressText,
   type StoreGeneralAddressLike,
 } from "@/lib/google-maps-route";
+import { chooseContractPreviewTarget } from "./contract-panel-preview";
 
 type Lead = {
   id: string;
@@ -1503,6 +1504,7 @@ export default function LeadPage() {
   const [generatedContractsError, setGeneratedContractsError] = useState<string | null>(null);
   const [openingGeneratedContractId, setOpeningGeneratedContractId] = useState<string | null>(null);
   const [contractPreview, setContractPreview] = useState<{
+    kind: "contract" | "template";
     contractId: string;
     signedUrl: string;
   } | null>(null);
@@ -1521,6 +1523,8 @@ export default function LeadPage() {
   const documentScopeRef = useRef<string | null>(null);
   const paymentScopeRef = useRef<string | null>(null);
   const quoteEditScopeRef = useRef<string | null>(null);
+  const automaticContractPreviewRef = useRef<string | null>(null);
+  const loadedContractDataScopeRef = useRef<string | null>(null);
   const manualSendInFlightRef = useRef(false);
   const simulatedCustomerSubmitInFlightRef = useRef(false);
   const simulatedCustomerMutationInFlightRef = useRef(false);
@@ -2993,6 +2997,7 @@ export default function LeadPage() {
       }
 
       setGeneratedContracts(Array.isArray(result.contracts) ? result.contracts : []);
+      loadedContractDataScopeRef.current = scopedDocumentKey;
       setHasLoadedGeneratedContracts(true);
     } catch (error: any) {
       if (documentScopeRef.current !== scopedDocumentKey) {
@@ -3050,6 +3055,7 @@ export default function LeadPage() {
       }
 
       setContractTemplateSource(result);
+      loadedContractDataScopeRef.current = scopedDocumentKey;
       return result;
     } catch (error: any) {
       if (documentScopeRef.current !== scopedDocumentKey) {
@@ -3235,7 +3241,7 @@ export default function LeadPage() {
         throw new Error(result?.message || "Nao foi possivel abrir o PDF deste contrato.");
       }
 
-      setContractPreview({ contractId: safeContractId, signedUrl: result.signedUrl });
+      setContractPreview({ kind: "contract", contractId: safeContractId, signedUrl: result.signedUrl });
     } catch (error: any) {
       setGeneratedContractsError(
         error?.message || "Nao foi possivel abrir o PDF deste contrato."
@@ -3306,6 +3312,10 @@ export default function LeadPage() {
     if (normalizedStatus !== "approved") {
       setContractActionError("Este contrato precisa ser aprovado antes de ser enviado.");
       setContractActionSuccess(null);
+      return;
+    }
+
+    if (!window.confirm("Confirma o envio deste contrato ao cliente?")) {
       return;
     }
 
@@ -4817,6 +4827,8 @@ export default function LeadPage() {
     setGeneratedContractsError(null);
     setGeneratedContractsLoading(false);
     setOpeningGeneratedContractId(null);
+    setContractPreview(null);
+    automaticContractPreviewRef.current = null;
     setContractActionLoadingId(null);
     setContractActionLoadingType(null);
     setContractActionError(null);
@@ -4825,6 +4837,7 @@ export default function LeadPage() {
     setContractTemplateSource(null);
     setContractTemplateSourceError(null);
     setContractTemplateSourceLoading(false);
+    loadedContractDataScopeRef.current = null;
   }, [documentScopeKey]);
 
   useEffect(() => {
@@ -4842,6 +4855,47 @@ export default function LeadPage() {
     void fetchGeneratedContracts();
     void fetchContractTemplateSource();
   }, [activeDetailsTab, documentScopeKey]);
+
+  useEffect(() => {
+    if (
+      activeDetailsTab !== "pdfs" ||
+      !documentScopeKey ||
+      loadedContractDataScopeRef.current !== documentScopeKey
+    ) return;
+
+    const target = chooseContractPreviewTarget(generatedContracts, contractTemplateSource);
+    if (!target) {
+      return;
+    }
+
+    const targetKey = target.kind === "contract"
+      ? `${documentScopeKey}:contract:${target.id}:${generatedContracts.find((item) => item.id === target.id)?.current_version_id || ""}`
+      : `${documentScopeKey}:template:${target.signedUrl}`;
+    if (automaticContractPreviewRef.current === targetKey) return;
+    automaticContractPreviewRef.current = targetKey;
+
+    if (target.kind === "template") {
+      void Promise.resolve().then(() => {
+        if (documentScopeRef.current === documentScopeKey) {
+          setContractPreview({ kind: "template", contractId: "template", signedUrl: target.signedUrl });
+        }
+      });
+      return;
+    }
+
+    void Promise.resolve().then(() => {
+      if (documentScopeRef.current === documentScopeKey) {
+        return openGeneratedContractPdf(target.id);
+      }
+      return undefined;
+    });
+  }, [
+    activeDetailsTab,
+    contractTemplateSource,
+    documentScopeKey,
+    generatedContracts,
+    generatedContractsLoading,
+  ]);
 
   useEffect(() => {
     if (loading) return;
@@ -6058,8 +6112,14 @@ export default function LeadPage() {
                             <section className="mb-4 overflow-hidden rounded-2xl border border-gray-200 bg-white ring-1 ring-black/5">
                               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 px-4 py-3">
                                 <div>
-                                  <div className="text-sm font-semibold text-gray-900">Contrato da oportunidade</div>
-                                  <div className="text-xs text-gray-500">Visualizacao segura do PDF especifico deste comprador.</div>
+                                <div className="text-sm font-semibold text-gray-900">
+                                  {contractPreview.kind === "contract" ? "Contrato da oportunidade" : "Modelo ativo da loja"}
+                                </div>
+                                <div className="text-xs text-gray-500">
+                                  {contractPreview.kind === "contract"
+                                    ? "Visualizacao segura do documento especifico deste comprador."
+                                    : "Visualizacao segura do modelo ativo da loja."}
+                                </div>
                                 </div>
                                 <button
                                   type="button"
@@ -6070,71 +6130,30 @@ export default function LeadPage() {
                                 </button>
                               </div>
                               <iframe
-                                title={`Visualizacao do contrato ${contractPreview.contractId}`}
+                                title={contractPreview.kind === "contract" ? `Visualizacao do contrato ${contractPreview.contractId}` : "Visualizacao do modelo ativo"}
                                 src={contractPreview.signedUrl}
                                 className="h-[52vh] min-h-[24rem] w-full bg-gray-100"
                               />
                             </section>
                           ) : (
                             <div className="mb-4 rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-5 text-sm text-gray-600">
-                              Selecione <span className="font-semibold text-gray-900">Abrir PDF</span> em um contrato da oportunidade para visualizar o documento aqui.
+                              {contractTemplateSourceLoading || generatedContractsLoading
+                                ? "Carregando documento..."
+                                : contractTemplateSource?.available && contractTemplateSource.signedUrl
+                                  ? <>
+                                       {contractTemplateSource.originalFilename || "O modelo ativo"} está em formato {contractTemplateSource.mimeType || "não visualizável no navegador"}.{" "}
+                                      <a href={contractTemplateSource.signedUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-sky-700 underline">
+                                         Abrir arquivo com URL temporaria
+                                      </a>
+                                    </>
+                                  : "Nenhum documento disponível para esta oportunidade."}
                             </div>
                           )}
-                          <section className="mt-0 rounded-2xl border border-sky-200 bg-sky-50 p-4 ring-1 ring-sky-900/5">
-                            <div className="flex flex-wrap items-start justify-between gap-3">
-                              <div>
-                                <div className="text-sm font-semibold text-gray-900">
-                                  Modelo original da loja (referencia)
-                                </div>
-                                <div className="mt-1 text-xs leading-5 text-gray-600">
-                                  Arquivo armazenado pela loja para consulta. Este acesso nao edita,
-                                  reconstrói ou gera um novo contrato.
-                                </div>
-                              </div>
-                              {contractTemplateSource?.available && contractTemplateSource.signedUrl ? (
-                                <a
-                                  href={contractTemplateSource.signedUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="rounded-xl bg-sky-700 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-800"
-                                >
-                                  Abrir arquivo original
-                                </a>
-                              ) : null}
+                          {contractTemplateSourceError ? (
+                            <div className="mb-4 rounded-xl bg-red-100 p-3 text-xs text-red-800">
+                              {contractTemplateSourceError}
                             </div>
-
-                            {contractTemplateSourceLoading ? (
-                              <div className="mt-3 text-xs text-gray-600">
-                                Carregando modelo original...
-                              </div>
-                            ) : null}
-
-                            {contractTemplateSourceError ? (
-                              <div className="mt-3 rounded-xl bg-red-100 p-3 text-xs text-red-800">
-                                {contractTemplateSourceError}
-                              </div>
-                            ) : null}
-
-                            {!contractTemplateSourceLoading && !contractTemplateSourceError ? (
-                              contractTemplateSource?.available ? (
-                                <div className="mt-3 text-xs text-gray-700">
-                                  <span className="font-semibold">
-                                    {contractTemplateSource.originalFilename || "Arquivo sem nome"}
-                                  </span>
-                                  {contractTemplateSource.mimeType ? (
-                                    <span className="ml-2 text-gray-500">
-                                      {contractTemplateSource.mimeType}
-                                    </span>
-                                  ) : null}
-                                </div>
-                              ) : (
-                                <div className="mt-3 text-xs text-gray-600">
-                                  {contractTemplateSource?.message ||
-                                    "Nenhum modelo de contrato ativo foi configurado para esta loja."}
-                                </div>
-                              )
-                            ) : null}
-                          </section>
+                          ) : null}
 
                           <div className="text-sm font-semibold text-gray-900">
                             Contratos
