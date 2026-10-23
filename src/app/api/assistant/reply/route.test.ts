@@ -414,6 +414,53 @@ function readProjectFile(relativePath: string) {
 
 const tests: TestCase[] = [
   {
+    name: "pending appointment list requests enumerate every open appointment and separate followups",
+    run: async () => {
+      const { buildPendingAppointmentsReply, isPendingAppointmentsListRequest } = await loadRouteModule();
+      assert.equal(isPendingAppointmentsListRequest("Quantos e quais compromissos temos pendentes?"), true);
+      assert.equal(isPendingAppointmentsListRequest("Quais retornos pendentes temos?"), false);
+      const appointments = Array.from({ length: 10 }, (_, index) => ({
+        id: `appointment-${index + 1}`,
+        title: `Atendimento ${index + 1}`,
+        appointment_type: index % 2 === 0 ? "technical_visit" : "installation",
+        status: index === 9 ? "rescheduled" : "scheduled",
+        scheduled_start: `2026-10-${String(10 + index).padStart(2, "0")}T12:00:00.000Z`,
+        scheduled_end: `2026-10-${String(10 + index).padStart(2, "0")}T13:00:00.000Z`,
+        customer_name: `Cliente ${index + 1}`,
+      })) as never;
+      const reply = buildPendingAppointmentsReply({ appointments, pendingFollowupCount: 10 });
+      assert.match(reply, /10 compromissos pendentes/);
+      for (let index = 1; index <= 10; index += 1) {
+        assert.equal(reply.includes(`Cliente ${index}`), true);
+        assert.equal(reply.includes(`Atendimento ${index}`), true);
+      }
+      assert.match(reply, /Retornos pendentes são acompanhamentos separados: 10/);
+    },
+  },
+  {
+    name: "pending appointment list preserves empty and incomplete-data states without inventing details",
+    run: async () => {
+      const { buildPendingAppointmentsReply } = await loadRouteModule();
+      const empty = buildPendingAppointmentsReply({ appointments: [] });
+      assert.match(empty, /0 compromissos pendentes/);
+      assert.match(empty, /nenhum compromisso em aberto/);
+      const partial = buildPendingAppointmentsReply({
+        appointments: [{
+          id: "appointment-partial",
+          title: null,
+          appointment_type: "technical_visit",
+          status: "scheduled",
+          scheduled_start: null,
+          scheduled_end: null,
+          customer_name: null,
+        } as never],
+      });
+      assert.match(partial, /cliente não identificado/);
+      assert.match(partial, /data e horário não informados/);
+      assert.equal(partial.includes("undefined"), false);
+    },
+  },
+  {
     name: "opening-hours questions use store schedule and do not enter appointment lookup",
     run: async () => {
       const { buildStoreOpeningHoursReply, isStoreOpeningHoursQuery } = await loadRouteModule();

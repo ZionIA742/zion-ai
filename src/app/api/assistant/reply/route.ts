@@ -8329,6 +8329,37 @@ function buildOverdueAppointmentsBlock(items: AppointmentRow[]) {
     .join("\n");
 }
 
+export function isPendingAppointmentsListRequest(text: string) {
+  const normalized = normalizeText(text);
+  const asksForAppointments = hasAnyTerm(normalized, ["compromisso", "compromissos", "agendamento", "agendamentos"]);
+  const asksForList = hasAnyTerm(normalized, ["quais", "quantos", "quantas", "listar", "lista", "todos", "todas"]);
+  const asksForOpenState = hasAnyTerm(normalized, ["pendente", "pendentes", "em aberto", "aberto", "abertos", "ainda nao concluido", "ainda nao concluidos"]);
+  const asksOnlyForFollowups = hasAnyTerm(normalized, ["retorno", "retornos", "acompanhamento", "acompanhamentos", "pos compromisso", "pos-compromisso"])
+    && !asksForAppointments;
+  return asksForAppointments && asksForList && asksForOpenState && !asksOnlyForFollowups && !hasExplicitAppointmentManagementCommand(text);
+}
+
+export function buildPendingAppointmentsReply(args: {
+  appointments: AppointmentRow[];
+  pendingFollowupCount?: number;
+}) {
+  const items = sortOpenScheduleAppointments(args.appointments || []);
+  const lines = [items.length === 1 ? "Encontrei 1 compromisso pendente:" : `Encontrei ${items.length} compromissos pendentes:`];
+  if (!items.length) lines.push("- nenhum compromisso em aberto ou pendente.");
+  items.forEach((item, index) => {
+    const date = item.scheduled_start ? formatDateTime(item.scheduled_start) : "data e horário não informados";
+    const type = formatAppointmentType(item.appointment_type);
+    const status = formatAppointmentStatus(item.status);
+    const customer = item.customer_name || "cliente não identificado";
+    const title = item.title ? ` — ${item.title}` : "";
+    lines.push(`${index + 1}. ${type}${title} — cliente ${customer} — ${date} — ${status}.`);
+  });
+  if ((args.pendingFollowupCount || 0) > 0) {
+    lines.push(`Retornos pendentes são acompanhamentos separados: ${args.pendingFollowupCount}.`);
+  }
+  return lines.join("\n").trim();
+}
+
 function buildPendingNotificationsBlock(items: PendingNotificationRow[]) {
   if (!items.length) {
     return "- nenhuma pendência da assistente";
@@ -9995,6 +10026,37 @@ export async function generateAssistantReply(params: {
     const scheduleSettings = (scheduleSettingsData || null) as StoreScheduleSettingsRow | null;
     const now = new Date();
     const todayRange = buildStoreLocalDayRangeIso(scheduleSettings, now);
+    const pendingAppointmentsListMode = isPendingAppointmentsListRequest(lastHumanMessage);
+    let pendingAppointmentsData: AppointmentRow[] = [];
+    if (pendingAppointmentsListMode) {
+      const { data: pendingAppointmentsRaw, error: pendingAppointmentsError } = await supabase
+        .from("store_appointments")
+        .select(
+          "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id, commercial_opportunity_id"
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
+        .in("status", ["scheduled", "rescheduled"])
+        .order("scheduled_start", { ascending: true })
+        .limit(100);
+
+      if (pendingAppointmentsError) {
+        return {
+          ok: false,
+          error: "LOAD_PENDING_APPOINTMENTS_FAILED",
+          message: pendingAppointmentsError.message,
+        };
+      }
+
+      pendingAppointmentsData = (pendingAppointmentsRaw || []) as AppointmentRow[];
+      if (pendingAppointmentsData.length >= 100) {
+        return {
+          ok: false,
+          error: "LOAD_PENDING_APPOINTMENTS_INCOMPLETE",
+          message: "A lista de compromissos pendentes excede o limite seguro de uma resposta.",
+        };
+      }
+    }
     const storeOpeningHoursMode = isStoreOpeningHoursQuery(lastHumanMessage);
     let storeOpeningHolidayBlocks: StoreScheduleBlockRow[] = [];
 
@@ -10487,6 +10549,11 @@ export async function generateAssistantReply(params: {
         blocks: specificDayScheduleBlocksData,
         includeBlocks: includeScheduleBlocksInSpecificDayQuery,
         scheduleSettings,
+      });
+    } else if (pendingAppointmentsListMode) {
+      aiText = buildPendingAppointmentsReply({
+        appointments: pendingAppointmentsData,
+        pendingFollowupCount: ((pendingPostFollowupsData || []) as PostAppointmentFollowupRow[]).length,
       });
     } else if (generalTodayOverviewMode) {
       aiText = buildDeterministicTodayOverviewReply({
