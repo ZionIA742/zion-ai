@@ -5,6 +5,7 @@ import {
   drainResponsibleOperationalApprovalNotifications,
   isAutomaticReportInternalNotification,
   isResponsibleOperationalApprovalAutoDrainCandidate,
+  loadResponsibleOperationalApprovalCandidates,
 } from "./responsible-external-notifications-drainer";
 
 type TestCase = {
@@ -101,6 +102,52 @@ function successfulDeps(rows: any[], calls: string[]) {
   };
 }
 
+type FakeOutboxQuery = {
+  select: () => FakeOutboxQuery;
+  eq: (field: string, value: string) => FakeOutboxQuery;
+  in: (field: string, values: readonly string[]) => FakeOutboxQuery;
+  is: () => FakeOutboxQuery;
+  order: () => FakeOutboxQuery;
+  limit: (limit: number) => Promise<{ data: OutboxCandidate[]; error: null }>;
+};
+
+function outboxReader(rows: OutboxCandidate[], queryLog: Array<{ notificationTypes: string[]; limit: number }>) {
+  return {
+    from: () => {
+      const state: { organizationId?: string; storeId?: string; notificationTypes?: string[]; limit?: number } = {};
+      const query: FakeOutboxQuery = {
+        select: () => query,
+        eq: (field: string, value: string) => {
+          if (field === "organization_id") state.organizationId = value;
+          if (field === "store_id") state.storeId = value;
+          if (field === "notification_type") state.notificationTypes = [value];
+          return query;
+        },
+        in: (field: string, values: readonly string[]) => {
+          if (field === "notification_type") state.notificationTypes = [...values];
+          return query;
+        },
+        is: () => query,
+        order: () => query,
+        limit: async (limit: number) => {
+          state.limit = limit;
+          queryLog.push({ notificationTypes: state.notificationTypes || [], limit });
+          return {
+            data: rows
+              .filter((row) => row.organization_id === state.organizationId && row.store_id === state.storeId)
+              .filter((row) => state.notificationTypes?.includes(row.notification_type || ""))
+              .filter((row) => row.external_message_id === null && row.sent_at === null)
+              .sort((left, right) => String(left.created_at).localeCompare(String(right.created_at)))
+              .slice(0, limit),
+            error: null,
+          };
+        },
+      };
+      return query;
+    },
+  };
+}
+
 const tests: TestCase[] = [
   {
     name: "whatsapp process-all cron drains operational approvals without replacing P9 followups",
@@ -145,7 +192,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "candidate query loads supported types before the in-process allowlist",
+    name: "candidate query reserves a bounded report page before scanning important alerts",
     run: () => {
       const source = fs.readFileSync(
         path.join(
@@ -167,15 +214,74 @@ const tests: TestCase[] = [
       assert.ok(loaderEnd > loaderStart);
 
       const loaderBlock = source.slice(loaderStart, loaderEnd);
-      const typeFilterIndex = loaderBlock.indexOf(
-        '.in("notification_type", ["important_alert", ...AUTOMATIC_REPORT_TYPES])',
-      );
-      const limitIndex = loaderBlock.indexOf(".limit(args.limit)");
-
-      assert.ok(typeFilterIndex >= 0);
-      assert.ok(limitIndex > typeFilterIndex);
+      assert.match(loaderBlock, /\.in\("notification_type", AUTOMATIC_REPORT_TYPES\)/);
+      assert.match(loaderBlock, /\.eq\("notification_type", "important_alert"\)/);
+      assert.match(loaderBlock, /const remainingLimit = Math\.max\(0, args\.limit - reports\.length\)/);
+      assert.match(loaderBlock, /\.limit\(remainingLimit\)/);
       assert.match(source, /isResponsibleOperationalApprovalAutoDrainCandidate/);
       assert.match(source, /isAutomaticReportCandidate/);
+    },
+  },
+  {
+    name: "twenty old important alerts cannot occupy the report reservation indefinitely",
+    run: async () => {
+      const report = reportCandidate({
+        id: "recent-report",
+        created_at: "2026-10-26T10:58:00.000Z",
+        context: {
+          report_source: "assistant_automatic_reports",
+          report_type: "morning_report",
+          local_date: "2026-10-26",
+          target_iso: "2026-10-26T11:00:00.000Z",
+          event_key: "assistant-automatic-report:org-1:store-1:2026-10-26:morning_report",
+        },
+      });
+      const oldAlerts = Array.from({ length: 20 }, (_, index) => candidate({
+        id: `old-alert-${index}`,
+        created_at: `2026-06-09T00:${String(index).padStart(2, "0")}:00.000Z`,
+        context: { source: "historic_important_alert" },
+      }));
+      const queryLog: Array<{ notificationTypes: string[]; limit: number }> = [];
+      const rows = await loadResponsibleOperationalApprovalCandidates({
+        supabase: outboxReader([...oldAlerts, report], queryLog),
+        organizationId: "org-1",
+        storeId: "store-1",
+        limit: 20,
+      });
+      assert.equal(rows.length, 20);
+      assert.equal(rows[0].id, "recent-report");
+      assert.deepEqual(queryLog, [
+        { notificationTypes: ["morning_report", "evening_report"], limit: 20 },
+        { notificationTypes: ["important_alert"], limit: 19 },
+      ]);
+
+      const calls: string[] = [];
+      const result = await drainResponsibleOperationalApprovalNotifications(
+        { organizationId: "org-1", storeId: "store-1", now: new Date("2026-10-26T12:00:00.000Z") },
+        successfulDeps(rows, calls) as DrainDependencies,
+      );
+      assert.equal(result.eligible, 1);
+      assert.equal(result.prepared, 1);
+      assert.equal(result.sent, 1);
+      assert.equal(result.skippedReasons.not_operational_approval_allowlist, 19);
+      assert.deepEqual(calls.slice(0, 4), ["materialize", "load", "prepare:recent-report", "send:recent-report"]);
+    },
+  },
+  {
+    name: "candidate loader keeps organization and store isolation and excludes already delivered rows",
+    run: async () => {
+      const selected = await loadResponsibleOperationalApprovalCandidates({
+        supabase: outboxReader([
+          reportCandidate({ id: "same-scope", created_at: "2026-10-26T10:58:00.000Z" }),
+          reportCandidate({ id: "other-org", organization_id: "org-2", created_at: "2026-10-26T10:57:00.000Z" }),
+          reportCandidate({ id: "other-store", store_id: "store-2", created_at: "2026-10-26T10:56:00.000Z" }),
+          reportCandidate({ id: "already-sent", external_message_id: "wamid.sent", created_at: "2026-10-26T10:55:00.000Z" }),
+        ], []),
+        organizationId: "org-1",
+        storeId: "store-1",
+        limit: 20,
+      });
+      assert.deepEqual(selected.map((row) => row.id), ["same-scope"]);
     },
   },
   {
@@ -247,7 +353,7 @@ const tests: TestCase[] = [
         );
         const calls: string[] = [];
         const result = await drainResponsibleOperationalApprovalNotifications(
-          { organizationId: "org-1", storeId: "store-1" },
+          { organizationId: "org-1", storeId: "store-1", now: new Date("2026-10-23T11:30:00.000Z") },
           successfulDeps([reportCandidate({ notification_type: reportType, context, created_at: "2026-10-23T10:58:00.000Z" })], calls) as DrainDependencies,
         );
         assert.equal(result.sent, 1);

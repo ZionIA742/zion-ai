@@ -140,34 +140,62 @@ function isAutomaticReportStale(row: ResponsibleOperationalApprovalOutboxRow, no
   return Number.isFinite(reference) && now.getTime() - reference > AUTOMATIC_REPORT_MAX_AGE_MS;
 }
 
-async function loadResponsibleOperationalApprovalCandidates(args: {
+export async function loadResponsibleOperationalApprovalCandidates(args: {
   supabase: any;
   organizationId: string;
   storeId: string;
   limit: number;
 }) {
-  const { data, error } = await args.supabase
+  const select =
+    "id, organization_id, store_id, channel, notification_type, status, context, attempts, external_message_id, sent_at, created_at";
+  const statuses = ["materialized", "ready_to_send", "failed", "processing"];
+
+  // Reports use a distinct bounded query so old, non-allowlisted important
+  // alerts cannot consume their entire FIFO page before the in-process
+  // provenance check. Reports remain first because they expire after 24h.
+  const reportsResult = await args.supabase
     .from("store_responsible_external_notifications")
-    .select(
-      "id, organization_id, store_id, channel, notification_type, status, context, attempts, external_message_id, sent_at, created_at",
-    )
+    .select(select)
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("channel", RESPONSIBLE_CHANNEL)
-    .in("notification_type", ["important_alert", ...AUTOMATIC_REPORT_TYPES])
-    .in("status", ["materialized", "ready_to_send", "failed", "processing"])
+    .in("notification_type", AUTOMATIC_REPORT_TYPES)
+    .in("status", statuses)
     .is("external_message_id", null)
     .is("sent_at", null)
     .order("created_at", { ascending: true })
     .limit(args.limit);
 
-  if (error) {
+  if (reportsResult.error) {
     throw new Error(
-      `Falha ao carregar outbox de aprovacao operacional do responsavel: ${error.message}`,
+      `Falha ao carregar outbox de aprovacao operacional do responsavel: ${reportsResult.error.message}`,
     );
   }
 
-  return (data || []) as ResponsibleOperationalApprovalOutboxRow[];
+  const reports = (reportsResult.data || []) as ResponsibleOperationalApprovalOutboxRow[];
+  const remainingLimit = Math.max(0, args.limit - reports.length);
+  if (remainingLimit === 0) return reports;
+
+  const alertsResult = await args.supabase
+    .from("store_responsible_external_notifications")
+    .select(select)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("channel", RESPONSIBLE_CHANNEL)
+    .eq("notification_type", "important_alert")
+    .in("status", statuses)
+    .is("external_message_id", null)
+    .is("sent_at", null)
+    .order("created_at", { ascending: true })
+    .limit(remainingLimit);
+
+  if (alertsResult.error) {
+    throw new Error(
+      `Falha ao carregar outbox de aprovacao operacional do responsavel: ${alertsResult.error.message}`,
+    );
+  }
+
+  return [...reports, ...((alertsResult.data || []) as ResponsibleOperationalApprovalOutboxRow[])];
 }
 
 function incrementReason(target: Record<string, number>, reason: string) {
