@@ -1775,6 +1775,96 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "customer cancellation decision expires at thirty minutes without renewing from unrelated messages",
+    run: async () => {
+      const {
+        buildCustomerCancelDecisionExpiresAt,
+        isCustomerCancelDecisionExpired,
+      } = await loadRouteModule();
+      const now = new Date("2026-10-26T12:00:00.000Z");
+      const baseContext = {
+        active_topic: "appointment_management",
+        active_intent: "cancel",
+        active_status: "waiting_cancel_decision",
+        active_appointment_id: "appointment-1",
+        context_payload: { reason: "cancel_requires_reschedule_or_customer_notice_decision" },
+        updated_at: "2026-10-26T12:00:00.000Z",
+      } as StoreAssistantContextStateRow;
+
+      assert.equal(buildCustomerCancelDecisionExpiresAt(now), "2026-10-26T12:30:00.000Z");
+      assert.equal(isCustomerCancelDecisionExpired({ ...baseContext, expires_at: "2026-10-26T12:30:00.000Z" }, new Date("2026-10-26T12:10:00.000Z")), false);
+      assert.equal(isCustomerCancelDecisionExpired({ ...baseContext, expires_at: "2026-10-26T12:30:00.000Z" }, new Date("2026-10-26T12:30:00.000Z")), true);
+      assert.equal(isCustomerCancelDecisionExpired({ ...baseContext, expires_at: "2026-10-26T12:30:00.000Z", updated_at: "2026-10-26T12:20:00.000Z" }, new Date("2026-10-26T12:31:00.000Z")), true);
+      assert.equal(isCustomerCancelDecisionExpired({ ...baseContext, updated_at: "2026-01-01T00:00:00.000Z" }, now), true);
+      assert.equal(isCustomerCancelDecisionExpired({ ...baseContext, expires_at: "not-a-date" }, now), true);
+      assert.equal(isCustomerCancelDecisionExpired({ ...baseContext, expires_at: null, updated_at: "not-a-date" }, now), true);
+    },
+  },
+  {
+    name: "expired cancellation decisions close safely and never reuse sim, option one, or deictic confirmation",
+    run: async () => {
+      const { handlePendingCustomerCancelDecision } = await loadRouteModule();
+      for (const lastHumanMessage of ["sim", "1", "cancele esse"]) {
+        const supabase = createAssistantRouteSupabaseMock();
+        const reply = await handlePendingCustomerCancelDecision({
+          supabase,
+          organizationId: "org-1",
+          storeId: "store-1",
+          threadId: "thread-1",
+          lastHumanMessage,
+          now: new Date("2026-10-26T12:00:00.000Z"),
+          assistantContextState: {
+            id: `cancel-expired-${lastHumanMessage}`,
+            active_topic: "appointment_management",
+            active_intent: "cancel",
+            active_status: "waiting_cancel_decision",
+            active_appointment_id: "appointment-1",
+            expires_at: "2026-10-26T11:30:00.000Z",
+            updated_at: "2026-10-26T11:00:00.000Z",
+            context_payload: { reason: "cancel_requires_reschedule_or_customer_notice_decision", appointment_id: "appointment-1" },
+          } as StoreAssistantContextStateRow,
+          scheduleSettings: null,
+        });
+
+        assert.equal(String(reply).includes("expirou"), true);
+        assert.equal(supabase.calls.upserts[0]?.active_status, "resolved");
+        assert.equal(supabase.calls.rpc.some((call) => call.name === "cancel_store_appointment"), false);
+        assert.equal(supabase.calls.from.includes("store_appointments"), false);
+      }
+    },
+  },
+  {
+    name: "a new explicit cancellation after expiry restarts without inheriting the old target",
+    run: async () => {
+      const { resolveAppointmentActionReply } = await loadRouteModule();
+      const supabase = createAssistantRouteSupabaseMock();
+      const reply = await resolveAppointmentActionReply({
+        supabase,
+        organizationId: "org-1",
+        storeId: "store-1",
+        threadId: "thread-1",
+        lastHumanMessage: "cancele esse",
+        recentMessages: [],
+        openAppointments: [],
+        scheduleSettings: null,
+        assistantContextState: {
+          id: "expired-cancel-context",
+          active_topic: "appointment_management",
+          active_intent: "cancel",
+          active_status: "waiting_cancel_decision",
+          active_appointment_id: "appointment-old",
+          expires_at: "2026-01-01T00:30:00.000Z",
+          updated_at: "2026-01-01T00:00:00.000Z",
+          context_payload: { reason: "cancel_requires_reschedule_or_customer_notice_decision", appointment_id: "appointment-old" },
+        } as StoreAssistantContextStateRow,
+      });
+
+      assert.equal(supabase.calls.upserts[0]?.active_status, "resolved");
+      assert.match(String(reply), /qual compromisso/i);
+      assert.equal(supabase.calls.rpc.some((call) => call.name === "cancel_store_appointment"), false);
+    },
+  },
+  {
     name: "expired customer identity pending context is resolved and cannot trigger side effects",
     run: async () => {
       const { resolvePendingCustomerIdentityDisambiguationReply } = await loadRouteModule();

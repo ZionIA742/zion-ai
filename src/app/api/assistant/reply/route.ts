@@ -2578,6 +2578,7 @@ function assertCommercialTargetForSideEffect(args: {
 }
 
 const CUSTOMER_IDENTITY_DISAMBIGUATION_TTL_MS = 30 * 60 * 1000;
+const CUSTOMER_CANCEL_DECISION_TTL_MS = 30 * 60 * 1000;
 
 function isActiveCustomerIdentityDisambiguationContext(contextState?: StoreAssistantContextStateRow | null) {
   return Boolean(
@@ -2589,6 +2590,10 @@ function isActiveCustomerIdentityDisambiguationContext(contextState?: StoreAssis
 
 export function buildCustomerIdentityDisambiguationExpiresAt(now = new Date()) {
   return new Date(now.getTime() + CUSTOMER_IDENTITY_DISAMBIGUATION_TTL_MS).toISOString();
+}
+
+export function buildCustomerCancelDecisionExpiresAt(now = new Date()) {
+  return new Date(now.getTime() + CUSTOMER_CANCEL_DECISION_TTL_MS).toISOString();
 }
 
 export function isAssistantContextExpired(contextState?: StoreAssistantContextStateRow | null, now = new Date()) {
@@ -2641,6 +2646,65 @@ function isWaitingForCustomerCancelDecision(contextState?: StoreAssistantContext
       payloadPhase === "cancel_or_reschedule_decision" ||
       Boolean(contextState?.active_appointment_id || payload.appointment_id)
     );
+}
+
+/**
+ * This is intentionally narrower than the identity-context expiry: only a
+ * pending authorization to cancel or reschedule an already identified
+ * appointment expires. A missing or invalid deadline may use a valid
+ * updated_at only for legacy state, and never extends beyond thirty minutes.
+ */
+export function isCustomerCancelDecisionExpired(contextState?: StoreAssistantContextStateRow | null, now = new Date()) {
+  if (!isWaitingForCustomerCancelDecision(contextState)) return false;
+  const nowMs = now.getTime();
+  if (!Number.isFinite(nowMs)) return true;
+  const expiresAt = String(contextState?.expires_at || "").trim();
+  const expiresMs = expiresAt ? new Date(expiresAt).getTime() : Number.NaN;
+  const updatedAt = String(contextState?.updated_at || "").trim();
+  const updatedMs = updatedAt ? new Date(updatedAt).getTime() : Number.NaN;
+
+  if (expiresAt && !Number.isFinite(expiresMs)) return true;
+  if (!expiresAt && !Number.isFinite(updatedMs)) return true;
+
+  const legacyDeadlineMs = Number.isFinite(updatedMs)
+    ? updatedMs + CUSTOMER_CANCEL_DECISION_TTL_MS
+    : Number.POSITIVE_INFINITY;
+  const deadlineMs = Math.min(Number.isFinite(expiresMs) ? expiresMs : legacyDeadlineMs, legacyDeadlineMs);
+  return deadlineMs <= nowMs;
+}
+
+async function closeExpiredCustomerCancelDecision(args: {
+  supabase: unknown;
+  organizationId: string;
+  storeId: string;
+  threadId?: string | null;
+  contextState: StoreAssistantContextStateRow;
+  lastHumanMessage: string;
+}) {
+  const expiredReply = "A decisão anterior de cancelamento expirou para evitar uma alteração indevida na agenda. Me diga novamente qual compromisso deseja cancelar e confirme a nova decisão.";
+  if (!args.threadId) {
+    return {
+      ok: false as const,
+      reply: "A decisão anterior de cancelamento expirou e não consegui encerrá-la com segurança porque a conversa não foi identificada. Nenhuma ação foi executada. Informe novamente o compromisso e a decisão.",
+    };
+  }
+  const result = await resolveAssistantContextState({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    currentContextState: args.contextState,
+    lastUserMessage: args.lastHumanMessage,
+    lastAssistantMessage: expiredReply,
+    resolvedReason: "customer_cancel_decision_expired",
+  });
+  if (!result.ok) {
+    return {
+      ok: false as const,
+      reply: "A decisão anterior de cancelamento expirou, mas não consegui encerrá-la com segurança. Nenhuma ação foi executada; informe novamente o compromisso e a decisão.",
+    };
+  }
+  return { ok: true as const, reply: expiredReply };
 }
 
 function isHumanCancellationAbortOrHold(text: string) {
@@ -3161,6 +3225,7 @@ async function startCustomerAppointmentCancelDecision(args: { supabase: any; org
       target_time: args.appointment.scheduled_start ? formatTimeOnlyInTimeZone(args.appointment.scheduled_start, scheduleTimezone) : null,
       target_start_at: args.appointment.scheduled_start || null, target_end_at: args.appointment.scheduled_end || null,
       timezone_name: scheduleTimezone, candidate_options: [],
+      expires_at: buildCustomerCancelDecisionExpiresAt(),
       context_payload: {
         reason: "cancel_requires_reschedule_or_customer_notice_decision",
         phase: "cancel_or_reschedule_decision",
@@ -3226,9 +3291,19 @@ async function executeConfirmedCustomerAppointmentCancellation(args: { supabase:
   return responsibleReply;
 }
 
-async function handlePendingCustomerCancelDecision(args: { supabase: any; organizationId: string; storeId: string; threadId?: string | null; assistantContextState?: StoreAssistantContextStateRow | null; lastHumanMessage: string; scheduleSettings?: StoreScheduleSettingsRow | null; }) {
+export async function handlePendingCustomerCancelDecision(args: { supabase: any; organizationId: string; storeId: string; threadId?: string | null; assistantContextState?: StoreAssistantContextStateRow | null; lastHumanMessage: string; scheduleSettings?: StoreScheduleSettingsRow | null; now?: Date; }) {
   const contextState = args.assistantContextState || null;
-  if (!isWaitingForCustomerCancelDecision(contextState)) return null;
+  if (!contextState || !isWaitingForCustomerCancelDecision(contextState)) return null;
+  if (isCustomerCancelDecisionExpired(contextState, args.now || new Date())) {
+    return (await closeExpiredCustomerCancelDecision({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId,
+      contextState,
+      lastHumanMessage: args.lastHumanMessage,
+    })).reply;
+  }
 
   const explicitAction = resolveScheduleAction(args.lastHumanMessage);
   if (explicitAction && explicitAction !== "cancel") return null;
@@ -6553,7 +6628,25 @@ export async function resolveAppointmentActionReply(args: {
   const pendingStatus = normalizeText(pendingContext?.active_status || "");
   const explicitAction = resolveScheduleAction(args.lastHumanMessage);
   const pendingIdentity = pendingTopic === "customer_identity_disambiguation" && pendingStatus === "waiting_user_choice";
-  const pendingCancellation = pendingTopic === "appointment_management" && ["waiting_user_choice", "waiting_cancel_decision"].includes(pendingStatus);
+  let pendingCancellation = pendingTopic === "appointment_management" && ["waiting_user_choice", "waiting_cancel_decision"].includes(pendingStatus);
+  const pendingCancellationContext = args.assistantContextState;
+
+  if (pendingCancellation && pendingCancellationContext && isCustomerCancelDecisionExpired(pendingCancellationContext)) {
+    const expirationResult = await closeExpiredCustomerCancelDecision({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId || null,
+      contextState: pendingCancellationContext,
+      lastHumanMessage: args.lastHumanMessage,
+    });
+    if (!expirationResult.ok) return expirationResult.reply;
+    args.assistantContextState = null;
+    pendingCancellation = false;
+    // A new explicit cancellation command may enter the canonical flow below,
+    // but it cannot inherit a target or authorization from the expired state.
+    if (!explicitAction) return expirationResult.reply;
+  }
 
   if ((pendingIdentity || pendingCancellation) && explicitAction) {
     if (!args.threadId) {
