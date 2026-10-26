@@ -229,6 +229,10 @@ type SupabaseQueryChainLike = {
   in(field: string, values: string[]): unknown;
   order(field: string, options?: { ascending?: boolean }): unknown;
   limit(value: number): unknown;
+  maybeSingle(): Promise<{
+    data: MessageRow | null;
+    error: QueryErrorLike | null;
+  }>;
 };
 
 type SupabaseBatchClientLike = {
@@ -2585,9 +2589,7 @@ export async function loadScopedRecentMessages(args: {
   conversationId: string;
 }): QueryResultLike<MessageRow[] | null> {
   const query = args.supabase.from("messages") as SupabaseQueryChainLike;
-  const selectedQuery = query.select(
-    "id, organization_id, store_id, conversation_id, sender, content, direction, message_type, media_url, metadata, created_at, conversation_session_id, commercial_session_context_link_id, commercial_context_capture_state"
-  ) as SupabaseQueryChainLike;
+  const selectedQuery = query.select(MESSAGE_SCOPE_SELECT) as SupabaseQueryChainLike;
   const scopedQuery = selectedQuery.eq(
     "conversation_id",
     args.conversationId
@@ -2605,6 +2607,105 @@ export async function loadScopedRecentMessages(args: {
   }) as SupabaseQueryChainLike;
 
   return orderedQuery.limit(12) as QueryResultLike<MessageRow[] | null>;
+}
+
+const MESSAGE_SCOPE_SELECT =
+  "id, organization_id, store_id, conversation_id, sender, content, direction, message_type, media_url, metadata, created_at, conversation_session_id, commercial_session_context_link_id, commercial_context_capture_state";
+
+export async function loadScopedMessageById(args: {
+  supabase: SupabaseBatchClientLike;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  messageId: string;
+}): QueryResultLike<MessageRow | null> {
+  const query = args.supabase.from("messages") as SupabaseQueryChainLike;
+  const selectedQuery = query.select(MESSAGE_SCOPE_SELECT) as SupabaseQueryChainLike;
+  const scopedQuery = selectedQuery
+    .eq("id", args.messageId) as SupabaseQueryChainLike;
+  const conversationScopedQuery = scopedQuery
+    .eq("conversation_id", args.conversationId) as SupabaseQueryChainLike;
+  const organizationScopedQuery = conversationScopedQuery
+    .eq("organization_id", args.organizationId) as SupabaseQueryChainLike;
+  const storeScopedQuery = organizationScopedQuery
+    .eq("store_id", args.storeId) as SupabaseQueryChainLike;
+
+  return storeScopedQuery.maybeSingle() as Promise<{
+    data: MessageRow | null;
+    error: QueryErrorLike | null;
+  }>;
+}
+
+export async function resolveGenerationAnchorMessageWithRecovery(args: {
+  supabase: SupabaseBatchClientLike;
+  messages: MessageRow[];
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  explicitAnchorMessageId: string;
+}): Promise<
+  | {
+      ok: true;
+      anchorMessage: MessageRow;
+      anchorMessageId: string;
+      fallbackUsed: boolean;
+    }
+  | {
+      ok: false;
+      error: string;
+      message: string;
+    }
+> {
+  const initialResolution = resolveGenerationAnchorMessage(args);
+  if (initialResolution.ok) {
+    return initialResolution;
+  }
+
+  const explicitAnchorMessageId = String(args.explicitAnchorMessageId || "").trim();
+  if (
+    initialResolution.error !== "INVALID_GENERATION_ANCHOR_MESSAGE" ||
+    args.messages.some(
+      (message) => String(message.id || "").trim() === explicitAnchorMessageId,
+    )
+  ) {
+    return initialResolution;
+  }
+
+  const recovered = await loadScopedMessageById({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    messageId: explicitAnchorMessageId,
+  });
+  if (recovered.error) {
+    return {
+      ok: false,
+      error: "LOAD_MESSAGES_FAILED",
+      message: recovered.error.message,
+    };
+  }
+  if (!recovered.data) {
+    return initialResolution;
+  }
+
+  const messagesById = new Map(
+    args.messages.map((message) => [String(message.id || "").trim(), message]),
+  );
+  messagesById.set(explicitAnchorMessageId, recovered.data);
+  const mergedMessages = [...messagesById.values()].sort((left, right) => {
+    const leftTime = Date.parse(String(left.created_at || ""));
+    const rightTime = Date.parse(String(right.created_at || ""));
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) {
+      return leftTime - rightTime;
+    }
+    return String(left.id || "").localeCompare(String(right.id || ""));
+  });
+  const resolved = resolveGenerationAnchorMessage({
+    ...args,
+    messages: mergedMessages,
+  });
+  return resolved.ok ? { ...resolved, fallbackUsed: true } : resolved;
 }
 
 export async function loadCanonicalCommercialOpportunityStage(args: {
@@ -12782,15 +12883,30 @@ export async function generateAiSalesReply(
       };
     }
 
-    const orderedMessages = ([...(recentMessages || [])] as MessageRow[]).reverse();
+    let orderedMessages = ([...(recentMessages || [])] as MessageRow[]).reverse();
 
-    const anchorResolution = resolveGenerationAnchorMessage({
+    const anchorResolution = await resolveGenerationAnchorMessageWithRecovery({
+      supabase,
       messages: orderedMessages,
       organizationId,
       storeId: resolvedStoreId,
       conversationId,
       explicitAnchorMessageId,
     });
+
+    if (
+      anchorResolution.ok &&
+      anchorResolution.fallbackUsed &&
+      !orderedMessages.some((message) => message.id === anchorResolution.anchorMessage.id)
+    ) {
+      orderedMessages = [...orderedMessages, anchorResolution.anchorMessage].sort((left, right) => {
+        const leftTime = Date.parse(String(left.created_at || ""));
+        const rightTime = Date.parse(String(right.created_at || ""));
+        return Number.isFinite(leftTime) && Number.isFinite(rightTime)
+          ? leftTime - rightTime
+          : String(left.id || "").localeCompare(String(right.id || ""));
+      });
+    }
 
     if (anchorResolution.ok === false) {
       return {

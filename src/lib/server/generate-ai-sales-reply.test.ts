@@ -31,7 +31,9 @@ import {
   resolveContextualQualificationDecision,
   resolveTechnicalVisitMeasurementsConfirmationPolicy,
   loadScopedRecentMessages,
+  loadScopedMessageById,
   resolveGenerationAnchorMessage,
+  resolveGenerationAnchorMessageWithRecovery,
   resolveMessagesWithCommercialContext,
   selectCustomerCatalogDocumentsForRequest,
   summarizeCanonicalKnownFacts,
@@ -1278,6 +1280,70 @@ test("scoped recent messages query filters by conversation organization and stor
     ["msg-valid"]
   );
   assert.deepEqual(supabase.fromCalls, ["messages"]);
+});
+
+test("recovers an explicit commercial anchor outside the recent window by scoped id", async () => {
+  const recentMessages = Array.from({ length: 12 }, (_, index) =>
+    createMessage({
+      id: `recent-${index}`,
+      created_at: `2026-08-24T${String(11 + index).padStart(2, "0")}:00:00.000Z`,
+    }),
+  );
+  const supabase = new FakeSupabase({
+    messages: [
+      ...recentMessages,
+      createMessage({
+        id: "anchor-13",
+        created_at: "2026-08-24T10:00:00.000Z",
+        content: "Quero retomar a proposta da piscina.",
+      }),
+    ],
+  });
+
+  const result = await resolveGenerationAnchorMessageWithRecovery({
+    supabase,
+    messages: recentMessages,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    explicitAnchorMessageId: "anchor-13",
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.anchorMessageId, "anchor-13");
+    assert.equal(result.fallbackUsed, true);
+  }
+  assert.deepEqual(supabase.fromCalls, ["messages"]);
+});
+
+test("anchor recovery keeps missing or out-of-scope anchors fail-closed", async () => {
+  const supabase = new FakeSupabase({
+    messages: [
+      createMessage({ id: "anchor-other-org", organization_id: "org-2" }),
+    ],
+  });
+  const base = {
+    supabase,
+    messages: [],
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+  };
+
+  const missing = await resolveGenerationAnchorMessageWithRecovery({
+    ...base,
+    explicitAnchorMessageId: "does-not-exist",
+  });
+  assert.equal(missing.ok, false);
+  if (!missing.ok) assert.equal(missing.error, "INVALID_GENERATION_ANCHOR_MESSAGE");
+
+  const outOfScope = await loadScopedMessageById({
+    ...base,
+    messageId: "anchor-other-org",
+  });
+  assert.equal(outOfScope.error, null);
+  assert.equal(outOfScope.data, null);
 });
 
 test("canonical qualification reader is called only with explicit organization, store and anchored opportunity", async () => {
