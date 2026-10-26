@@ -344,6 +344,28 @@ async function recordAssistantAiRun(params: {
   }
 }
 
+type AssistantReplyPersistenceInput = {
+  content: string;
+  messageType: string;
+  metadata: Record<string, unknown>;
+  relatedLeadId?: string | null;
+  relatedConversationId?: string | null;
+  relatedAppointmentId?: string | null;
+};
+
+/**
+ * Test-only dependency boundary. Production keeps the existing env-backed
+ * clients; callers that provide this object must provide every effectful
+ * dependency explicitly, so an incomplete test setup cannot fall back to a
+ * real service.
+ */
+export type AssistantReplyTestDependencies = {
+  supabaseClient: ReturnType<typeof createClient>;
+  openaiClient: Pick<OpenAI, "responses">;
+  persistAssistantReply: (input: AssistantReplyPersistenceInput) => Promise<{ message?: string } | null>;
+  recordAssistantAiRun: typeof recordAssistantAiRun;
+};
+
 
 function formatAppointmentRangeInTimeZone(args: {
   appointment?: Pick<AppointmentRow, "scheduled_start" | "scheduled_end"> | null;
@@ -9705,6 +9727,7 @@ export async function generateAssistantReply(params: {
   sourceExternalMessageId?: string | null;
   panelHumanMessageId?: string | null;
   panelReplyClaim?: { runId: string; claimToken: string } | null;
+  testDependencies?: AssistantReplyTestDependencies;
 }): Promise<AssistantReplyResult> {
   try {
     const organizationId = String(params.organizationId || "").trim();
@@ -9718,12 +9741,25 @@ export async function generateAssistantReply(params: {
       };
     }
 
+    const testDependencies = params.testDependencies;
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     const openaiApiKey = process.env.OPENAI_API_KEY;
     const model = process.env.ZION_AI_ASSISTANT_MODEL || "gpt-4.1-mini";
 
-    if (!supabaseUrl || !supabaseServiceKey) {
+    if (testDependencies &&
+      (!testDependencies.supabaseClient ||
+        !testDependencies.openaiClient?.responses?.create ||
+        !testDependencies.persistAssistantReply ||
+        !testDependencies.recordAssistantAiRun)) {
+      return {
+        ok: false,
+        error: "ASSISTANT_TEST_DEPENDENCIES_INCOMPLETE",
+        message: "As dependências isoladas da Assistente não estão completas.",
+      };
+    }
+
+    if (!testDependencies && (!supabaseUrl || !supabaseServiceKey)) {
       return {
         ok: false,
         error: "SUPABASE_ENV_MISSING",
@@ -9732,7 +9768,7 @@ export async function generateAssistantReply(params: {
       };
     }
 
-    if (!openaiApiKey) {
+    if (!testDependencies && !openaiApiKey) {
       return {
         ok: false,
         error: "OPENAI_ENV_MISSING",
@@ -9740,23 +9776,18 @@ export async function generateAssistantReply(params: {
       };
     }
 
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    // The injected client intentionally shares the broad Supabase surface used by this legacy route.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const supabase: any = testDependencies?.supabaseClient || createClient(supabaseUrl as string, supabaseServiceKey as string);
     Object.defineProperty(supabase, "__assistantPanelHumanMessageId", {
       value: String(params.panelHumanMessageId || "").trim() || null,
       configurable: true,
     });
     Object.defineProperty(supabase, "__assistantOrganizationId", { value: organizationId, configurable: true });
     Object.defineProperty(supabase, "__assistantStoreId", { value: storeId, configurable: true });
-    const openai = new OpenAI({ apiKey: openaiApiKey });
+    const openai = testDependencies?.openaiClient || new OpenAI({ apiKey: openaiApiKey as string });
 
-    const persistAssistantReply = async (input: {
-      content: string;
-      messageType: string;
-      metadata: Record<string, unknown>;
-      relatedLeadId?: string | null;
-      relatedConversationId?: string | null;
-      relatedAppointmentId?: string | null;
-    }) => {
+    const persistAssistantReply = testDependencies?.persistAssistantReply || (async (input: AssistantReplyPersistenceInput) => {
       if (params.panelReplyClaim) {
         const { data, error } = await supabase.rpc("finalize_assistant_panel_reply_by_system", {
           p_run_id: params.panelReplyClaim.runId,
@@ -9787,11 +9818,11 @@ export async function generateAssistantReply(params: {
         p_metadata: input.metadata,
       });
       return error;
-    };
+    });
 
     const sourceExternalMessageId = String(params.sourceExternalMessageId || "").trim();
     if (sourceExternalMessageId) {
-      const { data: existingReply, error: existingReplyError } = await supabase
+      const existingReplyResult = await supabase
         .from("store_assistant_messages")
         .select("content")
         .eq("organization_id", organizationId)
@@ -9800,7 +9831,9 @@ export async function generateAssistantReply(params: {
         .contains("metadata", { source_external_message_id: sourceExternalMessageId })
         .order("created_at", { ascending: false })
         .limit(1)
-        .maybeSingle<{ content: string | null }>();
+        .maybeSingle();
+      const existingReply = existingReplyResult.data as { content: string | null } | null;
+      const existingReplyError = existingReplyResult.error;
 
       if (existingReplyError) {
         return {
@@ -9816,12 +9849,14 @@ export async function generateAssistantReply(params: {
       }
     }
 
-    const { data: store, error: storeError } = await supabase
+    const storeResult = await supabase
       .from("stores")
       .select("id, organization_id, name")
       .eq("id", storeId)
       .eq("organization_id", organizationId)
-      .maybeSingle<StoreRow>();
+      .maybeSingle();
+    const store = storeResult.data as StoreRow | null;
+    const storeError = storeResult.error;
 
     if (storeError || !store) {
       return {
@@ -10701,7 +10736,7 @@ export async function generateAssistantReply(params: {
           eveningReportMode,
         });
 
-        await recordAssistantAiRun({
+        await (testDependencies?.recordAssistantAiRun || recordAssistantAiRun)({
           supabase,
           organizationId,
           storeId,
@@ -10718,7 +10753,7 @@ export async function generateAssistantReply(params: {
       } catch (openAiError: any) {
         const finishedAt = new Date().toISOString();
 
-        await recordAssistantAiRun({
+        await (testDependencies?.recordAssistantAiRun || recordAssistantAiRun)({
           supabase,
           organizationId,
           storeId,
