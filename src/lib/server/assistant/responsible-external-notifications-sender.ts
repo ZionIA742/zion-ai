@@ -737,24 +737,30 @@ export async function sendResponsibleExternalNotification(
 
   let acceptedExternalMessageId: string | null = null;
   try {
+    const automaticReport = isAutomaticReportNotification(claimedNotification);
     const policy = await resolveResponsibleWhatsappOutboundPolicy({
       supabase,
       organizationId,
       storeId,
       responsibleId: cleanText(claimedNotification.responsible_id),
       destination: cleanText(claimedNotification.destination),
-      templateContext: {
-        notificationType: claimedNotification.notification_type,
-        title: claimedNotification.title,
-        body: claimedNotification.body,
-        context: claimedNotification.context,
-        relatedLeadId: claimedNotification.related_lead_id,
-        relatedConversationId: claimedNotification.related_conversation_id,
-        relatedAppointmentId: claimedNotification.related_appointment_id,
-      } satisfies ResponsibleWhatsappTemplateContext,
+      // Automatic reports are free-form only. Passing their generic context to
+      // the template resolver makes a closed 24-hour window look like a
+      // missing template kind, even though reports have no template path.
+      templateContext: automaticReport
+        ? undefined
+        : {
+            notificationType: claimedNotification.notification_type,
+            title: claimedNotification.title,
+            body: claimedNotification.body,
+            context: claimedNotification.context,
+            relatedLeadId: claimedNotification.related_lead_id,
+            relatedConversationId: claimedNotification.related_conversation_id,
+            relatedAppointmentId: claimedNotification.related_appointment_id,
+          } satisfies ResponsibleWhatsappTemplateContext,
     });
     if (!policy.ok) throw new Error(policy.reason);
-    if (isAutomaticReportNotification(claimedNotification) && policy.mode !== "free_form") {
+    if (automaticReport && policy.mode !== "free_form") {
       throw new Error("AUTOMATIC_REPORT_WHATSAPP_WINDOW_CLOSED");
     }
 

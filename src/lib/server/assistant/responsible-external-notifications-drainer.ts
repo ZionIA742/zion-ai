@@ -17,6 +17,11 @@ const DEFAULT_LIMIT = 20;
 const AUTOMATIC_REPORT_TYPES = ["morning_report", "evening_report"] as const;
 const AUTOMATIC_REPORT_SOURCE = "assistant_automatic_reports";
 const AUTOMATIC_REPORT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const AUTOMATIC_REPORT_POLICY_FAILURES = new Set([
+  "RESPONSIBLE_WHATSAPP_TEMPLATE_KIND_REQUIRED",
+  "RESPONSIBLE_WHATSAPP_TEMPLATE_REQUIRED",
+  "AUTOMATIC_REPORT_WHATSAPP_WINDOW_CLOSED",
+]);
 
 type ResponsibleOperationalApprovalOutboxRow = {
   id: string;
@@ -29,6 +34,7 @@ type ResponsibleOperationalApprovalOutboxRow = {
   attempts: number | null;
   external_message_id: string | null;
   sent_at: string | null;
+  error_text: string | null;
   created_at: string | null;
 };
 
@@ -140,6 +146,10 @@ function isAutomaticReportStale(row: ResponsibleOperationalApprovalOutboxRow, no
   return Number.isFinite(reference) && now.getTime() - reference > AUTOMATIC_REPORT_MAX_AGE_MS;
 }
 
+function isAutomaticReportPolicyFailure(row: ResponsibleOperationalApprovalOutboxRow) {
+  return AUTOMATIC_REPORT_POLICY_FAILURES.has(cleanText(row.error_text));
+}
+
 export async function loadResponsibleOperationalApprovalCandidates(args: {
   supabase: any;
   organizationId: string;
@@ -147,7 +157,7 @@ export async function loadResponsibleOperationalApprovalCandidates(args: {
   limit: number;
 }) {
   const select =
-    "id, organization_id, store_id, channel, notification_type, status, context, attempts, external_message_id, sent_at, created_at";
+    "id, organization_id, store_id, channel, notification_type, status, context, attempts, external_message_id, sent_at, error_text, created_at";
   const statuses = ["materialized", "ready_to_send", "failed", "processing"];
 
   // Reports use a distinct bounded query so old, non-allowlisted important
@@ -398,6 +408,13 @@ export async function drainResponsibleOperationalApprovalNotifications(
       continue;
     }
 
+    const status = normalizeText(row.status);
+    if (isAutomaticReportCandidate(row) && status === "failed" && isAutomaticReportPolicyFailure(row)) {
+      skipped += 1;
+      incrementReason(skippedReasons, "automatic_report_policy_failure_not_retried");
+      continue;
+    }
+
     const attempts = Math.max(0, Number(row.attempts || 0));
     if (attempts >= MAX_AUTOMATIC_SEND_ATTEMPTS) {
       skipped += 1;
@@ -405,10 +422,10 @@ export async function drainResponsibleOperationalApprovalNotifications(
       continue;
     }
 
-    let status = normalizeText(row.status);
+    let currentStatus = status;
 
     try {
-      if (status === "processing") {
+      if (currentStatus === "processing") {
         const recovery = await unlockStuckResponsibleExternalNotificationProcessing({
           supabase,
           organizationId,
@@ -424,9 +441,9 @@ export async function drainResponsibleOperationalApprovalNotifications(
           uncertain += 1;
           continue;
         }
-        status = "failed";
+        currentStatus = "failed";
       }
-      if (status === "materialized" || status === "failed") {
+      if (currentStatus === "materialized" || currentStatus === "failed") {
         const prepareResult = await prepare({
           supabase,
           organizationId,
@@ -444,10 +461,10 @@ export async function drainResponsibleOperationalApprovalNotifications(
         }
 
         prepared += 1;
-        status = "ready_to_send";
+        currentStatus = "ready_to_send";
       }
 
-      if (status !== "ready_to_send") {
+      if (currentStatus !== "ready_to_send") {
         skipped += 1;
         incrementReason(skippedReasons, "status_not_ready_to_send");
         continue;

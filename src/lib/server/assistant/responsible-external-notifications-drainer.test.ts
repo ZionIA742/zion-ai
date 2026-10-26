@@ -34,6 +34,7 @@ function candidate(overrides: Record<string, unknown> = {}) {
     attempts: 0,
     external_message_id: null,
     sent_at: null,
+    error_text: null,
     created_at: "2026-09-30T18:00:00.000Z",
     ...overrides,
   };
@@ -529,6 +530,34 @@ const tests: TestCase[] = [
       assert.deepEqual(calls, ["materialize", "load", "cancel:external-1"]);
       assert.equal(result.sent, 0);
       assert.equal(result.skippedReasons.automatic_report_expired, 1);
+    },
+  },
+  {
+    name: "failed automatic reports blocked by deterministic policy failures are not recovered automatically",
+    run: async () => {
+      const calls: string[] = [];
+      const result = await drainResponsibleOperationalApprovalNotifications(
+        { organizationId: "org-1", storeId: "store-1", now: new Date("2026-10-26T12:00:00.000Z") },
+        successfulDeps([
+          reportCandidate({
+            status: "failed",
+            attempts: 2,
+            created_at: "2026-10-26T10:58:00.000Z",
+            context: {
+              report_source: "assistant_automatic_reports",
+              report_type: "morning_report",
+              local_date: "2026-10-26",
+              target_iso: "2026-10-26T11:00:00.000Z",
+              event_key: "assistant-automatic-report:org-1:store-1:2026-10-26:morning_report",
+            },
+            error_text: "RESPONSIBLE_WHATSAPP_TEMPLATE_KIND_REQUIRED",
+          }),
+        ], calls) as DrainDependencies,
+      );
+      assert.deepEqual(calls, ["materialize", "load"]);
+      assert.equal(result.sent, 0);
+      assert.equal(result.prepared, 0);
+      assert.equal(result.skippedReasons.automatic_report_policy_failure_not_retried, 1);
     },
   },
   {
