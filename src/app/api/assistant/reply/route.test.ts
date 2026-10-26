@@ -6,6 +6,7 @@ import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";
+import type { AppointmentRow, StoreAssistantContextStateRow } from "@/lib/server/assistant/types";
 
 type TestCase = {
   name: string;
@@ -2905,6 +2906,31 @@ const tests: TestCase[] = [
       });
 
       assert.match(String(reply), /mais de uma remarca/);
+    },
+  },
+  {
+    name: "deictic short reply never reuses an active appointment while multiple persisted options remain",
+    run: async () => {
+      const { resolveAppointmentIndexFromAssistantContext } = await loadRouteModule();
+      const appointments: AppointmentRow[] = [
+        { id: "appointment-ana", title: "Visita Ana", appointment_type: "technical_visit", status: "scheduled", scheduled_start: "2026-10-27T13:00:00.000Z", scheduled_end: "2026-10-27T14:00:00.000Z", customer_name: "Ana", customer_phone: null, address_text: null, notes: null, lead_id: "lead-ana", conversation_id: "conv-ana", commercial_opportunity_id: "opp-ana" },
+        { id: "appointment-maria", title: "Visita Maria", appointment_type: "technical_visit", status: "scheduled", scheduled_start: "2026-10-27T15:00:00.000Z", scheduled_end: "2026-10-27T16:00:00.000Z", customer_name: "Maria", customer_phone: null, address_text: null, notes: null, lead_id: "lead-maria", conversation_id: "conv-maria", commercial_opportunity_id: "opp-maria" },
+      ];
+      const ambiguousContext = {
+        active_topic: "appointment_management",
+        active_intent: "cancel",
+        active_status: "waiting_user_choice",
+        active_appointment_id: "appointment-ana",
+        candidate_options: [
+          { option_number: 1, source_index: 0, appointment_id: "appointment-ana" },
+          { option_number: 2, source_index: 1, appointment_id: "appointment-maria" },
+        ],
+        context_payload: {},
+      } as StoreAssistantContextStateRow;
+
+      assert.equal(resolveAppointmentIndexFromAssistantContext({ text: "esse", openAppointments: appointments, contextState: ambiguousContext }), null);
+      assert.equal(resolveAppointmentIndexFromAssistantContext({ text: "esse", openAppointments: appointments, contextState: { ...ambiguousContext, candidate_options: [{ option_number: 1, source_index: 0, appointment_id: "appointment-ana" }] } }), 0);
+      assert.equal(resolveAppointmentIndexFromAssistantContext({ text: "esse", openAppointments: appointments, contextState: null }), null);
     },
   },
 ];

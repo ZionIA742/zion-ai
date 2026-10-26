@@ -3910,13 +3910,14 @@ async function loadExplicitAppointmentMatchesFromCommand(args: {
   return [] as AppointmentRow[];
 }
 
-function resolveAppointmentIndexFromAssistantContext(args: {
+export function resolveAppointmentIndexFromAssistantContext(args: {
   text: string;
   openAppointments: AppointmentRow[];
   contextState?: StoreAssistantContextStateRow | null;
 }) {
   const options = readAssistantCandidateOptions(args.contextState);
   const explicitIndex = resolvePostAppointmentDetailIndex(args.text, Math.max(options.length, args.openAppointments.length, 1));
+  const hasUnresolvedOptionAmbiguity = options.length > 1 && explicitIndex === null;
 
   if (explicitIndex !== null && options.length > 0) {
     const optionNumber = explicitIndex + 1;
@@ -3946,7 +3947,7 @@ function resolveAppointmentIndexFromAssistantContext(args: {
     ["appointment_management", "appointment_reschedule"].includes(contextTopic) &&
     ["active", "waiting_user_choice", "waiting_customer_response"].includes(contextStatus);
 
-  if (canReuseActiveAppointment && activeAppointmentId) {
+  if (canReuseActiveAppointment && activeAppointmentId && !hasUnresolvedOptionAmbiguity) {
     const activeIndex = args.openAppointments.findIndex((appointment) => appointment.id === activeAppointmentId);
     if (activeIndex >= 0) {
       const directMatches = resolveAppointmentCandidateIndexesFromText({
@@ -3977,7 +3978,7 @@ function resolveAppointmentIndexFromAssistantContext(args: {
     "conclua esse", "pode fazer", "pode seguir",
   ]);
 
-  if (keepsCurrentContext && args.contextState?.active_appointment_id) {
+  if (keepsCurrentContext && args.contextState?.active_appointment_id && !hasUnresolvedOptionAmbiguity) {
     const activeIndex = args.openAppointments.findIndex((appointment) => appointment.id === args.contextState?.active_appointment_id);
     if (activeIndex >= 0) return activeIndex;
   }
