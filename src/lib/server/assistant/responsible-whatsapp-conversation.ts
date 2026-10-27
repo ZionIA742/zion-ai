@@ -7,6 +7,7 @@ import {
 import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
 import { sendResponsibleAssistantText } from "@/lib/server/assistant/responsible-external-notifications-sender";
 import { downloadAndStoreWhatsappInboundMedia, removeWhatsappInboundStoredMedia } from "@/lib/server/whatsapp-inbound-media";
+import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
 import type { QuoteApprovalDecisionResult } from "@/lib/server/sales-quotes/quote-approval-decision";
 
 type ResponsibleWhatsappEvent = {
@@ -38,6 +39,17 @@ type PersistedInboundMessage = {
   metadata: Record<string, unknown> | null;
 };
 
+export class ResponsibleAudioTranscriptionError extends Error {
+  constructor(
+    message: string,
+    public readonly retryable: boolean,
+    public readonly code: string,
+  ) {
+    super(message);
+    this.name = "ResponsibleAudioTranscriptionError";
+  }
+}
+
 const RESPONSIBLE_EVENT_RECOVERY_MAX_AGE_MS = 23 * 60 * 60 * 1000;
 const RESPONSIBLE_EVENT_RECOVERY_MAX_LIMIT = 10;
 
@@ -48,6 +60,10 @@ export type PersistedResponsibleWhatsappEventResumeResult =
 type ResumePersistedResponsibleWhatsappEventDeps = {
   loadResponsible: typeof loadCanonicalActivePrimaryStoreResponsible;
   resumeRoute: typeof routeResponsibleWhatsappToAssistant;
+};
+
+type ResponsibleWhatsappRouteDeps = {
+  transcribeAudio: typeof transcribeCustomerAudioFromStorage;
 };
 
 type ResponsibleWhatsappMedia = {
@@ -246,6 +262,124 @@ async function hasPersistedResponsibleWhatsappReply(args: {
   return Boolean(data?.id);
 }
 
+function isAudioInbound(inbound: PersistedInboundMessage) {
+  return clean(inbound.metadata?.attachment_kind) === "audio";
+}
+
+function isRetryableAudioTranscriptionError(error: string) {
+  return error === "AUDIO_DOWNLOAD_FAILED" || error === "OPENAI_AUDIO_TRANSCRIPTION_FAILED";
+}
+
+export async function ensureResponsibleAudioTranscript(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  inbound: PersistedInboundMessage;
+  transcribeAudio?: typeof transcribeCustomerAudioFromStorage;
+}) {
+  if (!isAudioInbound(args.inbound)) return null;
+
+  const metadata = { ...(args.inbound.metadata || {}) };
+  const existingTranscript = clean(metadata.audio_transcript);
+  if (existingTranscript && clean(metadata.audio_transcription_status) === "completed") {
+    return { transcript: existingTranscript, metadata };
+  }
+
+  if (
+    clean(metadata.audio_transcription_status) === "failed" &&
+    metadata.audio_transcription_retryable === false
+  ) {
+    throw new ResponsibleAudioTranscriptionError(
+      clean(metadata.audio_transcription_error) || "RESPONSIBLE_AUDIO_TRANSCRIPTION_PERMANENT_FAILURE",
+      false,
+      clean(metadata.audio_transcription_error_code) || "RESPONSIBLE_AUDIO_TRANSCRIPTION_PERMANENT_FAILURE",
+    );
+  }
+
+  const storageBucket = clean(metadata.storage_bucket);
+  const storagePath = clean(metadata.storage_path);
+  const organizationPrefix = `${args.organizationId}/${args.storeId}/`;
+  if (!storageBucket || !storagePath || !storagePath.startsWith(organizationPrefix)) {
+    throw new ResponsibleAudioTranscriptionError(
+      "RESPONSIBLE_AUDIO_STORAGE_METADATA_INVALID",
+      false,
+      "RESPONSIBLE_AUDIO_STORAGE_METADATA_INVALID",
+    );
+  }
+
+  const transcribeAudio = args.transcribeAudio || transcribeCustomerAudioFromStorage;
+  const result = await transcribeAudio({
+    supabase: args.supabase,
+    bucket: storageBucket,
+    storagePath,
+    fileName: clean(metadata.original_file_name) || "responsible-audio.webm",
+    mimeType: clean(metadata.mime_type) || "audio/webm",
+  });
+
+  const nextMetadata: Record<string, unknown> = {
+    ...metadata,
+    audio_transcription_provider: result.provider,
+    audio_transcription_model: result.model,
+    audio_transcription_attempted_at: new Date().toISOString(),
+  };
+
+  if (!result.ok) {
+    const retryable = isRetryableAudioTranscriptionError(result.error);
+    Object.assign(nextMetadata, {
+      audio_transcription_status: "failed",
+      audio_transcription_error_code: result.error,
+      audio_transcription_error: result.message,
+      audio_transcription_retryable: retryable,
+    });
+
+    const { data: updatedMessage, error } = await args.supabase
+      .from("store_assistant_messages")
+      .update({ metadata: nextMetadata })
+      .eq("id", args.inbound.id)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .select("id")
+      .maybeSingle();
+    if (error || !updatedMessage?.id) {
+      throw new Error(error?.message || "RESPONSIBLE_AUDIO_METADATA_UPDATE_EMPTY");
+    }
+
+    throw new ResponsibleAudioTranscriptionError(result.message, retryable, result.error);
+  }
+
+  const transcript = clean(result.transcript);
+  if (!transcript) {
+    throw new ResponsibleAudioTranscriptionError(
+      "RESPONSIBLE_AUDIO_TRANSCRIPTION_EMPTY",
+      false,
+      "EMPTY_AUDIO_TRANSCRIPT",
+    );
+  }
+
+  Object.assign(nextMetadata, {
+    audio_transcript: transcript,
+    audio_transcription_status: "completed",
+    audio_transcription_error_code: null,
+    audio_transcription_error: null,
+    audio_transcription_retryable: false,
+    audio_transcribed_at: new Date().toISOString(),
+  });
+
+  const { data: updatedMessage, error } = await args.supabase
+    .from("store_assistant_messages")
+    .update({ metadata: nextMetadata })
+    .eq("id", args.inbound.id)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .select("id")
+    .maybeSingle();
+  if (error || !updatedMessage?.id) {
+    throw new Error(error?.message || "RESPONSIBLE_AUDIO_METADATA_UPDATE_EMPTY");
+  }
+
+  return { transcript, metadata: nextMetadata };
+}
+
 function recoverySkip(eventId: string, reason: string): PersistedResponsibleWhatsappEventResumeResult {
   return { status: "skipped", eventId, reason };
 }
@@ -438,6 +572,7 @@ export async function routeResponsibleWhatsappToAssistant(args: {
   messageType?: string;
   metadata?: Record<string, unknown>;
   media?: ResponsibleWhatsappMedia | null;
+  deps?: Partial<ResponsibleWhatsappRouteDeps>;
   onInboundPersisted?: (input: {
     inboundMessageId: string;
     externalMessageId: string;
@@ -502,7 +637,7 @@ export async function routeResponsibleWhatsappToAssistant(args: {
 
     const { data: existingInbound, error: existingInboundError } = await supabase
       .from("store_assistant_messages")
-      .select("id, thread_id")
+      .select("id, thread_id, content, metadata")
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
       .eq("sender_role", "store_responsible")
@@ -527,7 +662,9 @@ export async function routeResponsibleWhatsappToAssistant(args: {
             fallbackBaseName: `responsible-whatsapp-${media.mediaKind}`,
           })
         : null;
-      uploadedMediaStoragePath = storedMedia?.storagePath || null;
+      uploadedMediaStoragePath = storedMedia && !storedMedia.reusedExisting
+        ? storedMedia.storagePath
+        : null;
       const attachmentKind = media?.mediaKind === "document" ? "file" : media?.mediaKind;
       const messageContent = content || media?.caption ||
         (media?.mediaKind === "image"
@@ -573,7 +710,7 @@ export async function routeResponsibleWhatsappToAssistant(args: {
             received_at: new Date().toISOString(),
           },
         })
-        .select("id, thread_id")
+        .select("id, thread_id, content, metadata")
         .maybeSingle();
       if (inboundError || !insertedInbound?.id) {
         throw new Error(inboundError?.message || "ASSISTANT_INBOUND_PERSIST_FAILED");
@@ -585,6 +722,14 @@ export async function routeResponsibleWhatsappToAssistant(args: {
     await updateEvent(supabase, event.id, event.claim_token!, {
       inbound_message_id: inbound.id,
       thread_id: inbound.thread_id,
+    });
+
+    await ensureResponsibleAudioTranscript({
+      supabase,
+      organizationId,
+      storeId,
+      inbound: inbound as PersistedInboundMessage,
+      transcribeAudio: args.deps?.transcribeAudio,
     });
 
     let inboundHookResult: QuoteApprovalDecisionResult | null = null;
@@ -695,7 +840,10 @@ export async function routeResponsibleWhatsappToAssistant(args: {
     }
     const errorText = error instanceof Error ? error.message : String(error);
     const uncertain = errorText === "send_uncertain";
-    const retryable = !uncertain && (Number(event.attempts || 1) < 3);
+    const retryable =
+      !uncertain &&
+      (!(error instanceof ResponsibleAudioTranscriptionError) || error.retryable) &&
+      Number(event.attempts || 1) < 3;
     await updateEvent(supabase, event.id, event.claim_token!, {
       status: uncertain ? "uncertain" : retryable ? "received" : "failed",
       outbound_status: uncertain ? "uncertain" : "failed",

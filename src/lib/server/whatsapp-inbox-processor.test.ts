@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -8,6 +9,7 @@ import {
   bootstrapCommercialContextBeforeInsert,
   extractIncomingMessage,
   processWhatsappInbox,
+  resolveCustomerMessageForAiDispatch,
   resolveWhatsappInboundThreadBySystem,
   isLikelyResponsibleAssistantQuestion,
 } from "./whatsapp-inbox-processor.js";
@@ -1120,7 +1122,6 @@ test("Sales AI failure is retried once and then becomes an explicit terminal inb
     message_type: "text",
     content: "Continuar atendimento",
   };
-
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
     const method = init?.method || "GET";
@@ -1317,6 +1318,9 @@ async function processCustomerMediaScenario(args: {
               : "application/pdf",
     },
   };
+  const persistedMimeType = String(
+    (persistedMessage.metadata as Record<string, unknown> | null | undefined)?.mime_type || "",
+  );
 
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
@@ -1343,7 +1347,7 @@ async function processCustomerMediaScenario(args: {
                 type: args.type,
                 [args.type]: {
                   id: "meta-media-1",
-                  mime_type: persistedMessage.metadata?.mime_type,
+                  mime_type: persistedMimeType,
                   caption: args.caption,
                   filename: args.filename,
                 },
@@ -1442,22 +1446,31 @@ async function processCustomerMediaScenario(args: {
     }
 
     if (url.includes("graph.facebook.com") && method === "GET") {
+      const mediaBytes = persistedMimeType.startsWith("audio/")
+        ? new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0])
+        : new Uint8Array([1, 2, 3]);
       return jsonFetchResponse({
         url: "https://media.test/object",
-        mime_type: persistedMessage.metadata?.mime_type,
-        sha256: "sha-media",
+        mime_type: persistedMimeType,
+        sha256: createHash("sha256").update(mediaBytes).digest("hex"),
       });
     }
 
     if (url === "https://media.test/object" && method === "GET") {
-      return new Response(new Uint8Array([1, 2, 3]), {
+      const mediaBytes = persistedMimeType.startsWith("audio/")
+        ? new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0])
+        : new Uint8Array([1, 2, 3]);
+      return new Response(mediaBytes, {
         status: 200,
-        headers: { "content-type": String(persistedMessage.metadata?.mime_type) },
+        headers: { "content-type": persistedMimeType },
       });
     }
 
     if (url.includes("/storage/v1/object/") && method === "GET") {
-      return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+      const storageBytes = persistedMimeType.startsWith("audio/")
+        ? new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0])
+        : new Uint8Array([1, 2, 3]);
+      return new Response(storageBytes, { status: 200 });
     }
 
     if (url.includes("api.openai.com/v1/audio/transcriptions") && method === "POST") {
@@ -1526,6 +1539,50 @@ test("customer audio follows insert, transcription metadata, then Sales AI", asy
   assert.match(metadataPatch.url, /organization_id=eq\.org-1/);
   assert.match(metadataPatch.url, /store_id=eq\.store-1/);
   assert.match(metadataPatch.url, /conversation_id=eq\.conversation-1/);
+});
+
+test("operational routing receives the real customer audio transcript", () => {
+  assert.equal(
+    resolveCustomerMessageForAiDispatch({
+      rawMessageType: "audio",
+      metadata: { audio_transcript: "Sim, pode remarcar para amanha." },
+    }),
+    "Sim, pode remarcar para amanha.",
+  );
+  assert.equal(
+    resolveCustomerMessageForAiDispatch({
+      rawMessageType: "audio",
+      metadata: { audio_transcript: "Muda o horario para as quinze." },
+    }),
+    "Muda o horario para as quinze.",
+  );
+});
+
+test("audio routing fails closed without transcript and never uses the placeholder", () => {
+  assert.throws(
+    () =>
+      resolveCustomerMessageForAiDispatch({
+        rawMessageType: "audio",
+        metadata: {},
+      }),
+    /customer_audio_transcript_missing/,
+  );
+
+  const source = readProcessorSource();
+  const dispatchStart = source.indexOf("customerMessage: resolveCustomerMessageForAiDispatch({");
+  assert.ok(dispatchStart >= 0);
+  const dispatchBlock = source.slice(dispatchStart, dispatchStart + 1_200);
+  assert.doesNotMatch(dispatchBlock, /Cliente enviou um audio/);
+});
+
+test("text routing remains unchanged by the audio transcript bridge", () => {
+  assert.equal(
+    resolveCustomerMessageForAiDispatch({
+      rawMessageType: "text",
+      textBody: "sim",
+    }),
+    "sim",
+  );
 });
 
 test("already transcribed audio retry avoids transcription and duplicate insert", async () => {

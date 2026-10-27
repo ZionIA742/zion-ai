@@ -1,9 +1,51 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { resumePersistedResponsibleWhatsappEvent } from "./responsible-whatsapp-conversation";
+import {
+  ensureResponsibleAudioTranscript,
+  ResponsibleAudioTranscriptionError,
+  resumePersistedResponsibleWhatsappEvent,
+} from "./responsible-whatsapp-conversation";
 
 const recoveryNow = new Date("2026-10-23T11:00:00.000Z");
+
+function createAudioMetadataSupabase() {
+  const updates: Record<string, unknown>[] = [];
+  const supabase = {
+    from(table: string) {
+      assert.equal(table, "store_assistant_messages");
+      const chain = {
+        update(values: Record<string, unknown>) {
+          updates.push(values);
+          return chain;
+        },
+        eq() { return chain; },
+        select() { return chain; },
+        async maybeSingle() { return { data: { id: "inbound-1" }, error: null }; },
+      };
+      return chain;
+    },
+  };
+  return { supabase, updates };
+}
+
+function audioInbound(metadata: Record<string, unknown> = {}) {
+  return {
+    id: "inbound-1",
+    organization_id: "org-1",
+    store_id: "store-1",
+    thread_id: "thread-1",
+    content: "Responsável enviou um áudio.",
+    metadata: {
+      attachment_kind: "audio",
+      storage_bucket: "zion-store-files",
+      storage_path: "org-1/store-1/whatsapp-inbound/thread-1/audio.webm",
+      original_file_name: "audio.webm",
+      mime_type: "audio/webm",
+      ...metadata,
+    },
+  };
+}
 
 function createResumeHarness(overrides: {
   event?: Record<string, unknown>;
@@ -269,6 +311,111 @@ test("responsible WhatsApp bridge persists bounded recovery and outbound uncerta
   assert.match(migration, /recover_stale_store_assistant_responsible_whatsapp_events/);
   assert.match(migration, /inbox_reopened_for_recovery/);
   assert.match(migration, /for update skip locked/);
+});
+
+test("responsible audio transcription persists transcript and preserves tenant scope", async () => {
+  const harness = createAudioMetadataSupabase();
+  const calls: Record<string, unknown>[] = [];
+  const result = await ensureResponsibleAudioTranscript({
+    supabase: harness.supabase as never,
+    organizationId: "org-1",
+    storeId: "store-1",
+    inbound: audioInbound(),
+    transcribeAudio: async (input) => {
+      calls.push(input as unknown as Record<string, unknown>);
+      return { ok: true as const, transcript: "Verifique a visita de amanha", provider: "openai" as const, model: "whisper-1" };
+    },
+  });
+
+  assert.equal(result?.transcript, "Verifique a visita de amanha");
+  assert.equal(calls[0]?.bucket, "zion-store-files");
+  assert.equal(calls[0]?.storagePath, "org-1/store-1/whatsapp-inbound/thread-1/audio.webm");
+  assert.equal(calls[0]?.mimeType, "audio/webm");
+  const metadata = harness.updates[0]?.metadata as Record<string, unknown>;
+  assert.equal(metadata.audio_transcript, "Verifique a visita de amanha");
+  assert.equal(metadata.audio_transcription_status, "completed");
+});
+
+test("completed responsible audio transcription is reused without provider or metadata writes", async () => {
+  const harness = createAudioMetadataSupabase();
+  let calls = 0;
+  const result = await ensureResponsibleAudioTranscript({
+    supabase: harness.supabase as never,
+    organizationId: "org-1",
+    storeId: "store-1",
+    inbound: audioInbound({
+      audio_transcript: "Transcricao persistida",
+      audio_transcription_status: "completed",
+    }),
+    transcribeAudio: async () => {
+      calls += 1;
+      throw new Error("provider must not be called");
+    },
+  });
+
+  assert.equal(result?.transcript, "Transcricao persistida");
+  assert.equal(calls, 0);
+  assert.equal(harness.updates.length, 0);
+});
+
+test("empty and permanent transcription failures fail closed without dispatch", async () => {
+  const emptyHarness = createAudioMetadataSupabase();
+  await assert.rejects(
+    () => ensureResponsibleAudioTranscript({
+      supabase: emptyHarness.supabase as never,
+      organizationId: "org-1",
+      storeId: "store-1",
+      inbound: audioInbound(),
+      transcribeAudio: async () => ({ ok: false as const, error: "EMPTY_AUDIO_TRANSCRIPT", message: "empty", provider: "openai" as const, model: "whisper-1" }),
+    }),
+    (error: unknown) => error instanceof ResponsibleAudioTranscriptionError && error.retryable === false,
+  );
+
+  const permanentHarness = createAudioMetadataSupabase();
+  await assert.rejects(
+    () => ensureResponsibleAudioTranscript({
+      supabase: permanentHarness.supabase as never,
+      organizationId: "org-1",
+      storeId: "store-1",
+      inbound: audioInbound(),
+      transcribeAudio: async () => ({ ok: false as const, error: "OPENAI_ENV_MISSING", message: "missing key", provider: "openai" as const, model: "whisper-1" }),
+    }),
+    (error: unknown) => error instanceof ResponsibleAudioTranscriptionError && error.retryable === false,
+  );
+
+  assert.equal((emptyHarness.updates[0]?.metadata as Record<string, unknown>).audio_transcription_status, "failed");
+  assert.equal((permanentHarness.updates[0]?.metadata as Record<string, unknown>).audio_transcription_retryable, false);
+});
+
+test("temporary transcription failures remain retryable and do not produce a transcript", async () => {
+  const harness = createAudioMetadataSupabase();
+  await assert.rejects(
+    () => ensureResponsibleAudioTranscript({
+      supabase: harness.supabase as never,
+      organizationId: "org-1",
+      storeId: "store-1",
+      inbound: audioInbound(),
+      transcribeAudio: async () => ({ ok: false as const, error: "AUDIO_DOWNLOAD_FAILED", message: "download failed", provider: "openai" as const, model: "whisper-1" }),
+    }),
+    (error: unknown) => error instanceof ResponsibleAudioTranscriptionError && error.retryable === true,
+  );
+
+  const metadata = harness.updates[0]?.metadata as Record<string, unknown>;
+  assert.equal(metadata.audio_transcription_status, "failed");
+  assert.equal(metadata.audio_transcription_retryable, true);
+  assert.equal("audio_transcript" in metadata, false);
+});
+
+test("the effective Assistant context uses transcript instead of the audio placeholder", () => {
+  const route = readFileSync("src/app/api/assistant/reply/route.ts", "utf8");
+  const bridge = readFileSync("src/lib/server/assistant/responsible-whatsapp-conversation.ts", "utf8");
+
+  assert.match(route, /message\.message_type\) === "audio"/);
+  assert.match(route, /message\.metadata\?\.audio_transcript/);
+  assert.match(route, /buildModelInput/);
+  assert.match(bridge, /ensureResponsibleAudioTranscript/);
+  assert.ok(bridge.indexOf("ensureResponsibleAudioTranscript") < bridge.indexOf("const { data: existingAssistant"));
+  assert.match(bridge, /sendResponsibleAssistantText/);
 });
 
 test("bridge treats sender role and message identity as database contracts", () => {

@@ -626,6 +626,10 @@ function formatPreferredChannel(value: string | null) {
 }
 
 function getMessageContent(message: AssistantMessageRow) {
+  if (normalizeText(message.message_type) === "audio") {
+    const transcript = asText(message.metadata?.audio_transcript);
+    if (transcript) return transcript;
+  }
   return String(message.content || "").trim();
 }
 

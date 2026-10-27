@@ -1713,6 +1713,44 @@ async function processCustomerMediaIntelligence(args: {
   return metadata;
 }
 
+export function resolveCustomerMessageForAiDispatch(args: {
+  rawMessageType: string;
+  textBody?: string | null;
+  imageCaption?: string | null;
+  videoCaption?: string | null;
+  documentCaption?: string | null;
+  documentFilename?: string | null;
+  metadata?: Record<string, unknown> | null;
+  canonicalLocation?: CanonicalLocation | null;
+  canonicalContacts?: CanonicalContact[] | null;
+}) {
+  if (args.rawMessageType === "audio") {
+    const transcript = asTrimmedString(args.metadata?.audio_transcript);
+    if (!transcript) {
+      throw new Error("customer_audio_transcript_missing");
+    }
+    return transcript;
+  }
+
+  return (
+    asTrimmedString(args.textBody) ||
+    asTrimmedString(args.imageCaption) ||
+    asTrimmedString(args.videoCaption) ||
+    asTrimmedString(args.documentCaption) ||
+    (args.rawMessageType === "image"
+      ? "Cliente enviou uma imagem."
+      : args.rawMessageType === "video"
+        ? "Cliente enviou um video."
+        : args.rawMessageType === "document"
+          ? `Cliente enviou o arquivo ${asTrimmedString(args.documentFilename) || "anexo"}.`
+          : args.rawMessageType === "location"
+            ? buildLocationContent(args.canonicalLocation as CanonicalLocation)
+            : args.rawMessageType === "contacts"
+              ? buildContactsContent(args.canonicalContacts as CanonicalContact[])
+              : "")
+  );
+}
+
 async function loadConversationAutomationState(args: {
   supabase: SupabaseClient;
   organizationId: string;
@@ -2260,7 +2298,7 @@ async function processSingleInboxRow(
       existingMessage.message_type || extracted.rawMessageType || "",
     ).trim();
     if (isCustomerMediaMessageType(existingMessageType)) {
-      await processCustomerMediaIntelligence({
+      const processedMetadata = await processCustomerMediaIntelligence({
         supabase,
         organizationId: inbox.organization_id,
         storeId: inbox.store_id,
@@ -2287,7 +2325,11 @@ async function processSingleInboxRow(
         storeId: inbox.store_id,
         conversationId: existingMessage.conversation_id,
         messageId: existingMessage.id,
-        customerMessage: existingMessage.content || "Cliente enviou uma midia.",
+        customerMessage: resolveCustomerMessageForAiDispatch({
+          rawMessageType: existingMessageType,
+          metadata: processedMetadata,
+          textBody: existingMessage.content,
+        }),
         runAiFlow,
         workerClaim,
       });
@@ -2400,6 +2442,7 @@ async function processSingleInboxRow(
   });
 
   let uploadedMediaStoragePath: string | null = null;
+  let processedMediaMetadata: Record<string, unknown> | null = null;
 
   try {
     let inserted: InsertMessageResult;
@@ -2420,7 +2463,7 @@ async function processSingleInboxRow(
         fallbackBaseName: "whatsapp-image",
       });
 
-      uploadedMediaStoragePath = storedMedia.storagePath;
+      uploadedMediaStoragePath = storedMedia.reusedExisting ? null : storedMedia.storagePath;
       const classificationMetadata = buildMediaClassificationMetadata({
         messageType: "image",
         mimeType: storedMedia.mimeType || extracted.imageMimeType,
@@ -2465,7 +2508,7 @@ async function processSingleInboxRow(
         fallbackBaseName: "whatsapp-audio",
       });
 
-      uploadedMediaStoragePath = storedMedia.storagePath;
+      uploadedMediaStoragePath = storedMedia.reusedExisting ? null : storedMedia.storagePath;
       const classificationMetadata = buildMediaClassificationMetadata({
         messageType: "audio",
         mimeType: storedMedia.mimeType || extracted.audioMimeType,
@@ -2510,7 +2553,7 @@ async function processSingleInboxRow(
         fallbackBaseName: "whatsapp-video",
       });
 
-      uploadedMediaStoragePath = storedMedia.storagePath;
+      uploadedMediaStoragePath = storedMedia.reusedExisting ? null : storedMedia.storagePath;
       const classificationMetadata = buildMediaClassificationMetadata({
         messageType: "video",
         mimeType: storedMedia.mimeType || extracted.videoMimeType,
@@ -2556,7 +2599,7 @@ async function processSingleInboxRow(
         fallbackBaseName: "whatsapp-document",
       });
 
-      uploadedMediaStoragePath = storedMedia.storagePath;
+      uploadedMediaStoragePath = storedMedia.reusedExisting ? null : storedMedia.storagePath;
       const classificationMetadata = buildMediaClassificationMetadata({
         messageType: "document",
         mimeType: storedMedia.mimeType || extracted.documentMimeType,
@@ -2661,7 +2704,7 @@ async function processSingleInboxRow(
     }
 
     if (isCustomerMediaMessageType(extracted.rawMessageType)) {
-      await processCustomerMediaIntelligence({
+      processedMediaMetadata = await processCustomerMediaIntelligence({
         supabase,
         organizationId: inbox.organization_id,
         storeId: inbox.store_id,
@@ -2699,24 +2742,17 @@ async function processSingleInboxRow(
         storeId: inbox.store_id,
         conversationId: conversation.id,
         messageId: inserted.id || null,
-        customerMessage:
-          extracted.textBody ||
-          extracted.imageCaption ||
-          extracted.videoCaption ||
-          extracted.documentCaption ||
-          (extracted.rawMessageType === "audio"
-            ? "Cliente enviou um audio."
-            : extracted.rawMessageType === "image"
-              ? "Cliente enviou uma imagem."
-              : extracted.rawMessageType === "video"
-                ? "Cliente enviou um video."
-                : extracted.rawMessageType === "document"
-                  ? `Cliente enviou o arquivo ${extracted.documentFilename || "anexo"}.`
-                  : extracted.rawMessageType === "location"
-                    ? buildLocationContent(canonicalLocation as CanonicalLocation)
-                    : extracted.rawMessageType === "contacts"
-                      ? buildContactsContent(canonicalContacts as CanonicalContact[])
-                  : ""),
+        customerMessage: resolveCustomerMessageForAiDispatch({
+          rawMessageType: extracted.rawMessageType,
+          textBody: extracted.textBody,
+          imageCaption: extracted.imageCaption,
+          videoCaption: extracted.videoCaption,
+          documentCaption: extracted.documentCaption,
+          documentFilename: extracted.documentFilename,
+          metadata: processedMediaMetadata,
+          canonicalLocation,
+          canonicalContacts,
+        }),
         runAiFlow,
         workerClaim,
       });
