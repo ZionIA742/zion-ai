@@ -373,3 +373,15 @@ test("transport failures never trigger blind claim retry", async () => {
     "OPENAI_COST_CLAIM_ASSERT_UNCONFIRMED",
   );
 });
+
+test("assertion RPC matches installed PostgreSQL identifier", () => {
+  assert.equal(
+    OPENAI_COST_ASSERT_RPC,
+    "zion_admin_assert_openai_cost_collection_operation_claim_by_sys",
+  );
+
+  assert.equal(
+    Buffer.byteLength(OPENAI_COST_ASSERT_RPC, "utf8"),
+    63,
+  );
+});

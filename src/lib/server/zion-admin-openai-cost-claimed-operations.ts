@@ -12,7 +12,7 @@ export const OPENAI_COST_CLAIM_RPC =
   "zion_admin_claim_openai_cost_collection_operations_by_system";
 
 export const OPENAI_COST_ASSERT_RPC =
-  "zion_admin_assert_openai_cost_collection_operation_claim_by_system";
+  "zion_admin_assert_openai_cost_collection_operation_claim_by_sys";
 
 type RpcResponse = {
   data: unknown;
