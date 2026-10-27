@@ -9,10 +9,17 @@ export type CustomerIdentityNameExtractionResult =
     };
 
 const SELF_DECLARATION_PATTERNS = [
+  /\b(?:pode\s+me\s+chamar\s+de|me\s+cham(?:a|e)\s+de|prefiro\s+que\s+me\s+chame\s+de)\s+(.+)/iu,
   /\bmeu\s+nome\s+(?:e|eh|é)\s+(.+)/iu,
   /\bme\s+chamo\s+(.+)/iu,
   /\bsou\s+(?:o|a)\s+(.+)/iu,
   /\baqui\s+(?:e|eh|é)\s+(?:o|a)\s+(.+)/iu,
+];
+
+const NEGATED_SELF_DECLARATION_PATTERNS = [
+  /\b(?:nao|não)\s+me\s+(?:chame|chamem|chamo)\b/iu,
+  /\b(?:nao|não)\s+sou\s+(?:o|a)\b/iu,
+  /\bnunca\s+me\s+(?:chame|chamem)\b/iu,
 ];
 
 const THIRD_PERSON_PATTERNS = [
@@ -24,6 +31,8 @@ const THIRD_PERSON_PATTERNS = [
   /\bcoloca\s+no\s+nome\s+(?:do|da|de)?\s*[\p{L}]/iu,
   /\bresponsavel\s+(?:e|eh|é)\s+[\p{L}]/iu,
   /\bresponsável\s+(?:e|eh|é)\s+[\p{L}]/iu,
+  /\b(?:pode\s+)?chamar\s+(?:o|a)\s+[\p{L}]/iu,
+  /\b(?:prefiro\s+que\s+)?(?:chame|chamem)\s+(?:o|a)\s+[\p{L}]/iu,
 ];
 
 const INVALID_NAME_WORDS = new Set([
@@ -86,6 +95,10 @@ export function extractCustomerSelfDeclaredName(
 ): CustomerIdentityNameExtractionResult {
   const text = normalizeSpacing(String(message || ""));
   if (!text) return { ok: false, reason: "empty" };
+
+  if (NEGATED_SELF_DECLARATION_PATTERNS.some((pattern) => pattern.test(text))) {
+    return { ok: false, reason: "no_high_confidence_self_declaration" };
+  }
 
   if (THIRD_PERSON_PATTERNS.some((pattern) => pattern.test(text))) {
     return { ok: false, reason: "no_high_confidence_self_declaration" };

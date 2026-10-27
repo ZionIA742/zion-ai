@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
+import { buildInformalPortugueseContextInstruction } from "@/lib/server/informal-portuguese-context";
 import type {
   AppointmentRow,
   AssistantCandidateOption,
@@ -9418,6 +9419,9 @@ function buildSystemPrompt(args: {
 }) {
   const storeName = args.storeContext.storeDisplayName || args.store.name || "a loja";
   const requestAnalysis = buildRequestAnalysisBlock(args.lastHumanMessage);
+  const informalPortugueseContextBlock = buildInformalPortugueseContextInstruction({
+    persona: "assistant",
+  });
 
   return [
     `Você é a IA assistente operacional interna do projeto ZION.`,
@@ -9458,6 +9462,8 @@ function buildSystemPrompt(args: {
     "- seja proativa com segurança: sugira o próximo passo, mas não finja execução nem force automações fora do que existe",
     "- se houver lista de compromissos, cite data, hora, cliente e título de forma curta para o responsável conseguir escolher rápido",
     "- se a pessoa responder de forma curta depois de uma lista, use o contexto recente da conversa antes de pedir tudo de novo",
+    "",
+    informalPortugueseContextBlock,
     "",
     ZION_POOL_STORE_ASSISTANT_BEHAVIOR_MAP,
     "",

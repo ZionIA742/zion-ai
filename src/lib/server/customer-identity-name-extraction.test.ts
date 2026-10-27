@@ -20,6 +20,18 @@ test("extracts explicit customer self-declared names", () => {
   assert.equal(nameOf("Aqui é a Maria"), "Maria");
 });
 
+test("extracts explicit preferred forms of address", () => {
+  assert.equal(nameOf("Pode me chamar de Carlos"), "Carlos");
+  assert.equal(nameOf("Me chama de Carlos"), "Carlos");
+  assert.equal(nameOf("Me chame de Carlos"), "Carlos");
+  assert.equal(nameOf("Prefiro que me chame de Carlos"), "Carlos");
+});
+
+test("allows a later explicit preferred name to replace an earlier extraction", () => {
+  assert.equal(nameOf("Me chama de Carlos"), "Carlos");
+  assert.equal(nameOf("Prefiro que me chame de Ana"), "Ana");
+});
+
 test("preserves Brazilian name characters and stops at punctuation", () => {
   assert.equal(nameOf("Meu nome é José D'Ávila-Santos, quero uma piscina"), "José D'Ávila-Santos");
   assert.equal(nameOf("Sou a Ana Júlia. Quero orçamento"), "Ana Júlia");
@@ -38,6 +50,21 @@ test("rejects third-person or billing-contact mentions", () => {
     "o orçamento é para Maria",
     "coloca no nome do Carlos",
     "o responsável é João",
+    "Pode chamar o Carlos",
+    "Prefiro que chamem a Ana",
+    "Carlos tem piscina",
+  ]) {
+    assert.equal(nameOf(message), null, message);
+  }
+});
+
+test("rejects negative or ambiguous forms that must not confirm identity", () => {
+  for (const message of [
+    "nao me chame de Carlos",
+    "não me chamo Carlos",
+    "nao sou o Carlos",
+    "nunca me chame de Carlos",
+    "pode chamar Carlos",
   ]) {
     assert.equal(nameOf(message), null, message);
   }
