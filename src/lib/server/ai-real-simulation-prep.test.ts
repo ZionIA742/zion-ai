@@ -16,6 +16,27 @@ export type SimulationScenario = {
   turns: SimulationTurn[];
 };
 
+type CommercialScenarioId =
+  | "commercial-technical-visit"
+  | "commercial-pump"
+  | "commercial-cover"
+  | "commercial-complete-pool"
+  | "commercial-discount"
+  | "commercial-change-request"
+  | "commercial-human-takeover";
+
+export type CommercialSimulationScenario = {
+  id: CommercialScenarioId;
+  actor: "sales";
+  title: string;
+  turns: SimulationTurn[];
+  requiresTechnicalVisit: boolean;
+  requiresContract: boolean;
+  fixtureTechnicalVisitCompletedAfterTurn?: number;
+};
+
+type FixtureScenarioId = SimulationScenario["id"] | CommercialScenarioId;
+
 export type SimulationBudget = {
   maxCalls: number;
   maxInputTokens: number;
@@ -27,7 +48,7 @@ export const budget: SimulationBudget = {
   maxCalls: 32,
   maxInputTokens: 96_000,
   maxOutputTokens: 9_600,
-  maxOutputTokensPerCall: 300,
+  maxOutputTokensPerCall: 800,
 };
 
 const modelPricing: Record<string, { inputUsdPer1M: number; outputUsdPer1M: number }> = {
@@ -102,6 +123,157 @@ export const scenarios: SimulationScenario[] = [
   },
 ];
 
+/**
+ * This commercial suite is intentionally separate from `budget`: it is a
+ * local-only preparation for a future paid run, not an expansion of the
+ * existing 32-call battery or of any production AI limit.
+ */
+export const commercialSimulationBudget: SimulationBudget = {
+  maxCalls: 96,
+  maxInputTokens: 1_200_000,
+  maxOutputTokens: 96_000,
+  maxOutputTokensPerCall: 1_200,
+};
+
+export const commercialSimulationMaxCostUsd = 1;
+
+export const commercialSimulationScenarios: CommercialSimulationScenario[] = [
+  {
+    id: "commercial-technical-visit",
+    actor: "sales",
+    title: "Piscina com visita tecnica e pos-visita",
+    requiresTechnicalVisit: true,
+    requiresContract: true,
+    fixtureTechnicalVisitCompletedAfterTurn: 6,
+    turns: [
+      { userMessage: "Quero uma piscina para o quintal.", simulatedReply: "Posso entender o espaco e o que voce espera da piscina?" },
+      { userMessage: "Tenho um espaco de 4 por 7 metros em Campinas.", simulatedReply: "Com essas medidas, vamos considerar opcoes compativeis e confirmar os detalhes do local." },
+      { userMessage: "Quero instalacao completa.", simulatedReply: "A instalacao pode ser avaliada com seguranca para esse espaco." },
+      { userMessage: "Vocês fazem visita tecnica?", simulatedReply: "Posso verificar o procedimento e os horarios; ainda nao ha visita confirmada." },
+      { userMessage: "Prefiro uma tarde na proxima semana.", simulatedReply: "Vou encaminhar essa preferencia para verificacao de disponibilidade." },
+      { userMessage: "Pode considerar quarta a tarde.", simulatedReply: "A preferencia foi registrada apenas na fixture, sem confirmacao de agenda." },
+      { userMessage: "A visita ja foi feita pela equipe e o acesso esta liberado.", simulatedReply: "Com a visita concluida pela equipe, podemos avancar com o orcamento." },
+      { userMessage: "Qual modelo faz mais sentido agora?", simulatedReply: "Vou usar somente as opcoes do catalogo ficticio para orientar o proximo passo." },
+      { userMessage: "Quero receber um orcamento com instalacao.", simulatedReply: "O orcamento deve ser preparado e confirmado, sem presumir aprovacao." },
+      { userMessage: "Se a entrada couber no meu plano, podemos seguir.", simulatedReply: "Vamos alinhar as condicoes cadastradas e a proxima confirmacao comercial." },
+    ],
+  },
+  {
+    id: "commercial-pump",
+    actor: "sales",
+    title: "Venda de bomba de piscina",
+    requiresTechnicalVisit: false,
+    requiresContract: false,
+    turns: [
+      { userMessage: "Preciso trocar so a bomba da minha piscina.", simulatedReply: "Posso ajudar a verificar a compatibilidade sem supor especificacoes." },
+      { userMessage: "Minha piscina tem cerca de 30 mil litros.", simulatedReply: "Essa informacao ajuda a orientar a consulta ao catalogo." },
+      { userMessage: "A instalacao atual usa tubulacao de 50 mm.", simulatedReply: "Vou tratar a medida como dado tecnico a conferir, sem inventar adaptacao." },
+      { userMessage: "A bomba Fluxo 1 CV serve?", simulatedReply: "Vou confirmar apenas os dados cadastrados para a Fluxo 1 CV." },
+      { userMessage: "Quanto ela custa?", simulatedReply: "O preco deve vir do catalogo ficticio, nao de uma decisao da IA." },
+      { userMessage: "Aceita Pix e cartao?", simulatedReply: "As formas de pagamento devem respeitar a configuracao ficticia." },
+      { userMessage: "Nao preciso de visita tecnica.", simulatedReply: "Para este item, a fixture nao exige visita tecnica." },
+      { userMessage: "Tambem nao quero contrato para uma bomba.", simulatedReply: "A fixture marca esta venda simples como sem contrato." },
+      { userMessage: "Conseguem entregar em Campinas?", simulatedReply: "A entrega precisa ser confirmada pela loja, sem promessa automatica." },
+      { userMessage: "Se estiver tudo certo, quero fechar.", simulatedReply: "O proximo passo e confirmar item e condicoes, sem venda presumida." },
+    ],
+  },
+  {
+    id: "commercial-cover",
+    actor: "sales",
+    title: "Venda de capa de piscina",
+    requiresTechnicalVisit: false,
+    requiresContract: false,
+    turns: [
+      { userMessage: "Quero uma capa para minha piscina.", simulatedReply: "Posso verificar a capa correta a partir das medidas." },
+      { userMessage: "Ela mede 3 por 6 metros.", simulatedReply: "Vou manter essas dimensoes como referencia da conversa." },
+      { userMessage: "Quero a capa termica Azul 3x6.", simulatedReply: "Vou procurar somente o item exato do catalogo ficticio." },
+      { userMessage: "Ela cobre a piscina inteira?", simulatedReply: "A resposta deve usar apenas as caracteristicas cadastradas." },
+      { userMessage: "Qual e o preco?", simulatedReply: "O valor deve vir do catalogo, sem preco arbitrario." },
+      { userMessage: "No Pix melhora alguma coisa?", simulatedReply: "Qualquer condicao depende da politica ficticia cadastrada." },
+      { userMessage: "Nao preciso de visita para isso.", simulatedReply: "A venda simples permanece sem visita tecnica." },
+      { userMessage: "Tambem nao preciso de contrato.", simulatedReply: "A fixture nao cria etapa contratual para esta capa." },
+      { userMessage: "Gostei, quero comprar uma.", simulatedReply: "Vamos confirmar item, medida e pagamento antes de avancar." },
+      { userMessage: "Pode me passar o proximo passo?", simulatedReply: "O fechamento deve ser encaminhado sem confirmar pedido automaticamente." },
+    ],
+  },
+  {
+    id: "commercial-complete-pool",
+    actor: "sales",
+    title: "Venda completa de piscina",
+    requiresTechnicalVisit: true,
+    requiresContract: true,
+    turns: [
+      { userMessage: "Estou comparando uma Compacta 300 e uma Modelo 305.", simulatedReply: "Vou diferenciar os dois modelos conforme o catalogo ficticio." },
+      { userMessage: "Meu terreno permite ate 4 por 7 metros.", simulatedReply: "Essa medida ajuda a comparar sem afirmar que a instalacao esta aprovada." },
+      { userMessage: "Qual delas tem instalacao completa?", simulatedReply: "A instalacao deve respeitar a configuracao cadastrada e a verificacao do local." },
+      { userMessage: "Quero a Modelo 305.", simulatedReply: "Vou manter o modelo escolhido como referencia mais recente." },
+      { userMessage: "Quanto fica com instalacao?", simulatedReply: "O orcamento deve usar catalogo e condicoes cadastradas." },
+      { userMessage: "Posso dar entrada e parcelar o restante?", simulatedReply: "As condicoes devem ser confirmadas, nao inventadas." },
+      { userMessage: "E se eu der uma entrada maior?", simulatedReply: "A negociacao deve continuar dentro das regras ficticias." },
+      { userMessage: "Precisa de contrato?", simulatedReply: "O contrato so e aplicavel porque esta configurado para esta venda completa." },
+      { userMessage: "Quero seguir, mas ainda nao assinei nada.", simulatedReply: "Nenhuma assinatura ou aprovacao deve ser presumida." },
+      { userMessage: "Qual e o proximo passo para fechar?", simulatedReply: "O proximo passo deve encaminhar a confirmacao comercial com seguranca." },
+    ],
+  },
+  {
+    id: "commercial-discount",
+    actor: "sales",
+    title: "Cliente insistente pedindo desconto",
+    requiresTechnicalVisit: true,
+    requiresContract: true,
+    turns: [
+      { userMessage: "Me da desconto numa piscina?", simulatedReply: "Primeiro preciso entender o modelo e o contexto antes de qualquer concessao." },
+      { userMessage: "A concorrente cobra menos.", simulatedReply: "Vou defender o valor sem inventar desconto ou atacar concorrentes." },
+      { userMessage: "Quero o menor preco possivel.", simulatedReply: "O preco cheio e as condicoes cadastradas devem vir antes de concessoes." },
+      { userMessage: "Tenho espaco de 4 por 7 em Campinas.", simulatedReply: "Agora ha dados para qualificar o caso comercial." },
+      { userMessage: "Estou olhando a Modelo 305 com instalacao.", simulatedReply: "Vou usar o modelo e a instalacao para orientar a proposta." },
+      { userMessage: "Se eu pagar a vista voce reduz?", simulatedReply: "Qualquer contrapartida depende da politica ficticia, sem promessa." },
+      { userMessage: "Quero mais desconto ainda.", simulatedReply: "A conversa deve respeitar o limite de duas concessoes por ciclo." },
+      { userMessage: "Entao me da outra condicao.", simulatedReply: "Nao vou criar condicao fora da politica configurada." },
+      { userMessage: "Por que vale esse valor?", simulatedReply: "A resposta deve defender a proposta por valor e escopo verificavel." },
+      { userMessage: "Se estiver dentro das regras, podemos avancar.", simulatedReply: "O proximo passo deve validar a proposta, sem desconto inventado." },
+    ],
+  },
+  {
+    id: "commercial-change-request",
+    actor: "sales",
+    title: "Cliente indeciso que altera o pedido",
+    requiresTechnicalVisit: true,
+    requiresContract: true,
+    turns: [
+      { userMessage: "Quero uma Compacta 300.", simulatedReply: "Vou registrar a primeira preferencia na conversa." },
+      { userMessage: "Meu espaco e 3 por 5 metros.", simulatedReply: "A medida fica como contexto para a opcao inicial." },
+      { userMessage: "Pode preparar uma proposta?", simulatedReply: "Uma proposta pode ser encaminhada, sem aprovar automaticamente." },
+      { userMessage: "Na verdade meu espaco e 4 por 7.", simulatedReply: "A medida mais recente deve prevalecer para a proxima proposta." },
+      { userMessage: "Agora estou considerando a Modelo 305.", simulatedReply: "A nova opcao deve ficar separada da proposta anterior." },
+      { userMessage: "Vou pensar e volto depois.", simulatedReply: "A conversa deve preservar o contexto sem pressionar fechamento." },
+      { userMessage: "Voltei; quero alterar a proposta.", simulatedReply: "A alteracao deve criar um novo caminho, nao mutar um orcamento ja enviado." },
+      { userMessage: "Quero a Modelo 305 com instalacao.", simulatedReply: "Vou usar o pedido mais recente para orientar a nova proposta." },
+      { userMessage: "O orcamento anterior continua igual, certo?", simulatedReply: "A resposta deve reconhecer a imutabilidade da proposta anterior." },
+      { userMessage: "Qual o proximo passo para a nova proposta?", simulatedReply: "O proximo passo deve pedir confirmacao sem inferir aprovacao." },
+    ],
+  },
+  {
+    id: "commercial-human-takeover",
+    actor: "sales",
+    title: "Cliente dificil, desistência e atendimento humano",
+    requiresTechnicalVisit: false,
+    requiresContract: false,
+    turns: [
+      { userMessage: "Quero saber de piscina, mas nao sei explicar.", simulatedReply: "Vou responder de forma objetiva e pedir somente o necessario." },
+      { userMessage: "Qualquer uma serve, quanto custa?", simulatedReply: "Sem modelo definido, nao devo inventar preco ou especificacao." },
+      { userMessage: "Achei tudo caro.", simulatedReply: "A resposta deve ser respeitosa e sem penalidade inventada." },
+      { userMessage: "Sua concorrente e bem melhor.", simulatedReply: "Vou acolher a comparacao e manter objetividade." },
+      { userMessage: "Quero cancelar essa negociacao.", simulatedReply: "O cancelamento deve ser encaminhado corretamente, sem multa ficticia." },
+      { userMessage: "Nao me mande mais proposta automatica.", simulatedReply: "Nenhuma nova acao comercial automatica deve ser acionada." },
+      { userMessage: "Quero falar com uma pessoa agora.", simulatedReply: "O takeover humano deve ser respeitado." },
+      { userMessage: "Voce ainda esta tentando vender?", simulatedReply: "A IA nao deve insistir apos o pedido de atendimento humano." },
+      { userMessage: "Pode so registrar minha reclamacao.", simulatedReply: "A resposta deve ser curta, respeitosa e sem prometer procedimento inexistente." },
+      { userMessage: "Vou aguardar uma pessoa responder.", simulatedReply: "O atendimento humano permanece o proximo passo, sem novas acoes automaticas." },
+    ],
+  },
+];
+
 export const simulationFixtures = {
   organization: { id: "org-simulation", name: "Organização fictícia" },
   store: { id: "store-simulation", organization_id: "org-simulation", name: "Loja de simulação", timezone: "America/Sao_Paulo" },
@@ -116,8 +288,10 @@ export const simulationFixtures = {
     { id: "appointment-maria", organization_id: "org-simulation", store_id: "store-simulation", customer_id: "customer-maria", customer_name: "Maria Souza", scheduled_start: "2026-10-27T15:00:00.000Z", status: "scheduled" },
   ],
   catalog: [
-    { id: "pool-compact", organization_id: "org-simulation", store_id: "store-simulation", name: "Compacta 300", price_cents: 1899000, active: true },
-    { id: "pool-305", organization_id: "org-simulation", store_id: "store-simulation", name: "Modelo 305", price_cents: 2499000, active: true },
+    { id: "pool-compact", organization_id: "org-simulation", store_id: "store-simulation", name: "Compacta 300", description: "Piscina ficticia Compacta 300, para comparacao comercial local.", price: 18990, price_cents: 1899000, is_active: true, active: true, track_stock: false },
+    { id: "pool-305", organization_id: "org-simulation", store_id: "store-simulation", name: "Modelo 305", description: "Piscina ficticia Modelo 305, para comparacao comercial local.", price: 24990, price_cents: 2499000, is_active: true, active: true, track_stock: false },
+    { id: "pump-flow-1cv", organization_id: "org-simulation", store_id: "store-simulation", name: "Bomba Fluxo 1 CV", sku: "BOMBA-1CV-FICT", description: "Bomba ficticia de 1 CV; compatibilidade depende de confirmacao tecnica.", price: 129900, price_cents: 129900, is_active: true, active: true, track_stock: false },
+    { id: "cover-thermal-3x6", organization_id: "org-simulation", store_id: "store-simulation", name: "Capa termica Azul 3x6", sku: "CAPA-TERM-3X6-FICT", description: "Capa termica ficticia para piscina de 3 por 6 metros.", price: 89900, price_cents: 89900, is_active: true, active: true, track_stock: false },
   ],
   opportunity: { id: "opportunity-simulation", organization_id: "org-simulation", store_id: "store-simulation", stage: "qualificacao", lead_id: "lead-simulation" },
   conversation: { id: "conversation-simulation", organization_id: "org-simulation", store_id: "store-simulation", lead_id: "lead-simulation", status: "open", is_human_active: false },
@@ -129,7 +303,14 @@ export const scenarioFixtures = {
   "assistant-2": { threadId: "thread-assistant-2", conversationId: "conversation-assistant-2", leadId: "lead-assistant-2" },
   "sales-1": { threadId: "thread-sales-1", conversationId: "conversation-sales-1", leadId: "lead-sales-1", opportunityId: "opportunity-sales-1" },
   "sales-2": { threadId: "thread-sales-2", conversationId: "conversation-sales-2", leadId: "lead-sales-2", opportunityId: "opportunity-sales-2" },
-} as const;
+  "commercial-technical-visit": { threadId: "thread-commercial-technical-visit", conversationId: "conversation-commercial-technical-visit", leadId: "lead-commercial-technical-visit", opportunityId: "opportunity-commercial-technical-visit" },
+  "commercial-pump": { threadId: "thread-commercial-pump", conversationId: "conversation-commercial-pump", leadId: "lead-commercial-pump", opportunityId: "opportunity-commercial-pump" },
+  "commercial-cover": { threadId: "thread-commercial-cover", conversationId: "conversation-commercial-cover", leadId: "lead-commercial-cover", opportunityId: "opportunity-commercial-cover" },
+  "commercial-complete-pool": { threadId: "thread-commercial-complete-pool", conversationId: "conversation-commercial-complete-pool", leadId: "lead-commercial-complete-pool", opportunityId: "opportunity-commercial-complete-pool" },
+  "commercial-discount": { threadId: "thread-commercial-discount", conversationId: "conversation-commercial-discount", leadId: "lead-commercial-discount", opportunityId: "opportunity-commercial-discount" },
+  "commercial-change-request": { threadId: "thread-commercial-change-request", conversationId: "conversation-commercial-change-request", leadId: "lead-commercial-change-request", opportunityId: "opportunity-commercial-change-request" },
+  "commercial-human-takeover": { threadId: "thread-commercial-human-takeover", conversationId: "conversation-commercial-human-takeover", leadId: "lead-commercial-human-takeover", opportunityId: "opportunity-commercial-human-takeover" },
+} as const satisfies Record<FixtureScenarioId, { threadId: string; conversationId: string; leadId: string; opportunityId?: string }>;
 
 export class BoundedSimulatedOpenAI {
   readonly calls: Array<{ model: string; input: unknown; outputTokens: number }> = [];
@@ -186,16 +367,30 @@ export function createFailFastSupabase() {
 
 export function createFixtureSupabase() {
   const events: string[] = [];
-  const historyByScenario = new Map<SimulationScenario["id"], Array<Record<string, unknown>>>(scenarios.map((scenario) => [scenario.id, []]));
-  let activeScenario: SimulationScenario["id"] = "assistant-1";
+  const allFixtureScenarioIds = [...scenarios, ...commercialSimulationScenarios].map((scenario) => scenario.id) as FixtureScenarioId[];
+  const historyByScenario = new Map<FixtureScenarioId, Array<Record<string, unknown>>>(allFixtureScenarioIds.map((scenarioId) => [scenarioId, []]));
+  const visitStateByScenario = new Map<FixtureScenarioId, "not_applicable" | "requested" | "completed">(
+    allFixtureScenarioIds.map((scenarioId) => [
+      scenarioId,
+      scenarioId === "commercial-technical-visit" ? "requested" : "not_applicable",
+    ]),
+  );
+  const humanTakeoverByScenario = new Map<FixtureScenarioId, boolean>(
+    allFixtureScenarioIds.map((scenarioId) => [scenarioId, false]),
+  );
+  let activeScenario: FixtureScenarioId = "assistant-1";
+  const contextStateByScenario = new Map<FixtureScenarioId, Array<Record<string, unknown>>>(
+    allFixtureScenarioIds.map((scenarioId) => [scenarioId, []]),
+  );
   let activeMessages = historyByScenario.get(activeScenario)!;
-  const scenarioRows = (scenarioId: SimulationScenario["id"]) => {
+  const scenarioRows = (scenarioId: FixtureScenarioId) => {
     const context = scenarioFixtures[scenarioId];
     return {
       conversation: {
         ...simulationFixtures.conversation,
         id: context.conversationId,
         lead_id: context.leadId,
+        is_human_active: humanTakeoverByScenario.get(scenarioId) === true,
       },
       lead: {
         id: context.leadId,
@@ -231,6 +426,7 @@ export function createFixtureSupabase() {
     store_discount_settings: [],
     store_high_value_discount_settings: [],
     store_catalog_items: simulationFixtures.catalog,
+    store_catalog_item_photos: [],
     pools: simulationFixtures.catalog,
     pool_photos: [],
     store_appointments: simulationFixtures.appointments,
@@ -262,6 +458,7 @@ export function createFixtureSupabase() {
       commercial_opportunities: [current.opportunity],
       messages: activeMessages,
       store_assistant_threads: [current.thread],
+      store_assistant_context_state: contextStateByScenario.get(activeScenario) || [],
     };
     const data = dynamicRows[table] || rows[table] || [];
     const query: Record<string, unknown> = {};
@@ -277,23 +474,85 @@ export function createFixtureSupabase() {
         throw new Error(`UNEXPECTED_SUPABASE_OPERATION:${table}.${method}`);
       };
     }
+    if (table === "store_assistant_context_state") {
+      const contextRows = contextStateByScenario.get(activeScenario)!;
+
+      const requireScopedContext = (value: unknown) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          throw new Error("UNEXPECTED_SUPABASE_OPERATION:context_invalid_payload");
+        }
+        const payload = value as Record<string, unknown>;
+        if (
+          payload.organization_id !== simulationFixtures.organization.id ||
+          payload.store_id !== simulationFixtures.store.id ||
+          payload.thread_id !== current.thread.id
+        ) {
+          throw new Error("UNEXPECTED_SUPABASE_OPERATION:context_wrong_scope");
+        }
+        return payload;
+      };
+
+      query.insert = (value: unknown) => {
+        const payload = requireScopedContext(value);
+        if (contextRows.length !== 0) {
+          throw new Error("UNEXPECTED_SUPABASE_OPERATION:context_duplicate_insert");
+        }
+        contextRows.push({ ...payload, id: `fixture-context-${activeScenario}` });
+        events.push(`memory:${table}.insert`);
+        return query;
+      };
+
+      query.update = (value: unknown) => {
+        const payload = requireScopedContext(value);
+        if (contextRows.length !== 1) {
+          throw new Error("UNEXPECTED_SUPABASE_OPERATION:context_update_without_row");
+        }
+        if (payload.id && payload.id !== contextRows[0].id) {
+          throw new Error("UNEXPECTED_SUPABASE_OPERATION:context_wrong_id");
+        }
+        contextRows[0] = { ...contextRows[0], ...payload };
+        events.push(`memory:${table}.update`);
+        return query;
+      };
+    }
+
     query.maybeSingle = async () => ({ data: data[0] || null, error: null });
     query.then = (resolve: (value: unknown) => unknown) => resolve({ data, error: null });
     return query;
   };
   return {
     events,
-    setScenario(scenarioId: SimulationScenario["id"]) {
+    setScenario(scenarioId: FixtureScenarioId) {
       activeScenario = scenarioId;
       activeMessages = historyByScenario.get(scenarioId)!;
     },
-    resetScenario(scenarioId: SimulationScenario["id"]) {
+    resetScenario(scenarioId: FixtureScenarioId) {
       historyByScenario.set(scenarioId, []);
+      contextStateByScenario.set(scenarioId, []);
+      visitStateByScenario.set(scenarioId, scenarioId === "commercial-technical-visit" ? "requested" : "not_applicable");
+      humanTakeoverByScenario.set(scenarioId, false);
       activeScenario = scenarioId;
       activeMessages = historyByScenario.get(scenarioId)!;
     },
-    getHistory(scenarioId: SimulationScenario["id"]) {
+    getHistory(scenarioId: FixtureScenarioId) {
       return [...(historyByScenario.get(scenarioId) || [])];
+    },
+    getFixtureTechnicalVisitState(scenarioId: FixtureScenarioId) {
+      return visitStateByScenario.get(scenarioId) || "not_applicable";
+    },
+    completeFixtureTechnicalVisit(scenarioId: FixtureScenarioId) {
+      if (scenarioId !== "commercial-technical-visit" || visitStateByScenario.get(scenarioId) !== "requested") {
+        throw new Error("UNEXPECTED_FIXTURE_VISIT_STATE_CHANGE");
+      }
+      visitStateByScenario.set(scenarioId, "completed");
+      events.push(`fixture_only:technical_visit.completed:${scenarioId}`);
+    },
+    activateFixtureHumanTakeover(scenarioId: FixtureScenarioId) {
+      if (scenarioId !== "commercial-human-takeover") {
+        throw new Error("UNEXPECTED_FIXTURE_HUMAN_TAKEOVER");
+      }
+      humanTakeoverByScenario.set(scenarioId, true);
+      events.push(`fixture_only:human_takeover.active:${scenarioId}`);
     },
     setActiveMessages(nextMessages: Array<Record<string, unknown>>) {
       activeMessages = [...nextMessages];
@@ -448,7 +707,7 @@ function generatedText(output: unknown): string {
 
 function appendConversationMessage(
   supabase: ReturnType<typeof createFixtureSupabase>,
-  scenario: SimulationScenario,
+  scenario: Pick<SimulationScenario, "id" | "actor"> | CommercialSimulationScenario,
   turn: number,
   role: "user" | "assistant",
   content: string,
@@ -468,11 +727,243 @@ function appendConversationMessage(
   });
 }
 
+export type CommercialSimulationRecord = {
+  scenarioId: CommercialScenarioId;
+  turn: number;
+  output: unknown;
+  historyContentsAfterTurn: string[];
+  simulatedCallsAfterTurn: number;
+  simulatedCallsThisScenario: number;
+  fixtureTechnicalVisitState: "not_applicable" | "requested" | "completed";
+  humanTakeoverActive: boolean;
+  generatorInvoked: boolean;
+  source: "simulated" | "openai" | "fixture_guard";
+  callsThisTurn: number;
+  inputTokensThisTurn: number;
+  outputTokensThisTurn: number;
+  costUsdThisTurn: number;
+};
+
+export type CommercialSimulationRunnerArgs = {
+  mode?: "simulated" | "real";
+  authorization?: string;
+  openaiClient?: { responses: { create: (request: unknown) => Promise<unknown> } };
+  supabaseClient?: unknown;
+};
+
+export type CommercialSimulationRunReport = {
+  mode: "simulated" | "real";
+  source: "simulated" | "openai";
+  model: string;
+  pricing: { inputUsdPer1M: number; outputUsdPer1M: number };
+  plannedTurns: number;
+  potentialCalls: number;
+  totals: { calls: number; inputTokens: number; outputTokens: number; costUsd: number };
+  scenarios: CommercialSimulationRecord[];
+  technicalEvaluation: "validated_fixture_invariants" | "not_evaluated";
+  commercialEvaluation: "not_evaluated";
+  aborted?: { scenarioId: string; turn: number; cause: string; cumulative: { calls: number; inputTokens: number; outputTokens: number; costUsd: number } };
+};
+
+export const futureCommercialQualityReportTemplate = {
+  technical: ["generator_path", "history_continuity", "catalog_and_configuration_scope", "external_effect_blocking"],
+  commercial: ["request_understanding", "memory_and_continuity", "naturalness", "catalog_precision", "price_and_payment_terms", "technical_visit_and_post_visit", "contract_applicability", "discount_and_negotiation", "closing"],
+} as const;
+
+/**
+ * Executes only the real sales generator with local, in-memory fixtures and
+ * a simulated Responses client. It intentionally does not judge sales quality:
+ * that is reserved for a future paid, human-reviewed battery.
+ */
+type CommercialUsage = ReturnType<typeof newSharedUsage> & { costUsd: number };
+
+function createCommercialBudgetedOpenAIClient(
+  client: { responses: { create: (request: unknown) => Promise<unknown> } },
+  usage: CommercialUsage,
+) {
+  return {
+    responses: {
+      create: async (request: Record<string, unknown>) => {
+        if (usage.calls >= commercialSimulationBudget.maxCalls) throw new Error("COMMERCIAL_CALL_LIMIT_EXCEEDED");
+        const model = pricingForModel(request.model);
+        if (!model) throw new Error("COMMERCIAL_MODEL_NOT_AUTHORIZED");
+        const requestedOutput = typeof request.max_output_tokens === "number" ? request.max_output_tokens : commercialSimulationBudget.maxOutputTokensPerCall;
+        if (requestedOutput <= 0 || requestedOutput > commercialSimulationBudget.maxOutputTokensPerCall) throw new Error("COMMERCIAL_OUTPUT_LIMIT_EXCEEDED");
+        const estimatedInput = JSON.stringify(request.input ?? null).length + 1_024;
+        const projectedInput = usage.estimatedInputTokens + estimatedInput;
+        const projectedOutput = usage.outputTokens + requestedOutput;
+        const projectedCost = costUsd(model.model, projectedInput, projectedOutput);
+        if (projectedInput > commercialSimulationBudget.maxInputTokens || projectedOutput > commercialSimulationBudget.maxOutputTokens || projectedCost > commercialSimulationMaxCostUsd) {
+          throw new Error("COMMERCIAL_FINANCIAL_LIMIT_EXCEEDED");
+        }
+        usage.calls += 1;
+        usage.estimatedInputTokens += estimatedInput;
+        const response = await client.responses.create({ ...request, max_output_tokens: requestedOutput });
+        const responseObject = response && typeof response === "object" ? response as { usage?: { input_tokens?: unknown; output_tokens?: unknown }; model?: unknown } : null;
+        const inputTokens = responseObject?.usage?.input_tokens;
+        const outputTokens = responseObject?.usage?.output_tokens;
+        if (typeof inputTokens !== "number" || typeof outputTokens !== "number" || inputTokens < 0 || outputTokens < 0 || outputTokens > requestedOutput) throw new Error("COMMERCIAL_USAGE_INVALID");
+        const returned = responseObject?.model == null ? model.model : pricingForModel(responseObject.model);
+        if (!returned) throw new Error("COMMERCIAL_RETURNED_MODEL_NOT_AUTHORIZED");
+        usage.inputTokens += inputTokens;
+        usage.outputTokens += outputTokens;
+        usage.costUsd += costUsd(model.model, inputTokens, outputTokens);
+        if (usage.costUsd > commercialSimulationMaxCostUsd) throw new Error("COMMERCIAL_FINANCIAL_LIMIT_EXCEEDED");
+        return response;
+      },
+    },
+  };
+}
+
+export async function executeCommercialSimulationScenarios(args: CommercialSimulationRunnerArgs = {}): Promise<CommercialSimulationRecord[]> {
+  const mode = args.mode || "simulated";
+  if (mode === "real") {
+    if (args.authorization !== "REAL_COMMERCIAL_SIMULATION_AUTHORIZED" || process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED !== "1") throw new Error("COMMERCIAL_REAL_AUTHORIZATION_REQUIRED");
+    if (args.supabaseClient) throw new Error("COMMERCIAL_REAL_SUPABASE_INJECTION_FORBIDDEN");
+    if (!args.openaiClient) throw new Error("COMMERCIAL_REAL_OPENAI_DEPENDENCY_REQUIRED");
+  }
+  const supabase = createFixtureSupabase();
+  const salesReply = "{\"reply_text\":\"Resposta comercial simulada e segura.\",\"cross_sell_suggestions_included\":[]}";
+  const model = new BoundedSimulatedOpenAI(
+    "gpt-4.1-mini",
+    Array.from({ length: commercialSimulationBudget.maxCalls }, () => salesReply),
+    commercialSimulationBudget,
+  );
+  const usage = { ...newSharedUsage(), costUsd: 0 } as CommercialUsage;
+  const realClient = mode === "real" ? createCommercialBudgetedOpenAIClient(args.openaiClient!, usage) : model;
+  const records: CommercialSimulationRecord[] = [];
+
+  for (const scenario of commercialSimulationScenarios) {
+    supabase.resetScenario(scenario.id);
+    const callsBeforeScenario = model.calls.length;
+    for (const [index, turn] of scenario.turns.entries()) {
+      if (scenario.fixtureTechnicalVisitCompletedAfterTurn === index) {
+        supabase.completeFixtureTechnicalVisit(scenario.id);
+      }
+      if (scenario.id === "commercial-human-takeover" && index === 7) {
+        supabase.activateFixtureHumanTakeover(scenario.id);
+      }
+
+      appendConversationMessage(supabase, scenario, index + 1, "user", turn.userMessage);
+      const generatorInvoked = !(scenario.id === "commercial-human-takeover" && index >= 7);
+      let output: unknown;
+      try {
+        output = generatorInvoked
+          ? await generateAiSalesReply({
+              organizationId: simulationFixtures.organization.id,
+              storeId: simulationFixtures.store.id,
+              conversationId: scenarioFixtures[scenario.id].conversationId,
+              anchorMessageId: `${scenario.id}-user-message-${index + 1}`,
+              supabaseClient: supabase.client,
+              openaiClient: realClient,
+            })
+          : { ok: true, message: "Automacao bloqueada: takeover humano ativo.", blockedByHumanTakeover: true };
+        assertSimulationTurnSucceeded(output, scenario.id, index + 1);
+      } catch (error) {
+        const cause = String(error instanceof Error ? error.message : error).replace(/[\r\n]/g, " ").slice(0, 180);
+        throw new Error(`COMMERCIAL_TURN_FAILED:${scenario.id}:${index + 1}:${cause}:calls=${usage.calls}:input=${usage.inputTokens}:output=${usage.outputTokens}:cost=${usage.costUsd.toFixed(6)}`);
+      }
+      appendConversationMessage(supabase, scenario, index + 1, "assistant", generatedText(output));
+      const history = supabase.getHistory(scenario.id);
+      records.push({
+        scenarioId: scenario.id,
+        turn: index + 1,
+        output,
+        historyContentsAfterTurn: history.map((entry) => String(entry.content || "")),
+        simulatedCallsAfterTurn: model.calls.length,
+        simulatedCallsThisScenario: model.calls.length - callsBeforeScenario,
+        fixtureTechnicalVisitState: supabase.getFixtureTechnicalVisitState(scenario.id),
+        humanTakeoverActive: scenario.id === "commercial-human-takeover" && index >= 7,
+        generatorInvoked,
+        source: generatorInvoked ? (mode === "real" ? "openai" : "simulated") : "fixture_guard",
+        callsThisTurn: mode === "real" ? usage.calls - (records.reduce((sum, record) => sum + record.callsThisTurn, 0)) : model.calls.length - callsBeforeScenario - records.filter((record) => record.scenarioId === scenario.id).reduce((sum, record) => sum + record.callsThisTurn, 0),
+        inputTokensThisTurn: mode === "real" ? usage.inputTokens - records.reduce((sum, record) => sum + record.inputTokensThisTurn, 0) : 0,
+        outputTokensThisTurn: mode === "real" ? usage.outputTokens - records.reduce((sum, record) => sum + record.outputTokensThisTurn, 0) : 0,
+        costUsdThisTurn: mode === "real" ? usage.costUsd - records.reduce((sum, record) => sum + record.costUsdThisTurn, 0) : 0,
+      });
+    }
+  }
+  return records;
+}
+
+export function buildCommercialSimulationRunReport(
+  records: CommercialSimulationRecord[],
+  mode: "simulated" | "real" = "simulated",
+  aborted?: CommercialSimulationRunReport["aborted"],
+): CommercialSimulationRunReport {
+  const configuredModel = normalizeModel(process.env.ZION_AI_SALES_MODEL || "gpt-4.1-mini");
+  const priced = pricingForModel(configuredModel);
+  if (!priced) throw new Error("COMMERCIAL_MODEL_NOT_AUTHORIZED");
+  const totals = records.reduce((sum, record) => ({
+    calls: sum.calls + record.callsThisTurn,
+    inputTokens: sum.inputTokens + record.inputTokensThisTurn,
+    outputTokens: sum.outputTokens + record.outputTokensThisTurn,
+    costUsd: sum.costUsd + record.costUsdThisTurn,
+  }), { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 });
+  return {
+    mode,
+    source: mode === "real" ? "openai" : "simulated",
+    model: priced.model,
+    pricing: priced.pricing,
+    plannedTurns: commercialSimulationScenarios.reduce((sum, scenario) => sum + scenario.turns.length, 0),
+    potentialCalls: commercialSimulationBudget.maxCalls,
+    totals,
+    scenarios: records,
+    technicalEvaluation: mode === "real" ? "validated_fixture_invariants" : "not_evaluated",
+    commercialEvaluation: "not_evaluated",
+    ...(aborted ? { aborted } : {}),
+  };
+}
+
+export async function executeCommercialSimulationRun(args: CommercialSimulationRunnerArgs = {}): Promise<CommercialSimulationRunReport> {
+  try {
+    const records = await executeCommercialSimulationScenarios(args);
+    return buildCommercialSimulationRunReport(records, args.mode || "simulated");
+  } catch (error) {
+    const message = String(error instanceof Error ? error.message : error);
+    const match = message.match(/^COMMERCIAL_TURN_FAILED:([^:]+):(\d+):(.+):calls=(\d+):input=(\d+):output=(\d+):cost=([0-9.]+)$/);
+    if (!match) throw error;
+    const [, scenarioId, turn, cause, calls, inputTokens, outputTokens, cost] = match;
+    return buildCommercialSimulationRunReport([], args.mode || "simulated", {
+      scenarioId,
+      turn: Number(turn),
+      cause,
+      cumulative: { calls: Number(calls), inputTokens: Number(inputTokens), outputTokens: Number(outputTokens), costUsd: Number(cost) },
+    });
+  }
+}
+
 /**
  * Local-only executor. Real mode never creates clients: it requires both an
  * explicit argument and a process-local authorization marker, plus injected
  * dependencies. Thus the default path cannot call OpenAI or Supabase.
  */
+function assertSimulationTurnSucceeded(
+  output: unknown,
+  scenarioId: string,
+  turnNumber: number,
+): void {
+  if (
+    output &&
+    typeof output === "object" &&
+    "ok" in output &&
+    output.ok === true
+  ) {
+    return;
+  }
+
+  const failure = output && typeof output === "object"
+    ? output as { error?: unknown; message?: unknown }
+    : null;
+
+  const reason = String(
+    failure?.error || failure?.message || "INVALID_GENERATOR_RESULT",
+  ).replace(/[\r\n]/g, " ").slice(0, 140);
+
+  throw new Error(
+    `SIMULATION_TURN_FAILED:${scenarioId}:${turnNumber}:${reason}`,
+  );
+}
 export async function executePreparedConversations(
   args: PreparedConversationRunnerArgs = {},
 ): Promise<PreparedConversationRecord[]> {
@@ -557,6 +1048,7 @@ export async function executePreparedConversations(
               supabaseClient: supabase.client,
               openaiClient: salesClient,
             });
+        assertSimulationTurnSucceeded(output, scenario.id, index + 1);
         appendConversationMessage(supabase, scenario, index + 1, "assistant", generatedText(output));
         const history = supabase.getHistory(scenario.id);
         records.push({ scenarioId: scenario.id, turn: index + 1, actor: scenario.actor, output, source: "simulated", modelCallsAfterTurn: assistantClient.calls.length + salesClient.calls.length, assistantCallsAfterTurn: assistantClient.calls.length, salesCallsAfterTurn: salesClient.calls.length, inputTokensAfterTurn: assistantClient.usage.inputTokens + salesClient.usage.inputTokens, outputTokensAfterTurn: assistantClient.usage.outputTokens + salesClient.usage.outputTokens, historyMessageCountAfterTurn: history.length, historyContentsAfterTurn: history.map((entry) => String(entry.content || "")) });
@@ -598,6 +1090,7 @@ export async function executePreparedConversations(
             supabaseClient: salesDependencies.supabaseClient,
             openaiClient: salesDependencies.openaiClient,
           });
+      assertSimulationTurnSucceeded(output, scenario.id, index + 1);
       appendConversationMessage(fixtureSupabase, scenario, index + 1, "assistant", generatedText(output));
       const history = fixtureSupabase.getHistory(scenario.id);
       const turnAudit = sharedUsage.audit.slice(auditStart);
@@ -687,6 +1180,33 @@ test("real-generation preparation keeps four conversations bounded and simulated
   assert.deepEqual(supabase.events, []);
 });
 
+test("a generator failure cannot be reported as a successful simulation turn", () => {
+  assert.doesNotThrow(() =>
+    assertSimulationTurnSucceeded(
+      { ok: true, aiText: "Resposta valida" },
+      "sales-1",
+      1,
+    ),
+  );
+
+  assert.throws(
+    () => assertSimulationTurnSucceeded(
+      { ok: false, error: "GENERATE_AI_SALES_REPLY_FAILED" },
+      "sales-1",
+      2,
+    ),
+    /SIMULATION_TURN_FAILED:sales-1:2:GENERATE_AI_SALES_REPLY_FAILED/,
+  );
+
+  assert.throws(
+    () => assertSimulationTurnSucceeded(
+      { error: "ASSISTANT_REPLY_ROUTE_FAILED" },
+      "assistant-2",
+      1,
+    ),
+    /SIMULATION_TURN_FAILED:assistant-2:1/,
+  );
+});
 test("prepared executor runs all 16 turns in simulated mode and marks outputs", async () => {
   const records = await executePreparedConversations();
   assert.equal(records.length, 16);
@@ -699,10 +1219,19 @@ test("prepared executor traverses the real generator functions with fixture data
   assert.equal(records.length, 16);
   assert.ok(records.every((record) => record.source === "simulated"));
   assert.ok(records.every((record) => record.output && typeof record.output === "object"));
+  assert.ok(
+    records.every((record) =>
+      record.output !== null &&
+      typeof record.output === "object" &&
+      "ok" in record.output &&
+      record.output.ok === true
+    ),
+    "SIMULATION_TURN_FAILED",
+  );
   const totalCalls = records.at(-1)?.modelCallsAfterTurn || 0;
-  assert.equal(totalCalls, 11);
-  assert.equal(records.at(-1)?.assistantCallsAfterTurn, 5);
-  assert.equal(records.at(-1)?.salesCallsAfterTurn, 6);
+  assert.equal(totalCalls, 10);
+  assert.equal(records.at(-1)?.assistantCallsAfterTurn, 2);
+  assert.equal(records.at(-1)?.salesCallsAfterTurn, 8);
   assert.ok(totalCalls <= budget.maxCalls);
   assert.ok((records.at(-1)?.inputTokensAfterTurn || 0) <= budget.maxInputTokens);
   assert.ok((records.at(-1)?.outputTokensAfterTurn || 0) <= budget.maxOutputTokens);
@@ -732,11 +1261,127 @@ test("prepared conversations preserve independent chronological histories", asyn
   }
 });
 
+test("seven commercial sales scenarios execute seventy fixture-only turns through the real generator", async () => {
+  assert.equal(commercialSimulationScenarios.length, 7);
+  assert.deepEqual(commercialSimulationScenarios.map((scenario) => scenario.turns.length), [10, 10, 10, 10, 10, 10, 10]);
+  assert.equal(commercialSimulationScenarios.flatMap((scenario) => scenario.turns).length, 70);
+  assert.equal(new Set(commercialSimulationScenarios.map((scenario) => scenarioFixtures[scenario.id].conversationId)).size, 7);
+  assert.equal(new Set(commercialSimulationScenarios.map((scenario) => scenarioFixtures[scenario.id].leadId)).size, 7);
+  assert.equal(new Set(commercialSimulationScenarios.map((scenario) => scenarioFixtures[scenario.id].opportunityId)).size, 7);
+
+  const records = await executeCommercialSimulationScenarios();
+  assert.equal(records.length, 70);
+  assert.ok(records.every((record) => record.output && typeof record.output === "object" && "ok" in record.output && record.output.ok === true));
+  assert.ok(records.every((record) => record.simulatedCallsAfterTurn <= commercialSimulationBudget.maxCalls));
+
+  for (const scenario of commercialSimulationScenarios) {
+    const scenarioRecords = records.filter((record) => record.scenarioId === scenario.id);
+    assert.equal(scenarioRecords.length, 10);
+    assert.ok(scenarioRecords.at(-1)!.simulatedCallsThisScenario <= scenario.turns.length);
+    for (const [index, record] of scenarioRecords.entries()) {
+      assert.equal(record.historyContentsAfterTurn.length, (index + 1) * 2);
+      assert.equal(record.historyContentsAfterTurn[index * 2], scenario.turns[index].userMessage);
+      assert.equal(record.historyContentsAfterTurn[index * 2 + 1], generatedText(record.output));
+      if (index > 0) assert.ok(record.historyContentsAfterTurn.includes(scenario.turns[index - 1].userMessage));
+      assert.ok(!record.historyContentsAfterTurn.includes(commercialSimulationScenarios.find((other) => other.id !== scenario.id)!.turns[0].userMessage));
+    }
+  }
+  assert.deepEqual(
+    commercialSimulationScenarios.map((scenario) => records.filter((record) => record.scenarioId === scenario.id).at(-1)!.simulatedCallsThisScenario),
+    [10, 10, 10, 10, 10, 10, 7],
+  );
+  assert.equal(records.at(-1)!.simulatedCallsAfterTurn, 67);
+
+  const visitRecords = records.filter((record) => record.scenarioId === "commercial-technical-visit");
+  assert.equal(visitRecords[5].fixtureTechnicalVisitState, "requested");
+  assert.equal(visitRecords[6].fixtureTechnicalVisitState, "completed");
+  assert.equal(visitRecords[6].historyContentsAfterTurn.includes("A visita ja foi feita pela equipe e o acesso esta liberado."), true);
+
+  const takeoverRecords = records.filter((record) => record.scenarioId === "commercial-human-takeover");
+  assert.equal(takeoverRecords[6].humanTakeoverActive, false);
+  assert.equal(takeoverRecords[7].humanTakeoverActive, true);
+  assert.deepEqual(takeoverRecords.map((record) => record.generatorInvoked), [true, true, true, true, true, true, true, false, false, false]);
+  assert.equal(takeoverRecords.at(-1)!.simulatedCallsThisScenario, takeoverRecords[6].simulatedCallsThisScenario);
+
+  assert.ok(simulationFixtures.catalog.some((item) => item.name === "Bomba Fluxo 1 CV" && item.price_cents === 129900));
+  assert.ok(simulationFixtures.catalog.some((item) => item.name === "Capa termica Azul 3x6" && item.price_cents === 89900));
+  assert.ok(records.every((record) => !generatedText(record.output).match(/R\$|desconto de|parcelas de/i)));
+  assert.deepEqual(futureCommercialQualityReportTemplate.technical, ["generator_path", "history_continuity", "catalog_and_configuration_scope", "external_effect_blocking"]);
+  assert.equal(futureCommercialQualityReportTemplate.commercial.length, 9);
+});
+
 test("prepared executor blocks real mode without both authorization gates", async () => {
   await assert.rejects(
     () => executePreparedConversations({ mode: "real" }),
     /REAL_SIMULATION_AUTHORIZATION_REQUIRED/,
   );
+});
+
+test("commercial real mode requires explicit authorization and never treats an API key as authorization", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousGate = process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED;
+  process.env.OPENAI_API_KEY = "intentionally-not-used";
+  delete process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED;
+  try {
+    await assert.rejects(
+      () => executeCommercialSimulationScenarios({ mode: "real", openaiClient: { responses: { create: async () => ({}) } } }),
+      /COMMERCIAL_REAL_AUTHORIZATION_REQUIRED/,
+    );
+  } finally {
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+    if (previousGate === undefined) delete process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED;
+    else process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED = previousGate;
+  }
+});
+
+test("commercial report labels simulated output and reserves a separate paid ceiling", async () => {
+  const records = await executeCommercialSimulationScenarios();
+  const report = buildCommercialSimulationRunReport(records);
+  assert.equal(report.source, "simulated");
+  assert.equal(report.commercialEvaluation, "not_evaluated");
+  assert.equal(report.plannedTurns, 70);
+  assert.equal(report.potentialCalls, commercialSimulationBudget.maxCalls);
+  assert.ok(report.totals.calls <= 67);
+  assert.equal(commercialSimulationMaxCostUsd, 1);
+});
+
+test("commercial real path is connected to the generator with an injected simulated provider", async () => {
+  const previous = process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED;
+  process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED = "1";
+  const provider = new BoundedSimulatedOpenAI(
+    "gpt-4.1-mini",
+    Array.from({ length: commercialSimulationBudget.maxCalls }, () => "{\"reply_text\":\"Resposta do provedor de teste.\",\"cross_sell_suggestions_included\":[]}"),
+    commercialSimulationBudget,
+  );
+  try {
+    const records = await executeCommercialSimulationScenarios({ mode: "real", authorization: "REAL_COMMERCIAL_SIMULATION_AUTHORIZED", openaiClient: provider });
+    assert.equal(records.length, 70);
+    assert.ok(records.filter((record) => record.source === "openai").length >= 63);
+    assert.equal(provider.calls.length, 67);
+  } finally {
+    if (previous === undefined) delete process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED;
+    else process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED = previous;
+  }
+});
+
+test("commercial run report records the first technical failure with cumulative usage", async () => {
+  const previous = process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED;
+  process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED = "1";
+  try {
+    const report = await executeCommercialSimulationRun({
+      mode: "real",
+      authorization: "REAL_COMMERCIAL_SIMULATION_AUTHORIZED",
+      openaiClient: { responses: { create: async () => { throw new Error("provider unavailable"); } } },
+    });
+    assert.equal(report.aborted?.scenarioId, "commercial-technical-visit");
+    assert.equal(report.aborted?.turn, 1);
+    assert.match(report.aborted?.cause || "", /GENERATE_AI_SALES_REPLY_FAILED/);
+    assert.equal(report.aborted?.cumulative.calls, 1);
+  } finally {
+    if (previous === undefined) delete process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED;
+    else process.env.ZION_REAL_COMMERCIAL_SIMULATION_AUTHORIZED = previous;
+  }
 });
 
 function newSharedUsage() {
@@ -796,6 +1441,57 @@ test("budget wrapper rejects unknown models and records requested/returned prici
   assert.deepEqual(shared.audit[0], { actor: "assistant", modelRequested: "gpt-4.1-mini", modelReturned: "gpt-4.1-mini", estimatedInputTokens: estimateInputTokens("priced"), effectiveInputTokens: 7, effectiveOutputTokens: 3, costUsd: costUsd("gpt-4.1-mini", 7, 3) });
 });
 
+test("fixture context writes remain scoped and in memory", async () => {
+  const fixture = createFixtureSupabase();
+  fixture.setScenario("assistant-2");
+
+  const payload = {
+    organization_id: simulationFixtures.organization.id,
+    store_id: simulationFixtures.store.id,
+    thread_id: scenarioFixtures["assistant-2"].threadId,
+    active_status: "active",
+    context_payload: { simulated: true },
+    candidate_options: [],
+  };
+
+  const contextTable = () => fixture.client.from("store_assistant_context_state") as Record<string, unknown>;
+
+  const firstQuery = contextTable();
+  const insert = firstQuery.insert as (value: Record<string, unknown>) => Record<string, unknown>;
+
+  assert.throws(
+    () => insert({ ...payload, thread_id: "wrong-thread" }),
+    /UNEXPECTED_SUPABASE_OPERATION/,
+  );
+
+  const insertedQuery = insert(payload);
+  const readInserted = insertedQuery.maybeSingle as () => Promise<{ data: Record<string, unknown> | null }>;
+  const inserted = (await readInserted()).data;
+
+  assert.equal(inserted?.thread_id, payload.thread_id);
+  assert.equal(inserted?.active_status, "active");
+
+  fixture.setScenario("assistant-1");
+  const otherQuery = contextTable();
+  const readOther = otherQuery.maybeSingle as () => Promise<{ data: unknown }>;
+  assert.equal((await readOther()).data, null);
+
+  fixture.setScenario("assistant-2");
+  const updateQuery = contextTable();
+  const update = updateQuery.update as (value: Record<string, unknown>) => Record<string, unknown>;
+  const updatedQuery = update({ ...payload, active_status: "waiting_user_choice" });
+  const readUpdated = updatedQuery.maybeSingle as () => Promise<{ data: Record<string, unknown> | null }>;
+
+  assert.equal((await readUpdated()).data?.active_status, "waiting_user_choice");
+
+  fixture.resetScenario("assistant-2");
+  const resetQuery = contextTable();
+  const readReset = resetQuery.maybeSingle as () => Promise<{ data: unknown }>;
+  assert.equal((await readReset()).data, null);
+
+  assert.ok(fixture.events.includes("memory:store_assistant_context_state.insert"));
+  assert.ok(fixture.events.includes("memory:store_assistant_context_state.update"));
+});
 test("fixture Supabase rejects unknown tables, RPCs, and mutations", async () => {
   const supabase = createFixtureSupabase();
   assert.throws(() => supabase.client.from("production_secret"), /UNEXPECTED_SUPABASE_OPERATION/);
