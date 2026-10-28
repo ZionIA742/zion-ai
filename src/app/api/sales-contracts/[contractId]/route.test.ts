@@ -145,19 +145,70 @@ function deniedAccess() {
 function validScope(supabase: unknown) {
   return {
     supabase: supabase as never,
+    user: { id: "user-1" } as never,
+    sessionSupabase: supabase as never,
+    organizationIds: ["org-1"],
     userId: "user-1",
     organizationId: "org-1",
-    store: { id: "store-1", organization_id: "org-1", name: "Store 1" },
-    conversation: { id: "conversation-1", organization_id: "org-1", lead_id: "lead-1" },
-    lead: { id: "lead-1", organization_id: "org-1", store_id: "store-1" },
+    store: { id: "store-1", organization_id: "org-1", name: "Store 1", created_at: "2026-01-01T00:00:00.000Z" },
+    conversation: {
+      id: "conversation-1",
+      organization_id: "org-1",
+      lead_id: "lead-1",
+      status: "open",
+      is_human_active: false,
+    },
+    lead: {
+      id: "lead-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      name: "Lead 1",
+      phone: "+5511999999999",
+    },
     contract: {
       id: "contract-1",
       organization_id: "org-1",
       store_id: "store-1",
       conversation_id: "conversation-1",
       lead_id: "lead-1",
+      quote_id: null,
+      quote_version_id: null,
+      commercial_opportunity_id: null,
+      current_version_id: "version-1",
+      contract_number: "C-1",
+      title: "Contract 1",
+      status: "draft",
+      customer_name: "Lead 1",
+      customer_phone: "+5511999999999",
+      currency: "BRL",
+      subtotal_cents: 0,
+      discount_cents: 0,
+      total_cents: 0,
+      payment_terms: null,
+      delivery_terms: null,
+      warranty_terms: null,
+      contract_terms: null,
+      valid_until: null,
+      metadata: null,
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
     },
-    currentVersion: { id: "version-1", contract_id: "contract-1" },
+    currentVersion: {
+      id: "version-1",
+      contract_id: "contract-1",
+      organization_id: "org-1",
+      store_id: "store-1",
+      version_number: 1,
+      status: "generated",
+      store_file_id: null,
+      storage_bucket: null,
+      storage_path: null,
+      original_filename: "contract.pdf",
+      mime_type: "application/pdf",
+      size_bytes: 1,
+      contract_snapshot: null,
+      created_at: "2026-01-01T00:00:00.000Z",
+    },
   };
 }
 
@@ -268,8 +319,10 @@ const tests: Array<{ name: string; run: () => Promise<void> | void }> = [
       const functionSource = source.slice(start);
       assert.equal(functionSource.includes("authenticateContractRequest"), false);
       assert.equal(functionSource.includes("memberships"), false);
-      assert.equal(functionSource.includes("organizationIds"), false);
       assert.equal(functionSource.includes("auth.getUser"), false);
+      assert.match(functionSource, /\.eq\("organization_id", organizationId\)/);
+      assert.match(functionSource, /\.eq\("store_id", storeId\)/);
+      assert.match(functionSource, /INVALID_AUTHORIZED_CONTRACT_SCOPE/);
     },
   },
   {
@@ -350,7 +403,12 @@ const tests: Array<{ name: string; run: () => Promise<void> | void }> = [
           resolveContract: async () => ({
             ...validScope(supabase),
             organizationId: foreignScope.organizationId,
-            store: { id: foreignScope.storeId, organization_id: foreignScope.organizationId },
+            store: {
+              id: foreignScope.storeId,
+              organization_id: foreignScope.organizationId,
+              name: "Foreign Store",
+              created_at: "2026-01-01T00:00:00.000Z",
+            },
             contract: {
               ...validScope(supabase).contract,
               organization_id: foreignScope.organizationId,

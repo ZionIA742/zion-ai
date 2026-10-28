@@ -100,6 +100,14 @@ function context(contractId: string) {
   return { params: Promise.resolve({ contractId }) };
 }
 
+function requestWithVersion(versionId?: string) {
+  const url = new URL("http://test");
+  if (versionId !== undefined) {
+    url.searchParams.set("expectedContractVersionId", versionId);
+  }
+  return new Request(url);
+}
+
 async function testDeniedAccess() {
   let contractCalls = 0;
   const handler = createSignedContractPdfUrlGetHandler({
@@ -248,6 +256,10 @@ async function testSuccessAndMimeFallback() {
   assert.deepEqual(body, {
     ok: true,
     signedUrl: "https://signed.example/result",
+    contractVersionId: "version-1",
+    pdfSha256: null,
+    isTextDraftVersion: false,
+    textProvenance: null,
     originalFilename: "contract.pdf",
     mimeType: "application/pdf",
     expiresIn: 900,
@@ -259,6 +271,96 @@ async function testSuccessAndMimeFallback() {
     path: "org-1/store-1/contract-1/version-1.pdf",
     expiration: 900,
   }]);
+}
+
+async function testExpectedCurrentVersionAndTextIdentity() {
+  const pdfSha256 = "a".repeat(64);
+  const supabase = storage({ signedData: { signedUrl: "https://signed.example/text" } });
+  const textVersion = version({
+    pdf_sha256: pdfSha256,
+    contract_snapshot: {
+      identity: { contract_id: "contract-1" },
+      text_provenance: {
+        mode: "saved_text_draft",
+        draft_id: "draft-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        template_version_id: "template-version-1",
+        revision: 4,
+        text_sha256: "b".repeat(64),
+        pdf_sha256: pdfSha256,
+      },
+    },
+  });
+  const handler = createSignedContractPdfUrlGetHandler({
+    resolveAccess: async () => access(supabase),
+    resolveContract: (async () => ({
+      ...makeScope({ currentVersion: textVersion }),
+      supabase,
+    })) as never,
+  });
+  const { body, response } = await readResponse(
+    await handler(requestWithVersion("VERSION-1"), context("contract-1")),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(body.contractVersionId, "version-1");
+  assert.equal(body.pdfSha256, pdfSha256);
+  assert.equal(body.isTextDraftVersion, true);
+  assert.deepEqual(body.textProvenance, {
+    draftId: "draft-1",
+    revision: 4,
+    textSha256: "b".repeat(64),
+    templateVersionId: "template-version-1",
+  });
+  assert.equal(supabase.calls.length, 1);
+}
+
+async function testHistoricalVersionIsRejectedBeforeSigning() {
+  const supabase = storage();
+  const handler = createSignedContractPdfUrlGetHandler({
+    resolveAccess: async () => access(supabase),
+    resolveContract: (async () => ({ ...makeScope(), supabase })) as never,
+  });
+  const { body, response } = await readResponse(
+    await handler(requestWithVersion("version-old"), context("contract-1")),
+  );
+  assert.equal(response.status, 409);
+  assert.equal(body.error, "CONTRACT_VERSION_STALE");
+  assert.equal(supabase.calls.length, 0);
+}
+
+async function testTextProvenanceMismatchIsRejected() {
+  const supabase = storage();
+  const handler = createSignedContractPdfUrlGetHandler({
+    resolveAccess: async () => access(supabase),
+    resolveContract: (async () => ({
+      ...makeScope({
+        currentVersion: version({
+          pdf_sha256: "a".repeat(64),
+          contract_snapshot: {
+            identity: { contract_id: "contract-1" },
+            text_provenance: {
+              mode: "saved_text_draft",
+              draft_id: "draft-1",
+              organization_id: "org-1",
+              store_id: "store-1",
+              template_version_id: "template-version-1",
+              revision: 4,
+              text_sha256: "b".repeat(64),
+              pdf_sha256: "c".repeat(64),
+            },
+          },
+        }),
+      }),
+      supabase,
+    })) as never,
+  });
+  const { body, response } = await readResponse(
+    await handler(requestWithVersion("version-1"), context("contract-1")),
+  );
+  assert.equal(response.status, 409);
+  assert.equal(body.error, "CONTRACT_TEXT_PROVENANCE_INVALID");
+  assert.equal(supabase.calls.length, 0);
 }
 
 async function testErrorContracts() {
@@ -312,6 +414,9 @@ async function main() {
     testCurrentVersionRules,
     testStorageMetadataAndSigning,
     testSuccessAndMimeFallback,
+    testExpectedCurrentVersionAndTextIdentity,
+    testHistoricalVersionIsRejectedBeforeSigning,
+    testTextProvenanceMismatchIsRejected,
     testErrorContracts,
     testSourceContract,
   ];

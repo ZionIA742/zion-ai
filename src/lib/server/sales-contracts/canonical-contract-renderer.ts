@@ -11,8 +11,8 @@ export type CanonicalContractRendererInput = {
     contractId: string;
     organizationId: string;
     storeId: string;
-    quoteId: string;
-    quoteVersionId: string;
+    quoteId: string | null;
+    quoteVersionId: string | null;
     quoteNumber: string | null;
     contractNumber: string | null;
     title: string | null;
@@ -110,8 +110,8 @@ export function buildCanonicalContractRendererInput(
 ): CanonicalContractRendererInput {
   const quote = source.quoteSnapshot.quote ?? {};
   const metadata = source.contract.metadata;
-  const quoteId = normalizeOptionalText(source.contract.quote_id) || "";
-  const quoteVersionId = normalizeOptionalText(source.contract.quote_version_id) || "";
+  const quoteId = normalizeOptionalText(source.contract.quote_id);
+  const quoteVersionId = normalizeOptionalText(source.contract.quote_version_id);
   const rules = source.templateTerms.rulesUsed.map((rule) => ({ ...rule }));
 
   return {
@@ -219,6 +219,10 @@ export function buildContractSnapshotV2(args: {
   input: CanonicalContractRendererInput;
   contentFingerprint: string;
   materializedAt: string;
+  origin?: {
+    source: "responsible_text_draft";
+    commercialAmountsAuthoritative: false;
+  };
 }) {
   return {
     schema: "zion.sales_contract_snapshot.v2",
@@ -242,5 +246,14 @@ export function buildContractSnapshotV2(args: {
     renderer_input: args.input,
     content_fingerprint: args.contentFingerprint,
     materialized_at: args.materializedAt,
+    ...(args.origin
+      ? {
+          origin: {
+            source: args.origin.source,
+            commercial_amounts_authoritative:
+              args.origin.commercialAmountsAuthoritative,
+          },
+        }
+      : {}),
   };
 }

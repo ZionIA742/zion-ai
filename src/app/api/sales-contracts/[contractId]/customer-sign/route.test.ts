@@ -87,7 +87,7 @@ test("customer-sign resolves active access before body, resolver, and helper", a
   let resolverCalls = 0;
   let helperCalls = 0;
   const handler = createSalesContractCustomerSignPostHandler({
-    resolveAccess: (async (params) => {
+    resolveAccess: (async (params: { requirement: "active" }) => {
       assert.deepEqual(params, { requirement: "active" });
       return deniedAccess();
     }) as never,

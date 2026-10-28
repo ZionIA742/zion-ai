@@ -4,12 +4,14 @@ import {
   resolveExistingContractForAuthorizedStoreScope,
   type ContractAuthorizedStoreScope,
 } from "@/lib/server/sales-contracts/contract-auth";
-import { registerContractBusinessEvent } from "@/lib/server/sales-contracts/contract-events";
 import {
   buildContractPdfMessageMetadata,
-  extractInsertMessageId,
 } from "@/lib/server/sales-contracts/contract-messaging";
-import type { SalesContractVersion } from "@/lib/server/sales-contracts/types";
+import {
+  buildSalesContractSendIdempotencyKey,
+  buildSalesContractSendMessageMetadata,
+  materializeSalesContractSendBySystem,
+} from "@/lib/server/sales-contracts/contract-send";
 import {
   resolveStoreApiAccess,
   type ResolveStoreApiAccessDeps,
@@ -21,10 +23,22 @@ import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const SEND_EVENT_TYPE = "contrato_enviado";
 const DEFAULT_MESSAGE_CONTENT =
   "Enviei o contrato para voce conferir. Qualquer duvida me avisa.";
 const BLOCKED_CONTRACT_STATUSES = new Set(["completed", "cancelled", "expired", "failed"]);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isManualContractOrigin(contract: { metadata?: unknown; quote_id?: unknown; quote_version_id?: unknown }) {
+  const metadata = contract.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  const record = metadata as Record<string, unknown>;
+  return (
+    record.source === "responsible_text_draft" &&
+    record.created_via === "create_sales_contract_manual_by_system" &&
+    contract.quote_id == null &&
+    contract.quote_version_id == null
+  );
+}
 
 function buildErrorResponse(error: unknown) {
   if (error instanceof ContractAccessError) {
@@ -45,13 +59,37 @@ function buildErrorResponse(error: unknown) {
   );
 }
 
+async function readExpectedContractVersionId(request: Request) {
+  const raw = await request.text();
+  if (!raw.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new ContractAccessError(400, "CONTRACT_VERSION_EXPECTATION_INVALID", "A versao esperada do contrato e invalida.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ContractAccessError(400, "CONTRACT_VERSION_EXPECTATION_INVALID", "A versao esperada do contrato e invalida.");
+  }
+  const expected = (parsed as Record<string, unknown>).expectedContractVersionId;
+  if (
+    typeof expected !== "string" ||
+    !expected.trim() ||
+    expected.trim().length > 100 ||
+    !UUID_PATTERN.test(expected.trim())
+  ) {
+    throw new ContractAccessError(400, "CONTRACT_VERSION_EXPECTATION_INVALID", "A versao esperada do contrato e invalida.");
+  }
+  return expected.trim().toLowerCase();
+}
+
 type SalesContractSendPostDeps = {
   resolveAccess: (params: {
     requirement: "active";
     deps?: Partial<ResolveStoreApiAccessDeps>;
   }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
   resolveContract: typeof resolveExistingContractForAuthorizedStoreScope;
-  registerBusinessEvent: typeof registerContractBusinessEvent;
+  materializeSend: typeof materializeSalesContractSendBySystem;
 };
 
 export function createSalesContractSendPostHandler(
@@ -60,17 +98,17 @@ export function createSalesContractSendPostHandler(
   const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
   const resolveContract =
     deps.resolveContract ?? resolveExistingContractForAuthorizedStoreScope;
-  const registerBusinessEvent =
-    deps.registerBusinessEvent ?? registerContractBusinessEvent;
+  const materializeSend = deps.materializeSend ?? materializeSalesContractSendBySystem;
 
   return async function POST(
-    _request: Request,
+    request: Request,
     context: { params: Promise<{ contractId: string }> },
   ) {
-    const access = await resolveAccess({ requirement: "active" });
-    if (!access.ok) return createStoreApiDeniedResponse(access);
-
     try {
+      const access = await resolveAccess({ requirement: "active" });
+      if (!access.ok) return createStoreApiDeniedResponse(access);
+      const expectedContractVersionId = await readExpectedContractVersionId(request);
+
       const { contractId: rawContractId } = await context.params;
       const contractId = String(rawContractId || "").trim();
       const authorizedScope: ContractAuthorizedStoreScope = {
@@ -95,6 +133,14 @@ export function createSalesContractSendPostHandler(
       }
 
       const normalizedContractStatus = String(scope.contract.status || "").trim().toLowerCase();
+
+      if (isManualContractOrigin(scope.contract) && !expectedContractVersionId) {
+        throw new ContractAccessError(
+          400,
+          "CONTRACT_VERSION_EXPECTATION_REQUIRED",
+          "O envio manual exige a versao exata do PDF previamente conferido.",
+        );
+      }
 
       if (BLOCKED_CONTRACT_STATUSES.has(normalizedContractStatus)) {
         throw new ContractAccessError(
@@ -163,6 +209,22 @@ export function createSalesContractSendPostHandler(
         );
       }
 
+      if (String(currentVersion.status || "").trim().toLowerCase() !== "approved") {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_VERSION_REQUIRES_APPROVAL",
+          "A versao atual do contrato precisa ser aprovada antes do envio.",
+        );
+      }
+
+      if (expectedContractVersionId && expectedContractVersionId !== currentVersionId.toLowerCase()) {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_VERSION_STALE",
+          "A versao preparada para envio nao e mais a versao atual do contrato.",
+        );
+      }
+
       const storageBucket = String(currentVersion.storage_bucket || "").trim();
       const storagePath = String(currentVersion.storage_path || "").trim();
       const originalFilename = String(currentVersion.original_filename || "").trim();
@@ -186,7 +248,7 @@ export function createSalesContractSendPostHandler(
         );
       }
 
-      const metadata = {
+      const baseMetadata = {
         ...buildContractPdfMessageMetadata({
           contractId: scope.contract.id,
           versionId: currentVersion.id,
@@ -203,104 +265,56 @@ export function createSalesContractSendPostHandler(
         sales_contract_version_id: currentVersion.id,
       };
 
-      const { data: insertData, error: insertError } = await scope.supabase.rpc(
-        "insert_message",
-        {
-          p_conversation_id: conversationId,
-          p_sender: "human",
-          p_direction: "outgoing",
-          p_message_type: "text",
-          p_content: DEFAULT_MESSAGE_CONTENT,
-          p_external_message_id: null,
-          p_media_url: null,
-          p_metadata: metadata,
-        },
-      );
-
-      if (insertError) {
-        throw new Error(`Falha ao criar mensagem do contrato: ${insertError.message}`);
-      }
-
-      const messageId = extractInsertMessageId(insertData);
-      if (!messageId) {
-        throw new Error("A mensagem foi criada, mas nao foi possivel identificar o message_id.");
-      }
-
-      const sentAt = new Date().toISOString();
-      const { data: updatedContract, error: contractUpdateError } = await scope.supabase
-        .from("sales_contracts")
-        .update({
-          status: "sent_to_customer",
-          sent_at: sentAt,
-          sent_by: access.sessionUserId,
-        })
-        .eq("id", scope.contract.id)
-        .eq("organization_id", access.organizationId)
-        .eq("store_id", access.storeId)
-        .select("*")
-        .maybeSingle();
-
-      if (contractUpdateError || !updatedContract?.id) {
-        throw new Error(contractUpdateError?.message || "Falha ao atualizar sales_contracts.");
-      }
-
-      if (
-        updatedContract.id !== scope.contract.id ||
-        updatedContract.organization_id !== access.organizationId ||
-        updatedContract.store_id !== access.storeId
-      ) {
-        throw new Error("Atualizacao de sales_contracts retornou escopo incoerente.");
-      }
-
-      const { data: updatedVersion, error: versionUpdateError } = await scope.supabase
-        .from("sales_contract_versions")
-        .update({ status: "sent", sent_at: sentAt })
-        .eq("id", currentVersion.id)
-        .eq("contract_id", scope.contract.id)
-        .eq("organization_id", access.organizationId)
-        .eq("store_id", access.storeId)
-        .select("*")
-        .maybeSingle();
-
-      if (versionUpdateError || !updatedVersion?.id) {
-        throw new Error(
-          versionUpdateError?.message || "Falha ao atualizar sales_contract_versions.",
-        );
-      }
-
-      if (
-        updatedVersion.id !== currentVersion.id ||
-        updatedVersion.contract_id !== scope.contract.id ||
-        updatedVersion.organization_id !== access.organizationId ||
-        updatedVersion.store_id !== access.storeId
-      ) {
-        throw new Error("Atualizacao de sales_contract_versions retornou escopo incoerente.");
-      }
-
-      await registerBusinessEvent({
-        supabase: scope.supabase,
+      const idempotencyKey = buildSalesContractSendIdempotencyKey({
         organizationId: access.organizationId,
         storeId: access.storeId,
-        eventKey: SEND_EVENT_TYPE,
-        actorType: "human",
-        leadId: scope.lead?.id || scope.contract.lead_id || null,
-        conversationId: scope.conversation?.id || scope.contract.conversation_id || null,
-        actorUserId: access.sessionUserId,
-        eventPayload: {
-          contract_id: updatedContract.id,
-          contract_number: updatedContract.contract_number,
-          contract_version_id: updatedVersion.id,
-          message_id: messageId,
-          status: updatedContract.status,
-          sent_at: sentAt,
-        },
+        contractId: scope.contract.id,
+        contractVersionId: currentVersion.id,
       });
+      let materialized: Awaited<ReturnType<typeof materializeSend>>;
+      try {
+        materialized = await materializeSend({
+          supabase: scope.supabase,
+          organizationId: access.organizationId,
+          storeId: access.storeId,
+          contractId: scope.contract.id,
+          contractVersionId: currentVersion.id,
+          conversationId,
+          messageContent: DEFAULT_MESSAGE_CONTENT,
+          actorUserId: access.sessionUserId,
+          messageMetadata: buildSalesContractSendMessageMetadata({
+            organizationId: access.organizationId,
+            storeId: access.storeId,
+            contractId: scope.contract.id,
+            contractVersionId: currentVersion.id,
+            outboundIdempotencyKey: idempotencyKey,
+            baseMetadata,
+            actorUserId: access.sessionUserId,
+          }),
+        });
+      } catch (error) {
+        // A conflict returned after the RPC began must not be retried blindly.
+        // A read here is diagnostic only; the RPC remains the transaction authority.
+        try {
+          const latest = await resolveContract(contractId, authorizedScope);
+          const latestVersionId = String(latest.contract.current_version_id || "").trim();
+          const latestStatus = String(latest.contract.status || "").trim().toLowerCase();
+          if (latestVersionId !== currentVersion.id || latestStatus !== "approved") {
+            throw new ContractAccessError(
+              409,
+              "CONTRACT_VERSION_STALE",
+              "A versao preparada para envio deixou de ser a versao aprovada do contrato.",
+            );
+          }
+        } catch (diagnosticError) {
+          if (diagnosticError instanceof ContractAccessError) throw diagnosticError;
+        }
+        throw error;
+      }
 
       return NextResponse.json({
         ok: true,
-        contract: updatedContract,
-        current_version: updatedVersion as SalesContractVersion,
-        messageId,
+        operation: materialized,
       });
     } catch (error) {
       return buildErrorResponse(error);

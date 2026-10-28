@@ -46,6 +46,25 @@ function createMessage(overrides?: MessageOverrides) {
   };
 }
 
+function createContractReconciliationRow(overrides?: MessageOverrides) {
+  return {
+    id: "contract-message-1",
+    organization_id: "org-1",
+    store_id: "store-1",
+    metadata: {
+      outbound_origin: "sales_contract_send",
+      sales_contract_id: "contract-1",
+      sales_contract_version_id: "contract-version-1",
+    },
+    external_message_id: "wamid-contract-1",
+    outbound_delivery_state: "sent",
+    outbound_provider_accepted_at: "2026-10-09T12:00:00.000Z",
+    outbound_commercial_finalized_at: null,
+    deleted_at: null,
+    ...overrides,
+  };
+}
+
 function createHarness(overrides?: {
   pending?: Array<Record<string, unknown>>;
   claimResults?: boolean[];
@@ -62,11 +81,21 @@ function createHarness(overrides?: {
     decision: "send" | "blocked" | "template_required";
     reason: string;
   }>;
+  contractGateImpl?: () => Promise<{
+    ok: true;
+    decision: "send" | "blocked" | "template_required";
+    reason: string;
+  }>;
   finalizeImpl?: () => Promise<{
     commercialOpportunityId: string;
     salesQuoteId: string;
     salesQuoteVersionId: string;
   } | null>;
+  contractFinalizeImpl?: () => Promise<{ salesContractId: string; salesContractVersionId: string } | null>;
+  contractReconciliationRows?: Array<Record<string, unknown>>;
+  contractReconciliationError?: string;
+  contractReconciliationFinalizeError?: string;
+  contractReconciliationPendingError?: string;
   reconcileResults?: Array<{ messageId: string; detail: string }>;
   integrationImpl?: () => Promise<{ accessToken: string; phoneNumberId: string }>;
   templateCandidates?: Array<{
@@ -89,6 +118,7 @@ function createHarness(overrides?: {
     integration: 0,
     preflight: [] as string[],
     gate: [] as string[],
+    contractGate: [] as string[],
     order: [] as string[],
     claim: [] as string[],
     templateRead: 0,
@@ -110,13 +140,114 @@ function createHarness(overrides?: {
     prepared: [] as string[],
     send: [] as string[],
     finalize: [] as string[],
+    contractFinalize: [] as string[],
+    contractFinalizeScopes: [] as Array<{ messageId: string; organizationId: string; storeId: string }>,
+    contractFinalizeRpc: [] as Array<{ name: string; payload: Record<string, unknown> }>,
+    reconciliationUpdates: [] as Array<{ table: string; payload: Record<string, unknown>; operations: string[] }>,
     reconcile: 0,
+    contractReconcileFrom: [] as Array<{ table: string; operations: string[] }>,
   };
   const claimQueue = [...(overrides?.claimResults ?? [true])];
   const pending = overrides?.pending ?? [createMessage()];
+  let contractReconciliationRows = [...(overrides?.contractReconciliationRows ?? [])];
+  let contractReconciliationFinalizeError = overrides?.contractReconciliationFinalizeError;
+  const supabase = {
+    from(table: string) {
+      const operations: string[] = [];
+      calls.contractReconcileFrom.push({ table, operations });
+      let organizationId: string | null = null;
+      let storeId: string | null = null;
+      const query = {
+        select: () => {
+          operations.push("select");
+          return query;
+        },
+        eq: (column: string, value: unknown) => {
+          operations.push(`eq:${column}=${String(value)}`);
+          if (column === "organization_id" && typeof value === "string") organizationId = value;
+          if (column === "store_id" && typeof value === "string") storeId = value;
+          return query;
+        },
+        contains: (column: string, value: unknown) => {
+          void value;
+          operations.push(`contains:${column}`);
+          return query;
+        },
+        not: (column: string, operator: string, value: unknown) => {
+          operations.push(`not:${column}:${operator}:${String(value)}`);
+          return query;
+        },
+        is: (column: string, value: unknown) => {
+          operations.push(`is:${column}:${String(value)}`);
+          return query;
+        },
+        limit: (value: number) => {
+          operations.push(`limit:${value}`);
+          return query;
+        },
+        update: (payload: Record<string, unknown>) => {
+          operations.push("update");
+          calls.reconciliationUpdates.push({ table, payload, operations });
+          return query;
+        },
+        maybeSingle: async () => overrides?.contractReconciliationPendingError
+          ? { data: null, error: { message: overrides.contractReconciliationPendingError } }
+          : { data: { id: "contract-message-1" }, error: null },
+        then: (
+          resolve: (value: { data: Array<Record<string, unknown>> | null; error: { message: string } | null }) => unknown,
+        ) => {
+          if (overrides?.contractReconciliationError) {
+            return Promise.resolve(resolve({
+              data: null,
+              error: { message: overrides.contractReconciliationError },
+            }));
+          }
+          const rows = table === "messages"
+            ? contractReconciliationRows.filter((row) =>
+                row.organization_id === organizationId &&
+                row.store_id === storeId &&
+                row.outbound_delivery_state === "sent" &&
+                row.external_message_id != null &&
+                row.outbound_provider_accepted_at != null &&
+                row.outbound_commercial_finalized_at == null &&
+                row.deleted_at == null &&
+                (row.metadata as Record<string, unknown> | null)?.outbound_origin === "sales_contract_send"
+              )
+            : [];
+          return Promise.resolve(resolve({ data: rows, error: null }));
+        },
+      };
+      return query;
+    },
+    rpc: async (name: string, payload: Record<string, unknown>) => {
+      calls.contractFinalizeRpc.push({ name, payload });
+      if (name === "finalize_sales_contract_send_by_system") {
+        if (contractReconciliationFinalizeError) {
+          return {
+            data: null,
+            error: { message: contractReconciliationFinalizeError },
+          };
+        }
+        const row = contractReconciliationRows.find((candidate) => candidate.id === payload.p_message_id);
+        return {
+          data: {
+            sales_contract_id: payload.p_contract_id,
+            sales_contract_version_id: payload.p_contract_version_id,
+            message_id: payload.p_message_id,
+            external_message_id: row?.external_message_id ?? "wamid-contract-1",
+            sent_at: "2026-10-09T12:00:00.000Z",
+            conversation_event_created: false,
+            outcome: "finalized",
+          },
+          error: null,
+        };
+      }
+      return { data: null, error: { message: `unexpected RPC ${name}` } };
+    },
+  };
 
   const process = createProcessWhatsappPendingMessages({
-    createSupabaseAdmin: () => ({}) as never,
+    createSupabaseAdmin: () => supabase as never,
     getWhatsappIntegration: async () => {
       calls.integration += 1;
       calls.order.push("STRICT INTEGRATION");
@@ -176,6 +307,12 @@ function createHarness(overrides?: {
       if (overrides?.gateImpl) return overrides.gateImpl() as never;
       return { ok: true, decision: "send", reason: "authorized" };
     },
+    validateSalesContractSendBeforeExternal: async () => {
+      calls.contractGate.push("contract");
+      calls.order.push("CONTRACT ATOMIC GATE");
+      if (overrides?.contractGateImpl) return overrides.contractGateImpl() as never;
+      return { ok: true, decision: "send" as const, reason: "authorized" };
+    },
     readCustomerWhatsapp24hWindow: async (_supabase, message) => {
       calls.preflight.push(message.id);
       calls.order.push("PREFLIGHT 24H");
@@ -227,15 +364,103 @@ function createHarness(overrides?: {
         salesQuoteVersionId: "version-1",
       };
     },
+    finalizeSalesContractSendMessageIfNeeded: async (_supabase, message) => {
+      calls.contractFinalize.push(message.id);
+      calls.contractFinalizeScopes.push({
+        messageId: message.id,
+        organizationId: message.organizationId,
+        storeId: message.storeId,
+      });
+      if (overrides?.contractFinalizeImpl) return overrides.contractFinalizeImpl();
+      return null;
+    },
     reconcileSentQuoteSendMessages: async () => {
       calls.reconcile += 1;
       return overrides?.reconcileResults ?? [];
     },
   });
-  return { calls, process };
+  return {
+    calls,
+    process,
+    setContractReconciliationRows(rows: Array<Record<string, unknown>>) {
+      contractReconciliationRows = [...rows];
+    },
+    setContractReconciliationFinalizeError(error: string | undefined) {
+      contractReconciliationFinalizeError = error;
+    },
+  };
 }
 
 const tests: TestCase[] = [
+
+  {
+    name: "contract send uses one atomic contract gate instead of the generic gate",
+    run: async () => {
+      const message = createMessage({
+        metadata: {
+          external_channel: "whatsapp",
+          send_external: true,
+          outbound_origin: "sales_contract_send",
+          sales_contract_id: "contract-1",
+          sales_contract_version_id: "version-1",
+        },
+        messageType: "document",
+        rawMessageType: "document",
+        mediaUrl: "contract.pdf",
+      });
+      const harness = createHarness({
+        pending: [message],
+        prepareImpl: async () => ({
+          mode: "document",
+          to: "5511999999999",
+          documentUrl: "https://example.test/contract.pdf",
+          filename: "contract.pdf",
+          caption: "Segue",
+        }),
+      });
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+      assert.equal(result.sent, 1);
+      assert.deepEqual(harness.calls.gate, []);
+      assert.deepEqual(harness.calls.contractGate, ["contract"]);
+      assert.deepEqual(harness.calls.order, [
+        "CLAIM",
+        "PREFLIGHT 24H",
+        "PREPARE",
+        "STRICT INTEGRATION",
+        "CONTRACT ATOMIC GATE",
+        "POST META",
+      ]);
+    },
+  },
+
+  {
+    name: "contract send finalization runs after provider acceptance without another POST",
+    run: async () => {
+      const message = createMessage({
+        metadata: {
+          external_channel: "whatsapp",
+          send_external: true,
+          outbound_origin: "sales_contract_send",
+          sales_contract_id: "contract-1",
+          sales_contract_version_id: "version-1",
+        },
+        outboundIdempotencyKey: "sales_contract_send:org-1:store-1:contract-1:version-1",
+        messageType: "document",
+        rawMessageType: "document",
+        mediaUrl: "contract.pdf",
+      });
+      const harness = createHarness({
+        pending: [message],
+        prepareImpl: async () => ({ mode: "document", to: "5511999999999", documentUrl: "https://example.test/contract.pdf", filename: "contract.pdf", caption: "Segue" }),
+        finalizeImpl: async () => null,
+        contractFinalizeImpl: async () => ({ salesContractId: "contract-1", salesContractVersionId: "version-1" }),
+      });
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1", limit: 1 });
+      assert.equal(result.sent, 1);
+      assert.deepEqual(harness.calls.send, ["send"]);
+      assert.deepEqual(harness.calls.contractFinalize, ["message-1"]);
+    },
+  },
 
   {
     name: "Meta HTTP retry classification keeps transient failures retryable and terminal 4xx final",
@@ -446,6 +671,201 @@ const tests: TestCase[] = [
       assert.equal(harness.calls.integration, 0);
       assert.equal(harness.calls.send.length, 0);
       assert.equal(result.results[0]?.messageId, "message-sent-1");
+    },
+  },
+  {
+    name: "real contract reconciliation finalizes an already sent message without a new POST",
+    run: async () => {
+      const harness = createHarness({
+        pending: [],
+        contractReconciliationRows: [createContractReconciliationRow()],
+        contractFinalizeImpl: async () => ({
+          salesContractId: "contract-1",
+          salesContractVersionId: "contract-version-1",
+        }),
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.equal(harness.calls.contractReconcileFrom.length, 1);
+      assert.deepEqual(harness.calls.contractFinalizeRpc, [{
+        name: "finalize_sales_contract_send_by_system",
+        payload: {
+          p_organization_id: "org-1",
+          p_store_id: "store-1",
+          p_contract_id: "contract-1",
+          p_contract_version_id: "contract-version-1",
+          p_message_id: "contract-message-1",
+          p_idempotency_key: "sales_contract_send:org-1:store-1:contract-1:contract-version-1",
+          p_source: "system_sales_contract_send_reconciliation",
+        },
+      }]);
+      assert.deepEqual(harness.calls.send, []);
+      assert.equal(harness.calls.integration, 0);
+      assert.equal(result.sent, 0);
+      assert.equal(result.results[0]?.messageId, "contract-message-1");
+      assert.match(String(result.results[0]?.detail || ""), /sem novo POST externo/);
+      assert.deepEqual(harness.calls.contractReconcileFrom[0]?.operations, [
+        "select",
+        "eq:organization_id=org-1",
+        "eq:store_id=store-1",
+        "eq:outbound_delivery_state=sent",
+        "contains:metadata",
+        "not:external_message_id:is:null",
+        "not:outbound_provider_accepted_at:is:null",
+        "is:outbound_commercial_finalized_at:null",
+        "is:deleted_at:null",
+        "limit:20",
+      ]);
+    },
+  },
+  {
+    name: "contract reconciliation read failure does not cause an external resend",
+    run: async () => {
+      const harness = createHarness({
+        pending: [],
+        contractReconciliationError: "database unavailable",
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.equal(harness.calls.contractReconcileFrom.length, 1);
+      assert.deepEqual(harness.calls.contractFinalize, []);
+      assert.deepEqual(harness.calls.send, []);
+      assert.equal(harness.calls.integration, 0);
+      assert.equal(result.sent, 0);
+      assert.equal(result.processed, 0);
+    },
+  },
+  {
+    name: "contract finalization failure records reconciliation pending without a new POST",
+    run: async () => {
+      const harness = createHarness({
+        pending: [],
+        contractReconciliationRows: [createContractReconciliationRow()],
+        contractReconciliationFinalizeError: "contract projection unavailable",
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.contractFinalizeRpc.map((call) => call.name), [
+        "finalize_sales_contract_send_by_system",
+      ]);
+      assert.equal(harness.calls.reconciliationUpdates.length, 1);
+      assert.equal(
+        harness.calls.reconciliationUpdates[0]?.payload.outbound_commercial_error_text,
+        "Nao foi possivel finalizar o envio canonico do contrato.",
+      );
+      assert.deepEqual(harness.calls.send, []);
+      assert.equal(harness.calls.integration, 0);
+      assert.equal(result.sent, 0);
+    },
+  },
+  {
+    name: "a second worker run after contract reconciliation does not create a duplicate POST",
+    run: async () => {
+      const harness = createHarness({
+        pending: [],
+        contractReconciliationRows: [createContractReconciliationRow()],
+        contractReconciliationFinalizeError: "temporary finalization failure",
+      });
+
+      await harness.process({ organizationId: "org-1", storeId: "store-1" });
+      assert.equal(harness.calls.reconciliationUpdates.length, 1);
+      harness.setContractReconciliationFinalizeError(undefined);
+      await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.contractFinalizeRpc.map((call) => call.payload.p_message_id), [
+        "contract-message-1",
+        "contract-message-1",
+      ]);
+      assert.deepEqual(harness.calls.send, []);
+      assert.equal(harness.calls.integration, 0);
+      assert.equal(harness.calls.contractReconcileFrom.length, 3);
+      assert.equal(harness.calls.reconciliationUpdates.length, 1);
+    },
+  },
+  {
+    name: "failure recording reconciliation pending remains fail-safe without a blind resend",
+    run: async () => {
+      const harness = createHarness({
+        pending: [],
+        contractReconciliationRows: [createContractReconciliationRow()],
+        contractReconciliationFinalizeError: "finalization unavailable",
+        contractReconciliationPendingError: "pending marker unavailable",
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.equal(harness.calls.contractFinalizeRpc.length, 1);
+      assert.equal(harness.calls.reconciliationUpdates.length, 1);
+      assert.deepEqual(harness.calls.send, []);
+      assert.equal(harness.calls.integration, 0);
+      assert.equal(result.sent, 0);
+    },
+  },
+  {
+    name: "contract reconciliation preserves organization and store isolation",
+    run: async () => {
+      const harness = createHarness({
+        pending: [],
+        contractReconciliationRows: [
+          createContractReconciliationRow({
+            id: "foreign-contract-message",
+            organization_id: "org-foreign",
+            store_id: "store-foreign",
+          }),
+        ],
+        contractFinalizeImpl: async () => ({
+          salesContractId: "contract-foreign",
+          salesContractVersionId: "contract-version-foreign",
+        }),
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.contractFinalize, []);
+      assert.deepEqual(harness.calls.send, []);
+      assert.equal(harness.calls.integration, 0);
+      assert.equal(result.sent, 0);
+      assert.equal(harness.calls.contractReconcileFrom[0]?.operations.includes("eq:organization_id=org-1"), true);
+      assert.equal(harness.calls.contractReconcileFrom[0]?.operations.includes("eq:store_id=store-1"), true);
+    },
+  },
+  {
+    name: "contract reconciliation excludes rows without sent state or provider evidence",
+    run: async () => {
+      const harness = createHarness({
+        pending: [],
+        contractReconciliationRows: [
+          createContractReconciliationRow({
+            id: "missing-external-id",
+            external_message_id: null,
+          }),
+          createContractReconciliationRow({
+            id: "not-sent",
+            outbound_delivery_state: "pending",
+          }),
+          createContractReconciliationRow({
+            id: "missing-provider-acceptance",
+            outbound_provider_accepted_at: null,
+          }),
+        ],
+        contractFinalizeImpl: async () => ({
+          salesContractId: "contract-1",
+          salesContractVersionId: "contract-version-1",
+        }),
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.contractFinalize, []);
+      assert.deepEqual(harness.calls.send, []);
+      assert.equal(harness.calls.integration, 0);
+      assert.equal(result.sent, 0);
+      assert.equal(harness.calls.contractReconcileFrom[0]?.operations.includes("eq:outbound_delivery_state=sent"), true);
+      assert.equal(harness.calls.contractReconcileFrom[0]?.operations.includes("not:external_message_id:is:null"), true);
+      assert.equal(harness.calls.contractReconcileFrom[0]?.operations.includes("not:outbound_provider_accepted_at:is:null"), true);
     },
   },
   {

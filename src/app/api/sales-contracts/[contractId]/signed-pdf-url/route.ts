@@ -43,6 +43,81 @@ function buildErrorResponse(error: unknown) {
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
+}
+
+function readExpectedContractVersionId(request: Request) {
+  const raw = new URL(request.url).searchParams.get("expectedContractVersionId");
+  if (raw == null || !raw.trim()) return null;
+  const expected = raw.trim().toLowerCase();
+  if (expected.length > 100) {
+    throw new ContractAccessError(
+      400,
+      "CONTRACT_VERSION_EXPECTATION_INVALID",
+      "A versao esperada do contrato e invalida.",
+    );
+  }
+  return expected;
+}
+
+function buildVersionIdentity(version: Record<string, unknown>, contractId: string) {
+  const snapshot = version.contract_snapshot;
+  const provenance = isRecord(snapshot) && isRecord(snapshot.text_provenance)
+    ? snapshot.text_provenance
+    : null;
+  const versionPdfSha256 = version.pdf_sha256;
+  const provenanceRevision = provenance?.revision;
+
+  if (provenance?.mode !== "saved_text_draft") {
+    return {
+      contractVersionId: String(version.id || ""),
+      pdfSha256: isSha256(versionPdfSha256) ? versionPdfSha256 : null,
+      isTextDraftVersion: false,
+      textProvenance: null,
+    };
+  }
+
+  if (
+    !isSha256(versionPdfSha256) ||
+    !isSha256(provenance.pdf_sha256) ||
+    provenance.pdf_sha256 !== versionPdfSha256 ||
+    !String(provenance.draft_id || "").trim() ||
+    !String(provenance.template_version_id || "").trim() ||
+    typeof provenanceRevision !== "number" ||
+    !Number.isSafeInteger(provenanceRevision) ||
+    provenanceRevision < 1 ||
+    !isSha256(provenance.text_sha256) ||
+    provenance.organization_id !== version.organization_id ||
+    provenance.store_id !== version.store_id ||
+    !isRecord(snapshot) ||
+    !isRecord(snapshot.identity) ||
+    snapshot.identity.contract_id !== contractId
+  ) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_TEXT_PROVENANCE_INVALID",
+      "A proveniencia textual da versao contratual e inconsistente.",
+    );
+  }
+
+  return {
+    contractVersionId: String(version.id || ""),
+    pdfSha256: versionPdfSha256,
+    isTextDraftVersion: true,
+    textProvenance: {
+      draftId: String(provenance.draft_id),
+      revision: provenanceRevision,
+      textSha256: String(provenance.text_sha256),
+      templateVersionId: String(provenance.template_version_id),
+    },
+  };
+}
+
 type SignedContractPdfUrlGetDeps = {
   resolveAccess: (params: {
     requirement: "active";
@@ -59,7 +134,7 @@ export function createSignedContractPdfUrlGetHandler(
     deps.resolveContract ?? resolveExistingContractForAuthorizedStoreScope;
 
   return async function GET(
-    _request: Request,
+    request: Request,
     context: { params: Promise<{ contractId: string }> },
   ) {
     const access = await resolveAccess({ requirement: "active" });
@@ -68,6 +143,7 @@ export function createSignedContractPdfUrlGetHandler(
     try {
       const { contractId: rawContractId } = await context.params;
       const contractId = String(rawContractId || "").trim();
+      const expectedContractVersionId = readExpectedContractVersionId(request);
 
       if (!contractId) {
         return buildJsonResponse(
@@ -138,6 +214,22 @@ export function createSignedContractPdfUrlGetHandler(
         );
       }
 
+      if (
+        expectedContractVersionId &&
+        version.id.toLowerCase() !== expectedContractVersionId
+      ) {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_VERSION_STALE",
+          "A versao esperada do contrato nao e mais a versao atual.",
+        );
+      }
+
+      const versionIdentity = buildVersionIdentity(
+        version as unknown as Record<string, unknown>,
+        scope.contract.id,
+      );
+
       const storageBucket = String(version.storage_bucket || "").trim();
       const storagePath = String(version.storage_path || "").trim();
       if (!storageBucket || !storagePath) {
@@ -170,6 +262,7 @@ export function createSignedContractPdfUrlGetHandler(
       return buildJsonResponse({
         ok: true,
         signedUrl: signedData.signedUrl,
+        ...versionIdentity,
         originalFilename: version.original_filename || null,
         mimeType: version.mime_type || "application/pdf",
         expiresIn: SIGNED_URL_EXPIRATION_SECONDS,

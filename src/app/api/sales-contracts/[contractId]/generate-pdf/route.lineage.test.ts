@@ -2,7 +2,8 @@ import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createGenerateContractPdfPostHandler } from "./route";
+import { ContractTextVersionError, createGenerateContractPdfPostHandler } from "./route";
+import { ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
 
 type TestCase = {
   name: string;
@@ -80,6 +81,7 @@ function createSupabaseMock(args: {
     error?: { message: string } | null;
     durableReadError?: { message: string } | null;
     workflowError?: { message: string } | null;
+    currentContract?: Record<string, unknown> | null;
   };
 }) {
   const writer = args.writer || {};
@@ -220,6 +222,23 @@ function createSupabaseMock(args: {
 
       if (table === "sales_contracts" || table === "store_files") {
         return {
+          select() {
+            const builder = {
+              eq(column: string, value: unknown) {
+                filters.push({ column, value });
+                return builder;
+              },
+              maybeSingle: async () => ({
+                data: writer.currentContract ?? {
+                  id: "contract-1",
+                  current_version_id: "contract-version-approved",
+                  status: "approved",
+                },
+                error: null,
+              }),
+            };
+            return builder;
+          },
           update(payload: Record<string, unknown>) {
             args.calls.push({
               table,
@@ -267,6 +286,7 @@ function createScope(overrides?: {
     error?: { message: string } | null;
     durableReadError?: { message: string } | null;
     workflowError?: { message: string } | null;
+    currentContract?: Record<string, unknown> | null;
   };
 }) {
   const calls: SupabaseCall[] = [];
@@ -345,6 +365,13 @@ function resetState(args?: Parameters<typeof createScope>[0]) {
 
 async function callRoute(args?: {
   headers?: Record<string, string>;
+  body?: unknown;
+  textDraft?: Record<string, unknown>;
+  textVersion?: {
+    replayed?: boolean;
+    versionNumber?: number;
+    error?: "uncertain" | "known_conflict";
+  };
   resolveAccess?: (params: { requirement: "active" }) => Promise<unknown>;
   resolveContract?: (contractId: string, scope: Record<string, unknown>) => Promise<unknown>;
 }) {
@@ -418,10 +445,92 @@ async function callRoute(args?: {
         sizeBytes: 4,
       };
     },
+    readContractTextDraftSource: async () => {
+      const requestedRevision = Number((args?.body as Record<string, unknown> | undefined)?.expectedDraftRevision);
+      const persistedRevision = Number(args?.textDraft?.revision || 4);
+      if (Number.isFinite(requestedRevision) && requestedRevision !== persistedRevision) {
+        throw new ContractAccessError(409, "CONTRACT_TEXT_DRAFT_REVISION_MISMATCH", "A revisao persistida divergiu.");
+      }
+      return {
+        draftId: String(args?.textDraft?.draftId || "draft-1"),
+        organizationId: "org-1",
+        storeId: "store-1",
+        commercialOpportunityId: "opportunity-1",
+        templateVersionId: "template-version-1",
+        revision: persistedRevision,
+        text: "CONTRATO TEXTUAL PERSISTIDO",
+        sha256: "a".repeat(64),
+      };
+    },
+    renderContractTextDraftVersion: async (source) => ({
+      pdfBytes: new Uint8Array([37, 80, 68, 70, 45, 84, 69, 88, 84]),
+      provenance: {
+        mode: "saved_text_draft" as const,
+        draft_id: source.draftId,
+        organization_id: source.organizationId,
+        store_id: source.storeId,
+        commercial_opportunity_id: source.commercialOpportunityId,
+        template_version_id: source.templateVersionId,
+        revision: source.revision,
+        text_sha256: source.sha256,
+        pdf_sha256: "b".repeat(64),
+        text_representation: "persisted_text_utf8_exact" as const,
+        rendered_text_representation: "line_endings_normalized_to_lf" as const,
+      },
+      textSha256: source.sha256,
+      pdfSha256: "b".repeat(64),
+    }),
+    buildContractTextDraftCanonicalSnapshot: ({ snapshot, provenance }) => ({
+      snapshot: { ...snapshot, text_provenance: provenance },
+      contentFingerprint: "c".repeat(64),
+      baseContentFingerprint: snapshot.content_fingerprint,
+    }),
+    createSalesContractTextVersionBySystem: async (input) => {
+      state.calls.push({ table: "create_sales_contract_text_version_by_system", operation: "rpc", payload: input as unknown as Record<string, unknown> });
+      if (args?.textVersion?.error === "uncertain") {
+        input.onAuthorityUncertain?.();
+        throw new ContractTextVersionError(
+          503,
+          "CONTRACT_TEXT_VERSION_AUTHORITY_UNCERTAIN",
+          "resultado incerto",
+          "uncertain",
+        );
+      }
+      if (args?.textVersion?.error === "known_conflict") {
+        throw new ContractTextVersionError(
+          409,
+          "P9_TEXT_VERSION_CURRENT_VERSION_CHANGED",
+          "O contrato foi alterado por outra operacao.",
+        );
+      }
+      if (state.scope.contract.status === "approved" && input.allowReopenApproved !== true) {
+        throw new ContractAccessError(409, "P9_TEXT_VERSION_REOPEN_REQUIRES_HUMAN_ACTION", "Acao humana explicita obrigatoria.");
+      }
+      return {
+        version: {
+          id: "contract-version-text-1",
+          contract_id: "contract-1",
+          organization_id: "org-1",
+          store_id: "store-1",
+          version_number: args?.textVersion?.versionNumber || 2,
+          status: "generated",
+          store_file_id: "store-file-1",
+          storage_bucket: "contracts",
+          storage_path: "contracts/contract-1.pdf",
+          original_filename: "contract-1.pdf",
+          size_bytes: 9,
+        } as never,
+        replayed: args?.textVersion?.replayed === true,
+      };
+    },
   });
 
   const response = await handler(
-    new Request("https://example.test", { method: "POST", headers: args?.headers }),
+    new Request("https://example.test", {
+      method: "POST",
+      headers: args?.headers,
+      body: args?.body == null ? undefined : JSON.stringify(args.body),
+    }),
     { params: Promise.resolve({ contractId: "contract-1" }) },
   );
   const body = await response.json();
@@ -965,6 +1074,244 @@ const tests: TestCase[] = [
         "ITEM IMUTAVEL V1",
       );
       assert.ok(insertedContractSnapshot());
+    },
+  },
+  {
+    name: "saved text draft uses the explicit revision and textual RPC provenance",
+    run: async () => {
+      resetState({ contract: { metadata: { commercial_opportunity_id: "opportunity-1" } } });
+      const { response, body } = await callRoute({
+        body: { mode: "saved_text_draft", expectedDraftRevision: 4 },
+      });
+      const rpc = state.calls.find((call) => call.table === "create_sales_contract_text_version_by_system");
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(state.pdfInputs.length, 0);
+      assert.equal(rpc?.payload?.draftRevision, 4);
+      assert.equal(rpc?.payload?.commercialOpportunityId, "opportunity-1");
+      assert.equal((rpc?.payload?.contractSnapshot as Record<string, unknown>)?.text_provenance != null, true);
+      assert.equal(state.calls.some((call) => call.table === "sales_contract_versions" && call.operation === "update"), false);
+      assert.equal(state.calls.some((call) => call.table === "sales_contracts" && call.operation === "update"), false);
+    },
+  },
+  {
+    name: "saved text draft rejects a divergent persisted revision before rendering",
+    run: async () => {
+      resetState({ contract: { metadata: { commercial_opportunity_id: "opportunity-1" } } });
+      const { response, body } = await callRoute({
+        body: { mode: "saved_text_draft", expectedDraftRevision: 3 },
+        textDraft: { revision: 4 },
+      });
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "CONTRACT_TEXT_DRAFT_REVISION_MISMATCH");
+      assert.equal(state.calls.some((call) => call.table === "create_sales_contract_text_version_by_system"), false);
+    },
+  },
+  {
+    name: "saved text draft fails closed when commercial opportunity scope is absent",
+    run: async () => {
+      resetState();
+      const { response, body } = await callRoute({
+        body: { mode: "saved_text_draft", expectedDraftRevision: 4 },
+      });
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "CONTRACT_COMMERCIAL_OPPORTUNITY_REQUIRED");
+      assert.equal(state.storedFiles.length, 0);
+    },
+  },
+  {
+    name: "manual responsible text contract materializes without quote lineage",
+    run: async () => {
+      resetState({
+        contract: {
+          quote_id: null,
+          quote_version_id: null,
+          metadata: {
+            source: "responsible_text_draft",
+            created_via: "create_sales_contract_manual_by_system",
+            commercial_opportunity_id: "opportunity-1",
+            draft_id: "draft-1",
+            template_version_id: "template-version-1",
+            creation_draft_revision: 4,
+            creation_draft_sha256: "a".repeat(64),
+            commercial_amounts_authoritative: false,
+          },
+        },
+      });
+
+      const { response, body } = await callRoute({
+        body: { mode: "saved_text_draft", expectedDraftRevision: 4 },
+      });
+
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(state.storedFiles.length, 1);
+      const rpc = state.calls.find((call) => call.table === "create_sales_contract_text_version_by_system");
+      assert.equal(rpc?.payload?.commercialOpportunityId, "opportunity-1");
+      assert.equal(rpc?.payload?.draftId, "draft-1");
+      assert.equal(rpc?.payload?.draftRevision, 4);
+      assert.equal(rpc?.payload?.expectedCurrentVersionId, null);
+      assert.equal((rpc?.payload?.contractSnapshot as Record<string, unknown>)?.origin != null, true);
+      assert.equal(
+        ((rpc?.payload?.contractSnapshot as Record<string, unknown>)?.lineage as Record<string, unknown>)?.quote_id,
+        null,
+      );
+      assert.equal(
+        state.calls.some((call) => call.table === "sales_quote_versions"),
+        false,
+      );
+      assert.equal(state.calls.some((call) => call.table.includes("whatsapp")), false);
+    },
+  },
+  {
+    name: "manual metadata with quote lineage is rejected before preparation",
+    run: async () => {
+      resetState({
+        contract: {
+          metadata: {
+            source: "responsible_text_draft",
+            created_via: "create_sales_contract_manual_by_system",
+            commercial_opportunity_id: "opportunity-1",
+          },
+        },
+      });
+
+      const { response, body } = await callRoute({
+        body: { mode: "saved_text_draft", expectedDraftRevision: 4 },
+      });
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "CONTRACT_MANUAL_ORIGIN_INVALID");
+      assert.equal(state.storedFiles.length, 0);
+      assert.equal(state.calls.some((call) => call.table === "create_sales_contract_text_version_by_system"), false);
+    },
+  },
+  {
+    name: "approved text contract requires explicit human reopen action",
+    run: async () => {
+      resetState({
+        contract: {
+          status: "approved",
+          current_version_id: "contract-version-approved",
+          quote_id: null,
+          quote_version_id: null,
+          metadata: {
+            source: "responsible_text_draft",
+            created_via: "create_sales_contract_manual_by_system",
+            commercial_opportunity_id: "opportunity-1",
+            draft_id: "draft-1",
+            template_version_id: "template-version-1",
+            creation_draft_revision: 4,
+            creation_draft_sha256: "a".repeat(64),
+            commercial_amounts_authoritative: false,
+          },
+        },
+      });
+      const blocked = await callRoute({
+        body: { mode: "saved_text_draft", expectedDraftRevision: 4 },
+      });
+      assert.equal(blocked.response.status, 409);
+      assert.equal(blocked.body.error, "P9_TEXT_VERSION_REOPEN_REQUIRES_HUMAN_ACTION");
+
+      resetState({
+        contract: {
+          status: "approved",
+          current_version_id: "contract-version-approved",
+          quote_id: null,
+          quote_version_id: null,
+          metadata: {
+            source: "responsible_text_draft",
+            created_via: "create_sales_contract_manual_by_system",
+            commercial_opportunity_id: "opportunity-1",
+            draft_id: "draft-1",
+            template_version_id: "template-version-1",
+            creation_draft_revision: 4,
+            creation_draft_sha256: "a".repeat(64),
+            commercial_amounts_authoritative: false,
+          },
+        },
+      });
+      const reopened = await callRoute({
+        body: {
+          mode: "saved_text_draft",
+          expectedDraftRevision: 4,
+          humanAction: "reopen_approved_contract",
+        },
+      });
+      assert.equal(reopened.response.status, 200);
+      assert.equal(
+        state.calls.find((call) => call.table === "create_sales_contract_text_version_by_system")?.payload?.allowReopenApproved,
+        true,
+      );
+    },
+  },
+  {
+    name: "text RPC replay does not reopen or overwrite approval state",
+    run: async () => {
+      resetState({
+        contract: {
+          status: "approved",
+          current_version_id: "contract-version-approved",
+          quote_id: null,
+          quote_version_id: null,
+          metadata: {
+            source: "responsible_text_draft",
+            created_via: "create_sales_contract_manual_by_system",
+            commercial_opportunity_id: "opportunity-1",
+            draft_id: "draft-1",
+            template_version_id: "template-version-1",
+            creation_draft_revision: 4,
+            creation_draft_sha256: "a".repeat(64),
+            commercial_amounts_authoritative: false,
+          },
+        },
+      });
+      const { response, body } = await callRoute({
+        body: {
+          mode: "saved_text_draft",
+          expectedDraftRevision: 4,
+          humanAction: "reopen_approved_contract",
+        },
+        textVersion: { replayed: true, versionNumber: 2 },
+      });
+      assert.equal(response.status, 200);
+      assert.equal(body.replayed, true);
+      assert.equal(body.contract.status, "approved");
+      assert.equal(state.calls.some((call) => call.table === "sales_contract_versions" && call.operation === "update"), false);
+      assert.equal(state.calls.some((call) => call.table === "sales_contracts" && call.operation === "update"), false);
+      assert.equal(body.contract.current_version_id, "contract-version-approved");
+      assert.equal(body.currentVersion, null);
+      assert.equal(state.calls.some((call) => call.table === "storage:contracts" && call.operation === "remove"), false);
+      assert.equal(state.calls.some((call) => call.table === "store_files" && call.operation === "delete"), false);
+    },
+  },
+  {
+    name: "uncertain text RPC preserves the possibly durable temporary artifact",
+    run: async () => {
+      resetState({ contract: { metadata: { commercial_opportunity_id: "opportunity-1" } } });
+      const { response, body } = await callRoute({
+        body: { mode: "saved_text_draft", expectedDraftRevision: 4 },
+        textVersion: { error: "uncertain" },
+      });
+      assert.equal(response.status, 503);
+      assert.equal(body.error, "CONTRACT_TEXT_VERSION_AUTHORITY_UNCERTAIN");
+      assert.equal(state.calls.some((call) => call.table === "storage:contracts" && call.operation === "remove"), false);
+      assert.equal(state.calls.some((call) => call.table === "store_files" && call.operation === "delete"), false);
+    },
+  },
+  {
+    name: "known text RPC conflict returns 409 and compensates only before authority",
+    run: async () => {
+      resetState({ contract: { metadata: { commercial_opportunity_id: "opportunity-1" } } });
+      const { response, body } = await callRoute({
+        body: { mode: "saved_text_draft", expectedDraftRevision: 4 },
+        textVersion: { error: "known_conflict" },
+      });
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "P9_TEXT_VERSION_CURRENT_VERSION_CHANGED");
+      assert.equal(body.message.includes("SQL"), false);
+      assert.equal(state.calls.some((call) => call.table === "storage:contracts" && call.operation === "remove"), true);
+      assert.equal(state.calls.some((call) => call.table === "store_files" && call.operation === "delete"), true);
     },
   },
 ];

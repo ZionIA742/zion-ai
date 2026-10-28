@@ -3,6 +3,10 @@ import {
   finalizeSalesQuoteSendBySystem,
   isSalesQuoteSendMetadata,
 } from "@/lib/server/sales-quotes/quote-send";
+import {
+  finalizeSalesContractSendBySystem,
+  isSalesContractSendMetadata,
+} from "@/lib/server/sales-contracts/contract-send";
 
 type Json =
   | string
@@ -136,6 +140,16 @@ type WhatsappExternalSendGateResult =
       conversation_id?: string | null;
     };
 
+type ContractSendGateResult =
+  | {
+      ok: true;
+      decision: "send" | "blocked" | "template_required";
+      reason: string;
+      message_id?: string | null;
+      conversation_id?: string | null;
+    }
+  | null;
+
 type Whatsapp24hWindowPreflightResult = {
   ok: true;
   decision: "send" | "blocked" | "template_required";
@@ -173,10 +187,20 @@ type QuoteSendMetadata = {
   sales_quote_version_id?: unknown;
 };
 
+type ContractSendMetadata = {
+  sales_contract_id?: unknown;
+  sales_contract_version_id?: unknown;
+};
+
 type FinalizedQuoteSendRef = {
   commercialOpportunityId: string;
   salesQuoteId: string;
   salesQuoteVersionId: string;
+};
+
+type FinalizedContractSendRef = {
+  salesContractId: string;
+  salesContractVersionId: string;
 };
 
 type PreparedWhatsappTransportMessage =
@@ -286,6 +310,10 @@ type ProcessDeps = {
     supabase: SupabaseClient,
     message: MessageScope,
   ) => Promise<WhatsappExternalSendGateResult>;
+  validateSalesContractSendBeforeExternal: (
+    supabase: SupabaseClient,
+    message: PendingExternalMessage,
+  ) => Promise<ContractSendGateResult>;
   readCustomerWhatsapp24hWindow: (
     supabase: SupabaseClient,
     message: MessageScope,
@@ -333,7 +361,17 @@ type ProcessDeps = {
       metadata: Record<string, unknown>;
     },
   ) => Promise<FinalizedQuoteSendRef | null>;
+  finalizeSalesContractSendMessageIfNeeded: (
+    supabase: SupabaseClient,
+    message: { id: string; organizationId: string; storeId: string; metadata: Record<string, unknown> },
+  ) => Promise<FinalizedContractSendRef | null>;
   reconcileSentQuoteSendMessages: (
+    supabase: SupabaseClient,
+    organizationId: string,
+    storeId: string,
+    limit: number,
+  ) => Promise<Array<{ messageId: string; detail: string }>>;
+  reconcileSentContractSendMessages: (
     supabase: SupabaseClient,
     organizationId: string,
     storeId: string,
@@ -644,6 +682,25 @@ async function validateOrCancelWhatsappExternalSend(
   }
 
   throw new Error(`Gate final de envio WhatsApp retornou decisao invalida para message ${message.id}`);
+}
+
+async function validateSalesContractSendBeforeExternal(
+  supabase: SupabaseClient,
+  message: PendingExternalMessage,
+): Promise<ContractSendGateResult> {
+  if (!isSalesContractSendMetadata(message.metadata)) return null;
+  const { data, error } = await supabase.rpc("validate_or_start_sales_contract_send_by_system", {
+    p_organization_id: message.organizationId,
+    p_store_id: message.storeId,
+    p_message_id: message.id,
+  });
+  if (error) throw new Error(`Erro no gate final do contrato ${message.id}: ${error.message}`);
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(`Gate final do contrato retornou contrato invalido para message ${message.id}`);
+  const result = data as Record<string, unknown>;
+  const decision = normalizeText(result.decision);
+  const reason = normalizeText(result.reason);
+  if (result.ok !== true || !reason || !["send", "blocked", "template_required"].includes(decision)) throw new Error(`Gate final do contrato retornou decisao invalida para message ${message.id}`);
+  return { ok: true, decision: decision as "send" | "blocked" | "template_required", reason, message_id: normalizeText(result.message_id) || null, conversation_id: normalizeText(result.conversation_id) || null };
 }
 
 async function readCustomerWhatsapp24hWindow(
@@ -1376,6 +1433,32 @@ async function finalizeQuoteSendMessageIfNeeded(
   return quoteSend;
 }
 
+function extractContractSendMetadata(metadata: Record<string, unknown>) {
+  if (!isSalesContractSendMetadata(metadata)) return null;
+  const typed = metadata as ContractSendMetadata;
+  const contractId = typeof typed.sales_contract_id === "string" ? typed.sales_contract_id.trim() : "";
+  const versionId = typeof typed.sales_contract_version_id === "string" ? typed.sales_contract_version_id.trim() : "";
+  if (!contractId || !versionId) throw new Error("SALES_CONTRACT_SEND_METADATA_SCOPE_REQUIRED");
+  return { contractId, versionId };
+}
+
+async function finalizeSalesContractSendMessageIfNeeded(
+  supabase: SupabaseClient,
+  message: { id: string; organizationId: string; storeId: string; metadata: Record<string, unknown> },
+) {
+  const contractSend = extractContractSendMetadata(message.metadata);
+  if (!contractSend) return null;
+  await finalizeSalesContractSendBySystem({
+    supabase,
+    organizationId: message.organizationId,
+    storeId: message.storeId,
+    contractId: contractSend.contractId,
+    contractVersionId: contractSend.versionId,
+    messageId: message.id,
+  });
+  return { salesContractId: contractSend.contractId, salesContractVersionId: contractSend.versionId };
+}
+
 async function reconcileSentQuoteSendMessages(
   supabase: SupabaseClient,
   organizationId: string,
@@ -1440,6 +1523,50 @@ async function reconcileSentQuoteSendMessages(
   return reconciled;
 }
 
+async function reconcileSentContractSendMessages(
+  supabase: SupabaseClient,
+  organizationId: string,
+  storeId: string,
+  limit: number,
+) {
+  const { data, error } = await supabase
+    .from("messages")
+    .select("id, organization_id, store_id, metadata")
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .eq("outbound_delivery_state", "sent")
+    .contains("metadata", { outbound_origin: "sales_contract_send" })
+    .not("external_message_id", "is", null)
+    .not("outbound_provider_accepted_at", "is", null)
+    .is("outbound_commercial_finalized_at", null)
+    .is("deleted_at", null)
+    .limit(Math.max(1, Math.min(limit, 100)));
+  if (error) throw new Error(`Erro ao listar contract sends para reconciliacao: ${error.message}`);
+  const rows = Array.isArray(data) ? data as Array<Record<string, unknown>> : [];
+  const reconciled: Array<{ messageId: string; detail: string }> = [];
+  for (const row of rows) {
+    const id = typeof row.id === "string" ? row.id : "";
+    const rowOrg = typeof row.organization_id === "string" ? row.organization_id : "";
+    const rowStore = typeof row.store_id === "string" ? row.store_id : "";
+    const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
+    if (!id || rowOrg !== organizationId || rowStore !== storeId) continue;
+    try {
+      const finalized = await finalizeSalesContractSendMessageIfNeeded(supabase, { id, organizationId, storeId, metadata });
+      if (!finalized) throw new Error("SALES_CONTRACT_SEND_RECONCILIATION_ORIGIN_REQUIRED");
+      reconciled.push({ messageId: id, detail: "finalizacao de contrato reconciliada sem novo POST externo" });
+    } catch (error) {
+      console.error("[whatsapp-external-sender] falha ao reconciliar contract send", error);
+      const detail = error instanceof Error ? error.message : "Erro desconhecido na reconciliacao";
+      await markMessageCommercialFinalizationPending(
+        supabase,
+        { id, organizationId: rowOrg, storeId: rowStore },
+        detail,
+      );
+    }
+  }
+  return reconciled;
+}
+
 function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
   const resolvedDeps: ProcessDeps = {
     createSupabaseAdmin: deps?.createSupabaseAdmin ?? getSupabaseAdmin,
@@ -1460,6 +1587,8 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
     releaseClaimedMessage: deps?.releaseClaimedMessage ?? releaseClaimedMessage,
     validateOrCancelWhatsappExternalSend:
       deps?.validateOrCancelWhatsappExternalSend ?? validateOrCancelWhatsappExternalSend,
+    validateSalesContractSendBeforeExternal:
+      deps?.validateSalesContractSendBeforeExternal ?? validateSalesContractSendBeforeExternal,
     readCustomerWhatsapp24hWindow:
       deps?.readCustomerWhatsapp24hWindow ?? readCustomerWhatsapp24hWindow,
     markMessageRetryableFailure: deps?.markMessageRetryableFailure ?? markMessageRetryableFailure,
@@ -1472,8 +1601,12 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
     sendSinglePendingMessage: deps?.sendSinglePendingMessage ?? sendSinglePendingMessage,
     finalizeQuoteSendMessageIfNeeded:
       deps?.finalizeQuoteSendMessageIfNeeded ?? finalizeQuoteSendMessageIfNeeded,
+    finalizeSalesContractSendMessageIfNeeded:
+      deps?.finalizeSalesContractSendMessageIfNeeded ?? finalizeSalesContractSendMessageIfNeeded,
     reconcileSentQuoteSendMessages:
       deps?.reconcileSentQuoteSendMessages ?? reconcileSentQuoteSendMessages,
+    reconcileSentContractSendMessages:
+      deps?.reconcileSentContractSendMessages ?? reconcileSentContractSendMessages,
   };
 
   return async function processWhatsappPendingMessages(
@@ -1505,6 +1638,18 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
         storeId: input.storeId,
         detail: error instanceof Error ? error.message : String(error),
       });
+    }
+
+    try {
+      const reconciled = await resolvedDeps.reconcileSentContractSendMessages(
+        supabase,
+        input.organizationId,
+        input.storeId,
+        limit,
+      );
+      for (const item of reconciled) results.push({ messageId: item.messageId, status: "sent", detail: item.detail });
+    } catch (error) {
+      console.error("[whatsapp-external-sender] falha global de reconciliacao de contratos", error);
     }
 
     const templateCandidates =
@@ -1740,12 +1885,13 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
       let attemptStarted = false;
       let providerMessageId: string | null = null;
       try {
+        const isContractSend = isSalesContractSendMetadata(message.metadata);
         const preflightResult = await resolvedDeps.readCustomerWhatsapp24hWindow(
           supabase,
           message,
         );
 
-        if (preflightResult.decision !== "send") {
+        if (preflightResult.decision !== "send" && !isContractSend) {
           const preflightGateResult = await resolvedDeps.validateOrCancelWhatsappExternalSend(
             supabase,
             message,
@@ -1779,12 +1925,11 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
           input.storeId,
         );
 
-        const gateResult = await resolvedDeps.validateOrCancelWhatsappExternalSend(
-          supabase,
-          message,
-        );
+        const gateResult = isContractSend
+          ? null
+          : await resolvedDeps.validateOrCancelWhatsappExternalSend(supabase, message);
 
-        if (gateResult.decision === "template_required") {
+        if (gateResult?.decision === "template_required") {
           templateRequired += 1;
           results.push({
             messageId: message.id,
@@ -1794,13 +1939,27 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
           continue;
         }
 
-        if (gateResult.decision === "blocked") {
+        if (gateResult?.decision === "blocked") {
           failed += 1;
           results.push({
             messageId: message.id,
             status: "failed",
             detail: `ZION_EXTERNAL_SEND_BLOCKED:${gateResult.reason}`,
           });
+          continue;
+        }
+
+        const contractGate = isContractSend
+          ? await resolvedDeps.validateSalesContractSendBeforeExternal(supabase, message)
+          : null;
+        if (contractGate?.decision === "template_required") {
+          templateRequired += 1;
+          results.push({ messageId: message.id, status: "template_required", detail: `ZION_EXTERNAL_SEND_TEMPLATE_REQUIRED:${contractGate.reason}` });
+          continue;
+        }
+        if (contractGate?.decision === "blocked") {
+          failed += 1;
+          results.push({ messageId: message.id, status: "failed", detail: `ZION_CONTRACT_SEND_BLOCKED:${contractGate.reason}` });
           continue;
         }
 
@@ -1816,8 +1975,11 @@ function createProcessWhatsappPendingMessages(deps?: Partial<ProcessDeps>) {
 
         let detail = `Enviado com sucesso como ${message.messageType}`;
         try {
-          const finalized = await resolvedDeps.finalizeQuoteSendMessageIfNeeded(supabase, message);
-          if (finalized) detail = `${detail}; finalizacao comercial concluida`;
+          const finalizedQuote = await resolvedDeps.finalizeQuoteSendMessageIfNeeded(supabase, message);
+          const finalizedContract = finalizedQuote
+            ? null
+            : await resolvedDeps.finalizeSalesContractSendMessageIfNeeded(supabase, message);
+          if (finalizedQuote || finalizedContract) detail = `${detail}; finalizacao comercial concluida`;
         } catch (error) {
           const finalizationDetail =
             error instanceof Error ? error.message : "Erro desconhecido na finalizacao comercial";

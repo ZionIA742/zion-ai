@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import Module from "node:module";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { StoreApiAccessResult } from "@/lib/server/store-api-access";
 
 type TestCase = {
   name: string;
@@ -10,10 +11,10 @@ type TestCase = {
 
 type Row = Record<string, unknown>;
 
-function grantedAccess(supabase: unknown) {
+function grantedAccess(supabase: unknown): StoreApiAccessResult {
   return {
-    ok: true,
-    supabase,
+    ok: true as const,
+    supabase: supabase as never,
     sessionUserId: "user-1",
     organizationId: "org-1",
     storeId: "store-1",
@@ -28,22 +29,22 @@ function grantedAccess(supabase: unknown) {
       organizationId: "org-1",
       storeId: "store-1",
       commercialAccess: "allowed",
-      reasonCode: "active_store_ready",
+      reasonCode: "ready_active",
       message: "Acesso ativo.",
     },
-  };
+  } as const;
 }
 
-function deniedAccess() {
+function deniedAccess(): StoreApiAccessResult {
   return {
-    ok: false,
+    ok: false as const,
     httpStatus: 401,
     payload: {
       ok: false,
       error: "STORE_API_UNAUTHENTICATED",
       message: "Nao autenticado.",
-      status: "anonymous",
-      reasonCode: "anonymous",
+      status: "anonymous" as const,
+      reasonCode: "anonymous" as const,
     },
     resolution: {
       domain: "anonymous",
@@ -59,7 +60,7 @@ function deniedAccess() {
       reasonCode: "anonymous",
       message: "Nao autenticado.",
     },
-  };
+  } as const;
 }
 
 const projectSrcPath = join(process.cwd(), "src");
@@ -272,7 +273,7 @@ async function parseBody(response: Response) {
 
 async function requestContracts(args: {
   query?: Record<string, string>;
-  access?: unknown;
+  access?: StoreApiAccessResult;
   onRequirement?: (requirement: string) => void;
 }) {
   const { createSalesContractsListGetHandler } = await routeModulePromise;

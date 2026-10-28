@@ -1,482 +1,304 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  ContractAccessError,
-  type ContractAuthorizedStoreScope,
-} from "@/lib/server/sales-contracts/contract-auth";
 import { createSalesContractSendPostHandler } from "./route";
 
 type Row = Record<string, unknown>;
+const VERSION_1 = "11111111-1111-4111-8111-111111111111";
+const VERSION_2 = "22222222-2222-4222-8222-222222222222";
 
-function access(supabase: unknown) {
+function manualContract() {
   return {
-    ok: true as const,
-    supabase: supabase as never,
-    sessionUserId: "user-1",
-    organizationId: "org-1",
-    storeId: "store-1",
-    resolution: {} as never,
-  };
-}
-
-function denied() {
-  return {
-    ok: false as const,
-    httpStatus: 401 as const,
-    payload: {
-      ok: false as const,
-      error: "STORE_API_UNAUTHENTICATED",
-      message: "Nao autenticado.",
-      status: "anonymous" as const,
-      reasonCode: "anonymous" as const,
+    metadata: {
+      source: "responsible_text_draft",
+      created_via: "create_sales_contract_manual_by_system",
     },
-    resolution: {} as never,
+    quote_id: null,
+    quote_version_id: null,
   };
 }
 
-function baseContract(overrides: Row = {}) {
-  return {
-    id: "contract-1",
-    organization_id: "org-1",
-    store_id: "store-1",
-    status: "approved",
-    conversation_id: "conversation-1",
-    lead_id: "lead-1",
-    current_version_id: "version-1",
-    contract_number: "C-001",
-    quote_id: "quote-1",
-    quote_version_id: "quote-version-1",
-    ...overrides,
-  };
+const makeScope = (supabase: unknown, overrides: { contract?: Row; currentVersion?: Row | null; organizationId?: string; store?: Row } = {}) => ({
+  supabase, organizationId: overrides.organizationId ?? "org-1", userId: "user-1",
+  store: { id: "store-1", organization_id: "org-1", ...overrides.store }, conversation: { id: "conversation-1" }, lead: { id: "lead-1" },
+  contract: { id: "contract-1", organization_id: "org-1", store_id: "store-1", status: "approved", conversation_id: "conversation-1", current_version_id: VERSION_1, contract_number: "C-001", quote_id: "quote-1", quote_version_id: "quote-version-1", ...overrides.contract } as Row,
+  currentVersion: (overrides.currentVersion === null ? null : { id: VERSION_1, contract_id: "contract-1", organization_id: "org-1", store_id: "store-1", status: "approved", storage_bucket: "contracts", storage_path: `org-1/store-1/contract-1/${VERSION_1}.pdf`, original_filename: "contract.pdf", mime_type: "application/pdf", size_bytes: 1234, ...overrides.currentVersion }) as Row | null,
+});
+
+function granted(supabase: unknown) { return { ok: true as const, supabase: supabase as never, sessionUserId: "user-1", organizationId: "org-1", storeId: "store-1", resolution: {} as never }; }
+function denied() { return { ok: false as const, httpStatus: 401 as const, payload: { ok: false, error: "STORE_API_UNAUTHENTICATED", message: "Nao autenticado.", status: "anonymous", reasonCode: "anonymous" }, resolution: {} as never }; }
+function context(contractId = "contract-1") { return { params: Promise.resolve({ contractId }) }; }
+async function body(response: Response) { return { response, body: await response.json() as Row }; }
+
+function harness(options: { result?: Row; error?: { message: string } | null; scope?: ReturnType<typeof makeScope>; resolveContract?: (contractId: string, scope: Row) => Promise<unknown>; resolveAccess?: () => Promise<unknown> } = {}) {
+  const calls: Array<{ fn: string; payload: Row }> = [];
+  const supabase = { rpc: async (fn: string, payload: Row) => { calls.push({ fn, payload }); return { data: [{ message_id: "message-1", outbound_idempotency_key: `sales_contract_send:org-1:store-1:contract-1:${VERSION_1}`, outbound_delivery_state: "pending", sales_contract_id: "contract-1", sales_contract_version_id: VERSION_1, external_message_id: null, outcome: "queued", ...options.result }], error: options.error ?? null }; } };
+  const scope = options.scope ?? makeScope(supabase);
+  return { calls, supabase, scope, resolveAccess: options.resolveAccess ?? (async () => granted(supabase)), resolveContract: options.resolveContract ?? (async () => scope) };
 }
 
-function baseVersion(overrides: Row = {}) {
-  return {
-    id: "version-1",
-    contract_id: "contract-1",
-    organization_id: "org-1",
-    store_id: "store-1",
-    storage_bucket: "contracts",
-    storage_path: "org-1/store-1/contract-1/version-1.pdf",
-    original_filename: "contract.pdf",
-    mime_type: "application/pdf",
-    size_bytes: 1234,
-    ...overrides,
-  };
+async function testDeniedBeforeContract() {
+  const h = harness(); let resolved = false;
+  const handler = createSalesContractSendPostHandler({ resolveAccess: (async () => denied()) as never, resolveContract: (async () => { resolved = true; throw new Error("must not run"); }) as never });
+  const result = await body(await handler(new Request("http://test"), context()));
+  assert.equal(result.response.status, 401); assert.equal(resolved, false); assert.equal(h.calls.length, 0);
 }
 
-function baseScope(overrides: {
-  organizationId?: string;
-  store?: Row;
-  contract?: Row;
-  currentVersion?: Row | null;
-  supabase?: unknown;
-} = {}) {
-  return {
-    supabase: overrides.supabase,
-    organizationId: overrides.organizationId ?? "org-1",
-    userId: "user-1",
-    store: { id: "store-1", organization_id: "org-1", ...overrides.store },
-    conversation: { id: "conversation-1" },
-    lead: { id: "lead-1" },
-    contract: { ...baseContract(), ...overrides.contract },
-    currentVersion:
-      overrides.currentVersion === undefined
-        ? baseVersion()
-        : overrides.currentVersion,
-  };
-}
-
-function createSupabase(options: {
-  insertData?: unknown;
-  insertError?: Row | null;
-  contractUpdate?: Row | null;
-  contractUpdateError?: Row | null;
-  versionUpdate?: Row | null;
-  versionUpdateError?: Row | null;
-} = {}) {
-  const calls: Array<{ kind: string; table?: string; method?: string; args?: unknown[] }> = [];
-  const updates: Array<{ table: string; values: Row; filters: Array<[string, unknown]> }> = [];
-  const supabase = {
-    calls,
-    updates,
-    async rpc(name: string, args: Row) {
-      calls.push({ kind: "rpc", method: name, args: [args] });
-      if (name === "insert_message") {
-        return {
-          data: options.insertData ?? { id: "message-1" },
-          error: options.insertError ?? null,
-        };
-      }
-      return { data: {}, error: null };
-    },
-    from(table: string) {
-      let values: Row = {};
-      const filters: Array<[string, unknown]> = [];
-      const builder = {
-        update(nextValues: Row) {
-          values = nextValues;
-          return builder;
-        },
-        eq(column: string, value: unknown) {
-          filters.push([column, value]);
-          return builder;
-        },
-        select() {
-          return builder;
-        },
-        async maybeSingle() {
-          calls.push({ kind: "query", table, method: "maybeSingle" });
-          updates.push({ table, values, filters: [...filters] });
-          if (table === "sales_contracts") {
-            return {
-              data: options.contractUpdate ?? baseContract({ status: "sent_to_customer" }),
-              error: options.contractUpdateError ?? null,
-            };
-          }
-          return {
-            data: options.versionUpdate ?? baseVersion({ status: "sent" }),
-            error: options.versionUpdateError ?? null,
-          };
-        },
-      };
-      return builder;
-    },
-  };
-  return supabase;
-}
-
-function context(contractId = "contract-1") {
-  return { params: Promise.resolve({ contractId }) };
-}
-
-async function bodyOf(response: Response) {
-  return { response, body: await response.json() };
-}
-
-function handlerFor(options: {
-  scope?: Row;
-  supabase?: ReturnType<typeof createSupabase>;
-  resolveAccess?: (params: { requirement: "active" }) => Promise<ReturnType<typeof access>>;
-  resolveContract?: unknown;
-  registerBusinessEvent?: unknown;
-} = {}) {
-  const supabase = options.supabase ?? createSupabase();
-  const scope = options.scope ?? baseScope({ supabase });
-  return {
-    supabase,
-    handler: createSalesContractSendPostHandler({
-      resolveAccess: options.resolveAccess ?? (async () => access(supabase)),
-      resolveContract:
-        (options.resolveContract as never) ??
-        (async () => scope) as never,
-      registerBusinessEvent:
-        (options.registerBusinessEvent as never) ?? (async () => undefined) as never,
-    }),
-  };
-}
-
-async function testDeniedAndCanonicalScope() {
-  let resolveContractCalls = 0;
-  const deniedSupabase = createSupabase();
-  const deniedSetup = handlerFor({
-    supabase: deniedSupabase,
-    resolveAccess: (async (params: { requirement: "active" }) => {
-      assert.deepEqual(params, { requirement: "active" });
-      return denied();
-    }) as never,
-    resolveContract: (async () => {
-      resolveContractCalls += 1;
-      throw new Error("must not resolve contract");
-    }) as never,
-    registerBusinessEvent: (async () => {
-      throw new Error("must not register event");
-    }) as never,
+async function testMaterializesWithoutDirectUpdates() {
+  const h = harness(); let received: Row | undefined;
+  const handler = createSalesContractSendPostHandler({
+    resolveAccess: async () => granted(h.supabase),
+    resolveContract: (async (_id: string, authorized: Row) => { assert.deepEqual(authorized, { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" }); return makeScope(h.supabase); }) as never,
+    materializeSend: (async (args: Row) => { received = args; return { message_id: "message-1", outbound_idempotency_key: `sales_contract_send:org-1:store-1:contract-1:${VERSION_1}`, outbound_delivery_state: "pending", sales_contract_id: "contract-1", sales_contract_version_id: VERSION_1, external_message_id: null, outcome: "queued" }; }) as never,
   });
-  const deniedResult = await bodyOf(
-    await deniedSetup.handler(new Request("http://test"), context()),
-  );
-  assert.equal(deniedResult.response.status, 401);
-  assert.equal(deniedResult.body.error, "STORE_API_UNAUTHENTICATED");
-  assert.equal(resolveContractCalls, 0);
-  assert.equal(deniedSupabase.calls.length, 0);
-
-  const canonicalSupabase = createSupabase();
-  let receivedScope: ContractAuthorizedStoreScope | undefined;
-  const canonicalSetup = handlerFor({
-    supabase: canonicalSupabase,
-    resolveContract: (async (_contractId: string, authorizedScope: ContractAuthorizedStoreScope) => {
-      receivedScope = authorizedScope;
-      return baseScope({ supabase: canonicalSupabase });
-    }) as never,
-  });
-  const canonicalResult = await bodyOf(
-    await canonicalSetup.handler(new Request("http://test"), context()),
-  );
-  assert.equal(canonicalResult.response.status, 200);
-  assert.deepEqual(receivedScope, {
-    organizationId: "org-1",
-    storeId: "store-1",
-    sessionUserId: "user-1",
-  });
+  const result = await body(await handler(new Request("http://test"), context()));
+  assert.equal(result.response.status, 200); assert.equal((result.body.operation as Row).message_id, "message-1");
+  assert.equal((received?.messageMetadata as Row).outbound_origin, "sales_contract_send"); assert.equal((received?.messageMetadata as Row).send_external, true); assert.equal(h.calls.length, 0);
 }
 
-async function testForeignScopeAndVersionMismatch() {
-  const scopes = [
-    baseScope({ organizationId: "org-2" }),
-    baseScope({ store: { id: "store-2" } }),
-    baseScope({ store: { organization_id: "org-2" } }),
-    baseScope({ contract: { organization_id: "org-2" } }),
-    baseScope({ contract: { store_id: "store-2" } }),
-    baseScope({ currentVersion: baseVersion({ id: "version-2" }) }),
-    baseScope({ currentVersion: baseVersion({ contract_id: "contract-2" }) }),
-    baseScope({ currentVersion: baseVersion({ organization_id: "org-2" }) }),
-    baseScope({ currentVersion: baseVersion({ store_id: "store-2" }) }),
-  ];
-  for (const scope of scopes) {
-    const supabase = createSupabase();
-    const setup = handlerFor({ scope: { ...scope, supabase }, supabase });
-    const result = await bodyOf(
-      await setup.handler(new Request("http://test"), context()),
-    );
-    assert.equal(result.response.status, 403);
-    assert.equal(result.body.error, "CONTRACT_SCOPE_MISMATCH");
-    assert.equal(supabase.calls.length, 0);
-    assert.equal(supabase.updates.length, 0);
-  }
+async function testRpcPayloadAndPdfIdentity() {
+  const h = harness(); const handler = createSalesContractSendPostHandler({ resolveAccess: async () => granted(h.supabase), resolveContract: (async () => makeScope(h.supabase)) as never });
+  const result = await body(await handler(new Request("http://test"), context()));
+  assert.equal(result.response.status, 200); assert.equal(h.calls.length, 1); assert.equal(h.calls[0].fn, "materialize_sales_contract_send_by_system");
+  assert.equal(h.calls[0].payload.p_contract_id, "contract-1"); assert.equal(h.calls[0].payload.p_contract_version_id, VERSION_1); assert.equal(h.calls[0].payload.p_idempotency_key, `sales_contract_send:org-1:store-1:contract-1:${VERSION_1}`);
+  assert.equal(h.calls[0].payload.p_actor_user_id, "user-1");
+  const metadata = h.calls[0].payload.p_message_metadata as Row; assert.equal(metadata.outbound_origin, "sales_contract_send"); assert.equal(metadata.storage_path, `org-1/store-1/contract-1/${VERSION_1}.pdf`); assert.equal(metadata.mime_type, "application/pdf"); assert.equal(metadata.sent_by_user_id, "user-1");
 }
 
-async function testStatusAndRequiredFields() {
-  const cases: Array<[Row, number, string]> = [
-    [baseContract({ status: "completed" }), 409, "CONTRACT_STATUS_NOT_SENDABLE"],
-    [baseContract({ status: "sent_to_customer" }), 409, "CONTRACT_ALREADY_SENT"],
-    [baseContract({ status: "draft" }), 409, "CONTRACT_REQUIRES_APPROVAL"],
-    [baseContract({ conversation_id: null }), 400, "CONTRACT_CONVERSATION_REQUIRED"],
-    [baseContract({ current_version_id: null }), 400, "CONTRACT_VERSION_REQUIRED"],
-  ];
-  for (const [contract, status, error] of cases) {
-    const supabase = createSupabase();
-    const setup = handlerFor({ scope: baseScope({ contract, supabase }), supabase });
-    const result = await bodyOf(
-      await setup.handler(new Request("http://test"), context()),
-    );
-    assert.equal(result.response.status, status);
-    assert.equal(result.body.error, error);
-    assert.equal(supabase.calls.length, 0);
-  }
-
-  const missingVersion = createSupabase();
-  const missingVersionSetup = handlerFor({
-    scope: baseScope({ currentVersion: null, supabase: missingVersion }),
-    supabase: missingVersion,
+async function testExpectedVersionIsCarriedAndFenced() {
+  const h = harness();
+  const handler = createSalesContractSendPostHandler({
+    resolveAccess: async () => granted(h.supabase),
+    resolveContract: (async () => h.scope) as never,
   });
-  const missingVersionResult = await bodyOf(
-    await missingVersionSetup.handler(new Request("http://test"), context()),
-  );
-  assert.equal(missingVersionResult.response.status, 404);
-  assert.equal(missingVersionResult.body.error, "CONTRACT_VERSION_NOT_FOUND");
-
-  for (const currentVersion of [
-    baseVersion({ storage_bucket: "" }),
-    baseVersion({ storage_path: "" }),
-  ]) {
-    const supabase = createSupabase();
-    const setup = handlerFor({ scope: baseScope({ currentVersion, supabase }), supabase });
-    const result = await bodyOf(
-      await setup.handler(new Request("http://test"), context()),
-    );
-    assert.equal(result.response.status, 400);
-    assert.equal(result.body.error, "CONTRACT_FILE_MISSING");
-    assert.equal(supabase.calls.length, 0);
-  }
-
-  const noFilenameSupabase = createSupabase();
-  const noFilename = handlerFor({
-    scope: baseScope({ currentVersion: baseVersion({ original_filename: "" }), supabase: noFilenameSupabase }),
-    supabase: noFilenameSupabase,
-  });
-  const noFilenameResult = await bodyOf(
-    await noFilename.handler(new Request("http://test"), context()),
-  );
-  assert.equal(noFilenameResult.response.status, 400);
-  assert.equal(noFilenameResult.body.error, "CONTRACT_FILENAME_MISSING");
-}
-
-async function testSuccessfulMutationsAndEvent() {
-  const supabase = createSupabase();
-  const eventCalls: Row[] = [];
-  const setup = handlerFor({
-    supabase,
-    registerBusinessEvent: (async (input: Row) => {
-      eventCalls.push(input);
-    }) as never,
-  });
-  const result = await bodyOf(
-    await setup.handler(new Request("http://test"), context()),
-  );
+  const result = await body(await handler(new Request("http://test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expectedContractVersionId: VERSION_1 }),
+  }), context()));
   assert.equal(result.response.status, 200);
-  assert.deepEqual(result.body, {
-    ok: true,
-    contract: baseContract({ status: "sent_to_customer" }),
-    current_version: baseVersion({ status: "sent" }),
-    messageId: "message-1",
-  });
+  assert.equal(h.calls[0].payload.p_contract_version_id, VERSION_1);
 
-  const insertCall = supabase.calls.find((call) => call.kind === "rpc");
-  assert.equal(insertCall?.method, "insert_message");
-  const insertArgs = insertCall?.args?.[0] as Row;
-  assert.equal(insertArgs.p_conversation_id, "conversation-1");
-  assert.equal(insertArgs.p_sender, "human");
-  assert.equal(insertArgs.p_direction, "outgoing");
-  assert.equal(insertArgs.p_message_type, "text");
-  assert.equal(insertArgs.p_content, "Enviei o contrato para voce conferir. Qualquer duvida me avisa.");
-  assert.equal(insertArgs.p_external_message_id, null);
-  assert.equal(insertArgs.p_media_url, null);
-  assert.deepEqual(insertArgs.p_metadata, {
-    attachment_kind: "file",
-    storage_bucket: "zion-store-files",
-    storage_path: "org-1/store-1/contract-1/version-1.pdf",
-    mime_type: "application/pdf",
-    original_file_name: "contract.pdf",
-    size_bytes: 1234,
-    file_kind: "sales_contract_pdf",
-    contract_id: "contract-1",
-    contract_version_id: "version-1",
-    contract_number: "C-001",
-    quote_id: "quote-1",
-    quote_version_id: "quote-version-1",
-    private: true,
-    generated_by: "system",
-    sales_contract_id: "contract-1",
-    sales_contract_version_id: "version-1",
+  const stale = harness({ scope: makeScope(h.supabase, {
+    contract: { current_version_id: VERSION_2 },
+    currentVersion: { id: VERSION_2 },
+  }) });
+  const staleHandler = createSalesContractSendPostHandler({
+    resolveAccess: async () => granted(stale.supabase),
+    resolveContract: (async () => stale.scope) as never,
   });
+  const staleResult = await body(await staleHandler(new Request("http://test", {
+    method: "POST",
+    body: JSON.stringify({ expectedContractVersionId: VERSION_1 }),
+  }), context()));
+  assert.equal(staleResult.response.status, 409);
+  assert.equal(staleResult.body.error, "CONTRACT_VERSION_STALE");
+  assert.equal(stale.calls.length, 0);
 
-  assert.deepEqual(supabase.updates[0], {
-    table: "sales_contracts",
-    values: {
-      status: "sent_to_customer",
-      sent_at: supabase.updates[0].values.sent_at,
-      sent_by: "user-1",
-    },
-    filters: [
-      ["id", "contract-1"],
-      ["organization_id", "org-1"],
-      ["store_id", "store-1"],
-    ],
+  let resolveCount = 0;
+  const race = harness();
+  const raceHandler = createSalesContractSendPostHandler({
+    resolveAccess: async () => granted(race.supabase),
+    resolveContract: (async () => {
+      resolveCount += 1;
+      return resolveCount === 1
+        ? race.scope
+        : makeScope(race.supabase, { contract: { current_version_id: VERSION_2 }, currentVersion: { id: VERSION_2 } });
+    }) as never,
+    materializeSend: (async () => { throw new Error("authority conflict"); }) as never,
   });
-  assert.deepEqual(supabase.updates[1].filters, [
-    ["id", "version-1"],
-    ["contract_id", "contract-1"],
-    ["organization_id", "org-1"],
-    ["store_id", "store-1"],
-  ]);
-  assert.equal(supabase.updates[1].values.status, "sent");
-  assert.equal(eventCalls.length, 1);
-  assert.equal(eventCalls[0].organizationId, "org-1");
-  assert.equal(eventCalls[0].storeId, "store-1");
-  assert.equal(eventCalls[0].actorType, "human");
-  assert.equal(eventCalls[0].actorUserId, "user-1");
+  const raceResult = await body(await raceHandler(new Request("http://test", {
+    method: "POST",
+    body: JSON.stringify({ expectedContractVersionId: VERSION_1 }),
+  }), context()));
+  assert.equal(raceResult.response.status, 409);
+  assert.equal(raceResult.body.error, "CONTRACT_VERSION_STALE");
 }
 
-async function testReturnedScopeMismatchAndErrorContracts() {
-  for (const contractUpdate of [
-    baseContract({ id: "contract-2" }),
-    baseContract({ organization_id: "org-2" }),
-    baseContract({ store_id: "store-2" }),
+async function testManualRequiresExactExpectedVersion() {
+  for (const request of [
+    new Request("http://test"),
+    new Request("http://test", { method: "POST", body: JSON.stringify({}) }),
+    new Request("http://test", { method: "POST", body: JSON.stringify({ expectedContractVersionId: "not-a-uuid" }) }),
   ]) {
-    const supabase = createSupabase({ contractUpdate });
-    let eventCalls = 0;
-    const setup = handlerFor({
-      supabase,
-      registerBusinessEvent: (async () => {
-        eventCalls += 1;
-      }) as never,
+    const h = harness();
+    h.scope.contract = { ...h.scope.contract, ...manualContract() };
+    const handler = createSalesContractSendPostHandler({
+      resolveAccess: async () => granted(h.supabase),
+      resolveContract: (async () => h.scope) as never,
     });
-    const result = await bodyOf(
-      await setup.handler(new Request("http://test"), context()),
-    );
-    assert.equal(result.response.status, 500);
-    assert.equal(result.body.error, "UNEXPECTED_ERROR");
-    assert.equal(eventCalls, 0);
+    const result = await body(await handler(request, context()));
+    assert.equal(result.response.status, 400);
+    assert.equal(result.body.error, request.body ? "CONTRACT_VERSION_EXPECTATION_INVALID" : "CONTRACT_VERSION_EXPECTATION_REQUIRED");
+    assert.equal(h.calls.length, 0);
   }
 
-  const versionMismatch = createSupabase({
-    versionUpdate: baseVersion({ organization_id: "org-2" }),
+  const h = harness();
+  h.scope.contract = { ...h.scope.contract, ...manualContract() };
+  const handler = createSalesContractSendPostHandler({
+    resolveAccess: async () => granted(h.supabase),
+    resolveContract: (async () => h.scope) as never,
   });
-  let eventCalls = 0;
-  const setup = handlerFor({
-    supabase: versionMismatch,
-    registerBusinessEvent: (async () => {
-      eventCalls += 1;
-    }) as never,
-  });
-  const result = await bodyOf(
-    await setup.handler(new Request("http://test"), context()),
-  );
-  assert.equal(result.response.status, 500);
-  assert.equal(result.body.error, "UNEXPECTED_ERROR");
-  assert.equal(eventCalls, 0);
+  const result = await body(await handler(new Request("http://test", {
+    method: "POST",
+    body: JSON.stringify({ expectedContractVersionId: VERSION_1 }),
+  }), context()));
+  assert.equal(result.response.status, 200, JSON.stringify(result.body));
+  assert.equal(h.calls.length, 1);
 }
 
-async function testAccessAndUnexpectedErrors() {
-  const accessErrorSetup = handlerFor({
-    resolveContract: (async () => {
-      throw new ContractAccessError(409, "CONTRACT_BLOCKED", "blocked");
-    }) as never,
+async function testManualRejectsStaleVersionAndPreservesReplay() {
+  const stale = harness();
+  stale.scope.contract = { ...stale.scope.contract, ...manualContract(), current_version_id: VERSION_2 };
+  stale.scope.currentVersion = { ...stale.scope.currentVersion, id: VERSION_2 };
+  const staleHandler = createSalesContractSendPostHandler({
+    resolveAccess: async () => granted(stale.supabase),
+    resolveContract: (async () => stale.scope) as never,
   });
-  const accessError = await bodyOf(
-    await accessErrorSetup.handler(new Request("http://test"), context()),
-  );
-  assert.equal(accessError.response.status, 409);
-  assert.deepEqual(accessError.body, {
-    ok: false,
-    error: "CONTRACT_BLOCKED",
-    message: "blocked",
-  });
+  const staleResult = await body(await staleHandler(new Request("http://test", {
+    method: "POST",
+    body: JSON.stringify({ expectedContractVersionId: VERSION_1 }),
+  }), context()));
+  assert.equal(staleResult.response.status, 409);
+  assert.equal(staleResult.body.error, "CONTRACT_VERSION_STALE");
+  assert.equal(stale.calls.length, 0);
 
-  const unexpectedSetup = handlerFor({
-    resolveContract: (async () => {
-      throw new Error("unexpected");
-    }) as never,
+  const replay = harness({ result: { outcome: "already_queued" } });
+  replay.scope.contract = { ...replay.scope.contract, ...manualContract() };
+  const replayHandler = createSalesContractSendPostHandler({
+    resolveAccess: async () => granted(replay.supabase),
+    resolveContract: (async () => replay.scope) as never,
   });
-  const unexpected = await bodyOf(
-    await unexpectedSetup.handler(new Request("http://test"), context()),
-  );
-  assert.equal(unexpected.response.status, 500);
-  assert.equal(unexpected.body.error, "UNEXPECTED_ERROR");
+  const replayResult = await body(await replayHandler(new Request("http://test", {
+    method: "POST",
+    body: JSON.stringify({ expectedContractVersionId: VERSION_1 }),
+  }), context()));
+  assert.equal(replayResult.response.status, 200);
+  assert.equal((replayResult.body.operation as Row).outcome, "already_queued");
+  assert.equal(replay.calls.length, 1);
+}
+
+async function testReplayAndAuthorityFailureClosed() {
+  for (const outcome of ["already_queued", "already_sent", "uncertain", "failed"]) {
+    const h = harness({ result: { outcome } }); const handler = createSalesContractSendPostHandler({ resolveAccess: async () => granted(h.supabase), resolveContract: (async () => makeScope(h.supabase)) as never });
+    const result = await body(await handler(new Request("http://test"), context())); assert.equal(result.response.status, 200); assert.equal((result.body.operation as Row).outcome, outcome);
+  }
+  const handler = createSalesContractSendPostHandler({ resolveAccess: async () => granted({}), resolveContract: (async () => makeScope({})) as never, materializeSend: (async () => { throw new Error("authority unavailable"); }) as never });
+  const result = await body(await handler(new Request("http://test"), context())); assert.equal(result.response.status, 500); assert.equal(result.body.error, "UNEXPECTED_ERROR");
 }
 
 async function testSourceContract() {
-  const source = readFileSync(
-    join(process.cwd(), "src/app/api/sales-contracts/[contractId]/send/route.ts"),
-    "utf8",
-  );
-  assert.match(source, /resolveStoreApiAccess/);
-  assert.match(source, /requirement: "active"/);
-  assert.match(source, /createStoreApiDeniedResponse/);
-  assert.match(source, /resolveExistingContractForAuthorizedStoreScope/);
-  assert.doesNotMatch(source, /resolveAuthorizedExistingContract/);
-  assert.match(source, /\.eq\("organization_id", access\.organizationId\)/);
-  assert.match(source, /\.eq\("store_id", access\.storeId\)/);
-  assert.match(source, /\.eq\("contract_id", scope\.contract\.id\)/);
+  const source = readFileSync(join(process.cwd(), "src/app/api/sales-contracts/[contractId]/send/route.ts"), "utf8");
+  assert.match(source, /materializeSalesContractSendBySystem/); assert.match(source, /requirement: "active"/); assert.match(source, /buildSalesContractSendIdempotencyKey/); assert.doesNotMatch(source, /insert_message/); assert.doesNotMatch(source, /from\("sales_contracts"\)\.update/); assert.doesNotMatch(source, /from\("sales_contract_versions"\)\.update/);
+}
+
+async function testCanonicalContractIdentityAndScope() {
+  const h = harness();
+  let requestedContractId = "";
+  const handler = createSalesContractSendPostHandler({
+    resolveAccess: async () => granted(h.supabase),
+    resolveContract: (async (contractId: string, authorizedScope: Row) => {
+      requestedContractId = contractId;
+      assert.deepEqual(authorizedScope, { organizationId: "org-1", storeId: "store-1", sessionUserId: "user-1" });
+      return h.scope;
+    }) as never,
+  });
+  const result = await body(await handler(new Request("http://test"), context("requested-contract")));
+  assert.equal(result.response.status, 200);
+  assert.equal(requestedContractId, "requested-contract");
+
+  const mismatches = [
+    { organizationId: "org-2" },
+    { store: { id: "store-2" } },
+    { store: { organization_id: "org-2" } },
+    { contract: { organization_id: "org-2" } },
+    { contract: { store_id: "store-2" } },
+  ];
+  for (const mismatch of mismatches) {
+    const mismatchHarness = harness({ scope: makeScope(h.supabase, mismatch) });
+    const mismatchHandler = createSalesContractSendPostHandler({
+      resolveAccess: async () => granted(mismatchHarness.supabase),
+      resolveContract: (async () => mismatchHarness.scope) as never,
+    });
+    const mismatchResult = await body(await mismatchHandler(new Request("http://test"), context()));
+    assert.equal(mismatchResult.response.status, 403);
+    assert.equal(mismatchResult.body.error, "CONTRACT_SCOPE_MISMATCH");
+    assert.equal(mismatchHarness.calls.length, 0);
+  }
+}
+
+async function testCurrentVersionAndPdfGates() {
+  const cases: Array<{ scope: ReturnType<typeof makeScope>; status: number; error: string }> = [
+    { scope: makeScope({}, { contract: { status: "completed" } }), status: 409, error: "CONTRACT_STATUS_NOT_SENDABLE" },
+    { scope: makeScope({}, { contract: { status: "cancelled" } }), status: 409, error: "CONTRACT_STATUS_NOT_SENDABLE" },
+    { scope: makeScope({}, { contract: { status: "draft" } }), status: 409, error: "CONTRACT_REQUIRES_APPROVAL" },
+    { scope: makeScope({}, { currentVersion: { status: "draft" } }), status: 409, error: "CONTRACT_VERSION_REQUIRES_APPROVAL" },
+    { scope: makeScope({}, { contract: { current_version_id: null } }), status: 400, error: "CONTRACT_VERSION_REQUIRED" },
+    { scope: makeScope({}, { currentVersion: null }), status: 404, error: "CONTRACT_VERSION_NOT_FOUND" },
+    { scope: makeScope({}, { currentVersion: { id: VERSION_2 } }), status: 403, error: "CONTRACT_SCOPE_MISMATCH" },
+    { scope: makeScope({}, { currentVersion: { id: VERSION_1, contract_id: "contract-2" } }), status: 403, error: "CONTRACT_SCOPE_MISMATCH" },
+    { scope: makeScope({}, { currentVersion: { id: VERSION_1, organization_id: "org-2" } }), status: 403, error: "CONTRACT_SCOPE_MISMATCH" },
+    { scope: makeScope({}, { currentVersion: { id: VERSION_1, store_id: "store-2" } }), status: 403, error: "CONTRACT_SCOPE_MISMATCH" },
+    { scope: makeScope({}, { currentVersion: { id: VERSION_1, storage_bucket: "" } }), status: 400, error: "CONTRACT_FILE_MISSING" },
+    { scope: makeScope({}, { currentVersion: { id: VERSION_1, storage_path: "" } }), status: 400, error: "CONTRACT_FILE_MISSING" },
+    { scope: makeScope({}, { currentVersion: { id: VERSION_1, original_filename: "" } }), status: 400, error: "CONTRACT_FILENAME_MISSING" },
+  ];
+  for (const item of cases) {
+    const h = harness({ scope: item.scope });
+    const handler = createSalesContractSendPostHandler({ resolveAccess: async () => granted(h.supabase), resolveContract: (async () => h.scope) as never });
+    const result = await body(await handler(new Request("http://test"), context()));
+    assert.equal(result.response.status, item.status, item.error);
+    assert.equal(result.body.error, item.error);
+    assert.equal(h.calls.length, 0);
+  }
+}
+
+async function testAuthorityErrorsAndUnexpectedResolution() {
+  const authorityFailure = harness({ error: { message: "P9_CONTRACT_SEND_AUTHORITY_FAILED" } });
+  const authorityHandler = createSalesContractSendPostHandler({ resolveAccess: async () => granted(authorityFailure.supabase), resolveContract: (async () => authorityFailure.scope) as never });
+  const authorityResult = await body(await authorityHandler(new Request("http://test"), context()));
+  assert.equal(authorityResult.response.status, 500);
+  assert.equal(authorityResult.body.error, "UNEXPECTED_ERROR");
+
+  const incomplete = harness({ result: { message_id: null } });
+  const incompleteHandler = createSalesContractSendPostHandler({ resolveAccess: async () => granted(incomplete.supabase), resolveContract: (async () => incomplete.scope) as never });
+  const incompleteResult = await body(await incompleteHandler(new Request("http://test"), context()));
+  assert.equal(incompleteResult.response.status, 500);
+
+  const resolutionHandler = createSalesContractSendPostHandler({
+    resolveAccess: async () => granted({}),
+    resolveContract: (async () => { throw new Error("resolver unavailable"); }) as never,
+  });
+  const resolutionResult = await body(await resolutionHandler(new Request("http://test"), context()));
+  assert.equal(resolutionResult.response.status, 500);
+  assert.equal(resolutionResult.body.error, "UNEXPECTED_ERROR");
+}
+
+async function testUnexpectedAccessErrorIsObserved() {
+  const handler = createSalesContractSendPostHandler({
+    resolveAccess: async () => { throw new Error("access resolver unavailable"); },
+  });
+  const result = await body(await handler(new Request("http://test"), context()));
+  assert.equal(result.response.status, 500);
+  assert.equal(result.body.error, "UNEXPECTED_ERROR");
 }
 
 async function main() {
   const tests = [
-    testDeniedAndCanonicalScope,
-    testForeignScopeAndVersionMismatch,
-    testStatusAndRequiredFields,
-    testSuccessfulMutationsAndEvent,
-    testReturnedScopeMismatchAndErrorContracts,
-    testAccessAndUnexpectedErrors,
+    testDeniedBeforeContract,
+    testCanonicalContractIdentityAndScope,
+    testCurrentVersionAndPdfGates,
+    testMaterializesWithoutDirectUpdates,
+    testRpcPayloadAndPdfIdentity,
+    testExpectedVersionIsCarriedAndFenced,
+    testManualRequiresExactExpectedVersion,
+    testManualRejectsStaleVersionAndPreservesReplay,
+    testReplayAndAuthorityFailureClosed,
+    testAuthorityErrorsAndUnexpectedResolution,
+    testUnexpectedAccessErrorIsObserved,
     testSourceContract,
   ];
   for (const test of tests) await test();
-  console.log(`PASS ${tests.length} send route tests`);
+  console.log(`PASS ${tests.length} contract send route tests`);
 }
-
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+main().catch((error) => { console.error(error); process.exitCode = 1; });

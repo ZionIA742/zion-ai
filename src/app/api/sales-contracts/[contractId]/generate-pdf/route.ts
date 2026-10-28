@@ -14,6 +14,12 @@ import {
 } from "@/lib/server/sales-contracts/contract-auth";
 import { registerContractBusinessEvent } from "@/lib/server/sales-contracts/contract-events";
 import { storeContractPdfFile } from "@/lib/server/sales-contracts/contract-storage";
+import {
+  readContractTextDraftSource,
+  type ContractTextDraftSource,
+} from "@/lib/server/sales-contracts/contract-text-draft-source";
+import { renderContractTextDraftVersion } from "@/lib/server/sales-contracts/render-contract-text-draft-version";
+import { buildContractTextDraftCanonicalSnapshot } from "@/lib/server/sales-contracts/contract-text-draft-canonical-snapshot";
 import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/document-review-messages";
 import {
   type ContractQuoteSnapshotItem,
@@ -61,6 +67,10 @@ type GenerateContractPdfDeps = {
   resolveContractTemplateTerms: typeof resolveContractTemplateTerms;
   reconcileSupersededContractVersion: typeof reconcileSupersededContractVersion;
   storeContractPdfFile: typeof storeContractPdfFile;
+  createSalesContractTextVersionBySystem: typeof createTextSalesContractVersionBySystem;
+  readContractTextDraftSource: typeof readContractTextDraftSource;
+  renderContractTextDraftVersion: typeof renderContractTextDraftVersion;
+  buildContractTextDraftCanonicalSnapshot: typeof buildContractTextDraftCanonicalSnapshot;
 };
 
 const defaultGenerateContractPdfDeps: GenerateContractPdfDeps = {
@@ -76,9 +86,19 @@ const defaultGenerateContractPdfDeps: GenerateContractPdfDeps = {
   resolveContractTemplateTerms,
   reconcileSupersededContractVersion,
   storeContractPdfFile,
+  createSalesContractTextVersionBySystem: createTextSalesContractVersionBySystem,
+  readContractTextDraftSource,
+  renderContractTextDraftVersion,
+  buildContractTextDraftCanonicalSnapshot,
 };
 
 function buildErrorResponse(error: unknown) {
+  if (error instanceof ContractTextVersionError) {
+    return NextResponse.json(
+      { ok: false, error: error.code, message: error.message },
+      { status: error.status },
+    );
+  }
   if (error instanceof ContractAccessError) {
     return NextResponse.json(
       {
@@ -101,9 +121,119 @@ function buildErrorResponse(error: unknown) {
   );
 }
 
+export class ContractTextVersionError extends Error {
+  readonly name = "ContractTextVersionError";
+
+  constructor(
+    readonly status: 409 | 500 | 503,
+    readonly code: string,
+    message: string,
+    readonly authorityOutcome: "pre_rpc" | "uncertain" = "pre_rpc",
+  ) {
+    super(message);
+  }
+}
+
+const TEXT_VERSION_CONFLICTS: Record<string, string> = {
+  P9_TEXT_VERSION_INVALID_ARGUMENTS: "Os argumentos da versao textual sao invalidos.",
+  P9_TEXT_VERSION_OPPORTUNITY_INVALID: "A oportunidade comercial nao pertence ao escopo autorizado.",
+  P9_TEXT_VERSION_CONTRACT_INVALID: "O contrato nao pertence ao escopo autorizado.",
+  P9_TEXT_VERSION_CONTRACT_LINEAGE_INVALID: "A lineage comercial do contrato e invalida.",
+  P9_TEXT_VERSION_CONTRACT_STATUS_BLOCKED: "O estado atual do contrato bloqueia esta geracao.",
+  P9_TEXT_VERSION_APPROVAL_AUDIT_INVALID: "A auditoria de aprovacao do contrato e invalida.",
+  P9_TEXT_VERSION_DRAFT_NOT_FOUND: "A revisao textual persistida nao foi encontrada.",
+  P9_TEXT_VERSION_DRAFT_REVISION_CHANGED: "A revisao textual persistida mudou antes da materializacao.",
+  P9_TEXT_VERSION_DRAFT_TEXT_INVALID: "O texto persistido do contrato e invalido.",
+  P9_TEXT_VERSION_DRAFT_SHA256_CHANGED: "O hash do texto persistido nao confere.",
+  P9_TEXT_VERSION_TEMPLATE_INACTIVE: "O template do contrato nao esta ativo.",
+  P9_TEXT_VERSION_TEMPLATE_VERSION_INACTIVE: "A versao do template nao esta ativa.",
+  P9_TEXT_VERSION_PROVENANCE_INVALID: "A proveniencia textual do contrato e invalida.",
+  P9_TEXT_VERSION_CURRENT_VERSION_CHANGED: "O contrato foi alterado por outra operacao.",
+  P9_TEXT_VERSION_REOPEN_REQUIRES_HUMAN_ACTION: "Acao humana explicita obrigatoria para reabrir contrato aprovado.",
+  P9_TEXT_VERSION_WRITER_RETURNED_NO_VERSION: "A autoridade textual nao materializou uma versao.",
+  P9_TEXT_VERSION_REVIEW_RESET_FAILED: "Nao foi possivel atualizar a revisao do contrato.",
+  P9_TEXT_VERSION_UNAUTHORIZED: "A autoridade textual recusou esta operacao.",
+};
+
+function textVersionRpcError(error: { message?: unknown }) {
+  const message = String(error?.message || "");
+  const code = Object.keys(TEXT_VERSION_CONFLICTS).find((candidate) => message.includes(candidate));
+  if (code) {
+    return new ContractTextVersionError(409, code, TEXT_VERSION_CONFLICTS[code]);
+  }
+  return new ContractTextVersionError(
+    500,
+    "CONTRACT_TEXT_VERSION_FAILED",
+    "Nao foi possivel materializar a versao textual do contrato.",
+  );
+}
+
 function normalizeOptionalText(value: unknown) {
   const normalized = String(value ?? "").trim();
   return normalized || null;
+}
+
+function isResponsibleTextDraftContract(contract: {
+  quote_id?: string | null;
+  quote_version_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+}) {
+  const metadata = isRecord(contract.metadata) ? contract.metadata : null;
+  return (
+    metadata?.source === "responsible_text_draft" &&
+    metadata?.created_via === "create_sales_contract_manual_by_system"
+  );
+}
+
+function assertManualContractOrigin(contract: {
+  quote_id?: string | null;
+  quote_version_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+}) {
+  const metadata = isRecord(contract.metadata) ? contract.metadata : null;
+  const opportunityId = normalizeOptionalText(metadata?.commercial_opportunity_id);
+
+  if (
+    !isResponsibleTextDraftContract(contract) ||
+    normalizeOptionalText(contract.quote_id) ||
+    normalizeOptionalText(contract.quote_version_id) ||
+    !opportunityId ||
+    metadata?.commercial_amounts_authoritative !== false ||
+    !normalizeOptionalText(metadata?.draft_id) ||
+    !normalizeOptionalText(metadata?.template_version_id) ||
+    !Number.isSafeInteger(Number(metadata?.creation_draft_revision)) ||
+    Number(metadata?.creation_draft_revision) < 1 ||
+    !/^[0-9a-f]{64}$/.test(String(metadata?.creation_draft_sha256 || ""))
+  ) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_MANUAL_ORIGIN_INVALID",
+      "A origem manual do contrato nao possui metadados canonicos validos.",
+    );
+  }
+
+  return opportunityId;
+}
+
+function assertManualContractDraftMetadata(
+  contract: { metadata?: Record<string, unknown> | null },
+  draft: ContractTextDraftSource,
+  templateVersionId: string,
+) {
+  const metadata = isRecord(contract.metadata) ? contract.metadata : null;
+  if (
+    String(metadata?.commercial_opportunity_id || "") !== draft.commercialOpportunityId ||
+    String(metadata?.draft_id || "") !== draft.draftId ||
+    String(metadata?.template_version_id || "") !== templateVersionId ||
+    String(metadata?.creation_draft_revision || "") !== String(draft.revision) ||
+    String(metadata?.creation_draft_sha256 || "") !== draft.sha256
+  ) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_MANUAL_ORIGIN_INVALID",
+      "A origem manual do contrato nao corresponde a revisao textual persistida.",
+    );
+  }
 }
 
 function resolveOperationId(headerValue: string | null) {
@@ -125,6 +255,9 @@ function buildRequestFingerprint(args: {
   contractId: string;
   rendererInput: ReturnType<typeof buildCanonicalContractRendererInput>;
   contentFingerprint: string;
+  mode?: "canonical" | "saved_text_draft";
+  draftId?: string | null;
+  draftRevision?: number | null;
 }) {
   const orderedRequest = [
     "zion.contract-pdf.request.v1",
@@ -136,10 +269,137 @@ function buildRequestFingerprint(args: {
     args.rendererInput.templateAuthority.templateId,
     args.rendererInput.templateAuthority.templateVersionId,
     args.contentFingerprint,
+    args.mode ?? "canonical",
+    args.draftId ?? null,
+    args.draftRevision ?? null,
   ];
   return createHash("sha256")
     .update(JSON.stringify(orderedRequest))
     .digest("hex");
+}
+
+type TextVersionWriterResult = Awaited<ReturnType<typeof createSalesContractVersionBySystem>>;
+
+async function createTextSalesContractVersionBySystem(args: {
+  supabase: Parameters<typeof createSalesContractVersionBySystem>[0]["supabase"];
+  organizationId: string;
+  storeId: string;
+  contractId: string;
+  commercialOpportunityId: string;
+  templateVersionId: string;
+  draftId: string;
+  draftRevision: number;
+  draftSha256: string;
+  expectedCurrentVersionId: string | null;
+  operationKey: string;
+  requestFingerprint: string;
+  contentFingerprint: string;
+  storeFileId: string;
+  storageBucket: string;
+  storagePath: string;
+  originalFilename: string;
+  mimeType: string;
+  sizeBytes: number;
+  pdfSha256: string;
+  contractSnapshot: Record<string, unknown>;
+  allowReopenApproved: boolean;
+  onAuthorityResolved?: (result: { versionId: string; replayed: boolean }) => void;
+  onAuthorityUncertain?: () => void;
+}): Promise<TextVersionWriterResult> {
+  let rpcResult: Awaited<ReturnType<typeof args.supabase.rpc>>;
+  try {
+    rpcResult = await args.supabase.rpc(
+      "create_sales_contract_text_version_by_system",
+      {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_contract_id: args.contractId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+      p_template_version_id: args.templateVersionId,
+      p_draft_id: args.draftId,
+      p_draft_revision: args.draftRevision,
+      p_draft_sha256: args.draftSha256,
+      p_expected_current_version_id: args.expectedCurrentVersionId,
+      p_operation_key: args.operationKey,
+      p_request_fingerprint: args.requestFingerprint,
+      p_content_fingerprint: args.contentFingerprint,
+      p_store_file_id: args.storeFileId,
+      p_storage_bucket: args.storageBucket,
+      p_storage_path: args.storagePath,
+      p_original_filename: args.originalFilename,
+      p_mime_type: args.mimeType,
+      p_size_bytes: args.sizeBytes,
+      p_pdf_sha256: args.pdfSha256,
+      p_contract_snapshot: args.contractSnapshot,
+      p_allow_reopen_approved: args.allowReopenApproved,
+      },
+    );
+  } catch {
+    args.onAuthorityUncertain?.();
+    throw new ContractTextVersionError(
+      503,
+      "CONTRACT_TEXT_VERSION_AUTHORITY_UNCERTAIN",
+      "A autoridade textual nao confirmou o resultado; o arquivo foi preservado para reconciliacao.",
+      "uncertain",
+    );
+  }
+  const { data, error } = rpcResult;
+  if (error) throw textVersionRpcError(error);
+  const row = Array.isArray(data) ? data.length === 1 ? data[0] : null : data;
+  if (!row || typeof row.id !== "string" || row.contract_id !== args.contractId ||
+      row.organization_id !== args.organizationId || row.store_id !== args.storeId ||
+      !Number.isInteger(Number(row.version_number)) || Number(row.version_number) < 1 ||
+      typeof row.status !== "string" || typeof row.replayed !== "boolean") {
+    args.onAuthorityUncertain?.();
+    throw new ContractTextVersionError(
+      503,
+      "CONTRACT_TEXT_VERSION_AUTHORITY_UNCERTAIN",
+      "A autoridade textual nao confirmou uma resposta reconciliavel; o arquivo foi preservado.",
+      "uncertain",
+    );
+  }
+  args.onAuthorityResolved?.({ versionId: row.id, replayed: row.replayed });
+  const { data: version, error: versionError } = await args.supabase
+    .from("sales_contract_versions")
+    .select("*")
+    .eq("id", row.id)
+    .eq("contract_id", args.contractId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+  if (versionError || !version?.id || Number(version.version_number) !== Number(row.version_number)) {
+    throw new ContractTextVersionError(
+      503,
+      "CONTRACT_TEXT_VERSION_RECONCILIATION_REQUIRED",
+      "A versao textual foi materializada, mas nao pode ser reconciliada com seguranca.",
+    );
+  }
+  return { version: version as TextVersionWriterResult["version"], replayed: row.replayed };
+}
+
+function isSavedTextDraftRequest(value: unknown): value is {
+  mode: "saved_text_draft";
+  expectedDraftRevision: number;
+  humanAction?: "reopen_approved_contract";
+} {
+  if (!isRecord(value) || value.mode !== "saved_text_draft") return false;
+  return typeof value.expectedDraftRevision === "number" &&
+    Number.isSafeInteger(value.expectedDraftRevision) && value.expectedDraftRevision >= 1 &&
+    (value.humanAction == null || value.humanAction === "reopen_approved_contract");
+}
+
+async function readGenerationRequest(request: Request) {
+  const raw = await request.text();
+  if (!raw.trim()) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || parsed.mode !== "saved_text_draft") return null;
+  if (!isSavedTextDraftRequest(parsed)) {
+    throw new ContractAccessError(400, "CONTRACT_TEXT_DRAFT_REQUEST_INVALID", "A geracao textual exige mode saved_text_draft e expectedDraftRevision valido.");
+  }
+  return parsed;
 }
 
 function buildDurableStoreFile(version: Awaited<ReturnType<typeof createSalesContractVersionBySystem>>["version"]) {
@@ -369,6 +629,16 @@ export function createGenerateContractPdfPostHandler(
     defaultGenerateContractPdfDeps.reconcileSupersededContractVersion;
   const storeContractPdfFile =
     deps.storeContractPdfFile ?? defaultGenerateContractPdfDeps.storeContractPdfFile;
+  const createTextVersion =
+    deps.createSalesContractTextVersionBySystem ??
+    defaultGenerateContractPdfDeps.createSalesContractTextVersionBySystem;
+  const readTextDraft =
+    deps.readContractTextDraftSource ?? defaultGenerateContractPdfDeps.readContractTextDraftSource;
+  const renderTextDraft =
+    deps.renderContractTextDraftVersion ?? defaultGenerateContractPdfDeps.renderContractTextDraftVersion;
+  const buildTextSnapshot =
+    deps.buildContractTextDraftCanonicalSnapshot ??
+    defaultGenerateContractPdfDeps.buildContractTextDraftCanonicalSnapshot;
 
   return async function POST(
     request: Request,
@@ -379,8 +649,9 @@ export function createGenerateContractPdfPostHandler(
     | null = null;
   let canonicalOrganizationId: string | null = null;
   let canonicalStoreId: string | null = null;
-  let authorityState: "unconfirmed" | "committed_new" | "committed_replay" =
+  let authorityState: "unconfirmed" | "uncertain" | "committed_new" | "committed_replay" =
     "unconfirmed";
+  let isTextDraftGeneration = false;
   let storeFileToRollback:
     | {
         storeFileId: string;
@@ -419,6 +690,20 @@ export function createGenerateContractPdfPostHandler(
     }
 
     const normalizedStatus = String(scope.contract.status || "").trim().toLowerCase();
+    const generationRequest = await readGenerationRequest(request);
+    isTextDraftGeneration = generationRequest?.mode === "saved_text_draft";
+    const isManualContract = isResponsibleTextDraftContract(scope.contract);
+    if (isManualContract && !isTextDraftGeneration) {
+      throw new ContractAccessError(
+        409,
+        "CONTRACT_MANUAL_REQUIRES_SAVED_TEXT_DRAFT",
+        "Contrato manual exige a revisao textual persistida para preparacao.",
+      );
+    }
+    const allowReopenApproved =
+      isTextDraftGeneration &&
+      normalizedStatus === "approved" &&
+      generationRequest?.humanAction === "reopen_approved_contract";
     const sentAt = normalizeOptionalText(scope.contract.sent_at);
     const customerSignedAt = normalizeOptionalText(scope.contract.customer_signed_at);
     const storeSignedAt = normalizeOptionalText(scope.contract.store_signed_at);
@@ -438,10 +723,15 @@ export function createGenerateContractPdfPostHandler(
       );
     }
 
-    const { quoteSnapshot, items } = await loadContractQuoteSnapshotItems(scope, {
-      organizationId: access.organizationId,
-      storeId: access.storeId,
-    });
+    const manualOpportunityId = isManualContract
+      ? assertManualContractOrigin(scope.contract)
+      : null;
+    const { quoteSnapshot, items } = isManualContract
+      ? { quoteSnapshot: { quote: {} }, items: [] as ContractQuoteSnapshotItem[] }
+      : await loadContractQuoteSnapshotItems(scope, {
+          organizationId: access.organizationId,
+          storeId: access.storeId,
+        });
     const operationId = resolveOperationId(
       request.headers.get("x-zion-contract-operation-id"),
     );
@@ -505,22 +795,72 @@ export function createGenerateContractPdfPostHandler(
         : null,
       logo: storeLogo,
     });
-    const contentFingerprint = computeContractContentFingerprint(rendererInput);
+    let textSource: ContractTextDraftSource | null = null;
+    let renderedTextDraft: Awaited<ReturnType<typeof renderContractTextDraftVersion>> | null = null;
+    let contentFingerprint = computeContractContentFingerprint(rendererInput);
+    let snapshot = buildContractSnapshotV2({
+      input: rendererInput,
+      contentFingerprint,
+      materializedAt: new Date().toISOString(),
+      ...(isManualContract
+        ? {
+            origin: {
+              source: "responsible_text_draft" as const,
+              commercialAmountsAuthoritative: false as const,
+            },
+          }
+        : {}),
+    });
+    if (generationRequest?.mode === "saved_text_draft") {
+      const commercialOpportunityId = manualOpportunityId || normalizeOptionalText(
+        isRecord(scope.contract.metadata) ? scope.contract.metadata.commercial_opportunity_id : null,
+      );
+      if (!commercialOpportunityId) {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_COMMERCIAL_OPPORTUNITY_REQUIRED",
+          "Contrato sem oportunidade comercial canonica para geracao textual.",
+        );
+      }
+      textSource = await readTextDraft({
+        supabase: scope.supabase,
+        authorizedScope: {
+          organizationId: access.organizationId,
+          storeId: access.storeId,
+          commercialOpportunityId,
+          templateVersionId: templateTerms.templateVersionId,
+          revision: generationRequest.expectedDraftRevision,
+        },
+      });
+      if (isManualContract) {
+        assertManualContractDraftMetadata(
+          scope.contract,
+          textSource,
+          templateTerms.templateVersionId,
+        );
+      }
+      renderedTextDraft = await renderTextDraft(textSource);
+      const textSnapshot = buildTextSnapshot({
+        snapshot,
+        provenance: renderedTextDraft.provenance,
+      });
+      contentFingerprint = textSnapshot.contentFingerprint;
+      snapshot = textSnapshot.snapshot;
+    }
+
     const requestFingerprint = buildRequestFingerprint({
       organizationId: access.organizationId,
       storeId: access.storeId,
       contractId: scope.contract.id,
       rendererInput,
       contentFingerprint,
+      mode: isTextDraftGeneration ? "saved_text_draft" : "canonical",
+      draftId: textSource?.draftId,
+      draftRevision: textSource?.revision,
     });
 
-    const pdfBytes = await buildContractPdf(rendererInput);
+    const pdfBytes = renderedTextDraft?.pdfBytes ?? await buildContractPdf(rendererInput);
     const pdfSha256 = createHash("sha256").update(pdfBytes).digest("hex");
-    const snapshot = buildContractSnapshotV2({
-      input: rendererInput,
-      contentFingerprint,
-      materializedAt: new Date().toISOString(),
-    });
 
     const storedFile = await storeContractPdfFile({
       supabase: scope.supabase,
@@ -538,7 +878,38 @@ export function createGenerateContractPdfPostHandler(
       storagePath: storedFile.storagePath,
     };
 
-    const canonicalResult = await createCanonicalVersion({
+    const canonicalResult = isTextDraftGeneration && textSource && renderedTextDraft
+      ? await createTextVersion({
+      supabase: scope.supabase,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
+      contractId: scope.contract.id,
+      commercialOpportunityId: textSource.commercialOpportunityId,
+      templateVersionId: textSource.templateVersionId,
+      draftId: textSource.draftId,
+      draftRevision: textSource.revision,
+      draftSha256: textSource.sha256,
+      expectedCurrentVersionId: scope.contract.current_version_id || null,
+      operationKey: `p9:contract-text-pdf:${scope.contract.id}:${operationId}`,
+      requestFingerprint,
+      contentFingerprint,
+      storeFileId: storedFile.storeFileId,
+      storageBucket: storedFile.storageBucket,
+      storagePath: storedFile.storagePath,
+      originalFilename: storedFile.originalFilename,
+      mimeType: "application/pdf",
+      sizeBytes: storedFile.sizeBytes,
+      pdfSha256,
+      contractSnapshot: snapshot as Record<string, unknown>,
+      allowReopenApproved,
+      onAuthorityResolved: ({ replayed }) => {
+        authorityState = replayed ? "committed_replay" : "committed_new";
+      },
+      onAuthorityUncertain: () => {
+        authorityState = "uncertain";
+      },
+    })
+      : await createCanonicalVersion({
       supabase: scope.supabase,
       organizationId: access.organizationId,
       storeId: access.storeId,
@@ -561,7 +932,11 @@ export function createGenerateContractPdfPostHandler(
     const version = canonicalResult.version;
     const durableStoreFile = buildDurableStoreFile(version);
 
-    if (canonicalResult.replayed) {
+    const temporaryArtifactIsDurable =
+      durableStoreFile.storeFileId === storedFile.storeFileId ||
+      (durableStoreFile.storageBucket === storedFile.storageBucket &&
+        durableStoreFile.storagePath === storedFile.storagePath);
+    if (canonicalResult.replayed && !temporaryArtifactIsDurable) {
       try {
         await scope.supabase.storage
           .from(storedFile.storageBucket)
@@ -578,20 +953,51 @@ export function createGenerateContractPdfPostHandler(
     }
     storeFileToRollback = null;
 
-    await reconcilePreviousVersion({
-      supabase: scope.supabase,
-      organizationId: access.organizationId,
-      storeId: access.storeId,
-      contractId: scope.contract.id,
-      versionNumber: version.version_number,
-    });
-    await markContractPendingReview({
-      supabase: scope.supabase,
-      organizationId: access.organizationId,
-      storeId: access.storeId,
-      contractId: scope.contract.id,
-      expectedCurrentVersionId: version.id,
-    });
+    if (canonicalResult.replayed && isTextDraftGeneration) {
+      const { data: currentContract, error: currentContractError } = await scope.supabase
+        .from("sales_contracts")
+        .select("*")
+        .eq("id", scope.contract.id)
+        .eq("organization_id", access.organizationId)
+        .eq("store_id", access.storeId)
+        .maybeSingle();
+      if (currentContractError || !currentContract?.id) {
+        throw new ContractTextVersionError(
+          503,
+          "CONTRACT_TEXT_VERSION_RECONCILIATION_REQUIRED",
+          "O replay foi confirmado, mas o estado atual do contrato nao pode ser reconciliado.",
+        );
+      }
+      storeFileToRollback = null;
+      return NextResponse.json({
+        ok: true,
+        replayed: true,
+        contract: {
+          ...scope.contract,
+          ...currentContract,
+        },
+        version,
+        currentVersion: currentContract.current_version_id === version.id ? version : null,
+        storeFile: durableStoreFile,
+      });
+    }
+
+    if (!isTextDraftGeneration) {
+      await reconcilePreviousVersion({
+        supabase: scope.supabase,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        contractId: scope.contract.id,
+        versionNumber: version.version_number,
+      });
+      await markContractPendingReview({
+        supabase: scope.supabase,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        contractId: scope.contract.id,
+        expectedCurrentVersionId: version.id,
+      });
+    }
 
     if (!canonicalResult.replayed && version.version_number === 1) {
       await registerBusinessEvent({
@@ -656,7 +1062,8 @@ export function createGenerateContractPdfPostHandler(
     });
   } catch (error) {
     const shouldRollbackTemporaryArtifact =
-      authorityState === "unconfirmed" || authorityState === "committed_replay";
+      authorityState === "unconfirmed" ||
+      (!isTextDraftGeneration && authorityState === "committed_replay");
 
     if (scope && storeFileToRollback && shouldRollbackTemporaryArtifact) {
       try {

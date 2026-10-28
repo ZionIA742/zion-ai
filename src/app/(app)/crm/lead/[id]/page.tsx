@@ -31,6 +31,15 @@ import {
   type StoreGeneralAddressLike,
 } from "@/lib/google-maps-route";
 import { chooseContractPreviewTarget } from "./contract-panel-preview";
+import {
+  confirmManualContractSendFlow,
+  prepareManualContractSendFlow,
+  type ManualPrepareStageResult,
+} from "./contract-send-orchestration";
+import {
+  ContractTemplateTextEditor,
+  type ContractDraftState,
+} from "./contract-template-text-editor";
 
 type Lead = {
   id: string;
@@ -554,11 +563,64 @@ type SalesContractActionResponse = {
 type SignedContractPdfUrlResponse = {
   ok: boolean;
   signedUrl?: string;
+  contractVersionId?: string;
+  pdfSha256?: string | null;
+  isTextDraftVersion?: boolean;
+  textProvenance?: {
+    draftId?: string;
+    revision?: number;
+    textSha256?: string;
+    templateVersionId?: string;
+  } | null;
   originalFilename?: string | null;
   mimeType?: string | null;
   expiresIn?: number;
   error?: string;
   message?: string;
+};
+
+type ContractTextDraftResponse = {
+  ok: boolean;
+  draftId?: string | null;
+  draftSha256?: string | null;
+  draft?: {
+    draftId?: string | null;
+    draftSha256?: string | null;
+    revision?: number;
+    templateVersionId?: string;
+  } | null;
+  message?: string;
+};
+
+type ManualContractCreateResponse = {
+  ok: boolean;
+  operation?: {
+    outcome?: string;
+    contract_id?: string;
+    organization_id?: string;
+    store_id?: string;
+    commercial_opportunity_id?: string;
+    draft_id?: string;
+    draft_revision?: number;
+    contract_status?: string;
+  } | null;
+  error?: string;
+  message?: string;
+};
+
+type ContractVersionIdentity = {
+  contractVersionId: string;
+  pdfSha256: string | null;
+  isTextDraftVersion: boolean;
+  textProvenance: SignedContractPdfUrlResponse["textProvenance"];
+};
+
+type PreparedContractSend = {
+  contractId: string;
+  contractVersionId: string;
+  pdfSha256: string;
+  signedUrl: string;
+  textProvenance: NonNullable<ContractVersionIdentity["textProvenance"]>;
 };
 
 type ContractTemplateSourceResponse = {
@@ -1360,6 +1422,31 @@ function InfoCard({
   );
 }
 
+function ContractCustomerInfoList({
+  items,
+}: {
+  items: Array<{ label: string; value: string; help?: string | null }>;
+}) {
+  const displayValue = (value: string) => {
+    const normalized = String(value || "").trim();
+    if (!normalized || /^(nao informado|não informado|nao identificado|não identificado|ainda nao coletado|ainda não coletado)$/i.test(normalized)) {
+      return "Ainda não coletado";
+    }
+    return normalized;
+  };
+  return (
+    <dl className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200 bg-white">
+      {items.map((item) => (
+        <div key={item.label} className="grid grid-cols-[minmax(98px,110px)_minmax(0,1fr)] items-start gap-3 px-3 py-2.5">
+          <dt className="text-xs font-medium leading-5 text-slate-500">{item.label}</dt>
+          <dd className="min-w-0 break-words text-xs font-semibold leading-5 text-slate-900">
+            {displayValue(item.value)}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
 function CompactInfoList({
   items,
 }: {
@@ -1507,10 +1594,13 @@ export default function LeadPage() {
     kind: "contract" | "template";
     contractId: string;
     signedUrl: string;
+    identity?: ContractVersionIdentity;
   } | null>(null);
+  const [contractDraftState, setContractDraftState] = useState<ContractDraftState | null>(null);
+  const [preparedContractSend, setPreparedContractSend] = useState<PreparedContractSend | null>(null);
   const [contractActionLoadingId, setContractActionLoadingId] = useState<string | null>(null);
   const [contractActionLoadingType, setContractActionLoadingType] = useState<
-    "create" | "generate_pdf" | "approve" | "send" | "customer_sign" | "store_sign" | null
+    "create" | "generate_pdf" | "prepare_send" | "approve" | "send" | "customer_sign" | "store_sign" | null
   >(null);
   const [contractActionError, setContractActionError] = useState<string | null>(null);
   const [contractActionSuccess, setContractActionSuccess] = useState<string | null>(null);
@@ -1519,6 +1609,25 @@ export default function LeadPage() {
     useState<ContractTemplateSourceResponse | null>(null);
   const [contractTemplateSourceLoading, setContractTemplateSourceLoading] = useState(false);
   const [contractTemplateSourceError, setContractTemplateSourceError] = useState<string | null>(null);
+
+  const handleContractDraftStateChange = useCallback((next: ContractDraftState) => {
+    setContractDraftState(next);
+    setPreparedContractSend((prepared) => {
+      if (!prepared) return null;
+      const provenance = prepared.textProvenance;
+      const remainsExact =
+        !next.changed &&
+        !next.conflict &&
+        next.draftId === provenance.draftId &&
+        next.draftSha256 === provenance.textSha256 &&
+        next.revision === provenance.revision &&
+        next.templateVersionId === provenance.templateVersionId;
+      if (remainsExact) return prepared;
+      setContractActionError("A versao conferida foi invalidada porque o rascunho mudou. Gere e confira novamente.");
+      return null;
+    });
+  }, []);
+
   const leadDetailsScopeRef = useRef<string | null>(null);
   const documentScopeRef = useRef<string | null>(null);
   const paymentScopeRef = useRef<string | null>(null);
@@ -1526,6 +1635,7 @@ export default function LeadPage() {
   const automaticContractPreviewRef = useRef<string | null>(null);
   const loadedContractDataScopeRef = useRef<string | null>(null);
   const manualSendInFlightRef = useRef(false);
+  const manualContractCreateInFlightRef = useRef(false);
   const simulatedCustomerSubmitInFlightRef = useRef(false);
   const simulatedCustomerMutationInFlightRef = useRef(false);
   const takeoverMutationInFlightRef = useRef(false);
@@ -2953,7 +3063,7 @@ export default function LeadPage() {
     }
   }
 
-  async function fetchGeneratedContracts(options?: { silent?: boolean }) {
+  async function fetchGeneratedContracts(options?: { silent?: boolean }): Promise<GeneratedContractSummary[]> {
     const scopedLeadId = leadId;
     const scopedOpportunityId = selectedDocumentOpportunityId;
     const scopedDocumentKey = documentScopeKey;
@@ -2963,7 +3073,7 @@ export default function LeadPage() {
       setGeneratedContractsError(null);
       setGeneratedContractsLoading(false);
       setHasLoadedGeneratedContracts(true);
-      return;
+      return [];
     }
 
     documentScopeRef.current = scopedDocumentKey;
@@ -2989,24 +3099,27 @@ export default function LeadPage() {
       const result = (await response.json()) as SalesContractListResponse;
 
       if (documentScopeRef.current !== scopedDocumentKey) {
-        return;
+        return [];
       }
 
       if (!response.ok || !result?.ok) {
         throw new Error(result?.message || "Nao foi possivel carregar os contratos.");
       }
 
-      setGeneratedContracts(Array.isArray(result.contracts) ? result.contracts : []);
+      const contracts = Array.isArray(result.contracts) ? result.contracts : [];
+      setGeneratedContracts(contracts);
       loadedContractDataScopeRef.current = scopedDocumentKey;
       setHasLoadedGeneratedContracts(true);
+      return contracts;
     } catch (error: any) {
       if (documentScopeRef.current !== scopedDocumentKey) {
-        return;
+        return [];
       }
 
       setGeneratedContractsError(
         error?.message || "Nao foi possivel carregar os contratos."
       );
+      return [];
     } finally {
       if (!options?.silent && documentScopeRef.current === scopedDocumentKey) {
         setGeneratedContractsLoading(false);
@@ -3074,6 +3187,69 @@ export default function LeadPage() {
     }
   }
 
+  async function fetchContractDraftState(options?: { silent?: boolean }) {
+    const scopedLeadId = leadId;
+    const scopedOpportunityId = selectedDocumentOpportunityId;
+    const scopedDocumentKey = documentScopeKey;
+
+    if (!scopedLeadId || !scopedOpportunityId || !scopedDocumentKey) {
+      setContractDraftState(null);
+      return null;
+    }
+
+    try {
+      const params = new URLSearchParams({
+        leadId: scopedLeadId,
+        commercialOpportunityId: scopedOpportunityId,
+      });
+      const response = await fetch(
+        `/api/sales-contracts/text-draft?${params.toString()}`,
+        { method: "GET", cache: "no-store" },
+      );
+      const result = (await response.json()) as ContractTextDraftResponse;
+      if (documentScopeRef.current !== scopedDocumentKey) return null;
+      if (!response.ok || !result.ok) {
+        throw new Error(result.message || "Nao foi possivel verificar o rascunho salvo.");
+      }
+
+      const revision = result.draft?.revision;
+      const draftId = String(result.draft?.draftId || result.draftId || "").trim();
+      const draftSha256 = String(result.draft?.draftSha256 || result.draftSha256 || "").trim().toLowerCase();
+      if (
+        !result.draft ||
+        !Number.isSafeInteger(revision) ||
+        Number(revision) < 1 ||
+        !draftId ||
+        !/^[0-9a-f]{64}$/u.test(draftSha256)
+      ) {
+        setContractDraftState(null);
+        return null;
+      }
+
+      const state: ContractDraftState = {
+        ready: true,
+        draftId,
+        draftSha256,
+        revision: Number(revision),
+        changed: false,
+        conflict: false,
+        templateVersionId: result.draft.templateVersionId || null,
+      };
+      setContractDraftState(state);
+      return state;
+    } catch (error: unknown) {
+      if (documentScopeRef.current === scopedDocumentKey) {
+        setContractDraftState(null);
+        if (!options?.silent) {
+          setGeneratedContractsError(
+            error instanceof Error ? error.message : "Nao foi possivel verificar o rascunho salvo.",
+          );
+        }
+      }
+      return null;
+    }
+  }
+
   async function refreshCurrentScreenSnapshot() {
     await fetchLeadConversationAndMessages({ silent: true });
 
@@ -3082,6 +3258,7 @@ export default function LeadPage() {
         fetchGeneratedQuotes({ silent: true }),
         fetchGeneratedContracts({ silent: true }),
         fetchContractTemplateSource({ silent: true }),
+        fetchContractDraftState({ silent: true }),
       ]);
     }
   }
@@ -3241,13 +3418,349 @@ export default function LeadPage() {
         throw new Error(result?.message || "Nao foi possivel abrir o PDF deste contrato.");
       }
 
-      setContractPreview({ kind: "contract", contractId: safeContractId, signedUrl: result.signedUrl });
+      if (!result.contractVersionId || result.contractVersionId !==
+          generatedContracts.find((contract) => contract.id === safeContractId)?.current_version_id) {
+        throw new Error("A identidade da versao aberta nao corresponde a versao atual carregada.");
+      }
+      setContractPreview({
+        kind: "contract",
+        contractId: safeContractId,
+        signedUrl: result.signedUrl,
+        identity: {
+          contractVersionId: result.contractVersionId,
+          pdfSha256: result.pdfSha256 || null,
+          isTextDraftVersion: result.isTextDraftVersion === true,
+          textProvenance: result.textProvenance || null,
+        },
+      });
     } catch (error: any) {
       setGeneratedContractsError(
         error?.message || "Nao foi possivel abrir o PDF deste contrato."
       );
     } finally {
       setOpeningGeneratedContractId(null);
+    }
+  }
+
+  function openContractTextEditor(contractId: string) {
+    const safeContractId = String(contractId || "").trim();
+    if (!safeContractId || !contractTemplateSource) return;
+    setContractPreview({
+      kind: "template",
+      contractId: safeContractId,
+      signedUrl: contractTemplateSource.signedUrl || "",
+    });
+    setContractActionError(null);
+    setContractActionSuccess(null);
+  }
+
+  async function createOrRecoverManualContract(): Promise<GeneratedContractSummary | null> {
+    const opportunityId = String(selectedDocumentOpportunityId || "").trim();
+    const manualActionId = `manual:${opportunityId}`;
+    if (!opportunityId || manualContractCreateInFlightRef.current) return null;
+    if (generatedContracts.length > 0) {
+      setContractActionSuccess("Contrato canonico ja existente. Nenhuma substituicao foi realizada.");
+      return generatedContracts[0] || null;
+    }
+
+    const draftState = contractDraftState?.changed
+      ? contractDraftState
+      : contractDraftState?.revision
+        ? contractDraftState
+        : await fetchContractDraftState({ silent: true });
+    if (
+      !draftState?.ready ||
+      draftState.changed ||
+      draftState.conflict ||
+      !draftState.draftId ||
+      !draftState.draftSha256 ||
+      !draftState.revision ||
+      !draftState.templateVersionId ||
+      !/^[0-9a-f]{64}$/u.test(draftState.draftSha256)
+    ) {
+      setContractActionError(
+        draftState?.changed
+          ? "Salve a edicao do contrato antes de criar o contrato manual."
+          : "Salve um rascunho textual valido antes de criar o contrato manual.",
+      );
+      setContractActionSuccess(null);
+      return null;
+    }
+
+    manualContractCreateInFlightRef.current = true;
+    setContractActionLoadingId(manualActionId);
+    setContractActionLoadingType("create");
+    setContractActionError(null);
+    setContractActionSuccess(null);
+
+    try {
+      const response = await fetch("/api/sales-contracts/create-manual", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          commercialOpportunityId: opportunityId,
+          draftId: draftState.draftId,
+          templateVersionId: draftState.templateVersionId,
+          draftRevision: draftState.revision,
+          draftSha256: draftState.draftSha256,
+        }),
+      });
+      const result = (await response.json().catch(() => null)) as ManualContractCreateResponse | null;
+      const operation = result?.operation;
+      const contractId = String(operation?.contract_id || "").trim();
+      const outcome = String(operation?.outcome || "").trim();
+      const expectedOrganizationId = String(lead?.organization_id || "").trim();
+      const expectedStoreId = String(lead?.store_id || "").trim();
+      if (
+        !response.ok ||
+        !result?.ok ||
+        !operation ||
+        !["created", "already_exists"].includes(outcome) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(contractId) ||
+        operation.organization_id !== expectedOrganizationId ||
+        operation.store_id !== expectedStoreId ||
+        operation.commercial_opportunity_id !== opportunityId ||
+        operation.draft_id !== draftState.draftId ||
+        operation.draft_revision !== draftState.revision
+      ) {
+        throw new Error(result?.message || "A criacao manual retornou uma identidade invalida.");
+      }
+
+      const contracts = await fetchGeneratedContracts({ silent: true });
+      const recoveredContract = contracts.find((contract) => contract.id === contractId) || null;
+      if (!recoveredContract) {
+        throw new Error("O contrato foi criado, mas nao foi possivel recuperar sua identidade atual.");
+      }
+      setContractActionSuccess(
+        outcome === "created"
+          ? "Contrato manual criado. A geracao do PDF e a aprovacao continuam pendentes."
+          : "Contrato manual ja existente recuperado. A geracao do PDF e a aprovacao continuam pendentes.",
+      );
+      return recoveredContract;
+    } catch (error: unknown) {
+      setContractActionError(
+        error instanceof Error ? error.message : "Nao foi possivel criar o contrato manual.",
+      );
+      setContractActionSuccess(null);
+      return null;
+    } finally {
+      manualContractCreateInFlightRef.current = false;
+      setContractActionLoadingId(null);
+      setContractActionLoadingType(null);
+    }
+  }
+
+  async function prepareTextContractSend(
+    contract: GeneratedContractSummary,
+  ): Promise<ManualPrepareStageResult<PreparedContractSend>> {
+    const safeContractId = String(contract.id || "").trim();
+    const normalizedStatus = String(contract.status || "").trim().toLowerCase();
+    if (!safeContractId || !selectedDocumentOpportunityId || !leadId) {
+      return { handled: false, prepared: null };
+    }
+    if (!["draft", "pending_review", "approved"].includes(normalizedStatus)) {
+      setContractActionError("Este contrato nao esta em um estado que permita preparar o envio.");
+      setContractActionSuccess(null);
+      return { handled: true, prepared: null };
+    }
+
+    const draftState = contractDraftState?.changed
+      ? contractDraftState
+      : contractDraftState?.revision
+        ? contractDraftState
+        : await fetchContractDraftState({ silent: true });
+    if (!draftState && normalizedStatus === "approved") {
+      return { handled: false, prepared: null };
+    }
+    if (
+      !draftState?.ready ||
+      !draftState.draftId ||
+      !draftState.draftSha256 ||
+      !/^[0-9a-f]{64}$/u.test(draftState.draftSha256) ||
+      !draftState.revision ||
+      draftState.changed ||
+      draftState.conflict
+    ) {
+      setContractActionError(
+        draftState?.changed
+          ? "Salve a edicao do contrato antes de iniciar o envio."
+          : "Nao existe uma revisao textual salva e valida para este contrato.",
+      );
+      setContractActionSuccess(null);
+      return { handled: true, prepared: null };
+    }
+
+    if (normalizedStatus === "approved" && !window.confirm(
+      "Este contrato ja esta aprovado. Preparar uma nova versao textual vai invalidar a aprovacao atual. Deseja continuar?",
+    )) {
+      return { handled: true, prepared: null };
+    }
+
+    setContractActionLoadingId(safeContractId);
+    setContractActionLoadingType("prepare_send");
+    setContractActionError(null);
+    setContractActionSuccess(null);
+    setPreparedContractSend(null);
+
+    try {
+      const operationId = crypto.randomUUID();
+      const response = await fetch(
+        `/api/sales-contracts/${encodeURIComponent(safeContractId)}/generate-pdf`,
+        {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            "Content-Type": "application/json",
+            "x-zion-contract-operation-id": operationId,
+          },
+          body: JSON.stringify({
+            mode: "saved_text_draft",
+            expectedDraftRevision: draftState.revision,
+            ...(normalizedStatus === "approved"
+              ? { humanAction: "reopen_approved_contract" }
+              : {}),
+          }),
+        },
+      );
+      const result = (await response.json().catch(() => null)) as
+        | (SalesContractActionResponse & { version?: Record<string, unknown>; replayed?: boolean })
+        | null;
+      const version = result?.version;
+      const versionId = String(version?.id || "").trim();
+      const pdfSha256 = String(version?.pdf_sha256 || "").trim().toLowerCase();
+      const currentVersionId = String(result?.contract?.current_version_id || "").trim();
+      if (!response.ok || !result?.ok || !versionId || !/^[0-9a-f]{64}$/u.test(pdfSha256)) {
+        throw new Error(result?.message || "Nao foi possivel preparar a versao textual do contrato.");
+      }
+      if (result.replayed && currentVersionId.toLowerCase() !== versionId.toLowerCase()) {
+        throw new Error("A operacao retornou uma versao historica; ela nao pode ser apresentada como atual.");
+      }
+
+      const url = new URL(
+        `/api/sales-contracts/${encodeURIComponent(safeContractId)}/signed-pdf-url`,
+        window.location.origin,
+      );
+      url.searchParams.set("expectedContractVersionId", versionId);
+      const signedResponse = await fetch(url.toString(), { method: "GET", cache: "no-store" });
+      const signed = (await signedResponse.json().catch(() => null)) as SignedContractPdfUrlResponse | null;
+      const provenance = signed?.textProvenance;
+      if (
+        !signedResponse.ok ||
+        !signed?.ok ||
+        !signed.signedUrl ||
+        signed.contractVersionId !== versionId ||
+        signed.pdfSha256 !== pdfSha256 ||
+        signed.isTextDraftVersion !== true ||
+        !provenance ||
+        provenance.draftId !== draftState.draftId ||
+        provenance.revision !== draftState.revision ||
+        provenance.textSha256 !== draftState.draftSha256 ||
+        provenance.templateVersionId !== draftState.templateVersionId
+      ) {
+        throw new Error(
+          signed?.message ||
+            "A identidade do PDF textual nao corresponde a revisao salva. O envio foi interrompido.",
+        );
+      }
+
+      const identity: ContractVersionIdentity = {
+        contractVersionId: versionId,
+        pdfSha256,
+        isTextDraftVersion: true,
+        textProvenance: provenance,
+      };
+      const prepared: PreparedContractSend = {
+        contractId: safeContractId,
+        contractVersionId: versionId,
+        pdfSha256,
+        signedUrl: signed.signedUrl,
+        textProvenance: provenance,
+      };
+      setContractPreview({
+        kind: "contract",
+        contractId: safeContractId,
+        signedUrl: signed.signedUrl,
+        identity,
+      });
+      setPreparedContractSend(prepared);
+      setContractActionSuccess(
+        "Versao textual preparada. Confira o PDF aberto e confirme o envio desta mesma versao.",
+      );
+      return { handled: true, prepared };
+    } catch (error: unknown) {
+      setContractActionError(
+        error instanceof Error ? error.message : "Nao foi possivel preparar o envio do contrato textual.",
+      );
+      setContractActionSuccess(null);
+      return { handled: true, prepared: null };
+    } finally {
+      setContractActionLoadingId(null);
+      setContractActionLoadingType(null);
+    }
+  }
+
+  async function confirmPreparedTextContractSend() {
+    const prepared = preparedContractSend;
+    if (!prepared || contractActionLoadingId) return;
+
+    setContractActionLoadingId(prepared.contractId);
+    setContractActionLoadingType("approve");
+    setContractActionError(null);
+    setContractActionSuccess(null);
+    try {
+      const result = await confirmManualContractSendFlow({
+        prepared,
+        confirmHuman: () => window.confirm(
+          `Confirma o envio do contrato ${prepared.contractId} na versao ${prepared.contractVersionId}?\nSHA-256 do PDF: ${prepared.pdfSha256}`,
+        ),
+        approve: async (value) => {
+          const body = JSON.stringify({ expectedContractVersionId: value.contractVersionId });
+          const approveResponse = await fetch(
+            `/api/sales-contracts/${encodeURIComponent(value.contractId)}/approve`,
+            { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body },
+          );
+          const approveResult = (await approveResponse.json().catch(() => null)) as SalesContractActionResponse | null;
+          if (!approveResponse.ok || !approveResult?.ok) {
+            throw new Error(approveResult?.message || "Nao foi possivel aprovar a versao conferida.");
+          }
+          return true;
+        },
+        send: async (value) => {
+          setContractActionLoadingType("send");
+          const body = JSON.stringify({ expectedContractVersionId: value.contractVersionId });
+          const sendResponse = await fetch(
+            `/api/sales-contracts/${encodeURIComponent(value.contractId)}/send`,
+            { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body },
+          );
+          const sendResult = (await sendResponse.json().catch(() => null)) as SalesContractActionResponse | null;
+          if (!sendResponse.ok || !sendResult?.ok) {
+            throw new Error(sendResult?.message || "A aprovacao foi preservada, mas o envio nao foi solicitado.");
+          }
+          return true;
+        },
+      });
+
+      if (result.outcome === "cancelled") return;
+      if (result.outcome !== "sent_requested") {
+        throw new Error("A operacao humana nao concluiu o envio da versao conferida.");
+      }
+
+      setPreparedContractSend(null);
+      setContractActionSuccess("Envio solicitado para a versao conferida. Isso nao confirma entrega no WhatsApp.");
+      await fetchGeneratedContracts({ silent: true });
+      if (leadId) await fetchLeadConversationAndMessages({ silent: true });
+    } catch (error: unknown) {
+      setContractActionError(
+        error instanceof Error
+          ? error.message
+          : "Nao foi possivel concluir o envio da versao conferida. Nenhum retry automatico foi executado.",
+      );
+      setContractActionSuccess(null);
+      await fetchGeneratedContracts({ silent: true });
+    } finally {
+      setContractActionLoadingId(null);
+      setContractActionLoadingType(null);
     }
   }
 
@@ -3353,6 +3866,21 @@ export default function LeadPage() {
     } finally {
       setContractActionLoadingId(null);
       setContractActionLoadingType(null);
+    }
+  }
+
+  async function handleContractSend(contract: GeneratedContractSummary | null) {
+    if (contractActionLoadingId || manualContractCreateInFlightRef.current) return;
+    const preparation = await prepareManualContractSendFlow({
+      contract,
+      createOrRecover: createOrRecoverManualContract,
+      prepare: prepareTextContractSend,
+    });
+    if (preparation.outcome === "not_handled") {
+      await sendGeneratedContractToCustomer(
+        preparation.contract.id,
+        preparation.contract.status,
+      );
     }
   }
 
@@ -4828,6 +5356,8 @@ export default function LeadPage() {
     setGeneratedContractsLoading(false);
     setOpeningGeneratedContractId(null);
     setContractPreview(null);
+    setContractDraftState(null);
+    setPreparedContractSend(null);
     automaticContractPreviewRef.current = null;
     setContractActionLoadingId(null);
     setContractActionLoadingType(null);
@@ -4854,6 +5384,7 @@ export default function LeadPage() {
     void fetchGeneratedQuotes();
     void fetchGeneratedContracts();
     void fetchContractTemplateSource();
+    void fetchContractDraftState({ silent: true });
   }, [activeDetailsTab, documentScopeKey]);
 
   useEffect(() => {
@@ -5451,9 +5982,9 @@ export default function LeadPage() {
           </div>
 
           {activeDetailsTab ? (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-3 py-3 lg:px-6 lg:py-5">
+            <div className={`fixed inset-0 z-50 flex items-center justify-center bg-black/30 ${activeDetailsTab === "pdfs" ? "px-4 py-4 lg:px-10 lg:py-8" : "px-3 py-3 lg:px-6 lg:py-5"}`}>
               <div className={`flex max-h-[96vh] w-full flex-col overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10 ${
-                activeDetailsTab === "pdfs" ? "max-w-[96vw] lg:h-[96vh]" : "max-w-6xl"
+                activeDetailsTab === "pdfs" ? "!max-h-[90dvh] h-[90dvh] max-w-[1480px] !rounded-2xl" : "max-w-6xl"
               }`}>
                 <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
                   <div>
@@ -5477,7 +6008,7 @@ export default function LeadPage() {
                   </button>
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto p-5 lg:p-7">
+                <div className={`min-h-0 flex-1 overflow-y-auto ${activeDetailsTab === "pdfs" ? "p-3 lg:p-4" : "p-5 lg:p-7"}`}>
                   {activeDetailsTab === "summary" ? (
                     <div className="space-y-5">
                       <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-gray-50 p-2 ring-1 ring-black/5">
@@ -6078,16 +6609,13 @@ export default function LeadPage() {
                       ) : null}
 
                       {activeGeneratedPdfTab === "contracts" ? (
-                        <div className="grid gap-4 lg:grid-cols-[minmax(0,7fr)_minmax(250px,3fr)]">
-                          <section className="rounded-2xl border border-gray-200 bg-white p-4 ring-1 ring-black/5 lg:col-start-2 lg:row-start-1">
+                        <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,360px)]">
+                          <section className="rounded-xl border border-gray-200 bg-white p-3 ring-1 ring-black/5 lg:sticky lg:top-0 lg:col-start-2 lg:row-start-1 lg:max-h-[calc(100dvh-8rem)] lg:self-start lg:overflow-y-auto">
                             <div className="text-sm font-semibold text-gray-900">
-                              Dados do comprador para consulta
-                            </div>
-                            <div className="mt-1 text-xs leading-5 text-gray-500">
-                              Consulte apenas os dados realmente disponiveis durante o preenchimento manual. Nenhuma informacao e presumida ou salva por este painel.
+                              Dados do cliente
                             </div>
 
-                            <CompactInfoList
+                            <ContractCustomerInfoList
                               items={[
                                 { label: "Nome", value: lead.name?.trim() || "Nao informado" },
                                 { label: "CPF", value: "Nao informado", help: "Ainda nao ha CPF disponivel no cadastro desta conversa." },
@@ -6113,27 +6641,55 @@ export default function LeadPage() {
                               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 px-4 py-3">
                                 <div>
                                 <div className="text-sm font-semibold text-gray-900">
-                                  {contractPreview.kind === "contract" ? "Contrato da oportunidade" : "Modelo ativo da loja"}
+                                  {contractPreview.kind === "contract"
+                                    ? "Contrato da oportunidade"
+                                    : contractPreview.contractId === "template"
+                                      ? "Modelo ativo da loja"
+                                      : "Editar contrato textual"}
                                 </div>
                                 <div className="text-xs text-gray-500">
                                   {contractPreview.kind === "contract"
                                     ? "Visualizacao segura do documento especifico deste comprador."
-                                    : "Visualizacao segura do modelo ativo da loja."}
+                                    : "Texto editavel do modelo ativo da loja. Alteracoes ainda nao sao salvas."}
                                 </div>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => setContractPreview(null)}
-                                  className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-200"
-                                >
-                                  Fechar visualizacao
-                                </button>
+
                               </div>
-                              <iframe
-                                title={contractPreview.kind === "contract" ? `Visualizacao do contrato ${contractPreview.contractId}` : "Visualizacao do modelo ativo"}
-                                src={contractPreview.signedUrl}
-                                className="h-[52vh] min-h-[24rem] w-full bg-gray-100"
-                              />
+                               {contractPreview.kind === "template" ? (
+                                 <ContractTemplateTextEditor
+                                   key={documentScopeKey || "contract-template-editor"}
+                                   leadId={leadId}
+                                   commercialOpportunityId={selectedDocumentOpportunityId}
+                                   onDraftStateChange={handleContractDraftStateChange}
+                                 />
+                               ) : (
+                                 <iframe
+                                   title={`Visualizacao do contrato ${contractPreview.contractId}`}
+                                   src={contractPreview.signedUrl}
+                                   className="h-[52vh] min-h-[24rem] w-full bg-gray-100"
+                                 />
+                               )}
+                               {preparedContractSend && preparedContractSend.contractId === contractPreview.contractId ? (
+                                 <div className="border-t border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+                                   <p className="font-semibold">Confira a versão materializada antes de confirmar.</p>
+                                   <p className="mt-1 text-xs break-all">
+                                     Versão: {preparedContractSend.contractVersionId} · SHA-256: {preparedContractSend.pdfSha256}
+                                   </p>
+                                   <p className="mt-1 text-xs">
+                                     Draft {preparedContractSend.textProvenance.draftId} · revisão {preparedContractSend.textProvenance.revision} · hash textual {preparedContractSend.textProvenance.textSha256} · modelo {preparedContractSend.textProvenance.templateVersionId}.
+                                   </p>
+                                   <button
+                                     type="button"
+                                     onClick={() => void confirmPreparedTextContractSend()}
+                                     disabled={Boolean(contractActionLoadingId)}
+                                     className="mt-3 rounded-xl bg-amber-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                   >
+                                     {contractActionLoadingType === "approve" || contractActionLoadingType === "send"
+                                       ? "Processando..."
+                                       : "Confirmar envio desta versão"}
+                                   </button>
+                                 </div>
+                               ) : null}
                             </section>
                           ) : (
                             <div className="mb-4 rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-5 text-sm text-gray-600">
@@ -6192,9 +6748,31 @@ export default function LeadPage() {
 
                           {!generatedContractsLoading && generatedContracts.length === 0 ? (
                             <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
-                              {selectedDocumentOpportunityId
-                                ? "Nenhum contrato gerado ainda."
-                                : "Selecione uma oportunidade para ver os contratos."}
+                              {selectedDocumentOpportunityId ? (
+                                <>
+                                  <p>Nenhum contrato canonico gerado ainda.</p>
+                                  <p className="mt-1 text-xs text-gray-500">
+                                    O contrato manual pode ser criado somente a partir de um rascunho salvo e valido.
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleContractSend(null)}
+                                    disabled={
+                                      Boolean(contractActionLoadingId) ||
+                                      !contractDraftState?.ready ||
+                                      !contractDraftState.draftId ||
+                                      !contractDraftState.draftSha256 ||
+                                      contractDraftState.changed === true ||
+                                      contractDraftState.conflict === true
+                                    }
+                                    className="mt-3 rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-200 disabled:text-blue-700"
+                                  >
+                                    {contractActionLoadingType === "create"
+                                      ? "Criando..."
+                                      : "Enviar"}
+                                  </button>
+                                </>
+                              ) : "Selecione uma oportunidade para ver os contratos."}
                             </div>
                           ) : null}
 
@@ -6205,14 +6783,21 @@ export default function LeadPage() {
                                   .trim()
                                   .toLowerCase();
                                 const hasCurrentVersion = Boolean(contract.current_version_id);
+                                const hasSavedTextDraft = Boolean(
+                                  contractDraftState?.ready && contractDraftState.revision,
+                                );
+                                const canTextContractAction =
+                                  hasSavedTextDraft &&
+                                  ["draft", "pending_review", "approved"].includes(normalizedStatus);
                                 const isOpening = openingGeneratedContractId === contract.id;
                                 const isActionLoading = contractActionLoadingId === contract.id;
-                                const canGeneratePdf = !hasCurrentVersion;
+                                const canGeneratePdf = !hasCurrentVersion && !hasSavedTextDraft;
                                 const canApprove =
                                   (normalizedStatus === "pending_review" ||
                                     normalizedStatus === "draft") &&
-                                  hasCurrentVersion;
-                                const canSend = normalizedStatus === "approved";
+                                  hasCurrentVersion &&
+                                  !canTextContractAction;
+                                const canSend = normalizedStatus === "approved" && !canTextContractAction;
                                 const canRegisterCustomerAcceptance =
                                   normalizedStatus === "sent_to_customer";
                                 const canConfirmStore = normalizedStatus === "customer_signed";
@@ -6266,6 +6851,17 @@ export default function LeadPage() {
                                       </div>
 
                                       <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+                                        {canTextContractAction && contractTemplateSource ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => openContractTextEditor(contract.id)}
+                                            disabled={isActionLoading}
+                                            className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                          >
+                                            Editar
+                                          </button>
+                                        ) : null}
+
                                         {canGeneratePdf ? (
                                           <button
                                             type="button"
@@ -6310,6 +6906,19 @@ export default function LeadPage() {
                                           </button>
                                         ) : null}
 
+                                        {canTextContractAction ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => void handleContractSend(contract)}
+                                            disabled={isActionLoading || contractDraftState?.changed === true}
+                                            className="rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-200 disabled:text-blue-700"
+                                          >
+                                            {isActionLoading && contractActionLoadingType === "prepare_send"
+                                              ? "Preparando..."
+                                              : "Enviar"}
+                                          </button>
+                                        ) : null}
+
                                         {canRegisterCustomerAcceptance ? (
                                           <button
                                             type="button"
@@ -6351,7 +6960,7 @@ export default function LeadPage() {
                                           disabled={!hasCurrentVersion || isOpening}
                                           className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
                                         >
-                                          {isOpening ? "Abrindo..." : "Abrir PDF"}
+                                          {isOpening ? "Abrindo..." : "Abrir"}
                                         </button>
                                       </div>
                                     </div>

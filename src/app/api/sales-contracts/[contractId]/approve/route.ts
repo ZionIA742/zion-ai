@@ -49,6 +49,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function isManualContract(contract: { metadata?: unknown }) {
+  const metadata = isRecord(contract.metadata) ? contract.metadata : null;
+  return metadata?.source === "responsible_text_draft" &&
+    metadata?.created_via === "create_sales_contract_manual_by_system";
+}
+
 function buildErrorResponse(error: unknown) {
   if (error instanceof ContractAccessError) {
     return NextResponse.json(
@@ -70,6 +76,22 @@ function buildErrorResponse(error: unknown) {
     },
     { status: 500 },
   );
+}
+
+async function readExpectedContractVersionId(request: Request) {
+  const raw = await request.text();
+  if (!raw.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new ContractAccessError(400, "CONTRACT_VERSION_EXPECTATION_INVALID", "A versao esperada do contrato e invalida.");
+  }
+  if (!isRecord(parsed) || typeof parsed.expectedContractVersionId !== "string" ||
+      !parsed.expectedContractVersionId.trim() || parsed.expectedContractVersionId.trim().length > 100) {
+    throw new ContractAccessError(400, "CONTRACT_VERSION_EXPECTATION_INVALID", "A versao esperada do contrato e invalida.");
+  }
+  return parsed.expectedContractVersionId.trim().toLowerCase();
 }
 
 function mapApprovalAuthorityError(error: { message?: string | null } | null) {
@@ -167,11 +189,12 @@ export function createApproveContractPostHandler(deps: ApproveContractRouteDeps 
     deps.registerContractBusinessEvent ?? registerContractBusinessEvent;
 
   return async function POST(
-    _request: Request,
+    request: Request,
     context: { params: Promise<{ contractId: string }> },
   ) {
     const access = await resolveAccess({ requirement: "active" });
     if (!access.ok) return createStoreApiDeniedResponse(access);
+      const expectedContractVersionId = await readExpectedContractVersionId(request);
 
     try {
       const { contractId: rawContractId } = await context.params;
@@ -197,6 +220,14 @@ export function createApproveContractPostHandler(deps: ApproveContractRouteDeps 
         );
       }
       const normalizedContractStatus = String(scope.contract.status || "").trim().toLowerCase();
+
+      if (isManualContract(scope.contract) && !expectedContractVersionId) {
+        throw new ContractAccessError(
+          400,
+          "CONTRACT_VERSION_EXPECTATION_REQUIRED",
+          "A aprovacao manual exige a versao do PDF conferida pelo responsavel.",
+        );
+      }
 
       if (BLOCKED_CONTRACT_STATUSES.has(normalizedContractStatus)) {
         throw new ContractAccessError(
@@ -236,6 +267,13 @@ export function createApproveContractPostHandler(deps: ApproveContractRouteDeps 
           409,
           "CONTRACT_VERSION_STALE",
           "Existe uma versao atual diferente da carregada para aprovacao.",
+        );
+      }
+      if (expectedContractVersionId && expectedContractVersionId !== currentVersionId.toLowerCase()) {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_VERSION_STALE",
+          "Existe uma versao diferente da preparada para aprovacao.",
         );
       }
 

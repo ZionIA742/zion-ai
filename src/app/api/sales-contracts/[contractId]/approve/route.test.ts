@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createApproveContractPostHandler } from "./route";
+import { ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
 
 type Row = Record<string, unknown>;
 
@@ -112,6 +113,30 @@ function authorityResult(overrides: Row = {}) {
   };
 }
 
+function manualScope(supabase: unknown, overrides: Row = {}) {
+  const scope = baseScope(supabase);
+  return {
+    ...scope,
+    ...overrides,
+    contract: {
+      ...scope.contract,
+      quote_id: null,
+      quote_version_id: null,
+      metadata: {
+        source: "responsible_text_draft",
+        created_via: "create_sales_contract_manual_by_system",
+        commercial_opportunity_id: "opportunity-1",
+        draft_id: "draft-1",
+        template_version_id: "template-version-1",
+        creation_draft_revision: 4,
+        creation_draft_sha256: "a".repeat(64),
+        commercial_amounts_authoritative: false,
+      },
+      ...((overrides.contract as Row | undefined) || {}),
+    },
+  };
+}
+
 function grantedAccess(supabase: unknown) {
   return {
     ok: true as const,
@@ -139,6 +164,7 @@ function deniedAccess() {
 }
 
 async function callRoute(args: {
+  body?: unknown;
   scope?: Row;
   authority?: Row;
   authorityError?: Error;
@@ -171,7 +197,11 @@ async function callRoute(args: {
       if (args.eventError) throw args.eventError;
     },
   });
-  const response = await handler(new Request("https://example.test"), {
+  const response = await handler(new Request("https://example.test", {
+    method: "POST",
+    body: args.body == null ? undefined : JSON.stringify(args.body),
+    headers: args.body == null ? undefined : { "Content-Type": "application/json" },
+  }), {
     params: Promise.resolve({ contractId: "contract-1" }),
   });
   return {
@@ -246,6 +276,162 @@ const tests: Array<{ name: string; run: () => Promise<void> | void }> = [
       });
       assert.equal(result.supabase.calls.some((call) => call.operation === "update"), false);
       assert.equal(result.eventCalls.length, 1);
+    },
+  },
+  {
+    name: "manual contract without quote is approved independently of quote lineage",
+    run: async () => {
+      const supabase = createSupabaseMock();
+      const result = await callRoute({
+        body: { expectedContractVersionId: "VERSION-1" },
+        scope: manualScope(supabase),
+      });
+
+      assert.equal(result.response.status, 200);
+      assert.equal(result.body.outcome, "approved");
+      assert.equal(result.rpcCalls[0]?.expectedContractVersionId, "version-1");
+      assert.equal(result.rpcCalls[0]?.actorUserId, "user-1");
+      assert.equal(result.eventCalls.length, 1);
+    },
+  },
+  {
+    name: "manual approval requires the explicitly prepared PDF version",
+    run: async () => {
+      const result = await callRoute({
+        scope: manualScope(createSupabaseMock()),
+      });
+
+      assert.equal(result.response.status, 400);
+      assert.equal(result.body.error, "CONTRACT_VERSION_EXPECTATION_REQUIRED");
+      assert.equal(result.rpcCalls.length, 0);
+    },
+  },
+  {
+    name: "manual approval rejects a version that is no longer current",
+    run: async () => {
+      const supabase = createSupabaseMock();
+      const result = await callRoute({
+        body: { expectedContractVersionId: "version-1" },
+        scope: manualScope(supabase, {
+          contract: { current_version_id: "version-2" },
+          currentVersion: {
+            id: "version-2",
+            contract_id: "contract-1",
+            organization_id: "org-1",
+            store_id: "store-1",
+            status: "generated",
+            storage_bucket: "zion-store-files",
+            storage_path: "org-1/store-1/contracts/contract-1-v2.pdf",
+          },
+        }),
+      });
+
+      assert.equal(result.response.status, 409);
+      assert.equal(result.body.error, "CONTRACT_VERSION_STALE");
+      assert.equal(result.rpcCalls.length, 0);
+    },
+  },
+  {
+    name: "manual origin inconsistency is rejected by the approval authority",
+    run: async () => {
+      const result = await callRoute({
+        body: { expectedContractVersionId: "version-1" },
+        scope: manualScope(createSupabaseMock(), {
+          contract: {
+            metadata: {
+              source: "responsible_text_draft",
+              created_via: "create_sales_contract_manual_by_system",
+              commercial_opportunity_id: "opportunity-1",
+              quote_id: "quote-forbidden",
+            },
+          },
+        }),
+        authorityError: new ContractAccessError(
+          409,
+          "CONTRACT_LINEAGE_NOT_APPROVABLE",
+          "linhagem manual inconsistente",
+        ),
+      });
+
+      assert.equal(result.response.status, 409);
+      assert.equal(result.body.error, "CONTRACT_LINEAGE_NOT_APPROVABLE");
+      assert.equal(result.eventCalls.length, 0);
+    },
+  },
+  {
+    name: "manual approval replay is idempotent and emits no duplicate event",
+    run: async () => {
+      const result = await callRoute({
+        body: { expectedContractVersionId: "version-1" },
+        scope: manualScope(createSupabaseMock()),
+        authority: authorityResult({
+          outcome: "already_applied",
+          replayed: true,
+          reconciled: false,
+        }),
+      });
+
+      assert.equal(result.response.status, 200);
+      assert.equal(result.body.outcome, "already_applied");
+      assert.equal(result.body.replayed, true);
+      assert.equal(result.eventCalls.length, 0);
+    },
+  },
+  {
+    name: "manual approval requires PDF storage evidence before authority",
+    run: async () => {
+      const result = await callRoute({
+        body: { expectedContractVersionId: "version-1" },
+        scope: manualScope(createSupabaseMock(), {
+          currentVersion: {
+            id: "version-1",
+            contract_id: "contract-1",
+            organization_id: "org-1",
+            store_id: "store-1",
+            status: "pending_review",
+            storage_bucket: "zion-store-files",
+            storage_path: null,
+          },
+        }),
+      });
+
+      assert.equal(result.response.status, 400);
+      assert.equal(result.body.error, "CONTRACT_PDF_STORAGE_MISSING");
+      assert.equal(result.rpcCalls.length, 0);
+    },
+  },
+  {
+    name: "manual new current version requires approval of that exact version",
+    run: async () => {
+      const supabase = createSupabaseMock();
+      const result = await callRoute({
+        body: { expectedContractVersionId: "version-2" },
+        scope: manualScope(supabase, {
+          contract: { current_version_id: "version-2" },
+          currentVersion: {
+            id: "version-2",
+            contract_id: "contract-1",
+            organization_id: "org-1",
+            store_id: "store-1",
+            status: "pending_review",
+            storage_bucket: "zion-store-files",
+            storage_path: "org-1/store-1/contracts/contract-1-v2.pdf",
+          },
+        }),
+      });
+
+      assert.equal(result.response.status, 200);
+      assert.equal(result.rpcCalls[0]?.expectedContractVersionId, "version-2");
+      assert.equal(result.rpcCalls[0]?.contractId, "contract-1");
+    },
+  },
+  {
+    name: "approval rejects a prepared version that is no longer current",
+    run: async () => {
+      const result = await callRoute({ body: { expectedContractVersionId: "version-old" } });
+      assert.equal(result.response.status, 409);
+      assert.equal(result.body.error, "CONTRACT_VERSION_STALE");
+      assert.equal(result.rpcCalls.length, 0);
     },
   },
   {

@@ -1,0 +1,30 @@
+import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { findContractTextMatches } from "./contract-text-search";
+
+let checks = 0;
+const check = (text: string, term: string, expected: string[], maxResults = 500) => {
+  const result = findContractTextMatches(text, term, maxResults);
+  assert.deepEqual(result.matches.map(({ start, end }) => text.slice(start, end)), expected);
+  checks++;
+  return result;
+};
+check("Vinícius, vinicius e VINÍCIUS", "vinicius", ["Vinícius", "vinicius", "VINÍCIUS"]);
+check("João e José", "joao", ["João"]);
+check("Cláusula 12 - Valor R$ 28.500", "CLAUSULA", ["Cláusula"]);
+check("teste", "inexistente", []);
+check("teste", "  ", []);
+check("😀 João", "Joao", ["João"]);
+check("AAA AAA AAA", "aaa", ["AAA", "AAA", "AAA"]);
+assert.equal(check("AAA AAA AAA", "aaa", ["AAA", "AAA"], 2).truncated, true);
+const source = readFileSync(join(process.cwd(), "src/app/(app)/crm/lead/[id]/contract-template-text-editor.tsx"), "utf8");
+const crm = readFileSync(join(process.cwd(), "src/app/(app)/crm/lead/[id]/page.tsx"), "utf8");
+assert.match(source, /findContractTextMatches\(draftText, searchQuery, 500\)/);
+assert.match(source, /Localizar no contrato/);
+assert.match(source, /editor\.setSelectionRange\(match\.start, match\.end\)/);
+assert.doesNotMatch(source, /Ampliar editor|Sair da tela ampliada/);
+assert.match(source, /h-\[calc\(100dvh-22rem\)\]/);
+assert.match(source, /Salvar rascunho/);
+assert.match(crm, /lg:grid-cols-\[minmax\(0,1fr\)_minmax\(320px,360px\)\]/);
+console.log(`ZION P9 busca contratual: ${checks}/8 PASS; integracao UI/layout PASS`);
