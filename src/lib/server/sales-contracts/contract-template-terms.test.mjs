@@ -106,6 +106,21 @@ const tests = [
       assert.equal(result.generatedContractTerms, null);
     },
   },
+  {
+    name: "active template without extracted rules remains authoritative",
+    async run() {
+      const result = await resolveContractTemplateTerms({
+        supabase: createClient({ rules: [] }),
+        organizationId: "org-1",
+        storeId: "store-1",
+      });
+      assert.equal(result.contractTemplateUsed, true);
+      assert.equal(result.templateId, "template-1");
+      assert.equal(result.templateVersionId, "version-1");
+      assert.equal(result.generatedContractTerms, null);
+      assert.deepEqual(result.rulesUsed, []);
+    },
+  },
 ];
 
 const failures = [];

@@ -754,7 +754,7 @@ export function createGenerateContractPdfPostHandler(
       !templateTerms.contractTemplateUsed ||
       !templateTerms.templateId ||
       !templateTerms.templateVersionId ||
-      !templateTerms.generatedContractTerms
+      (!isManualContract && !templateTerms.generatedContractTerms)
     ) {
       throw new ContractAccessError(
         409,

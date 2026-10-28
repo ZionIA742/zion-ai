@@ -372,6 +372,7 @@ async function callRoute(args?: {
     versionNumber?: number;
     error?: "uncertain" | "known_conflict";
   };
+  emptyTemplateRules?: boolean;
   resolveAccess?: (params: { requirement: "active" }) => Promise<unknown>;
   resolveContract?: (contractId: string, scope: Record<string, unknown>) => Promise<unknown>;
 }) {
@@ -416,6 +417,18 @@ async function callRoute(args?: {
     resolveContract: (args?.resolveContract ?? (async () => state.scope)) as never,
     resolveContractTemplateTerms: async (input) => {
       state.calls.push({ table: "template_terms", operation: "call", payload: input as unknown as Record<string, unknown> });
+      if (args?.emptyTemplateRules) {
+        return {
+          contractTemplateUsed: true,
+          templateId: "template-1",
+          templateVersionId: "template-version-1",
+          templateVersionNumber: 1,
+          generatedContractTerms: null,
+          rulesUsed: [],
+          snapshotGeneratedAt: "2026-09-24T12:00:00.000Z",
+          warning: null,
+        };
+      }
       return {
       contractTemplateUsed: true,
       templateId: "template-1",
@@ -1184,6 +1197,40 @@ const tests: TestCase[] = [
       assert.equal(body.error, "CONTRACT_MANUAL_ORIGIN_INVALID");
       assert.equal(state.storedFiles.length, 0);
       assert.equal(state.calls.some((call) => call.table === "create_sales_contract_text_version_by_system"), false);
+    },
+  },
+  {
+    name: "manual responsible text contract allows zero extracted rules",
+    run: async () => {
+      resetState({
+        contract: {
+          quote_id: null,
+          quote_version_id: null,
+          metadata: {
+            source: "responsible_text_draft",
+            created_via: "create_sales_contract_manual_by_system",
+            commercial_opportunity_id: "opportunity-1",
+            draft_id: "draft-1",
+            template_version_id: "template-version-1",
+            creation_draft_revision: 4,
+            creation_draft_sha256: "a".repeat(64),
+            commercial_amounts_authoritative: false,
+          },
+        },
+      });
+
+      const { response, body } = await callRoute({
+        body: { mode: "saved_text_draft", expectedDraftRevision: 4 },
+        emptyTemplateRules: true,
+      });
+
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(state.storedFiles.length, 1);
+      assert.equal(
+        state.calls.some((call) => call.table === "create_sales_contract_text_version_by_system"),
+        true,
+      );
     },
   },
   {

@@ -596,7 +596,7 @@ export async function resolveContractTemplateTerms(args: {
   supabase: SupabaseClient;
   organizationId: string;
   storeId: string;
-}) {
+}): Promise<ContractTemplateTermsResolution> {
   const snapshotGeneratedAt = new Date().toISOString();
 
   try {
@@ -726,7 +726,10 @@ export async function resolveContractTemplateTerms(args: {
 
     if (!generatedContractTerms) {
       return {
-        contractTemplateUsed: false,
+        // An active template/version remains authoritative for manual text
+        // drafts even when no extracted rules exist. Quote-derived contracts
+        // still require generatedContractTerms at the route boundary.
+        contractTemplateUsed: true,
         templateId: template.id,
         templateVersionId: version.id,
         templateVersionNumber: version.version_number,
