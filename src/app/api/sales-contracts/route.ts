@@ -23,30 +23,88 @@ type CommercialOpportunityScopeRow = {
   organization_id: string;
   store_id: string;
   origin_lead_id: string | null;
+  customer_id: string | null;
 };
 
 type QuoteScopeRow = {
   id: string;
 };
 
-function isValidManualContract(
+type ManualContractProvenance = {
+  source: "responsible_text_draft";
+  created_via: "create_sales_contract_manual_by_system";
+  commercial_opportunity_id: string;
+  customer_id: string | null;
+  draft_id: string;
+  template_version_id: string;
+  created_by_user_id: string | null;
+  commercial_amounts_authoritative: false;
+  creation_draft_revision: number;
+  creation_draft_sha256: string;
+};
+
+function readValidManualContractProvenance(
   contract: Record<string, unknown>,
-  commercialOpportunityId?: string,
-) {
+  opportunity?: Pick<CommercialOpportunityScopeRow, "id" | "customer_id">,
+): ManualContractProvenance | null {
   const metadata =
     contract.metadata && typeof contract.metadata === "object"
       ? (contract.metadata as Record<string, unknown>)
       : null;
 
-  return (
-    contract.quote_id === null &&
-    contract.quote_version_id === null &&
-    metadata?.source === "responsible_text_draft" &&
-    metadata.created_via === "create_sales_contract_manual_by_system" &&
-    typeof metadata.commercial_opportunity_id === "string" &&
-    (!commercialOpportunityId ||
-      metadata.commercial_opportunity_id === commercialOpportunityId)
-  );
+  if (
+    contract.quote_id !== null ||
+    contract.quote_version_id !== null ||
+    metadata?.source !== "responsible_text_draft" ||
+    metadata.created_via !== "create_sales_contract_manual_by_system"
+  ) {
+    return null;
+  }
+
+  const commercialOpportunityId = String(metadata.commercial_opportunity_id || "").trim();
+  const draftId = String(metadata.draft_id || "").trim();
+  const templateVersionId = String(metadata.template_version_id || "").trim();
+  const createdByUserId = metadata.created_by_user_id == null
+    ? null
+    : String(metadata.created_by_user_id).trim();
+  const customerId = metadata.customer_id == null
+    ? null
+    : String(metadata.customer_id).trim();
+  const revision = metadata.creation_draft_revision;
+  const sha256 = String(metadata.creation_draft_sha256 || "").trim().toLowerCase();
+
+  if (
+    !commercialOpportunityId ||
+    !draftId ||
+    !templateVersionId ||
+    (createdByUserId !== null && !createdByUserId) ||
+    !Number.isSafeInteger(revision) ||
+    Number(revision) < 1 ||
+    !/^[0-9a-f]{64}$/u.test(sha256) ||
+    metadata.commercial_amounts_authoritative !== false
+  ) {
+    return null;
+  }
+
+  if (
+    opportunity &&
+    (commercialOpportunityId !== opportunity.id || customerId !== (opportunity.customer_id || null))
+  ) {
+    return null;
+  }
+
+  return {
+    source: "responsible_text_draft",
+    created_via: "create_sales_contract_manual_by_system",
+    commercial_opportunity_id: commercialOpportunityId,
+    customer_id: customerId,
+    draft_id: draftId,
+    template_version_id: templateVersionId,
+    created_by_user_id: createdByUserId,
+    commercial_amounts_authoritative: false,
+    creation_draft_revision: Number(revision),
+    creation_draft_sha256: sha256,
+  };
 }
 
 function buildJsonResponse(body: unknown, status = 200) {
@@ -185,7 +243,7 @@ export function createSalesContractsListGetHandler(
 
       const { data: opportunity, error: opportunityError } = await supabase
         .from("commercial_opportunities")
-        .select("id, organization_id, store_id, origin_lead_id")
+        .select("id, organization_id, store_id, origin_lead_id, customer_id")
         .eq("id", commercialOpportunityId)
         .eq("organization_id", access.organizationId)
         .eq("store_id", access.storeId)
@@ -274,10 +332,10 @@ export function createSalesContractsListGetHandler(
             validatedOpportunity
               ? scopedQuoteIdSet.has(String(contract.quote_id || ""))
               : contract.quote_id !== null;
-          const manualMatch = isValidManualContract(
+          const manualMatch = readValidManualContractProvenance(
             contract as Record<string, unknown>,
-            validatedOpportunity?.id,
-          );
+            validatedOpportunity || undefined,
+          ) !== null;
           return quoteMatch || manualMatch;
         })
       : [];
@@ -304,6 +362,12 @@ export function createSalesContractsListGetHandler(
         store_signed_at: contract.store_signed_at || null,
         completed_at: contract.completed_at || null,
         created_at: contract.created_at || null,
+        manual_provenance: validatedOpportunity
+          ? readValidManualContractProvenance(
+              contract as Record<string, unknown>,
+              validatedOpportunity,
+            )
+          : null,
       }));
 
     return buildJsonResponse({

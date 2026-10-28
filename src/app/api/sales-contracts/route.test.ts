@@ -173,6 +173,13 @@ function createFixtureSupabase() {
           source: "responsible_text_draft",
           created_via: "create_sales_contract_manual_by_system",
           commercial_opportunity_id: "opp-1",
+          customer_id: null,
+          draft_id: "draft-opp-1",
+          template_version_id: "template-version-1",
+          created_by_user_id: "user-1",
+          commercial_amounts_authoritative: false,
+          creation_draft_revision: 1,
+          creation_draft_sha256: "a".repeat(64),
         },
         contract_number: "M1",
         status: "draft",
@@ -192,6 +199,13 @@ function createFixtureSupabase() {
           source: "responsible_text_draft",
           created_via: "create_sales_contract_manual_by_system",
           commercial_opportunity_id: "opp-manual",
+          customer_id: null,
+          draft_id: "draft-manual",
+          template_version_id: "template-version-manual",
+          created_by_user_id: "user-1",
+          commercial_amounts_authoritative: false,
+          creation_draft_revision: 2,
+          creation_draft_sha256: "b".repeat(64),
         },
         contract_number: "CM",
         status: "draft",
@@ -230,6 +244,13 @@ function createFixtureSupabase() {
           source: "responsible_text_draft",
           created_via: "create_sales_contract_manual_by_system",
           commercial_opportunity_id: "opp-2",
+          customer_id: null,
+          draft_id: "draft-opp-2",
+          template_version_id: "template-version-2",
+          created_by_user_id: "user-1",
+          commercial_amounts_authoritative: false,
+          creation_draft_revision: 1,
+          creation_draft_sha256: "c".repeat(64),
         },
         contract_number: "WRONG-OPP",
         status: "draft",
@@ -408,6 +429,10 @@ const tests: TestCase[] = [
       assert.equal(contracts[0]?.id, "contract-manual");
       assert.equal(contracts[0]?.quote_id, null);
       assert.equal(contracts[0]?.quote_version_id, null);
+      assert.equal(
+        (contracts[0]?.manual_provenance as Record<string, unknown>)?.draft_id,
+        "draft-manual",
+      );
     },
   },
   {
@@ -432,6 +457,14 @@ const tests: TestCase[] = [
       assert.equal(contracts.some((contract) => contract.contract_number === "BAD"), false);
       assert.equal(
         contracts.some((contract) => contract.contract_number === "WRONG-OPP"),
+        false,
+      );
+      assert.equal(
+        contracts.some(
+          (contract) =>
+            (contract.manual_provenance as Record<string, unknown> | null | undefined)
+              ?.commercial_amounts_authoritative !== false,
+        ),
         false,
       );
     },

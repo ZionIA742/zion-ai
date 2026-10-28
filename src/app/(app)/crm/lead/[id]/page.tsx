@@ -539,6 +539,18 @@ type GeneratedContractSummary = {
   store_signed_at: string | null;
   completed_at: string | null;
   created_at: string | null;
+  manual_provenance?: {
+    source: "responsible_text_draft";
+    created_via: "create_sales_contract_manual_by_system";
+    commercial_opportunity_id: string;
+    customer_id: string | null;
+    draft_id: string;
+    template_version_id: string;
+    created_by_user_id: string | null;
+    commercial_amounts_authoritative: false;
+    creation_draft_revision: number;
+    creation_draft_sha256: string;
+  } | null;
 };
 
 type SalesContractListResponse = {
@@ -862,6 +874,25 @@ function buildContractQuoteVersionKey(
   if (!safeQuoteId || !safeQuoteVersionId) return null;
 
   return `${safeQuoteId}:${safeQuoteVersionId}`;
+}
+
+function selectManualContractForOpportunity(
+  contracts: GeneratedContractSummary[],
+  commercialOpportunityId: string,
+): { contract: GeneratedContractSummary | null; ambiguous: boolean } {
+  const candidates = contracts.filter(
+    (contract) =>
+      contract.quote_id === null &&
+      contract.quote_version_id === null &&
+      contract.manual_provenance?.source === "responsible_text_draft" &&
+      contract.manual_provenance.created_via === "create_sales_contract_manual_by_system" &&
+      contract.manual_provenance.commercial_opportunity_id === commercialOpportunityId,
+  );
+
+  return {
+    contract: candidates.length === 1 ? candidates[0] : null,
+    ambiguous: candidates.length > 1,
+  };
 }
 
 function createQuoteFormItemId() {
@@ -3458,9 +3489,20 @@ export default function LeadPage() {
     const opportunityId = String(selectedDocumentOpportunityId || "").trim();
     const manualActionId = `manual:${opportunityId}`;
     if (!opportunityId || manualContractCreateInFlightRef.current) return null;
-    if (generatedContracts.length > 0) {
+    const selection = selectManualContractForOpportunity(
+      generatedContracts,
+      opportunityId,
+    );
+    if (selection.ambiguous) {
+      setContractActionError(
+        "Foram encontrados varios contratos manuais para esta oportunidade. Recupere a identidade explicita antes de continuar.",
+      );
+      setContractActionSuccess(null);
+      return null;
+    }
+    if (selection.contract) {
       setContractActionSuccess("Contrato canonico ja existente. Nenhuma substituicao foi realizada.");
-      return generatedContracts[0] || null;
+      return selection.contract;
     }
 
     const draftState = contractDraftState?.changed
