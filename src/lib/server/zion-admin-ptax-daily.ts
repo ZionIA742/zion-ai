@@ -109,7 +109,6 @@ export async function loadDailyPtaxRates(
     "@dataFinalCotacao": `'${bcbDate(to)}'`,
     "$top": "1500",
     "$select": "cotacaoVenda,dataHoraCotacao",
-    "$orderby": "dataHoraCotacao asc",
     "$format": "json",
   });
 
