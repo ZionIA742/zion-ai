@@ -353,18 +353,33 @@ async function requestContracts(args: {
   query?: Record<string, string>;
   access?: StoreApiAccessResult;
   onRequirement?: (requirement: string) => void;
+  onServiceClient?: () => void;
+  serviceClientError?: string;
 }) {
   const { createSalesContractsListGetHandler } = await routeModulePromise;
   const supabase = createFixtureSupabase();
+  const serviceSupabase = createFixtureSupabase();
   const handler = createSalesContractsListGetHandler({
     resolveAccess: async ({ requirement }) => {
       args.onRequirement?.(requirement);
       return args.access || grantedAccess(supabase);
     },
+    createServiceClient: () => {
+      args.onServiceClient?.();
+      if (args.serviceClientError) {
+        throw new Error(args.serviceClientError);
+      }
+      return serviceSupabase as never;
+    },
   });
   const params = new URLSearchParams(args.query);
   const response = await handler(new Request(`https://example.test/api/sales-contracts?${params}`));
-  return { response, body: await parseBody(response), queryLog: supabase.queryLog };
+  return {
+    response,
+    body: await parseBody(response),
+    queryLog: supabase.queryLog,
+    serviceQueryLog: serviceSupabase.queryLog,
+  };
 }
 
 const tests: TestCase[] = [
@@ -506,11 +521,42 @@ const tests: TestCase[] = [
     run: async () => {
       const { response, body, queryLog } = await requestContracts({
         access: deniedAccess(),
+        onServiceClient: () => {
+          throw new Error("service client must not be created for denied access");
+        },
       });
 
       assert.equal(response.status, 401);
       assert.equal(body.error, "STORE_API_UNAUTHENTICATED");
       assert.deepEqual(queryLog, []);
+    },
+  },
+  {
+    name: "authorized scope is validated before the service contract query",
+    run: async () => {
+      const events: string[] = [];
+      const { response, serviceQueryLog } = await requestContracts({
+        query: { leadId: "lead-a", commercialOpportunityId: "opp-manual" },
+        onRequirement: () => events.push("session-authenticated"),
+        onServiceClient: () => events.push("service-client-created"),
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(events, ["session-authenticated", "service-client-created"]);
+      assert.deepEqual(serviceQueryLog, ["sales_contracts"]);
+    },
+  },
+  {
+    name: "service client failure returns a controlled error without partial data",
+    run: async () => {
+      const { response, body } = await requestContracts({
+        query: { leadId: "lead-a", commercialOpportunityId: "opp-manual" },
+        serviceClientError: "service client unavailable",
+      });
+
+      assert.equal(response.status, 500);
+      assert.equal(body.error, "SALES_CONTRACTS_LIST_FAILED");
+      assert.equal(body.contracts, undefined);
     },
   },
   {

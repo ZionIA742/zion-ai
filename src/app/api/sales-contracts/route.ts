@@ -7,6 +7,7 @@ import {
   type StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
+import { createServiceSupabaseClient } from "@/lib/server/store-contract-templates/template-management";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -62,12 +63,15 @@ type SalesContractsListRouteDeps = {
     requirement: "active";
     deps?: Partial<ResolveStoreApiAccessDeps>;
   }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+  createServiceClient?: typeof createServiceSupabaseClient;
 };
 
 export function createSalesContractsListGetHandler(
   deps: Partial<SalesContractsListRouteDeps> = {},
 ) {
   const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
+  const createServiceClient =
+    deps.createServiceClient ?? createServiceSupabaseClient;
 
   return async function GET(request: Request) {
   const access = await resolveAccess({ requirement: "active" });
@@ -229,7 +233,8 @@ export function createSalesContractsListGetHandler(
         : [];
     }
 
-    let query = supabase
+    const contractSupabase = createServiceClient();
+    let query = contractSupabase
       .from("sales_contracts")
       .select("*")
       .eq("organization_id", access.organizationId)
