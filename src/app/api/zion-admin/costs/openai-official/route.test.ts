@@ -88,6 +88,15 @@ function handler(data: Record<string, unknown[]>, authorized = true) {
   return createOpenAiOfficialCostsGetHandler({
     resolveAccess: async () => access(authorized) as never,
     createServiceClient: () => clientFor(data),
+    loadPtax: async () => ({
+      source: "bcb_ptax_venda",
+      daily: [{
+        date: "2026-10-27",
+        quotationDate: "2026-10-27",
+        rate: "5.25",
+        status: "same_day",
+      }],
+    }),
   });
 }
 
@@ -232,6 +241,15 @@ test("filters all financial tables by UTC period before pagination", async () =>
       (table, op, column, value) =>
         observed.push(`${table}:${op}:${column}:${value}`),
     ),
+    loadPtax: async () => ({
+      source: "bcb_ptax_venda",
+      daily: [{
+        date: "2026-10-27",
+        quotationDate: "2026-10-27",
+        rate: "5.25",
+        status: "same_day",
+      }],
+    }),
   })(new Request(`${URL}?from=2026-10-27&to=2026-10-27`));
 
   assert.equal(response.status, 200);
@@ -248,6 +266,49 @@ test("filters all financial tables by UTC period before pagination", async () =>
       `${table}:gt:period_end:2026-10-27T00:00:00.000Z`
     ));
   }
+});
+test("adds PTAX provenance and estimated BRL without changing USD", async () => {
+  const response = await read(rows());
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.totalUsd, "0.1642352");
+  assert.equal(body.daily[0].ptaxRate, "5.25");
+  assert.equal(body.daily[0].ptaxQuotationDate, "2026-10-27");
+  assert.equal(body.daily[0].estimatedBrl, "0.86");
+  assert.equal(body.fx.totalBrlEstimated, "0.86");
+});
+
+test("keeps official USD available if the BCB fails", async () => {
+  const response = await createOpenAiOfficialCostsGetHandler({
+    resolveAccess: async () => access(true) as never,
+    createServiceClient: () => clientFor(rows()),
+    loadPtax: async () => { throw new Error("BCB_UNAVAILABLE"); },
+  })(new Request(`${URL}?from=2026-10-27&to=2026-10-27`));
+
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.totalUsd, "0.1642352");
+  assert.equal(body.daily[0].estimatedBrl, null);
+  assert.equal(body.fx.totalBrlEstimated, null);
+  assert.equal(body.fx.availability, "unavailable");
+});
+
+test("does not publish a monthly BRL total with missing days", async () => {
+  const response = await read(
+    rows(),
+    "?from=2026-10-25&to=2026-10-27",
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.availability, "partial");
+  assert.equal(body.totalUsd, null);
+  assert.equal(body.fx.totalBrlEstimated, null);
+  assert.equal(
+    body.daily.find((day: { date: string }) =>
+      day.date === "2026-10-27").estimatedBrl,
+    "0.86",
+  );
 });
 test("returns source unavailable on a read failure", async () => {
   const client: OfficialCostClient = { from() { const query = { lt() { return query; }, gt() { return query; }, order() { return query; }, async range() { return { data: null, error: new Error("unavailable") }; } }; return { select(columns: string) { void columns; return query; } }; } };
