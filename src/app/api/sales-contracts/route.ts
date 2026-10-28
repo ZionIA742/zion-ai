@@ -28,6 +28,26 @@ type QuoteScopeRow = {
   id: string;
 };
 
+function isValidManualContract(
+  contract: Record<string, unknown>,
+  commercialOpportunityId?: string,
+) {
+  const metadata =
+    contract.metadata && typeof contract.metadata === "object"
+      ? (contract.metadata as Record<string, unknown>)
+      : null;
+
+  return (
+    contract.quote_id === null &&
+    contract.quote_version_id === null &&
+    metadata?.source === "responsible_text_draft" &&
+    metadata.created_via === "create_sales_contract_manual_by_system" &&
+    typeof metadata.commercial_opportunity_id === "string" &&
+    (!commercialOpportunityId ||
+      metadata.commercial_opportunity_id === commercialOpportunityId)
+  );
+}
+
 function buildJsonResponse(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
@@ -222,18 +242,6 @@ export function createSalesContractsListGetHandler(
         .eq("store_id", access.storeId)
         .eq("lead_id", validatedLead.id);
 
-      if (scopedQuoteIds && scopedQuoteIds.length > 0) {
-        query = query.in("quote_id", scopedQuoteIds);
-      } else {
-        return buildJsonResponse({
-          ok: true,
-          leadId: validatedLead.id,
-          commercialOpportunityId: validatedOpportunity.id,
-          organizationId: validatedOpportunity.organization_id,
-          storeId: validatedOpportunity.store_id,
-          contracts: [],
-        });
-      }
     }
 
     if (leadId) {
@@ -254,24 +262,44 @@ export function createSalesContractsListGetHandler(
       throw new ContractAccessError(500, "LOAD_CONTRACTS_FAILED", error.message);
     }
 
-    const contracts = Array.isArray(data)
-      ? data.map((contract) => ({
-          id: contract.id,
-          contract_number: contract.contract_number || null,
-          status: contract.status || null,
-          title: contract.title || null,
-          total_cents:
-            typeof contract.total_cents === "number" ? contract.total_cents : null,
-          current_version_id: contract.current_version_id || null,
-          quote_id: contract.quote_id || null,
-          quote_version_id: contract.quote_version_id || null,
-          sent_at: contract.sent_at || null,
-          customer_signed_at: contract.customer_signed_at || null,
-          store_signed_at: contract.store_signed_at || null,
-          completed_at: contract.completed_at || null,
-          created_at: contract.created_at || null,
-        }))
+    const scopedQuoteIdSet = new Set(scopedQuoteIds || []);
+    const filteredData = Array.isArray(data)
+      ? data.filter((contract) => {
+          const quoteMatch =
+            validatedOpportunity
+              ? scopedQuoteIdSet.has(String(contract.quote_id || ""))
+              : contract.quote_id !== null;
+          const manualMatch = isValidManualContract(
+            contract as Record<string, unknown>,
+            validatedOpportunity?.id,
+          );
+          return quoteMatch || manualMatch;
+        })
       : [];
+    const seenContractIds = new Set<string>();
+    const contracts = filteredData
+      .filter((contract) => {
+        const id = String(contract.id || "").trim();
+        if (!id || seenContractIds.has(id)) return false;
+        seenContractIds.add(id);
+        return true;
+      })
+      .map((contract) => ({
+        id: contract.id,
+        contract_number: contract.contract_number || null,
+        status: contract.status || null,
+        title: contract.title || null,
+        total_cents:
+          typeof contract.total_cents === "number" ? contract.total_cents : null,
+        current_version_id: contract.current_version_id || null,
+        quote_id: contract.quote_id || null,
+        quote_version_id: contract.quote_version_id || null,
+        sent_at: contract.sent_at || null,
+        customer_signed_at: contract.customer_signed_at || null,
+        store_signed_at: contract.store_signed_at || null,
+        completed_at: contract.completed_at || null,
+        created_at: contract.created_at || null,
+      }));
 
     return buildJsonResponse({
       ok: true,

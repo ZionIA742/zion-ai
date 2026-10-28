@@ -106,6 +106,8 @@ function createFixtureSupabase() {
     commercial_opportunities: [
       { id: "opp-1", organization_id: "org-1", store_id: "store-1", origin_lead_id: "lead-a" },
       { id: "opp-2", organization_id: "org-1", store_id: "store-1", origin_lead_id: "lead-a" },
+      { id: "opp-manual", organization_id: "org-1", store_id: "store-1", origin_lead_id: "lead-a" },
+      { id: "opp-empty", organization_id: "org-1", store_id: "store-1", origin_lead_id: "lead-a" },
       { id: "opp-store-mismatch", organization_id: "org-1", store_id: "store-2", origin_lead_id: "lead-a" },
       { id: "opp-other-lead", organization_id: "org-1", store_id: "store-1", origin_lead_id: "lead-b" },
       { id: "opp-foreign", organization_id: "org-2", store_id: "store-foreign", origin_lead_id: "lead-a" },
@@ -159,6 +161,82 @@ function createFixtureSupabase() {
         total_cents: 2000,
         current_version_id: null,
         created_at: "2026-09-12T11:00:00.000Z",
+      },
+      {
+        id: "contract-manual-opp-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        lead_id: "lead-a",
+        quote_id: null,
+        quote_version_id: null,
+        metadata: {
+          source: "responsible_text_draft",
+          created_via: "create_sales_contract_manual_by_system",
+          commercial_opportunity_id: "opp-1",
+        },
+        contract_number: "M1",
+        status: "draft",
+        title: "Manual Contract 1",
+        total_cents: 0,
+        current_version_id: null,
+        created_at: "2026-09-12T12:00:00.000Z",
+      },
+      {
+        id: "contract-manual",
+        organization_id: "org-1",
+        store_id: "store-1",
+        lead_id: "lead-a",
+        quote_id: null,
+        quote_version_id: null,
+        metadata: {
+          source: "responsible_text_draft",
+          created_via: "create_sales_contract_manual_by_system",
+          commercial_opportunity_id: "opp-manual",
+        },
+        contract_number: "CM",
+        status: "draft",
+        title: "Manual Contract",
+        total_cents: 0,
+        current_version_id: null,
+        created_at: "2026-09-12T13:00:00.000Z",
+      },
+      {
+        id: "contract-manual-invalid",
+        organization_id: "org-1",
+        store_id: "store-1",
+        lead_id: "lead-a",
+        quote_id: null,
+        quote_version_id: null,
+        metadata: {
+          source: "responsible_text_draft",
+          created_via: "wrong_writer",
+          commercial_opportunity_id: "opp-manual",
+        },
+        contract_number: "BAD",
+        status: "draft",
+        title: "Invalid Manual Contract",
+        total_cents: 0,
+        current_version_id: null,
+        created_at: "2026-09-12T14:00:00.000Z",
+      },
+      {
+        id: "contract-manual-wrong-opportunity",
+        organization_id: "org-1",
+        store_id: "store-1",
+        lead_id: "lead-a",
+        quote_id: null,
+        quote_version_id: null,
+        metadata: {
+          source: "responsible_text_draft",
+          created_via: "create_sales_contract_manual_by_system",
+          commercial_opportunity_id: "opp-2",
+        },
+        contract_number: "WRONG-OPP",
+        status: "draft",
+        title: "Wrong Opportunity",
+        total_cents: 0,
+        current_version_id: null,
+        created_at: "2026-09-12T15:00:00.000Z",
       },
       {
         id: "contract-store-mismatch",
@@ -299,7 +377,79 @@ const tests: TestCase[] = [
       const contracts = body.contracts as Array<Record<string, unknown>>;
 
       assert.equal(response.status, 200);
-      assert.deepEqual(contracts.map((contract) => contract.contract_number), ["C1"]);
+      assert.deepEqual(contracts.map((contract) => contract.contract_number), ["M1", "C1"]);
+    },
+  },
+  {
+    name: "manual contract without quote is returned for the opportunity",
+    run: async () => {
+      const { response, body } = await requestContracts({
+        query: { leadId: "lead-a", commercialOpportunityId: "opp-manual" },
+      });
+      const contracts = body.contracts as Array<Record<string, unknown>>;
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(contracts.map((contract) => contract.contract_number), ["CM"]);
+      assert.equal(contracts[0]?.id, "contract-manual");
+      assert.equal(contracts[0]?.quote_id, null);
+      assert.equal(contracts[0]?.quote_version_id, null);
+    },
+  },
+  {
+    name: "opportunity without quote or contract is empty",
+    run: async () => {
+      const { response, body } = await requestContracts({
+        query: { leadId: "lead-a", commercialOpportunityId: "opp-empty" },
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(body.contracts, []);
+    },
+  },
+  {
+    name: "inconsistent manual provenance is excluded",
+    run: async () => {
+      const { body } = await requestContracts({
+        query: { leadId: "lead-a", commercialOpportunityId: "opp-manual" },
+      });
+      const contracts = body.contracts as Array<Record<string, unknown>>;
+
+      assert.equal(contracts.some((contract) => contract.contract_number === "BAD"), false);
+      assert.equal(
+        contracts.some((contract) => contract.contract_number === "WRONG-OPP"),
+        false,
+      );
+    },
+  },
+  {
+    name: "manual and quote contracts are both returned without duplicates",
+    run: async () => {
+      const { body } = await requestContracts({
+        query: { leadId: "lead-a", commercialOpportunityId: "opp-1" },
+      });
+      const contracts = body.contracts as Array<Record<string, unknown>>;
+
+      assert.deepEqual(contracts.map((contract) => contract.id), [
+        "contract-manual-opp-1",
+        "contract-1",
+      ]);
+      assert.equal(new Set(contracts.map((contract) => contract.id)).size, contracts.length);
+    },
+  },
+  {
+    name: "manual contract replay can be recovered by the same list identity",
+    run: async () => {
+      const first = await requestContracts({
+        query: { leadId: "lead-a", commercialOpportunityId: "opp-manual" },
+      });
+      const replay = await requestContracts({
+        query: { leadId: "lead-a", commercialOpportunityId: "opp-manual" },
+      });
+      const firstContracts = first.body.contracts as Array<Record<string, unknown>>;
+      const replayContracts = replay.body.contracts as Array<Record<string, unknown>>;
+
+      assert.equal(firstContracts[0]?.id, "contract-manual");
+      assert.equal(replayContracts[0]?.id, firstContracts[0]?.id);
     },
   },
   {
@@ -311,7 +461,10 @@ const tests: TestCase[] = [
       const contracts = body.contracts as Array<Record<string, unknown>>;
 
       assert.equal(response.status, 200);
-      assert.deepEqual(contracts.map((contract) => contract.contract_number), ["C2"]);
+      assert.deepEqual(contracts.map((contract) => contract.contract_number), [
+        "WRONG-OPP",
+        "C2",
+      ]);
     },
   },
   {
@@ -400,7 +553,13 @@ const tests: TestCase[] = [
       const contracts = body.contracts as Array<Record<string, unknown>>;
 
       assert.equal(response.status, 200);
-      assert.deepEqual(contracts.map((contract) => contract.contract_number), ["C2", "C1"]);
+      assert.deepEqual(contracts.map((contract) => contract.contract_number), [
+        "WRONG-OPP",
+        "CM",
+        "M1",
+        "C2",
+        "C1",
+      ]);
       assert.equal(contracts.some((contract) => contract.contract_number === "C-STORE-2"), false);
       assert.equal(contracts.some((contract) => contract.contract_number === "C-FOREIGN"), false);
     },
