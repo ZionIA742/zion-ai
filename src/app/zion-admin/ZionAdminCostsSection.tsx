@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatCostMetric, type CostCompleteness, type CostSourceAvailability } from "@/lib/server/zion-admin-costs";
+import ZionAdminOpenAiOfficialCosts from "./ZionAdminOpenAiOfficialCosts";
 
 type CostFrequency = "monthly" | "annual";
 type FixedCost = { id: string; name: string; amount_cents: number; frequency: CostFrequency; enabled: boolean; effective_month: string };
@@ -209,6 +210,7 @@ export default function ZionAdminCostsSection() {
     {error?<div role="alert" className="rounded-xl border border-amber-500/40 bg-amber-500/[0.08] p-3 text-xs text-amber-100">{error}</div>:null}
     {feedback?<div role="status" className="rounded-xl border border-cyan-500/30 bg-cyan-500/[0.06] p-3 text-xs text-cyan-100">{feedback}</div>:null}
     {loading&&!data?<p className="text-sm text-[#9fb6c2]">Carregando informações financeiras...</p>:null}
+    <ZionAdminOpenAiOfficialCosts />
     {data?<>
       <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
         <FinancialCard label="Custos fixos" value={brl(data.totals.fixedCents)} sub="Despesas cadastradas, conforme a vigência" />
