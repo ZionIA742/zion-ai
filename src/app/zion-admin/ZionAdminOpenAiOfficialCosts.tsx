@@ -7,6 +7,10 @@ type OfficialDay = {
   status: "available" | "confirmed_empty" | "not_collected" | "unavailable";
   totalUsd: string | null;
   financialLineCount: number;
+  ptaxRate?: string | null;
+  ptaxQuotationDate?: string | null;
+  ptaxStatus?: "same_day" | "previous_available" | "unavailable" | "not_applicable";
+  estimatedBrl?: string | null;
 };
 
 type OfficialReport = {
@@ -18,6 +22,12 @@ type OfficialReport = {
   collectedDays: string[];
   missingDays: string[];
   availability: "complete" | "partial" | "unavailable";
+  fx?: {
+    source: "bcb_ptax_venda";
+    availability: "complete" | "partial" | "unavailable";
+    totalBrlEstimated: string | null;
+    note: string;
+  };
 };
 
 function formatOfficialUsd(value: string | null): string {
@@ -25,6 +35,23 @@ function formatOfficialUsd(value: string | null): string {
   return `US$ ${value.replace(".", ",")}`;
 }
 
+function formatOfficialBrl(value: string | null | undefined): string {
+  if (value == null) return "Indisponível";
+  return `R$ ${value.replace(".", ",")}`;
+}
+
+function formatPtax(day: OfficialDay): string {
+  if (day.status === "confirmed_empty") return "Não aplicável";
+  if (day.status !== "available") return "Não apurado";
+  if (!day.ptaxRate || !day.ptaxQuotationDate) return "Indisponível";
+  return `${day.ptaxRate.replace(".", ",")} (${day.ptaxQuotationDate})`;
+}
+
+function formatDayBrl(day: OfficialDay): string {
+  if (day.status === "confirmed_empty") return "Sem linhas";
+  if (day.status !== "available") return "Não apurado";
+  return formatOfficialBrl(day.estimatedBrl);
+}
 function lastClosedUtcDay(): string {
   const now = new Date();
   return new Date(
@@ -141,6 +168,9 @@ export default function ZionAdminOpenAiOfficialCosts() {
   const officialTotal = complete
     ? formatOfficialUsd(report.totalUsd)
     : "Incompleto";
+  const officialBrlTotal = complete
+    ? formatOfficialBrl(report?.fx?.totalBrlEstimated)
+    : "Incompleto";
 
   return (
     <section
@@ -190,7 +220,7 @@ export default function ZionAdminOpenAiOfficialCosts() {
 
       {report ? (
         <>
-          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-lg border border-[#29414d] p-3">
               <p className="text-[10px] uppercase text-[#96b5c1]">
                 Total oficial do período
@@ -200,6 +230,17 @@ export default function ZionAdminOpenAiOfficialCosts() {
               </p>
               <p className="text-[10px] text-[#8da8b5]">
                 {complete ? "Cobertura completa do período consultado" : "Não é um total mensal confirmado"}
+              </p>
+            </div>
+            <div className="rounded-lg border border-[#29414d] p-3">
+              <p className="text-[10px] uppercase text-[#96b5c1]">
+                BRL estimado pela PTAX
+              </p>
+              <p className="mt-1 break-words text-lg font-semibold tabular-nums text-white">
+                {officialBrlTotal}
+              </p>
+              <p className="text-[10px] text-[#8da8b5]">
+                Estimativa cambial, não valor cobrado pelo cartão
               </p>
             </div>
             <div className="rounded-lg border border-[#29414d] p-3">
@@ -235,12 +276,14 @@ export default function ZionAdminOpenAiOfficialCosts() {
               Expandir histórico diário ({report.daily.length} dias)
             </summary>
             <div className="mt-3 max-h-80 overflow-auto">
-              <table className="w-full text-left text-xs">
+              <table className="w-full min-w-[820px] text-left text-xs">
                 <thead>
                   <tr className="border-b border-[#36505c] text-[#9db6c2]">
                     <th className="pb-2">Dia UTC</th>
                     <th className="pb-2">Situação</th>
                     <th className="pb-2 text-right">USD oficial</th>
+                    <th className="pb-2 text-right">PTAX venda (data)</th>
+                    <th className="pb-2 text-right">BRL estimado</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -257,6 +300,12 @@ export default function ZionAdminOpenAiOfficialCosts() {
                             ? "Sem linhas"
                             : "Não apurado"}
                       </td>
+                      <td className="py-2 text-right tabular-nums text-[#9fb7c3]">
+                        {formatPtax(day)}
+                      </td>
+                      <td className="py-2 text-right tabular-nums text-[#a3edf0]">
+                        {formatDayBrl(day)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -269,6 +318,11 @@ export default function ZionAdminOpenAiOfficialCosts() {
             das estimativas de ai_runs.cost_usd. Não são somados novamente
             ao Total consolidado. O mês corrente considera somente dias UTC
             já encerrados.
+          </p>
+          <p className="mt-1 text-[11px] leading-5 text-[#8ca6b5]">
+            BRL estimado pela PTAX venda do Banco Central, com data
+            da cotação identificada. Não representa cobrança efetiva.
+            Sem cotação disponível, nenhum valor em reais é presumido.
           </p>
         </>
       ) : null}

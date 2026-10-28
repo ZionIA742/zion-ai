@@ -46,3 +46,24 @@ test("limits current month to closed UTC days", () => {
   assert.ok(component.includes("lastClosedUtcDay()"));
   assert.ok(component.includes("monthEndUtc(month)"));
 });
+
+test("shows daily USD, PTAX quotation date and estimated BRL", () => {
+  assert.ok(component.includes("PTAX venda (data)"));
+  assert.ok(component.includes("BRL estimado"));
+  assert.ok(component.includes("formatPtax(day)"));
+  assert.ok(component.includes("formatDayBrl(day)"));
+  assert.ok(component.includes("ptaxQuotationDate"));
+});
+
+test("does not create a monthly BRL total for partial coverage", () => {
+  assert.ok(component.includes("const officialBrlTotal = complete"));
+  assert.ok(component.includes("report?.fx?.totalBrlEstimated"));
+  assert.ok(component.includes('formatOfficialBrl(day.estimatedBrl)'));
+  assert.ok(component.includes('if (value == null) return "Indisponível"'));
+});
+
+test("keeps BRL estimated and separate from card charges", () => {
+  assert.ok(component.includes("BRL estimado pela PTAX"));
+  assert.ok(component.includes("não valor cobrado pelo cartão"));
+  assert.ok(component.includes("Não representa cobrança efetiva"));
+});
