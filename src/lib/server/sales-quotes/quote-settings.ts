@@ -7,7 +7,7 @@ type QuoteSettingsSupabase = {
     select: (columns: string) => {
       eq: (column: string, value: string) => {
         eq: (column: string, value: string) => {
-          maybeSingle: () => Promise<{
+          maybeSingle: () => PromiseLike<{
             data: unknown;
             error: { message?: unknown } | null;
           }>;
@@ -18,11 +18,15 @@ type QuoteSettingsSupabase = {
   rpc: (
     functionName: string,
     payload: { p_organization_id: string; p_store_id: string },
-  ) => Promise<{
+  ) => PromiseLike<{
     data: unknown;
     error: { message?: unknown } | null;
   }>;
 };
+
+// Keep the route boundary shallow. SupabaseClient's generated generic builders
+// otherwise force deep instantiation when this small adapter is called.
+type QuoteSettingsClient = object;
 
 export const DEFAULT_QUOTE_SETTINGS: QuoteSettings = {
   quotePdfEnabled: false,
@@ -34,11 +38,12 @@ export const DEFAULT_QUOTE_SETTINGS: QuoteSettings = {
 };
 
 export async function loadStoreQuoteSettings(args: {
-  supabase: QuoteSettingsSupabase;
+  supabase: QuoteSettingsClient;
   organizationId: string;
   storeId: string;
 }) {
-  const { data, error } = await args.supabase
+  const supabase = args.supabase as QuoteSettingsSupabase;
+  const { data, error } = await supabase
     .from("store_quote_settings")
     .select(
       "id, organization_id, store_id, quote_pdf_enabled, ai_can_generate_quote, ai_can_send_quote_to_customer, requires_human_approval_before_send, quote_number_prefix, next_quote_number, created_at, updated_at"
@@ -72,11 +77,12 @@ export async function loadStoreQuoteSettings(args: {
 }
 
 export async function reserveNextQuoteNumber(args: {
-  supabase: QuoteSettingsSupabase;
+  supabase: QuoteSettingsClient;
   organizationId: string;
   storeId: string;
 }) {
   const { row, settings } = await loadStoreQuoteSettings(args);
+  const supabase = args.supabase as QuoteSettingsSupabase;
 
   if (!row?.id) {
     throw new Error(
@@ -84,7 +90,7 @@ export async function reserveNextQuoteNumber(args: {
     );
   }
 
-  const { data, error } = await args.supabase.rpc(
+  const { data, error } = await supabase.rpc(
     "reserve_next_sales_quote_number_by_system",
     {
       p_organization_id: args.organizationId,
