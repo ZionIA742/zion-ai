@@ -2,6 +2,28 @@ import type { QuoteSettings, StoreQuoteSettingsRow } from "./types";
 
 const DEFAULT_QUOTE_NUMBER_PREFIX = "ORC";
 
+type QuoteSettingsSupabase = {
+  from: (table: string) => {
+    select: (columns: string) => {
+      eq: (column: string, value: string) => {
+        eq: (column: string, value: string) => {
+          maybeSingle: () => Promise<{
+            data: unknown;
+            error: { message?: unknown } | null;
+          }>;
+        };
+      };
+    };
+  };
+  rpc: (
+    functionName: string,
+    payload: { p_organization_id: string; p_store_id: string },
+  ) => Promise<{
+    data: unknown;
+    error: { message?: unknown } | null;
+  }>;
+};
+
 export const DEFAULT_QUOTE_SETTINGS: QuoteSettings = {
   quotePdfEnabled: false,
   aiCanGenerateQuote: false,
@@ -12,7 +34,7 @@ export const DEFAULT_QUOTE_SETTINGS: QuoteSettings = {
 };
 
 export async function loadStoreQuoteSettings(args: {
-  supabase: any;
+  supabase: QuoteSettingsSupabase;
   organizationId: string;
   storeId: string;
 }) {
@@ -49,54 +71,64 @@ export async function loadStoreQuoteSettings(args: {
   };
 }
 
-function formatQuoteNumber(prefix: string, nextQuoteNumber: number) {
-  return `${prefix}-${String(nextQuoteNumber).padStart(6, "0")}`;
-}
-
 export async function reserveNextQuoteNumber(args: {
-  supabase: any;
+  supabase: QuoteSettingsSupabase;
   organizationId: string;
   storeId: string;
 }) {
   const { row, settings } = await loadStoreQuoteSettings(args);
 
-  if (row?.id) {
-    const currentNumber = Math.max(1, settings.nextQuoteNumber);
-    const { error: updateError } = await args.supabase
-      .from("store_quote_settings")
-      .update({
-        next_quote_number: currentNumber + 1,
-      })
-      .eq("id", row.id);
-
-    if (updateError) {
-      throw new Error(`Falha ao reservar numero do orcamento: ${updateError.message}`);
-    }
-
-    return {
-      settings,
-      quoteNumber: formatQuoteNumber(settings.quoteNumberPrefix, currentNumber),
-      reservedNumber: currentNumber,
-    };
-  }
-
-  const { count, error: countError } = await args.supabase
-    .from("sales_quotes")
-    .select("id", { count: "exact", head: true })
-    .eq("organization_id", args.organizationId)
-    .eq("store_id", args.storeId);
-
-  if (countError) {
+  if (!row?.id) {
     throw new Error(
-      `Falha ao calcular numero fallback do orcamento: ${countError.message}`
+      "Configuracao de numeracao do orcamento nao encontrada para a loja.",
     );
   }
 
-  const fallbackNumber = Math.max(1, Number(count || 0) + 1);
+  const { data, error } = await args.supabase.rpc(
+    "reserve_next_sales_quote_number_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+    },
+  );
+
+  if (error) {
+    throw new Error(`Falha ao reservar numero do orcamento: ${error.message}`);
+  }
+
+  const rows = Array.isArray(data) ? data : null;
+  if (rows?.length !== 1) {
+    throw new Error(
+      "A autoridade de numeracao do orcamento retornou uma quantidade invalida de linhas.",
+    );
+  }
+
+  const reservation = rows[0] as {
+    quote_number?: unknown;
+    reserved_number?: unknown;
+    quote_number_prefix?: unknown;
+  } | null;
+  const reservedNumber = reservation?.reserved_number;
+  const quoteNumber = reservation?.quote_number;
+  const quoteNumberPrefix = reservation?.quote_number_prefix;
+
+  if (
+    typeof quoteNumber !== "string" ||
+    !quoteNumber.trim() ||
+    typeof quoteNumberPrefix !== "string" ||
+    !quoteNumberPrefix.trim() ||
+    typeof reservedNumber !== "number" ||
+    !Number.isInteger(reservedNumber) ||
+    reservedNumber < 1
+  ) {
+    throw new Error(
+      "A autoridade de numeracao do orcamento retornou uma reserva invalida.",
+    );
+  }
 
   return {
     settings,
-    quoteNumber: formatQuoteNumber(settings.quoteNumberPrefix, fallbackNumber),
-    reservedNumber: fallbackNumber,
+    quoteNumber: quoteNumber.trim(),
+    reservedNumber,
   };
 }
