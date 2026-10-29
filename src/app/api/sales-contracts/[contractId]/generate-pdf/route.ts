@@ -266,9 +266,7 @@ function assertManualContractDraftMetadata(
   if (
     String(metadata?.commercial_opportunity_id || "") !== draft.commercialOpportunityId ||
     String(metadata?.draft_id || "") !== draft.draftId ||
-    String(metadata?.template_version_id || "") !== templateVersionId ||
-    String(metadata?.creation_draft_revision || "") !== String(draft.revision) ||
-    String(metadata?.creation_draft_sha256 || "") !== draft.sha256
+    String(metadata?.template_version_id || "") !== templateVersionId
   ) {
     throw new ContractAccessError(
       409,

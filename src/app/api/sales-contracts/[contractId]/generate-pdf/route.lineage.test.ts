@@ -1145,8 +1145,8 @@ const tests: TestCase[] = [
             commercial_opportunity_id: "opportunity-1",
             draft_id: "draft-1",
             template_version_id: "template-version-1",
-            creation_draft_revision: 4,
-            creation_draft_sha256: "a".repeat(64),
+            creation_draft_revision: 1,
+            creation_draft_sha256: "c".repeat(64),
             commercial_amounts_authoritative: false,
           },
         },
@@ -1163,6 +1163,14 @@ const tests: TestCase[] = [
       assert.equal(rpc?.payload?.commercialOpportunityId, "opportunity-1");
       assert.equal(rpc?.payload?.draftId, "draft-1");
       assert.equal(rpc?.payload?.draftRevision, 4);
+      assert.equal(
+        ((rpc?.payload?.contractSnapshot as Record<string, unknown>)?.text_provenance as Record<string, unknown>)?.revision,
+        4,
+      );
+      assert.equal(
+        ((rpc?.payload?.contractSnapshot as Record<string, unknown>)?.text_provenance as Record<string, unknown>)?.text_sha256,
+        "a".repeat(64),
+      );
       assert.equal(rpc?.payload?.expectedCurrentVersionId, null);
       assert.equal((rpc?.payload?.contractSnapshot as Record<string, unknown>)?.origin != null, true);
       assert.equal(
