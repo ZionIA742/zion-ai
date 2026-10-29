@@ -155,7 +155,49 @@ const TEXT_VERSION_CONFLICTS: Record<string, string> = {
   P9_TEXT_VERSION_UNAUTHORIZED: "A autoridade textual recusou esta operacao.",
 };
 
-function textVersionRpcError(error: { message?: unknown }) {
+type TextVersionRpcErrorShape = {
+  code?: unknown;
+  message?: unknown;
+  status?: unknown;
+  statusCode?: unknown;
+};
+
+function textVersionDiagnosticCode(error: TextVersionRpcErrorShape) {
+  const directCode = String(error?.code || "").trim();
+  if (/^[A-Za-z0-9_:-]{2,64}$/.test(directCode)) return directCode;
+
+  const message = String(error?.message || "");
+  const knownCode = Object.keys(TEXT_VERSION_CONFLICTS).find((candidate) =>
+    message.includes(candidate),
+  );
+  if (knownCode) return knownCode;
+
+  const extractedCode = message.match(/\b(?:PGRST\d{3}|[A-Z][A-Z0-9_]{2,63})\b/)?.[0];
+  return extractedCode || "UNCLASSIFIED_RPC_ERROR";
+}
+
+function logTextVersionRpcFailure(args: {
+  operationKey: string;
+  phase: "rpc_error" | "rpc_rejected";
+  error?: TextVersionRpcErrorShape;
+}) {
+  const correlationId = createHash("sha256")
+    .update(args.operationKey)
+    .digest("hex")
+    .slice(0, 16);
+  const rawStatus = args.error?.statusCode ?? args.error?.status;
+  const status = Number.isInteger(Number(rawStatus)) ? Number(rawStatus) : undefined;
+
+  console.error("[sales-contracts/generate-pdf] text-version-authority-failed", {
+    authority: "create_sales_contract_text_version_by_system",
+    phase: args.phase,
+    correlationId,
+    rpcCode: args.error ? textVersionDiagnosticCode(args.error) : "RPC_REJECTED",
+    httpStatus: status,
+  });
+}
+
+function textVersionRpcError(error: TextVersionRpcErrorShape) {
   const message = String(error?.message || "");
   const code = Object.keys(TEXT_VERSION_CONFLICTS).find((candidate) => message.includes(candidate));
   if (code) {
@@ -280,7 +322,7 @@ function buildRequestFingerprint(args: {
 
 type TextVersionWriterResult = Awaited<ReturnType<typeof createSalesContractVersionBySystem>>;
 
-async function createTextSalesContractVersionBySystem(args: {
+export async function createTextSalesContractVersionBySystem(args: {
   supabase: Parameters<typeof createSalesContractVersionBySystem>[0]["supabase"];
   organizationId: string;
   storeId: string;
@@ -335,6 +377,7 @@ async function createTextSalesContractVersionBySystem(args: {
       },
     );
   } catch {
+    logTextVersionRpcFailure({ operationKey: args.operationKey, phase: "rpc_rejected" });
     args.onAuthorityUncertain?.();
     throw new ContractTextVersionError(
       503,
@@ -344,7 +387,10 @@ async function createTextSalesContractVersionBySystem(args: {
     );
   }
   const { data, error } = rpcResult;
-  if (error) throw textVersionRpcError(error);
+  if (error) {
+    logTextVersionRpcFailure({ operationKey: args.operationKey, phase: "rpc_error", error });
+    throw textVersionRpcError(error);
+  }
   const row = Array.isArray(data) ? data.length === 1 ? data[0] : null : data;
   if (!row || typeof row.id !== "string" || row.contract_id !== args.contractId ||
       row.organization_id !== args.organizationId || row.store_id !== args.storeId ||
