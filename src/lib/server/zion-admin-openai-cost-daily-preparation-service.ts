@@ -28,6 +28,10 @@ import {
   buildOpenAiCostQueryContract,
 } from "./zion-admin-openai-cost-query-contract";
 
+import {
+  planDailyOpenAiCostCollection,
+} from "./zion-admin-openai-cost-daily-planner";
+
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -194,9 +198,10 @@ export async function runDailyOpenAiCostPreparation(
   }
 
   let decision: DailyInventoryDecision;
+  let now: Date;
 
   try {
-    const now = (dependencies.now ?? (() => new Date()))();
+    now = (dependencies.now ?? (() => new Date()))();
 
     decision = await (
       dependencies.resolve ??
@@ -255,11 +260,39 @@ export async function runDailyOpenAiCostPreparation(
     };
   }
 
-  const contract = buildOpenAiCostQueryContract(
-    plan.costsRequest,
-  );
+  const expectedPlan = planDailyOpenAiCostCollection({
+    now,
+    inventoryVerified: true,
+    existingQueryIdentities: [],
+  });
 
-  if (contract.queryIdentity !== plan.queryIdentity) {
+  if (
+    expectedPlan.status !== "prepare" ||
+    plan.dateUtc !== expectedPlan.dateUtc ||
+    plan.operationKey !== expectedPlan.operationKey ||
+    plan.queryIdentity !== expectedPlan.queryIdentity
+  ) {
+    return {
+      status: "blocked",
+      reason: "inventory_blocked",
+    };
+  }
+
+  let matchingContract = false;
+
+  try {
+    matchingContract =
+      buildOpenAiCostQueryContract(
+        plan.costsRequest,
+      ).queryIdentity === expectedPlan.queryIdentity;
+  } catch {
+    return {
+      status: "blocked",
+      reason: "inventory_blocked",
+    };
+  }
+
+  if (!matchingContract) {
     return {
       status: "blocked",
       reason: "inventory_blocked",
@@ -288,7 +321,15 @@ export async function runDailyOpenAiCostPreparation(
     };
   }
 
-  if (!validPreparedResult(result, prepareRequest)) {
+  let valid = false;
+
+  try {
+    valid = validPreparedResult(result, prepareRequest);
+  } catch {
+    valid = false;
+  }
+
+  if (!valid) {
     return {
       status: "blocked",
       reason: "preparation_unconfirmed",

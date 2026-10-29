@@ -309,3 +309,62 @@ test("created confirmed response is rejected", async () => {
     reason: "preparation_unconfirmed",
   });
 });
+
+test("blocks a forged daily operation key", async () => {
+  let called = false;
+
+  const result = await runDailyOpenAiCostPreparation(
+    request,
+    {
+      ...defaults(),
+      resolve: async () => ({
+        status: "ready",
+        plan: {
+          ...PLAN,
+          operationKey: "forged-financial-key",
+        },
+      }),
+      prepare: async () => {
+        called = true;
+        return prepared();
+      },
+    },
+  );
+
+  assert.deepEqual(result, {
+    status: "blocked",
+    reason: "inventory_blocked",
+  });
+  assert.equal(called, false);
+});
+
+test("blocks malformed financial request without RPC", async () => {
+  let called = false;
+
+  const result = await runDailyOpenAiCostPreparation(
+    request,
+    {
+      ...defaults(),
+      resolve: async () => ({
+        status: "ready",
+        plan: {
+          ...PLAN,
+          costsRequest: {
+            ...PLAN.costsRequest,
+            startTime: Number.NaN,
+          },
+        },
+      }),
+      prepare: async () => {
+        called = true;
+        return prepared();
+      },
+    },
+  );
+
+  assert.deepEqual(result, {
+    status: "blocked",
+    reason: "inventory_blocked",
+  });
+  assert.equal(called, false);
+});
