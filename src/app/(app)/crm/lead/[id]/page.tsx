@@ -3603,7 +3603,7 @@ export default function LeadPage() {
     if (!safeContractId || !selectedDocumentOpportunityId || !leadId) {
       return { handled: false, prepared: null };
     }
-    if (!["draft", "pending_review", "approved"].includes(normalizedStatus)) {
+    if (!["draft", "pending_review", "generated", "approved"].includes(normalizedStatus)) {
       setContractActionError("Este contrato nao esta em um estado que permita preparar o envio.");
       setContractActionSuccess(null);
       return { handled: true, prepared: null };
@@ -3635,7 +3635,10 @@ export default function LeadPage() {
       return { handled: true, prepared: null };
     }
 
-    if (normalizedStatus === "approved" && contract.current_version_id) {
+    if (
+      ["pending_review", "generated", "approved"].includes(normalizedStatus) &&
+      contract.current_version_id
+    ) {
       try {
         const currentVersionId = String(contract.current_version_id).trim();
         const url = new URL(
@@ -3673,7 +3676,7 @@ export default function LeadPage() {
             contractVersionId: currentVersionId,
             pdfSha256: currentPdfSha256,
             signedUrl: currentSigned.signedUrl,
-            requiresApproval: false,
+            requiresApproval: normalizedStatus !== "approved",
             textProvenance: currentProvenance,
           };
           setContractPreview({
@@ -3684,7 +3687,9 @@ export default function LeadPage() {
           });
           setPreparedContractSend(prepared);
           setContractActionSuccess(
-            "A versao aprovada corresponde exatamente a revisao salva. Confira o PDF e confirme o envio desta mesma versao.",
+            normalizedStatus === "approved"
+              ? "A versao aprovada corresponde exatamente a revisao salva. Confira o PDF e confirme o envio desta mesma versao."
+              : "A versao gerada corresponde exatamente a revisao salva. Confira o PDF e aprove antes de confirmar o envio desta mesma versao.",
           );
           return { handled: true, prepared };
         }
@@ -6912,7 +6917,7 @@ export default function LeadPage() {
                                 );
                                 const canTextContractAction =
                                   hasSavedTextDraft &&
-                                  ["draft", "pending_review", "approved"].includes(normalizedStatus);
+                                  ["draft", "pending_review", "generated", "approved"].includes(normalizedStatus);
                                 const isOpening = openingGeneratedContractId === contract.id;
                                 const isActionLoading = contractActionLoadingId === contract.id;
                                 const canGeneratePdf = !hasCurrentVersion && !hasSavedTextDraft;

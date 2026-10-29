@@ -123,7 +123,9 @@ assert.match(source, /provenance\??\.templateVersionId !== draftState\.templateV
 assert.match(source, /A versao conferida foi invalidada porque o rascunho mudou/);
 assert.match(source, /contractSendInFlightRef\.current/);
 assert.match(source, /currentVersionMatchesDraft/);
-assert.match(source, /requiresApproval: false/);
+assert.match(source, /\["pending_review", "generated", "approved"\]\.includes\(normalizedStatus\)/);
+assert.match(source, /canTextContractAction[\s\S]*?\["draft", "pending_review", "generated", "approved"\]\.includes\(normalizedStatus\)/);
+assert.match(source, /requiresApproval: normalizedStatus !== "approved"/);
 assert.match(source, /requiresApproval: true/);
 assert.match(source, /if \(!value\.requiresApproval\) return true/);
 assert.match(source, /manual_provenance\.commercial_opportunity_id === commercialOpportunityId/);
