@@ -2146,6 +2146,77 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "persists the trusted generation anchor for quote preparation",
+    run: async () => {
+      const recorder = createSupabaseRecorder();
+
+      const result = await createCommercialAssistantHandoff(
+        {
+          supabase: recorder.supabase,
+          organizationId: "org-1",
+          storeId: "store-1",
+          conversationId: "conv-1",
+          leadId: "lead-1",
+          handoff: createHandoff(),
+          generationAnchorMessageId: "msg-incoming-1",
+        },
+        createDeps(),
+      );
+
+      assert.equal(result.created, true);
+      assert.deepEqual(
+        (recorder.insertedRows[0]?.task_payload as Record<string, unknown>)
+          ?.quote_preparation,
+        { request_message_id: "msg-incoming-1" },
+      );
+    },
+  },
+  {
+    name: "does not mark a quote task eligible without a trusted anchor",
+    run: async () => {
+      const recorder = createSupabaseRecorder();
+
+      const result = await createCommercialAssistantHandoff(
+        {
+          supabase: recorder.supabase,
+          organizationId: "org-1",
+          storeId: "store-1",
+          conversationId: "conv-1",
+          leadId: "lead-1",
+          handoff: createHandoff(),
+        },
+        createDeps(),
+      );
+
+      assert.equal(result.created, true);
+      const payload = recorder.insertedRows[0]?.task_payload as Record<string, unknown>;
+      assert.equal(Object.prototype.hasOwnProperty.call(payload, "quote_preparation"), false);
+    },
+  },
+  {
+    name: "does not persist quote preparation identity for visit tasks",
+    run: async () => {
+      const recorder = createSupabaseRecorder();
+
+      const result = await createCommercialAssistantHandoff(
+        {
+          supabase: recorder.supabase,
+          organizationId: "org-1",
+          storeId: "store-1",
+          conversationId: "conv-1",
+          leadId: "lead-1",
+          handoff: createHandoff({ taskType: "commercial_visit_request", intent: "visit_request" }),
+          generationAnchorMessageId: "msg-incoming-1",
+        },
+        createDeps(),
+      );
+
+      assert.equal(result.created, true);
+      const payload = recorder.insertedRows[0]?.task_payload as Record<string, unknown>;
+      assert.equal(Object.prototype.hasOwnProperty.call(payload, "quote_preparation"), false);
+    },
+  },
+  {
     name: "dedupe does not collide across different opportunities in the same conversation",
     run: async () => {
       const recorder = createSupabaseRecorder();

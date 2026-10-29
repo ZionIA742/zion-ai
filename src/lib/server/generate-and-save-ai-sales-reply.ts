@@ -4938,7 +4938,7 @@ export async function createCommercialAssistantHandoff(
       ? `Orçamento comercial pendente${handoff.customerName ? `: ${handoff.customerName}` : ""}`
       : `Visita comercial pendente${handoff.customerName ? `: ${handoff.customerName}` : ""}`;
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     handoff_origin: "ai_sales",
     allow_sales_ai_while_pending: true,
     intent: handoff.intent,
@@ -4958,6 +4958,15 @@ export async function createCommercialAssistantHandoff(
     next_step: handoff.nextStep,
     created_by: "generate-and-save-ai-sales-reply",
   };
+
+  if (handoff.taskType === "commercial_quote_request") {
+    const requestMessageId = String(args.generationAnchorMessageId || "").trim();
+    if (requestMessageId) {
+      payload.quote_preparation = {
+        request_message_id: requestMessageId,
+      };
+    }
+  }
 
   const { data, error } = await args.supabase
     .from("store_assistant_operational_tasks")
