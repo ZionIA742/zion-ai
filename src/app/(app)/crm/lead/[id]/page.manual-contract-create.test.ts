@@ -121,6 +121,11 @@ assert.match(source, /provenance\??\.draftId !== draftState\.draftId/);
 assert.match(source, /provenance\??\.textSha256 !== draftState\.draftSha256/);
 assert.match(source, /provenance\??\.templateVersionId !== draftState\.templateVersionId/);
 assert.match(source, /A versao conferida foi invalidada porque o rascunho mudou/);
+assert.match(source, /contractSendInFlightRef\.current/);
+assert.match(source, /currentVersionMatchesDraft/);
+assert.match(source, /requiresApproval: false/);
+assert.match(source, /requiresApproval: true/);
+assert.match(source, /if \(!value\.requiresApproval\) return true/);
 assert.match(source, /manual_provenance\.commercial_opportunity_id === commercialOpportunityId/);
 assert.match(source, /manual_provenance\.created_via === "create_sales_contract_manual_by_system"/);
 
@@ -133,6 +138,10 @@ assert.ok(approveCall > confirmStart);
 assert.ok(sendCall > approveCall);
 assert.match(source.slice(confirmStart, sendCall), /window\.confirm\(/);
 assert.match(source.slice(confirmStart, sendCall), /expectedContractVersionId: value\.contractVersionId/);
+assert.doesNotMatch(
+  source.slice(prepareStart, confirmStart).match(/currentVersionMatchesDraft[\s\S]*?return \{ handled: true, prepared \};/)?.[0] || "",
+  /generate-pdf/,
+);
 assert.match(source.slice(sendCall), /body \}/);
 assert.match(source, /Nenhum retry automatico foi executado/);
 assert.match(source, /Envio solicitado para a versao conferida/);

@@ -632,6 +632,7 @@ type PreparedContractSend = {
   contractVersionId: string;
   pdfSha256: string;
   signedUrl: string;
+  requiresApproval: boolean;
   textProvenance: NonNullable<ContractVersionIdentity["textProvenance"]>;
 };
 
@@ -1666,6 +1667,7 @@ export default function LeadPage() {
   const automaticContractPreviewRef = useRef<string | null>(null);
   const loadedContractDataScopeRef = useRef<string | null>(null);
   const manualSendInFlightRef = useRef(false);
+  const contractSendInFlightRef = useRef(false);
   const manualContractCreateInFlightRef = useRef(false);
   const simulatedCustomerSubmitInFlightRef = useRef(false);
   const simulatedCustomerMutationInFlightRef = useRef(false);
@@ -3633,6 +3635,64 @@ export default function LeadPage() {
       return { handled: true, prepared: null };
     }
 
+    if (normalizedStatus === "approved" && contract.current_version_id) {
+      try {
+        const currentVersionId = String(contract.current_version_id).trim();
+        const url = new URL(
+          `/api/sales-contracts/${encodeURIComponent(safeContractId)}/signed-pdf-url`,
+          window.location.origin,
+        );
+        url.searchParams.set("expectedContractVersionId", currentVersionId);
+        const currentSignedResponse = await fetch(url.toString(), { method: "GET", cache: "no-store" });
+        const currentSigned = (await currentSignedResponse.json().catch(() => null)) as SignedContractPdfUrlResponse | null;
+        const currentProvenance = currentSigned?.textProvenance;
+        const currentPdfSha256 = String(currentSigned?.pdfSha256 || "").trim().toLowerCase();
+        const currentVersionMatchesDraft =
+          currentSignedResponse.ok &&
+          currentSigned?.ok === true &&
+          Boolean(currentSigned.signedUrl) &&
+          currentSigned.contractVersionId === currentVersionId &&
+          /^[0-9a-f]{64}$/u.test(currentPdfSha256) &&
+          currentSigned.isTextDraftVersion === true &&
+        currentProvenance !== null &&
+        currentProvenance !== undefined &&
+          currentProvenance.draftId === draftState.draftId &&
+          currentProvenance.revision === draftState.revision &&
+          currentProvenance.textSha256 === draftState.draftSha256 &&
+          currentProvenance.templateVersionId === draftState.templateVersionId;
+
+        if (currentVersionMatchesDraft && currentProvenance && currentSigned?.signedUrl) {
+          const identity: ContractVersionIdentity = {
+            contractVersionId: currentVersionId,
+            pdfSha256: currentPdfSha256,
+            isTextDraftVersion: true,
+            textProvenance: currentProvenance,
+          };
+          const prepared: PreparedContractSend = {
+            contractId: safeContractId,
+            contractVersionId: currentVersionId,
+            pdfSha256: currentPdfSha256,
+            signedUrl: currentSigned.signedUrl,
+            requiresApproval: false,
+            textProvenance: currentProvenance,
+          };
+          setContractPreview({
+            kind: "contract",
+            contractId: safeContractId,
+            signedUrl: currentSigned.signedUrl,
+            identity,
+          });
+          setPreparedContractSend(prepared);
+          setContractActionSuccess(
+            "A versao aprovada corresponde exatamente a revisao salva. Confira o PDF e confirme o envio desta mesma versao.",
+          );
+          return { handled: true, prepared };
+        }
+      } catch {
+        // Falha ao consultar a versao atual nao autoriza seu reaproveitamento.
+      }
+    }
+
     if (normalizedStatus === "approved" && !window.confirm(
       "Este contrato ja esta aprovado. Preparar uma nova versao textual vai invalidar a aprovacao atual. Deseja continuar?",
     )) {
@@ -3717,6 +3777,7 @@ export default function LeadPage() {
         contractVersionId: versionId,
         pdfSha256,
         signedUrl: signed.signedUrl,
+        requiresApproval: true,
         textProvenance: provenance,
       };
       setContractPreview({
@@ -3744,7 +3805,9 @@ export default function LeadPage() {
 
   async function confirmPreparedTextContractSend() {
     const prepared = preparedContractSend;
-    if (!prepared || contractActionLoadingId) return;
+    if (!prepared || contractActionLoadingId || contractSendInFlightRef.current) return;
+
+    contractSendInFlightRef.current = true;
 
     setContractActionLoadingId(prepared.contractId);
     setContractActionLoadingType("approve");
@@ -3757,6 +3820,7 @@ export default function LeadPage() {
           `Confirma o envio do contrato ${prepared.contractId} na versao ${prepared.contractVersionId}?\nSHA-256 do PDF: ${prepared.pdfSha256}`,
         ),
         approve: async (value) => {
+          if (!value.requiresApproval) return true;
           const body = JSON.stringify({ expectedContractVersionId: value.contractVersionId });
           const approveResponse = await fetch(
             `/api/sales-contracts/${encodeURIComponent(value.contractId)}/approve`,
@@ -3801,6 +3865,7 @@ export default function LeadPage() {
       setContractActionSuccess(null);
       await fetchGeneratedContracts({ silent: true });
     } finally {
+      contractSendInFlightRef.current = false;
       setContractActionLoadingId(null);
       setContractActionLoadingType(null);
     }
@@ -3855,7 +3920,8 @@ export default function LeadPage() {
 
   async function sendGeneratedContractToCustomer(
     contractId: string,
-    currentStatus: string | null | undefined
+    currentStatus: string | null | undefined,
+    alreadyClaimed = false,
   ) {
     const safeContractId = String(contractId || "").trim();
     const normalizedStatus = String(currentStatus || "").trim().toLowerCase();
@@ -3873,6 +3939,10 @@ export default function LeadPage() {
     if (!window.confirm("Confirma o envio deste contrato ao cliente?")) {
       return;
     }
+
+    if (!alreadyClaimed && contractSendInFlightRef.current) return;
+    const ownsContractSendClaim = !alreadyClaimed;
+    if (ownsContractSendClaim) contractSendInFlightRef.current = true;
 
     setContractActionLoadingId(safeContractId);
     setContractActionLoadingType("send");
@@ -3906,23 +3976,35 @@ export default function LeadPage() {
       );
       setContractActionSuccess(null);
     } finally {
+      if (ownsContractSendClaim) contractSendInFlightRef.current = false;
       setContractActionLoadingId(null);
       setContractActionLoadingType(null);
     }
   }
 
   async function handleContractSend(contract: GeneratedContractSummary | null) {
-    if (contractActionLoadingId || manualContractCreateInFlightRef.current) return;
-    const preparation = await prepareManualContractSendFlow({
-      contract,
-      createOrRecover: createOrRecoverManualContract,
-      prepare: prepareTextContractSend,
-    });
-    if (preparation.outcome === "not_handled") {
-      await sendGeneratedContractToCustomer(
-        preparation.contract.id,
-        preparation.contract.status,
-      );
+    if (
+      contractActionLoadingId ||
+      contractSendInFlightRef.current ||
+      manualContractCreateInFlightRef.current
+    ) return;
+
+    contractSendInFlightRef.current = true;
+    try {
+      const preparation = await prepareManualContractSendFlow({
+        contract,
+        createOrRecover: createOrRecoverManualContract,
+        prepare: prepareTextContractSend,
+      });
+      if (preparation.outcome === "not_handled") {
+        await sendGeneratedContractToCustomer(
+          preparation.contract.id,
+          preparation.contract.status,
+          true,
+        );
+      }
+    } finally {
+      contractSendInFlightRef.current = false;
     }
   }
 
