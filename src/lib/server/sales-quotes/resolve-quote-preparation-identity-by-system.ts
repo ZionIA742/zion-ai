@@ -317,7 +317,11 @@ export async function resolveQuotePreparationIdentityBySystem(args: {
   if (result.error) return queryFailure(taskId, result.error);
   if (!result.row) return ineligible(taskId, "profile_not_resolved");
   const profileVersionNumber = result.row.version_number;
-  if (!Number.isSafeInteger(profileVersionNumber) || profileVersionNumber < 1) {
+  if (
+    typeof profileVersionNumber !== "number" ||
+    !Number.isSafeInteger(profileVersionNumber) ||
+    profileVersionNumber < 1
+  ) {
     return ineligible(taskId, "profile_not_resolved");
   }
 
