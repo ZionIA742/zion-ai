@@ -66,6 +66,16 @@ function createDeps(
       reason: "stubbed",
       skippedReason: "stubbed",
     }),
+    enqueueQuotePreparationTask: async () => ({
+      outcome: "created",
+      queueId: "queue-stub",
+      organizationId: "org-stub",
+      storeId: "store-stub",
+      taskId: "task-stub",
+      conversationId: "conversation-stub",
+      requestMessageId: "message-stub",
+      status: "pending",
+    }),
     ...overrides,
   };
 }
@@ -2195,6 +2205,7 @@ const tests: TestCase[] = [
       const taskId = "11111111-1111-4111-8111-111111111111";
       const requestMessageId = "22222222-2222-4222-8222-222222222222";
       const calls: Array<Record<string, unknown>> = [];
+      const queueCalls: Array<Record<string, unknown>> = [];
 
       await withQuotePreparationAuthorizationGate("true", async () => {
         const result = await createCommercialAssistantHandoff(
@@ -2213,6 +2224,10 @@ const tests: TestCase[] = [
               calls.push(args as unknown as Record<string, unknown>);
               return { outcome: "created", authorizationId: "auth-1" } as never;
             },
+            enqueueQuotePreparationTask: async (args) => {
+              queueCalls.push(args as unknown as Record<string, unknown>);
+              return { outcome: "created", queueId: "queue-1" } as never;
+            },
           }),
         );
 
@@ -2222,17 +2237,22 @@ const tests: TestCase[] = [
           outcome: "created",
           authorizationId: "auth-1",
         });
+        assert.equal(result.quotePreparationQueue?.outcome, "created");
       });
 
       assert.equal(calls.length, 1);
       assert.equal(calls[0]?.taskId, taskId);
       assert.equal(calls[0]?.requestMessageId, requestMessageId);
+      assert.equal(queueCalls.length, 1);
+      assert.equal(queueCalls[0]?.taskId, taskId);
+      assert.equal(queueCalls[0]?.requestMessageId, requestMessageId);
     },
   },
   {
     name: "quote preparation authorization gate is off by default and makes no RPC call",
     run: async () => {
       let calls = 0;
+      let queueCalls = 0;
       await withQuotePreparationAuthorizationGate(undefined, async () => {
         assert.equal(isQuotePreparationTaskAuthorizationEnabled(), false);
         const result = await createCommercialAssistantHandoff(
@@ -2253,12 +2273,18 @@ const tests: TestCase[] = [
               calls += 1;
               return { outcome: "created", authorizationId: "auth-1" } as never;
             },
+            enqueueQuotePreparationTask: async () => {
+              queueCalls += 1;
+              return { outcome: "created", queueId: "queue-1" } as never;
+            },
           }),
         );
 
         assert.equal(result.quotePreparationAuthorization?.outcome, "gate_off");
+        assert.equal(result.quotePreparationQueue?.outcome, "authorization_not_confirmed");
       });
       assert.equal(calls, 0);
+      assert.equal(queueCalls, 0);
     },
   },
   {

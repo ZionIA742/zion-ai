@@ -36,6 +36,10 @@ import {
   QuotePreparationTaskAuthorizationError,
   type QuotePreparationTaskAuthorizationResult,
 } from "./sales-quotes/issue-quote-preparation-task-authorization-by-system";
+import {
+  enqueueQuotePreparationTaskBySystem,
+  type QuotePreparationQueueResult,
+} from "./sales-quotes/enqueue-quote-preparation-task-by-system";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -142,6 +146,19 @@ export type QuotePreparationAuthorizationAttempt =
       outcome: "created" | "idempotent_replay" | "blocked" | "uncertain" | "rejected";
       attempted: true;
       authorizationId?: string | null;
+      errorCode?: string | null;
+      error?: string | null;
+    };
+
+export type QuotePreparationQueueAttempt =
+  | {
+      attempted: false;
+      outcome: "not_applicable" | "gate_off" | "authorization_not_confirmed";
+    }
+  | {
+      attempted: true;
+      outcome: "created" | "idempotent_replay" | "rejected" | "uncertain";
+      queueId?: string | null;
       errorCode?: string | null;
       error?: string | null;
     };
@@ -882,6 +899,7 @@ type CommercialHandoffCreationResult = {
   crmAutoProgressError?: string | null;
   crmAutoProgressResult?: CrmAutoProgressResult | null;
   quotePreparationAuthorization?: QuotePreparationAuthorizationAttempt;
+  quotePreparationQueue?: QuotePreparationQueueAttempt;
 };
 
 export type CommercialAssistantHandoffDeps = {
@@ -889,6 +907,7 @@ export type CommercialAssistantHandoffDeps = {
   enqueueNotification: typeof enqueueCommercialHandoffNotification;
   autoProgressBudgetFromQuote: typeof maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical;
   issueQuotePreparationTaskAuthorization?: typeof issueQuotePreparationTaskAuthorizationBySystem;
+  enqueueQuotePreparationTask?: typeof enqueueQuotePreparationTaskBySystem;
 };
 
 type CurrentCommercialProposalRow = {
@@ -5059,6 +5078,10 @@ export async function createCommercialAssistantHandoff(
         ? "task_not_persisted"
         : "not_applicable",
   };
+  let quotePreparationQueue: QuotePreparationQueueAttempt = {
+    attempted: false,
+    outcome: handoff.taskType === "commercial_quote_request" ? "authorization_not_confirmed" : "not_applicable",
+  };
 
   if (handoff.taskType === "commercial_quote_request") {
     const requestMessageId = String(args.generationAnchorMessageId || "").trim() || null;
@@ -5133,6 +5156,63 @@ export async function createCommercialAssistantHandoff(
     }
   }
 
+  if (
+    handoff.taskType === "commercial_quote_request" &&
+    quotePreparationAuthorization.attempted === true &&
+    (quotePreparationAuthorization.outcome === "created" ||
+      quotePreparationAuthorization.outcome === "idempotent_replay") &&
+    quotePreparationAuthorization.authorizationId
+  ) {
+    try {
+      const queue: QuotePreparationQueueResult = await (
+        deps.enqueueQuotePreparationTask || enqueueQuotePreparationTaskBySystem
+      )({
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        taskId: String(data.id),
+        conversationId: args.conversationId,
+        requestMessageId: String(args.generationAnchorMessageId || "").trim(),
+        leadId: String(args.leadId || "").trim(),
+        commercialOpportunityId,
+        authorizationId: quotePreparationAuthorization.authorizationId,
+        supabase: args.systemSupabase || args.supabase,
+      });
+      quotePreparationQueue = {
+        attempted: true,
+        outcome: queue.outcome,
+        queueId: queue.queueId,
+      };
+    } catch (queueError: unknown) {
+      const typedError = queueError instanceof Error ? queueError : null;
+      const errorCode =
+        typeof (queueError as { code?: unknown })?.code === "string"
+          ? String((queueError as { code: string }).code)
+          : "P19A_QUOTE_PREP_QUEUE_UNCERTAIN";
+      quotePreparationQueue = {
+        attempted: true,
+        outcome:
+          (queueError as { kind?: unknown })?.kind === "rejected"
+            ? "rejected"
+            : "uncertain",
+        errorCode,
+        error: typedError?.message || String(queueError || ""),
+      };
+      console.warn("[zion-ai-sales-quote-preparation] fila nao confirmada", {
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        taskId: String(data.id),
+        requestMessageId: String(args.generationAnchorMessageId || "").trim(),
+        outcome: quotePreparationQueue.outcome,
+        errorCode,
+      });
+    }
+  } else if (handoff.taskType === "commercial_quote_request") {
+    quotePreparationQueue = {
+      attempted: false,
+      outcome: "authorization_not_confirmed",
+    };
+  }
+
   const notificationResult = await deps.enqueueNotification({
     supabase: args.supabase,
     organizationId: args.organizationId,
@@ -5187,6 +5267,7 @@ export async function createCommercialAssistantHandoff(
     crmAutoProgressError: crmAutoProgressResult?.error || null,
     crmAutoProgressResult: crmAutoProgressResult || null,
     quotePreparationAuthorization,
+    quotePreparationQueue,
   };
 }
 
