@@ -7,6 +7,14 @@ import {
 import { registerQuotePreparationFromTaskBySystem } from "./sales-quotes/register-quote-preparation-from-task-by-system";
 import { resolveQuotePreparationIdentityBySystem } from "./sales-quotes/resolve-quote-preparation-identity-by-system";
 import { validateQuotePreparationTaskAuthorizationBySystem } from "./sales-quotes/validate-quote-preparation-task-authorization-by-system";
+import {
+  issueQuotePreparationTaskAuthorizationBySystem,
+  type QuotePreparationTaskAuthorizationResult,
+} from "./sales-quotes/issue-quote-preparation-task-authorization-by-system";
+import {
+  enqueueQuotePreparationTaskBySystem,
+  type QuotePreparationQueueResult,
+} from "./sales-quotes/enqueue-quote-preparation-task-by-system";
 
 type QueueRow = {
   id: string;
@@ -33,6 +41,9 @@ export function isQuotePreparationConsumerEnabled() {
 const MAX_SAFE_QUEUE_ATTEMPTS = 3;
 const QUEUE_RETRY_DELAY_MS = 60_000;
 const QUEUE_STALE_LOCK_MS = 15 * 60_000;
+const QUOTE_PREPARATION_RECOVERY_CANDIDATE_LIMIT = 20;
+const QUOTE_PREPARATION_AUTHORIZATION_WINDOW_MS = 15 * 60_000;
+const QUOTE_PREPARATION_FUTURE_SKEW_MS = 30_000;
 
 type OrganizationSubscriptionRow = {
   id: string;
@@ -100,11 +111,98 @@ export type ProcessAssistantOperationalTasksParams = {
   workerName?: string;
 };
 
+type QuotePreparationRecoveryResult = {
+  taskId: string;
+  ok: boolean;
+  skipped?: boolean;
+  reason: string;
+  queueId?: string;
+};
+
+export type QuotePreparationRecoveryRunResult = {
+  ok: boolean;
+  skipped?: boolean;
+  reason?: string;
+  candidates: number;
+  recovered: number;
+  results: QuotePreparationRecoveryResult[];
+};
+
+export type QuotePreparationRecoveryDeps = {
+  resolveIdentity: typeof resolveQuotePreparationIdentityBySystem;
+  readAuthorization: typeof readQuotePreparationAuthorizationBySystem;
+  issueAuthorization: typeof issueQuotePreparationTaskAuthorizationBySystem;
+  enqueue: typeof enqueueQuotePreparationTaskBySystem;
+};
+
+type QuotePreparationAuthorizationLookup =
+  | { outcome: "absent" }
+  | { outcome: "valid"; authorizationId: string }
+  | { outcome: "blocked"; reason: "authorization_expired" | "authorization_revoked" }
+  | { outcome: "uncertain" };
+
+async function readQuotePreparationAuthorizationBySystem(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  taskId: string;
+  requestMessageId: string;
+  now: Date;
+}): Promise<QuotePreparationAuthorizationLookup> {
+  try {
+    const { data, error } = await args.supabase
+      .from("p19a_quote_preparation_task_authorizations")
+      .select("id,organization_id,store_id,task_id,request_message_id,expires_at,revoked_at")
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("task_id", args.taskId)
+      .limit(2);
+
+    if (error) return { outcome: "uncertain" };
+    const rows = Array.isArray(data) ? data : data ? [data] : [];
+    if (rows.length === 0) return { outcome: "absent" };
+    if (rows.length !== 1) return { outcome: "uncertain" };
+
+    const row = rows[0] as Record<string, unknown>;
+    if (
+      row.organization_id !== args.organizationId ||
+      row.store_id !== args.storeId ||
+      row.task_id !== args.taskId ||
+      row.request_message_id !== args.requestMessageId ||
+      typeof row.id !== "string" ||
+      !row.id.trim() ||
+      typeof row.expires_at !== "string"
+    ) {
+      return { outcome: "uncertain" };
+    }
+
+    if (row.revoked_at !== null && row.revoked_at !== undefined) {
+      return { outcome: "blocked", reason: "authorization_revoked" };
+    }
+
+    const expiresAt = new Date(row.expires_at);
+    if (Number.isNaN(expiresAt.getTime())) return { outcome: "uncertain" };
+    if (expiresAt <= args.now) return { outcome: "blocked", reason: "authorization_expired" };
+
+    return { outcome: "valid", authorizationId: row.id.trim() };
+  } catch {
+    return { outcome: "uncertain" };
+  }
+}
+
+const defaultQuotePreparationRecoveryDeps: QuotePreparationRecoveryDeps = {
+  resolveIdentity: resolveQuotePreparationIdentityBySystem,
+  readAuthorization: readQuotePreparationAuthorizationBySystem,
+  issueAuthorization: issueQuotePreparationTaskAuthorizationBySystem,
+  enqueue: enqueueQuotePreparationTaskBySystem,
+};
+
 export type ProcessAssistantOperationalTasksResult = {
   ok: true;
   processed: number;
   failed: number;
   total: number;
+  quotePreparationRecovery?: QuotePreparationRecoveryRunResult;
   results: Array<{
     queueId: string;
     ok: boolean;
@@ -3158,6 +3256,288 @@ export async function routeIncomingCustomerReplyToOperationalTask(args: {
   };
 }
 
+function quotePreparationRecoveryErrorKind(error: unknown) {
+  const value = error as { kind?: unknown } | null;
+  return value?.kind === "uncertain" ? "uncertain" : "blocked";
+}
+
+function quotePreparationRecoveryErrorCode(error: unknown, fallback: string) {
+  const value = error as { code?: unknown } | null;
+  return typeof value?.code === "string" && value.code.trim() ? value.code : fallback;
+}
+
+export async function recoverAbandonedQuotePreparationTasks(args: {
+  supabase: any;
+  organizationId?: string | null;
+  storeId?: string | null;
+  now?: Date;
+  candidateLimit?: number;
+  deps?: Partial<QuotePreparationRecoveryDeps>;
+}): Promise<QuotePreparationRecoveryRunResult> {
+  if (!isQuotePreparationConsumerEnabled()) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "quote_preparation_gate_off",
+      candidates: 0,
+      recovered: 0,
+      results: [],
+    };
+  }
+
+  const now = args.now || new Date();
+  const candidateLimit = Math.min(
+    Math.max(Number(args.candidateLimit || QUOTE_PREPARATION_RECOVERY_CANDIDATE_LIMIT), 1),
+    QUOTE_PREPARATION_RECOVERY_CANDIDATE_LIMIT,
+  );
+  const createdAtFloor = new Date(
+    now.getTime() - QUOTE_PREPARATION_AUTHORIZATION_WINDOW_MS,
+  ).toISOString();
+  const createdAtCeiling = new Date(
+    now.getTime() + QUOTE_PREPARATION_FUTURE_SKEW_MS,
+  ).toISOString();
+
+  let query = args.supabase
+    .from("store_assistant_operational_tasks")
+    .select(
+      "id,organization_id,store_id,task_type,status,created_at,cancelled_at,resolved_at,related_lead_id,related_conversation_id,commercial_opportunity_id,task_payload",
+    )
+    .eq("task_type", "commercial_quote_request")
+    .in("status", [
+      "open",
+      "waiting_user_choice",
+      "waiting_customer_response",
+      "ready_to_execute",
+      "in_progress",
+    ])
+    .gte("created_at", createdAtFloor)
+    .lte("created_at", createdAtCeiling)
+    .order("created_at", { ascending: true })
+    .limit(candidateLimit);
+
+  if (args.organizationId) query = query.eq("organization_id", args.organizationId);
+  if (args.storeId) query = query.eq("store_id", args.storeId);
+
+  const { data: candidateRows, error: candidateError } = await query;
+  if (candidateError) {
+    return {
+      ok: false,
+      reason: "quote_preparation_recovery_candidates_uncertain",
+      candidates: 0,
+      recovered: 0,
+      results: [],
+    };
+  }
+
+  const deps = { ...defaultQuotePreparationRecoveryDeps, ...(args.deps || {}) };
+  const candidates = Array.isArray(candidateRows) ? candidateRows : [];
+  const results: QuotePreparationRecoveryResult[] = [];
+  let recovered = 0;
+
+  for (const candidate of candidates as Array<Record<string, unknown>>) {
+    const taskId = typeof candidate.id === "string" ? candidate.id : "";
+    const organizationId = typeof candidate.organization_id === "string" ? candidate.organization_id : "";
+    const storeId = typeof candidate.store_id === "string" ? candidate.store_id : "";
+
+    if (!taskId || !organizationId || !storeId) {
+      results.push({ taskId, ok: false, skipped: true, reason: "candidate_identity_invalid" });
+      continue;
+    }
+
+    if (candidate.cancelled_at !== null && candidate.cancelled_at !== undefined) {
+      results.push({ taskId, ok: false, skipped: true, reason: "task_cancelled" });
+      continue;
+    }
+    if (candidate.resolved_at !== null && candidate.resolved_at !== undefined) {
+      results.push({ taskId, ok: false, skipped: true, reason: "task_resolved" });
+      continue;
+    }
+
+    let identityResolution;
+    try {
+      identityResolution = await deps.resolveIdentity({
+        taskId,
+        organizationId,
+        storeId,
+        supabase: args.supabase,
+      });
+    } catch {
+      results.push({ taskId, ok: false, skipped: true, reason: "identity_resolution_uncertain" });
+      continue;
+    }
+
+    if (!identityResolution.eligible) {
+      results.push({
+        taskId,
+        ok: false,
+        skipped: true,
+        reason: identityResolution.reason === "query_failed"
+          ? "identity_resolution_uncertain"
+          : `task_not_recoverable_${identityResolution.reason}`,
+      });
+      continue;
+    }
+
+    const identity = identityResolution.identity;
+    let queueRows: Array<Record<string, unknown>>;
+    try {
+      const queueResult = await args.supabase
+        .from("store_assistant_operational_task_queue")
+        .select("id,organization_id,store_id,task_id,conversation_id,message_id,queue_type,status")
+        .eq("organization_id", identity.organizationId)
+        .eq("store_id", identity.storeId)
+        .eq("task_id", identity.taskId)
+        .eq("queue_type", QUOTE_PREPARATION_QUEUE_TYPE)
+        .limit(10);
+      if (queueResult.error) throw queueResult.error;
+      queueRows = Array.isArray(queueResult.data) ? queueResult.data : queueResult.data ? [queueResult.data] : [];
+    } catch {
+      results.push({ taskId, ok: false, skipped: true, reason: "queue_state_uncertain" });
+      continue;
+    }
+
+    const hasDivergentQueue = queueRows.some((row) =>
+      row.organization_id !== identity.organizationId ||
+      row.store_id !== identity.storeId ||
+      row.task_id !== identity.taskId ||
+      row.conversation_id !== identity.conversationId ||
+      row.message_id !== identity.requestMessageId ||
+      row.queue_type !== QUOTE_PREPARATION_QUEUE_TYPE,
+    );
+
+    if (hasDivergentQueue || queueRows.length > 1) {
+      results.push({ taskId, ok: false, skipped: true, reason: "queue_identity_divergence" });
+      continue;
+    }
+
+    const existingQueue = queueRows[0];
+    if (existingQueue) {
+      results.push({
+        taskId,
+        ok: true,
+        skipped: true,
+        reason: existingQueue.status === "failed"
+          ? "queue_exists_requires_reconciliation"
+          : "queue_already_exists",
+        queueId: typeof existingQueue.id === "string" ? existingQueue.id : undefined,
+      });
+      continue;
+    }
+
+    const persistedAuthorization = await deps.readAuthorization({
+      organizationId: identity.organizationId,
+      storeId: identity.storeId,
+      taskId: identity.taskId,
+      requestMessageId: identity.requestMessageId,
+      now,
+      supabase: args.supabase,
+    });
+
+    if (persistedAuthorization.outcome === "uncertain") {
+      results.push({
+        taskId,
+        ok: false,
+        skipped: true,
+        reason: "authorization_state_uncertain",
+      });
+      continue;
+    }
+
+    if (persistedAuthorization.outcome === "blocked") {
+      results.push({
+        taskId,
+        ok: false,
+        skipped: true,
+        reason: persistedAuthorization.reason === "authorization_revoked"
+          ? "authorization_revoked"
+          : "authorization_expired",
+      });
+      continue;
+    }
+
+    let authorizationId: string;
+    if (persistedAuthorization.outcome === "valid") {
+      authorizationId = persistedAuthorization.authorizationId;
+    } else {
+      let authorization: QuotePreparationTaskAuthorizationResult;
+      try {
+        authorization = await deps.issueAuthorization({
+          organizationId: identity.organizationId,
+          storeId: identity.storeId,
+          taskId: identity.taskId,
+          requestMessageId: identity.requestMessageId,
+          supabase: args.supabase,
+        });
+      } catch (error) {
+        results.push({
+          taskId,
+          ok: false,
+          skipped: true,
+          reason: quotePreparationRecoveryErrorKind(error) === "uncertain"
+            ? "authorization_uncertain"
+            : `authorization_blocked_${quotePreparationRecoveryErrorCode(error, "rejected")}`,
+        });
+        continue;
+      }
+
+      if (authorization.outcome === "blocked" || !authorization.authorizationId) {
+        results.push({
+          taskId,
+          ok: false,
+          skipped: true,
+          reason: authorization.reason === "authorization_revoked"
+            ? "authorization_revoked"
+            : "authorization_expired",
+        });
+        continue;
+      }
+      authorizationId = authorization.authorizationId;
+    }
+
+    let queue: QuotePreparationQueueResult;
+    try {
+      queue = await deps.enqueue({
+        organizationId: identity.organizationId,
+        storeId: identity.storeId,
+        taskId: identity.taskId,
+        conversationId: identity.conversationId,
+        requestMessageId: identity.requestMessageId,
+        leadId: identity.leadId,
+        commercialOpportunityId: identity.commercialOpportunityId,
+        authorizationId,
+        supabase: args.supabase,
+      });
+    } catch (error) {
+      results.push({
+        taskId,
+        ok: false,
+        skipped: true,
+        reason: quotePreparationRecoveryErrorKind(error) === "uncertain"
+          ? "queue_insert_uncertain"
+          : `queue_insert_blocked_${quotePreparationRecoveryErrorCode(error, "rejected")}`,
+      });
+      continue;
+    }
+
+    recovered += 1;
+    results.push({
+      taskId,
+      ok: true,
+      reason: queue.outcome === "idempotent_replay"
+        ? "queue_recovered_idempotent_replay"
+        : "queue_recovered",
+      queueId: queue.queueId,
+    });
+  }
+
+  return {
+    ok: true,
+    candidates: candidates.length,
+    recovered,
+    results,
+  };
+}
+
 export async function processAssistantOperationalTasks(
   params: ProcessAssistantOperationalTasksParams
 ): Promise<ProcessAssistantOperationalTasksResult> {
@@ -3180,6 +3560,14 @@ export async function processAssistantOperationalTasks(
     organizationId: organizationId || null,
     storeId: storeId || null,
   });
+
+  const quotePreparationRecovery = isQuotePreparationConsumerEnabled()
+    ? await recoverAbandonedQuotePreparationTasks({
+        supabase,
+        organizationId: organizationId || null,
+        storeId: storeId || null,
+      })
+    : undefined;
 
   let query = supabase
     .from("store_assistant_operational_task_queue")
@@ -3275,6 +3663,7 @@ export async function processAssistantOperationalTasks(
     processed: results.filter((item) => item.ok).length,
     failed: results.filter((item) => !item.ok).length,
     total: results.length,
+    ...(quotePreparationRecovery ? { quotePreparationRecovery } : {}),
     results,
   };
 }
