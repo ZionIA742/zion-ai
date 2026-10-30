@@ -31,6 +31,11 @@ import {
   SalesAiPersistenceError,
   type SalesAiErrorDiagnostic,
 } from "./sales-ai-error-diagnostics";
+import {
+  issueQuotePreparationTaskAuthorizationBySystem,
+  QuotePreparationTaskAuthorizationError,
+  type QuotePreparationTaskAuthorizationResult,
+} from "./sales-quotes/issue-quote-preparation-task-authorization-by-system";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -115,6 +120,48 @@ type GenerateAndSaveAiSalesReplyDeps = {
   loadSalesAiOperatingWindowAuthority: typeof loadSalesAiOperatingWindowAuthority;
 };
 
+const QUOTE_PREPARATION_AUTHORIZATION_ENABLED_ENV =
+  "P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED";
+
+export function isQuotePreparationTaskAuthorizationEnabled() {
+  return process.env[QUOTE_PREPARATION_AUTHORIZATION_ENABLED_ENV] === "true";
+}
+
+export type QuotePreparationAuthorizationAttempt =
+  | {
+      outcome:
+        | "not_applicable"
+        | "gate_off"
+        | "task_not_persisted"
+        | "request_message_missing"
+        | "task_identity_invalid"
+        | "anchor_not_current";
+      attempted: false;
+    }
+  | {
+      outcome: "created" | "idempotent_replay" | "blocked" | "uncertain" | "rejected";
+      attempted: true;
+      authorizationId?: string | null;
+      errorCode?: string | null;
+      error?: string | null;
+    };
+
+function canIssueQuotePreparationTaskAuthorization(args: {
+  taskType: string;
+  taskPersisted: boolean;
+  taskId: string | null | undefined;
+  requestMessageId: string | null | undefined;
+  anchorStillCurrent: boolean;
+}) {
+  return (
+    args.taskType === "commercial_quote_request" &&
+    args.taskPersisted &&
+    Boolean(args.taskId && UUID_PATTERN.test(args.taskId)) &&
+    Boolean(args.requestMessageId) &&
+    UUID_PATTERN.test(args.requestMessageId || "") &&
+    args.anchorStillCurrent
+  );
+}
 const AI_REPLY_GENERATION_ANCHOR_MISMATCH =
   "AI_REPLY_GENERATION_ANCHOR_MISMATCH";
 const AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE =
@@ -834,12 +881,14 @@ type CommercialHandoffCreationResult = {
   crmAutoProgressSkippedReason?: string | null;
   crmAutoProgressError?: string | null;
   crmAutoProgressResult?: CrmAutoProgressResult | null;
+  quotePreparationAuthorization?: QuotePreparationAuthorizationAttempt;
 };
 
 export type CommercialAssistantHandoffDeps = {
   findExistingTask: typeof findExistingCommercialHandoffTask;
   enqueueNotification: typeof enqueueCommercialHandoffNotification;
   autoProgressBudgetFromQuote: typeof maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical;
+  issueQuotePreparationTaskAuthorization?: typeof issueQuotePreparationTaskAuthorizationBySystem;
 };
 
 type CurrentCommercialProposalRow = {
@@ -4899,6 +4948,7 @@ export async function createCommercialAssistantHandoff(
   leadId: string | null;
   handoff: CommercialHandoffContext | null | undefined;
   generationAnchorMessageId?: string | null;
+  quotePreparationAnchorStillCurrent?: boolean;
 },
   deps: CommercialAssistantHandoffDeps = {
     findExistingTask: findExistingCommercialHandoffTask,
@@ -5002,6 +5052,87 @@ export async function createCommercialAssistantHandoff(
     );
   }
 
+  let quotePreparationAuthorization: QuotePreparationAuthorizationAttempt = {
+    attempted: false,
+    outcome:
+      handoff.taskType === "commercial_quote_request"
+        ? "task_not_persisted"
+        : "not_applicable",
+  };
+
+  if (handoff.taskType === "commercial_quote_request") {
+    const requestMessageId = String(args.generationAnchorMessageId || "").trim() || null;
+    if (!isQuotePreparationTaskAuthorizationEnabled()) {
+      quotePreparationAuthorization = { attempted: false, outcome: "gate_off" };
+    } else if (!requestMessageId) {
+      quotePreparationAuthorization = {
+        attempted: false,
+        outcome: "request_message_missing",
+      };
+    } else if (
+      !UUID_PATTERN.test(String(data.id)) ||
+      !UUID_PATTERN.test(requestMessageId)
+    ) {
+      quotePreparationAuthorization = {
+        attempted: false,
+        outcome: "task_identity_invalid",
+      };
+    } else if (
+      !canIssueQuotePreparationTaskAuthorization({
+        taskType: handoff.taskType,
+        taskPersisted: Boolean(data.id),
+        taskId: String(data.id),
+        requestMessageId,
+        anchorStillCurrent: args.quotePreparationAnchorStillCurrent === true,
+      })
+    ) {
+      quotePreparationAuthorization = {
+        attempted: false,
+        outcome: "anchor_not_current",
+      };
+    } else {
+      try {
+        const authorization: QuotePreparationTaskAuthorizationResult =
+          await (deps.issueQuotePreparationTaskAuthorization ||
+            issueQuotePreparationTaskAuthorizationBySystem)({
+            organizationId: args.organizationId,
+            storeId: args.storeId,
+            taskId: String(data.id),
+            requestMessageId,
+            supabase: args.systemSupabase || args.supabase,
+          });
+        quotePreparationAuthorization = {
+          attempted: true,
+          outcome: authorization.outcome,
+          authorizationId: authorization.authorizationId,
+        };
+      } catch (authorizationError: unknown) {
+        const typedError =
+          authorizationError instanceof QuotePreparationTaskAuthorizationError
+            ? authorizationError
+            : null;
+        quotePreparationAuthorization = {
+          attempted: true,
+          outcome: typedError?.kind === "rejected" ? "rejected" : "uncertain",
+          errorCode: typedError?.code || "P19A_QUOTE_PREP_AUTH_UNCERTAIN",
+          error:
+            typedError?.message ||
+            (authorizationError instanceof Error
+              ? authorizationError.message
+              : String(authorizationError || "")),
+        };
+        console.warn("[zion-ai-sales-quote-preparation] autorizacao nao confirmada", {
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          taskId: String(data.id),
+          requestMessageId,
+          outcome: quotePreparationAuthorization.outcome,
+          errorCode: quotePreparationAuthorization.errorCode,
+        });
+      }
+    }
+  }
+
   const notificationResult = await deps.enqueueNotification({
     supabase: args.supabase,
     organizationId: args.organizationId,
@@ -5055,6 +5186,7 @@ export async function createCommercialAssistantHandoff(
     crmAutoProgressSkippedReason: crmAutoProgressResult?.skippedReason || null,
     crmAutoProgressError: crmAutoProgressResult?.error || null,
     crmAutoProgressResult: crmAutoProgressResult || null,
+    quotePreparationAuthorization,
   };
 }
 
@@ -5703,6 +5835,7 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
+
     if (!aiText) {
       return {
         ok: false,
@@ -6337,6 +6470,9 @@ export async function generateAndSaveAiSalesReply(
         leadId: normalizedConversation.lead_id || null,
         handoff: validatedCommercialHandoff,
         generationAnchorMessageId,
+        quotePreparationAnchorStillCurrent:
+          generationAnchorMessageId ===
+          boundaryBeforeSave.lastIncomingCustomerMessageId,
       });
     } catch (handoffError: any) {
       commercialHandoffResult = {

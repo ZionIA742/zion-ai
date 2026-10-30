@@ -8,6 +8,7 @@ import {
   findExistingCommercialHandoffTask,
   generateAndSaveAiSalesReply,
   materializeSalesAiReplySet,
+  isQuotePreparationTaskAuthorizationEnabled,
   mapGenerateAndSaveAiSalesReplyError,
   persistCustomerCatalogDocumentActions,
   tryHandleCustomerContractAcceptance,
@@ -700,6 +701,49 @@ async function withMockedSupabaseEnv(run: () => Promise<void>) {
       process.env.SUPABASE_SERVICE_ROLE_KEY = previousKey;
     }
   }
+}
+
+async function withQuotePreparationAuthorizationGate(
+  value: string | undefined,
+  run: () => Promise<void>,
+) {
+  const previous = process.env.P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED;
+  if (value === undefined) {
+    delete process.env.P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED;
+  } else {
+    process.env.P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED = value;
+  }
+
+  try {
+    await run();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED;
+    } else {
+      process.env.P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED = previous;
+    }
+  }
+}
+
+function createQuoteAuthorizationInsertSupabase(taskId: string) {
+  return {
+    from(table: string) {
+      assert.equal(table, "store_assistant_operational_tasks");
+      return {
+        insert() {
+          return {
+            select() {
+              return {
+                async maybeSingle() {
+                  return { data: { id: taskId }, error: null };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
 }
 
 function createScopeAwareReplyDeps(overrides?: Record<string, unknown>) {
@@ -2143,6 +2187,220 @@ const tests: TestCase[] = [
 
       assert.equal(result.created, true);
       assert.equal(receivedAnchorMessageId, "msg-anchor-1");
+    },
+  },
+  {
+    name: "authorizes a persisted quote handoff only through the enabled internal gate",
+    run: async () => {
+      const taskId = "11111111-1111-4111-8111-111111111111";
+      const requestMessageId = "22222222-2222-4222-8222-222222222222";
+      const calls: Array<Record<string, unknown>> = [];
+
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: createQuoteAuthorizationInsertSupabase(taskId),
+            organizationId: "33333333-3333-4333-8333-333333333333",
+            storeId: "44444444-4444-4444-8444-444444444444",
+            conversationId: "conv-1",
+            leadId: "lead-1",
+            handoff: createHandoff(),
+            generationAnchorMessageId: requestMessageId,
+            quotePreparationAnchorStillCurrent: true,
+          },
+          createDeps({
+            issueQuotePreparationTaskAuthorization: async (args) => {
+              calls.push(args as unknown as Record<string, unknown>);
+              return { outcome: "created", authorizationId: "auth-1" } as never;
+            },
+          }),
+        );
+
+        assert.equal(result.created, true);
+        assert.deepEqual(result.quotePreparationAuthorization, {
+          attempted: true,
+          outcome: "created",
+          authorizationId: "auth-1",
+        });
+      });
+
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]?.taskId, taskId);
+      assert.equal(calls[0]?.requestMessageId, requestMessageId);
+    },
+  },
+  {
+    name: "quote preparation authorization gate is off by default and makes no RPC call",
+    run: async () => {
+      let calls = 0;
+      await withQuotePreparationAuthorizationGate(undefined, async () => {
+        assert.equal(isQuotePreparationTaskAuthorizationEnabled(), false);
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: createQuoteAuthorizationInsertSupabase(
+              "11111111-1111-4111-8111-111111111111",
+            ),
+            organizationId: "33333333-3333-4333-8333-333333333333",
+            storeId: "44444444-4444-4444-8444-444444444444",
+            conversationId: "conv-1",
+            leadId: "lead-1",
+            handoff: createHandoff(),
+            generationAnchorMessageId: "22222222-2222-4222-8222-222222222222",
+            quotePreparationAnchorStillCurrent: true,
+          },
+          createDeps({
+            issueQuotePreparationTaskAuthorization: async () => {
+              calls += 1;
+              return { outcome: "created", authorizationId: "auth-1" } as never;
+            },
+          }),
+        );
+
+        assert.equal(result.quotePreparationAuthorization?.outcome, "gate_off");
+      });
+      assert.equal(calls, 0);
+    },
+  },
+  {
+    name: "missing or duplicate handoff task never authorizes",
+    run: async () => {
+      let calls = 0;
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: {},
+            organizationId: "33333333-3333-4333-8333-333333333333",
+            storeId: "44444444-4444-4444-8444-444444444444",
+            conversationId: "conv-1",
+            leadId: "lead-1",
+            handoff: createHandoff(),
+            generationAnchorMessageId: "22222222-2222-4222-8222-222222222222",
+            quotePreparationAnchorStillCurrent: true,
+          },
+          createDeps({
+            findExistingTask: async () => ({
+              id: "55555555-5555-4555-8555-555555555555",
+              task_type: "commercial_quote_request",
+              status: "open",
+            }),
+            issueQuotePreparationTaskAuthorization: async () => {
+              calls += 1;
+              return { outcome: "created", authorizationId: "auth-1" } as never;
+            },
+          }),
+        );
+
+        assert.equal(result.created, false);
+        assert.equal(result.reason, "similar_open_handoff_already_exists");
+      });
+      assert.equal(calls, 0);
+    },
+  },
+  {
+    name: "invalid or superseded anchor never authorizes quote preparation",
+    run: async () => {
+      let calls = 0;
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        for (const anchorCase of [
+          { anchor: "not-a-uuid", current: true },
+          {
+            anchor: "22222222-2222-4222-8222-222222222222",
+            current: false,
+          },
+        ]) {
+          const result = await createCommercialAssistantHandoff(
+            {
+              supabase: createQuoteAuthorizationInsertSupabase(
+                "11111111-1111-4111-8111-111111111111",
+              ),
+              organizationId: "33333333-3333-4333-8333-333333333333",
+              storeId: "44444444-4444-4444-8444-444444444444",
+              conversationId: "conv-1",
+              leadId: "lead-1",
+              handoff: createHandoff(),
+              generationAnchorMessageId: anchorCase.anchor,
+              quotePreparationAnchorStillCurrent: anchorCase.current,
+            },
+            createDeps({
+              issueQuotePreparationTaskAuthorization: async () => {
+                calls += 1;
+                return { outcome: "created", authorizationId: "auth-1" } as never;
+              },
+            }),
+          );
+
+          assert.equal(result.quotePreparationAuthorization?.attempted, false);
+        }
+      });
+      assert.equal(calls, 0);
+    },
+  },
+  {
+    name: "authorization failure is uncertain and is not retried or treated as granted",
+    run: async () => {
+      let calls = 0;
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: createQuoteAuthorizationInsertSupabase(
+              "11111111-1111-4111-8111-111111111111",
+            ),
+            organizationId: "33333333-3333-4333-8333-333333333333",
+            storeId: "44444444-4444-4444-8444-444444444444",
+            conversationId: "conv-1",
+            leadId: "lead-1",
+            handoff: createHandoff(),
+            generationAnchorMessageId: "22222222-2222-4222-8222-222222222222",
+            quotePreparationAnchorStillCurrent: true,
+          },
+          createDeps({
+            issueQuotePreparationTaskAuthorization: async () => {
+              calls += 1;
+              throw new Error("authorization transport failed");
+            },
+          }),
+        );
+
+        assert.equal(result.created, true);
+        assert.equal(result.quotePreparationAuthorization?.attempted, true);
+        assert.equal(result.quotePreparationAuthorization?.outcome, "uncertain");
+      });
+      assert.equal(calls, 1);
+    },
+  },
+  {
+    name: "visit handoffs never call quote preparation authorization",
+    run: async () => {
+      let calls = 0;
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: createQuoteAuthorizationInsertSupabase(
+              "11111111-1111-4111-8111-111111111111",
+            ),
+            organizationId: "33333333-3333-4333-8333-333333333333",
+            storeId: "44444444-4444-4444-8444-444444444444",
+            conversationId: "conv-1",
+            leadId: "lead-1",
+            handoff: createHandoff({
+              taskType: "commercial_visit_request",
+              intent: "visit_request",
+            }),
+            generationAnchorMessageId: "22222222-2222-4222-8222-222222222222",
+            quotePreparationAnchorStillCurrent: true,
+          },
+          createDeps({
+            issueQuotePreparationTaskAuthorization: async () => {
+              calls += 1;
+              return { outcome: "created", authorizationId: "auth-1" } as never;
+            },
+          }),
+        );
+
+        assert.equal(result.created, true);
+        assert.equal(result.quotePreparationAuthorization?.outcome, "not_applicable");
+      });
+      assert.equal(calls, 0);
     },
   },
   {
