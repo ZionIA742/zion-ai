@@ -70,7 +70,7 @@ export async function GET(request: Request) {
       cache: "no-store",
       signal: AbortSignal.timeout(12000),
     });
-    if (!response.ok) throw new Error("META_PRICING_PROVIDER_UNAVAILABLE");
+    if (!response.ok) throw new Error(`META_PRICING_PROVIDER_HTTP_${response.status}`);
     const payload: unknown = await response.json();
     const summary = summarizeMetaPricingAnalytics(payload, wabaId);
     return createZionAdminApiJsonResponse({
@@ -81,7 +81,29 @@ export async function GET(request: Request) {
       source: "meta_pricing_analytics",
       ...summary,
     }, 200);
-  } catch {
-    return createZionAdminApiJsonResponse({ ok: false, code: "META_PRICING_UNAVAILABLE" }, 503);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "";
+
+    const knownCodes = [
+      "META_PRICING_INTEGRATION_UNAVAILABLE",
+      "META_PRICING_WABA_MISMATCH",
+      "META_PRICING_INVALID_RESPONSE",
+      "META_PRICING_INVALID_POINT",
+      "META_PRICING_INVALID_TOTAL",
+      "META_PRICING_TOO_MANY_POINTS",
+    ];
+
+    const safeCode =
+      /^META_PRICING_PROVIDER_HTTP_[45]\d{2}$/.test(reason) ||
+      knownCodes.includes(reason)
+        ? reason
+        : error instanceof Error && error.name === "TimeoutError"
+          ? "META_PRICING_PROVIDER_TIMEOUT"
+          : "META_PRICING_UNAVAILABLE";
+
+    return createZionAdminApiJsonResponse(
+      { ok: false, code: safeCode },
+      503,
+    );
   }
 }
