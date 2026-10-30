@@ -44,6 +44,18 @@ const QUEUE_STALE_LOCK_MS = 15 * 60_000;
 const QUOTE_PREPARATION_RECOVERY_CANDIDATE_LIMIT = 20;
 const QUOTE_PREPARATION_AUTHORIZATION_WINDOW_MS = 15 * 60_000;
 const QUOTE_PREPARATION_FUTURE_SKEW_MS = 30_000;
+const QUOTE_PREPARATION_EXPIRED_SCAN_WINDOW_MS = 24 * 60 * 60_000;
+const QUOTE_PREPARATION_ELIGIBLE_TASK_STATUSES = [
+  "open",
+  "waiting_user_choice",
+  "waiting_customer_response",
+  "ready_to_execute",
+  "in_progress",
+] as const;
+const QUOTE_PREPARATION_MANUAL_REQUIRED_FIELD =
+  "quote_preparation_manual_required";
+const QUOTE_PREPARATION_MANUAL_REQUIRED_AT_FIELD =
+  "quote_preparation_manual_required_at";
 
 type OrganizationSubscriptionRow = {
   id: string;
@@ -125,6 +137,7 @@ export type QuotePreparationRecoveryRunResult = {
   reason?: string;
   candidates: number;
   recovered: number;
+  manualRequired: number;
   results: QuotePreparationRecoveryResult[];
 };
 
@@ -3266,6 +3279,146 @@ function quotePreparationRecoveryErrorCode(error: unknown, fallback: string) {
   return typeof value?.code === "string" && value.code.trim() ? value.code : fallback;
 }
 
+async function signalExpiredQuotePreparationTasks(args: {
+  supabase: any;
+  organizationId?: string | null;
+  storeId?: string | null;
+  now: Date;
+  deps: QuotePreparationRecoveryDeps;
+}): Promise<{ count: number; results: QuotePreparationRecoveryResult[] }> {
+  const expiredFloor = new Date(
+    args.now.getTime() - QUOTE_PREPARATION_AUTHORIZATION_WINDOW_MS,
+  ).toISOString();
+  const scanFloor = new Date(
+    args.now.getTime() -
+      QUOTE_PREPARATION_AUTHORIZATION_WINDOW_MS -
+      QUOTE_PREPARATION_EXPIRED_SCAN_WINDOW_MS,
+  ).toISOString();
+
+  let query = args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("id,organization_id,store_id,task_type,status,created_at,cancelled_at,resolved_at,task_payload")
+    .eq("task_type", "commercial_quote_request")
+    .in("status", QUOTE_PREPARATION_ELIGIBLE_TASK_STATUSES)
+    .gte("created_at", scanFloor)
+    .lt("created_at", expiredFloor)
+    .order("created_at", { ascending: true })
+    .limit(QUOTE_PREPARATION_RECOVERY_CANDIDATE_LIMIT);
+  if (args.organizationId) query = query.eq("organization_id", args.organizationId);
+  if (args.storeId) query = query.eq("store_id", args.storeId);
+
+  const { data, error } = await query;
+  if (error) {
+    return {
+      count: 0,
+      results: [{ taskId: "", ok: false, skipped: true, reason: "expired_candidates_uncertain" }],
+    };
+  }
+
+  const results: QuotePreparationRecoveryResult[] = [];
+  let count = 0;
+  for (const row of (Array.isArray(data) ? data : []) as Array<Record<string, unknown>>) {
+    const taskId = typeof row.id === "string" ? row.id : "";
+    const organizationId = typeof row.organization_id === "string" ? row.organization_id : "";
+    const storeId = typeof row.store_id === "string" ? row.store_id : "";
+    const payload = row.task_payload && typeof row.task_payload === "object" && !Array.isArray(row.task_payload)
+      ? row.task_payload as Record<string, unknown>
+      : {};
+
+    if (!taskId || !organizationId || !storeId) {
+      results.push({ taskId, ok: false, skipped: true, reason: "expired_candidate_identity_invalid" });
+      continue;
+    }
+    if (row.cancelled_at != null) {
+      results.push({ taskId, ok: false, skipped: true, reason: "task_cancelled" });
+      continue;
+    }
+    if (row.resolved_at != null) {
+      results.push({ taskId, ok: false, skipped: true, reason: "task_resolved" });
+      continue;
+    }
+    if (payload[QUOTE_PREPARATION_MANUAL_REQUIRED_FIELD] === true) {
+      results.push({ taskId, ok: true, skipped: true, reason: "manual_preparation_already_signaled" });
+      continue;
+    }
+
+    let identityResolution;
+    try {
+      identityResolution = await args.deps.resolveIdentity({
+        taskId,
+        organizationId,
+        storeId,
+        supabase: args.supabase,
+      });
+    } catch {
+      results.push({ taskId, ok: false, skipped: true, reason: "identity_resolution_uncertain" });
+      continue;
+    }
+    if (!identityResolution.eligible) {
+      results.push({ taskId, ok: false, skipped: true, reason: "task_not_recoverable" });
+      continue;
+    }
+
+    const identity = identityResolution.identity;
+    let queueRows: Array<Record<string, unknown>>;
+    try {
+      const queueResult = await args.supabase
+        .from("store_assistant_operational_task_queue")
+        .select("id,organization_id,store_id,task_id,conversation_id,message_id,queue_type,status")
+        .eq("organization_id", identity.organizationId)
+        .eq("store_id", identity.storeId)
+        .eq("task_id", identity.taskId)
+        .eq("queue_type", QUOTE_PREPARATION_QUEUE_TYPE)
+        .limit(2);
+      if (queueResult.error) throw queueResult.error;
+      queueRows = Array.isArray(queueResult.data) ? queueResult.data : queueResult.data ? [queueResult.data] : [];
+    } catch {
+      results.push({ taskId, ok: false, skipped: true, reason: "queue_state_uncertain" });
+      continue;
+    }
+
+    const matches = queueRows.every((queue) =>
+      queue.organization_id === identity.organizationId &&
+      queue.store_id === identity.storeId &&
+      queue.task_id === identity.taskId &&
+      queue.conversation_id === identity.conversationId &&
+      queue.message_id === identity.requestMessageId &&
+      queue.queue_type === QUOTE_PREPARATION_QUEUE_TYPE,
+    );
+    if (queueRows.length > 1 || (queueRows.length === 1 && !matches)) {
+      results.push({ taskId, ok: false, skipped: true, reason: "queue_identity_divergence" });
+      continue;
+    }
+    if (queueRows.length === 1) {
+      results.push({ taskId, ok: true, skipped: true, reason: "queue_already_exists" });
+      continue;
+    }
+
+    const markedAt = args.now.toISOString();
+    const nextPayload = {
+      ...payload,
+      [QUOTE_PREPARATION_MANUAL_REQUIRED_FIELD]: true,
+      [QUOTE_PREPARATION_MANUAL_REQUIRED_AT_FIELD]: markedAt,
+      updated_by_operational_worker_at: markedAt,
+    };
+    const { error: updateError } = await args.supabase
+      .from("store_assistant_operational_tasks")
+      .update({ task_payload: nextPayload, updated_at: markedAt })
+      .eq("id", taskId)
+      .eq("organization_id", identity.organizationId)
+      .eq("store_id", identity.storeId)
+      .eq("task_type", "commercial_quote_request")
+      .in("status", QUOTE_PREPARATION_ELIGIBLE_TASK_STATUSES);
+    if (updateError) {
+      results.push({ taskId, ok: false, skipped: true, reason: "manual_preparation_signal_failed" });
+      continue;
+    }
+    count += 1;
+    results.push({ taskId, ok: true, reason: "manual_preparation_required" });
+  }
+  return { count, results };
+}
+
 export async function recoverAbandonedQuotePreparationTasks(args: {
   supabase: any;
   organizationId?: string | null;
@@ -3281,6 +3434,7 @@ export async function recoverAbandonedQuotePreparationTasks(args: {
       reason: "quote_preparation_gate_off",
       candidates: 0,
       recovered: 0,
+      manualRequired: 0,
       results: [],
     };
   }
@@ -3303,13 +3457,7 @@ export async function recoverAbandonedQuotePreparationTasks(args: {
       "id,organization_id,store_id,task_type,status,created_at,cancelled_at,resolved_at,related_lead_id,related_conversation_id,commercial_opportunity_id,task_payload",
     )
     .eq("task_type", "commercial_quote_request")
-    .in("status", [
-      "open",
-      "waiting_user_choice",
-      "waiting_customer_response",
-      "ready_to_execute",
-      "in_progress",
-    ])
+    .in("status", QUOTE_PREPARATION_ELIGIBLE_TASK_STATUSES)
     .gte("created_at", createdAtFloor)
     .lte("created_at", createdAtCeiling)
     .order("created_at", { ascending: true })
@@ -3325,6 +3473,7 @@ export async function recoverAbandonedQuotePreparationTasks(args: {
       reason: "quote_preparation_recovery_candidates_uncertain",
       candidates: 0,
       recovered: 0,
+      manualRequired: 0,
       results: [],
     };
   }
@@ -3530,11 +3679,20 @@ export async function recoverAbandonedQuotePreparationTasks(args: {
     });
   }
 
+  const expiredSignal = await signalExpiredQuotePreparationTasks({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    now,
+    deps,
+  });
+
   return {
     ok: true,
     candidates: candidates.length,
     recovered,
-    results,
+    manualRequired: expiredSignal.count,
+    results: [...results, ...expiredSignal.results],
   };
 }
 

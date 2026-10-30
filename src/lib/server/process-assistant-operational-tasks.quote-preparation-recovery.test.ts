@@ -57,6 +57,7 @@ function createSupabase(options: { tasks?: unknown[]; queues?: unknown[] } = {})
     from(table: string) {
       state.calls.push(table);
       const filters: Array<{ kind: string; column?: string; value?: unknown }> = [];
+      let updateValues: Record<string, unknown> | null = null;
       const builder = {
         select() { return builder; },
         eq(column: string, value: unknown) { filters.push({ kind: "eq", column, value }); return builder; },
@@ -65,6 +66,11 @@ function createSupabase(options: { tasks?: unknown[]; queues?: unknown[] } = {})
         lte(column: string, value: unknown) { filters.push({ kind: "lte", column, value }); return builder; },
         order() { return builder; },
         limit() { return builder; },
+        lt(column: string, value: unknown) { filters.push({ kind: "lt", column, value }); return builder; },
+        update(values: Record<string, unknown>) {
+          updateValues = values;
+          return builder;
+        },
         then(resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) {
           const rows = table === "store_assistant_operational_tasks" ? state.tasks : state.queues;
           const filtered = rows.filter((row) => filters.every((filter) => {
@@ -73,8 +79,13 @@ function createSupabase(options: { tasks?: unknown[]; queues?: unknown[] } = {})
             if (filter.kind === "in") return Array.isArray(filter.value) && filter.value.includes(actual);
             if (filter.kind === "gte") return String(actual) >= String(filter.value);
             if (filter.kind === "lte") return String(actual) <= String(filter.value);
+            if (filter.kind === "lt") return String(actual) < String(filter.value);
             return true;
           }));
+          if (updateValues) {
+            for (const row of filtered) Object.assign(row as Record<string, unknown>, updateValues);
+            return Promise.resolve({ data: filtered, error: null }).then(resolve, reject);
+          }
           return Promise.resolve({ data: filtered, error: null }).then(resolve, reject);
         },
       };
@@ -269,6 +280,42 @@ test("authorization blocked, stale, resolved and cancelled tasks are not recover
   const cancelled = createSupabase({ tasks: [{ ...task, cancelled_at: "2026-10-30T11:59:00.000Z" }] });
   const cancelledResult = await recoverAbandonedQuotePreparationTasks({ supabase: cancelled.supabase, now, deps: recoveryDeps(cancelled.state) });
   assert.equal(cancelledResult.results[0]?.reason, "task_cancelled");
+});
+
+test("expired task without queue is marked for manual preparation and replay is stable", async () => {
+  process.env.P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED = "true";
+  const expiredTask = { ...task, created_at: "2026-10-30T10:00:00.000Z" };
+  const { supabase, state } = createSupabase({ tasks: [expiredTask] });
+  const deps = recoveryDeps(state);
+
+  const first = await recoverAbandonedQuotePreparationTasks({ supabase, now, deps });
+  assert.equal(first.manualRequired, 1);
+  assert.equal(first.results.at(-1)?.reason, "manual_preparation_required");
+
+  const second = await recoverAbandonedQuotePreparationTasks({ supabase, now, deps });
+  assert.equal(second.manualRequired, 0);
+  assert.equal(second.results.at(-1)?.reason, "manual_preparation_already_signaled");
+});
+
+test("expired task with a canonical queue is not marked", async () => {
+  process.env.P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED = "true";
+  const queue = {
+    id: ids.queueId,
+    organization_id: ids.organizationId,
+    store_id: ids.storeId,
+    task_id: ids.taskId,
+    conversation_id: ids.conversationId,
+    message_id: ids.messageId,
+    queue_type: "quote_preparation_request",
+    status: "pending",
+  };
+  const { supabase, state } = createSupabase({
+    tasks: [{ ...task, created_at: "2026-10-30T10:00:00.000Z" }],
+    queues: [queue],
+  });
+  const result = await recoverAbandonedQuotePreparationTasks({ supabase, now, deps: recoveryDeps(state) });
+  assert.equal(result.manualRequired, 0);
+  assert.equal((state.tasks[0] as Record<string, unknown>).quote_preparation_manual_required, undefined);
 });
 
 test("legacy worker path remains present and recovery is outside the AI reply module", () => {

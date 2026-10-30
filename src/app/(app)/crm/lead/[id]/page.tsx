@@ -97,6 +97,8 @@ type CommercialTaskPayload = {
   preferred_period_text?: string | null;
   ad_model_or_requested_model?: string | null;
   allow_sales_ai_while_pending?: boolean | null;
+  quote_preparation_manual_required?: boolean | null;
+  quote_preparation_manual_required_at?: string | null;
 };
 
 type CommercialTask = {
@@ -6639,6 +6641,13 @@ export default function LeadPage() {
                                                         <div className="mt-2 text-sm leading-6 text-gray-700">
                                                           {task.description || "Sem descrição registrada."}
                                                         </div>
+
+                                                        {task.task_type === "commercial_quote_request" &&
+                                                        task.task_payload?.quote_preparation_manual_required === true ? (
+                                                          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
+                                                            O orçamento não foi preparado automaticamente. Prepare-o manualmente.
+                                                          </div>
+                                                        ) : null}
 
                                                         <div className="mt-3 grid gap-3 md:grid-cols-2">
                                                           <InfoCard
