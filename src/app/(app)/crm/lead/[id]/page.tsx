@@ -3506,7 +3506,10 @@ export default function LeadPage() {
         cache: "no-store",
       });
       const result = (await response.json()) as SalesContractDetailResponse;
-      const detailStatus = String(result.current_version?.status || result.contract?.status || "")
+      const contractStatus = String(result.contract?.status || "")
+        .trim()
+        .toLowerCase();
+      const versionStatus = String(result.current_version?.status || "")
         .trim()
         .toLowerCase();
       const snapshot = result.current_version?.contract_snapshot;
@@ -3525,7 +3528,7 @@ export default function LeadPage() {
       if (result.contract?.id !== contractId || result.current_version?.id !== contract.current_version_id) {
         throw new Error("A versão carregada não corresponde à versão atual do contrato.");
       }
-      if (detailStatus !== "sent_to_customer" || !customer || typeof customer !== "object" || Array.isArray(customer)) {
+      if (contractStatus !== "sent_to_customer" || versionStatus !== "sent" || !customer || typeof customer !== "object" || Array.isArray(customer)) {
         throw new Error("Os dados históricos do comprador não estão disponíveis para correção.");
       }
 
