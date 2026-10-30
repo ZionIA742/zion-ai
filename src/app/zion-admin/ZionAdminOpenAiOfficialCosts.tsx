@@ -82,8 +82,10 @@ export default function ZionAdminOpenAiOfficialCosts() {
     () => new Date().toISOString().slice(0, 7)
   );
 
+  const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<{
     month: string;
+    revision: number;
     report: OfficialReport | null;
     error: string | null;
   } | null>(null);
@@ -102,7 +104,7 @@ export default function ZionAdminOpenAiOfficialCosts() {
 
   // Um resultado de outro mes nunca sera exibido
   // como se pertencesse ao periodo atual.
-  const currentResult = result?.month === month
+  const currentResult = result?.month === month && result.revision === revision
     ? result
     : null;
 
@@ -144,6 +146,7 @@ export default function ZionAdminOpenAiOfficialCosts() {
         if (!controller.signal.aborted) {
           setResult({
             month,
+            revision,
             report: payload as OfficialReport,
             error: null,
           });
@@ -152,6 +155,7 @@ export default function ZionAdminOpenAiOfficialCosts() {
         if (!controller.signal.aborted) {
           setResult({
             month,
+            revision,
             report: null,
             error:
               "Custos oficiais indisponíveis. Nenhum valor foi presumido.",
@@ -163,7 +167,7 @@ export default function ZionAdminOpenAiOfficialCosts() {
     void load();
 
     return () => controller.abort();
-  }, [month, from, to, hasClosedDay]);
+  }, [month, from, to, hasClosedDay, revision]);
   const complete = report?.availability === "complete";
   const officialTotal = complete
     ? formatOfficialUsd(report.totalUsd)
@@ -198,6 +202,15 @@ export default function ZionAdminOpenAiOfficialCosts() {
             className="ml-2 rounded-lg border border-[#36525f] bg-[#091721] px-2 py-1.5 text-white"
           />
         </label>
+        <button
+          type="button"
+          onClick={() => setRevision(value => value + 1)}
+          disabled={!hasClosedDay || loading}
+          title="Atualiza a leitura dos custos registrados, sem iniciar nova coleta"
+          className="rounded-lg border border-[#378697] bg-[#153943] px-3 py-2 text-xs text-[#b1f0f5] disabled:opacity-50"
+        >
+          Atualizar dados
+        </button>
       </div>
 
       {loading ? (
