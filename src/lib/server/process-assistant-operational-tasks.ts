@@ -8,11 +8,14 @@ type QueueRow = {
   task_id: string;
   conversation_id: string;
   message_id: string;
+  queue_type: string;
   status: string;
   attempts: number | null;
   locked_at?: string | null;
   payload: Record<string, any> | null;
 };
+
+const LEGACY_OPERATIONAL_TASK_QUEUE_TYPE = "customer_reply_to_operational_task";
 
 const MAX_SAFE_QUEUE_ATTEMPTS = 3;
 const QUEUE_RETRY_DELAY_MS = 60_000;
@@ -712,14 +715,19 @@ async function revalidateOperationalExecution(args: {
 
   const { data: currentQueue, error: queueError } = await args.supabase
     .from("store_assistant_operational_task_queue")
-    .select("id,status,task_id")
+    .select("id,status,task_id,queue_type")
     .eq("id", args.queueId)
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .maybeSingle();
 
   if (queueError) throw new Error(`Nao consegui revalidar a fila antes do efeito externo: ${queueError.message}`);
-  if (!currentQueue || currentQueue.task_id !== args.taskId || currentQueue.status !== "processing") {
+  if (
+    !currentQueue ||
+    currentQueue.task_id !== args.taskId ||
+    currentQueue.status !== "processing" ||
+    currentQueue.queue_type !== LEGACY_OPERATIONAL_TASK_QUEUE_TYPE
+  ) {
     throw new Error("A fila deixou de estar em processamento; efeito externo abortado.");
   }
 }
@@ -2459,6 +2467,7 @@ async function lockPendingQueueRow(args: {
   queueId: string;
   attempts: number | null | undefined;
   workerId: string;
+  queueType: string;
 }) {
   const now = new Date().toISOString();
 
@@ -2473,6 +2482,7 @@ async function lockPendingQueueRow(args: {
     })
     .eq("id", args.queueId)
     .eq("status", "pending")
+    .eq("queue_type", args.queueType)
     .select("*");
 
   if (lockError) {
@@ -2492,8 +2502,9 @@ export async function recoverStaleProcessingQueueRows(args: {
   const staleBefore = new Date(now.getTime() - QUEUE_STALE_LOCK_MS).toISOString();
   let query = args.supabase
     .from("store_assistant_operational_task_queue")
-    .select("id,organization_id,store_id,task_id,locked_at")
+    .select("id,organization_id,store_id,task_id,queue_type,locked_at")
     .eq("status", "processing")
+    .eq("queue_type", LEGACY_OPERATIONAL_TASK_QUEUE_TYPE)
     .lt("locked_at", staleBefore)
     .limit(50);
 
@@ -2521,7 +2532,8 @@ export async function recoverStaleProcessingQueueRows(args: {
         updated_at: now.toISOString(),
       })
       .eq("id", row.id)
-      .eq("status", "processing");
+      .eq("status", "processing")
+      .eq("queue_type", LEGACY_OPERATIONAL_TASK_QUEUE_TYPE);
 
     results.push(error
       ? { queueId: row.id, ok: false, reason: "stale_processing_write_failed", error: error.message }
@@ -2536,6 +2548,8 @@ async function scheduleSafeQueueRetry(args: {
   queue: QueueRow;
   errorMessage: string;
 }) {
+  if (args.queue.queue_type !== LEGACY_OPERATIONAL_TASK_QUEUE_TYPE) return null;
+
   const attempts = Number(args.queue.attempts || 0);
   if (attempts >= MAX_SAFE_QUEUE_ATTEMPTS) return null;
 
@@ -2589,6 +2603,14 @@ async function processLockedQueueRowWithSubscriptionGuard(args: {
   queue: QueueRow;
   workerId: string;
 }) {
+  if (args.queue.queue_type !== LEGACY_OPERATIONAL_TASK_QUEUE_TYPE) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "queue_type_not_supported_by_legacy_worker",
+    };
+  }
+
   const subscription = await loadCanonicalOrganizationSubscription(
     args.supabase,
     args.queue.organization_id,
@@ -2845,6 +2867,7 @@ export async function routeIncomingCustomerReplyToOperationalTask(args: {
       task_id: taskId,
       conversation_id: conversationId,
       message_id: messageId,
+      queue_type: LEGACY_OPERATIONAL_TASK_QUEUE_TYPE,
       status: "pending",
       attempts: 0,
       available_at: now,
@@ -2872,6 +2895,7 @@ export async function routeIncomingCustomerReplyToOperationalTask(args: {
     queueId: insertedQueue.id,
     attempts: insertedQueue.attempts,
     workerId,
+    queueType: LEGACY_OPERATIONAL_TASK_QUEUE_TYPE,
   });
 
   if (!lockedQueue) {
@@ -2930,6 +2954,7 @@ export async function processAssistantOperationalTasks(
     .from("store_assistant_operational_task_queue")
     .select("*")
     .eq("status", "pending")
+    .eq("queue_type", LEGACY_OPERATIONAL_TASK_QUEUE_TYPE)
     .lte("available_at", new Date().toISOString())
     .order("created_at", { ascending: true })
     .limit(limit);
@@ -2965,6 +2990,7 @@ export async function processAssistantOperationalTasks(
       })
       .eq("id", row.id)
       .eq("status", "pending")
+      .eq("queue_type", LEGACY_OPERATIONAL_TASK_QUEUE_TYPE)
       .select("*");
 
     if (lockError) {

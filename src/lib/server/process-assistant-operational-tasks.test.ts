@@ -369,6 +369,67 @@ async function runCustomerReply(supabase: any, message: string, messageId: strin
 
 const tests: TestCase[] = [
   {
+    name: "legacy worker isolates operational queue types before any lifecycle effect",
+    run: async () => {
+      const source = readSource();
+      const queueType = '"customer_reply_to_operational_task"';
+
+      assert.match(source, /\.eq\("queue_type",\s*LEGACY_OPERATIONAL_TASK_QUEUE_TYPE\)/);
+      assert.match(source, /queue_type:\s*LEGACY_OPERATIONAL_TASK_QUEUE_TYPE/);
+      assert.match(source, /queue\.queue_type !== LEGACY_OPERATIONAL_TASK_QUEUE_TYPE/);
+      assert.equal(source.includes('"quote_preparation_request"'), false);
+
+      const supabase = createMockSupabase();
+      await runCustomerReply(supabase, "talvez", "message-queue-type");
+      assert.equal(supabase.state.queues[0]?.queue_type, "customer_reply_to_operational_task");
+      assert.equal(source.includes(queueType), true);
+    },
+  },
+  {
+    name: "stale recovery does not touch quote preparation rows",
+    run: async () => {
+      const rows = [
+        { id: "quote-queue", organization_id: "org-1", store_id: "store-1", status: "processing", queue_type: "quote_preparation_request", locked_at: "2026-09-18T09:00:00.000Z" },
+        { id: "legacy-queue", organization_id: "org-1", store_id: "store-1", status: "processing", queue_type: "customer_reply_to_operational_task", locked_at: "2026-09-18T09:00:00.000Z" },
+      ];
+      const updated: string[] = [];
+      const supabase = {
+        from() {
+          const builder: any = {
+            filters: {} as Record<string, unknown>,
+            payload: null as Record<string, unknown> | null,
+            select: () => builder,
+            eq: (key: string, value: unknown) => { builder.filters[key] = value; return builder; },
+            lt: () => builder,
+            limit: () => builder,
+            update: (payload: Record<string, unknown>) => { builder.payload = payload; return builder; },
+            then: (resolve: (value: unknown) => unknown) => {
+              if (builder.payload) {
+                const row = rows.find((candidate) => Object.entries(builder.filters).every(([key, value]) => candidate[key] === value));
+                if (row) updated.push(row.id);
+                return resolve({ data: null, error: null });
+              }
+              const selected = rows.filter((candidate) => Object.entries(builder.filters).every(([key, value]) => candidate[key] === value));
+              return resolve({ data: selected, error: null });
+            },
+          };
+          return builder;
+        },
+      };
+
+      await recoverStaleProcessingQueueRows({
+        supabase,
+        organizationId: "org-1",
+        storeId: "store-1",
+        now: new Date("2026-09-18T10:00:00.000Z"),
+      });
+
+      assert.deepEqual(updated, ["legacy-queue"]);
+      assert.equal(rows[0].queue_type, "quote_preparation_request");
+      assert.equal(rows[0].locked_at, "2026-09-18T09:00:00.000Z");
+    },
+  },
+  {
     name: "worker checks canonical subscription before processing queue item",
     run: () => {
       const source = readSource();
