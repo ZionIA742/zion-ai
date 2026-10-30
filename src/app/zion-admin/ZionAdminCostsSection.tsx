@@ -104,7 +104,7 @@ export default function ZionAdminCostsSection() {
   const [variableCurrency,setVariableCurrency]=useState<"BRL"|"USD">("BRL");
   const [variableDate,setVariableDate]=useState(localToday);
   const variableOperationKey=useRef<string|null>(null);
-  const closeAttempted=useRef(new Set<string>());
+
   const year=Number(anchor.slice(0,4));
   const month=Number(anchor.slice(5,7));
 
@@ -128,24 +128,7 @@ export default function ZionAdminCostsSection() {
     return () => controller.abort();
   }, [fetchCosts]);
 
-  // First visit after month end triggers close, one month at a time; the DB atomically freezes the result.
-  useEffect(()=>{
-    const next=data?.closeCandidates.find((m)=>!closeAttempted.current.has(m));
-    if (!next || saving || loading) return;
-    closeAttempted.current.add(next);
-    let alive=true;
-    (async()=>{
-      try {
-        const response=await fetch("/api/zion-admin/costs",{method:"POST",credentials:"include",headers:{"content-type":"application/json"},body:JSON.stringify({action:"close",month:next})});
-        const payload=await response.json().catch(()=>null);
-        if(!response.ok) throw new Error(payload?.error || "Fechamento não concluído.");
-        if(alive) void fetchCosts();
-      } catch(caught) {
-        if(alive)setFeedback(`Fechamento de ${next.slice(0,7)} pendente: ${caught instanceof Error?caught.message:"verifique as fontes"}`);
-      }
-    })();
-    return()=>{alive=false;};
-  },[data,fetchCosts,loading,saving]);
+
 
   function startEditing(item: FixedCost|"new"){
     setEditing(item);setFeedback(null);
