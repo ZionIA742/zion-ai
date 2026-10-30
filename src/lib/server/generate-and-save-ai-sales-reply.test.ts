@@ -756,6 +756,79 @@ function createQuoteAuthorizationInsertSupabase(taskId: string) {
   };
 }
 
+function createQuotePreparationRecoverySupabase(args?: {
+  queue?: Record<string, unknown> | null;
+  queueError?: { message: string } | null;
+}) {
+  const calls: Array<{ table: string; eq: Array<{ column: string; value: unknown }> }> = [];
+  const queue = args?.queue ?? null;
+  return {
+    calls,
+    from(table: string) {
+      assert.equal(table, "store_assistant_operational_task_queue");
+      const state = { eq: [] as Array<{ column: string; value: unknown }> };
+      const builder = {
+        select() {
+          return builder;
+        },
+        eq(column: string, value: unknown) {
+          state.eq.push({ column, value });
+          return builder;
+        },
+        async maybeSingle() {
+          calls.push({ table, eq: state.eq });
+          return { data: queue, error: args?.queueError ?? null };
+        },
+      };
+      return builder;
+    },
+  };
+}
+
+const RECOVERY_ORGANIZATION_ID = "33333333-3333-4333-8333-333333333333";
+const RECOVERY_STORE_ID = "44444444-4444-4444-8444-444444444444";
+const RECOVERY_TASK_ID = "55555555-5555-4555-8555-555555555555";
+const RECOVERY_MESSAGE_ID = "22222222-2222-4222-8222-222222222222";
+const RECOVERY_LEAD_ID = "66666666-6666-4666-8666-666666666666";
+const RECOVERY_CONVERSATION_ID = "77777777-7777-4777-8777-777777777777";
+const RECOVERY_OPPORTUNITY_ID = "88888888-8888-4888-8888-888888888888";
+
+function createExistingQuotePreparationTask(overrides?: Record<string, unknown>) {
+  return {
+    id: RECOVERY_TASK_ID,
+    organization_id: RECOVERY_ORGANIZATION_ID,
+    store_id: RECOVERY_STORE_ID,
+    task_type: "commercial_quote_request",
+    status: "open",
+    related_lead_id: RECOVERY_LEAD_ID,
+    related_conversation_id: RECOVERY_CONVERSATION_ID,
+    commercial_opportunity_id: RECOVERY_OPPORTUNITY_ID,
+    task_payload: {
+      quote_preparation: { request_message_id: RECOVERY_MESSAGE_ID },
+    },
+    ...overrides,
+  };
+}
+
+function createExistingQuotePreparationQueue(overrides?: Record<string, unknown>) {
+  return {
+    id: "99999999-9999-4999-8999-999999999999",
+    organization_id: RECOVERY_ORGANIZATION_ID,
+    store_id: RECOVERY_STORE_ID,
+    task_id: RECOVERY_TASK_ID,
+    conversation_id: RECOVERY_CONVERSATION_ID,
+    message_id: RECOVERY_MESSAGE_ID,
+    queue_type: "quote_preparation_request",
+    payload: {
+      request_message_id: RECOVERY_MESSAGE_ID,
+      lead_id: RECOVERY_LEAD_ID,
+      commercial_opportunity_id: RECOVERY_OPPORTUNITY_ID,
+      authorization_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    },
+    ...overrides,
+  };
+}
+
 function createScopeAwareReplyDeps(overrides?: Record<string, unknown>) {
   return {
     detectOpenAssistantOperationalFlow: async () => ({ blocked: false as const }),
@@ -2359,6 +2432,292 @@ const tests: TestCase[] = [
         }
       });
       assert.equal(calls, 0);
+    },
+  },
+  {
+    name: "existing quote task with a canonical queue is replayed without duplication",
+    run: async () => {
+      const recoverySupabase = createQuotePreparationRecoverySupabase({
+        queue: createExistingQuotePreparationQueue(),
+      });
+      let authorizationCalls = 0;
+      let enqueueCalls = 0;
+
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: recoverySupabase,
+            systemSupabase: recoverySupabase,
+            organizationId: RECOVERY_ORGANIZATION_ID,
+            storeId: RECOVERY_STORE_ID,
+            conversationId: RECOVERY_CONVERSATION_ID,
+            leadId: RECOVERY_LEAD_ID,
+            handoff: createHandoff({ commercialOpportunityId: RECOVERY_OPPORTUNITY_ID }),
+            generationAnchorMessageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          },
+          createDeps({
+            findExistingTask: async () => createExistingQuotePreparationTask(),
+            issueQuotePreparationTaskAuthorization: async () => {
+              authorizationCalls += 1;
+              throw new Error("nao deveria emitir autorizacao");
+            },
+            enqueueQuotePreparationTask: async () => {
+              enqueueCalls += 1;
+              throw new Error("nao deveria enfileirar novamente");
+            },
+            enqueueNotification: async () => {
+              throw new Error("nao deve notificar novamente");
+            },
+            autoProgressBudgetFromQuote: async () => {
+              throw new Error("nao deve alterar estagio");
+            },
+          }),
+        );
+
+        assert.equal(result.reason, "similar_open_handoff_already_exists");
+        assert.equal(result.quotePreparationQueue?.outcome, "idempotent_replay");
+      });
+
+      assert.equal(recoverySupabase.calls.length, 1);
+      assert.equal(authorizationCalls, 0);
+      assert.equal(enqueueCalls, 0);
+    },
+  },
+  {
+    name: "existing quote task with missing queue reuses valid authorization and enqueues canonical identities",
+    run: async () => {
+      const recoverySupabase = createQuotePreparationRecoverySupabase();
+      let receivedAuthorization: Record<string, unknown> | null = null;
+      let receivedQueue: Record<string, unknown> | null = null;
+
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: recoverySupabase,
+            systemSupabase: recoverySupabase,
+            organizationId: RECOVERY_ORGANIZATION_ID,
+            storeId: RECOVERY_STORE_ID,
+            conversationId: RECOVERY_CONVERSATION_ID,
+            leadId: "different-current-lead",
+            handoff: createHandoff({ commercialOpportunityId: RECOVERY_OPPORTUNITY_ID }),
+            generationAnchorMessageId: "different-current-message",
+          },
+          createDeps({
+            findExistingTask: async () => createExistingQuotePreparationTask(),
+            issueQuotePreparationTaskAuthorization: async (args) => {
+              receivedAuthorization = args as unknown as Record<string, unknown>;
+              return {
+                outcome: "idempotent_replay",
+                authorizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              } as never;
+            },
+            enqueueQuotePreparationTask: async (args) => {
+              receivedQueue = args as unknown as Record<string, unknown>;
+              return { outcome: "created", queueId: "99999999-9999-4999-8999-999999999999" } as never;
+            },
+          }),
+        );
+
+        assert.equal(result.quotePreparationAuthorization?.outcome, "idempotent_replay");
+        assert.equal(result.quotePreparationQueue?.outcome, "created");
+      });
+
+      assert.deepEqual(receivedAuthorization, {
+        organizationId: RECOVERY_ORGANIZATION_ID,
+        storeId: RECOVERY_STORE_ID,
+        taskId: RECOVERY_TASK_ID,
+        requestMessageId: RECOVERY_MESSAGE_ID,
+        supabase: recoverySupabase,
+      });
+      assert.deepEqual(receivedQueue, {
+        organizationId: RECOVERY_ORGANIZATION_ID,
+        storeId: RECOVERY_STORE_ID,
+        taskId: RECOVERY_TASK_ID,
+        conversationId: RECOVERY_CONVERSATION_ID,
+        requestMessageId: RECOVERY_MESSAGE_ID,
+        leadId: RECOVERY_LEAD_ID,
+        commercialOpportunityId: RECOVERY_OPPORTUNITY_ID,
+        authorizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        supabase: recoverySupabase,
+      });
+    },
+  },
+  {
+    name: "existing quote task permits a new authorization only through the issuer RPC result",
+    run: async () => {
+      const recoverySupabase = createQuotePreparationRecoverySupabase();
+      let enqueueCalls = 0;
+
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: recoverySupabase,
+            systemSupabase: recoverySupabase,
+            organizationId: RECOVERY_ORGANIZATION_ID,
+            storeId: RECOVERY_STORE_ID,
+            conversationId: RECOVERY_CONVERSATION_ID,
+            leadId: RECOVERY_LEAD_ID,
+            handoff: createHandoff({ commercialOpportunityId: RECOVERY_OPPORTUNITY_ID }),
+          },
+          createDeps({
+            findExistingTask: async () => createExistingQuotePreparationTask(),
+            issueQuotePreparationTaskAuthorization: async () => ({
+              outcome: "created",
+              authorizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            } as never),
+            enqueueQuotePreparationTask: async () => {
+              enqueueCalls += 1;
+              return { outcome: "idempotent_replay", queueId: "99999999-9999-4999-8999-999999999999" } as never;
+            },
+          }),
+        );
+
+        assert.equal(result.quotePreparationAuthorization?.outcome, "created");
+        assert.equal(result.quotePreparationQueue?.outcome, "idempotent_replay");
+      });
+
+      assert.equal(enqueueCalls, 1);
+    },
+  },
+  {
+    name: "revoked or expired existing authorization blocks without queue insertion",
+    run: async () => {
+      const recoverySupabase = createQuotePreparationRecoverySupabase();
+      let enqueueCalls = 0;
+
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: recoverySupabase,
+            systemSupabase: recoverySupabase,
+            organizationId: RECOVERY_ORGANIZATION_ID,
+            storeId: RECOVERY_STORE_ID,
+            conversationId: RECOVERY_CONVERSATION_ID,
+            leadId: RECOVERY_LEAD_ID,
+            handoff: createHandoff({ commercialOpportunityId: RECOVERY_OPPORTUNITY_ID }),
+          },
+          createDeps({
+            findExistingTask: async () => createExistingQuotePreparationTask(),
+            issueQuotePreparationTaskAuthorization: async () => ({
+              outcome: "blocked",
+              authorizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            } as never),
+            enqueueQuotePreparationTask: async () => {
+              enqueueCalls += 1;
+              throw new Error("nao deve enfileirar");
+            },
+          }),
+        );
+
+        assert.equal(result.quotePreparationAuthorization?.outcome, "blocked");
+        assert.equal(result.quotePreparationQueue?.outcome, "authorization_not_confirmed");
+      });
+
+      assert.equal(enqueueCalls, 0);
+    },
+  },
+  {
+    name: "uncertain recovery does not blindly retry authorization or queue",
+    run: async () => {
+      const recoverySupabase = createQuotePreparationRecoverySupabase();
+      let enqueueCalls = 0;
+
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: recoverySupabase,
+            systemSupabase: recoverySupabase,
+            organizationId: RECOVERY_ORGANIZATION_ID,
+            storeId: RECOVERY_STORE_ID,
+            conversationId: RECOVERY_CONVERSATION_ID,
+            leadId: RECOVERY_LEAD_ID,
+            handoff: createHandoff({ commercialOpportunityId: RECOVERY_OPPORTUNITY_ID }),
+          },
+          createDeps({
+            findExistingTask: async () => createExistingQuotePreparationTask(),
+            issueQuotePreparationTaskAuthorization: async () => {
+              throw new Error("resultado incerto");
+            },
+            enqueueQuotePreparationTask: async () => {
+              enqueueCalls += 1;
+              throw new Error("nao deve tentar sem autorizacao confirmada");
+            },
+          }),
+        );
+
+        assert.equal(result.quotePreparationAuthorization?.outcome, "uncertain");
+        assert.equal(result.quotePreparationQueue?.outcome, "authorization_not_confirmed");
+      });
+
+      assert.equal(enqueueCalls, 0);
+    },
+  },
+  {
+    name: "divergent queue identity remains uncertain without authorization retry",
+    run: async () => {
+      const recoverySupabase = createQuotePreparationRecoverySupabase({
+        queue: createExistingQuotePreparationQueue({ task_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      });
+      let authorizationCalls = 0;
+
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: recoverySupabase,
+            systemSupabase: recoverySupabase,
+            organizationId: RECOVERY_ORGANIZATION_ID,
+            storeId: RECOVERY_STORE_ID,
+            conversationId: RECOVERY_CONVERSATION_ID,
+            leadId: RECOVERY_LEAD_ID,
+            handoff: createHandoff({ commercialOpportunityId: RECOVERY_OPPORTUNITY_ID }),
+          },
+          createDeps({
+            findExistingTask: async () => createExistingQuotePreparationTask(),
+            issueQuotePreparationTaskAuthorization: async () => {
+              authorizationCalls += 1;
+              throw new Error("nao deve consultar emissao apos divergencia");
+            },
+          }),
+        );
+
+        assert.equal(result.quotePreparationQueue?.outcome, "uncertain");
+        assert.equal(result.quotePreparationQueue?.errorCode, "P19A_QUOTE_PREP_QUEUE_IDENTITY_CONFLICT");
+      });
+
+      assert.equal(authorizationCalls, 0);
+    },
+  },
+  {
+    name: "existing non-quote task preserves the early-return behavior",
+    run: async () => {
+      let queueCalls = 0;
+      await withQuotePreparationAuthorizationGate("true", async () => {
+        const result = await createCommercialAssistantHandoff(
+          {
+            supabase: {
+              from() {
+                queueCalls += 1;
+                throw new Error("nao deve consultar fila de visita");
+              },
+            },
+            organizationId: "org-1",
+            storeId: "store-1",
+            conversationId: "conv-1",
+            leadId: "lead-1",
+            handoff: createHandoff({ taskType: "commercial_visit_request", intent: "visit_request" }),
+          },
+          createDeps({
+            findExistingTask: async () => ({
+              id: "task-visit",
+              task_type: "commercial_visit_request",
+              status: "open",
+            }),
+          }),
+        );
+
+        assert.equal(result.reason, "similar_open_handoff_already_exists");
+      });
+      assert.equal(queueCalls, 0);
     },
   },
   {

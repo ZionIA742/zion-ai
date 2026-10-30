@@ -857,6 +857,10 @@ type OpenOperationalTaskRow = {
   id: string;
   task_type: string | null;
   status: string | null;
+  organization_id?: string | null;
+  store_id?: string | null;
+  related_lead_id?: string | null;
+  related_conversation_id?: string | null;
   commercial_opportunity_id?: string | null;
   task_payload?: Record<string, unknown> | null;
 };
@@ -1232,6 +1236,248 @@ export async function findExistingCommercialHandoffTask(args: {
   return (data as OpenOperationalTaskRow | null) || null;
 }
 
+function getQuotePreparationRequestMessageId(task: OpenOperationalTaskRow): string | null {
+  const payload = task.task_payload;
+  const quotePreparation =
+    payload && typeof payload === "object" && !Array.isArray(payload) &&
+    payload.quote_preparation && typeof payload.quote_preparation === "object" &&
+    !Array.isArray(payload.quote_preparation)
+      ? payload.quote_preparation as Record<string, unknown>
+      : null;
+  const requestMessageId = quotePreparation?.request_message_id;
+  return typeof requestMessageId === "string" && UUID_PATTERN.test(requestMessageId.trim())
+    ? requestMessageId.trim()
+    : null;
+}
+
+function isValidQuotePreparationUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+function isCanonicalQuotePreparationQueueRow(args: {
+  row: unknown;
+  organizationId: string;
+  storeId: string;
+  taskId: string;
+  conversationId: string;
+  requestMessageId: string;
+  leadId: string;
+  commercialOpportunityId: string;
+}): boolean {
+  if (!args.row || typeof args.row !== "object" || Array.isArray(args.row)) return false;
+  const row = args.row as Record<string, unknown>;
+  const payload = row.payload;
+  const payloadRecord = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : null;
+  return (
+    typeof row.id === "string" && UUID_PATTERN.test(row.id) &&
+    row.organization_id === args.organizationId &&
+    row.store_id === args.storeId &&
+    row.task_id === args.taskId &&
+    row.conversation_id === args.conversationId &&
+    row.message_id === args.requestMessageId &&
+    row.queue_type === "quote_preparation_request" &&
+    payloadRecord?.request_message_id === args.requestMessageId &&
+    payloadRecord.lead_id === args.leadId &&
+    payloadRecord.commercial_opportunity_id === args.commercialOpportunityId &&
+    typeof payloadRecord.authorization_id === "string" &&
+    UUID_PATTERN.test(payloadRecord.authorization_id)
+  );
+}
+
+type QuotePreparationRecoveryQuery = {
+  insert(payload: Record<string, unknown>): QuotePreparationRecoveryQuery;
+  select(columns: string): QuotePreparationRecoveryQuery;
+  eq(column: string, value: unknown): QuotePreparationRecoveryQuery;
+  maybeSingle(): Promise<{ data: unknown; error: { message?: string } | null }>;
+};
+
+type QuotePreparationRecoverySupabase = {
+  from(table: string): QuotePreparationRecoveryQuery;
+  rpc(
+    functionName: string,
+    args: Record<string, unknown>,
+  ): PromiseLike<{ data: unknown; error: { code?: unknown; message?: unknown } | null }>;
+};
+
+async function reconcileExistingQuotePreparationTask(args: {
+  supabase: QuotePreparationRecoverySupabase;
+  task: OpenOperationalTaskRow;
+  organizationId: string;
+  storeId: string;
+  deps: CommercialAssistantHandoffDeps;
+}): Promise<{
+  authorization: QuotePreparationAuthorizationAttempt;
+  queue: QuotePreparationQueueAttempt;
+}> {
+  const task = args.task;
+  const taskId = task.id;
+  const organizationId = task.organization_id as string | undefined;
+  const storeId = task.store_id as string | undefined;
+  const conversationId = task.related_conversation_id as string | undefined;
+  const leadId = task.related_lead_id as string | undefined;
+  const commercialOpportunityId = task.commercial_opportunity_id as string | undefined;
+  const requestMessageId = getQuotePreparationRequestMessageId(task);
+
+  const invalidIdentity = !isValidQuotePreparationUuid(taskId) ||
+    !isValidQuotePreparationUuid(organizationId) ||
+    !isValidQuotePreparationUuid(storeId) ||
+    !isValidQuotePreparationUuid(conversationId) ||
+    !isValidQuotePreparationUuid(leadId) ||
+    !isValidQuotePreparationUuid(commercialOpportunityId) ||
+    !requestMessageId;
+
+  if (invalidIdentity) {
+    return {
+      authorization: { attempted: false, outcome: "request_message_missing" },
+      queue: { attempted: false, outcome: "authorization_not_confirmed" },
+    };
+  }
+
+  const canonicalOrganizationId = organizationId as string;
+  const canonicalStoreId = storeId as string;
+  const canonicalConversationId = conversationId as string;
+  const canonicalLeadId = leadId as string;
+  const canonicalCommercialOpportunityId = commercialOpportunityId as string;
+
+  let queueResult: { data: unknown; error: { message?: string } | null };
+  try {
+    queueResult = await args.supabase
+      .from("store_assistant_operational_task_queue")
+      .select("id, organization_id, store_id, task_id, conversation_id, message_id, queue_type, payload")
+      .eq("organization_id", canonicalOrganizationId)
+      .eq("store_id", canonicalStoreId)
+      .eq("task_id", taskId)
+      .eq("conversation_id", canonicalConversationId)
+      .eq("message_id", requestMessageId)
+      .eq("queue_type", "quote_preparation_request")
+      .maybeSingle();
+  } catch (error) {
+    return {
+      authorization: { attempted: false, outcome: "task_identity_invalid" },
+      queue: {
+        attempted: true,
+        outcome: "uncertain",
+        errorCode: "P19A_QUOTE_PREP_QUEUE_RECONCILIATION_UNCERTAIN",
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+
+  if (queueResult.error) {
+    return {
+      authorization: { attempted: false, outcome: "task_identity_invalid" },
+      queue: {
+        attempted: true,
+        outcome: "uncertain",
+        errorCode: "P19A_QUOTE_PREP_QUEUE_RECONCILIATION_FAILED",
+        error: queueResult.error.message || "A fila existente nao foi confirmada.",
+      },
+    };
+  }
+
+  if (queueResult.data !== null) {
+    if (!isCanonicalQuotePreparationQueueRow({
+      row: queueResult.data,
+      organizationId: canonicalOrganizationId,
+      storeId: canonicalStoreId,
+      taskId,
+      conversationId: canonicalConversationId,
+      requestMessageId,
+      leadId: canonicalLeadId,
+      commercialOpportunityId: canonicalCommercialOpportunityId,
+    })) {
+      return {
+        authorization: { attempted: false, outcome: "task_identity_invalid" },
+        queue: {
+          attempted: true,
+          outcome: "uncertain",
+          errorCode: "P19A_QUOTE_PREP_QUEUE_IDENTITY_CONFLICT",
+          error: "A fila existente diverge da identidade canonica persistida.",
+        },
+      };
+    }
+
+    const queueRow = queueResult.data as { id: string };
+
+    return {
+      authorization: { attempted: false, outcome: "task_not_persisted" },
+      queue: {
+        attempted: true,
+        outcome: "idempotent_replay",
+        queueId: queueRow.id,
+      },
+    };
+  }
+
+  let authorization: QuotePreparationTaskAuthorizationResult;
+  try {
+    authorization = await (args.deps.issueQuotePreparationTaskAuthorization ||
+      issueQuotePreparationTaskAuthorizationBySystem)({
+      organizationId: canonicalOrganizationId,
+      storeId: canonicalStoreId,
+      taskId,
+      requestMessageId,
+      supabase: args.supabase,
+    });
+  } catch (error: unknown) {
+    const typedError = error instanceof QuotePreparationTaskAuthorizationError ? error : null;
+    return {
+      authorization: {
+        attempted: true,
+        outcome: typedError?.kind === "rejected" ? "rejected" : "uncertain",
+        errorCode: typedError?.code || "P19A_QUOTE_PREP_AUTH_UNCERTAIN",
+        error: typedError?.message || (error instanceof Error ? error.message : String(error)),
+      },
+      queue: { attempted: false, outcome: "authorization_not_confirmed" },
+    };
+  }
+
+  const authorizationAttempt: QuotePreparationAuthorizationAttempt = {
+    attempted: true,
+    outcome: authorization.outcome,
+    authorizationId: authorization.authorizationId,
+  };
+  if (authorization.outcome === "blocked") {
+    return {
+      authorization: authorizationAttempt,
+      queue: { attempted: false, outcome: "authorization_not_confirmed" },
+    };
+  }
+
+  try {
+    const queue = await (args.deps.enqueueQuotePreparationTask || enqueueQuotePreparationTaskBySystem)({
+      organizationId: canonicalOrganizationId,
+      storeId: canonicalStoreId,
+      taskId,
+      conversationId: canonicalConversationId,
+      requestMessageId,
+      leadId: canonicalLeadId,
+      commercialOpportunityId: canonicalCommercialOpportunityId,
+      authorizationId: authorization.authorizationId,
+      supabase: args.supabase,
+    });
+    return {
+      authorization: authorizationAttempt,
+      queue: { attempted: true, outcome: queue.outcome, queueId: queue.queueId },
+    };
+  } catch (error: unknown) {
+    const typedError = error instanceof Error ? error : null;
+    return {
+      authorization: authorizationAttempt,
+      queue: {
+        attempted: true,
+        outcome: (error as { kind?: unknown })?.kind === "rejected" ? "rejected" : "uncertain",
+        errorCode: typeof (error as { code?: unknown })?.code === "string"
+          ? String((error as { code: string }).code)
+          : "P19A_QUOTE_PREP_QUEUE_UNCERTAIN",
+        error: typedError?.message || String(error || ""),
+      },
+    };
+  }
+}
+
 export async function findExistingHumanHandoffTask(args: {
   supabase: any;
   organizationId: string;
@@ -1241,7 +1487,7 @@ export async function findExistingHumanHandoffTask(args: {
 }) {
   const { data, error } = await args.supabase
     .from("store_assistant_operational_tasks")
-    .select("id, task_type, status, commercial_opportunity_id, task_payload")
+    .select("id, organization_id, store_id, task_type, status, related_lead_id, related_conversation_id, commercial_opportunity_id, task_payload")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("related_conversation_id", args.conversationId)
@@ -4994,6 +5240,24 @@ export async function createCommercialAssistantHandoff(
   });
 
   if (similarTask) {
+    if (handoff.taskType === "commercial_quote_request" && isQuotePreparationTaskAuthorizationEnabled()) {
+      const recovery = await reconcileExistingQuotePreparationTask({
+        supabase: args.systemSupabase || args.supabase,
+        task: similarTask,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        deps,
+      });
+      return {
+        created: false,
+        skipped: true,
+        reason: "similar_open_handoff_already_exists",
+        taskId: similarTask.id || null,
+        quotePreparationAuthorization: recovery.authorization,
+        quotePreparationQueue: recovery.queue,
+      };
+    }
+
     return {
       created: false,
       skipped: true,
