@@ -1,5 +1,12 @@
 import { createClient } from "@supabase/supabase-js";
 import { projectTechnicalVisitStageBySystem } from "../commercial-opportunity-visit-stage-projection";
+import {
+  createAuthorizedSalesQuoteDraftBySystem,
+  type AuthorizedSalesQuoteDraftResult,
+} from "./sales-quotes/create-authorized-sales-quote-draft-by-system";
+import { registerQuotePreparationFromTaskBySystem } from "./sales-quotes/register-quote-preparation-from-task-by-system";
+import { resolveQuotePreparationIdentityBySystem } from "./sales-quotes/resolve-quote-preparation-identity-by-system";
+import { validateQuotePreparationTaskAuthorizationBySystem } from "./sales-quotes/validate-quote-preparation-task-authorization-by-system";
 
 type QueueRow = {
   id: string;
@@ -16,6 +23,12 @@ type QueueRow = {
 };
 
 const LEGACY_OPERATIONAL_TASK_QUEUE_TYPE = "customer_reply_to_operational_task";
+const QUOTE_PREPARATION_QUEUE_TYPE = "quote_preparation_request";
+const QUOTE_PREPARATION_AUTHORIZATION_ENABLED_ENV = "P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED";
+
+export function isQuotePreparationConsumerEnabled() {
+  return process.env[QUOTE_PREPARATION_AUTHORIZATION_ENABLED_ENV] === "true";
+}
 
 const MAX_SAFE_QUEUE_ATTEMPTS = 3;
 const QUEUE_RETRY_DELAY_MS = 60_000;
@@ -1579,12 +1592,202 @@ async function processCreateAppointmentTask(args: {
   return { ok: true, action: "appointment_created", appointmentId: createdAppointment.id, taskId: task.id, queueId: queue.id };
 }
 
+class QuotePreparationConsumerError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly kind: "blocked" | "uncertain" | "rejected",
+    public readonly details: Record<string, unknown> = {},
+  ) {
+    super(message);
+    this.name = "QuotePreparationConsumerError";
+  }
+}
+
+type QuotePreparationConsumerDeps = {
+  resolveIdentity: typeof resolveQuotePreparationIdentityBySystem;
+  validateAuthorization: typeof validateQuotePreparationTaskAuthorizationBySystem;
+  registerOperation: typeof registerQuotePreparationFromTaskBySystem;
+  createDraft: typeof createAuthorizedSalesQuoteDraftBySystem;
+};
+
+const defaultQuotePreparationConsumerDeps: QuotePreparationConsumerDeps = {
+  resolveIdentity: resolveQuotePreparationIdentityBySystem,
+  validateAuthorization: validateQuotePreparationTaskAuthorizationBySystem,
+  registerOperation: registerQuotePreparationFromTaskBySystem,
+  createDraft: createAuthorizedSalesQuoteDraftBySystem,
+};
+
+export async function processQuotePreparationQueueItem(args: {
+  supabase: any;
+  queue: QueueRow;
+  workerId: string;
+  deps?: Partial<QuotePreparationConsumerDeps>;
+}) {
+  if (!isQuotePreparationConsumerEnabled()) {
+    return { ok: true as const, skipped: true, reason: "quote_preparation_gate_off" };
+  }
+
+  if (args.queue.queue_type !== QUOTE_PREPARATION_QUEUE_TYPE) {
+    throw new QuotePreparationConsumerError(
+      "Tipo de fila invalido para o consumidor de preparacao de orcamento.",
+      "P19A_QUOTE_PREP_QUEUE_TYPE_INVALID",
+      "blocked",
+    );
+  }
+
+  const deps = { ...defaultQuotePreparationConsumerDeps, ...(args.deps || {}) };
+  const identityResolution = await deps.resolveIdentity({
+    taskId: args.queue.task_id,
+    organizationId: args.queue.organization_id,
+    storeId: args.queue.store_id,
+    supabase: args.supabase,
+  });
+
+  if (!identityResolution.eligible) {
+    throw new QuotePreparationConsumerError(
+      "A tarefa de preparacao nao permanece elegivel.",
+      "P19A_QUOTE_PREP_IDENTITY_INELIGIBLE",
+      "blocked",
+      { resolution: identityResolution },
+    );
+  }
+
+  const identity = identityResolution.identity;
+  if (
+    identity.organizationId !== args.queue.organization_id ||
+    identity.storeId !== args.queue.store_id ||
+    identity.taskId !== args.queue.task_id ||
+    identity.requestMessageId !== args.queue.message_id ||
+    identity.conversationId !== args.queue.conversation_id
+  ) {
+    throw new QuotePreparationConsumerError(
+      "A identidade canonica nao corresponde exatamente a entrada da fila.",
+      "P19A_QUOTE_PREP_QUEUE_IDENTITY_MISMATCH",
+      "blocked",
+      { queueId: args.queue.id },
+    );
+  }
+
+  let authorization;
+  try {
+    authorization = await deps.validateAuthorization({
+      organizationId: identity.organizationId,
+      storeId: identity.storeId,
+      taskId: identity.taskId,
+      requestMessageId: identity.requestMessageId,
+      queueId: args.queue.id,
+      supabase: args.supabase,
+    });
+  } catch (error: any) {
+    throw new QuotePreparationConsumerError(
+      error?.message || "A autorizacao nao foi confirmada.",
+      error?.code || "P19A_QUOTE_PREP_AUTHORIZATION_UNCERTAIN",
+      error?.kind === "rejected" ? "rejected" : "uncertain",
+      { authorizationErrorKind: error?.kind || "uncertain" },
+    );
+  }
+
+  if (authorization.outcome !== "authorized" || !authorization.authorizationId) {
+    throw new QuotePreparationConsumerError(
+      "A autorizacao da preparacao foi bloqueada.",
+      "P19A_QUOTE_PREP_AUTHORIZATION_BLOCKED",
+      "blocked",
+      { reason: authorization.reason },
+    );
+  }
+
+  let registration;
+  try {
+    registration = await deps.registerOperation({
+      taskId: identity.taskId,
+      organizationId: identity.organizationId,
+      storeId: identity.storeId,
+      supabase: args.supabase,
+    });
+  } catch (error: any) {
+    throw new QuotePreparationConsumerError(
+      error?.message || "A operacao de preparacao nao foi confirmada.",
+      error?.code || "P19A_QUOTE_PREP_OPERATION_UNCERTAIN",
+      "uncertain",
+    );
+  }
+
+  if (registration.outcome === "ineligible") {
+    throw new QuotePreparationConsumerError(
+      "A operacao de preparacao nao permanece elegivel.",
+      "P19A_QUOTE_PREP_OPERATION_INELIGIBLE",
+      "blocked",
+      { resolution: registration.resolution },
+    );
+  }
+
+  if (registration.outcome === "blocked" || !registration.registration.operationId) {
+    throw new QuotePreparationConsumerError(
+      "A operacao de preparacao esta bloqueada ou sem identidade canonica.",
+      "P19A_QUOTE_PREP_OPERATION_BLOCKED",
+      "blocked",
+      { status: registration.registration.status },
+    );
+  }
+
+  const operation = registration.registration;
+  if (!operation.operationId) {
+    throw new QuotePreparationConsumerError(
+      "A operacao de preparacao nao possui identificador canonico.",
+      "P19A_QUOTE_PREP_OPERATION_ID_MISSING",
+      "uncertain",
+    );
+  }
+  let result: AuthorizedSalesQuoteDraftResult;
+  try {
+    result = await deps.createDraft({
+      operation: {
+        authorizationId: authorization.authorizationId,
+        organizationId: identity.organizationId,
+        storeId: identity.storeId,
+        taskId: identity.taskId,
+        requestMessageId: identity.requestMessageId,
+        queueId: args.queue.id,
+        operationId: operation.operationId,
+        commercialOpportunityId: identity.commercialOpportunityId,
+        profileVersionId: identity.profileVersionId,
+        profileVersionNumber: identity.profileVersionNumber,
+        creationIdempotencyKey: registration.operationKey,
+        creationRequestFingerprint: registration.requestFingerprint,
+      },
+      supabase: args.supabase,
+    });
+  } catch (error: any) {
+    throw new QuotePreparationConsumerError(
+      error?.message || "A criacao autorizada nao confirmou o resultado.",
+      error?.code || "P19A_QUOTE_PREP_CREATION_UNCERTAIN",
+      error?.kind === "rejected" ? "rejected" : "uncertain",
+      { operationId: operation.operationId, operationKey: registration.operationKey },
+    );
+  }
+
+  return {
+    ok: true as const,
+    action: result.outcome === "created" ? "quote_preparation_created" : "quote_preparation_idempotent_replay",
+    outcome: result.outcome,
+    quoteId: result.quoteId,
+    operationId: result.operationId,
+    taskId: identity.taskId,
+    queueId: args.queue.id,
+  };
+}
+
 async function processQueueItem(args: {
   supabase: any;
   queue: QueueRow;
   workerId: string;
 }) {
   const { supabase, queue } = args;
+
+  if (queue.queue_type === QUOTE_PREPARATION_QUEUE_TYPE) {
+    return processQuotePreparationQueueItem(args);
+  }
 
   const customerMessage = String(queue.payload?.customer_message || "").trim();
   const normalizedCustomerReply = normalizeText(customerMessage).replace(/\s+/g, " ").trim();
@@ -2603,7 +2806,21 @@ async function processLockedQueueRowWithSubscriptionGuard(args: {
   queue: QueueRow;
   workerId: string;
 }) {
-  if (args.queue.queue_type !== LEGACY_OPERATIONAL_TASK_QUEUE_TYPE) {
+  if (
+    args.queue.queue_type === QUOTE_PREPARATION_QUEUE_TYPE &&
+    !isQuotePreparationConsumerEnabled()
+  ) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "quote_preparation_gate_off",
+    };
+  }
+
+  if (
+    args.queue.queue_type !== LEGACY_OPERATIONAL_TASK_QUEUE_TYPE &&
+    args.queue.queue_type !== QUOTE_PREPARATION_QUEUE_TYPE
+  ) {
     return {
       ok: true,
       skipped: true,
@@ -2715,11 +2932,25 @@ async function processLockedQueueRowWithSubscriptionGuard(args: {
         result_payload: {
           ok: false,
           error: message,
+          ...(args.queue.queue_type === QUOTE_PREPARATION_QUEUE_TYPE
+            ? {
+                quotePreparation: {
+                  code: error?.code || "P19A_QUOTE_PREP_CONSUMER_FAILED",
+                  kind: error?.kind || "uncertain",
+                  details: error?.details || {},
+                  retryable: false,
+                },
+              }
+            : {}),
           workerId: args.workerId,
         },
         updated_at: new Date().toISOString(),
       })
-      .eq("id", args.queue.id);
+      .eq("id", args.queue.id)
+      .eq("status", "processing")
+      .eq("queue_type", args.queue.queue_type)
+      .eq("organization_id", args.queue.organization_id)
+      .eq("store_id", args.queue.store_id);
 
     if (failedQueueError) {
       return {
@@ -2954,10 +3185,18 @@ export async function processAssistantOperationalTasks(
     .from("store_assistant_operational_task_queue")
     .select("*")
     .eq("status", "pending")
-    .eq("queue_type", LEGACY_OPERATIONAL_TASK_QUEUE_TYPE)
     .lte("available_at", new Date().toISOString())
     .order("created_at", { ascending: true })
     .limit(limit);
+
+  if (isQuotePreparationConsumerEnabled()) {
+    query = query.in("queue_type", [
+      LEGACY_OPERATIONAL_TASK_QUEUE_TYPE,
+      QUOTE_PREPARATION_QUEUE_TYPE,
+    ]);
+  } else {
+    query = query.eq("queue_type", LEGACY_OPERATIONAL_TASK_QUEUE_TYPE);
+  }
 
   if (organizationId) {
     query = query.eq("organization_id", organizationId);
@@ -2990,7 +3229,7 @@ export async function processAssistantOperationalTasks(
       })
       .eq("id", row.id)
       .eq("status", "pending")
-      .eq("queue_type", LEGACY_OPERATIONAL_TASK_QUEUE_TYPE)
+      .eq("queue_type", row.queue_type)
       .select("*");
 
     if (lockError) {

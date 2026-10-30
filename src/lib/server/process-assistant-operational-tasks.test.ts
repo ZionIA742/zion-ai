@@ -377,7 +377,9 @@ const tests: TestCase[] = [
       assert.match(source, /\.eq\("queue_type",\s*LEGACY_OPERATIONAL_TASK_QUEUE_TYPE\)/);
       assert.match(source, /queue_type:\s*LEGACY_OPERATIONAL_TASK_QUEUE_TYPE/);
       assert.match(source, /queue\.queue_type !== LEGACY_OPERATIONAL_TASK_QUEUE_TYPE/);
-      assert.equal(source.includes('"quote_preparation_request"'), false);
+      assert.equal(source.includes('"quote_preparation_request"'), true);
+      assert.match(source, /P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED/);
+      assert.match(source, /query\.in\("queue_type",\s*\[/);
 
       const supabase = createMockSupabase();
       await runCustomerReply(supabase, "talvez", "message-queue-type");
