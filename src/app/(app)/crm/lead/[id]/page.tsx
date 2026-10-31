@@ -7248,15 +7248,15 @@ export default function LeadPage() {
                                 );
                                 const canTextContractAction =
                                   hasSavedTextDraft &&
-                                  ["draft", "pending_review", "generated", "approved"].includes(normalizedStatus);
+                                  ["draft", "pending_review", "generated", "approved"].includes(normalizedStatus) &&
+                                  (!hasCurrentVersion || normalizedStatus === "approved");
                                 const isOpening = openingGeneratedContractId === contract.id;
                                 const isActionLoading = contractActionLoadingId === contract.id;
                                 const canGeneratePdf = !hasCurrentVersion && !hasSavedTextDraft;
                                 const canApprove =
                                   (normalizedStatus === "pending_review" ||
                                     normalizedStatus === "draft") &&
-                                  hasCurrentVersion &&
-                                  !canTextContractAction;
+                                  hasCurrentVersion;
                                 const canSend = normalizedStatus === "approved" && !canTextContractAction;
                                 const canRegisterCustomerAcceptance =
                                   normalizedStatus === "sent_to_customer";
