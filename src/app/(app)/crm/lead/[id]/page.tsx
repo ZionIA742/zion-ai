@@ -589,10 +589,31 @@ type SalesContractDetailResponse = {
   message?: string;
 };
 
+type ContractTextCorrectionResponse = {
+  ok: boolean;
+  contractId?: string;
+  expectedSentVersionId?: string;
+  text?: string;
+  revision?: number;
+  templateVersionId?: string;
+  originalFilename?: string | null;
+  error?: string;
+  message?: string;
+};
+
+type ContractTextCorrectionState = {
+  contractId: string;
+  expectedSentVersionId: string;
+  text: string;
+  textSha256: string;
+  revision: number;
+  templateVersionId: string;
+  originalFilename: string | null;
+  operationId: string;
+};
+
 type BuyerCorrectionField = "name" | "phone" | "document" | "email" | "address";
-
 type BuyerCorrectionValues = Record<BuyerCorrectionField, string | null>;
-
 type BuyerCorrectionState = {
   contractId: string;
   expectedSentVersionId: string;
@@ -1653,7 +1674,7 @@ export default function LeadPage() {
   const [generatedContractsError, setGeneratedContractsError] = useState<string | null>(null);
   const [openingGeneratedContractId, setOpeningGeneratedContractId] = useState<string | null>(null);
   const [contractPreview, setContractPreview] = useState<{
-    kind: "contract" | "template";
+    kind: "contract" | "template" | "correction";
     contractId: string;
     signedUrl: string;
     identity?: ContractVersionIdentity;
@@ -1671,8 +1692,10 @@ export default function LeadPage() {
     useState<ContractTemplateSourceResponse | null>(null);
   const [contractTemplateSourceLoading, setContractTemplateSourceLoading] = useState(false);
   const [contractTemplateSourceError, setContractTemplateSourceError] = useState<string | null>(null);
+  const [contractTextCorrection, setContractTextCorrection] =
+    useState<ContractTextCorrectionState | null>(null);
+  const [contractTextCorrectionLoading, setContractTextCorrectionLoading] = useState(false);
   const [buyerCorrection, setBuyerCorrection] = useState<BuyerCorrectionState | null>(null);
-  const [buyerCorrectionLoading, setBuyerCorrectionLoading] = useState(false);
   const [buyerCorrectionSaving, setBuyerCorrectionSaving] = useState(false);
   const [buyerCorrectionError, setBuyerCorrectionError] = useState<string | null>(null);
 
@@ -3478,6 +3501,8 @@ export default function LeadPage() {
     }
   }
 
+  /* Legacy buyer-only correction handlers are intentionally disabled. The
+     sent-contract action now uses the full historical text editor below.
   function closeBuyerCorrection() {
     if (buyerCorrectionSaving) return;
     setBuyerCorrection(null);
@@ -3628,6 +3653,84 @@ export default function LeadPage() {
       setContractActionLoadingId(null);
       setContractActionLoadingType(null);
     }
+  }
+
+  */
+
+  async function openFullTextContractCorrection(contract: GeneratedContractSummary) {
+    const contractId = String(contract.id || "").trim();
+    if (!contractId || String(contract.status || "").trim().toLowerCase() !== "sent_to_customer" ||
+        !contract.manual_provenance || !contract.current_version_id) {
+      setContractActionError("Somente contratos manuais enviados ao cliente podem ser corrigidos.");
+      return;
+    }
+    setContractTextCorrectionLoading(true);
+    setContractActionError(null);
+    setBuyerCorrectionError(null);
+    try {
+      const response = await fetch(`/api/sales-contracts/${encodeURIComponent(contractId)}/correct-text`, { method: "GET", cache: "no-store" });
+      const result = (await response.json()) as ContractTextCorrectionResponse;
+      if (!response.ok || !result.ok || result.contractId !== contractId ||
+          result.expectedSentVersionId !== contract.current_version_id ||
+          typeof result.text !== "string" || !result.text.trim() ||
+          typeof result.revision !== "number" || !Number.isSafeInteger(result.revision) || result.revision < 1 ||
+          typeof result.templateVersionId !== "string") {
+        throw new Error(formatBuyerCorrectionError(result.error, result.message));
+      }
+      const revision = result.revision as number;
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(result.text));
+      const textSha256 = Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, "0")).join("");
+      setContractTextCorrection({
+        contractId,
+        expectedSentVersionId: contract.current_version_id,
+        text: result.text,
+        textSha256,
+        revision,
+        templateVersionId: result.templateVersionId,
+        originalFilename: result.originalFilename || null,
+        operationId: crypto.randomUUID(),
+      });
+      setContractPreview({ kind: "correction", contractId, signedUrl: "" });
+    } catch (error: unknown) {
+      setContractActionError(error instanceof Error ? error.message : "Nao foi possivel carregar o texto historico do contrato.");
+    } finally {
+      setContractTextCorrectionLoading(false);
+    }
+  }
+
+  async function saveFullTextContractCorrection(text: string) {
+    if (!contractTextCorrection) return;
+    const response = await fetch(`/api/sales-contracts/${encodeURIComponent(contractTextCorrection.contractId)}/correct-text`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-zion-contract-operation-id": contractTextCorrection.operationId,
+      },
+      body: JSON.stringify({
+        expectedSentVersionId: contractTextCorrection.expectedSentVersionId,
+        expectedHistoricalTextSha256: contractTextCorrection.textSha256,
+        text,
+      }),
+    });
+    const result = (await response.json()) as SalesContractActionResponse & { versionId?: string };
+    if (!response.ok || !result.ok || !result.versionId) {
+      throw new Error(formatBuyerCorrectionError(result.error, result.message));
+    }
+    const refreshedContracts = await fetchGeneratedContracts({ silent: true });
+    if (refreshedContracts.find((contract) => contract.id === contractTextCorrection.contractId)?.current_version_id !== result.versionId) {
+      throw new Error("A nova versao foi criada, mas o CRM nao confirmou sua identidade atual.");
+    }
+    const correctedContractId = contractTextCorrection.contractId;
+    setContractTextCorrection(null);
+    const opened = await openGeneratedContractPdf(correctedContractId, refreshedContracts);
+    if (!opened) throw new Error("A nova versao foi criada, mas o PDF nao pode ser aberto para conferencia.");
+    setContractActionSuccess("Correcao salva. A nova versao esta pendente de aprovacao humana.");
+  }
+
+  function cancelFullTextContractCorrection() {
+    setContractTextCorrection(null);
+    setContractPreview(null);
+    setContractTextCorrectionLoading(false);
   }
 
   async function openGeneratedContractPdf(
@@ -5693,6 +5796,8 @@ export default function LeadPage() {
     setGeneratedContractsLoading(false);
     setOpeningGeneratedContractId(null);
     setContractPreview(null);
+    setContractTextCorrection(null);
+    setContractTextCorrectionLoading(false);
     setContractDraftState(null);
     setPreparedContractSend(null);
     automaticContractPreviewRef.current = null;
@@ -6989,12 +7094,14 @@ export default function LeadPage() {
                                     ? "Contrato da oportunidade"
                                     : contractPreview.contractId === "template"
                                       ? "Modelo ativo da loja"
-                                      : "Editar contrato textual"}
+                                      : "Corrigir contrato enviado"}
                                 </div>
                                 <div className="text-xs text-gray-500">
                                   {contractPreview.kind === "contract"
                                     ? "Visualizacao segura do documento especifico deste comprador."
-                                    : "Texto editavel do modelo ativo da loja. Alteracoes ainda nao sao salvas."}
+                                    : contractPreview.kind === "correction"
+                                      ? "Edite o texto historico deste contrato. O original permanece preservado."
+                                      : "Texto editavel do modelo ativo da loja. Alteracoes ainda nao sao salvas."}
                                 </div>
                                 </div>
 
@@ -7005,6 +7112,19 @@ export default function LeadPage() {
                                    leadId={leadId}
                                    commercialOpportunityId={selectedDocumentOpportunityId}
                                    onDraftStateChange={handleContractDraftStateChange}
+                                 />
+                               ) : contractPreview.kind === "correction" && contractTextCorrection ? (
+                                 <ContractTemplateTextEditor
+                                   key={`contract-correction-${contractTextCorrection.contractId}-${contractTextCorrection.expectedSentVersionId}`}
+                                   leadId={leadId}
+                                   commercialOpportunityId={selectedDocumentOpportunityId}
+                                   correction={{
+                                     contractId: contractTextCorrection.contractId,
+                                     text: contractTextCorrection.text,
+                                     originalFilename: contractTextCorrection.originalFilename,
+                                     onSaveText: saveFullTextContractCorrection,
+                                     onCancel: cancelFullTextContractCorrection,
+                                   }}
                                  />
                                ) : (
                                  <iframe
@@ -7074,7 +7194,7 @@ export default function LeadPage() {
                             </div>
                           ) : null}
 
-                          {buyerCorrection ? (
+                          {false && buyerCorrection ? (
                             <section
                               className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 p-4 ring-1 ring-blue-600/10"
                               aria-label="Corrigir dados do comprador"
@@ -7086,7 +7206,7 @@ export default function LeadPage() {
                                 Apenas os campos pessoais identificados no contrato são exibidos. Cláusulas, valores e condições comerciais não podem ser alterados. A nova versão ficará pendente de aprovação humana.
                               </p>
                               <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                                {buyerCorrection.fields.map((field) => {
+                                {buyerCorrection?.fields.map((field) => {
                                   const labels: Record<BuyerCorrectionField, string> = {
                                     name: "Nome",
                                     phone: "Telefone",
@@ -7353,11 +7473,11 @@ export default function LeadPage() {
                                         {canCorrectBuyer ? (
                                           <button
                                             type="button"
-                                            onClick={() => void openBuyerCorrection(contract)}
-                                            disabled={isActionLoading || buyerCorrectionLoading}
+                                            onClick={() => void openFullTextContractCorrection(contract)}
+                                            disabled={isActionLoading || contractTextCorrectionLoading}
                                             className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
                                           >
-                                            {buyerCorrectionLoading ? "Carregando..." : "Corrigir dados"}
+                                            {contractTextCorrectionLoading ? "Carregando..." : "Corrigir"}
                                           </button>
                                         ) : null}
 

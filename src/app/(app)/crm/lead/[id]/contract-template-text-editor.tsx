@@ -45,6 +45,13 @@ type EditorProps = {
   leadId: string | null | undefined;
   commercialOpportunityId: string | null | undefined;
   onDraftStateChange?: (state: ContractDraftState) => void;
+  correction?: {
+    contractId: string;
+    text: string;
+    originalFilename?: string | null;
+    onSaveText: (text: string) => Promise<void>;
+    onCancel: () => void;
+  } | null;
 };
 
 export type ContractDraftState = {
@@ -63,6 +70,7 @@ export function ContractTemplateTextEditor({
   leadId,
   commercialOpportunityId,
   onDraftStateChange,
+  correction = null,
 }: EditorProps) {
   const [sourceText, setSourceText] = useState("");
   const [draftText, setDraftText] = useState("");
@@ -116,6 +124,24 @@ export function ContractTemplateTextEditor({
     setConflict(false);
     setSearchQuery("");
     setActiveMatchIndex(-1);
+
+    if (correction) {
+      setSourceText(correction.text);
+      setDraftText(correction.text);
+      setSavedText(correction.text);
+      setTemplateVersionId("historical-contract");
+      setDraftId(null);
+      setDraftSha256(null);
+      setRevision(null);
+      setOriginalFilename(correction.originalFilename ?? null);
+      setReady(true);
+      setLoading(false);
+      return () => {
+        controller.abort();
+        saveAbort.current?.abort();
+        if (scopeEpoch.current === epoch) scopeEpoch.current++;
+      };
+    }
 
     if (!leadId || !commercialOpportunityId) {
       setLoading(false);
@@ -190,7 +216,7 @@ export function ContractTemplateTextEditor({
       saveAbort.current?.abort();
       if (scopeEpoch.current === epoch) scopeEpoch.current++;
     };
-  }, [leadId, commercialOpportunityId]);
+  }, [correction, leadId, commercialOpportunityId]);
 
   const changed = ready && draftText !== savedText;
   const previewPdfAvailable =
@@ -235,7 +261,25 @@ export function ContractTemplateTextEditor({
   }, [changed]);
 
   async function saveDraft() {
-    if (!ready || !canSave || !templateVersionId || !leadId || !commercialOpportunityId) return;
+    if (!ready || !canSave) return;
+
+    if (correction) {
+      setSaving(true);
+      setSaveError(null);
+      setSaveNotice(null);
+      try {
+        await correction.onSaveText(draftText);
+        setSavedText(draftText);
+        setSaveNotice("Nova versao textual salva e preparada para revisao humana.");
+      } catch (caught) {
+        setSaveError(caught instanceof Error ? caught.message : "Falha ao salvar a correcao textual.");
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
+    if (!templateVersionId || !leadId || !commercialOpportunityId) return;
 
     const controller = new AbortController();
     const epoch = scopeEpoch.current;
@@ -349,6 +393,16 @@ export function ContractTemplateTextEditor({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {correction ? (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={correction.onCancel}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={saving || draftText === sourceText}
