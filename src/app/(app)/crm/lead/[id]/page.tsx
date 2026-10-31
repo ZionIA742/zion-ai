@@ -1646,6 +1646,11 @@ export default function LeadPage() {
   const [generatedContracts, setGeneratedContracts] = useState<GeneratedContractSummary[]>([]);
   const [generatedContractsLoading, setGeneratedContractsLoading] = useState(false);
   const [generatedContractsError, setGeneratedContractsError] = useState<string | null>(null);
+  const [blockedContractPdf, setBlockedContractPdf] = useState<{
+    contractId: string;
+    contractVersionId: string;
+    signedUrl: string;
+  } | null>(null);
   const [openingGeneratedContractId, setOpeningGeneratedContractId] = useState<string | null>(null);
   const [contractPreview, setContractPreview] = useState<{
     kind: "contract" | "template" | "correction";
@@ -3566,6 +3571,15 @@ export default function LeadPage() {
 
     setOpeningGeneratedContractId(safeContractId);
     setGeneratedContractsError(null);
+    setBlockedContractPdf(null);
+    const pdfWindow = window.open("about:blank", "_blank");
+    if (pdfWindow) {
+      try {
+        pdfWindow.opener = null;
+      } catch {
+        // Alguns navegadores expõem opener como somente leitura.
+      }
+    }
 
     try {
       const response = await fetch(
@@ -3587,19 +3601,31 @@ export default function LeadPage() {
       ) {
         throw new Error("A identidade da versao aberta nao corresponde a versao atual carregada.");
       }
-      setContractPreview({
-        kind: "contract",
-        contractId: safeContractId,
-        signedUrl: result.signedUrl,
-        identity: {
+      let signedUrl: URL;
+      try {
+        signedUrl = new URL(result.signedUrl);
+      } catch {
+        throw new Error("A URL autorizada do PDF e invalida.");
+      }
+      if (signedUrl.protocol !== "https:" && signedUrl.protocol !== "http:") {
+        throw new Error("A URL autorizada do PDF e invalida.");
+      }
+
+      if (pdfWindow) {
+        pdfWindow.location.replace(signedUrl.toString());
+      } else {
+        setBlockedContractPdf({
+          contractId: safeContractId,
           contractVersionId: result.contractVersionId,
-          pdfSha256: result.pdfSha256 || null,
-          isTextDraftVersion: result.isTextDraftVersion === true,
-          textProvenance: result.textProvenance || null,
-        },
-      });
+          signedUrl: signedUrl.toString(),
+        });
+        setGeneratedContractsError(
+          "O navegador bloqueou a nova aba. Use o link abaixo para abrir o PDF.",
+        );
+      }
       return true;
     } catch (error: unknown) {
+      if (pdfWindow && !pdfWindow.closed) pdfWindow.close();
       const message =
         error instanceof Error ? error.message : "Nao foi possivel abrir o PDF deste contrato.";
       setGeneratedContractsError(message);
@@ -7010,6 +7036,16 @@ export default function LeadPage() {
                           {generatedContractsError ? (
                             <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
                               {generatedContractsError}
+                              {blockedContractPdf ? (
+                                <a
+                                  href={blockedContractPdf.signedUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="mt-2 inline-flex font-semibold underline"
+                                >
+                                  Abrir PDF em nova aba
+                                </a>
+                              ) : null}
                             </div>
                           ) : null}
 
