@@ -80,6 +80,23 @@ type SelectedCatalogProduct = CatalogComposerProduct & {
   operationId: string;
 };
 
+const QUOTE_PDF_OPERATION_KEY_PREFIX = "zion:quote-pdf-operation:";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+function getQuotePdfOperationId(quoteId: string) {
+  const key = `${QUOTE_PDF_OPERATION_KEY_PREFIX}${quoteId}`;
+  const existing = window.sessionStorage.getItem(key) || "";
+  if (UUID_PATTERN.test(existing)) return existing;
+
+  const operationId = window.crypto.randomUUID();
+  window.sessionStorage.setItem(key, operationId);
+  return operationId;
+}
+
+function clearQuotePdfOperationId(quoteId: string) {
+  window.sessionStorage.removeItem(`${QUOTE_PDF_OPERATION_KEY_PREFIX}${quoteId}`);
+}
+
 type CommercialTaskPayload = {
   intent?: string | null;
   next_step?: string | null;
@@ -1636,9 +1653,10 @@ export default function LeadPage() {
   const [generatedQuotesLoading, setGeneratedQuotesLoading] = useState(false);
   const [generatedQuotesError, setGeneratedQuotesError] = useState<string | null>(null);
   const [openingGeneratedQuoteId, setOpeningGeneratedQuoteId] = useState<string | null>(null);
+  const [quotePdfPreparationUncertainId, setQuotePdfPreparationUncertainId] = useState<string | null>(null);
   const [quoteActionLoadingId, setQuoteActionLoadingId] = useState<string | null>(null);
   const [quoteActionLoadingType, setQuoteActionLoadingType] = useState<
-    "approve" | "send" | null
+    "approve" | "send" | "generate_pdf" | null
   >(null);
   const [quoteActionError, setQuoteActionError] = useState<string | null>(null);
   const [quoteActionSuccess, setQuoteActionSuccess] = useState<string | null>(null);
@@ -2817,6 +2835,9 @@ export default function LeadPage() {
         {
           method: "POST",
           cache: "no-store",
+          headers: {
+            "x-zion-quote-operation-id": getQuotePdfOperationId(createResult.quoteId),
+          },
         }
       );
 
@@ -2830,6 +2851,8 @@ export default function LeadPage() {
             "O orcamento foi criado, mas nao foi possivel gerar o PDF."
         );
       }
+
+      clearQuotePdfOperationId(createResult.quoteId);
 
       clearPendingManualQuoteCreationOperation({
         storage: window.sessionStorage,
@@ -3360,6 +3383,73 @@ export default function LeadPage() {
       );
     } finally {
       setOpeningGeneratedQuoteId(null);
+    setQuotePdfPreparationUncertainId(null);
+    }
+  }
+
+  async function prepareDraftQuoteForReview(
+    quoteId: string,
+    currentStatus: string | null | undefined,
+  ) {
+    const safeQuoteId = String(quoteId || "").trim();
+    const normalizedStatus = String(currentStatus || "").trim().toLowerCase();
+    const quoteBelongsToCurrentScope = generatedQuotes.some(
+      (quote) => quote.id === safeQuoteId,
+    );
+
+    if (!safeQuoteId || !quoteBelongsToCurrentScope || normalizedStatus !== "draft") {
+      setGeneratedQuotesError("Este rascunho nao esta disponivel para preparacao humana.");
+      return;
+    }
+
+    if (quoteActionLoadingId === safeQuoteId) {
+      return;
+    }
+
+    setQuoteActionLoadingId(safeQuoteId);
+    setQuoteActionLoadingType("generate_pdf");
+    setGeneratedQuotesError(null);
+    setQuoteActionError(null);
+    setQuoteActionSuccess(null);
+
+    try {
+      const response = await fetch(
+        `/api/sales-quotes/${encodeURIComponent(safeQuoteId)}/generate-pdf`,
+        {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            "x-zion-quote-operation-id": getQuotePdfOperationId(safeQuoteId),
+          },
+        },
+      );
+      const result = (await response.json().catch(() => null)) as GenerateSalesQuotePdfResponse | null;
+
+      if (!response.ok || !result?.ok || result.quoteId !== safeQuoteId) {
+        throw new Error(
+          result?.message ||
+            result?.error ||
+            "Nao foi possivel preparar o PDF deste rascunho para revisao.",
+        );
+      }
+
+      clearQuotePdfOperationId(safeQuoteId);
+
+      await fetchGeneratedQuotes({ silent: true });
+      await fetchLeadConversationAndMessages({ silent: true });
+      setQuoteActionSuccess("PDF preparado e aguardando revisao humana.");
+      setStatusText("PDF preparado e aguardando revisao humana.");
+    } catch (error: any) {
+      await fetchGeneratedQuotes({ silent: true });
+      setQuotePdfPreparationUncertainId(safeQuoteId);
+      setGeneratedQuotesError(
+        error?.message ||
+          "Nao foi possivel confirmar a preparacao deste PDF. Atualize a tela antes de tentar novamente.",
+      );
+      setQuoteActionSuccess(null);
+    } finally {
+      setQuoteActionLoadingId(null);
+      setQuoteActionLoadingType(null);
     }
   }
 
@@ -6751,8 +6841,11 @@ export default function LeadPage() {
                                 const canEditQuote =
                                   normalizedStatus === "pending_review" ||
                                   normalizedStatus === "changes_requested" ||
-                                  normalizedStatus === "draft" ||
                                   normalizedStatus === "approved";
+                                const canPrepareDraftPdf =
+                                  normalizedStatus === "draft" &&
+                                  !hasPdf &&
+                                  quotePdfPreparationUncertainId !== quote.id;
 
                                 return (
                                   <div
@@ -6801,6 +6894,21 @@ export default function LeadPage() {
                                       </div>
 
                                       <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+                                        {canPrepareDraftPdf ? (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              void prepareDraftQuoteForReview(quote.id, quote.status)
+                                            }
+                                            disabled={isActionLoading}
+                                            className="rounded-xl bg-amber-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-amber-200 disabled:text-amber-700"
+                                          >
+                                            {isActionLoading && quoteActionLoadingType === "generate_pdf"
+                                              ? "Preparando..."
+                                              : "Preparar PDF para revisão"}
+                                          </button>
+                                        ) : null}
+
                                         {canEditQuote ? (
                                           <button
                                             type="button"

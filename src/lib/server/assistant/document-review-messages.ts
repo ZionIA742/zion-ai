@@ -595,6 +595,36 @@ export async function pushAssistantDocumentReviewMessage(
   });
 
   if (error) {
+    const isExpectedDeduplication =
+      error.code === "23505" &&
+      [error.constraint, error.message, error.details, error.hint].some((value) =>
+        String(value || "").includes("store_assistant_messages_quote_pdf_document_review_uidx"),
+      );
+    if (isExpectedDeduplication) {
+      const concurrentMessageId = await findExistingDocumentReviewMessage({
+        supabase: input.supabase,
+        organizationId: input.organizationId,
+        storeId: input.storeId,
+        documentType: input.documentType,
+        documentId: input.documentId,
+        documentVersionId: input.documentVersionId,
+        documentStatus: input.documentStatus,
+        source,
+      });
+
+      if (!concurrentMessageId) {
+        throw new Error(
+          "A mensagem document_review foi deduplicada, mas a identidade canonica nao foi confirmada.",
+        );
+      }
+
+      return {
+        ok: true as const,
+        deduped: true,
+        threadId,
+        messageId: concurrentMessageId,
+      };
+    }
     throw new Error(`Falha ao criar mensagem document_review da assistente: ${error.message}`);
   }
 

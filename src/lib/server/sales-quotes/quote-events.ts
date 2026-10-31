@@ -62,10 +62,22 @@ export async function insertQuoteConversationEvent(args: {
   createdBy?: string;
 }) {
   const conversationId = String(args.quote.conversation_id || "").trim();
+  const isExpectedDeduplication = (error: {
+    code?: string;
+    constraint?: string;
+    message?: string;
+    details?: string;
+    hint?: string;
+  }) =>
+    error.code === "23505" &&
+    [error.constraint, error.message, error.details, error.hint].some((value) =>
+      String(value || "").includes("conversation_events_quote_pdf_generation_uidx"),
+    );
 
   if (!conversationId) {
     return {
       created: false,
+      deduped: false,
       skippedReason: "missing_conversation_id",
     };
   }
@@ -79,11 +91,19 @@ export async function insertQuoteConversationEvent(args: {
   });
 
   if (error) {
+    if (isExpectedDeduplication(error)) {
+      return {
+        created: false,
+        deduped: true,
+        skippedReason: "already_exists",
+      };
+    }
     throw new Error(`Falha ao registrar conversation_event: ${error.message}`);
   }
 
   return {
     created: true,
+    deduped: false,
     skippedReason: null,
   };
 }
