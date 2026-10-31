@@ -250,7 +250,9 @@ async function calculatePeriod(
     }
 
     const end = previousUtcDate(costs.range.endDate);
-    const to = end < anchor ? end : anchor;
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    const lastClosedUtcDay = previousUtcDate(todayUtc);
+    const to = [end, anchor, lastClosedUtcDay].sort()[0];
 
     let officialUsd: string | null = null;
     let officialBrlCents: number | null = null;
@@ -320,9 +322,13 @@ async function calculatePeriod(
 
     const knownBrlSources = [fixedCents, manualBrlCents, officialBrlCents]
       .filter((value): value is number => value !== null);
-    const subtotalCents = knownBrlSources.length > 0
-      ? sumMinor(knownBrlSources)
-      : null;
+    const subtotalCents =
+      knownBrlSources.some((value) => value > 0) ||
+      (fixedCents !== null &&
+        manualBrlCents !== null &&
+        officialBrlCents !== null)
+        ? sumMinor(knownBrlSources)
+        : null;
 
     return {
       ...base,

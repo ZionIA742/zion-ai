@@ -43,3 +43,13 @@ test("botao conectado e consolidado legado identificado", () => {
   assert.match(parent, /Total operacional estimado/);
   assert.doesNotMatch(parent, /label="Total consolidado"/);
 });
+test("OpenAI considera somente dias UTC encerrados", () => {
+  assert.match(child, /lastClosedUtcDay/);
+  assert.match(child, /previousUtcDate\(todayUtc\)/);
+  assert.match(child, /\[end, anchor, lastClosedUtcDay\]\.sort\(\)\[0\]/);
+});
+
+test("ausencia de custo confirmado nao vira subtotal zero", () => {
+  assert.match(child, /knownBrlSources\.some\(\(value\) => value > 0\)/);
+  assert.match(child, /officialBrlCents !== null/);
+});
