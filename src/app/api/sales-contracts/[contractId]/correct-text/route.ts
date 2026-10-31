@@ -26,9 +26,38 @@ function json(body: unknown, status = 200) {
   return NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
 }
 
+class ContractTextCorrectionAuthorityError extends Error {
+  constructor(readonly diagnosticCode: string, readonly correlationId: string) {
+    super("A autoridade do contrato rejeitou a nova versao textual.");
+  }
+}
+
+function safeAuthorityDiagnostic(error: unknown) {
+  const candidate = isRecord(error) ? error : null;
+  const directCode = String(candidate?.code || "").trim();
+  if (/^(?:[0-9A-Z_:-]){2,64}$/u.test(directCode)) return directCode;
+
+  const message = String(candidate?.message || "");
+  return message.match(/\b(?:PGRST\d{3}|P9_[A-Z0-9_]{2,64}|CONTRACT_[A-Z0-9_]{2,64})\b/u)?.[0] ||
+    "UNCLASSIFIED_AUTHORITY_ERROR";
+}
+
+function authorityCorrelationId(operationKeyValue: string) {
+  return createHash("sha256").update(operationKeyValue, "utf8").digest("hex").slice(0, 16);
+}
+
 function errorResponse(error: unknown) {
   if (error instanceof ContractAccessError) return json({ ok: false, error: error.code, message: error.message }, error.status);
   if (error instanceof HistoricalContractTextError) return json({ ok: false, error: `HISTORICAL_TEXT_${error.code}`, message: error.message }, 409);
+  if (error instanceof ContractTextCorrectionAuthorityError) {
+    return json({
+      ok: false,
+      error: "CONTRACT_TEXT_CORRECTION_FAILED",
+      message: error.message,
+      diagnosticCode: error.diagnosticCode,
+      correlationId: error.correlationId,
+    }, 409);
+  }
   return json({ ok: false, error: "CONTRACT_TEXT_CORRECTION_FAILED", message: error instanceof Error ? error.message : "Nao foi possivel corrigir o texto do contrato." }, 409);
 }
 
@@ -103,6 +132,7 @@ export async function POST(request: Request, context: { params: Promise<{ contra
   let cleanupSupabase: Awaited<ReturnType<typeof resolveExistingContractForAuthorizedStoreScope>>["supabase"] | null = null;
   let cleanupOrganizationId = "";
   let cleanupStoreId = "";
+  let operationKeyValue = "";
   try {
     const access = await resolveStoreApiAccess({ requirement: "active" });
     if (!access.ok) return createStoreApiDeniedResponse(access);
@@ -145,13 +175,14 @@ export async function POST(request: Request, context: { params: Promise<{ contra
       pdfBytes: prepared.pdfBytes,
     });
     storedFile = stored;
+    operationKeyValue = operationKey(request, contractId);
     const { data, error } = await scope.supabase.rpc("create_sales_contract_text_correction_version_by_system", {
       p_organization_id: access.organizationId,
       p_store_id: access.storeId,
       p_contract_id: contractId,
       p_expected_sent_version_id: expectedVersionId,
       p_human_actor_id: access.sessionUserId,
-      p_operation_key: operationKey(request, contractId),
+      p_operation_key: operationKeyValue,
       p_request_fingerprint: prepared.requestFingerprint,
       p_content_fingerprint: prepared.contentFingerprint,
       p_store_file_id: stored.storeFileId,
@@ -162,7 +193,16 @@ export async function POST(request: Request, context: { params: Promise<{ contra
       p_pdf_sha256: prepared.pdfSha256,
       p_contract_snapshot: prepared.correctedSnapshot,
     });
-    if (error) throw new Error("A autoridade do contrato rejeitou a nova versao textual.");
+    if (error) {
+      const diagnosticCode = safeAuthorityDiagnostic(error);
+      const correlationId = authorityCorrelationId(operationKeyValue);
+      console.error("[sales-contracts/correct-text] authority-rejected", {
+        authority: "create_sales_contract_text_correction_version_by_system",
+        diagnosticCode,
+        correlationId,
+      });
+      throw new ContractTextCorrectionAuthorityError(diagnosticCode, correlationId);
+    }
     const row = Array.isArray(data) ? data.length === 1 ? data[0] : null : data;
     if (!row?.id || row.contract_id !== contractId || row.replayed !== false && row.replayed !== true) throw new Error("A autoridade nao confirmou a nova versao.");
     if (row.replayed === true && storedFile) {

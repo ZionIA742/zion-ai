@@ -19,6 +19,8 @@ assert.match(route, /expectedHistoricalTextSha256/);
 assert.match(route, /create_sales_contract_text_correction_version_by_system/);
 assert.match(route, /storeContractPdfFile/);
 assert.match(route, /replayed === true/);
+assert.match(route, /diagnosticCode/);
+assert.match(route, /correlationId/);
 assert.doesNotMatch(route, /send.*whatsapp|approve.*contract/i);
 
 assert.match(helper, /buildContractTextDraftPdf/);
