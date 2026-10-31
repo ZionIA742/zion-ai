@@ -4,15 +4,38 @@ export const SALES_CONTRACT_SEND_RECONCILIATION_SOURCE =
   "system_sales_contract_send_reconciliation";
 export const SALES_CONTRACT_SEND_MATERIALIZE_RPC =
   "materialize_sales_contract_send_by_system";
+export const SALES_CONTRACT_SEND_RESUME_RPC =
+  "resume_sales_contract_send_by_system";
 export const SALES_CONTRACT_SEND_FINALIZE_RPC =
   "finalize_sales_contract_send_by_system";
 
 export type SalesContractSendDeliveryState =
   | "pending"
   | "processing"
+  | "template_required"
   | "sent"
   | "uncertain"
   | "failed";
+
+export type SalesContractSendResumeOutcome =
+  | "no_existing_message"
+  | "template_required"
+  | "resumed"
+  | "already_queued"
+  | "already_sent"
+  | "uncertain"
+  | "in_progress"
+  | "failed";
+
+export type SalesContractSendResumeRow = {
+  message_id: string | null;
+  outbound_idempotency_key: string;
+  outbound_delivery_state: SalesContractSendDeliveryState | null;
+  sales_contract_id: string;
+  sales_contract_version_id: string;
+  external_message_id: string | null;
+  outcome: SalesContractSendResumeOutcome;
+};
 
 export type SalesContractSendMaterializationOutcome =
   | "queued"
@@ -154,6 +177,51 @@ export function materializeSalesContractSendBySystem(args: {
         throw new SalesContractSendError("O envio do contrato retornou uma operacao materializada invalida.");
       }
       return result as SalesContractSendMaterializationRow;
+    });
+}
+
+export function resumeSalesContractSendBySystem(args: {
+  supabase: {
+    rpc: (
+      fn: string,
+      payload: Record<string, unknown>,
+    ) => PromiseLike<{ data: unknown; error: { message: string } | null }>;
+  };
+  organizationId: string;
+  storeId: string;
+  contractId: string;
+  contractVersionId: string;
+}) {
+  const key = buildSalesContractSendIdempotencyKey(args);
+  return args.supabase
+    .rpc(SALES_CONTRACT_SEND_RESUME_RPC, {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_contract_id: args.contractId,
+      p_contract_version_id: args.contractVersionId,
+    })
+    .then(({ data, error }) => {
+      if (error) throw new SalesContractSendError("Nao foi possivel retomar o envio canonico do contrato.");
+      const row = rowOf(data) as Partial<SalesContractSendResumeRow> | null;
+      const result = {
+        message_id: text(row?.message_id) || null,
+        outbound_idempotency_key: text(row?.outbound_idempotency_key),
+        outbound_delivery_state: text(row?.outbound_delivery_state) || null,
+        sales_contract_id: text(row?.sales_contract_id),
+        sales_contract_version_id: text(row?.sales_contract_version_id),
+        external_message_id: text(row?.external_message_id) || null,
+        outcome: text(row?.outcome),
+      };
+      if (
+        result.outbound_idempotency_key !== key ||
+        result.sales_contract_id !== args.contractId ||
+        result.sales_contract_version_id !== args.contractVersionId ||
+        !["no_existing_message", "template_required", "resumed", "already_queued", "already_sent", "uncertain", "in_progress", "failed"].includes(result.outcome) ||
+        (result.outcome !== "no_existing_message" && !result.message_id)
+      ) {
+        throw new SalesContractSendError("A retomada do envio retornou uma operacao invalida.");
+      }
+      return result as SalesContractSendResumeRow;
     });
 }
 

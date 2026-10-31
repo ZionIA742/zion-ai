@@ -11,6 +11,7 @@ import {
   buildSalesContractSendIdempotencyKey,
   buildSalesContractSendMessageMetadata,
   materializeSalesContractSendBySystem,
+  resumeSalesContractSendBySystem,
 } from "@/lib/server/sales-contracts/contract-send";
 import {
   resolveStoreApiAccess,
@@ -90,6 +91,7 @@ type SalesContractSendPostDeps = {
   }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
   resolveContract: typeof resolveExistingContractForAuthorizedStoreScope;
   materializeSend: typeof materializeSalesContractSendBySystem;
+  resumeSend: typeof resumeSalesContractSendBySystem;
 };
 
 export function createSalesContractSendPostHandler(
@@ -99,6 +101,7 @@ export function createSalesContractSendPostHandler(
   const resolveContract =
     deps.resolveContract ?? resolveExistingContractForAuthorizedStoreScope;
   const materializeSend = deps.materializeSend ?? materializeSalesContractSendBySystem;
+  const resumeSend = deps.resumeSend ?? resumeSalesContractSendBySystem;
 
   return async function POST(
     request: Request,
@@ -271,6 +274,29 @@ export function createSalesContractSendPostHandler(
         contractId: scope.contract.id,
         contractVersionId: currentVersion.id,
       });
+      const resumed = await resumeSend({
+        supabase: scope.supabase,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        contractId: scope.contract.id,
+        contractVersionId: currentVersion.id,
+      });
+
+      if (resumed.outcome !== "no_existing_message") {
+        return NextResponse.json({
+          ok: true,
+          operation: {
+            message_id: resumed.message_id,
+            outbound_idempotency_key: resumed.outbound_idempotency_key,
+            outbound_delivery_state: resumed.outbound_delivery_state,
+            sales_contract_id: resumed.sales_contract_id,
+            sales_contract_version_id: resumed.sales_contract_version_id,
+            external_message_id: resumed.external_message_id,
+            outcome: resumed.outcome,
+          },
+        });
+      }
+
       let materialized: Awaited<ReturnType<typeof materializeSend>>;
       try {
         materialized = await materializeSend({

@@ -32,7 +32,7 @@ async function body(response: Response) { return { response, body: await respons
 
 function harness(options: { result?: Row; error?: { message: string } | null; scope?: ReturnType<typeof makeScope>; resolveContract?: (contractId: string, scope: Row) => Promise<unknown>; resolveAccess?: () => Promise<unknown> } = {}) {
   const calls: Array<{ fn: string; payload: Row }> = [];
-  const supabase = { rpc: async (fn: string, payload: Row) => { calls.push({ fn, payload }); return { data: [{ message_id: "message-1", outbound_idempotency_key: `sales_contract_send:org-1:store-1:contract-1:${VERSION_1}`, outbound_delivery_state: "pending", sales_contract_id: "contract-1", sales_contract_version_id: VERSION_1, external_message_id: null, outcome: "queued", ...options.result }], error: options.error ?? null }; } };
+  const supabase = { rpc: async (fn: string, payload: Row) => { if (fn === "resume_sales_contract_send_by_system") return { data: [{ message_id: null, outbound_idempotency_key: `sales_contract_send:org-1:store-1:contract-1:${VERSION_1}`, outbound_delivery_state: null, sales_contract_id: "contract-1", sales_contract_version_id: VERSION_1, external_message_id: null, outcome: "no_existing_message" }], error: null }; calls.push({ fn, payload }); return { data: [{ message_id: "message-1", outbound_idempotency_key: `sales_contract_send:org-1:store-1:contract-1:${VERSION_1}`, outbound_delivery_state: "pending", sales_contract_id: "contract-1", sales_contract_version_id: VERSION_1, external_message_id: null, outcome: "queued", ...options.result }], error: options.error ?? null }; } };
   const scope = options.scope ?? makeScope(supabase);
   return { calls, supabase, scope, resolveAccess: options.resolveAccess ?? (async () => granted(supabase)), resolveContract: options.resolveContract ?? (async () => scope) };
 }
@@ -283,6 +283,36 @@ async function testUnexpectedAccessErrorIsObserved() {
   assert.equal(result.body.error, "UNEXPECTED_ERROR");
 }
 
+async function testTemplateRequiredResumeUsesExistingMessage() {
+  const h = harness();
+  let materializeCalled = false;
+  const handler = createSalesContractSendPostHandler({
+    resolveAccess: async () => granted(h.supabase),
+    resolveContract: (async () => h.scope) as never,
+    resumeSend: (async () => ({
+      message_id: "message-existing",
+      outbound_idempotency_key: `sales_contract_send:org-1:store-1:contract-1:${VERSION_1}`,
+      outbound_delivery_state: "template_required",
+      sales_contract_id: "contract-1",
+      sales_contract_version_id: VERSION_1,
+      external_message_id: null,
+      outcome: "template_required",
+    })) as never,
+    materializeSend: (async () => {
+      materializeCalled = true;
+      throw new Error("must not create a second message");
+    }) as never,
+  });
+  const result = await body(await handler(new Request("http://test", {
+    method: "POST",
+    body: JSON.stringify({ expectedContractVersionId: VERSION_1 }),
+  }), context()));
+  assert.equal(result.response.status, 200);
+  assert.equal((result.body.operation as Row).message_id, "message-existing");
+  assert.equal((result.body.operation as Row).outcome, "template_required");
+  assert.equal(materializeCalled, false);
+}
+
 async function main() {
   const tests = [
     testDeniedBeforeContract,
@@ -296,6 +326,7 @@ async function main() {
     testReplayAndAuthorityFailureClosed,
     testAuthorityErrorsAndUnexpectedResolution,
     testUnexpectedAccessErrorIsObserved,
+    testTemplateRequiredResumeUsesExistingMessage,
     testSourceContract,
   ];
   for (const test of tests) await test();
