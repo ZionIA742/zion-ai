@@ -28,6 +28,7 @@ const PUBLIC_PATHS = new Set([
   "/api/cron/assistant-reports",
   "/api/cron/whatsapp-process-all",
   "/api/cron/zion-admin-openai-costs",
+  "/api/cron/zion-admin-monthly-preclosure",
 ]);
 
 export const KNOWN_PUBLIC_MIDDLEWARE_PATHS = Array.from(PUBLIC_PATHS);

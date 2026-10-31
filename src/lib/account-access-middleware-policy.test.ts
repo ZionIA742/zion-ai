@@ -119,6 +119,23 @@ const tests: TestCase[] = [
       expectNext("/api/cron/whatsapp-process-all", "anonymous");
       expectNext("/api/cron/zion-admin-openai-costs", "anonymous");
       expectNext("/api/cron/zion-admin-openai-costs", "unavailable");
+      expectNext("/api/cron/zion-admin-monthly-preclosure", "anonymous");
+      expectNext("/api/cron/zion-admin-monthly-preclosure", "unavailable");
+      expectNext("/api/cron/zion-admin-monthly-preclosure/", "anonymous");
+
+      expectRedirect(
+        "/api/cron/zion-admin-monthly-preclosure/other",
+        "anonymous",
+        "/login",
+        true,
+      );
+
+      expectRedirect(
+        "/api/cron/zion-admin-monthly-preclosure-extra",
+        "anonymous",
+        "/login",
+        true,
+      );
       expectRedirect(
         "/api/cron/zion-admin-openai-costs/other",
         "anonymous",
