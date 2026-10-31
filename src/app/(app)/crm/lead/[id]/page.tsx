@@ -3550,10 +3550,17 @@ export default function LeadPage() {
   async function openGeneratedContractPdf(
     contractId: string,
     contractsSource: GeneratedContractSummary[] = generatedContracts,
+    expectedContractVersionId?: string | null,
   ): Promise<boolean> {
     const safeContractId = String(contractId || "").trim();
+    const expectedVersionId = String(
+      expectedContractVersionId ||
+        contractsSource.find((contract) => contract.id === safeContractId)?.current_version_id ||
+        "",
+    ).trim();
 
-    if (!safeContractId) {
+    if (!safeContractId || !expectedVersionId) {
+      setGeneratedContractsError("Este contrato ainda nao possui uma versao PDF atual para abrir.");
       return false;
     }
 
@@ -3562,7 +3569,7 @@ export default function LeadPage() {
 
     try {
       const response = await fetch(
-        `/api/sales-contracts/${encodeURIComponent(safeContractId)}/signed-pdf-url`,
+        `/api/sales-contracts/${encodeURIComponent(safeContractId)}/signed-pdf-url?expectedContractVersionId=${encodeURIComponent(expectedVersionId)}`,
         {
           method: "GET",
           cache: "no-store",
@@ -3574,8 +3581,10 @@ export default function LeadPage() {
         throw new Error(result?.message || "Nao foi possivel abrir o PDF deste contrato.");
       }
 
-      if (!result.contractVersionId || result.contractVersionId !==
-          contractsSource.find((contract) => contract.id === safeContractId)?.current_version_id) {
+      if (
+        !result.contractVersionId ||
+        result.contractVersionId.toLowerCase() !== expectedVersionId.toLowerCase()
+      ) {
         throw new Error("A identidade da versao aberta nao corresponde a versao atual carregada.");
       }
       setContractPreview({
@@ -3591,9 +3600,11 @@ export default function LeadPage() {
       });
       return true;
     } catch (error: unknown) {
-      setGeneratedContractsError(
-        error instanceof Error ? error.message : "Nao foi possivel abrir o PDF deste contrato."
-      );
+      const message =
+        error instanceof Error ? error.message : "Nao foi possivel abrir o PDF deste contrato.";
+      setGeneratedContractsError(message);
+      setContractActionError(message);
+      setContractActionSuccess(null);
       return false;
     } finally {
       setOpeningGeneratedContractId(null);
@@ -7249,7 +7260,13 @@ export default function LeadPage() {
 
                                         <button
                                           type="button"
-                                          onClick={() => void openGeneratedContractPdf(contract.id)}
+                                          onClick={() =>
+                                            void openGeneratedContractPdf(
+                                              contract.id,
+                                              generatedContracts,
+                                              contract.current_version_id,
+                                            )
+                                          }
                                           disabled={!hasCurrentVersion || isOpening}
                                           className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
                                         >
