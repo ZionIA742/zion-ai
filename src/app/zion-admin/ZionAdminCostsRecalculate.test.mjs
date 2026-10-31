@@ -49,7 +49,10 @@ test("OpenAI considera somente dias UTC encerrados", () => {
   assert.match(child, /\[end, anchor, lastClosedUtcDay\]\.sort\(\)\[0\]/);
 });
 
-test("ausencia de custo confirmado nao vira subtotal zero", () => {
-  assert.match(child, /knownBrlSources\.some\(\(value\) => value > 0\)/);
-  assert.match(child, /officialBrlCents !== null/);
+test("subtotal registrado permite zero sem presumir custo OpenAI", () => {
+  assert.match(child, /knownBrlSources\.length > 0/);
+  assert.match(child, /sumMinor\(knownBrlSources\)/);
+  assert.doesNotMatch(child, /officialBrlCents\s*\?\?\s*0/);
+  assert.match(child, /Subtotal registrado em BRL/);
+  assert.match(child, /Não é o total efetivamente cobrado/);
 });

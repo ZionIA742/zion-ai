@@ -322,13 +322,9 @@ async function calculatePeriod(
 
     const knownBrlSources = [fixedCents, manualBrlCents, officialBrlCents]
       .filter((value): value is number => value !== null);
-    const subtotalCents =
-      knownBrlSources.some((value) => value > 0) ||
-      (fixedCents !== null &&
-        manualBrlCents !== null &&
-        officialBrlCents !== null)
-        ? sumMinor(knownBrlSources)
-        : null;
+    const subtotalCents = knownBrlSources.length > 0
+      ? sumMinor(knownBrlSources)
+      : null;
 
     return {
       ...base,
@@ -451,7 +447,7 @@ export default function ZionAdminCostsRecalculate({
                 <div className="mt-2 space-y-2">
                   <div>
                     <p className="text-[10px] text-[#91a7b6]">
-                      Subtotal conhecido em BRL
+                      Subtotal registrado em BRL
                     </p>
                     <p className="text-lg font-semibold tabular-nums text-white">
                       {brl(item.subtotalCents)}
