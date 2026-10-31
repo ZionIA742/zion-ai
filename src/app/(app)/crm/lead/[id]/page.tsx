@@ -574,21 +574,6 @@ type SalesContractActionResponse = {
   message?: string;
 };
 
-type SalesContractDetailResponse = {
-  ok: boolean;
-  contract?: {
-    id?: string;
-    status?: string | null;
-  } | null;
-  current_version?: {
-    id?: string;
-    status?: string | null;
-    contract_snapshot?: unknown;
-  } | null;
-  error?: string;
-  message?: string;
-};
-
 type ContractTextCorrectionResponse = {
   ok: boolean;
   contractId?: string;
@@ -609,17 +594,6 @@ type ContractTextCorrectionState = {
   revision: number;
   templateVersionId: string;
   originalFilename: string | null;
-  operationId: string;
-};
-
-type BuyerCorrectionField = "name" | "phone" | "document" | "email" | "address";
-type BuyerCorrectionValues = Record<BuyerCorrectionField, string | null>;
-type BuyerCorrectionState = {
-  contractId: string;
-  expectedSentVersionId: string;
-  fields: BuyerCorrectionField[];
-  previousBuyer: BuyerCorrectionValues;
-  correctedBuyer: BuyerCorrectionValues;
   operationId: string;
 };
 
@@ -1683,7 +1657,7 @@ export default function LeadPage() {
   const [preparedContractSend, setPreparedContractSend] = useState<PreparedContractSend | null>(null);
   const [contractActionLoadingId, setContractActionLoadingId] = useState<string | null>(null);
   const [contractActionLoadingType, setContractActionLoadingType] = useState<
-    "create" | "generate_pdf" | "prepare_send" | "approve" | "send" | "customer_sign" | "store_sign" | "correct_buyer" | null
+    "create" | "generate_pdf" | "prepare_send" | "approve" | "send" | "customer_sign" | "store_sign" | null
   >(null);
   const [contractActionError, setContractActionError] = useState<string | null>(null);
   const [contractActionSuccess, setContractActionSuccess] = useState<string | null>(null);
@@ -1695,9 +1669,6 @@ export default function LeadPage() {
   const [contractTextCorrection, setContractTextCorrection] =
     useState<ContractTextCorrectionState | null>(null);
   const [contractTextCorrectionLoading, setContractTextCorrectionLoading] = useState(false);
-  const [buyerCorrection, setBuyerCorrection] = useState<BuyerCorrectionState | null>(null);
-  const [buyerCorrectionSaving, setBuyerCorrectionSaving] = useState(false);
-  const [buyerCorrectionError, setBuyerCorrectionError] = useState<string | null>(null);
 
   const handleContractDraftStateChange = useCallback((next: ContractDraftState) => {
     setContractDraftState(next);
@@ -3484,7 +3455,7 @@ export default function LeadPage() {
     }
   }
 
-  function formatBuyerCorrectionError(code?: string, fallback?: string) {
+  function formatContractCorrectionError(code?: string, fallback?: string) {
     switch (code) {
       case "CONTRACT_VERSION_CHANGED":
         return "O contrato mudou desde a abertura desta tela. Atualize os contratos e tente novamente.";
@@ -3501,162 +3472,6 @@ export default function LeadPage() {
     }
   }
 
-  /* Legacy buyer-only correction handlers are intentionally disabled. The
-     sent-contract action now uses the full historical text editor below.
-  function closeBuyerCorrection() {
-    if (buyerCorrectionSaving) return;
-    setBuyerCorrection(null);
-    setBuyerCorrectionError(null);
-  }
-
-  async function openBuyerCorrection(contract: GeneratedContractSummary) {
-    const contractId = String(contract.id || "").trim();
-    const status = String(contract.status || "").trim().toLowerCase();
-    const isManualContract =
-      contract.manual_provenance?.source === "responsible_text_draft" &&
-      contract.manual_provenance.created_via === "create_sales_contract_manual_by_system";
-
-    if (!contractId || status !== "sent_to_customer" || !isManualContract || !contract.current_version_id) {
-      setContractActionError("Somente contratos manuais enviados ao cliente podem ter os dados corrigidos.");
-      return;
-    }
-
-    setBuyerCorrectionLoading(true);
-    setBuyerCorrectionError(null);
-    setContractActionError(null);
-
-    try {
-      const response = await fetch(`/api/sales-contracts/${encodeURIComponent(contractId)}`, {
-        method: "GET",
-        cache: "no-store",
-      });
-      const result = (await response.json()) as SalesContractDetailResponse;
-      const contractStatus = String(result.contract?.status || "")
-        .trim()
-        .toLowerCase();
-      const versionStatus = String(result.current_version?.status || "")
-        .trim()
-        .toLowerCase();
-      const snapshot = result.current_version?.contract_snapshot;
-      const rendererInput =
-        snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
-          ? (snapshot as Record<string, unknown>).renderer_input
-          : null;
-      const customer =
-        rendererInput && typeof rendererInput === "object" && !Array.isArray(rendererInput)
-          ? (rendererInput as Record<string, unknown>).customer
-          : null;
-
-      if (!response.ok || !result.ok) {
-        throw new Error(formatBuyerCorrectionError(result.error, result.message));
-      }
-      if (result.contract?.id !== contractId || result.current_version?.id !== contract.current_version_id) {
-        throw new Error("A versão carregada não corresponde à versão atual do contrato.");
-      }
-      if (contractStatus !== "sent_to_customer" || versionStatus !== "sent" || !customer || typeof customer !== "object" || Array.isArray(customer)) {
-        throw new Error("Os dados históricos do comprador não estão disponíveis para correção.");
-      }
-
-      const source = customer as Record<string, unknown>;
-      const supportedFields: BuyerCorrectionField[] = ["name", "phone", "document", "email", "address"]
-        .filter((field): field is BuyerCorrectionField => Object.prototype.hasOwnProperty.call(source, field));
-      if (!supportedFields.includes("name")) {
-        throw new Error("O nome do comprador não foi identificado com segurança no contrato histórico.");
-      }
-
-      const values = (field: BuyerCorrectionField) => {
-        const value = source[field];
-        if (value === null || value === undefined) return null;
-        if (typeof value !== "string") {
-          throw new Error("Um campo pessoal do contrato histórico não possui formato seguro para correção.");
-        }
-        return value;
-      };
-      const previousBuyer = {
-        name: values("name"),
-        phone: values("phone"),
-        document: values("document"),
-        email: values("email"),
-        address: values("address"),
-      } satisfies BuyerCorrectionValues;
-
-      setBuyerCorrection({
-        contractId,
-        expectedSentVersionId: contract.current_version_id,
-        fields: supportedFields,
-        previousBuyer,
-        correctedBuyer: { ...previousBuyer },
-        operationId: crypto.randomUUID(),
-      });
-    } catch (error: unknown) {
-      setBuyerCorrectionError(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível carregar os dados históricos do contrato.",
-      );
-    } finally {
-      setBuyerCorrectionLoading(false);
-    }
-  }
-
-  async function saveBuyerCorrection() {
-    if (!buyerCorrection || buyerCorrectionSaving) return;
-
-    setBuyerCorrectionSaving(true);
-    setBuyerCorrectionError(null);
-    setContractActionError(null);
-    setContractActionLoadingId(buyerCorrection.contractId);
-    setContractActionLoadingType("correct_buyer");
-
-    try {
-      const response = await fetch(
-        `/api/sales-contracts/${encodeURIComponent(buyerCorrection.contractId)}/correct-buyer`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-zion-contract-operation-id": buyerCorrection.operationId,
-          },
-          body: JSON.stringify({
-            expectedSentVersionId: buyerCorrection.expectedSentVersionId,
-            previousBuyer: buyerCorrection.previousBuyer,
-            correctedBuyer: buyerCorrection.correctedBuyer,
-          }),
-        },
-      );
-      const result = (await response.json()) as SalesContractActionResponse & { versionId?: string; replayed?: boolean };
-      if (!response.ok || !result.ok || !result.versionId) {
-        throw new Error(formatBuyerCorrectionError(result.error, result.message));
-      }
-
-      const correctedContractId = buyerCorrection.contractId;
-      const refreshedContracts = await fetchGeneratedContracts({ silent: true });
-      if (
-        refreshedContracts.find((contract) => contract.id === correctedContractId)?.current_version_id !==
-        result.versionId
-      ) {
-        throw new Error("A nova versão foi criada, mas o CRM não confirmou sua identidade atual. Atualize a tela antes de conferir o PDF.");
-      }
-      setBuyerCorrection(null);
-      const opened = await openGeneratedContractPdf(correctedContractId, refreshedContracts);
-      if (!opened) {
-        throw new Error("A nova versão foi criada, mas o PDF não pôde ser aberto para conferência.");
-      }
-      setContractActionSuccess("Correção salva. A nova versão está pendente de aprovação humana.");
-    } catch (error: unknown) {
-      setBuyerCorrectionError(
-        error instanceof Error ? error.message : "Não foi possível salvar a correção.",
-      );
-      setContractActionSuccess(null);
-    } finally {
-      setBuyerCorrectionSaving(false);
-      setContractActionLoadingId(null);
-      setContractActionLoadingType(null);
-    }
-  }
-
-  */
-
   async function openFullTextContractCorrection(contract: GeneratedContractSummary) {
     const contractId = String(contract.id || "").trim();
     if (!contractId || String(contract.status || "").trim().toLowerCase() !== "sent_to_customer" ||
@@ -3666,7 +3481,6 @@ export default function LeadPage() {
     }
     setContractTextCorrectionLoading(true);
     setContractActionError(null);
-    setBuyerCorrectionError(null);
     try {
       const response = await fetch(`/api/sales-contracts/${encodeURIComponent(contractId)}/correct-text`, { method: "GET", cache: "no-store" });
       const result = (await response.json()) as ContractTextCorrectionResponse;
@@ -3675,7 +3489,7 @@ export default function LeadPage() {
           typeof result.text !== "string" || !result.text.trim() ||
           typeof result.revision !== "number" || !Number.isSafeInteger(result.revision) || result.revision < 1 ||
           typeof result.templateVersionId !== "string") {
-        throw new Error(formatBuyerCorrectionError(result.error, result.message));
+        throw new Error(formatContractCorrectionError(result.error, result.message));
       }
       const revision = result.revision as number;
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(result.text));
@@ -3714,7 +3528,7 @@ export default function LeadPage() {
     });
     const result = (await response.json()) as SalesContractActionResponse & { versionId?: string };
     if (!response.ok || !result.ok || !result.versionId) {
-      throw new Error(formatBuyerCorrectionError(result.error, result.message));
+      throw new Error(formatContractCorrectionError(result.error, result.message));
     }
     const refreshedContracts = await fetchGeneratedContracts({ silent: true });
     if (refreshedContracts.find((contract) => contract.id === contractTextCorrection.contractId)?.current_version_id !== result.versionId) {
@@ -7186,102 +7000,6 @@ export default function LeadPage() {
                             <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
                               {generatedContractsError}
                             </div>
-                          ) : null}
-
-                          {buyerCorrectionError ? (
-                            <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
-                              {buyerCorrectionError}
-                            </div>
-                          ) : null}
-
-                          {false && buyerCorrection ? (
-                            <section
-                              className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 p-4 ring-1 ring-blue-600/10"
-                              aria-label="Corrigir dados do comprador"
-                            >
-                              <div className="text-sm font-semibold text-gray-900">
-                                Corrigir dados do comprador
-                              </div>
-                              <p className="mt-1 text-xs text-gray-700">
-                                Apenas os campos pessoais identificados no contrato são exibidos. Cláusulas, valores e condições comerciais não podem ser alterados. A nova versão ficará pendente de aprovação humana.
-                              </p>
-                              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                                {buyerCorrection?.fields.map((field) => {
-                                  const labels: Record<BuyerCorrectionField, string> = {
-                                    name: "Nome",
-                                    phone: "Telefone",
-                                    document: "CPF/CNPJ",
-                                    email: "E-mail",
-                                    address: "Endereço",
-                                  };
-                                  const value = buyerCorrection.correctedBuyer[field] || "";
-                                  return (
-                                    <label key={field} className={field === "address" ? "sm:col-span-2" : ""}>
-                                      <span className="text-xs font-semibold text-gray-700">{labels[field]}</span>
-                                      {field === "address" ? (
-                                        <textarea
-                                          value={value}
-                                          onChange={(event) =>
-                                            setBuyerCorrection((current) =>
-                                              current
-                                                ? {
-                                                    ...current,
-                                                    correctedBuyer: {
-                                                      ...current.correctedBuyer,
-                                                      [field]: event.target.value,
-                                                    },
-                                                  }
-                                                : current,
-                                            )
-                                          }
-                                          rows={3}
-                                          disabled={buyerCorrectionSaving}
-                                          className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 disabled:bg-gray-100"
-                                        />
-                                      ) : (
-                                        <input
-                                          type={field === "email" ? "email" : field === "phone" ? "tel" : "text"}
-                                          value={value}
-                                          onChange={(event) =>
-                                            setBuyerCorrection((current) =>
-                                              current
-                                                ? {
-                                                    ...current,
-                                                    correctedBuyer: {
-                                                      ...current.correctedBuyer,
-                                                      [field]: event.target.value,
-                                                    },
-                                                  }
-                                                : current,
-                                            )
-                                          }
-                                          disabled={buyerCorrectionSaving}
-                                          className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 disabled:bg-gray-100"
-                                        />
-                                      )}
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                              <div className="mt-4 flex flex-wrap justify-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={closeBuyerCorrection}
-                                  disabled={buyerCorrectionSaving}
-                                  className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-800 shadow-sm ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                  Cancelar
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void saveBuyerCorrection()}
-                                  disabled={buyerCorrectionSaving}
-                                  className="rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-200 disabled:text-blue-700"
-                                >
-                                  {buyerCorrectionSaving ? "Salvando..." : "Salvar correção"}
-                                </button>
-                              </div>
-                            </section>
                           ) : null}
 
                           {contractActionError ? (
