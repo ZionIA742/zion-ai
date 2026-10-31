@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatCostMetric, type CostCompleteness, type CostSourceAvailability } from "@/lib/server/zion-admin-costs";
 import ZionAdminOpenAiOfficialCosts from "./ZionAdminOpenAiOfficialCosts";
 import ZionAdminMetaCosts from "./ZionAdminMetaCosts";
+import ZionAdminCostsRecalculate from "./ZionAdminCostsRecalculate";
 
 type CostFrequency = "monthly" | "annual";
 type FixedCost = { id: string; name: string; amount_cents: number; frequency: CostFrequency; enabled: boolean; effective_month: string };
@@ -191,6 +192,7 @@ export default function ZionAdminCostsSection() {
           {period==="month"?<label className="text-xs text-[#9fb8c4]">Mês <select aria-label="Mês" className={`${PALETTE.input} ml-1`} value={Math.min(month,maxMonth)} onChange={e=>setAnchor(`${year}-${String(e.target.value).padStart(2,"0")}-01`)}>{MONTHS.slice(0,maxMonth).map((name,index)=><option value={index+1} key={name}>{name}</option>)}</select></label>:null}</>}
       </div>
     </div>
+    <ZionAdminCostsRecalculate onRecalculated={() => { void fetchCosts(); }} />
     {error?<div role="alert" className="rounded-xl border border-amber-500/40 bg-amber-500/[0.08] p-3 text-xs text-amber-100">{error}</div>:null}
     {feedback?<div role="status" className="rounded-xl border border-cyan-500/30 bg-cyan-500/[0.06] p-3 text-xs text-cyan-100">{feedback}</div>:null}
     {loading&&!data?<p className="text-sm text-[#9fb6c2]">Carregando informações financeiras...</p>:null}
@@ -199,8 +201,8 @@ export default function ZionAdminCostsSection() {
     {data?<>
       <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
         <FinancialCard label="Custos fixos" value={brl(data.totals.fixedCents)} sub="Despesas cadastradas, conforme a vigência" />
-        <FinancialCard label="IA variável" value={data.totals.variableCents != null && data.dataAvailability?.ptax === "available" && data.totals.costCompleteness === "complete" ? brl(data.totals.variableCents) : data.dataAvailability?.ptax === "unavailable" ? "Indisponível" : "Incompleto"} sub={`${costUsd(data.totals.aiCostUsd,data.dataAvailability?.aiRuns,data.totals.costCompleteness)} em custos registrados`} />
-        <FinancialCard accent label="Total consolidado" value={data.totals.totalCents != null && data.dataAvailability?.ptax === "available" && data.totals.costCompleteness === "complete" ? brl(data.totals.totalCents) : data.dataAvailability?.ptax === "unavailable" ? "Indisponível" : "Incompleto"} sub="Fixos + consumo da IA, sem dupla contagem" />
+        <FinancialCard label="IA variável estimada" value={data.totals.variableCents != null && data.dataAvailability?.ptax === "available" && data.totals.costCompleteness === "complete" ? brl(data.totals.variableCents) : data.dataAvailability?.ptax === "unavailable" ? "Indisponível" : "Incompleto"} sub={`${costUsd(data.totals.aiCostUsd,data.dataAvailability?.aiRuns,data.totals.costCompleteness)} em custos registrados`} />
+        <FinancialCard accent label="Total operacional estimado" value={data.totals.totalCents != null && data.dataAvailability?.ptax === "available" && data.totals.costCompleteness === "complete" ? brl(data.totals.totalCents) : data.dataAvailability?.ptax === "unavailable" ? "Indisponível" : "Incompleto"} sub="Estimativa por ai_runs; não é cobrança comprovada" />
         <FinancialCard label="Execuções da IA" value={sourceNumber(data.totals.executions,data.dataAvailability?.aiRuns)} sub={`${costNumber(data.totals.tokens,data.dataAvailability?.aiRuns,data.totals.tokenCompleteness)} tokens utilizados`} />
       </div>
       {(data.totals.variableCents==null || data.totals.unpricedExecutions>0)?<div className="rounded-xl border border-amber-400/25 bg-amber-400/5 px-3 py-2 text-xs text-amber-200">A conversão em reais está incompleta: cotação PTAX indisponível ou {data.totals.unpricedExecutions} execução(ões) sem custo registrado. Não presumimos custo zero.</div>:null}
