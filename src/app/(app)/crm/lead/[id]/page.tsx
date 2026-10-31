@@ -3646,6 +3646,7 @@ export default function LeadPage() {
     contractId: string,
     contractsSource: GeneratedContractSummary[] = generatedContracts,
     expectedContractVersionId?: string | null,
+    openInNewTab = true,
   ): Promise<boolean> {
     const safeContractId = String(contractId || "").trim();
     const expectedVersionId = String(
@@ -3662,7 +3663,7 @@ export default function LeadPage() {
     setOpeningGeneratedContractId(safeContractId);
     setGeneratedContractsError(null);
     setBlockedContractPdf(null);
-    const pdfWindow = window.open("about:blank", "_blank");
+    const pdfWindow = openInNewTab ? window.open("about:blank", "_blank") : null;
     if (pdfWindow) {
       try {
         pdfWindow.opener = null;
@@ -3699,6 +3700,22 @@ export default function LeadPage() {
       }
       if (signedUrl.protocol !== "https:" && signedUrl.protocol !== "http:") {
         throw new Error("A URL autorizada do PDF e invalida.");
+      }
+
+      setContractPreview({
+        kind: "contract",
+        contractId: safeContractId,
+        signedUrl: signedUrl.toString(),
+        identity: {
+          contractVersionId: result.contractVersionId,
+          pdfSha256: result.pdfSha256 || null,
+          isTextDraftVersion: result.isTextDraftVersion === true,
+          textProvenance: result.textProvenance || null,
+        },
+      });
+
+      if (!openInNewTab) {
+        return true;
       }
 
       if (pdfWindow) {
@@ -5797,9 +5814,9 @@ export default function LeadPage() {
       return;
     }
 
-    void Promise.resolve().then(() => {
+    void Promise.resolve().then(async () => {
       if (documentScopeRef.current === documentScopeKey) {
-        return openGeneratedContractPdf(target.id);
+        return openGeneratedContractPdf(target.id, generatedContracts, undefined, false);
       }
       return undefined;
     });

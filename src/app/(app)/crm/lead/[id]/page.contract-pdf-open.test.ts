@@ -15,6 +15,7 @@ assert.match(openSource, /result\.contractVersionId\.toLowerCase\(\) !== expecte
 assert.match(openSource, /window\.open\("about:blank", "_blank"\)/);
 assert.match(openSource, /pdfWindow\.location\.replace\(signedUrl\.toString\(\)\)/);
 assert.match(openSource, /setBlockedContractPdf\(/);
+assert.match(openSource, /setContractPreview\(\{[\s\S]*signedUrl: signedUrl\.toString\(\)/);
 assert.match(source, /Abrir PDF em nova aba/);
 assert.match(openSource, /pdfWindow\.close\(\)/);
 assert.ok(
@@ -23,5 +24,6 @@ assert.ok(
   "the temporary tab must open before the signed URL request",
 );
 assert.match(source, /openGeneratedContractPdf\([\s\S]*?contract\.id,[\s\S]*?contract\.current_version_id,/);
+assert.match(source, /openGeneratedContractPdf\(target\.id, generatedContracts, undefined, false\)/);
 
 console.log("contract PDF opening uses the current version contract");
