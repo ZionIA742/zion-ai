@@ -25,6 +25,8 @@ export type StoreHighValueDiscountSettingsRow = {
   enabled: boolean | null;
   threshold_amount_cents: number | null;
   discount_percent: number | null;
+  requires_human_approval?: boolean | null;
+  requires_human_approval_configured_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };

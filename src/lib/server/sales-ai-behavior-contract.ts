@@ -66,6 +66,8 @@ export type SalesAiBehaviorContract = {
       highValueEnabled: boolean | null;
       highValueThresholdAmountCents: number | null;
       highValueDiscountPercent: number | null;
+      highValueRequiresHumanApproval: boolean | null;
+      highValueRequiresHumanApprovalConfiguredAt: string | null;
     };
     counterparts: {
       paymentMethods: Record<StorePaymentMethod, SalesAiBehaviorDecision>;
@@ -268,6 +270,7 @@ function resolveDiscountBehavior(
 
 function resolveHighValueBehavior(
   settings: StoreHighValueDiscountSettingsRow | null,
+  discountSettings: StoreDiscountSettingsRow | null,
 ): SalesAiBehaviorDecision {
   if (!settings || settings.enabled == null) {
     return decision(
@@ -285,7 +288,9 @@ function resolveHighValueBehavior(
 
   if (
     settings.threshold_amount_cents == null ||
-    settings.discount_percent == null
+    settings.discount_percent == null ||
+    settings.requires_human_approval == null ||
+    !cleanText(settings.requires_human_approval_configured_at)
   ) {
     return decision(
       "unconfigured",
@@ -293,10 +298,41 @@ function resolveHighValueBehavior(
     );
   }
 
-  return decision(
-    "human_approval_required",
-    "HIGH_VALUE_DISCOUNT_ELIGIBLE_REQUIRES_APPROVAL",
-  );
+  const autonomyMode = cleanText(discountSettings?.discount_autonomy_mode);
+  const defaultDiscountPercent = discountSettings?.default_discount_percent;
+  const maxDiscountPercent = discountSettings?.max_discount_percent;
+  const normalPolicyValid =
+    autonomyMode !== null &&
+    ["approval_required", "default_step_autonomous", "within_policy_autonomous"].includes(autonomyMode) &&
+    typeof defaultDiscountPercent === "number" &&
+    Number.isFinite(defaultDiscountPercent) &&
+    typeof maxDiscountPercent === "number" &&
+    Number.isFinite(maxDiscountPercent) &&
+    defaultDiscountPercent >= 0 &&
+    defaultDiscountPercent <= maxDiscountPercent;
+
+  if (!normalPolicyValid) {
+    return decision("unconfigured", "HIGH_VALUE_DISCOUNT_POLICY_INCOMPLETE");
+  }
+
+  if (settings.requires_human_approval || autonomyMode === "approval_required") {
+    return decision(
+      "human_approval_required",
+      "HIGH_VALUE_DISCOUNT_ELIGIBLE_REQUIRES_APPROVAL",
+    );
+  }
+
+  if (
+    autonomyMode === "default_step_autonomous" &&
+    settings.discount_percent > defaultDiscountPercent
+  ) {
+    return decision(
+      "human_approval_required",
+      "HIGH_VALUE_DISCOUNT_ABOVE_DEFAULT_REQUIRES_APPROVAL",
+    );
+  }
+
+  return decision("allowed", "HIGH_VALUE_DISCOUNT_WITHIN_AUTONOMY_POLICY");
 }
 
 function resolveCounterparts(args: {
@@ -469,7 +505,10 @@ export function buildSalesAiBehaviorContract(args: {
               );
 
   const discountBehavior = resolveDiscountBehavior(args.discountSettings);
-  const highValue = resolveHighValueBehavior(args.highValueDiscountSettings);
+  const highValue = resolveHighValueBehavior(
+    args.highValueDiscountSettings,
+    args.discountSettings,
+  );
   const counterparts = resolveCounterparts({
     policy: args.counterpartPolicy ?? null,
     paymentSettings,
@@ -530,6 +569,10 @@ export function buildSalesAiBehaviorContract(args: {
           args.highValueDiscountSettings?.threshold_amount_cents ?? null,
         highValueDiscountPercent:
           args.highValueDiscountSettings?.discount_percent ?? null,
+        highValueRequiresHumanApproval:
+          args.highValueDiscountSettings?.requires_human_approval ?? null,
+        highValueRequiresHumanApprovalConfiguredAt:
+          cleanText(args.highValueDiscountSettings?.requires_human_approval_configured_at),
       },
       counterparts,
     },
@@ -717,6 +760,8 @@ export function buildSalesAiBehaviorContractPromptBlock(
     `- discount.autonomy_mode: ${contract.discount.canonical.autonomyMode ?? "not_configured"}`,
     `- discount.high_value_threshold_cents: ${contract.discount.canonical.highValueThresholdAmountCents ?? "not_configured"}`,
     `- discount.high_value_percent: ${contract.discount.canonical.highValueDiscountPercent ?? "not_configured"}`,
+    `- discount.high_value_requires_human_approval: ${contract.discount.canonical.highValueRequiresHumanApproval ?? "not_configured"}`,
+    `- discount.high_value_requires_human_approval_configured_at: ${contract.discount.canonical.highValueRequiresHumanApprovalConfiguredAt ?? "not_configured"}`,
     `- discount.special_rules: ${contract.discount.canonical.specialRules ?? "not_configured"}`,
     "- regras especiais podem restringir ou contextualizar a politica, mas texto livre nao amplia sozinho uma permissao marcada como forbidden, human_approval_required ou unconfigured",
     ...STORE_PAYMENT_METHOD_VALUES.map((method) =>

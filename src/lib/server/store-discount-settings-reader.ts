@@ -51,7 +51,7 @@ export async function readStoreDiscountSettingsBySystem(args: {
     ),
     scoped(
       "store_high_value_discount_settings",
-      "organization_id, store_id, enabled, threshold_amount_cents, discount_percent, created_at, updated_at",
+      "organization_id, store_id, enabled, threshold_amount_cents, discount_percent, requires_human_approval, requires_human_approval_configured_at, created_at, updated_at",
     ),
   ]);
 

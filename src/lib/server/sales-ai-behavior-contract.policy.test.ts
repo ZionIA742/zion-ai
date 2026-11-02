@@ -70,12 +70,65 @@ const discountBase = {
       enabled: true,
       threshold_amount_cents: 5000000,
       discount_percent: 20,
+      requires_human_approval: true,
+      requires_human_approval_configured_at: "2026-10-06T12:00:00Z",
     },
   });
 
   assert.equal(
     contract.discount.highValue.state,
     "human_approval_required",
+  );
+}
+
+{
+  const contract = buildSalesAiBehaviorContract({
+    paymentSettings: null,
+    discountSettings: {
+      ...discountBase,
+      discount_autonomy_mode: "default_step_autonomous",
+      default_discount_percent: 15,
+    },
+    highValueDiscountSettings: {
+      organization_id: "org-1",
+      store_id: "store-1",
+      enabled: true,
+      threshold_amount_cents: 5000000,
+      discount_percent: 20,
+      requires_human_approval: false,
+      requires_human_approval_configured_at: "2026-10-06T12:00:00Z",
+    },
+  });
+
+  assert.equal(contract.discount.highValue.state, "human_approval_required");
+  assert.equal(
+    contract.discount.highValue.reasonCode,
+    "HIGH_VALUE_DISCOUNT_ABOVE_DEFAULT_REQUIRES_APPROVAL",
+  );
+}
+
+{
+  const contract = buildSalesAiBehaviorContract({
+    paymentSettings: null,
+    discountSettings: {
+      ...discountBase,
+      discount_autonomy_mode: "within_policy_autonomous",
+    },
+    highValueDiscountSettings: {
+      organization_id: "org-1",
+      store_id: "store-1",
+      enabled: true,
+      threshold_amount_cents: 5000000,
+      discount_percent: 35,
+      requires_human_approval: false,
+      requires_human_approval_configured_at: "2026-10-06T12:00:00Z",
+    },
+  });
+
+  assert.equal(contract.discount.highValue.state, "allowed");
+  assert.equal(
+    contract.discount.highValue.reasonCode,
+    "HIGH_VALUE_DISCOUNT_WITHIN_AUTONOMY_POLICY",
   );
 }
 
@@ -104,6 +157,8 @@ const discountBase = {
       enabled: true,
       threshold_amount_cents: 5000000,
       discount_percent: 20,
+      requires_human_approval: true,
+      requires_human_approval_configured_at: "2026-10-06T12:00:00Z",
     },
     contractUsagePolicy: {
       state: "enabled",
@@ -136,4 +191,4 @@ const discountBase = {
   assert.match(block, /nunca cria, preenche, edita, gera PDF ou envia contrato/);
 }
 
-console.log("sales AI behavior contract policy: 6 tests passed");
+console.log("sales AI behavior contract policy: 7 tests passed");
