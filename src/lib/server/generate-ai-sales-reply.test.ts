@@ -10674,12 +10674,12 @@ test("CMIR new independent opportunity keeps arrival A historical and routes can
   assert.equal(result.usage.totalTokens, 45);
 });
 
-test("CMIR ambiguity stays fail-closed and never qualifies the arrival opportunity", async () => {
+test("CMIR needs_clarification preserves facts on a proven effective opportunity", async () => {
   const arrivalOpportunityId = "opp-1";
 
   const supabase = createGenerateAiSalesReplySupabase({
     anchorMessageContent:
-      "Nao sei se quero continuar essa compra ou fazer outra piscina.",
+      "Nao sei se quero continuar essa compra ou fazer outra piscina, mas o espaco e 3x4.",
     commercialOpportunityId: arrivalOpportunityId,
     includeCurrentIntentResolution: false,
   });
@@ -10695,6 +10695,14 @@ test("CMIR ambiguity stays fail-closed and never qualifies the arrival opportuni
         input_tokens: 4,
         output_tokens: 2,
         total_tokens: 6,
+      },
+    },
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
       },
     },
     {
@@ -10764,8 +10772,8 @@ test("CMIR ambiguity stays fail-closed and never qualifies the arrival opportuni
       "write_commercial_opportunity_qualification_fact_by_system",
   );
 
-  assert.equal(qualificationReaderCalls.length, 1);
-  assert.equal(qualificationWriterCalls.length, 0);
+  assert.equal(qualificationReaderCalls.length, 2);
+  assert.equal(qualificationWriterCalls.length > 0, true);
 
   assert.equal(
     qualificationReaderCalls.some(
@@ -10774,20 +10782,20 @@ test("CMIR ambiguity stays fail-closed and never qualifies the arrival opportuni
     true,
   );
   assert.equal(
-    qualificationWriterCalls.some(
+    qualificationWriterCalls.every(
       (call) => call.payload.p_commercial_opportunity_id === arrivalOpportunityId,
     ),
-    false,
+    true,
   );
 
   assert.equal(
     result.aiText,
     "Voce esta falando da compra atual ou de uma nova piscina?",
   );
-  assert.equal(openai.calls.length, 2);
-  assert.equal(result.usage.tokensPrompt, 14);
-  assert.equal(result.usage.tokensCompletion, 7);
-  assert.equal(result.usage.totalTokens, 21);
+  assert.equal(openai.calls.length, 3);
+  assert.equal(result.usage.tokensPrompt, 15);
+  assert.equal(result.usage.tokensCompletion, 8);
+  assert.equal(result.usage.totalTokens, 23);
 });
 
 test("effective reply opportunity requires current canonical identity proof", async () => {
@@ -11992,7 +12000,38 @@ test("customer city and state have distinct canonical known fact descriptions", 
   );
 });
 
-test("all 14 canonical fact keys have concrete known fact representation", () => {
+const EXPECTED_CANONICAL_FACT_KEYS = [
+  "need_summary",
+  "interested_product_reference",
+  "space_text",
+  "requested_area_m2",
+  "location_text",
+  "customer_address_text",
+  "customer_city",
+  "customer_state_code",
+  "preferred_period_text",
+  "budget_text",
+  "decision_context",
+  "installation_interest",
+  "payment_interest",
+  "technical_visit_interest",
+  "measurements_confirmation_required",
+  "customer_preferences_text",
+  "relevant_objection_text",
+] as const;
+
+test("all 17 canonical fact keys have concrete known fact representation", () => {
+  const extractionSource = readFileSync(
+    "src/lib/server/sales-qualification-fact-extraction.ts",
+    "utf8",
+  );
+  const contractKeys = Array.from(
+    extractionSource
+      .split("type QualificationFactValueKind", 1)[0]
+      .matchAll(/^  \| "([a-z0-9_]+)"/gm),
+    (match) => match[1],
+  );
+  assert.deepEqual(contractKeys, [...EXPECTED_CANONICAL_FACT_KEYS]);
   const snapshot = {
     organizationId: "org-1",
     storeId: "store-1",
@@ -12008,6 +12047,14 @@ test("all 14 canonical fact keys have concrete known fact representation", () =>
         factKey: "requested_area_m2",
         valueKind: "number",
         value: 12,
+      }),
+      createCanonicalKnownFact({
+        factKey: "customer_city",
+        normalizedValueText: "suzano",
+      }),
+      createCanonicalKnownFact({
+        factKey: "customer_state_code",
+        normalizedValueText: "SP",
       }),
       createCanonicalKnownFact({ factKey: "location_text", normalizedValueText: "campinas" }),
       createCanonicalKnownFact({
@@ -12039,6 +12086,11 @@ test("all 14 canonical fact keys have concrete known fact representation", () =>
         value: true,
       }),
       createCanonicalKnownFact({
+        factKey: "measurements_confirmation_required",
+        valueKind: "boolean",
+        value: true,
+      }),
+      createCanonicalKnownFact({
         factKey: "customer_preferences_text",
         normalizedValueText: "compacta",
       }),
@@ -12050,26 +12102,194 @@ test("all 14 canonical fact keys have concrete known fact representation", () =>
     missingFactGroups: [],
     conflicts: [],
     provenanceSummary: {
-      knownFactCount: 14,
-      confirmedCount: 14,
+      knownFactCount: 17,
+      confirmedCount: 17,
       inferredCount: 0,
       conflictCount: 0,
       messageBackedCount: 0,
       conversationBackedCount: 0,
       sourceCounts: {
-        system_correction: 14,
+        system_correction: 17,
       },
     },
     canAskNextQuestion: false,
-    knownFactCount: 14,
+    knownFactCount: 17,
     missingGroupCount: 0,
     conflictCount: 0,
   };
 
   const summary = summarizeCanonicalKnownFacts(snapshot as never);
 
-  assert.equal(summary.length, 14);
+  assert.equal(summary.length, 17);
   assert.equal(summary.every(Boolean), true);
+});
+
+test("all 17 canonical facts use the shared needs_clarification retention path", async () => {
+  const cases = [
+    ["need_summary", "Quero uma piscina para lazer", "lazer", "text", "lazer"],
+    ["interested_product_reference", "Tenho interesse no modelo X", "modelo X", "text", "modelo X"],
+    ["space_text", "O espaco e 3x4", "3x4", "text", "3x4"],
+    ["requested_area_m2", "A area e 12 m2", 12, "number", "12 m2"],
+    ["location_text", "Fico no bairro Centro", "bairro Centro", "text", "bairro Centro"],
+    ["customer_address_text", "Meu endereco e Rua das Flores, 10, Centro", "Rua das Flores, 10, Centro", "text", "Rua das Flores, 10, Centro"],
+    ["customer_city", "A cidade e Suzano", "Suzano", "text", "Suzano"],
+    ["customer_state_code", "A UF e SP", "SP", "text", "SP"],
+    ["preferred_period_text", "Prefiro este mes", "este mes", "text", "este mes"],
+    ["budget_text", "Meu orcamento e 20 mil", "20 mil", "text", "20 mil"],
+    ["decision_context", "Eu decido com minha esposa", "decido com minha esposa", "text", "decido com minha esposa"],
+    ["installation_interest", "Quero instalacao", true, "boolean", "Quero instalacao"],
+    ["payment_interest", "Quero pagar no Pix", true, "boolean", "Quero pagar no Pix"],
+    ["technical_visit_interest", "Quero uma visita tecnica", true, "boolean", "Quero uma visita tecnica"],
+    ["measurements_confirmation_required", "Ainda preciso confirmar as medidas", true, "boolean", "Ainda preciso confirmar as medidas"],
+    ["customer_preferences_text", "Prefiro uma piscina compacta", "piscina compacta", "text", "piscina compacta"],
+    ["relevant_objection_text", "Achei caro", "Achei caro", "text", "Achei caro"],
+  ] as const;
+
+  assert.deepEqual(
+    cases.map(([factKey]) => factKey),
+    [...EXPECTED_CANONICAL_FACT_KEYS],
+  );
+
+  for (const [factKey, factText, value, valueKind, evidenceText] of cases) {
+    const anchorMessageContent =
+      `Nao sei se quero continuar essa compra ou fazer outra piscina, mas ${factText}.`;
+    const readerRow = createCanonicalQualificationReaderRow({
+      commercialOpportunityId: "opp-1",
+      knownFacts: [
+        createCanonicalKnownFact({
+          factKey,
+          valueKind,
+          value,
+          normalizedValueText: valueKind === "text" ? String(value) : null,
+          sourceType: "incoming_customer_message",
+        }),
+      ],
+      missingFactGroups: [],
+      canAskNextQuestion: false,
+    });
+    const supabase = createGenerateAiSalesReplySupabase({
+      anchorMessageContent,
+      includeCurrentIntentResolution: false,
+      canonicalReaderResponses: [
+        {
+          data: [
+            createCanonicalQualificationReaderRow({
+              commercialOpportunityId: "opp-1",
+              knownFacts: [],
+              missingFactGroups: [],
+              canAskNextQuestion: true,
+            }),
+          ],
+          error: null,
+        },
+        { data: [readerRow], error: null },
+      ],
+      writerResponse: (payload) => {
+        const writerValueKind =
+          payload.p_fact_key === "requested_area_m2"
+            ? "number"
+            : [
+                  "installation_interest",
+                  "payment_interest",
+                  "technical_visit_interest",
+                  "measurements_confirmation_required",
+                ].includes(String(payload.p_fact_key))
+              ? "boolean"
+              : "text";
+        return {
+          data: [
+            {
+              commercial_opportunity_id: payload.p_commercial_opportunity_id,
+              fact_key: payload.p_fact_key,
+              event_id: `event-${String(payload.p_fact_key)}`,
+              current_last_event_id: `event-${String(payload.p_fact_key)}`,
+              current_state: payload.p_assertion_level,
+              current_value_json: payload.p_value_json,
+              normalized_value_text:
+                typeof payload.p_value_json === "string"
+                  ? payload.p_value_json
+                  : null,
+              value_kind: writerValueKind,
+              conflict_values_json: [],
+              changed: true,
+              outcome: "confirmed_created",
+              updated_at: "2026-08-24T10:00:01.000Z",
+            },
+          ],
+          error: null,
+        };
+      },
+    });
+    const openai = new FakeOpenAi([
+      {
+        output_text: JSON.stringify({
+          decision_kind: "needs_clarification",
+          reason_code: "model_reason_is_not_authority",
+          evidence: ["continuar essa compra ou fazer outra piscina"],
+        }),
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      },
+      {
+        output_text: JSON.stringify({
+          candidates: [
+            {
+              fact_key: factKey,
+              assertion_level: "confirmed",
+              value_kind: valueKind,
+              text_value: valueKind === "text" ? String(value) : null,
+              number_value: valueKind === "number" ? Number(value) : null,
+              boolean_value: valueKind === "boolean" ? Boolean(value) : null,
+              evidence_text: evidenceText,
+            },
+          ],
+        }),
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      },
+      {
+        output_text: "Preciso confirmar o contexto da compra.",
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      },
+    ]);
+
+    const result = await generateAiSalesReply({
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      anchorMessageId: "msg-anchor",
+      supabaseClient: supabase,
+      openaiClient: openai,
+    });
+
+    assert.equal(result.ok, true, factKey);
+    if (!result.ok) continue;
+
+    assert.equal(result.context.resolvedCommercialOpportunityId, null, factKey);
+    assert.equal(
+      result.context.effectiveReplyCommercialOpportunityId,
+      "opp-1",
+      factKey,
+    );
+    const writerCalls = supabase.rpcCalls.filter(
+      (call) =>
+        call.fn ===
+        "write_commercial_opportunity_qualification_fact_by_system",
+    );
+    const factWriterCall = writerCalls.find(
+      (call) => call.payload.p_fact_key === factKey,
+    );
+    assert.ok(factWriterCall, factKey);
+    assert.equal(factWriterCall.payload.p_commercial_opportunity_id, "opp-1");
+    assert.equal(factWriterCall.payload.p_value_json, value);
+    assert.equal(
+      supabase.rpcCalls.filter(
+        (call) =>
+          call.fn ===
+          "read_commercial_opportunity_qualification_facts_by_system",
+      ).at(-1)?.payload.p_commercial_opportunity_id,
+      "opp-1",
+      factKey,
+    );
+  }
 });
 
 test("different explicit opportunities keep commercialOpportunityId and snapshot isolated", async () => {

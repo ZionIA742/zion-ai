@@ -13101,7 +13101,7 @@ export async function generateAiSalesReply(
         console.warn("[generateAiSalesReply] structured qualification extraction dropped", {
           anchorMessageId,
           conversationId,
-          commercialOpportunityId: resolvedCommercialOpportunityId,
+          commercialOpportunityId: qualificationFactWriteCommercialOpportunityId,
           reason: structuredExtraction.failureReason,
         });
       }
@@ -13123,7 +13123,7 @@ export async function generateAiSalesReply(
         console.info("[generateAiSalesReply] qualification candidate collision", {
           anchorMessageId,
           conversationId,
-          commercialOpportunityId: resolvedCommercialOpportunityId,
+          commercialOpportunityId: qualificationFactWriteCommercialOpportunityId,
           discardedFactKeys: mergedCandidatesResult.discardedFactKeys,
           reason: "candidate_collision",
         });
@@ -13139,7 +13139,7 @@ export async function generateAiSalesReply(
             supabase,
             organizationId,
             storeId: resolvedStoreId,
-            commercialOpportunityId: resolvedCommercialOpportunityId,
+            commercialOpportunityId: qualificationFactWriteCommercialOpportunityId,
             conversationId,
             anchorMessageId,
             candidate,
@@ -13160,7 +13160,7 @@ export async function generateAiSalesReply(
             supabase,
             organizationId,
             storeId: resolvedStoreId,
-            commercialOpportunityId: resolvedCommercialOpportunityId,
+            commercialOpportunityId: qualificationFactWriteCommercialOpportunityId,
           });
 
         if (!postWriteQualificationResult.ok) {
@@ -13204,7 +13204,7 @@ export async function generateAiSalesReply(
               supabase,
               organizationId,
               storeId: resolvedStoreId,
-              commercialOpportunityId: resolvedCommercialOpportunityId,
+              commercialOpportunityId: qualificationFactWriteCommercialOpportunityId,
               conversationId,
               anchorMessageId,
               factKey: candidate.factKey,
@@ -13227,7 +13227,7 @@ export async function generateAiSalesReply(
               supabase,
               organizationId,
               storeId: resolvedStoreId,
-              commercialOpportunityId: resolvedCommercialOpportunityId,
+              commercialOpportunityId: qualificationFactWriteCommercialOpportunityId,
             });
 
           if (!postResolutionQualificationResult.ok) {
@@ -13287,7 +13287,7 @@ export async function generateAiSalesReply(
               supabase,
               organizationId,
               storeId: resolvedStoreId,
-              commercialOpportunityId: resolvedCommercialOpportunityId,
+              commercialOpportunityId: qualificationFactWriteCommercialOpportunityId,
               stateCode: inferredStateCode,
               operationKey,
             });
@@ -13305,7 +13305,7 @@ export async function generateAiSalesReply(
               supabase,
               organizationId,
               storeId: resolvedStoreId,
-              commercialOpportunityId: resolvedCommercialOpportunityId,
+              commercialOpportunityId: qualificationFactWriteCommercialOpportunityId,
             });
 
           if (!postGeographyQualificationResult.ok) {
@@ -13323,39 +13323,41 @@ export async function generateAiSalesReply(
       }
       }
 
-      const profileMaterializationResult =
-        await materializeCommercialOpportunityProfileFromQualificationBySystem({
-          supabase,
-          organizationId,
-          storeId: resolvedStoreId,
-          commercialOpportunityId: resolvedCommercialOpportunityId,
-          materializationEventKey: anchorMessageId,
-          canonicalQualificationSnapshot,
-        });
+      if (resolvedCommercialOpportunityId) {
+        const profileMaterializationResult =
+          await materializeCommercialOpportunityProfileFromQualificationBySystem({
+            supabase,
+            organizationId,
+            storeId: resolvedStoreId,
+            commercialOpportunityId: resolvedCommercialOpportunityId,
+            materializationEventKey: anchorMessageId,
+            canonicalQualificationSnapshot,
+          });
 
-      if (!profileMaterializationResult.ok) {
-        return {
-          ok: false,
-          error: "MATERIALIZE_CANONICAL_PROFILE_FAILED",
-          message: profileMaterializationResult.message,
-        };
-      }
+        if (!profileMaterializationResult.ok) {
+          return {
+            ok: false,
+            error: "MATERIALIZE_CANONICAL_PROFILE_FAILED",
+            message: profileMaterializationResult.message,
+          };
+        }
 
-      const checklistProgressMaterializationResult =
-        await materializeCommercialOpportunityChecklistAndProgress({
-          supabase,
-          organizationId,
-          storeId: resolvedStoreId,
-          commercialOpportunityId: resolvedCommercialOpportunityId,
-          eventKeyBase: `sales_ai:${anchorMessageId}`,
-        });
+        const checklistProgressMaterializationResult =
+          await materializeCommercialOpportunityChecklistAndProgress({
+            supabase,
+            organizationId,
+            storeId: resolvedStoreId,
+            commercialOpportunityId: resolvedCommercialOpportunityId,
+            eventKeyBase: `sales_ai:${anchorMessageId}`,
+          });
 
-      if (!checklistProgressMaterializationResult.ok) {
-        return {
-          ok: false,
-          error: "MATERIALIZE_CANONICAL_CHECKLIST_PROGRESS_FAILED",
-          message: checklistProgressMaterializationResult.message,
-        };
+        if (!checklistProgressMaterializationResult.ok) {
+          return {
+            ok: false,
+            error: "MATERIALIZE_CANONICAL_CHECKLIST_PROGRESS_FAILED",
+            message: checklistProgressMaterializationResult.message,
+          };
+        }
       }
     }
 
