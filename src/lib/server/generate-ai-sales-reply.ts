@@ -13075,8 +13075,17 @@ export async function generateAiSalesReply(
       canonicalCommercialContextResult.canonicalQualificationSnapshot;
     let customerGeographyLookupStatus: CustomerGeographyLookupStatus | null = null;
     const crmStageForReply = canonicalCommercialContextResult.crmStageForReply;
+    const qualificationFactWriteCommercialOpportunityId =
+      resolvedCommercialOpportunityId ||
+      (commercialMessageIntentResolution.decisionKind ===
+        "needs_clarification" &&
+      effectiveReplyCommercialOpportunityId &&
+      canonicalCommercialContextResult.anchoredCommercialOpportunityId ===
+        effectiveReplyCommercialOpportunityId
+        ? effectiveReplyCommercialOpportunityId
+        : null);
 
-    if (resolvedCommercialOpportunityId) {
+    if (qualificationFactWriteCommercialOpportunityId) {
       const deterministicCandidates = extractDeterministicQualificationCandidates(
         lastCustomerMessage,
       )
