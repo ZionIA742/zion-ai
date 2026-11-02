@@ -460,6 +460,13 @@ type SalesQuoteListResponse = {
   ok: boolean;
   quotes?: GeneratedQuoteSummary[];
   currentCommercialProposal?: CurrentCommercialProposalSummary | null;
+  currentCommercialProposalAcceptance?: {
+    acceptance_state: string | null;
+    reason_code: string | null;
+    current_quote_id: string | null;
+    current_quote_version_id: string | null;
+    accepted_at: string | null;
+  } | null;
   error?: string;
   message?: string;
 };
@@ -474,7 +481,6 @@ type SalesQuoteDetailResponse = {
     customer_name: string | null;
     customer_phone: string | null;
     customer_notes: string | null;
-    internal_notes: string | null;
     payment_terms: string | null;
     delivery_terms: string | null;
     warranty_terms: string | null;
@@ -542,6 +548,15 @@ type SalesQuoteActionResponse = {
     salesQuoteId?: string;
     salesQuoteVersionId?: string;
   } | null;
+};
+
+type AcceptedQuoteSummaryState = {
+  status: "loading" | "accepted" | "none" | "error";
+  quote: NonNullable<SalesQuoteDetailResponse["quote"]> | null;
+  items: NonNullable<SalesQuoteDetailResponse["items"]>;
+  acceptedAt: string | null;
+  quoteId: string | null;
+  quoteVersionId: string | null;
 };
 
 type GeneratedContractSummary = {
@@ -2361,6 +2376,14 @@ export default function LeadPage() {
     setPaymentSuccess(null);
     setGeneratedQuotes([]);
     setCurrentCommercialProposal(null);
+    setAcceptedQuoteSummary({
+      status: "loading",
+      quote: null,
+      items: [],
+      acceptedAt: null,
+      quoteId: null,
+      quoteVersionId: null,
+    });
     setGeneratedQuotesError(null);
     setGeneratedQuotesLoading(false);
     setHasLoadedGeneratedQuotes(false);
@@ -3149,6 +3172,106 @@ export default function LeadPage() {
       if (!options?.silent && documentScopeRef.current === scopedDocumentKey) {
         setGeneratedQuotesLoading(false);
       }
+    }
+  }
+
+  async function fetchAcceptedQuoteSummary() {
+    const scopedLeadId = leadId;
+    const scopedOpportunityId = selectedDocumentOpportunityId;
+    const scopedDocumentKey = documentScopeKey;
+
+    if (!scopedLeadId || !scopedOpportunityId || !scopedDocumentKey) {
+      setAcceptedQuoteSummary({
+        status: "none",
+        quote: null,
+        items: [],
+        acceptedAt: null,
+        quoteId: null,
+        quoteVersionId: null,
+      });
+      return;
+    }
+
+    documentScopeRef.current = scopedDocumentKey;
+    setAcceptedQuoteSummary((current) => ({
+      ...current,
+      status: "loading",
+      quote: null,
+      items: [],
+    }));
+
+    try {
+      const params = new URLSearchParams({
+        leadId: scopedLeadId,
+        commercialOpportunityId: scopedOpportunityId,
+      });
+      const listResponse = await fetch(`/api/sales-quotes?${params.toString()}`, {
+        method: "GET",
+        cache: "no-store",
+      });
+      const listResult = (await listResponse.json()) as SalesQuoteListResponse;
+
+      if (documentScopeRef.current !== scopedDocumentKey) return;
+      if (!listResponse.ok || !listResult?.ok) {
+        throw new Error(listResult?.message || "Nao foi possivel verificar o orcamento aceito.");
+      }
+
+      const acceptance = listResult.currentCommercialProposalAcceptance;
+      const acceptedQuoteId = String(acceptance?.current_quote_id || "").trim();
+      const acceptedQuoteVersionId = String(acceptance?.current_quote_version_id || "").trim();
+
+      if (
+        acceptance?.acceptance_state !== "accepted" ||
+        !acceptedQuoteId ||
+        !acceptedQuoteVersionId
+      ) {
+        setAcceptedQuoteSummary({
+          status: acceptance?.acceptance_state === "error" ? "error" : "none",
+          quote: null,
+          items: [],
+          acceptedAt: null,
+          quoteId: null,
+          quoteVersionId: null,
+        });
+        return;
+      }
+
+      const detailResponse = await fetch(
+        `/api/sales-quotes/${encodeURIComponent(acceptedQuoteId)}`,
+        { method: "GET", cache: "no-store" },
+      );
+      const detailResult = (await detailResponse.json()) as SalesQuoteDetailResponse;
+
+      if (documentScopeRef.current !== scopedDocumentKey) return;
+      if (
+        !detailResponse.ok ||
+        !detailResult?.ok ||
+        !detailResult.quote ||
+        detailResult.quote.id !== acceptedQuoteId ||
+        detailResult.quote.current_version_id !== acceptedQuoteVersionId ||
+        detailResult.current_version?.id !== acceptedQuoteVersionId
+      ) {
+        throw new Error("A versao aceita nao corresponde ao detalhe comercial consultado.");
+      }
+
+      setAcceptedQuoteSummary({
+        status: "accepted",
+        quote: detailResult.quote,
+        items: Array.isArray(detailResult.items) ? detailResult.items : [],
+        acceptedAt: acceptance.accepted_at,
+        quoteId: acceptedQuoteId,
+        quoteVersionId: acceptedQuoteVersionId,
+      });
+    } catch {
+      if (documentScopeRef.current !== scopedDocumentKey) return;
+      setAcceptedQuoteSummary({
+        status: "error",
+        quote: null,
+        items: [],
+        acceptedAt: null,
+        quoteId: null,
+        quoteVersionId: null,
+      });
     }
   }
 
@@ -6489,6 +6612,144 @@ export default function LeadPage() {
                                                     label="Pendências abertas"
                                                     value={`${commercialTasks.length}`}
                                                   />
+                                                </div>
+
+                                                <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                                                  <div className="flex flex-wrap items-start justify-between gap-3">
+                                                    <div>
+                                                      <h3 className="text-sm font-bold text-gray-950">Orçamento aceito</h3>
+                                                      <p className="mt-1 text-xs text-gray-500">
+                                                        Resumo somente leitura da versão comprovadamente aceita pelo cliente.
+                                                      </p>
+                                                    </div>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => {
+                                                        setActiveGeneratedPdfTab("quotes");
+                                                        setActiveDetailsTab("pdfs");
+                                                      }}
+                                                      className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                                                    >
+                                                      Ver todos os orçamentos
+                                                    </button>
+                                                  </div>
+
+                                                  {acceptedQuoteSummary.status === "loading" ? (
+                                                    <div className="mt-3 text-sm text-gray-600">Verificando o orçamento aceito...</div>
+                                                  ) : acceptedQuoteSummary.status === "error" ? (
+                                                    <div className="mt-3 text-sm text-red-700">
+                                                      Não foi possível verificar o orçamento aceito.
+                                                    </div>
+                                                  ) : acceptedQuoteSummary.status === "none" || !acceptedQuoteSummary.quote ? (
+                                                    <div className="mt-3 text-sm text-gray-600">
+                                                      Nenhum orçamento aceito registrado para este lead.
+                                                    </div>
+                                                  ) : (
+                                                    <div className="mt-4 space-y-4">
+                                                      <div className="grid gap-3 md:grid-cols-2">
+                                                        <InfoCard
+                                                          label="Orçamento"
+                                                          value={
+                                                            acceptedQuoteSummary.quote.title ||
+                                                            acceptedQuoteSummary.quote.quote_number ||
+                                                            "Sem identificação"
+                                                          }
+                                                        />
+                                                        <InfoCard
+                                                          label="Aceito em"
+                                                          value={
+                                                            acceptedQuoteSummary.acceptedAt
+                                                              ? formatDateTime(acceptedQuoteSummary.acceptedAt)
+                                                              : "Data não informada"
+                                                          }
+                                                        />
+                                                        <InfoCard
+                                                          label="Subtotal"
+                                                          value={
+                                                            acceptedQuoteSummary.quote.subtotal_cents === null
+                                                              ? "Não informado"
+                                                              : formatCurrencyBRL(acceptedQuoteSummary.quote.subtotal_cents / 100)
+                                                          }
+                                                        />
+                                                        <InfoCard
+                                                          label="Desconto"
+                                                          value={
+                                                            acceptedQuoteSummary.quote.discount_cents === null
+                                                              ? "Não informado"
+                                                              : formatCurrencyBRL(acceptedQuoteSummary.quote.discount_cents / 100)
+                                                          }
+                                                        />
+                                                        <InfoCard
+                                                          label="Total aprovado"
+                                                          value={
+                                                            acceptedQuoteSummary.quote.total_cents === null
+                                                              ? "Não informado"
+                                                              : formatCurrencyBRL(acceptedQuoteSummary.quote.total_cents / 100)
+                                                          }
+                                                        />
+                                                        <InfoCard
+                                                          label="Validade"
+                                                          value={
+                                                            acceptedQuoteSummary.quote.valid_until ||
+                                                            acceptedQuoteSummary.quote.validity_days ||
+                                                            "Não informada"
+                                                          }
+                                                        />
+                                                      </div>
+
+                                                      {acceptedQuoteSummary.items.length > 0 ? (
+                                                        <div>
+                                                          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                                            Produtos e serviços
+                                                          </div>
+                                                          <div className="mt-2 space-y-2">
+                                                            {acceptedQuoteSummary.items.map((item) => (
+                                                              <div key={item.id} className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                                                  <div className="min-w-0">
+                                                                    <div className="text-sm font-semibold text-gray-900">
+                                                                      {item.name || "Item sem nome"}
+                                                                    </div>
+                                                                    {item.description ? (
+                                                                      <div className="mt-1 text-xs leading-5 text-gray-600">
+                                                                        {item.description}
+                                                                      </div>
+                                                                    ) : null}
+                                                                  </div>
+                                                                  <div className="text-xs font-semibold text-gray-700">
+                                                                    Qtd.: {item.quantity === null ? "Não informada" : item.quantity}
+                                                                  </div>
+                                                                </div>
+                                                                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
+                                                                  <span>
+                                                                    Unitário: {item.unit_price_cents === null ? "Não informado" : formatCurrencyBRL(item.unit_price_cents / 100)}
+                                                                  </span>
+                                                                  <span>
+                                                                    Desconto: {item.discount_cents === null ? "Não informado" : formatCurrencyBRL(item.discount_cents / 100)}
+                                                                  </span>
+                                                                  <span>
+                                                                    Total: {item.total_cents === null ? "Não informado" : formatCurrencyBRL(item.total_cents / 100)}
+                                                                  </span>
+                                                                </div>
+                                                              </div>
+                                                            ))}
+                                                          </div>
+                                                        </div>
+                                                      ) : null}
+
+                                                      <div className="grid gap-3 md:grid-cols-3">
+                                                        {acceptedQuoteSummary.quote.payment_terms ? (
+                                                          <InfoCard label="Pagamento" value={acceptedQuoteSummary.quote.payment_terms} />
+                                                        ) : null}
+                                                        {acceptedQuoteSummary.quote.delivery_terms ? (
+                                                          <InfoCard label="Entrega" value={acceptedQuoteSummary.quote.delivery_terms} />
+                                                        ) : null}
+                                                        {acceptedQuoteSummary.quote.warranty_terms ? (
+                                                          <InfoCard label="Garantia" value={acceptedQuoteSummary.quote.warranty_terms} />
+                                                        ) : null}
+                                                      </div>
+                                                    </div>
+                                                  )}
                                                 </div>
 
                                                 <div className="mt-3 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">

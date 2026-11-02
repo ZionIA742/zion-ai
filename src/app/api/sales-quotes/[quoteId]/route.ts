@@ -147,7 +147,6 @@ export async function GET(
         customer_name: scope.quote.customer_name || null,
         customer_phone: scope.quote.customer_phone || null,
         customer_notes: scope.quote.customer_notes || null,
-        internal_notes: scope.quote.internal_notes || null,
         payment_terms: readOfficialOrMetadataValue(scope.quote as Record<string, unknown>, quoteMetadata, "payment_terms"),
         delivery_terms: readOfficialOrMetadataValue(scope.quote as Record<string, unknown>, quoteMetadata, "delivery_terms"),
         warranty_terms: readOfficialOrMetadataValue(scope.quote as Record<string, unknown>, quoteMetadata, "warranty_terms"),

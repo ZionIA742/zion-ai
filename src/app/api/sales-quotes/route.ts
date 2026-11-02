@@ -44,6 +44,14 @@ type CurrentCommercialProposalSummary = {
   reason_code: string | null;
 };
 
+type CurrentCommercialProposalAcceptanceSummary = {
+  acceptance_state: string | null;
+  reason_code: string | null;
+  current_quote_id: string | null;
+  current_quote_version_id: string | null;
+  accepted_at: string | null;
+};
+
 function cleanText(value: unknown) {
   const text = String(value || "").trim();
   return text || null;
@@ -261,6 +269,41 @@ export function createSalesQuotesListGetHandler(deps?: {
       reason_code: cleanText(currentProposalRow.reason_code),
     };
 
+    let currentCommercialProposalAcceptance: CurrentCommercialProposalAcceptanceSummary = {
+      acceptance_state: "error",
+      reason_code: "acceptance_reader_unavailable",
+      current_quote_id: null,
+      current_quote_version_id: null,
+      accepted_at: null,
+    };
+
+    const { data: acceptanceData, error: acceptanceError } =
+      await auth.supabase.rpc("read_current_commercial_proposal_acceptance_by_system", {
+        p_organization_id: opportunity.organization_id,
+        p_store_id: opportunity.store_id,
+        p_commercial_opportunity_id: opportunity.id,
+      });
+
+    if (!acceptanceError) {
+      const acceptanceRows = normalizeCurrentCommercialProposalRows(acceptanceData);
+      const acceptanceRow = acceptanceRows.length === 1 ? acceptanceRows[0] : null;
+      const acceptanceScopeMatches =
+        acceptanceRow &&
+        cleanText(acceptanceRow.organization_id) === opportunity.organization_id &&
+        cleanText(acceptanceRow.store_id) === opportunity.store_id &&
+        cleanText(acceptanceRow.commercial_opportunity_id) === opportunity.id;
+
+      if (acceptanceScopeMatches) {
+        currentCommercialProposalAcceptance = {
+          acceptance_state: cleanText(acceptanceRow.acceptance_state),
+          reason_code: cleanText(acceptanceRow.reason_code),
+          current_quote_id: cleanText(acceptanceRow.current_quote_id),
+          current_quote_version_id: cleanText(acceptanceRow.current_quote_version_id),
+          accepted_at: cleanText(acceptanceRow.accepted_at),
+        };
+      }
+    }
+
     if (
       currentCommercialProposal.proposal_state === "available" &&
       (!currentCommercialProposal.current_quote_id ||
@@ -381,6 +424,7 @@ export function createSalesQuotesListGetHandler(deps?: {
       organizationId: opportunity.organization_id,
       storeId: opportunity.store_id,
       currentCommercialProposal,
+      currentCommercialProposalAcceptance,
       quotes: quotesList,
     });
   } catch (error: unknown) {

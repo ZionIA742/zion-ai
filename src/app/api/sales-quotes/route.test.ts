@@ -45,6 +45,8 @@ const routeModulePromise = import("./route");
 function createFixtureSupabase(args?: {
   currentProposalRows?: Row[];
   currentProposalError?: { message: string };
+  acceptanceRows?: Row[];
+  acceptanceError?: { message: string };
 }) {
   const rpcCalls: RpcCall[] = [];
   const tables: Record<string, Row[]> = {
@@ -184,12 +186,37 @@ function createFixtureSupabase(args?: {
     async rpc(fn: string, payload: Record<string, unknown>) {
       rpcCalls.push({ fn, payload });
 
-      if (fn !== "read_current_commercial_proposal_by_system") {
+      if (
+        fn !== "read_current_commercial_proposal_by_system" &&
+        fn !== "read_current_commercial_proposal_acceptance_by_system"
+      ) {
         throw new Error(`Unexpected rpc: ${fn}`);
       }
 
       if (args?.currentProposalError) {
         return { data: null, error: args.currentProposalError };
+      }
+
+      if (fn === "read_current_commercial_proposal_acceptance_by_system") {
+        if (args?.acceptanceError) {
+          return { data: null, error: args.acceptanceError };
+        }
+
+        return {
+          data: args?.acceptanceRows ?? [
+            {
+              organization_id: "org-1",
+              store_id: "store-1",
+              commercial_opportunity_id: payload.p_commercial_opportunity_id,
+              acceptance_state: "none",
+              reason_code: "current_proposal_not_accepted",
+              current_quote_id: null,
+              current_quote_version_id: null,
+              accepted_at: null,
+            },
+          ],
+          error: null,
+        };
       }
 
       return {
@@ -211,6 +238,8 @@ async function requestQuotes(args: {
   commercialOpportunityId: string;
   currentProposalRows?: Row[];
   currentProposalError?: { message: string };
+  acceptanceRows?: Row[];
+  acceptanceError?: { message: string };
 }) {
   const { createSalesQuotesListGetHandler } = await routeModulePromise;
   const fixtureOptions: Parameters<typeof createFixtureSupabase>[0] = {};
@@ -219,6 +248,12 @@ async function requestQuotes(args: {
   }
   if ("currentProposalError" in args) {
     fixtureOptions.currentProposalError = args.currentProposalError;
+  }
+  if ("acceptanceRows" in args) {
+    fixtureOptions.acceptanceRows = args.acceptanceRows;
+  }
+  if ("acceptanceError" in args) {
+    fixtureOptions.acceptanceError = args.acceptanceError;
   }
   const supabase = createFixtureSupabase(fixtureOptions);
   const handler = createSalesQuotesListGetHandler({
@@ -237,6 +272,48 @@ async function requestQuotes(args: {
 }
 
 const tests: TestCase[] = [
+  {
+    name: "returns only the exact current accepted quote version",
+    run: async () => {
+      const { response, body } = await requestQuotes({
+        leadId: "lead-a",
+        commercialOpportunityId: "opp-1",
+        acceptanceRows: [
+          {
+            organization_id: "org-1",
+            store_id: "store-1",
+            commercial_opportunity_id: "opp-1",
+            acceptance_state: "accepted",
+            reason_code: "current_proposal_accepted",
+            current_quote_id: "quote-1",
+            current_quote_version_id: "version-presented-v1",
+            accepted_at: "2026-11-02T10:00:00.000Z",
+          },
+        ],
+      });
+
+      const acceptance = body.currentCommercialProposalAcceptance as Row;
+      assert.equal(response.status, 200);
+      assert.equal(acceptance.acceptance_state, "accepted");
+      assert.equal(acceptance.current_quote_id, "quote-1");
+      assert.equal(acceptance.current_quote_version_id, "version-presented-v1");
+    },
+  },
+  {
+    name: "acceptance reader failure is not treated as no acceptance",
+    run: async () => {
+      const { response, body } = await requestQuotes({
+        leadId: "lead-a",
+        commercialOpportunityId: "opp-1",
+        acceptanceError: { message: "reader unavailable" },
+      });
+
+      const acceptance = body.currentCommercialProposalAcceptance as Row;
+      assert.equal(response.status, 200);
+      assert.equal(acceptance.acceptance_state, "error");
+      assert.equal(acceptance.reason_code, "acceptance_reader_unavailable");
+    },
+  },
   {
     name: "lead with two opportunities only receives opp-1 quotes",
     run: async () => {
@@ -266,6 +343,14 @@ const tests: TestCase[] = [
       assert.deepEqual(supabase.rpcCalls, [
         {
           fn: "read_current_commercial_proposal_by_system",
+          payload: {
+            p_organization_id: "org-1",
+            p_store_id: "store-1",
+            p_commercial_opportunity_id: "opp-1",
+          },
+        },
+        {
+          fn: "read_current_commercial_proposal_acceptance_by_system",
           payload: {
             p_organization_id: "org-1",
             p_store_id: "store-1",
