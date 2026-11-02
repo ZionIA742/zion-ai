@@ -579,6 +579,31 @@ function extractBooleanCandidates(anchorMessage: string): QualificationFactCandi
   return out;
 }
 
+function canonicalizeSpaceDimensionComparableText(value: string): string {
+  const normalized = normalizeComparableText(value);
+
+  const match =
+    /^(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:x|×|por)\s*(\d{1,3}(?:[.,]\d{1,2})?)(?:\s*(?:m|metros?))?$/.exec(
+      normalized,
+    );
+
+  if (!match?.[1] || !match?.[2]) return normalized;
+
+  const first = parseDimensionNumberToken(match[1]);
+  const second = parseDimensionNumberToken(match[2]);
+
+  if (
+    first == null ||
+    second == null ||
+    first <= 0 ||
+    second <= 0
+  ) {
+    return normalized;
+  }
+
+  return `space_dimensions:${first}x${second}`;
+}
+
 function canonicalizeCandidateValue(candidate: QualificationFactCandidate): string | null {
   if (candidate.valueKind === "text") {
     if (typeof candidate.valueJson !== "string") return null;
@@ -586,7 +611,9 @@ function canonicalizeCandidateValue(candidate: QualificationFactCandidate): stri
     const comparableValue =
       candidate.factKey === "preferred_period_text"
         ? canonicalizePreferredPeriodComparableText(candidate.valueJson)
-        : normalizeComparableText(candidate.valueJson);
+        : candidate.factKey === "space_text"
+          ? canonicalizeSpaceDimensionComparableText(candidate.valueJson)
+          : normalizeComparableText(candidate.valueJson);
 
     return comparableValue ? `text:${comparableValue}` : null;
   }
