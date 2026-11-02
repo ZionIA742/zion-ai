@@ -27,6 +27,10 @@ import {
   validateFinancialEvidenceUpload,
 } from "@/lib/server/zion-admin-financial-evidence-upload-validation";
 
+import {
+  FinancialEvidenceRegistrationError,
+  registerFinancialEvidenceUpload,
+} from "@/lib/server/zion-admin-financial-evidence-upload-registration";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -151,6 +155,7 @@ export type FinancialEvidenceUploadDependencies = {
   authorize: typeof resolveZionAdminApiAccess;
   getPeriodState: typeof checkPeriod;
   upload: typeof uploadUnverifiedFile;
+  register: typeof registerFinancialEvidenceUpload;
   generateId: () => string;
 };
 
@@ -161,6 +166,7 @@ export function createFinancialEvidenceUploadHandler(
     authorize: overrides.authorize ?? resolveZionAdminApiAccess,
     getPeriodState: overrides.getPeriodState ?? checkPeriod,
     upload: overrides.upload ?? uploadUnverifiedFile,
+    register: overrides.register ?? registerFinancialEvidenceUpload,
     generateId: overrides.generateId ?? randomUUID,
   };
 
@@ -377,9 +383,46 @@ export function createFinancialEvidenceUploadHandler(
         validated.mimeType,
       );
 
+      let registration: Awaited<
+        ReturnType<typeof registerFinancialEvidenceUpload>
+      >;
+
+      try {
+        registration = await deps.register({
+          validated,
+          storagePath: path,
+          sessionUserId: access.sessionUserId,
+        });
+      } catch (error) {
+        const knownRejection =
+          error instanceof FinancialEvidenceRegistrationError &&
+          error.outcome === "rejected";
+
+        // Nenhuma rejeicao autoriza exclusao automatica.
+        // O arquivo pode possuir registro anterior ou
+        // estar envolvido em uma operacao concorrente.
+        // Preservar para reconciliacao administrativa.
+        return createZionAdminApiJsonResponse(
+          {
+            ok: false,
+            error: knownRejection
+              ? "FINANCIAL_EVIDENCE_REGISTRATION_REJECTED"
+              : "FINANCIAL_EVIDENCE_REGISTRATION_UNCERTAIN",
+            status: "uploaded_unverified_requires_reconciliation",
+            cleanupStatus: "not_attempted",
+            bucket: FINANCIAL_EVIDENCE_BUCKET,
+            path,
+            sha256: validated.sha256,
+            verified: false,
+          },
+          503,
+        );
+      }
+
       return createZionAdminApiJsonResponse(
         {
           ok: true,
+          uploadId: registration.uploadId,
           status: "uploaded_unverified",
           bucket: FINANCIAL_EVIDENCE_BUCKET,
           path,

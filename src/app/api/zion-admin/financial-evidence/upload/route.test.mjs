@@ -34,6 +34,16 @@ function loadTs(path, resolveModule) {
   return context.exports;
 }
 
+const TEST_ADMIN_ID =
+  "11111111-2222-4333-8444-555555555555";
+
+class TestRegistrationError extends Error {
+  constructor(outcome, reasonCode) {
+    super(reasonCode);
+    this.outcome = outcome;
+    this.reasonCode = reasonCode;
+  }
+}
 const validator = loadTs(
   "src/lib/server/zion-admin-financial-evidence-upload-validation.ts",
   nativeRequire,
@@ -82,6 +92,18 @@ const route = loadTs(
       return validator;
     }
 
+    if (
+      name.endsWith(
+        "/zion-admin-financial-evidence-upload-registration",
+      )
+    ) {
+      return {
+        FinancialEvidenceRegistrationError: TestRegistrationError,
+        registerFinancialEvidenceUpload() {
+          throw new Error("REAL_REGISTRATION_FORBIDDEN");
+        },
+      };
+    }
     throw new Error(`UNEXPECTED_IMPORT: ${name}`);
   },
 );
@@ -142,6 +164,7 @@ function fakeAccess(capabilities = ["manage_accounts"]) {
   return {
     ok: true,
     resolution: { capabilities },
+    sessionUserId: TEST_ADMIN_ID,
   };
 }
 
@@ -150,6 +173,8 @@ function setup(options = {}) {
     authorization: 0,
     periods: [],
     uploads: [],
+    registrations: [],
+    cleanups: [],
   };
 
   const handler = createHandler({
@@ -177,7 +202,26 @@ function setup(options = {}) {
         throw new Error("SIMULATED_STORAGE_FAILURE");
       }
     },
-    generateId: () =>
+    register: async (payload) => {
+      calls.registrations.push(payload);
+
+      if (options.registrationError) {
+        throw options.registrationError;
+      }
+
+      return {
+        uploadId: options.uploadId ?? 7,
+        status: "uploaded_unverified",
+        verified: false,
+      };
+    },
+    cleanup: async (path) => {
+      calls.cleanups.push(path);
+
+      if (options.cleanupError) {
+        throw new Error("SIMULATED_CLEANUP_FAILURE");
+      }
+    },    generateId: () =>
       "11111111-2222-4333-8444-555555555555",
   });
 
@@ -503,4 +547,145 @@ test("23 - nome original nao define caminho", async () => {
     ),
     true,
   );
+});
+
+test("24 - registro confirmado inclui ID e ator da sessao", async () => {
+  const ctx = setup();
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 201);
+  assert.equal(result.body.uploadId, 7);
+  assert.equal(result.body.verified, false);
+  assert.equal(ctx.calls.registrations.length, 1);
+  assert.equal(ctx.calls.cleanups.length, 0);
+
+  const registration = ctx.calls.registrations[0];
+
+  assert.equal(registration.sessionUserId, TEST_ADMIN_ID);
+  assert.equal(registration.storagePath, result.body.path);
+  assert.equal(registration.validated.sha256, result.body.sha256);
+});
+
+test("25 - rejeicao confirmada preserva arquivo", async () => {
+  const ctx = setup({
+    registrationError: new TestRegistrationError(
+      "rejected",
+      "ZION_ADMIN_UPLOAD_STALE_REVISION",
+    ),
+  });
+
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 503);
+  assert.equal(
+    result.body.error,
+    "FINANCIAL_EVIDENCE_REGISTRATION_REJECTED",
+  );
+  assert.equal(result.body.verified, false);
+  assert.equal(result.body.cleanupStatus, "not_attempted");
+  assert.equal(ctx.calls.uploads.length, 1);
+  assert.equal(ctx.calls.registrations.length, 1);
+  assert.equal(ctx.calls.cleanups.length, 0);
+});
+
+test("26 - resultado incerto preserva arquivo", async () => {
+  const ctx = setup({
+    registrationError: new TestRegistrationError(
+      "uncertain",
+      "FINANCIAL_REGISTRATION_OUTCOME_UNKNOWN",
+    ),
+  });
+
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 503);
+  assert.equal(
+    result.body.error,
+    "FINANCIAL_EVIDENCE_REGISTRATION_UNCERTAIN",
+  );
+  assert.equal(result.body.cleanupStatus, "not_attempted");
+  assert.equal(result.body.verified, false);
+  assert.equal(ctx.calls.uploads.length, 1);
+  assert.equal(ctx.calls.cleanups.length, 0);
+});
+
+test("27 - conflito de caminho nao exclui arquivo", async () => {
+  const ctx = setup({
+    registrationError: new TestRegistrationError(
+      "rejected",
+      "ZION_ADMIN_UPLOAD_PATH_CONFLICT",
+    ),
+  });
+
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 503);
+  assert.equal(result.body.cleanupStatus, "not_attempted");
+  assert.equal(ctx.calls.cleanups.length, 0);
+});
+
+test("28 - rejeicao nao tenta limpeza indisponivel", async () => {
+  const ctx = setup({
+    registrationError: new TestRegistrationError(
+      "rejected",
+      "ZION_ADMIN_UPLOAD_STALE_REVISION",
+    ),
+    cleanupError: true,
+  });
+
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 503);
+  assert.equal(result.body.cleanupStatus, "not_attempted");
+  assert.equal(result.body.verified, false);
+  assert.equal(ctx.calls.cleanups.length, 0);
+});
+
+test("29 - erro inesperado preserva arquivo", async () => {
+  const ctx = setup({
+    registrationError: new Error("UNEXPECTED_FAILURE"),
+  });
+
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 503);
+  assert.equal(
+    result.body.error,
+    "FINANCIAL_EVIDENCE_REGISTRATION_UNCERTAIN",
+  );
+  assert.equal(ctx.calls.cleanups.length, 0);
+});
+
+test("30 - falha no upload nao tenta registrar nem limpar", async () => {
+  const ctx = setup({ uploadError: true });
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 503);
+  assert.equal(ctx.calls.uploads.length, 1);
+  assert.equal(ctx.calls.registrations.length, 0);
+  assert.equal(ctx.calls.cleanups.length, 0);
+});
+
+test("31 - arquivo invalido nao inicia registro", async () => {
+  const ctx = setup();
+
+  const result = await execute(
+    ctx.handler,
+    request({ bytes: Buffer.from("INVALIDO") }),
+  );
+
+  assert.equal(result.status, 400);
+  assert.equal(ctx.calls.uploads.length, 0);
+  assert.equal(ctx.calls.registrations.length, 0);
+  assert.equal(ctx.calls.cleanups.length, 0);
+});
+
+test("32 - revisao desatualizada impede todas as escritas", async () => {
+  const ctx = setup({ period: "stale" });
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 409);
+  assert.equal(ctx.calls.uploads.length, 0);
+  assert.equal(ctx.calls.registrations.length, 0);
+  assert.equal(ctx.calls.cleanups.length, 0);
 });
