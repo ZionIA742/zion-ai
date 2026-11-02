@@ -55,6 +55,7 @@ type HandlerDeps = {
     organizationId: string;
     storeId: string;
     conversationId: string;
+    simulationAnchorMessageId?: string;
   }) => Promise<
     | {
         ok: true;
@@ -444,6 +445,9 @@ export function createSimulateCustomerPostHandler(
         organizationId: access.organizationId,
         storeId: access.storeId,
         conversationId: conversation.id,
+        ...(insertedMessageId
+          ? { simulationAnchorMessageId: insertedMessageId }
+          : {}),
       });
     } catch {
       console.warn("[simulate-customer] sales ai flow unavailable", {

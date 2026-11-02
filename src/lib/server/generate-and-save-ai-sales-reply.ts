@@ -77,6 +77,7 @@ type GenerateAndSaveAiSalesReplyParams = {
   conversationId: string;
   executionContext?: ScheduledSalesResumeExecutionContext;
   workerClaim?: SalesAiWorkerClaimContext;
+  simulationAnchorMessageId?: string | null;
 };
 
 type GenerateAndSaveAiSalesReplyResult =
@@ -179,6 +180,25 @@ function canIssueQuotePreparationTaskAuthorization(args: {
     args.anchorStillCurrent
   );
 }
+
+export function shouldAuthorizeExternalSalesAiReply(args: {
+  anchorOrigin: string | null | undefined;
+  hasExternalReplyMetadata: boolean;
+  simulationAnchorMessageId?: string | null;
+  generationAnchorMessageId?: string | null;
+}) {
+  const simulationAnchorMatches = Boolean(
+    args.simulationAnchorMessageId &&
+      args.simulationAnchorMessageId === args.generationAnchorMessageId &&
+      args.anchorOrigin === "simulated_customer",
+  );
+
+  return (
+    !simulationAnchorMatches &&
+    args.hasExternalReplyMetadata
+  );
+}
+
 const AI_REPLY_GENERATION_ANCHOR_MISMATCH =
   "AI_REPLY_GENERATION_ANCHOR_MISMATCH";
 const AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE =
@@ -6123,6 +6143,8 @@ export async function generateAndSaveAiSalesReply(
 
     let aiText = String(generationResult.aiText || "").trim();
     const generationAnchorMessageId = String(generationResult.anchorMessageId || "").trim();
+    const simulationAnchorMessageId =
+      String(params.simulationAnchorMessageId || "").trim() || null;
     const generationResponseAnchorCommercialContext =
       (generationResult.context?.responseAnchorCommercialContext ||
         null) as ResponseAnchorCommercialContext | null;
@@ -6180,6 +6202,17 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
+    if (
+      simulationAnchorMessageId &&
+      simulationAnchorMessageId !== generationAnchorMessageId
+    ) {
+      return {
+        ok: false,
+        error: "SIMULATION_ANCHOR_MISMATCH",
+        message:
+          "A simulacao nao preservou a mensagem-ancora criada pelo simulador. A resposta foi descartada com seguranca.",
+      };
+    }
 
     if (!aiText) {
       return {
@@ -6704,10 +6737,15 @@ export async function generateAndSaveAiSalesReply(
         };
       }
 
-      const externalAuthorized = Boolean(
-        salesAiExternalMetadata &&
-          salesAiExternalMetadata.outbound_kind === outboundKind,
-      );
+      const externalAuthorized = shouldAuthorizeExternalSalesAiReply({
+        anchorOrigin: generationResult.context?.anchorMessageOrigin,
+        hasExternalReplyMetadata: Boolean(
+          salesAiExternalMetadata &&
+            salesAiExternalMetadata.outbound_kind === outboundKind,
+        ),
+        simulationAnchorMessageId,
+        generationAnchorMessageId,
+      });
       try {
         materializedReplySet = await resolvedDeps.materializeSalesAiReplySet!({
           supabase: systemSupabase,

@@ -137,6 +137,31 @@ type MessageRow = {
   commercial_context_capture_state?: string | null;
 };
 
+export type SalesAiAnchorMessageOrigin =
+  | "simulated_customer"
+  | "real_whatsapp"
+  | "unknown";
+
+export function classifySalesAiAnchorMessageOrigin(
+  metadata: Record<string, unknown> | null | undefined,
+): SalesAiAnchorMessageOrigin {
+  const source = String(metadata?.source || "").trim();
+  const route = String(metadata?.route || "").trim();
+  if (source === "demo_customer" && route === "simulate_customer") {
+    return "simulated_customer";
+  }
+
+  if (
+    source === "meta_whatsapp_webhook" &&
+    String(metadata?.channel || "").trim() === "whatsapp" &&
+    String(metadata?.external_channel || "").trim() === "whatsapp"
+  ) {
+    return "real_whatsapp";
+  }
+
+  return "unknown";
+}
+
 type ConversationSessionRow = {
   id: string;
   organization_id: string;
@@ -901,6 +926,7 @@ export type GenerateAiSalesReplyResult =
         commercialDecisionExplanation: CommercialDecisionExplanation;
         crossSellSuggestionsActuallyIncluded: CrossSellSuggestionIncluded[];
         crossSellInboundHandling: CrossSellInboundHandlingContext;
+        anchorMessageOrigin: SalesAiAnchorMessageOrigin;
       };
     }
   | {
@@ -14432,6 +14458,9 @@ export async function generateAiSalesReply(
         commercialDecisionExplanation,
         crossSellSuggestionsActuallyIncluded,
         crossSellInboundHandling,
+        anchorMessageOrigin: classifySalesAiAnchorMessageOrigin(
+          anchorMessageRow.metadata,
+        ),
       },
     };
   } catch (error: any) {

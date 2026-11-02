@@ -8,6 +8,7 @@ import {
   findExistingCommercialHandoffTask,
   generateAndSaveAiSalesReply,
   materializeSalesAiReplySet,
+  shouldAuthorizeExternalSalesAiReply,
   isQuotePreparationTaskAuthorizationEnabled,
   mapGenerateAndSaveAiSalesReplyError,
   persistCustomerCatalogDocumentActions,
@@ -16,12 +17,71 @@ import {
   type CustomerCatalogDocumentAction,
 } from "./generate-and-save-ai-sales-reply";
 import type { CommercialHandoffContext } from "./generate-ai-sales-reply";
+import { classifySalesAiAnchorMessageOrigin } from "./generate-ai-sales-reply";
 import { ContractAccessError } from "./sales-contracts/contract-auth";
 
 type TestCase = {
   name: string;
   run: () => Promise<void> | void;
 };
+
+const anchorOriginTests: TestCase[] = [
+  {
+    name: "simulation anchor is classified as internal customer input",
+    run: () => {
+      assert.equal(
+        classifySalesAiAnchorMessageOrigin({
+          source: "demo_customer",
+          route: "simulate_customer",
+        }),
+        "simulated_customer",
+      );
+      assert.equal(
+        shouldAuthorizeExternalSalesAiReply({
+          anchorOrigin: "simulated_customer",
+          hasExternalReplyMetadata: true,
+          simulationAnchorMessageId: "anchor-1",
+          generationAnchorMessageId: "anchor-1",
+        }),
+        false,
+      );
+    },
+  },
+  {
+    name: "real WhatsApp anchor remains externally classified",
+    run: () => {
+      assert.equal(
+        classifySalesAiAnchorMessageOrigin({
+          source: "meta_whatsapp_webhook",
+          channel: "whatsapp",
+          external_channel: "whatsapp",
+        }),
+        "real_whatsapp",
+      );
+      assert.equal(
+        shouldAuthorizeExternalSalesAiReply({
+          anchorOrigin: "real_whatsapp",
+          hasExternalReplyMetadata: true,
+          simulationAnchorMessageId: "anchor-1",
+          generationAnchorMessageId: "anchor-1",
+        }),
+        true,
+      );
+    },
+  },
+  {
+    name: "untrusted anchor metadata remains unknown",
+    run: () => {
+      assert.equal(
+        classifySalesAiAnchorMessageOrigin({
+          source: "demo_customer",
+          route: "other_route",
+        }),
+        "unknown",
+      );
+    },
+  },
+];
 
 function createHandoff(
   overrides?: Partial<CommercialHandoffContext>,
@@ -1396,6 +1456,7 @@ function createPreContractCurrentProposalHarness(args?: {
 }
 
 const tests: TestCase[] = [
+  ...anchorOriginTests,
   {
     name: "I8 transactional production seam materializes text, document, and photo once",
     run: async () => {
