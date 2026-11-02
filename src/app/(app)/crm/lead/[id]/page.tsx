@@ -4127,7 +4127,7 @@ export default function LeadPage() {
       }
 
       setPreparedContractSend(null);
-      setContractActionSuccess("Envio solicitado para a versao conferida. Isso nao confirma entrega no WhatsApp.");
+      setContractActionSuccess("Envio solicitado para a versao conferida.");
       await fetchGeneratedContracts({ silent: true });
       if (leadId) await fetchLeadConversationAndMessages({ silent: true });
     } catch (error: unknown) {
@@ -7196,9 +7196,6 @@ export default function LeadPage() {
                             </div>
                           ) : null}
 
-                          <div className="mt-3 rounded-2xl bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-600/20">
-                            O aceite do cliente nesta tela e um registro rastreavel operacional, nao uma assinatura digital avancada.
-                          </div>
 
                           {generatedContractsLoading ? (
                             <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
