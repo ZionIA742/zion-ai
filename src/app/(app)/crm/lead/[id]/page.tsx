@@ -1665,6 +1665,15 @@ export default function LeadPage() {
   const [generatedQuotes, setGeneratedQuotes] = useState<GeneratedQuoteSummary[]>([]);
   const [currentCommercialProposal, setCurrentCommercialProposal] =
     useState<CurrentCommercialProposalSummary | null>(null);
+  const [acceptedQuoteSummary, setAcceptedQuoteSummary] =
+    useState<AcceptedQuoteSummaryState>({
+      status: "loading",
+      quote: null,
+      items: [],
+      acceptedAt: null,
+      quoteId: null,
+      quoteVersionId: null,
+    });
   const [generatedQuotesLoading, setGeneratedQuotesLoading] = useState(false);
   const [generatedQuotesError, setGeneratedQuotesError] = useState<string | null>(null);
   const [openingGeneratedQuoteId, setOpeningGeneratedQuoteId] = useState<string | null>(null);
