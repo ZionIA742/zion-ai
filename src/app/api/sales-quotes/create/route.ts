@@ -17,6 +17,7 @@ import {
   resolveQuoteDiscountFromItems,
   sumQuoteItemMoneyTotals,
 } from "@/lib/server/sales-quotes/money";
+import { createSalesQuoteByUser } from "@/lib/server/sales-quotes/quote-creation-boundary";
 import type { NormalizedQuoteItemInput, QuoteItemInput } from "@/lib/server/sales-quotes/types";
 
 export const runtime = "nodejs";
@@ -825,120 +826,145 @@ export function createCreateQuotePostHandler(deps?: {
       valid_until: validUntil,
     };
 
-    const { data: quoteRow, error: quoteError } = await scope.supabase
-      .from("sales_quotes")
-      .insert({
-        organization_id: scope.organizationId,
-        store_id: scope.store.id,
-        commercial_opportunity_id: commercialOpportunityId,
-        creation_idempotency_key: creationIdempotencyKey,
-        creation_request_fingerprint: creationRequestFingerprint,
-        conversation_id: scope.conversation?.id || null,
-        lead_id: scope.lead?.id || null,
-        quote_number: numberReservation.quoteNumber,
-        title: quoteTitle,
-        status: "draft",
-        customer_name: customerName,
-        customer_phone: customerPhone,
-        customer_notes: customerNotes,
-        internal_notes: internalNotes,
-        warranty_terms: warrantyTerms,
-        valid_until: validUntil,
-        subtotal_cents: subtotalCents,
-        discount_cents: discountCents,
-        total_cents: totalCents,
-        current_version_id: null,
-        metadata: quoteMetadata,
-      })
-      .select(
-        "id, organization_id, store_id, commercial_opportunity_id, creation_idempotency_key, creation_request_fingerprint, conversation_id, lead_id, quote_number, title, status, customer_name, customer_phone, customer_notes, internal_notes, warranty_terms, valid_until, subtotal_cents, discount_cents, total_cents, current_version_id, metadata, created_at, updated_at"
-      )
-      .maybeSingle<QuoteRow>();
+    const quoteInsert = {
+      organization_id: scope.organizationId,
+      store_id: scope.store.id,
+      commercial_opportunity_id: commercialOpportunityId,
+      creation_idempotency_key: creationIdempotencyKey,
+      creation_request_fingerprint: creationRequestFingerprint,
+      conversation_id: scope.conversation?.id || null,
+      lead_id: scope.lead?.id || null,
+      quote_number: numberReservation.quoteNumber,
+      title: quoteTitle,
+      status: "draft",
+      customer_name: customerName,
+      customer_phone: customerPhone,
+      customer_notes: customerNotes,
+      internal_notes: internalNotes,
+      warranty_terms: warrantyTerms,
+      valid_until: validUntil,
+      subtotal_cents: subtotalCents,
+      discount_cents: discountCents,
+      total_cents: totalCents,
+      current_version_id: null,
+      metadata: quoteMetadata,
+    };
+    const itemRows = items.map((item) => ({
+      organization_id: scope.organizationId,
+      store_id: scope.store.id,
+      item_type: item.itemType,
+      name: item.name,
+      description: item.description,
+      quantity: item.quantity,
+      unit_price_cents: item.unitPriceCents,
+      discount_cents: item.discountCents,
+      subtotal_cents: item.subtotalCents,
+      total_cents: item.totalCents,
+      sort_order: item.sortOrder,
+      sku: item.sku,
+      metadata: item.metadata,
+    }));
 
-    if (quoteError || !quoteRow?.id) {
-      if (isUniqueViolation(quoteError)) {
-        const concurrentQuote = await loadExistingQuoteByCreationIdempotencyKey({
-          supabase: scope.supabase,
+    const creation = await createSalesQuoteByUser({
+      userId: scope.user.id,
+      request: {
+        identity: {
           organizationId: scope.organizationId,
           storeId: scope.store.id,
-          creationIdempotencyKey,
-        });
+          commercialOpportunityId,
+          conversationId: scope.conversation?.id || null,
+          leadId: scope.lead?.id || null,
+        },
+        creationIdempotencyKey,
+        quote: quoteInsert,
+        items: itemRows,
+      },
+      execute: async ({ request: canonicalRequest }) => {
+        const { data: quoteRow, error: quoteError } = await scope.supabase
+          .from("sales_quotes")
+          .insert(canonicalRequest.quote)
+          .select(
+            "id, organization_id, store_id, commercial_opportunity_id, creation_idempotency_key, creation_request_fingerprint, conversation_id, lead_id, quote_number, title, status, customer_name, customer_phone, customer_notes, internal_notes, warranty_terms, valid_until, subtotal_cents, discount_cents, total_cents, current_version_id, metadata, created_at, updated_at",
+          )
+          .maybeSingle<QuoteRow>();
 
-        if (!concurrentQuote?.id) {
-          throw buildNonIdempotentUniqueConflictError();
+        if (quoteError || !quoteRow?.id) {
+          if (isUniqueViolation(quoteError)) {
+            const concurrentQuote = await loadExistingQuoteByCreationIdempotencyKey({
+              supabase: scope.supabase,
+              organizationId: scope.organizationId,
+              storeId: scope.store.id,
+              creationIdempotencyKey,
+            });
+
+            if (!concurrentQuote?.id) {
+              throw buildNonIdempotentUniqueConflictError();
+            }
+
+            const replayQuote = await resolveExistingQuoteReplay({
+              supabase: scope.supabase,
+              organizationId: scope.organizationId,
+              storeId: scope.store.id,
+              creationIdempotencyKey,
+              creationRequestFingerprint,
+              items,
+            });
+
+            await projectCommercialOpportunityToQuoteStage({
+              supabase: scope.supabase,
+              organizationId: scope.organizationId,
+              storeId: scope.store.id,
+              commercialOpportunityId,
+              salesQuoteId: replayQuote.id,
+            });
+
+            return {
+              quote: replayQuote,
+              itemCount: items.length,
+              replayed: true,
+            };
+          }
+
+          throw new Error(quoteError?.message || "Falha ao criar sales_quotes.");
         }
 
-        const replayQuote = await resolveExistingQuoteReplay({
-          supabase: scope.supabase,
-          organizationId: scope.organizationId,
-          storeId: scope.store.id,
-          creationIdempotencyKey,
-          creationRequestFingerprint,
-          items,
-        });
+        if (canonicalRequest.items.length > 0) {
+          const itemRowsWithQuoteId = canonicalRequest.items.map((item) => ({
+            quote_id: quoteRow.id,
+            ...item,
+          }));
+          const { error: itemsError } = await scope.supabase
+            .from("sales_quote_items")
+            .insert(itemRowsWithQuoteId);
+
+          if (itemsError) {
+            await scope.supabase.from("sales_quotes").delete().eq("id", quoteRow.id);
+            throw new Error(itemsError.message);
+          }
+        }
 
         await projectCommercialOpportunityToQuoteStage({
           supabase: scope.supabase,
           organizationId: scope.organizationId,
           storeId: scope.store.id,
           commercialOpportunityId,
-          salesQuoteId: replayQuote.id,
+          salesQuoteId: quoteRow.id,
         });
 
-        return buildCreateQuoteSuccessResponse({
-          quote: replayQuote,
+        return {
+          quote: quoteRow,
           itemCount: items.length,
-          customerName: replayQuote.customer_name,
-          customerPhone: replayQuote.customer_phone,
-          replayed: true,
-        });
-      }
-
-      throw new Error(quoteError?.message || "Falha ao criar sales_quotes.");
-    }
-
-    if (items.length > 0) {
-      const itemRows = items.map((item) => ({
-        quote_id: quoteRow.id,
-        organization_id: scope.organizationId,
-        store_id: scope.store.id,
-        item_type: item.itemType,
-        name: item.name,
-        description: item.description,
-        quantity: item.quantity,
-        unit_price_cents: item.unitPriceCents,
-        discount_cents: item.discountCents,
-        subtotal_cents: item.subtotalCents,
-        total_cents: item.totalCents,
-        sort_order: item.sortOrder,
-        sku: item.sku,
-        metadata: item.metadata,
-      }));
-
-      const { error: itemsError } = await scope.supabase
-        .from("sales_quote_items")
-        .insert(itemRows);
-
-      if (itemsError) {
-        await scope.supabase.from("sales_quotes").delete().eq("id", quoteRow.id);
-        throw new Error(itemsError.message);
-      }
-    }
-
-    await projectCommercialOpportunityToQuoteStage({
-      supabase: scope.supabase,
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
-      commercialOpportunityId,
-      salesQuoteId: quoteRow.id,
+          replayed: false,
+        };
+      },
     });
 
     return buildCreateQuoteSuccessResponse({
-      quote: quoteRow,
-      itemCount: items.length,
+      quote: creation.quote,
+      itemCount: creation.itemCount,
       customerName,
       customerPhone,
-      replayed: false,
+      replayed: creation.replayed,
     });
   } catch (error) {
     return buildErrorResponse(error);
