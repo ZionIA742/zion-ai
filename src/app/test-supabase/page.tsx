@@ -1,6 +1,8 @@
+import { connection } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 
 export default async function TestSupabasePage() {
+  await connection();
   const { data, error } = await supabase
     .from("ping")
     .select("id, message, created_at")
