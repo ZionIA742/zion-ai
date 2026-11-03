@@ -37,6 +37,7 @@ import {
   resolveMessagesWithCommercialContext,
   selectCustomerCatalogDocumentsForRequest,
   summarizeCanonicalKnownFacts,
+  summarizeCanonicalQualificationAuthority,
   selectMessagesForCurrentCommercialInference,
   isAffirmativeReply,
 } from "./generate-ai-sales-reply.js";
@@ -2209,6 +2210,143 @@ test("measurements confirmation receives safe natural guidance in the structured
   assert.match(block, /As medidas desse local ja estao confirmadas ou ainda precisam ser conferidas\?/);
   assert.match(block, /nao pergunte se precisamos marcar visita para medir/);
   assert.match(block, /nao confunda confirmar medidas com necessidade de visita presencial/);
+});
+
+test("canonical measurement authority separates customer space from product dimensions across states", () => {
+  const confirmed = summarizeCanonicalQualificationAuthority(
+    createContextualQualificationSnapshot({
+      knownFacts: [
+        createCanonicalKnownFact({
+          factKey: "space_text",
+          normalizedValueText: "6 por 3 metros",
+          state: "confirmed",
+        }),
+        createCanonicalKnownFact({
+          factKey: "requested_area_m2",
+          valueKind: "number",
+          value: 18,
+          normalizedValueText: "18 m2",
+          state: "confirmed",
+        }),
+      ],
+    }) as never,
+  ).join("\n");
+
+  assert.match(confirmed, /confirmado como medida\/area do terreno ou espaco fisico do cliente/);
+  assert.match(confirmed, /dimensoes e areas de produtos pertencem exclusivamente aos produtos/);
+  assert.match(confirmed, /nunca combine uma dimensao do terreno com outra dimensao de piscina/);
+
+  const inferred = summarizeCanonicalQualificationAuthority(
+    createContextualQualificationSnapshot({
+      knownFacts: [
+        createCanonicalKnownFact({
+          factKey: "space_text",
+          normalizedValueText: "6 por 3 metros",
+          state: "inferred",
+        }),
+      ],
+    }) as never,
+  ).join("\n");
+  assert.match(inferred, /space_text: inferido e nao confirmado/);
+
+  const missing = summarizeCanonicalQualificationAuthority(
+    createContextualQualificationSnapshot() as never,
+  ).join("\n");
+  assert.match(missing, /space_text: ausente/);
+  assert.match(missing, /nao invente nem derive a partir de dimensoes de produtos/);
+
+  const conflicted = summarizeCanonicalQualificationAuthority(
+    createContextualQualificationSnapshot({
+      conflicts: [{ factKey: "space_text" }],
+    }) as never,
+  ).join("\n");
+  assert.match(conflicted, /space_text: conflito canonico/);
+  assert.match(conflicted, /nao escolha um valor/);
+
+  assert.equal(confirmed.includes("2,8 por 7,5 metros"), false);
+  assert.equal(
+    summarizeCanonicalQualificationAuthority(
+      createContextualQualificationSnapshot({
+        knownFacts: [
+          createCanonicalKnownFact({
+            factKey: "space_text",
+            normalizedValueText: "2,8 por 7,5 metros",
+          }),
+        ],
+      }) as never,
+    ).join("\n").includes("6 por 3 metros"),
+    false,
+  );
+});
+
+test("final model instructions preserve confirmed customer space after product dimensions appear in history", async () => {
+  const canonicalRow = createCanonicalQualificationReaderRow({
+    commercialOpportunityId: "opp-1",
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "space_text",
+        normalizedValueText: "6 por 3 metros",
+        value: "6 por 3 metros",
+        state: "confirmed",
+      }),
+      createCanonicalKnownFact({
+        factKey: "requested_area_m2",
+        valueKind: "number",
+        value: 18,
+        normalizedValueText: "18 m2",
+        state: "confirmed",
+      }),
+    ],
+    missingFactGroups: [],
+    conflicts: [],
+    canAskNextQuestion: false,
+  });
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageContent: "Depois de ver o modelo, quero seguir com a piscina.",
+    additionalMessages: [
+      createMessage({
+        id: "msg-product",
+        sender: "ai_sales",
+        direction: "outgoing",
+        content: "O modelo apresentado tem 2,8 por 7,5 metros.",
+        created_at: "2026-11-03T10:00:00.000Z",
+      }),
+    ],
+    canonicalReaderResponses: [
+      { data: [canonicalRow], error: null },
+      { data: [canonicalRow], error: null },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Vou considerar o espaço confirmado do terreno.",
+      usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  const finalCall = openai.calls[1] as { instructions?: string; input?: unknown };
+  const instructions = String(finalCall.instructions || "");
+  assert.match(instructions, /dimensao do terreno\/espaco fisico disponivel do cliente registrada: 6 por 3 metros/);
+  assert.match(instructions, /area registrada do terreno\/espaco fisico do cliente: 18 m2/);
+  assert.match(instructions, /fatos canonicos desta oportunidade sao a autoridade/);
+  assert.match(instructions, /dimensoes e areas de produtos pertencem exclusivamente aos produtos/);
+  assert.match(instructions, /nunca combine uma dimensao do terreno com outra dimensao de piscina/);
+  assert.match(instructions, /MODELOS DE PISCINA MAIS COMPATÍVEIS — DIMENSÕES EXCLUSIVAS DOS PRODUTOS/);
+  assert.match(JSON.stringify(finalCall.input), /2,8 por 7,5 metros/);
 });
 
 test("local photo context can make canonical space the structured qualification target", () => {
@@ -11942,7 +12080,7 @@ test("inferred fact remains inferred in snapshot and representation", async () =
 
   assert.equal(result.snapshot.knownFacts[0]?.state, "inferred");
   assert.deepEqual(summarizeCanonicalKnownFacts(result.snapshot), [
-    "espaco ou medida registrados: 3x4 (inferido)",
+    "dimensao do terreno/espaco fisico disponivel do cliente registrada: 3x4 (inferido; nao confirmado)",
   ]);
 });
 

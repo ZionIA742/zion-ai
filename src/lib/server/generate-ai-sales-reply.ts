@@ -633,6 +633,7 @@ type CommercialObjective = {
   primaryIntent: string;
   mustAnswerFirst: string[];
   knownFacts: string[];
+  canonicalQualificationAuthority?: string[];
   missingFacts: string[];
   qualificationDecision: QualificationDecision;
   nextBestQuestion: string | null;
@@ -7366,6 +7367,8 @@ export function describeCanonicalKnownFact(
   fact: CanonicalQualificationFact,
 ): string | null {
   const suffix = fact.state === "inferred" ? " (inferido)" : "";
+  const measurementSuffix =
+    fact.state === "confirmed" ? " (confirmado)" : " (inferido; nao confirmado)";
   const normalizedValue = fact.normalizedValueText || null;
   const rawValue = fact.value;
   const booleanValue = typeof rawValue === "boolean" ? rawValue : null;
@@ -7387,13 +7390,13 @@ export function describeCanonicalKnownFact(
   }
   if (fact.factKey === "space_text") {
     return displayValue
-      ? `espaco ou medida registrados: ${displayValue}${suffix}`
-      : `espaco ou medida ja registrados${suffix}`;
+      ? `dimensao do terreno/espaco fisico disponivel do cliente registrada: ${displayValue}${measurementSuffix}`
+      : `dimensao do terreno/espaco fisico disponivel do cliente ja registrada${measurementSuffix}`;
   }
   if (fact.factKey === "requested_area_m2") {
     return displayValue
-      ? `area aproximada registrada: ${displayValue} m2${suffix}`
-      : `area aproximada registrada${suffix}`;
+      ? `area registrada do terreno/espaco fisico do cliente: ${displayValue} m2${measurementSuffix}`
+      : `area registrada do terreno/espaco fisico do cliente${measurementSuffix}`;
   }
   if (fact.factKey === "location_text") {
     return displayValue
@@ -7471,6 +7474,56 @@ export function summarizeCanonicalKnownFacts(
     .filter((item): item is string => !!item);
 
   return out.length > 0 ? out : ["ha fatos canonicos persistidos para esta oportunidade"];
+}
+
+export function summarizeCanonicalQualificationAuthority(
+  snapshot: CanonicalQualificationSnapshot | null,
+): string[] {
+  if (!snapshot) {
+    return [
+      "- nao ha snapshot canonico de qualificacao confirmado para esta oportunidade",
+      "- nao invente dimensoes ou area do terreno; use somente medidas explicitamente informadas e ainda nao consolidadas como fatos canonicos",
+      "- dimensoes encontradas em historico ou catalogo nao autorizam uma medida do terreno",
+    ];
+  }
+
+  const hasConflict = (factKey: CanonicalQualificationFactKey) =>
+    snapshot.conflicts.some((conflict) => conflict.factKey === factKey) ||
+    snapshot.missingFactGroups.some(
+      (group) => group.groupKey === "space" && group.status === "conflict" && group.factKeys.includes(factKey),
+    );
+  const factState = (factKey: CanonicalQualificationFactKey) =>
+    snapshot.knownFacts.find((fact) => fact.factKey === factKey)?.state || null;
+
+  const lines = [
+    "- fatos canonicos desta oportunidade sao a autoridade para qualificacao; prevalecem sobre interpretacoes do historico",
+    "- dimensoes e areas de produtos pertencem exclusivamente aos produtos e nunca representam o terreno/espaco fisico do cliente",
+    "- nunca combine uma dimensao do terreno com outra dimensao de piscina/produto",
+  ];
+
+  for (const [factKey, label] of [
+    ["space_text", "space_text"],
+    ["requested_area_m2", "requested_area_m2"],
+  ] as const) {
+    if (hasConflict(factKey)) {
+      lines.push(`- ${label}: conflito canonico; nao escolha um valor nem substitua por medida de produto`);
+      continue;
+    }
+
+    const state = factState(factKey);
+    if (state === "confirmed") {
+      lines.push(`- ${label}: confirmado como medida/area do terreno ou espaco fisico do cliente; preserve exatamente o valor canonico`);
+    } else if (state === "inferred") {
+      lines.push(`- ${label}: inferido e nao confirmado; nao apresente como medida certa do terreno`);
+    } else {
+      lines.push(`- ${label}: ausente; nao invente nem derive a partir de dimensoes de produtos`);
+    }
+  }
+
+  lines.push(
+    "- uma correcao explicita posterior do cliente deve seguir o fluxo canonico de atualizacao e conflito; nao substitua fatos confirmados por inferencia do historico",
+  );
+  return lines;
 }
 
 function summarizeMissingFacts(facts: ConversationFactState, _lastCustomerMessage: string): string[] {
@@ -8746,6 +8799,9 @@ function buildCommercialObjective(args: {
     knownFacts: canonicalQualificationSnapshot
       ? summarizeCanonicalKnownFacts(canonicalQualificationSnapshot)
       : summarizeKnownFacts(facts, args.lastCustomerMessage),
+    canonicalQualificationAuthority: summarizeCanonicalQualificationAuthority(
+      canonicalQualificationSnapshot,
+    ),
     missingFacts: canonicalQualificationSnapshot
       ? summarizeCanonicalMissingFacts(canonicalQualificationSnapshot)
       : summarizeMissingFacts(facts, args.lastCustomerMessage),
@@ -8850,6 +8906,10 @@ export function buildCommercialObjectiveBlock(objective: CommercialObjective): s
     ? objective.knownFacts.map((item) => `- ${item}`).join("\n")
     : "- ainda há poucos fatos consolidados";
 
+  const canonicalQualificationAuthorityText = objective.canonicalQualificationAuthority?.length
+    ? objective.canonicalQualificationAuthority.join("\n")
+    : "- nenhuma autoridade canônica de medida disponível";
+
   const missingFactsText = objective.missingFacts.length
     ? objective.missingFacts.map((item) => `- ${item}`).join("\n")
     : "- nenhum dado crítico faltando para esta resposta";
@@ -8907,6 +8967,9 @@ ${mustAnswerFirstText}
 
 FATOS JÁ CONHECIDOS
 ${knownFactsText}
+
+AUTORIDADE CANÔNICA DAS MEDIDAS
+${canonicalQualificationAuthorityText}
 
 O QUE AINDA FALTA, SE FIZER SENTIDO
 ${missingFactsText}
@@ -9832,7 +9895,7 @@ function buildCatalogEvidenceBlock(args: {
       : "- nenhum modelo de piscina compatível sem disponibilidade localizado";
 
   return `
-EVIDÊNCIAS DE CATÁLOGO E MÍDIA
+EVIDÊNCIAS DE CATÁLOGO E MÍDIA — DIMENSÕES ABAIXO PERTENCEM AOS PRODUTOS, NÃO AO TERRENO DO CLIENTE
 - cliente perguntou por produto de catálogo: ${args.analysis.asksAboutCatalogProduct ? "sim" : "não"}
 - cliente perguntou por piscina/modelo: ${args.analysis.asksAboutPool ? "sim" : "não"}
 - cliente pediu foto/imagem: ${args.analysis.asksForPhoto ? "sim" : "não"}
@@ -9853,7 +9916,7 @@ EVIDÊNCIAS DE CATÁLOGO E MÍDIA
 ITENS DE CATÁLOGO MAIS COMPATÍVEIS
 ${catalogLines}
 
-MODELOS DE PISCINA MAIS COMPATÍVEIS
+MODELOS DE PISCINA MAIS COMPATÍVEIS — DIMENSÕES EXCLUSIVAS DOS PRODUTOS
 ${poolLines}
 
 ITENS ENCONTRADOS NO CATÁLOGO, MAS SEM DISPONIBILIDADE VENDÁVEL
