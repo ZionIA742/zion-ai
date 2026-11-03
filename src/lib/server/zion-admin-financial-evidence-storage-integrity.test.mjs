@@ -23,6 +23,40 @@ const compiled = ts.transpileModule(source, {
   },
 });
 
+const privateBytesSource = readFileSync(
+  new URL(
+    "./zion-admin-financial-evidence-private-bytes.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
+
+const privateBytesCompiled = ts.transpileModule(
+  privateBytesSource,
+  {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  },
+);
+
+const privateBytesModule = {
+  exports: {},
+  Buffer,
+  require(name) {
+    if (name === "node:crypto") {
+      return nativeRequire(name);
+    }
+
+    throw new Error(`UNEXPECTED_PRIVATE_BYTES_IMPORT: ${name}`);
+  },
+};
+
+runInNewContext(
+  privateBytesCompiled.outputText,
+  privateBytesModule,
+);
 const context = {
   exports: {},
   Buffer,
@@ -30,6 +64,13 @@ const context = {
     if (name === "node:crypto") {
       return nativeRequire(name);
     }
+    if (
+      name ===
+      "./zion-admin-financial-evidence-private-bytes"
+    ) {
+      return privateBytesModule.exports;
+    }
+
     throw new Error(`UNEXPECTED_IMPORT: ${name}`);
   },
 };

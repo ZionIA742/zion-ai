@@ -80,6 +80,24 @@ const integrity = load(
       return nativeRequire(name);
     }
 
+    if (
+      name ===
+      "./zion-admin-financial-evidence-private-bytes"
+    ) {
+      return load(
+        "./zion-admin-financial-evidence-private-bytes.ts",
+        (dependencyName) => {
+          if (dependencyName === "node:crypto") {
+            return nativeRequire(dependencyName);
+          }
+
+          throw new Error(
+            `UNEXPECTED_PRIVATE_BYTES_IMPORT: ${dependencyName}`,
+          );
+        },
+      );
+    }
+
     throw new Error(`UNEXPECTED_INTEGRITY_IMPORT: ${name}`);
   },
 );

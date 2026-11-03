@@ -1,48 +1,29 @@
 /**
- * ZION-ADM / 8-E.11-D.3-B.2-C.1
+ * ZION-ADM / 8-E.11-D.3-C.3-E.2-C.2
  *
- * Conferencia dos bytes reais de um comprovante
- * financeiro armazenado em bucket privado.
+ * Interface legada de integridade financeira.
  *
- * Esta funcao:
- * - usa Storage fornecido pelo servidor;
- * - confere tamanho e SHA-256;
- * - nao cria credenciais ou URLs publicas;
- * - nao altera ou remove arquivos;
- * - nao autentica faturas;
- * - nao aprova comprovantes;
- * - nao autoriza fechamento.
+ * A verificacao de bytes e realizada exclusivamente
+ * pelo leitor canonico private-bytes.
  *
- * O chamador deve autenticar o administrador e obter
- * caminho, tamanho e SHA do banco confiavel.
+ * Mantem o contrato dos chamadores anteriores:
+ * - mesmo nome de funcao;
+ * - mesmas entradas;
+ * - mesmos estados de retorno;
+ * - nenhum Buffer na resposta.
  *
- * A futura RPC de aprovacao deve revalidar competencia,
- * revisao, ator e demais autoridades na transacao.
+ * Nao autentica administrador.
+ * Nao aprova comprovante.
+ * Nao executa fechamento financeiro.
  */
 
-import { createHash } from "node:crypto";
+import {
+  readVerifiedPrivateFinancialBytes,
+  type PrivateFinancialBytesStorage,
+} from "./zion-admin-financial-evidence-private-bytes";
 
-const BUCKET = "zion-admin-financial-evidence";
-const MAX_BYTES = 10485760;
-
-const SHA256 = /^[0-9a-f]{64}$/;
-
-const PATH =
-  /^unverified\/(?:20[2-9]\d|2100)-(?:0[1-9]|1[0-2])-01\/[1-9]\d*\/(?:fixed_costs|manual_expenses|openai_invoice|meta_invoice)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-([0-9a-f]{64})\.(?:pdf|png|jpg)$/;
-
-type StoredBlob = {
-  size: number;
-  arrayBuffer(): Promise<ArrayBuffer>;
-};
-
-export type PrivateFinancialStorageReader = {
-  from(bucket: string): {
-    download(path: string): Promise<{
-      data: StoredBlob | null;
-      error: unknown;
-    }>;
-  };
-};
+export type PrivateFinancialStorageReader =
+  PrivateFinancialBytesStorage;
 
 export type FinancialStorageIntegrityResult =
   | {
@@ -60,6 +41,12 @@ export type FinancialStorageIntegrityResult =
         | "SHA256_MISMATCH";
     };
 
+const MIME_BY_EXTENSION = {
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+} as const;
+
 function isRecord(
   value: unknown,
 ): value is Record<string, unknown> {
@@ -70,101 +57,80 @@ function isRecord(
   );
 }
 
-/**
- * Verificacao privada somente de leitura.
- *
- * Confirmar integridade NAO significa confirmar
- * valor, cobranca, competencia ou autorizacao.
- */
 export async function verifyPrivateFinancialEvidence(
   input: unknown,
   storage: PrivateFinancialStorageReader,
 ): Promise<FinancialStorageIntegrityResult> {
   if (!isRecord(input)) {
-    return { ok: false, reason: "INVALID_INPUT" };
-  }
-
-  const bucket = input.bucket;
-  const path = input.path;
-  const expectedSha256 = input.expectedSha256;
-  const expectedSizeBytes = input.expectedSizeBytes;
-
-  if (
-    bucket !== BUCKET ||
-    typeof path !== "string" ||
-    path.length > 512 ||
-    typeof expectedSha256 !== "string" ||
-    !SHA256.test(expectedSha256) ||
-    typeof expectedSizeBytes !== "number" ||
-    !Number.isSafeInteger(expectedSizeBytes) ||
-    expectedSizeBytes < 1 ||
-    expectedSizeBytes > MAX_BYTES
-  ) {
-    return { ok: false, reason: "INVALID_INPUT" };
-  }
-
-  const match = PATH.exec(path);
-
-  if (!match || match[1] !== expectedSha256) {
-    return { ok: false, reason: "INVALID_INPUT" };
-  }
-
-  try {
-    // O cliente deve ser criado pelo backend autorizado.
-    // Nenhum acesso direto do navegador e permitido.
-    const response = await storage
-      .from(BUCKET)
-      .download(path);
-
-    if (response.error || !response.data) {
-      return {
-        ok: false,
-        reason: "STORAGE_UNAVAILABLE",
-      };
-    }
-
-    const blob = response.data;
-
-    // Rejeitar tamanho divergente antes de alocar bytes.
-    if (
-      typeof blob.size !== "number" ||
-      !Number.isSafeInteger(blob.size) ||
-      blob.size !== expectedSizeBytes
-    ) {
-      return { ok: false, reason: "SIZE_MISMATCH" };
-    }
-
-    const bytes = Buffer.from(
-      await blob.arrayBuffer(),
-    );
-
-    // Conferencia independente do tamanho real.
-    if (bytes.length !== expectedSizeBytes) {
-      return { ok: false, reason: "SIZE_MISMATCH" };
-    }
-
-    const actualSha256 = createHash("sha256")
-      .update(bytes)
-      .digest("hex");
-
-    if (actualSha256 !== expectedSha256) {
-      return {
-        ok: false,
-        reason: "SHA256_MISMATCH",
-      };
-    }
-
-    return {
-      ok: true,
-      status: "integrity_confirmed_unverified",
-      sha256: actualSha256,
-      sizeBytes: bytes.length,
-    };
-  } catch {
-    // Falha de rede ou leitura nunca confirma integridade.
     return {
       ok: false,
-      reason: "STORAGE_UNAVAILABLE",
+      reason: "INVALID_INPUT",
     };
   }
+
+  if (typeof input.path !== "string") {
+    return {
+      ok: false,
+      reason: "INVALID_INPUT",
+    };
+  }
+
+  // Derivar MIME do caminho canonico. O leitor central
+  // verifica que a extensao realmente e permitida.
+  const extensionMatch =
+    /\.([a-z]+)$/.exec(input.path);
+
+  if (!extensionMatch) {
+    return {
+      ok: false,
+      reason: "INVALID_INPUT",
+    };
+  }
+
+  const extension = extensionMatch[1];
+
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      MIME_BY_EXTENSION,
+      extension,
+    )
+  ) {
+    return {
+      ok: false,
+      reason: "INVALID_INPUT",
+    };
+  }
+
+  const expectedMimeType =
+    MIME_BY_EXTENSION[
+      extension as keyof typeof MIME_BY_EXTENSION
+    ];
+
+  // Unico mecanismo que baixa, dimensiona e
+  // verifica o SHA-256 dos bytes privados.
+  const result = await readVerifiedPrivateFinancialBytes(
+    {
+      bucket: input.bucket,
+      path: input.path,
+      expectedSha256: input.expectedSha256,
+      expectedSizeBytes: input.expectedSizeBytes,
+      expectedMimeType,
+    },
+    storage,
+  );
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      reason: result.reason,
+    };
+  }
+
+  // A interface legada nunca expoe bytes.
+  return {
+    ok: true,
+    status: "integrity_confirmed_unverified",
+    sha256: result.sha256,
+    sizeBytes: result.sizeBytes,
+  };
 }
