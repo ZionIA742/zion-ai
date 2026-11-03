@@ -23,6 +23,7 @@ import { classifyIncomingMediaMessage } from "@/lib/server/media-classification"
 import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
 import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
 import { decideQuoteApprovalFromPersistedInbound } from "@/lib/server/sales-quotes/quote-approval-decision";
+import { registerReceivedContractDocumentEvidence } from "@/lib/server/sales-contracts/received-contract-document-evidence";
 import { formatSalesAiProcessingError } from "@/lib/server/sales-ai-error-diagnostics";
 import {
   enqueuePersistedSalesAiFailureAlerts,
@@ -60,6 +61,20 @@ type InboxRow = {
 
 const RETRYABLE_AI_INBOX_ERROR_PREFIX = "sales_ai_retryable:";
 const FINAL_AI_INBOX_ERROR_PREFIX = "sales_ai_failed_final:";
+
+async function registerReceivedContractDocumentEvidenceSafely(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  sourceMessageId: string;
+  leadId?: string | null;
+}) {
+  try {
+    await registerReceivedContractDocumentEvidence(args);
+  } catch (error) {
+    console.warn("[whatsapp_inbound] received contract document evidence skipped:", error);
+  }
+}
 
 type LeadRow = {
   id: string;
@@ -2319,6 +2334,16 @@ async function processSingleInboxRow(
           null,
       });
 
+      if (existingMessageType === "document" || existingMessageType === "image") {
+        await registerReceivedContractDocumentEvidenceSafely({
+          supabase,
+          organizationId: inbox.organization_id,
+          storeId: inbox.store_id,
+          sourceMessageId: existingMessage.id,
+          leadId: existingMessage.lead_id,
+        });
+      }
+
       const mediaAiResult = await dispatchAiSalesReplyForConversation({
         supabase,
         organizationId: inbox.organization_id,
@@ -2723,6 +2748,14 @@ async function processSingleInboxRow(
           extracted.documentCaption ||
           persistedMessage.content ||
           null,
+      });
+
+      await registerReceivedContractDocumentEvidenceSafely({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        sourceMessageId: persistedMessage.id,
+        leadId: persistedMessage.lead_id,
       });
     }
 

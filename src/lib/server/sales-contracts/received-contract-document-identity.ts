@@ -10,6 +10,7 @@ export type ReceivedContractDocumentResolution =
       contractId: string;
       contractVersionId: string;
       sourceMessageId: string;
+      receivedAt: string | null;
       storageBucket: string;
       storagePath: string;
       mimeType: string | null;
@@ -17,6 +18,14 @@ export type ReceivedContractDocumentResolution =
       originalFileName: string | null;
       signatureStatus: "not_evaluated";
       duplicateOfMessageId: string | null;
+      originalDocument: {
+        sourceMessageId: string;
+        storageBucket: string | null;
+        storagePath: string | null;
+        mimeType: string | null;
+        originalFileName: string | null;
+        sentAt: string | null;
+      };
     }
   | {
       outcome: "pending";
@@ -33,6 +42,7 @@ export type ReceivedContractDocumentResolution =
       storeId: string;
       conversationId: string | null;
       sourceMessageId: string;
+      receivedAt: string | null;
       candidateContractIds: string[];
       candidateVersionIds: string[];
       storageBucket: string | null;
@@ -71,6 +81,7 @@ type ReceivedMessageRow = {
   media_url?: unknown;
   external_message_id?: unknown;
   metadata?: unknown;
+  created_at?: unknown;
 };
 
 type ContractRow = {
@@ -93,6 +104,7 @@ type VersionRow = {
   storage_path?: unknown;
   original_filename?: unknown;
   mime_type?: unknown;
+  size_bytes?: unknown;
 };
 
 type QueryResult = { data: unknown; error: { message: string } | null };
@@ -116,6 +128,7 @@ function basePending(args: {
   organizationId: string;
   storeId: string;
   sourceMessageId: string;
+  receivedAt?: string | null;
   conversationId: string | null;
   reason: Extract<ReceivedContractDocumentResolution, { outcome: "pending" }>['reason'];
   storageBucket?: string | null;
@@ -133,6 +146,7 @@ function basePending(args: {
     storeId: args.storeId,
     conversationId: args.conversationId,
     sourceMessageId: args.sourceMessageId,
+    receivedAt: args.receivedAt || null,
     candidateContractIds: args.candidateContractIds || [],
     candidateVersionIds: args.candidateVersionIds || [],
     storageBucket: args.storageBucket || null,
@@ -158,6 +172,7 @@ export function resolveReceivedContractDocumentIdentity(args: {
   const sourceMessageId = text(args.sourceMessageId) || "";
   const message = args.message;
   const conversationId = text(message?.conversation_id);
+  const receivedAt = text(message?.created_at);
   const metadata = record(message?.metadata);
   const messageType = text(message?.message_type)?.toLowerCase();
 
@@ -170,7 +185,7 @@ export function resolveReceivedContractDocumentIdentity(args: {
     text(message.direction)?.toLowerCase() !== "incoming" ||
     text(message.sender)?.toLowerCase() !== "user"
   ) {
-    return basePending({ organizationId, storeId, sourceMessageId, conversationId, reason: "message_not_customer_media" });
+    return basePending({ organizationId, storeId, sourceMessageId, receivedAt, conversationId, reason: "message_not_customer_media" });
   }
   if (messageType !== "document" && messageType !== "image") {
     return {
@@ -193,6 +208,7 @@ export function resolveReceivedContractDocumentIdentity(args: {
       organizationId,
       storeId,
       sourceMessageId,
+      receivedAt,
       conversationId,
       reason: "media_identity_missing",
       storageBucket,
@@ -210,39 +226,50 @@ export function resolveReceivedContractDocumentIdentity(args: {
   );
   const candidateContractIds = contracts.map((contract) => text(contract.id)).filter((id): id is string => Boolean(id));
   if (contracts.length === 0) {
-    return basePending({ organizationId, storeId, sourceMessageId, conversationId, reason: "no_contract_candidate", storageBucket, storagePath, mimeType, sha256, originalFileName });
+    return basePending({ organizationId, storeId, sourceMessageId, receivedAt, conversationId, reason: "no_contract_candidate", storageBucket, storagePath, mimeType, sha256, originalFileName });
   }
   const opportunityIds = Array.from(new Set(contracts.map((contract) => text(contract.commercial_opportunity_id)).filter((id): id is string => Boolean(id))));
   if (opportunityIds.length !== 1) {
-    return basePending({ organizationId, storeId, sourceMessageId, conversationId, reason: "opportunity_missing", storageBucket, storagePath, mimeType, sha256, originalFileName, candidateContractIds });
+    return basePending({ organizationId, storeId, sourceMessageId, receivedAt, conversationId, reason: "opportunity_missing", storageBucket, storagePath, mimeType, sha256, originalFileName, candidateContractIds });
   }
   if (contracts.length > 1) {
-    return basePending({ organizationId, storeId, sourceMessageId, conversationId, reason: "multiple_contract_candidates", storageBucket, storagePath, mimeType, sha256, originalFileName, candidateContractIds });
+    return basePending({ organizationId, storeId, sourceMessageId, receivedAt, conversationId, reason: "multiple_contract_candidates", storageBucket, storagePath, mimeType, sha256, originalFileName, candidateContractIds });
   }
 
   const contract = contracts[0];
   const contractId = text(contract.id) || "";
   const versions = args.versionsByContract.get(contractId) || [];
-  const matchingVersions = versions.filter((version) => {
-    return text(version.organization_id) === organizationId &&
-      text(version.store_id) === storeId &&
-      text(version.contract_id) === contractId &&
+  const sentVersionEvidence = (version: VersionRow) => args.sentDocuments.find((sent) => {
+    if (
+      text(sent.direction)?.toLowerCase() !== "outgoing" ||
+      text(sent.message_type)?.toLowerCase() !== "document"
+    ) return false;
+    const sentMetadata = record(sent.metadata);
+    const sentContractId = text(sentMetadata.sales_contract_id) || text(sentMetadata.contract_id);
+    const sentVersionId = text(sentMetadata.sales_contract_version_id) || text(sentMetadata.contract_version_id);
+    const explicitIdentity = sentContractId === contractId && sentVersionId === text(version.id);
+    const legacyPathIdentity =
       text(version.storage_bucket) === storageBucket &&
       text(version.storage_path) === storagePath &&
-      args.sentDocuments.some((sent) =>
-        text(sent.direction)?.toLowerCase() === "outgoing" &&
-        text(sent.message_type)?.toLowerCase() === "document" &&
-        text(sent.media_url) === storagePath &&
-        text(record(sent.metadata).storage_path) === storagePath,
-      );
+      text(sent.media_url) === storagePath &&
+      text(sentMetadata.storage_path) === storagePath;
+    if (!explicitIdentity && !legacyPathIdentity) return false;
+    return (
+      text(version.organization_id) === organizationId &&
+      text(version.store_id) === storeId &&
+      text(version.contract_id) === contractId &&
+      (!sentMetadata.storage_path || text(sentMetadata.storage_path) === text(version.storage_path))
+    );
   });
+  const matchingVersions = versions.filter((version) => Boolean(sentVersionEvidence(version)));
   const candidateVersionIds = matchingVersions.map((version) => text(version.id)).filter((id): id is string => Boolean(id));
   if (matchingVersions.length !== 1) {
-    return basePending({ organizationId, storeId, sourceMessageId, conversationId, reason: matchingVersions.length > 1 ? "multiple_version_candidates" : "version_evidence_missing", storageBucket, storagePath, mimeType, sha256, originalFileName, candidateContractIds, candidateVersionIds });
+    return basePending({ organizationId, storeId, sourceMessageId, receivedAt, conversationId, reason: matchingVersions.length > 1 ? "multiple_version_candidates" : "version_evidence_missing", storageBucket, storagePath, mimeType, sha256, originalFileName, candidateContractIds, candidateVersionIds });
   }
 
   const version = matchingVersions[0];
   const versionId = text(version.id) || "";
+  const sentEvidence = sentVersionEvidence(version);
   const duplicate = args.sentDocuments.find((sent) =>
     text(sent.id) !== sourceMessageId &&
     text(sent.direction)?.toLowerCase() === "incoming" &&
@@ -259,6 +286,7 @@ export function resolveReceivedContractDocumentIdentity(args: {
     contractId,
     contractVersionId: versionId,
     sourceMessageId,
+    receivedAt,
     storageBucket,
     storagePath,
     mimeType,
@@ -266,6 +294,14 @@ export function resolveReceivedContractDocumentIdentity(args: {
     originalFileName,
     signatureStatus: "not_evaluated",
     duplicateOfMessageId: text(duplicate?.id),
+    originalDocument: {
+      sourceMessageId: text(sentEvidence?.id) || "",
+      storageBucket: text(record(sentEvidence?.metadata).storage_bucket) || text(version.storage_bucket),
+      storagePath: text(record(sentEvidence?.metadata).storage_path) || text(version.storage_path),
+      mimeType: text(record(sentEvidence?.metadata).mime_type) || text(version.mime_type),
+      originalFileName: text(record(sentEvidence?.metadata).original_file_name) || text(version.original_filename),
+      sentAt: text(sentEvidence?.created_at),
+    },
   };
 }
 
@@ -280,7 +316,7 @@ export async function identifyReceivedContractDocument(args: {
   const sourceMessageId = text(args.sourceMessageId) || "";
   const messageQuery = await args.supabase
     .from("messages")
-    .select("id, organization_id, store_id, conversation_id, direction, sender, message_type, media_url, metadata")
+    .select("id, organization_id, store_id, conversation_id, direction, sender, message_type, media_url, metadata, created_at")
     .eq("id", sourceMessageId)
     .eq("organization_id", organizationId)
     .eq("store_id", storeId)
@@ -313,7 +349,7 @@ export async function identifyReceivedContractDocument(args: {
 
   const sentDocumentsQuery = await args.supabase
     .from("messages")
-    .select("id, direction, message_type, media_url, metadata")
+      .select("id, direction, message_type, media_url, metadata, created_at")
     .eq("organization_id", organizationId)
     .eq("store_id", storeId)
     .eq("conversation_id", conversationId)
