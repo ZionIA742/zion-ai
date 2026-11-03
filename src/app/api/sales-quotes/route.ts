@@ -287,16 +287,18 @@ export function createSalesQuotesListGetHandler(deps?: {
     if (!acceptanceError) {
       const acceptanceRows = normalizeCurrentCommercialProposalRows(acceptanceData);
       const acceptanceRow = acceptanceRows.length === 1 ? acceptanceRows[0] : null;
+      const acceptanceState = cleanText(acceptanceRow?.acceptance_state);
+      const acceptanceReasonCode = cleanText(acceptanceRow?.reason_code);
       const acceptanceScopeMatches =
         acceptanceRow &&
-        cleanText(acceptanceRow.organization_id) === opportunity.organization_id &&
-        cleanText(acceptanceRow.store_id) === opportunity.store_id &&
-        cleanText(acceptanceRow.commercial_opportunity_id) === opportunity.id;
+        cleanText(acceptanceRow.commercial_opportunity_id) === opportunity.id &&
+        (acceptanceState === "none" || acceptanceState === "accepted") &&
+        Boolean(acceptanceReasonCode);
 
       if (acceptanceScopeMatches) {
         currentCommercialProposalAcceptance = {
-          acceptance_state: cleanText(acceptanceRow.acceptance_state),
-          reason_code: cleanText(acceptanceRow.reason_code),
+          acceptance_state: acceptanceState,
+          reason_code: acceptanceReasonCode,
           current_quote_id: cleanText(acceptanceRow.current_quote_id),
           current_quote_version_id: cleanText(acceptanceRow.current_quote_version_id),
           accepted_at: cleanText(acceptanceRow.accepted_at),

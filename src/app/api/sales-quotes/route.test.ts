@@ -205,11 +205,9 @@ function createFixtureSupabase(args?: {
         return {
           data: args?.acceptanceRows ?? [
             {
-              organization_id: "org-1",
-              store_id: "store-1",
               commercial_opportunity_id: payload.p_commercial_opportunity_id,
               acceptance_state: "none",
-              reason_code: "current_proposal_not_accepted",
+              reason_code: "current_proposal_unknown",
               current_quote_id: null,
               current_quote_version_id: null,
               accepted_at: null,
@@ -280,8 +278,6 @@ const tests: TestCase[] = [
         commercialOpportunityId: "opp-1",
         acceptanceRows: [
           {
-            organization_id: "org-1",
-            store_id: "store-1",
             commercial_opportunity_id: "opp-1",
             acceptance_state: "accepted",
             reason_code: "current_proposal_accepted",
@@ -297,6 +293,105 @@ const tests: TestCase[] = [
       assert.equal(acceptance.acceptance_state, "accepted");
       assert.equal(acceptance.current_quote_id, "quote-1");
       assert.equal(acceptance.current_quote_version_id, "version-presented-v1");
+    },
+  },
+  {
+    name: "valid none acceptance preserves the authority reason without tenant columns",
+    run: async () => {
+      const { response, body } = await requestQuotes({
+        leadId: "lead-a",
+        commercialOpportunityId: "opp-1",
+        acceptanceRows: [
+          {
+            commercial_opportunity_id: "opp-1",
+            acceptance_state: "none",
+            reason_code: "current_proposal_unknown",
+            current_quote_id: null,
+            current_quote_version_id: null,
+            accepted_at: null,
+          },
+        ],
+      });
+
+      const acceptance = body.currentCommercialProposalAcceptance as Row;
+      assert.equal(response.status, 200);
+      assert.equal(acceptance.acceptance_state, "none");
+      assert.equal(acceptance.reason_code, "current_proposal_unknown");
+    },
+  },
+  {
+    name: "acceptance opportunity mismatch fails closed",
+    run: async () => {
+      const { response, body } = await requestQuotes({
+        leadId: "lead-a",
+        commercialOpportunityId: "opp-1",
+        acceptanceRows: [
+          {
+            commercial_opportunity_id: "opp-2",
+            acceptance_state: "accepted",
+            reason_code: "current_proposal_accepted",
+            current_quote_id: "quote-2",
+            current_quote_version_id: "version-presented-v2",
+            accepted_at: "2026-11-02T10:00:00.000Z",
+          },
+        ],
+      });
+
+      const acceptance = body.currentCommercialProposalAcceptance as Row;
+      assert.equal(response.status, 200);
+      assert.equal(acceptance.acceptance_state, "error");
+      assert.equal(acceptance.reason_code, "acceptance_reader_unavailable");
+    },
+  },
+  {
+    name: "empty or multiple acceptance rows fail closed",
+    run: async () => {
+      for (const acceptanceRows of [
+        [],
+        [
+          {
+            commercial_opportunity_id: "opp-1",
+            acceptance_state: "none",
+            reason_code: "current_proposal_unknown",
+          },
+          {
+            commercial_opportunity_id: "opp-1",
+            acceptance_state: "accepted",
+            reason_code: "current_proposal_accepted",
+          },
+        ],
+      ]) {
+        const { response, body } = await requestQuotes({
+          leadId: "lead-a",
+          commercialOpportunityId: "opp-1",
+          acceptanceRows,
+        });
+        const acceptance = body.currentCommercialProposalAcceptance as Row;
+        assert.equal(response.status, 200);
+        assert.equal(acceptance.acceptance_state, "error");
+        assert.equal(acceptance.reason_code, "acceptance_reader_unavailable");
+      }
+    },
+  },
+  {
+    name: "malformed acceptance state fails closed",
+    run: async () => {
+      const { response, body } = await requestQuotes({
+        leadId: "lead-a",
+        commercialOpportunityId: "opp-1",
+        acceptanceRows: [
+          {
+            commercial_opportunity_id: "opp-1",
+            acceptance_state: "approved",
+            reason_code: "current_proposal_approved",
+          },
+        ],
+      });
+
+      const acceptance = body.currentCommercialProposalAcceptance as Row;
+      assert.equal(response.status, 200);
+      assert.equal(acceptance.acceptance_state, "error");
+      assert.equal(acceptance.reason_code, "acceptance_reader_unavailable");
     },
   },
   {
