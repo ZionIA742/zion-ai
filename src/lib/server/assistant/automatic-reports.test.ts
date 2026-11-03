@@ -95,6 +95,8 @@ function createReportSupabaseMock(options: {
   morningSnapshot?: unknown;
   schedule?: Partial<typeof base>;
   schedules?: Array<Partial<typeof base>>;
+  notifications?: unknown[];
+  tasks?: unknown[];
 } = {}) {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
   const inCalls: Array<{ column: string; values: unknown[] }> = [];
@@ -110,6 +112,10 @@ function createReportSupabaseMock(options: {
         ? { data: options.morningSnapshot ? [{ metadata: { automatic_report_snapshot: options.morningSnapshot } }] : [], error: null }
         : table === "store_appointments"
       ? { data: options.appointmentError ? null : [{ status: "open", scheduled_end: "2026-10-19T12:00:00Z" }], error: options.appointmentError ? { message: options.appointmentError } : null }
+      : table === "store_assistant_notification_queue"
+        ? { data: options.notifications || [], error: null }
+        : table === "store_assistant_operational_tasks"
+          ? { data: options.tasks || [], error: null }
       : { data: [], error: null };
   const supabase = {
     from(table: string) {
@@ -159,6 +165,26 @@ async function runIntegrationTests() {
   assert.equal(generatedSnapshot.local_date, "2026-10-19");
   assert.ok(Array.isArray(generatedSnapshot.appointments));
   assert.ok(Array.isArray(generatedSnapshot.pending_items));
+
+  const pendingNoise = createReportSupabaseMock({
+    notifications: [
+      { id: "report-queue", notification_type: "morning_report", title: "Relatorio da manha", context: { report_source: "assistant_automatic_reports" } },
+      { id: "failure-1", notification_type: "important_alert", title: "Falha definitiva no processamento da IA Vendedora", context: { reason: "sales_ai_failed_final", failure_source: "inbox", event_key: "failure:1" } },
+      { id: "failure-1-replay", notification_type: "important_alert", title: "Falha definitiva no processamento da IA Vendedora", context: { reason: "sales_ai_failed_final", failure_source: "inbox", event_key: "failure:1" } },
+      { id: "contract-review-old", notification_type: "important_alert", priority: "normal", title: "Contrato CTR-1 aguardando revisao", context: { reason: "pending_review", related_contract_id: "contract-1", document_version_id: "version-1", document_status: "pending_review", event_key: "contract-event-old" }, created_at: "2026-10-19T09:00:00Z" },
+      { id: "contract-review-new", notification_type: "important_alert", priority: "high", title: "Contrato CTR-1 exige conferencia", context: { reason: "pending_review", related_contract_id: "contract-1", document_version_id: "version-1", document_status: "pending_review", event_key: "contract-event-new" }, created_at: "2026-10-19T10:00:00Z" },
+      { id: "common-action", notification_type: "important_alert", priority: "normal", title: "Tarefa comum", context: { reason: "other_action", event_key: "common-action" }, created_at: "2026-10-19T11:00:00Z" },
+    ],
+    tasks: [{ id: "task-1", task_type: "contract_review", title: "Contrato aguardando revisao", description: null }],
+  });
+  const pendingNoiseResult = await processAutomaticAssistantReports({ now: reportNow, supabase: pendingNoise.supabase });
+  const pendingNoiseBody = String(pendingNoise.calls.find((call) => call.name === "assistant_materialize_automatic_report")?.args.p_content || "");
+  assert.equal(pendingNoiseResult.results[0]?.status, "generated");
+  assert.doesNotMatch(pendingNoiseBody, /Relatorio da manha/);
+  assert.match(pendingNoiseBody, /atendimento interrompido: 1 falha/);
+  assert.match(pendingNoiseBody, /Contrato CTR-1 exige conferencia/);
+  assert.equal((pendingNoiseBody.match(/Contrato CTR-1/g) || []).length, 1);
+  assert.ok(pendingNoiseBody.indexOf("Contrato CTR-1") < pendingNoiseBody.indexOf("Tarefa comum"));
 
   const eveningSnapshot = {
     version: 1,

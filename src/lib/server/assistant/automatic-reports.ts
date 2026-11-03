@@ -40,6 +40,11 @@ export type ReportPendingItem = {
   related_appointment_id: string | null;
   created_at: string | null;
   kind: "notification" | "task";
+  priority?: string | null;
+  notification_type?: string | null;
+  task_type?: string | null;
+  commercial_opportunity_id?: string | null;
+  context?: Record<string, unknown> | null;
 };
 
 type MorningSnapshotAppointment = {
@@ -292,10 +297,79 @@ function formatAppointmentLine(appointment: ReportAppointment, timeZone = "Ameri
 
 function formatPendingItems(items: ReportPendingItem[], reportLocalDate = "") {
   if (!items.length) return ["- nenhuma pendencia interna aberta identificada"];
-  return items.map((item) => {
+  const technicalFailures = new Map<string, number>();
+  const ordinaryItems: ReportPendingItem[] = [];
+  for (const item of items) {
+    if (normalize(item.context?.reason) === "sales_ai_failed_final") {
+      const key = normalize(item.context?.failure_source) || "atendimento";
+      technicalFailures.set(key, (technicalFailures.get(key) || 0) + 1);
+    } else {
+      ordinaryItems.push(item);
+    }
+  }
+  const lines = ordinaryItems.map((item) => {
     const label = cleanReportValue(item.title || item.body, "pendencia sem descricao");
     const age = item.created_at && item.created_at.slice(0, 10) !== reportLocalDate ? " (pendencia anterior)" : "";
-    return `- ${label}${age}`;
+    const priority = ["urgent", "high"].includes(normalize(item.priority)) ? " [prioridade alta]" : "";
+    return `- ${label}${priority}${age}`;
+  });
+  for (const [source, count] of technicalFailures) {
+    lines.push(`- atendimento interrompido: ${count} falha(s) definitiva(s) da IA Vendedora (${source}); requer verificacao no painel`);
+  }
+  return lines;
+}
+
+function isAutomaticReportQueueItem(item: { notification_type?: unknown; context?: unknown }) {
+  const type = normalize(item.notification_type);
+  if (type === "morning_report" || type === "evening_report") return true;
+  const context = item.context && typeof item.context === "object" && !Array.isArray(item.context)
+    ? item.context as Record<string, unknown>
+    : null;
+  return normalize(context?.report_source) === "assistant_automatic_reports";
+}
+
+function pendingIdentity(item: ReportPendingItem) {
+  const context = item.context || {};
+  const reason = normalize(context.reason);
+  const contractId = cleanText(context.related_contract_id || context.document_id);
+  if (contractId && reason) {
+    return `${item.kind}:contract:${contractId}:reason:${reason}:status:${normalize(context.document_status)}`;
+  }
+  const taskId = cleanText(context.task_id);
+  const appointmentId = cleanText(item.related_appointment_id || context.related_appointment_id);
+  if (taskId && reason && appointmentId) {
+    return `${item.kind}:task:${taskId}:appointment:${appointmentId}:reason:${reason}:classification:${normalize(context.classification)}`;
+  }
+  const eventKey = cleanText(context.event_key || context.dedupe_key);
+  if (eventKey) return `${item.kind}:event:${eventKey}`;
+  return `${item.kind}:row:${item.id}`;
+}
+
+function pendingPriority(item: ReportPendingItem) {
+  const priority = normalize(item.priority);
+  if (priority === "urgent") return 0;
+  if (priority === "high") return 1;
+  if (priority === "normal") return 2;
+  if (priority === "low") return 3;
+  return 4;
+}
+
+function deduplicatePendingItems(items: ReportPendingItem[]) {
+  const seen = new Set<string>();
+  return [...items].sort((left, right) => {
+    const priorityDifference = pendingPriority(left) - pendingPriority(right);
+    if (priorityDifference !== 0) return priorityDifference;
+    const leftCreatedAt = Date.parse(cleanText(left.created_at));
+    const rightCreatedAt = Date.parse(cleanText(right.created_at));
+    if (Number.isFinite(leftCreatedAt) && Number.isFinite(rightCreatedAt) && leftCreatedAt !== rightCreatedAt) {
+      return rightCreatedAt - leftCreatedAt;
+    }
+    return cleanText(left.id).localeCompare(cleanText(right.id));
+  }).filter((item) => {
+    const identity = pendingIdentity(item);
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
   });
 }
 
@@ -444,17 +518,19 @@ async function loadReportData(supabase: ReportSupabase, settings: AutomaticRepor
   const endIso = buildIsoFromDateAndTime({ year: parts.year, month: parts.month - 1, day: parts.day }, "23:59", settings);
   const [appointments, notifications, tasks] = await Promise.all([
     supabase.from("store_appointments").select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, created_at").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).gte("scheduled_start", startIso).lte("scheduled_start", endIso),
-    supabase.from("store_assistant_notification_queue").select("id, title, body, related_appointment_id, created_at").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).eq("status", "pending"),
-    supabase.from("store_assistant_operational_tasks").select("id, title, description, related_appointment_id, created_at").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).in("status", ["open", "waiting_customer_response", "waiting_user_choice", "ready_to_execute", "in_progress"]),
+    supabase.from("store_assistant_notification_queue").select("id, title, body, related_appointment_id, created_at, priority, notification_type, context").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).eq("status", "pending"),
+    supabase.from("store_assistant_operational_tasks").select("id, title, description, related_appointment_id, created_at, task_type, commercial_opportunity_id").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).in("status", ["open", "waiting_customer_response", "waiting_user_choice", "ready_to_execute", "in_progress"]),
   ]);
   if (appointments.error || notifications.error || tasks.error) throw new Error("AUTOMATIC_REPORT_DATA_LOAD_FAILED");
   const rows = (appointments.data || []) as ReportAppointment[];
-  const notificationRows = (notifications.data || []) as Array<{ id?: string; title?: string | null; body?: string | null; related_appointment_id?: string | null; created_at?: string | null }>;
-  const taskRows = (tasks.data || []) as Array<{ id?: string; title?: string | null; description?: string | null; related_appointment_id?: string | null; created_at?: string | null }>;
-  const pendingItems: ReportPendingItem[] = [
-    ...notificationRows.map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.body || null, related_appointment_id: row.related_appointment_id || null, created_at: row.created_at || null, kind: "notification" as const })),
-    ...taskRows.map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.description || null, related_appointment_id: row.related_appointment_id || null, created_at: row.created_at || null, kind: "task" as const })),
-  ];
+  const notificationRows = (notifications.data || []) as Array<{ id?: string; title?: string | null; body?: string | null; related_appointment_id?: string | null; created_at?: string | null; priority?: string | null; notification_type?: string | null; context?: unknown }>;
+  const taskRows = (tasks.data || []) as Array<{ id?: string; title?: string | null; description?: string | null; related_appointment_id?: string | null; created_at?: string | null; task_type?: string | null; commercial_opportunity_id?: string | null }>;
+  const pendingItems = deduplicatePendingItems([
+    ...notificationRows
+      .filter((row) => !isAutomaticReportQueueItem(row))
+      .map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.body || null, related_appointment_id: row.related_appointment_id || null, created_at: row.created_at || null, kind: "notification" as const, priority: row.priority || null, notification_type: row.notification_type || null, context: row.context && typeof row.context === "object" && !Array.isArray(row.context) ? row.context as Record<string, unknown> : null })),
+    ...taskRows.map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.description || null, related_appointment_id: row.related_appointment_id || null, created_at: row.created_at || null, kind: "task" as const, task_type: row.task_type || null, commercial_opportunity_id: row.commercial_opportunity_id || null })),
+  ]);
   const nowMs = now.getTime();
   const normalized = rows.map((row) => normalize(row.status));
   return {
