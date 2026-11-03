@@ -90,6 +90,7 @@ import {
   readStoreContractUsagePolicyBySystem,
   type StoreContractUsagePolicy,
 } from "@/lib/server/store-contract-usage-policy";
+import { tryHandleReceivedContractDocumentDecision } from "@/lib/server/assistant/received-contract-document-decision";
 
 export const runtime = "nodejs";
 
@@ -7773,6 +7774,7 @@ function resolveLatestResponsibleRequest(messages: AssistantMessageRow[]) {
 
     return {
       lastHumanMessage: content,
+      lastHumanMessageId: message.id || null,
       detectedIntent: resolveAssistantIntent(content),
     };
   }
@@ -7787,6 +7789,7 @@ function resolveLatestResponsibleRequest(messages: AssistantMessageRow[]) {
 
     return {
       lastHumanMessage: content,
+      lastHumanMessageId: message.id || null,
       detectedIntent: resolveAssistantIntent(content),
     };
   }
@@ -7802,12 +7805,14 @@ function resolveLatestResponsibleRequest(messages: AssistantMessageRow[]) {
 
     return {
       lastHumanMessage: content,
+      lastHumanMessageId: message.id || null,
       detectedIntent: resolveAssistantIntent(content),
     };
   }
 
   return {
     lastHumanMessage: "",
+    lastHumanMessageId: null,
     detectedIntent: "general" as AssistantIntent,
   };
 }
@@ -10030,6 +10035,7 @@ export async function generateAssistantReply(params: {
 
     const latestRequest = resolveLatestResponsibleRequest(recentMessages);
     const lastHumanMessage = latestRequest.lastHumanMessage;
+    const lastHumanMessageId = latestRequest.lastHumanMessageId;
 
     if (!lastHumanMessage) {
       return {
@@ -10053,6 +10059,35 @@ export async function generateAssistantReply(params: {
     }
 
     const assistantContextState = assistantContextResult.contextState;
+    const receivedContractDecision = lastHumanMessageId
+      ? await tryHandleReceivedContractDocumentDecision({
+          supabase,
+          organizationId,
+          storeId,
+          decisionMessageId: lastHumanMessageId,
+          content: lastHumanMessage,
+          channel: "assistant",
+        })
+      : null;
+    if (receivedContractDecision) {
+      const saveDecisionReplyError = await persistAssistantReply({
+        content: receivedContractDecision.responseText,
+        messageType: "text",
+        metadata: {
+          source: "assistant.reply.route",
+          source_external_message_id: params.sourceExternalMessageId || null,
+          receivedContractDocumentDecision: receivedContractDecision.result,
+        },
+      });
+      if (saveDecisionReplyError) {
+        return {
+          ok: false,
+          error: "SAVE_ASSISTANT_MESSAGE_FAILED",
+          message: saveDecisionReplyError.message,
+        };
+      }
+      return { ok: true, aiText: receivedContractDecision.responseText };
+    }
     const contractGenerationResult = await handleAssistantContractGenerationRequest({
       request: params.request,
       supabase,

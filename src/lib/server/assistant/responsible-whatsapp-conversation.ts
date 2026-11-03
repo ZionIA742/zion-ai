@@ -9,6 +9,7 @@ import { sendResponsibleAssistantText } from "@/lib/server/assistant/responsible
 import { downloadAndStoreWhatsappInboundMedia, removeWhatsappInboundStoredMedia } from "@/lib/server/whatsapp-inbound-media";
 import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
 import type { QuoteApprovalDecisionResult } from "@/lib/server/sales-quotes/quote-approval-decision";
+import type { ReceivedContractDocumentDecisionHandled } from "@/lib/server/assistant/received-contract-document-decision";
 
 type ResponsibleWhatsappEvent = {
   id: string;
@@ -578,7 +579,7 @@ export async function routeResponsibleWhatsappToAssistant(args: {
     externalMessageId: string;
     content: string;
     contextMessageId: string | null;
-  }) => Promise<QuoteApprovalDecisionResult | null>;
+  }) => Promise<(QuoteApprovalDecisionResult | ReceivedContractDocumentDecisionHandled) | null>;
 }) {
   const organizationId = clean(args.organizationId);
   const storeId = clean(args.storeId);
@@ -732,7 +733,7 @@ export async function routeResponsibleWhatsappToAssistant(args: {
       transcribeAudio: args.deps?.transcribeAudio,
     });
 
-    let inboundHookResult: QuoteApprovalDecisionResult | null = null;
+    let inboundHookResult: (QuoteApprovalDecisionResult | ReceivedContractDocumentDecisionHandled) | null = null;
     if (args.onInboundPersisted && args.messageType === "text") {
       inboundHookResult = await args.onInboundPersisted({
         inboundMessageId: inbound.id,

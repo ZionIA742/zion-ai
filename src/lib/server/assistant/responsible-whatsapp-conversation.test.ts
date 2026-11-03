@@ -260,7 +260,7 @@ test("a canonical quote decision terminates the assistant bridge before generati
     "utf8",
   );
 
-  assert.match(source, /QuoteApprovalDecisionResult \| null/);
+  assert.match(source, /QuoteApprovalDecisionResult \| ReceivedContractDocumentDecisionHandled\) \| null/);
   assert.match(source, /decisionHandled: true/);
   assert.match(source, /outbound_status: null/);
 

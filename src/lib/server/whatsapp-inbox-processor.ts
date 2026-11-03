@@ -23,6 +23,7 @@ import { classifyIncomingMediaMessage } from "@/lib/server/media-classification"
 import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
 import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
 import { decideQuoteApprovalFromPersistedInbound } from "@/lib/server/sales-quotes/quote-approval-decision";
+import { tryHandleReceivedContractDocumentDecision } from "@/lib/server/assistant/received-contract-document-decision";
 import { registerReceivedContractDocumentEvidence } from "@/lib/server/sales-contracts/received-contract-document-evidence";
 import { pushAssistantReceivedContractDocumentMessage } from "@/lib/server/assistant/document-review-messages";
 import { formatSalesAiProcessingError } from "@/lib/server/sales-ai-error-diagnostics";
@@ -758,6 +759,16 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
         external_event_id: args.inbox.external_event_id,
       },
       onInboundPersisted: async (inbound) => {
+        const contractDecision = await tryHandleReceivedContractDocumentDecision({
+          supabase: args.supabase,
+          organizationId: args.inbox.organization_id,
+          storeId: args.inbox.store_id,
+          decisionMessageId: inbound.inboundMessageId,
+          content: inbound.content,
+          channel: "whatsapp",
+          contextMessageId: inbound.contextMessageId,
+        });
+        if (contractDecision) return contractDecision;
         return decideQuoteApprovalFromPersistedInbound({
           supabase: args.supabase,
           organizationId: args.inbox.organization_id,

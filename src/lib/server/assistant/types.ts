@@ -10,6 +10,7 @@ export type StoreAnswerRow = {
 };
 
 export type AssistantMessageRow = {
+  id?: string | null;
   sender: string | null;
   sender_role: string | null;
   direction: string | null;
