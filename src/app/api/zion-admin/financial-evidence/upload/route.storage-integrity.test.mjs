@@ -28,6 +28,41 @@ const compiled = ts.transpileModule(executable, {
   },
 });
 
+const sharedVerifierSource = readFileSync(
+  new URL(
+    "../../../../../lib/server/zion-admin-financial-evidence-storage-integrity.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
+
+const sharedVerifierCompiled = ts.transpileModule(
+  sharedVerifierSource,
+  {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  },
+);
+
+const sharedVerifierContext = {
+  exports: {},
+  Buffer,
+  require(name) {
+    if (name === "node:crypto") {
+      return nativeRequire(name);
+    }
+
+    throw new Error(`UNEXPECTED_SHARED_IMPORT: ${name}`);
+  },
+};
+
+runInNewContext(
+  sharedVerifierCompiled.outputText,
+  sharedVerifierContext,
+);
+
 const pdfBytes = Buffer.from(
   "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n",
   "ascii",
@@ -38,7 +73,9 @@ const expectedHash = createHash("sha256")
   .digest("hex");
 
 const expectedPath =
-  "unverified/2026-10-01/1/fixed_costs/integrity-test.pdf";
+  "unverified/2026-10-01/1/fixed_costs/" +
+  "11111111-2222-4333-8444-555555555555-" +
+  `${expectedHash}.pdf`;
 
 function setup(options = {}) {
   const calls = {
@@ -63,6 +100,14 @@ function setup(options = {}) {
     require(name) {
       if (name === "node:crypto") {
         return nativeRequire(name);
+      }
+
+      if (
+        name.endsWith(
+          "/zion-admin-financial-evidence-storage-integrity",
+        )
+      ) {
+        return sharedVerifierContext.exports;
       }
 
       if (name === "@supabase/supabase-js") {
@@ -100,6 +145,7 @@ function setup(options = {}) {
                       if (options.readError) {
                         return {
                           data: {
+                            size: pdfBytes.length,
                             async arrayBuffer() {
                               throw new Error("SIMULATED_READ_FAILURE");
                             },
@@ -261,10 +307,13 @@ test("43 - resposta sem dados nao confirma arquivo", async () => {
 test("44 - falha de transporte nao produz confirmacao", async () => {
   const ctx = setup({ transportError: true });
 
-  await assert.rejects(
-    ctx.verify(expectedPath, expectedHash, pdfBytes.length),
-    /SIMULATED_TRANSPORT_FAILURE/,
+  const result = await ctx.verify(
+    expectedPath,
+    expectedHash,
+    pdfBytes.length,
   );
+
+  assert.equal(result, false);
 });
 
 test("45 - SHA256 esperado incorreto rejeitado", async () => {
@@ -282,8 +331,11 @@ test("45 - SHA256 esperado incorreto rejeitado", async () => {
 test("46 - falha ao ler bytes nao confirma integridade", async () => {
   const ctx = setup({ readError: true });
 
-  await assert.rejects(
-    ctx.verify(expectedPath, expectedHash, pdfBytes.length),
-    /SIMULATED_READ_FAILURE/,
+  const result = await ctx.verify(
+    expectedPath,
+    expectedHash,
+    pdfBytes.length,
   );
+
+  assert.equal(result, false);
 });

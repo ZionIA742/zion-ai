@@ -49,10 +49,29 @@ const validator = loadTs(
   nativeRequire,
 );
 
+const privateIntegrity = loadTs(
+  "src/lib/server/zion-admin-financial-evidence-storage-integrity.ts",
+  (name) => {
+    if (name === "node:crypto") {
+      return nativeRequire(name);
+    }
+
+    throw new Error(`UNEXPECTED_INTEGRITY_IMPORT: ${name}`);
+  },
+);
+
 const route = loadTs(
   "src/app/api/zion-admin/financial-evidence/upload/route.ts",
   (name) => {
     if (name === "node:crypto") return nativeRequire(name);
+
+    if (
+      name.endsWith(
+        "/zion-admin-financial-evidence-storage-integrity",
+      )
+    ) {
+      return privateIntegrity;
+    }
 
     if (name === "@supabase/supabase-js") {
       return {

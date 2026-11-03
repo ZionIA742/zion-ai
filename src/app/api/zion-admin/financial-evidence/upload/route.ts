@@ -31,6 +31,10 @@ import {
   FinancialEvidenceRegistrationError,
   registerFinancialEvidenceUpload,
 } from "@/lib/server/zion-admin-financial-evidence-upload-registration";
+import {
+  verifyPrivateFinancialEvidence,
+} from "@/lib/server/zion-admin-financial-evidence-storage-integrity";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -158,29 +162,19 @@ async function verifyStoredUpload(
 ): Promise<boolean> {
   const db = createAdminClient();
 
-  // Download privado usando credenciais do servidor.
-  // Nenhuma URL publica ou assinada e criada.
-  const { data, error } = await db.storage
-    .from(FINANCIAL_EVIDENCE_BUCKET)
-    .download(path);
-
-  if (error || !data) {
-    return false;
-  }
-
-  const storedBytes = Buffer.from(
-    await data.arrayBuffer(),
+  // Reutiliza a verificacao privada de bytes.
+  // Falhas e divergencias nunca confirmam o upload.
+  const result = await verifyPrivateFinancialEvidence(
+    {
+      bucket: FINANCIAL_EVIDENCE_BUCKET,
+      path,
+      expectedSha256,
+      expectedSizeBytes: expectedSize,
+    },
+    db.storage,
   );
 
-  if (storedBytes.length !== expectedSize) {
-    return false;
-  }
-
-  const actualSha256 = createHash("sha256")
-    .update(storedBytes)
-    .digest("hex");
-
-  return actualSha256 === expectedSha256;
+  return result.ok;
 }
 export type FinancialEvidenceUploadDependencies = {
   authorize: typeof resolveZionAdminApiAccess;
