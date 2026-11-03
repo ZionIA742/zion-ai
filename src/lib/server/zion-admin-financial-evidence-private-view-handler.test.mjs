@@ -45,6 +45,20 @@ const reviewAccess = loadTs(
 const handlerModule = loadTs(
   "./zion-admin-financial-evidence-private-view-handler.ts",
   (name) => {
+    if (name === "node:crypto") {
+      return nativeRequire(name);
+    }
+
+    if (
+      name ===
+      "./zion-admin-financial-evidence-review-confirmation"
+    ) {
+      return {
+        prepareFinancialEvidenceReview() {
+          throw new Error("REAL_FINGERPRINT_FORBIDDEN");
+        },
+      };
+    }
     if (name === "./zion-admin-api-access") {
       return {
         resolveZionAdminApiAccess() {
@@ -140,6 +154,7 @@ function body(overrides = {}) {
   return {
     month: "2026-10-01",
     uploadId: 7,
+    reviewFingerprint: SHA,
     proofDraft: {
       source: "fixed_costs",
       proofType: "supplier_invoice",
@@ -212,6 +227,8 @@ function setup(overrides = {}) {
     binding: 0,
     bytes: 0,
     lastReadInput: null,
+    fingerprints: 0,
+    lastFingerprintContext: null,
   };
 
   const dependencies = {
@@ -235,6 +252,16 @@ function setup(overrides = {}) {
       return {
         ok: true,
         binding: binding(),
+      };
+    },
+    createFingerprint: (trustedContext) => {
+      calls.fingerprints++;
+      calls.lastFingerprintContext = trustedContext;
+
+      return {
+        ok: true,
+        status: "awaiting_manual_confirmation",
+        fingerprint: SHA,
       };
     },
     readBytes: async (input) => {
@@ -699,4 +726,142 @@ test("39 - visualizacao nao registra aprovacao", async () => {
     response.headers.get("x-zion-verified"),
     null,
   );
+});
+
+
+test("40 - resposta identifica a revisao preparada", async () => {
+  const { response } = await run();
+
+  assert.equal(response.status, 200);
+  assert.equal(
+    response.headers.get("x-zion-review-fingerprint"),
+    SHA,
+  );
+  assert.equal(
+    response.headers.get("x-zion-preclosure-revision"),
+    "1",
+  );
+});
+
+test("41 - fingerprint malformado bloqueado", async () => {
+  const { response, calls } = await run({
+    body: body({ reviewFingerprint: "invalid" }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(calls.db, 0);
+  assert.equal(calls.bytes, 0);
+});
+
+test("42 - fingerprint diferente bloqueia antes do Storage", async () => {
+  const { response, calls } = await run({
+    body: body({ reviewFingerprint: "b".repeat(64) }),
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(calls.fingerprints, 1);
+  assert.equal(calls.bytes, 0);
+});
+
+test("43 - contexto usa ator autenticado", async () => {
+  const { response, calls } = await run();
+
+  assert.equal(response.status, 200);
+  assert.equal(
+    calls.lastFingerprintContext.actorUserId,
+    ACTOR,
+  );
+  assert.equal(
+    calls.lastFingerprintContext.preclosureRevision,
+    1,
+  );
+});
+
+test("44 - revisao alterada invalida a correspondencia", async () => {
+  const changed = binding();
+  changed.storagePath = changed.storagePath.replace(
+    "/2026-10-01/1/",
+    "/2026-10-01/2/",
+  );
+
+  const { response, calls } = await run({}, {
+    readBinding: async () => ({
+      ok: true,
+      binding: changed,
+    }),
+    createFingerprint: (ctx) => ({
+      ok: true,
+      fingerprint:
+        ctx.preclosureRevision === 1
+          ? SHA
+          : "b".repeat(64),
+    }),
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(calls.bytes, 0);
+});
+
+test("45 - valor alterado invalida a correspondencia", async () => {
+  const changed = binding();
+  changed.candidate = {
+    ...changed.candidate,
+    amountBrlCents: 1500,
+  };
+
+  const { response, calls } = await run({}, {
+    readBinding: async () => ({
+      ok: true,
+      binding: changed,
+    }),
+    createFingerprint: (ctx) => ({
+      ok: true,
+      fingerprint:
+        ctx.amountBrlCents === 0
+          ? SHA
+          : "b".repeat(64),
+    }),
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(calls.bytes, 0);
+});
+
+test("46 - contexto de documento vem do banco", async () => {
+  const { response, calls } = await run();
+  const trusted = calls.lastFingerprintContext;
+
+  assert.equal(response.status, 200);
+  assert.equal(trusted.uploadId, 7);
+  assert.equal(trusted.source, "fixed_costs");
+  assert.equal(trusted.proofType, "supplier_invoice");
+  assert.equal(trusted.documentSha256, SHA);
+  assert.equal(trusted.sizeBytes, BYTES.length);
+  assert.equal(
+    trusted.storagePath,
+    binding().storagePath,
+  );
+});
+
+test("47 - geracao de fingerprint rejeitada falha fechada", async () => {
+  const { response, calls } = await run({}, {
+    createFingerprint: () => ({
+      ok: false,
+      reason: "INVALID_CONTEXT",
+    }),
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(calls.bytes, 0);
+});
+
+test("48 - erro ao montar contexto falha fechado", async () => {
+  const { response, calls } = await run({}, {
+    createFingerprint: () => {
+      throw new Error("CONTEXT_UNAVAILABLE");
+    },
+  });
+
+  assert.equal(response.status, 503);
+  assert.equal(calls.bytes, 0);
 });

@@ -38,11 +38,17 @@ import {
   readVerifiedPrivateFinancialBytes,
 } from "./zion-admin-financial-evidence-private-bytes";
 
+import { timingSafeEqual } from "node:crypto";
+
+import {
+  prepareFinancialEvidenceReview,
+} from "./zion-admin-financial-evidence-review-confirmation";
 type Dependencies = {
   authorize: typeof resolveZionAdminApiAccess;
   createDb: typeof createServiceSupabaseClient;
   readBinding: typeof readFinancialEvidenceBinding;
   readBytes: typeof readVerifiedPrivateFinancialBytes;
+  createFingerprint: typeof prepareFinancialEvidenceReview;
 };
 
 const BUCKET = "zion-admin-financial-evidence";
@@ -105,12 +111,14 @@ function validInput(
   month: string;
   uploadId: number;
   proofDraft: Record<string, unknown>;
+  reviewFingerprint: string;
 } {
   if (
     !exactKeys(value, [
       "month",
       "uploadId",
       "proofDraft",
+    "reviewFingerprint",
     ])
   ) {
     return false;
@@ -121,7 +129,9 @@ function validInput(
     !/^\d{4}-(0[1-9]|1[0-2])-01$/.test(value.month) ||
     typeof value.uploadId !== "number" ||
     !Number.isSafeInteger(value.uploadId) ||
-    value.uploadId < 1
+    value.uploadId < 1 ||
+    typeof value.reviewFingerprint !== "string" ||
+    !/^[0-9a-f]{64}$/.test(value.reviewFingerprint)
   ) {
     return false;
   }
@@ -251,6 +261,8 @@ export function createFinancialEvidencePrivateViewHandler(
       overrides.readBinding ?? readFinancialEvidenceBinding,
     readBytes:
       overrides.readBytes ?? readVerifiedPrivateFinancialBytes,
+    createFingerprint:
+      overrides.createFingerprint ?? prepareFinancialEvidenceReview,
   };
 
   return async function POST(
@@ -400,6 +412,55 @@ export function createFinancialEvidencePrivateViewHandler(
       }
 
       const mimeType = MIME[extension];
+      const segments = binding.storagePath.split("/");
+      const preclosureRevision = Number(segments[2]);
+
+      if (
+        segments.length !== 5 ||
+        segments[0] !== "unverified" ||
+        segments[1] !== body.value.month ||
+        segments[3] !== binding.source ||
+        !/^[1-9][0-9]{0,9}$/.test(segments[2]) ||
+        !Number.isSafeInteger(preclosureRevision) ||
+        preclosureRevision < 1 ||
+        preclosureRevision > 2147483647
+      ) {
+        return errorResponse(
+          409,
+          "FINANCIAL_DOCUMENT_REVIEW_MISMATCH",
+        );
+      }
+
+      const prepared = deps.createFingerprint({
+        actorUserId: authority.actorUserId,
+        month: body.value.month,
+        preclosureRevision,
+        uploadId: binding.uploadId,
+        source: binding.source,
+        proofType: binding.candidate.proofType,
+        amountBrlCents: binding.candidate.amountBrlCents,
+        amountUsd: binding.candidate.amountUsd,
+        documentSha256: binding.documentSha256,
+        sizeBytes: binding.sizeBytes,
+        storagePath: binding.storagePath,
+      });
+
+      // O fingerprint recebido nao e permissao.
+      // Apenas comprova correspondencia de contexto.
+      if (
+        !prepared.ok ||
+        !/^[0-9a-f]{64}$/.test(prepared.fingerprint) ||
+        !timingSafeEqual(
+          Buffer.from(prepared.fingerprint, "hex"),
+          Buffer.from(body.value.reviewFingerprint, "hex"),
+        )
+      ) {
+        return errorResponse(
+          409,
+          "FINANCIAL_DOCUMENT_REVIEW_MISMATCH",
+        );
+      }
+
 
       // O novo leitor devolve exatamente o Buffer
       // que acabou de passar na verificacao SHA-256.
@@ -453,6 +514,8 @@ export function createFinancialEvidencePrivateViewHandler(
             "frame-ancestors 'self'",
           "X-ZION-Document-SHA256": verified.sha256,
           "X-ZION-Upload-ID": String(binding.uploadId),
+          "X-ZION-Review-Fingerprint": prepared.fingerprint,
+          "X-ZION-Preclosure-Revision": String(preclosureRevision),
           "Vary": "Cookie",
         },
       });
