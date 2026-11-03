@@ -130,17 +130,17 @@ test("product dimensions cannot silently replace space dimensions", () => {
     "2,8 por 7,5 metros",
   );
 
-  assert.ok(aiCandidate);
+  assert.equal(aiCandidate, null);
 
   const result = mergeQualificationFactCandidates({
     deterministicCandidates: validatedCandidates(message),
-    aiCandidates: [aiCandidate],
+    aiCandidates: [],
   });
 
-  assert.equal(result.discardedFactKeys.includes("space_text"), true);
+  assert.deepEqual(result.discardedFactKeys, []);
   assert.equal(
-    result.mergedCandidates.some((c) => c.factKey === "space_text"),
-    false,
+    result.mergedCandidates.find((c) => c.factKey === "space_text")?.valueJson,
+    "6 por 3 metros",
   );
 });
 

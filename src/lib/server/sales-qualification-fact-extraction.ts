@@ -280,6 +280,7 @@ function normalizeForPatternChar(char: string): string {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/\u00d7/g, "x")
+    .replace(/\u00b2/g, "2")
     .toLowerCase();
 }
 
@@ -445,30 +446,62 @@ function parseDeterministicBooleanCandidate(args: {
 
 function extractDimensionCandidates(anchorMessage: string): QualificationFactCandidate[] {
   const out: QualificationFactCandidate[] = [];
+  const normalized = buildNormalizedTextWithIndexMap(anchorMessage);
   const matches = Array.from(
-    anchorMessage.matchAll(/\b(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:x|×|por(?=\s*\d{1,3}(?:[.,]\d{1,2})?\s*(?:m|metros?)\b))\s*(\d{1,3}(?:[.,]\d{1,2})?)(?:\s*(?:m|metros?))?\b/gi),
+    normalized.normalizedText.matchAll(/\b(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:x|por(?=\s*\d{1,3}(?:[.,]\d{1,2})?\s*(?:m|metros?)\b))\s*(\d{1,3}(?:[.,]\d{1,2})?)(?:\s*(?:m|metros?))?\b/gi),
   );
-  const first = matches[0];
+  for (const match of matches) {
+    if (match.index == null || !isCustomerSpaceEvidence({ normalizedText: normalized.normalizedText, start: match.index, end: match.index + match[0].length, evidenceKind: "dimension" })) continue;
+    const evidenceText = extractRawMatchSlice({
+      sourceText: anchorMessage,
+      indexMap: normalized.indexMap,
+      matchIndex: match.index,
+      matchText: match[0],
+    });
+    const areaM2 = deriveConfirmedAreaFromMatchableText(evidenceText);
+    pushCandidate(out, buildCandidate({ factKey: "space_text", valueJson: normalizeTextValue(evidenceText), assertionLevel: "confirmed", sourceType: "incoming_customer_message", evidenceText }));
+    if (areaM2 != null) pushCandidate(out, buildCandidate({ factKey: "requested_area_m2", valueJson: areaM2, assertionLevel: "confirmed", sourceType: "incoming_customer_message", evidenceText }));
+  }
 
-  if (!first) return out;
+  return out;
+}
 
-  const evidenceText = first[0];
-  const areaM2 = deriveConfirmedAreaFromMatchableText(evidenceText);
+function extractExplicitAreaCandidates(anchorMessage: string): QualificationFactCandidate[] {
+  const out: QualificationFactCandidate[] = [];
+  const normalized = buildNormalizedTextWithIndexMap(anchorMessage);
+  const normalizedForArea = normalized.normalizedText.replace(/\u00b2/g, "2");
+  for (const match of normalizedForArea.matchAll(/\b(\d+(?:[.,]\d+)?)\s*(?:m2|metros?\s+quadrados?)\b/gi)) {
+    if (
+      match.index == null ||
+      !isCustomerSpaceEvidence({
+        normalizedText: normalizedForArea,
+        start: match.index,
+        end: match.index + match[0].length,
+        evidenceKind: "area",
+      })
+    ) {
+      continue;
+    }
 
-  pushCandidate(
-    out,
-    buildCandidate({
-      factKey: "space_text",
-      valueJson: normalizeTextValue(evidenceText),
-      assertionLevel: "confirmed",
-      sourceType: "incoming_customer_message",
-      evidenceText,
-    }),
-  );
+    const evidenceText = extractRawMatchSlice({
+      sourceText: anchorMessage,
+      indexMap: normalized.indexMap,
+      matchIndex: match.index,
+      matchText: match[0],
+    });
+    const areaM2 = deriveConfirmedAreaFromMatchableText(evidenceText);
+    if (areaM2 == null) continue;
 
-  if (areaM2 != null) {
-    pushCandidate(
-      out,
+    out.push(
+      buildCandidate({
+        factKey: "space_text",
+        valueJson: normalizeTextValue(evidenceText),
+        assertionLevel: "confirmed",
+        sourceType: "incoming_customer_message",
+        evidenceText,
+      }),
+    );
+    out.push(
       buildCandidate({
         factKey: "requested_area_m2",
         valueJson: areaM2,
@@ -482,46 +515,138 @@ function extractDimensionCandidates(anchorMessage: string): QualificationFactCan
   return out;
 }
 
-function extractExplicitAreaCandidates(anchorMessage: string): QualificationFactCandidate[] {
-  const out: QualificationFactCandidate[] = [];
-  const normalized = buildNormalizedTextWithIndexMap(anchorMessage);
-  const normalizedForArea = normalized.normalizedText.replace(/\u00b2/g, "2");
-  const match = /\b(\d+(?:[.,]\d+)?)\s*(?:m2|metros?\s+quadrados?)\b/i.exec(
-    normalizedForArea,
+function isCustomerSpaceEvidence(args: {
+  normalizedText: string;
+  start: number;
+  end: number;
+  evidenceKind: "dimension" | "area";
+}): boolean {
+  const before = args.normalizedText.slice(0, args.start);
+  const sentenceStart = Math.max(
+    before.lastIndexOf("."),
+    before.lastIndexOf(","),
+    before.lastIndexOf(";"),
+    before.lastIndexOf(":"),
+  );
+  const segment = args.normalizedText.slice(sentenceStart + 1, args.end);
+  const connector = Math.max(segment.lastIndexOf(" e "), segment.lastIndexOf(" mas "), segment.lastIndexOf(" porem "));
+  const rightSide = connector >= 0 ? segment.slice(connector + 3) : "";
+  const startsNewSubject = /\b(?:espacos?|terrenos?|quintais?|lotes?|piscina|modelo|casco|produto)\b/.test(rightSide);
+  const local = (connector >= 0 && startsNewSubject ? rightSide : segment).trim();
+  const beforeOccurrence = local.slice(0, Math.max(0, local.length - (args.end - args.start)));
+  const hasSpace = /\b(?:espacos?|terrenos?|quintais?|lotes?)\b/.test(beforeOccurrence);
+  const product = /\b(?:piscina|modelo|casco|produto)\b[\s\S]*(?:\b(?:mede|tem|possui|e|e de|de)\b)/.test(beforeOccurrence);
+  const installationSpace = /\b(?:espacos?|terrenos?|quintais?|lotes?)\b[\s\S]*\b(?:para|pra)\s+(?:instalar|colocar)\s+(?:(?:uma?|a)\s+)?piscina\b[\s\S]*(?:\b(?:mede|e de)\b)\s*$/.test(beforeOccurrence);
+  const directArea =
+    args.evidenceKind === "area" &&
+    /\b(?:tenho|possuo|disponho de)\b/.test(beforeOccurrence);
+  const explicitAreaSubject =
+    args.evidenceKind === "area" &&
+    /\barea\b[\s\S]*\b(?:e|de|tem|possui)\s*$/.test(beforeOccurrence);
+  return (
+    hasSpace ||
+    installationSpace ||
+    directArea ||
+    explicitAreaSubject
+  ) && (!product || installationSpace);
+}
+
+function countDimensionalOccurrences(value: string): number {
+  const normalized = buildNormalizedTextWithIndexMap(value).normalizedText;
+  return [
+    ...normalized.matchAll(/\b\d{1,3}(?:[.,]\d{1,2})?\s*(?:x|por)\s*\d{1,3}(?:[.,]\d{1,2})?(?:\s*(?:m|metros?))?\b/gi),
+    ...normalized.matchAll(/\b\d+(?:[.,]\d+)?\s*(?:m2|metros?\s+quadrados?)\b/gi),
+  ].length;
+}
+
+function canonicalDimensionOccurrenceKey(value: string): string | null {
+  const normalized = buildNormalizedTextWithIndexMap(value).normalizedText;
+  const matches = Array.from(normalized.matchAll(/\b(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:x|por)\s*(\d{1,3}(?:[.,]\d{1,2})?)(?:\s*(?:m|metros?))?\b/gi));
+  if (matches.length !== 1) return null;
+  const match = matches[0];
+  if (!match?.[1] || !match[2]) return null;
+  const first = parseDimensionNumberToken(match[1]);
+  const second = parseDimensionNumberToken(match[2]);
+  if (first == null || second == null) return null;
+  return `${first}x${second}`;
+}
+
+function hasAuthorizedCustomerSpaceEvidence(
+  anchorMessage: string,
+  evidenceText: string,
+  candidateValue: string | number,
+): boolean {
+  const normalizedAnchor = buildNormalizedTextWithIndexMap(anchorMessage);
+  const normalizedEvidence = buildNormalizedTextWithIndexMap(evidenceText).normalizedText;
+  if (!normalizedEvidence) return false;
+
+  const evidenceStart = normalizedAnchor.normalizedText.indexOf(normalizedEvidence);
+  if (evidenceStart < 0) return false;
+  const evidenceEnd = evidenceStart + normalizedEvidence.length;
+
+  const occurrences = [
+    ...Array.from(normalizedAnchor.normalizedText.matchAll(/\b\d{1,3}(?:[.,]\d{1,2})?\s*(?:x|por)\s*\d{1,3}(?:[.,]\d{1,2})?(?:\s*(?:m|metros?))?\b/gi)).map((match) => ({
+      match,
+      evidenceKind: "dimension" as const,
+    })),
+    ...Array.from(normalizedAnchor.normalizedText.matchAll(/\b\d+(?:[.,]\d+)?\s*(?:m2|metros?\s+quadrados?)\b/gi)).map((match) => ({
+      match,
+      evidenceKind: "area" as const,
+    })),
+  ].filter(({ match }) =>
+    match.index != null &&
+    match.index >= evidenceStart &&
+    match.index + match[0].length <= evidenceEnd,
   );
 
-  if (!match || match.index == null) return out;
+  if (occurrences.length === 0) return false;
 
-  const evidenceText = extractRawMatchSlice({
-    sourceText: anchorMessage,
-    indexMap: normalized.indexMap,
-    matchIndex: match.index,
-    matchText: match[0],
+  const candidateHasSingleDimensionalOccurrence =
+    typeof candidateValue !== "string" || countDimensionalOccurrences(candidateValue) === 1;
+  if (!candidateHasSingleDimensionalOccurrence) return false;
+
+  const candidateDimensionKey =
+    typeof candidateValue === "string"
+      ? canonicalDimensionOccurrenceKey(candidateValue)
+      : null;
+  const candidateArea =
+    typeof candidateValue === "number"
+      ? candidateValue
+      : typeof candidateValue === "string"
+        ? deriveConfirmedAreaFromMatchableText(candidateValue)
+        : null;
+  const candidateOccurrences = occurrences.filter(({ match, evidenceKind }) => {
+    if (evidenceKind === "dimension" && candidateDimensionKey != null) {
+      return canonicalDimensionOccurrenceKey(match[0]) === candidateDimensionKey;
+    }
+    if (candidateArea != null) {
+      return deriveConfirmedAreaFromMatchableText(match[0]) === candidateArea;
+    }
+    return candidateDimensionKey == null && candidateArea == null;
   });
-  const areaM2 = deriveConfirmedAreaFromMatchableText(evidenceText);
 
-  if (areaM2 == null) return out;
+  if (candidateOccurrences.length === 0) return false;
 
-  out.push(
-    buildCandidate({
-      factKey: "space_text",
-      valueJson: normalizeTextValue(evidenceText),
-      assertionLevel: "confirmed",
-      sourceType: "incoming_customer_message",
-      evidenceText,
+  const exactOccurrenceEvidence = candidateOccurrences.every(({ match }) => normalizedEvidence === match[0]);
+  if (exactOccurrenceEvidence) {
+    const exactMatchCount = candidateOccurrences.reduce((count, { evidenceKind }) => {
+      const pattern = evidenceKind === "dimension"
+        ? /\b\d{1,3}(?:[.,]\d{1,2})?\s*(?:x|por)\s*\d{1,3}(?:[.,]\d{1,2})?(?:\s*(?:m|metros?))?\b/gi
+        : /\b\d+(?:[.,]\d+)?\s*(?:m2|metros?\s+quadrados?)\b/gi;
+      return count + Array.from(normalizedAnchor.normalizedText.matchAll(pattern)).filter((match) => match[0] === normalizedEvidence).length;
+    }, 0);
+    if (exactMatchCount !== 1) return false;
+  }
+
+  return candidateOccurrences.some(({ match, evidenceKind }) =>
+    match.index != null &&
+    isCustomerSpaceEvidence({
+      normalizedText: normalizedAnchor.normalizedText,
+      start: match.index,
+      end: match.index + match[0].length,
+      evidenceKind,
     }),
   );
-  out.push(
-    buildCandidate({
-      factKey: "requested_area_m2",
-      valueJson: areaM2,
-      assertionLevel: "confirmed",
-      sourceType: "incoming_customer_message",
-      evidenceText,
-    }),
-  );
-
-  return out;
 }
 
 function extractPreferredPeriodCandidates(anchorMessage: string): QualificationFactCandidate[] {
@@ -582,12 +707,72 @@ function extractBooleanCandidates(anchorMessage: string): QualificationFactCandi
 function canonicalizeSpaceDimensionComparableText(value: string): string {
   const normalized = normalizeComparableText(value);
 
-  const match =
-    /^(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:x|×|por)\s*(\d{1,3}(?:[.,]\d{1,2})?)(?:\s*(?:m|metros?))?$/.exec(
-      normalized,
+  const matches = Array.from(
+    normalized.matchAll(
+      /\b(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:x|\u00d7|por)\s*(\d{1,3}(?:[.,]\d{1,2})?)(?:\s*(?:m|metros?))?\b/g,
+    ),
+  );
+
+  // Multiplas dimensoes nao podem ser reduzidas a uma unica medida.
+  if (matches.length !== 1) return normalized;
+
+  const match = matches[0];
+  if (!match?.[1] || !match?.[2]) return normalized;
+
+  const precedingText = normalized.slice(0, match.index ?? 0);
+  const isBareDimension = normalized === match[0];
+
+  // Uma descricao contextual so representa o espaco do cliente
+  // quando o proprio texto identifica claramente esse espaco.
+  const hasCustomerSpaceContext =
+    /\b(?:espaco|terreno|quintal|lote)\b/.test(precedingText);
+
+  // Considerar a clausula que descreve a medida, nao qualquer
+  // referencia anterior a piscina na mensagem inteira.
+  const clauseStart = Math.max(
+    precedingText.lastIndexOf(","),
+    precedingText.lastIndexOf(";"),
+    precedingText.lastIndexOf(":"),
+    precedingText.lastIndexOf("."),
+  );
+  const clauseContext = precedingText.slice(clauseStart + 1).trim();
+
+  const productIsSubject =
+    /^(?:(?:e|mas)\s+)?(?:(?:o|a|um|uma|esse|essa|meu|minha)\s+)?(?:piscina|modelo|produto|casco)\b/.test(
+      clauseContext,
     );
 
-  if (!match?.[1] || !match?.[2]) return normalized;
+  const spaceMentions = Array.from(
+    precedingText.matchAll(/\b(?:espaco|terreno|quintal|lote)\b/g),
+  );
+  const lastSpaceMention = spaceMentions[spaceMentions.length - 1];
+
+  const textAfterSpace = lastSpaceMention
+    ? precedingText.slice(
+        (lastSpaceMention.index ?? 0) + lastSpaceMention[0].length,
+      )
+    : "";
+
+  const productMentionedAfterSpace =
+    /\b(?:piscina|modelo|produto|casco)\b/.test(textAfterSpace);
+
+  // "Meu espaco para instalar uma piscina e de 6 por 3 metros"
+  // descreve o espaco; "piscina de 6 por 3 metros" nao.
+  const explicitInstallationPurpose =
+    /\b(?:espaco|terreno|quintal|lote)\b.*\b(?:para|pra)\s+(?:instalar|colocar)\s+(?:(?:uma?|a)\s+)?piscina\s+(?:e\s+de|mede)\s*$/.test(
+      precedingText,
+    );
+
+  if (
+    !isBareDimension &&
+    (
+      !hasCustomerSpaceContext ||
+      productIsSubject ||
+      (productMentionedAfterSpace && !explicitInstallationPurpose)
+    )
+  ) {
+    return normalized;
+  }
 
   const first = parseDimensionNumberToken(match[1]);
   const second = parseDimensionNumberToken(match[2]);
@@ -693,6 +878,18 @@ export function validateQualificationFactCandidate(args: {
     if (!normalizedValue) return null;
 
     if (
+      args.candidate.factKey === "space_text" &&
+      args.candidate.assertionLevel === "confirmed" &&
+      !hasAuthorizedCustomerSpaceEvidence(
+        args.anchorMessage,
+        args.candidate.evidenceText,
+        args.candidate.valueJson,
+      )
+    ) {
+      return null;
+    }
+
+    if (
       args.candidate.factKey === "customer_city" &&
       isApproximateCustomerCityEvidence({
         evidence: normalizedEvidence,
@@ -740,6 +937,15 @@ export function validateQualificationFactCandidate(args: {
     ) {
       const derivedArea = deriveConfirmedAreaFromMatchableText(args.candidate.evidenceText);
       if (derivedArea == null || derivedArea !== args.candidate.valueJson) {
+        return null;
+      }
+      if (
+        !hasAuthorizedCustomerSpaceEvidence(
+          args.anchorMessage,
+          args.candidate.evidenceText,
+          args.candidate.valueJson,
+        )
+      ) {
         return null;
       }
     }
