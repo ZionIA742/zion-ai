@@ -24,6 +24,7 @@ import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-cust
 import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
 import { decideQuoteApprovalFromPersistedInbound } from "@/lib/server/sales-quotes/quote-approval-decision";
 import { registerReceivedContractDocumentEvidence } from "@/lib/server/sales-contracts/received-contract-document-evidence";
+import { pushAssistantReceivedContractDocumentMessage } from "@/lib/server/assistant/document-review-messages";
 import { formatSalesAiProcessingError } from "@/lib/server/sales-ai-error-diagnostics";
 import {
   enqueuePersistedSalesAiFailureAlerts,
@@ -68,9 +69,45 @@ async function registerReceivedContractDocumentEvidenceSafely(args: {
   storeId: string;
   sourceMessageId: string;
   leadId?: string | null;
+  customerMessage?: string | null;
 }) {
   try {
-    await registerReceivedContractDocumentEvidence(args);
+    const persisted = await registerReceivedContractDocumentEvidence(args);
+    if (persisted.outcome === "not_contract_related" || !persisted.record) return;
+
+    let customerName: string | null = null;
+    if (args.leadId) {
+      const { data: lead, error } = await args.supabase
+        .from("leads")
+        .select("id, name")
+        .eq("id", args.leadId)
+        .eq("organization_id", args.organizationId)
+        .eq("store_id", args.storeId)
+        .maybeSingle();
+      if (error) throw new Error(`Falha ao carregar cliente da evidencia documental: ${error.message}`);
+      customerName = typeof lead?.name === "string" ? lead.name.trim() || null : null;
+    }
+
+    await pushAssistantReceivedContractDocumentMessage({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      sourceMessageId: persisted.record.sourceMessageId,
+      customerName,
+      customerMessage: args.customerMessage,
+      relatedLeadId: args.leadId,
+      relatedConversationId: persisted.record.conversationId,
+      contractId: persisted.record.contractId,
+      contractVersionId: persisted.record.contractVersionId,
+      receivedDocument: {
+        storageBucket: persisted.record.receivedDocument.storageBucket,
+        storagePath: persisted.record.receivedDocument.storagePath,
+        mimeType: persisted.record.receivedDocument.mimeType,
+        originalFileName: persisted.record.receivedDocument.originalFileName,
+      },
+      identificationStatus: persisted.record.identificationStatus,
+      identificationReason: persisted.record.identificationReason,
+    });
   } catch (error) {
     console.warn("[whatsapp_inbound] received contract document evidence skipped:", error);
   }
@@ -2341,6 +2378,7 @@ async function processSingleInboxRow(
           storeId: inbox.store_id,
           sourceMessageId: existingMessage.id,
           leadId: existingMessage.lead_id,
+          customerMessage: existingMessage.content,
         });
       }
 
@@ -2756,6 +2794,7 @@ async function processSingleInboxRow(
         storeId: inbox.store_id,
         sourceMessageId: persistedMessage.id,
         leadId: persistedMessage.lead_id,
+        customerMessage: persistedMessage.content,
       });
     }
 

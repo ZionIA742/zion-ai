@@ -4,6 +4,7 @@ const DOCUMENT_REVIEW_SOURCE = "assistant_document_workflow_v1";
 const DOCUMENT_REVIEW_PROMPT =
   "Esse documento pode ser enviado ou precisa ser editado? Caso precise ser editado, me diga o que precisa que eu edito.";
 const DOCUMENT_REVIEW_NOTIFICATION_TYPE = "important_alert";
+const RECEIVED_CONTRACT_DOCUMENT_SOURCE = "received_contract_document_evidence_v1";
 
 type InternalAssistantNotificationRow = {
   id: string;
@@ -64,6 +65,31 @@ type PushAssistantDocumentReviewMessageInput = {
   assistantPromptOverride?: string | null;
   availableActionsOverride?: AssistantDocumentReviewAction[] | null;
   sourceOverride?: string | null;
+  materializeExternalNotification?: boolean;
+  receivedEvidenceSourceMessageId?: string | null;
+  receivedEvidenceIdentificationStatus?: "identified" | "pending_identification" | null;
+};
+
+export type ReceivedContractDocumentAssistantNotificationInput = {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  sourceMessageId: string;
+  customerName?: string | null;
+  customerMessage?: string | null;
+  relatedLeadId?: string | null;
+  relatedConversationId?: string | null;
+  contractId: string | null;
+  contractVersionId: string | null;
+  documentNumber?: string | null;
+  receivedDocument: {
+    storageBucket: string | null;
+    storagePath: string | null;
+    mimeType: string | null;
+    originalFileName: string | null;
+  };
+  identificationStatus: "identified" | "pending_identification";
+  identificationReason?: string | null;
 };
 
 function cleanText(value: unknown) {
@@ -167,6 +193,7 @@ function buildDefaultAvailableActions(
 
 function buildDocumentReviewMetadata(input: PushAssistantDocumentReviewMessageInput) {
   const source = cleanText(input.sourceOverride) || DOCUMENT_REVIEW_SOURCE;
+  const isReceivedEvidence = source === RECEIVED_CONTRACT_DOCUMENT_SOURCE;
   return {
     kind: "document_review",
     document_type: input.documentType,
@@ -180,7 +207,9 @@ function buildDocumentReviewMetadata(input: PushAssistantDocumentReviewMessageIn
         : cleanText(input.relatedQuoteId),
     related_contract_id:
       input.documentType === "contract"
-        ? cleanText(input.relatedContractId) || input.documentId
+        ? isReceivedEvidence
+          ? cleanText(input.relatedContractId)
+          : cleanText(input.relatedContractId) || input.documentId
         : cleanText(input.relatedContractId),
     related_lead_id: cleanText(input.relatedLeadId),
     related_conversation_id: cleanText(input.relatedConversationId),
@@ -191,10 +220,19 @@ function buildDocumentReviewMetadata(input: PushAssistantDocumentReviewMessageIn
     file_kind: cleanText(input.fileKind),
     mime_type: cleanText(input.mimeType) || "application/pdf",
     original_file_name: cleanText(input.originalFileName),
+    ...(isReceivedEvidence
+      ? {
+          attachment_kind: "file",
+          origin: "received_contract_document_evidence",
+          channel: "whatsapp",
+          received_evidence_source_message_id: cleanText(input.receivedEvidenceSourceMessageId),
+          received_identification_status: cleanText(input.receivedEvidenceIdentificationStatus),
+        }
+      : {}),
     assistant_prompt:
       cleanText(input.assistantPromptOverride) || getDefaultAssistantPrompt(input),
     available_actions:
-      input.availableActionsOverride && input.availableActionsOverride.length > 0
+      input.availableActionsOverride
         ? input.availableActionsOverride
         : buildDefaultAvailableActions(input),
     source,
@@ -224,6 +262,20 @@ function getDocumentNotificationDescriptor(metadata: Record<string, unknown>) {
     const kind = cleanText(item.kind);
     return id === "confirm_store_signature" || kind === "confirm_store_signature";
   });
+
+  if (cleanText(metadata.source) === RECEIVED_CONTRACT_DOCUMENT_SOURCE) {
+    const customerName = cleanText(metadata.customer_name) || "O cliente";
+    const statusText = cleanText(metadata.received_identification_status) === "identified"
+      ? `${customerName} devolveu um documento relacionado ao ${documentLabel.toLowerCase()} ${documentNumber}.`
+      : `${customerName} devolveu um documento contratual para associacao.`;
+    return {
+      title: "Documento contratual recebido",
+      body: `${statusText} O arquivo esta disponivel para conferencia humana. A assinatura nao foi validada automaticamente.`,
+      priority: "high" as const,
+      needsHumanAction: true,
+      reason: "received_contract_document",
+    };
+  }
 
   if (status === "pending_review" && canApproveAndSend) {
     return {
@@ -423,6 +475,7 @@ async function enqueueDocumentReviewNotification(args: {
   metadata: Record<string, unknown>;
   relatedLeadId?: string | null;
   relatedConversationId?: string | null;
+  materializeExternalNotification?: boolean;
 }) {
   const descriptor = getDocumentNotificationDescriptor(args.metadata);
   if (!descriptor?.needsHumanAction) {
@@ -498,40 +551,42 @@ async function enqueueDocumentReviewNotification(args: {
       };
     }
 
-    try {
-      const createdNotification = await findCreatedDocumentReviewNotificationByEventKey({
-        supabase: args.supabase,
-        organizationId: args.organizationId,
-        storeId: args.storeId,
-        notificationType: DOCUMENT_REVIEW_NOTIFICATION_TYPE,
-        eventKey,
-      });
-
-      if (createdNotification?.id) {
-        await enqueueResponsibleExternalNotificationFromAssistantNotification({
+    if (args.materializeExternalNotification !== false) {
+      try {
+        const createdNotification = await findCreatedDocumentReviewNotificationByEventKey({
           supabase: args.supabase,
-          internalNotification: createdNotification,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          notificationType: DOCUMENT_REVIEW_NOTIFICATION_TYPE,
+          eventKey,
         });
-      } else {
+
+        if (createdNotification?.id) {
+          await enqueueResponsibleExternalNotificationFromAssistantNotification({
+            supabase: args.supabase,
+            internalNotification: createdNotification,
+          });
+        } else {
+          console.warn(
+            "[assistant_document_review] notificacao interna criada, mas nao encontrada para materializacao externa",
+            {
+              organizationId: args.organizationId,
+              storeId: args.storeId,
+              eventKey,
+            }
+          );
+        }
+      } catch (materializeError) {
         console.warn(
-          "[assistant_document_review] notificacao interna criada, mas nao encontrada para materializacao externa",
+          "[assistant_document_review] falha ao materializar fila externa do responsavel:",
           {
             organizationId: args.organizationId,
             storeId: args.storeId,
             eventKey,
+            error: materializeError,
           }
         );
       }
-    } catch (materializeError) {
-      console.warn(
-        "[assistant_document_review] falha ao materializar fila externa do responsavel:",
-        {
-          organizationId: args.organizationId,
-          storeId: args.storeId,
-          eventKey,
-          error: materializeError,
-        }
-      );
     }
 
     return {
@@ -641,6 +696,7 @@ export async function pushAssistantDocumentReviewMessage(
     metadata,
     relatedLeadId: cleanText(input.relatedLeadId),
     relatedConversationId: cleanText(input.relatedConversationId),
+    materializeExternalNotification: input.materializeExternalNotification,
   });
 
   return {
@@ -649,4 +705,64 @@ export async function pushAssistantDocumentReviewMessage(
     threadId,
     messageId: null,
   };
+}
+
+function customerDeclaredSignature(message: string | null | undefined) {
+  const normalized = String(message || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  return /\b(assinei|assinado|assinada|assinei|assinou|ja assinei)\b/.test(normalized);
+}
+
+export async function pushAssistantReceivedContractDocumentMessage(
+  input: ReceivedContractDocumentAssistantNotificationInput,
+) {
+  const identified = input.identificationStatus === "identified" &&
+    Boolean(input.contractId && input.contractVersionId);
+  const customerName = cleanText(input.customerName) || "O cliente";
+  const documentName = cleanText(input.receivedDocument.originalFileName) || "documento recebido";
+  const contractLine = identified
+    ? `Contrato: ${cleanText(input.documentNumber) || input.contractId} (versao ${input.contractVersionId})`
+    : "Contrato: ainda nao associado de forma inequivoca";
+  const signatureLine = customerDeclaredSignature(input.customerMessage)
+    ? `${customerName} informou que assinou.`
+    : `${customerName} enviou um documento relacionado ao contrato para conferencia.`;
+  const content = [
+    signatureLine,
+    identified ? contractLine : "O documento precisa ser associado a um contrato pela equipe.",
+    `Documento recebido: ${documentName}`,
+    "O arquivo devolvido esta disponivel para conferencia.",
+    "A assinatura nao foi validada automaticamente.",
+    identified ? "Posso marcar o contrato como concluido? Sim ou nao?" : "Nao ha acao contratual automatica disponivel nesta etapa.",
+  ].join("\n\n");
+
+  return pushAssistantDocumentReviewMessage({
+    supabase: input.supabase,
+    organizationId: input.organizationId,
+    storeId: input.storeId,
+    documentType: "contract",
+    documentId: input.contractId || input.sourceMessageId,
+    documentVersionId: input.contractVersionId || input.sourceMessageId,
+    documentNumber: input.documentNumber || input.contractId,
+    documentStatus: "received_document",
+    relatedContractId: input.contractId,
+    relatedLeadId: input.relatedLeadId,
+    relatedConversationId: input.relatedConversationId,
+    customerName: input.customerName,
+    originalFileName: input.receivedDocument.originalFileName,
+    fileKind: "file",
+    mimeType: input.receivedDocument.mimeType,
+    storageBucket: input.receivedDocument.storageBucket,
+    storagePath: input.receivedDocument.storagePath,
+    contentOverride: content,
+    assistantPromptOverride: "Conferir o documento recebido. Nao presumir assinatura valida nem concluir o contrato automaticamente.",
+    availableActionsOverride: identified
+      ? [{ id: "review", label: "Abrir documento recebido", kind: "open_document" }]
+      : [],
+    sourceOverride: RECEIVED_CONTRACT_DOCUMENT_SOURCE,
+    materializeExternalNotification: false,
+    receivedEvidenceSourceMessageId: input.sourceMessageId,
+    receivedEvidenceIdentificationStatus: input.identificationStatus,
+  });
 }

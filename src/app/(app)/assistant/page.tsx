@@ -283,7 +283,14 @@ type AssistantExternalLinkPreview = {
 function getAssistantAttachmentMetadata(
   metadata: AssistantOpportunityMetadata | null,
 ): AssistantAttachment | null {
-  if (!metadata || metadata.origin !== "whatsapp" || metadata.channel !== "whatsapp") {
+  const isReceivedContractDocument =
+    metadata?.origin === "received_contract_document_evidence" &&
+    metadata?.channel === "whatsapp";
+  if (
+    !metadata ||
+    (!isReceivedContractDocument &&
+      (metadata.origin !== "whatsapp" || metadata.channel !== "whatsapp"))
+  ) {
     return null;
   }
 

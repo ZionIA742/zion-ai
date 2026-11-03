@@ -13,6 +13,8 @@ export const dynamic = "force-dynamic";
 
 const STORAGE_BUCKET = "zion-store-files";
 const SIGNED_URL_EXPIRATION_SECONDS = 60;
+const RECEIVED_EVIDENCE_SOURCE = "received_contract_document_evidence";
+const RECEIVED_EVIDENCE_EVENT = "contract_uploaded";
 
 type AssistantMessageRow = {
   id: string;
@@ -96,7 +98,7 @@ export function createAssistantSignedMediaUrlGetHandler(
 
       if (messageError) return json({ ok: false, error: "LOAD_MESSAGE_FAILED", message: messageError.message }, 500);
       if (!message) return json({ ok: false, error: "MESSAGE_NOT_FOUND" }, 404);
-      if (message.sender_role !== "store_responsible" || !message.thread_id) {
+      if (!message.thread_id) {
         return json({ ok: false, error: "INVALID_ASSISTANT_MEDIA_MESSAGE" }, 422);
       }
 
@@ -116,14 +118,51 @@ export function createAssistantSignedMediaUrlGetHandler(
       const kind = attachmentKind(metadata?.attachment_kind);
       const bucket = String(metadata?.storage_bucket || "").trim();
       const path = String(metadata?.storage_path || "").trim();
+      const receivedEvidenceSourceMessageId = String(
+        metadata?.received_evidence_source_message_id || "",
+      ).trim();
+      const isReceivedEvidence =
+        message.sender_role === "system" &&
+        metadata?.kind === "document_review" &&
+        metadata?.origin === RECEIVED_EVIDENCE_SOURCE &&
+        metadata?.channel === "whatsapp" &&
+        Boolean(receivedEvidenceSourceMessageId);
       const responsibleId = String(metadata?.responsible_id || "").trim();
       const externalMessageId = String(metadata?.external_message_id || "").trim();
-      if (
-        !metadata ||
-        !kind ||
-        bucket !== STORAGE_BUCKET ||
-        !path ||
-        /^https?:\/\//i.test(path) ||
+      if (!metadata || !kind || bucket !== STORAGE_BUCKET || !path || /^https?:\/\//i.test(path)) {
+        return json({ ok: false, error: "INVALID_ASSISTANT_MEDIA_MESSAGE" }, 422);
+      }
+
+      if (isReceivedEvidence) {
+        const { data: evidenceEvent, error: evidenceError } = await supabase
+          .from("store_business_events")
+          .select("event_key, event_payload")
+          .eq("organization_id", access.organizationId)
+          .eq("store_id", access.storeId)
+          .eq("event_key", RECEIVED_EVIDENCE_EVENT)
+          .contains("event_payload", {
+            schema: "received_contract_document_evidence",
+            source_message_id: receivedEvidenceSourceMessageId,
+          })
+          .maybeSingle();
+        const evidencePayload = isRecord(evidenceEvent?.event_payload)
+          ? evidenceEvent.event_payload
+          : null;
+        const receivedDocument = isRecord(evidencePayload?.received_document)
+          ? evidencePayload.received_document
+          : null;
+        if (
+          evidenceError ||
+          !evidenceEvent ||
+          evidenceEvent.event_key !== RECEIVED_EVIDENCE_EVENT ||
+          !receivedDocument ||
+          String(receivedDocument.storage_bucket || receivedDocument.storageBucket || "").trim() !== bucket ||
+          String(receivedDocument.storage_path || receivedDocument.storagePath || "").trim() !== path
+        ) {
+          return json({ ok: false, error: "INVALID_RECEIVED_DOCUMENT_EVIDENCE" }, 403);
+        }
+      } else if (
+        message.sender_role !== "store_responsible" ||
         !responsibleId ||
         !externalMessageId ||
         metadata.origin !== "whatsapp" ||
