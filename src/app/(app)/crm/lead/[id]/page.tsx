@@ -5913,6 +5913,10 @@ export default function LeadPage() {
   }, [documentScopeKey]);
 
   useEffect(() => {
+    void fetchAcceptedQuoteSummary();
+  }, [documentScopeKey]);
+
+  useEffect(() => {
     if (activeDetailsTab !== "pdfs") {
       return;
     }
