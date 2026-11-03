@@ -7,7 +7,10 @@ import {
   sendResponsibleExternalNotification,
   type SendResponsibleExternalNotificationResult,
 } from "@/lib/server/assistant/responsible-external-notifications-sender";
-import { prepareResponsibleExternalNotification } from "@/lib/server/assistant/responsible-external-notifications";
+import {
+  prepareResponsibleExternalNotification,
+  unlockStuckResponsibleExternalNotificationProcessing,
+} from "@/lib/server/assistant/responsible-external-notifications";
 import {
   isAssistantPanelWhatsappTemplateEnabled,
   RESPONSIBLE_WHATSAPP_WINDOW_MS,
@@ -610,7 +613,30 @@ export async function syncAssistantPanelMessageToResponsibleWhatsapp(
     return { ok: false, status: "uncertain", notificationId: existing.id, reason: existing.error_text || "uncertain" };
   }
   if (existing?.id && existingStatus === "processing") {
-    return { ok: false, status: "already_processing", notificationId: existing.id, reason: existing.error_text || "processing" };
+    const recovery = await unlockStuckResponsibleExternalNotificationProcessing({
+      supabase: supabase as never,
+      organizationId,
+      storeId,
+      notificationId: existing.id,
+    });
+    if (!recovery.ok) {
+      return {
+        ok: false,
+        status: "already_processing",
+        notificationId: existing.id,
+        reason: existing.error_text || recovery.reason,
+      };
+    }
+    if (recovery.status === "uncertain") {
+      return {
+        ok: false,
+        status: "uncertain",
+        notificationId: existing.id,
+        reason: "processing_stale_after_provider_call",
+      };
+    }
+    existing.status = "failed";
+    existing.error_text = "Processamento destravado apos ficar preso antes do envio externo.";
   }
   if (existing?.id && existingStatus === "failed" && isPermanentPanelSyncFailure(existing.error_text)) {
     return { ok: false, status: "failed", notificationId: existing.id, reason: cleanText(existing.error_text) };

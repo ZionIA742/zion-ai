@@ -12,7 +12,9 @@ type FakeBuilder = {
   select(): FakeBuilder;
   eq(column: string, value: unknown): FakeBuilder;
   gte(column: string, value: unknown): FakeBuilder;
+  lt(column: string, value: unknown): FakeBuilder;
   in(column: string, value: unknown): FakeBuilder;
+  or(value: string): FakeBuilder;
   contains(column: string, value: unknown): FakeBuilder;
   order(): FakeBuilder;
   limit(): FakeBuilder;
@@ -40,8 +42,16 @@ function createFakeSupabase(options: FakeOptions = {}) {
         filters[`${column}__gte`] = value;
         return api;
       },
+      lt(column: string, value: unknown) {
+        filters[`${column}__lt`] = value;
+        return api;
+      },
       in(column: string, value: unknown) {
         filters[column] = value;
+        return api;
+      },
+      or(value: string) {
+        filters.__or = value;
         return api;
       },
       contains(column: string, value: unknown) {
@@ -88,7 +98,26 @@ function createFakeSupabase(options: FakeOptions = {}) {
           const existing = filters.id
             ? notifications.find((item) => item.id === filters.id)
             : notifications.find((item) => item.source_event_key === key);
-          return { data: existing || null, error: null };
+          const scoped = existing &&
+            (!existing.organization_id || existing.organization_id === filters.organization_id) &&
+            (!existing.store_id || existing.store_id === filters.store_id);
+          if (filters.__update && scoped) {
+            const statusMatches = !filters.status || existing.status === filters.status;
+            const stale = !filters.locked_at__lt || (
+              existing.locked_at &&
+              Date.parse(String(existing.locked_at)) < Date.parse(String(filters.locked_at__lt))
+            );
+            const sendStatus = String(existing.send_status || "");
+            const sendMatches = filters.__or
+              ? !sendStatus || sendStatus === "prepared"
+              : !filters.send_status || sendStatus === filters.send_status;
+            if (statusMatches && stale && sendMatches) {
+              Object.assign(existing, filters.__update);
+              return { data: { id: existing.id, status: existing.status }, error: null };
+            }
+            return { data: null, error: null };
+          }
+          return { data: scoped ? existing || null : null, error: null };
         }
 
         if (table === "store_assistant_notification_queue") {
@@ -145,6 +174,7 @@ function createFakeSupabase(options: FakeOptions = {}) {
         };
       },
       update(payload: Row) {
+        filters.__update = payload;
         if (table === "store_assistant_notification_queue" && options.internalNotification) {
           Object.assign(options.internalNotification, payload);
         }
@@ -320,6 +350,117 @@ void (async () => {
   );
   assert.equal(processing.status, "already_processing");
   assert.equal(processingSendCount, 0);
+
+  const expiredProcessingNotification = {
+    id: "external-processing-expired-1",
+    organization_id: "org-1",
+    store_id: "store-1",
+    status: "processing",
+    send_status: "prepared",
+    locked_at: "2026-10-21T09:00:00.000Z",
+    source_event_key: "assistant-panel-whatsapp:human:human-message-1",
+    external_message_id: null,
+    attempts: 1,
+  };
+  const expiredProcessingSupabase = createFakeSupabase({
+    sharedNotifications: [expiredProcessingNotification],
+  });
+  let expiredProcessingSendCount = 0;
+  const expiredProcessing = await syncAssistantPanelMessageToResponsibleWhatsapp(
+    {
+      organizationId: "org-1",
+      storeId: "store-1",
+      messageId: "human-message-1",
+      kind: "human",
+    },
+    {
+      supabase: expiredProcessingSupabase as never,
+      prepare: async ({ notificationId }) => ({
+        ok: true as const,
+        updated: true as const,
+        notificationId,
+        status: "ready_to_send" as const,
+      }),
+      send: async (input) => {
+        expiredProcessingSendCount += 1;
+        expiredProcessingNotification.status = "sent";
+        expiredProcessingNotification.external_message_id = "wamid-expired-recovered-1";
+        return {
+          ok: true,
+          sent: true,
+          notificationId: input.notificationId,
+          externalMessageId: "wamid-expired-recovered-1",
+        };
+      },
+    },
+  );
+  assert.equal(expiredProcessing.status, "sent");
+  assert.equal(expiredProcessingSendCount, 1);
+
+  const validProcessingNotification = {
+    id: "external-processing-valid-1",
+    organization_id: "org-1",
+    store_id: "store-1",
+    status: "processing",
+    send_status: "prepared",
+    locked_at: new Date(Date.now() + 60_000).toISOString(),
+    source_event_key: "assistant-panel-whatsapp:human:human-message-1",
+    external_message_id: null,
+  };
+  const validProcessingSupabase = createFakeSupabase({
+    sharedNotifications: [validProcessingNotification],
+  });
+  let validProcessingSendCount = 0;
+  const validProcessing = await syncAssistantPanelMessageToResponsibleWhatsapp(
+    {
+      organizationId: "org-1",
+      storeId: "store-1",
+      messageId: "human-message-1",
+      kind: "human",
+    },
+    {
+      supabase: validProcessingSupabase as never,
+      send: async () => {
+        validProcessingSendCount += 1;
+        throw new Error("valid lease must not send");
+      },
+    },
+  );
+  assert.equal(validProcessing.status, "already_processing");
+  assert.equal(validProcessingSendCount, 0);
+
+  const uncertainProcessingNotification = {
+    id: "external-processing-uncertain-1",
+    organization_id: "org-1",
+    store_id: "store-1",
+    status: "processing",
+    send_status: "sending",
+    locked_at: "2026-10-21T09:00:00.000Z",
+    source_event_key: "assistant-panel-whatsapp:human:human-message-1",
+    external_message_id: null,
+  };
+  const uncertainProcessingSupabase = createFakeSupabase({
+    sharedNotifications: [uncertainProcessingNotification],
+  });
+  let staleUncertainSendCount = 0;
+  const staleUncertain = await syncAssistantPanelMessageToResponsibleWhatsapp(
+    {
+      organizationId: "org-1",
+      storeId: "store-1",
+      messageId: "human-message-1",
+      kind: "human",
+    },
+    {
+      supabase: uncertainProcessingSupabase as never,
+      send: async () => {
+        staleUncertainSendCount += 1;
+        throw new Error("uncertain processing must not send");
+      },
+    },
+  );
+  assert.equal(staleUncertain.status, "uncertain");
+  assert.equal(staleUncertainSendCount, 0);
+  assert.equal(uncertainProcessingNotification.status, "uncertain");
 
   const failedNotification = {
     id: "external-failed-1",
