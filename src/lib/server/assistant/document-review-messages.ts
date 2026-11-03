@@ -68,6 +68,7 @@ type PushAssistantDocumentReviewMessageInput = {
   materializeExternalNotification?: boolean;
   receivedEvidenceSourceMessageId?: string | null;
   receivedEvidenceIdentificationStatus?: "identified" | "pending_identification" | null;
+  receivedCustomerSignatureDeclared?: boolean;
 };
 
 export type ReceivedContractDocumentAssistantNotificationInput = {
@@ -90,6 +91,7 @@ export type ReceivedContractDocumentAssistantNotificationInput = {
   };
   identificationStatus: "identified" | "pending_identification";
   identificationReason?: string | null;
+  forwardToResponsible?: boolean;
 };
 
 function cleanText(value: unknown) {
@@ -227,6 +229,7 @@ function buildDocumentReviewMetadata(input: PushAssistantDocumentReviewMessageIn
           channel: "whatsapp",
           received_evidence_source_message_id: cleanText(input.receivedEvidenceSourceMessageId),
           received_identification_status: cleanText(input.receivedEvidenceIdentificationStatus),
+          customer_signature_declared: input.receivedCustomerSignatureDeclared === true,
         }
       : {}),
     assistant_prompt:
@@ -524,6 +527,19 @@ async function enqueueDocumentReviewNotification(args: {
       document_status: cleanText(args.metadata.document_status),
       related_quote_id: cleanText(args.metadata.related_quote_id),
       related_contract_id: cleanText(args.metadata.related_contract_id),
+      ...(cleanText(args.metadata.source) === RECEIVED_CONTRACT_DOCUMENT_SOURCE
+        ? {
+            needs_human_action: true,
+            customer_name: cleanText(args.metadata.customer_name),
+            received_identification_status: cleanText(args.metadata.received_identification_status),
+            received_evidence_source_message_id: cleanText(args.metadata.received_evidence_source_message_id),
+            received_document_storage_bucket: cleanText(args.metadata.storage_bucket),
+            received_document_storage_path: cleanText(args.metadata.storage_path),
+            received_document_mime_type: cleanText(args.metadata.mime_type),
+            received_document_file_name: cleanText(args.metadata.original_file_name),
+          customer_signature_declared: args.metadata.customer_signature_declared === true,
+          }
+        : {}),
     };
 
     const { error } = await args.supabase.rpc("assistant_enqueue_internal_notification", {
@@ -761,8 +777,9 @@ export async function pushAssistantReceivedContractDocumentMessage(
       ? [{ id: "review", label: "Abrir documento recebido", kind: "open_document" }]
       : [],
     sourceOverride: RECEIVED_CONTRACT_DOCUMENT_SOURCE,
-    materializeExternalNotification: false,
+    materializeExternalNotification: input.forwardToResponsible === true,
     receivedEvidenceSourceMessageId: input.sourceMessageId,
     receivedEvidenceIdentificationStatus: input.identificationStatus,
+    receivedCustomerSignatureDeclared: customerDeclaredSignature(input.customerMessage),
   });
 }

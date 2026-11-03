@@ -305,6 +305,22 @@ export function shouldEnqueueResponsibleExternalNotification(
     };
   }
 
+  if (reason === "received_contract_document") {
+    if (
+      context.needs_human_action !== true ||
+      !cleanText(context.received_evidence_source_message_id) ||
+      !cleanText(context.received_document_storage_bucket) ||
+      !cleanText(context.received_document_storage_path)
+    ) {
+      return { eligible: false as const, reason: "received_document_context_incomplete" };
+    }
+
+    return {
+      eligible: true as const,
+      requiresResponsibleNotification: true as const,
+    };
+  }
+
   if (context.needs_human_action !== true) {
     return { eligible: false as const, reason: "needs_human_action_false" };
   }
@@ -378,6 +394,27 @@ export function renderResponsibleExternalNotificationMessage(args: {
       "",
       "Neste primeiro bloco, revise e confirme pelo painel.",
     ].join("\n");
+  }
+
+  if (documentType === "contract" && reason === "received_contract_document") {
+    const customerName = cleanText(args.context.customer_name) || "O cliente";
+    const identificationStatus = normalizeText(args.context.received_identification_status);
+    const identityLine = identificationStatus === "identified" && documentNumber
+      ? `Contrato: ${documentNumber}`
+      : "O documento ainda precisa ser associado a um contrato.";
+    return [
+      args.context.customer_signature_declared === true
+        ? `${customerName} devolveu o contrato pelo WhatsApp e informou que assinou.`
+        : identificationStatus === "identified"
+          ? `${customerName} devolveu um documento relacionado ao contrato para conferencia.`
+          : `${customerName} devolveu um documento contratual para conferencia.`,
+      identityLine,
+      "Estou encaminhando o documento recebido para voce conferir.",
+      "A assinatura nao foi validada automaticamente.",
+      identificationStatus === "identified"
+        ? "Posso marcar o contrato como concluido? Sim ou nao?"
+        : "A associacao do documento deve ser conferida pela equipe.",
+    ].join("\n\n");
   }
 
   return [cleanText(args.title), cleanText(args.body)]

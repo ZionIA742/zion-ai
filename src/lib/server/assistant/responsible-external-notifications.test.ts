@@ -234,6 +234,43 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "received contract evidence materializes the received file reference",
+    run: async () => {
+      const {
+        enqueueResponsibleExternalNotificationFromAssistantNotification,
+      } = await modulePromise;
+      const supabase = createSupabaseRecorder();
+      const result = await enqueueResponsibleExternalNotificationFromAssistantNotification({
+        supabase: supabase.client as never,
+        internalNotification: {
+          ...createMandatoryNotification(),
+          title: "Documento contratual recebido",
+          context: {
+            source: "received_contract_document_evidence_v1",
+            reason: "received_contract_document",
+            needs_human_action: true,
+            document_type: "contract",
+            document_id: "11111111-1111-4111-8111-111111111111",
+            document_version_id: "22222222-2222-4222-8222-222222222222",
+            document_number: "CTR-001",
+            received_identification_status: "identified",
+            received_evidence_source_message_id: "33333333-3333-4333-8333-333333333333",
+            received_document_storage_bucket: "zion-store-files",
+            received_document_storage_path: "inbound/signed-v2.pdf",
+            received_document_file_name: "contrato-devolvido.pdf",
+            event_key: "assistant_document_review:received_contract_document_evidence_v1:contract:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222:received_document",
+          },
+        },
+      });
+
+      assert.equal(result.created, true);
+      const payload = supabase.insertCalls[0]?.payload;
+      assert.equal(payload.context && (payload.context as Record<string, unknown>).received_document_storage_path, "inbound/signed-v2.pdf");
+      assert.match(String(payload.rendered_message || ""), /documento/i);
+      assert.match(String(payload.rendered_message || ""), /conferencia/i);
+    },
+  },
+  {
     name: "operational reschedule approval fails closed when canonical context is incomplete",
     run: async () => {
       const { shouldEnqueueResponsibleExternalNotification } = await modulePromise;

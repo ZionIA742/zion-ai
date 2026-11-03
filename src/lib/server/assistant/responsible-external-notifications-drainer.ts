@@ -12,6 +12,7 @@ const OPERATIONAL_APPROVAL_REASON =
   "customer_suggested_available_time_requires_approval";
 const OPERATIONAL_APPROVAL_SOURCE = "assistant_operational_task_worker";
 const OPERATIONAL_APPROVAL_CLASSIFICATION = "suggested_other_time";
+const RECEIVED_CONTRACT_DOCUMENT_SOURCE = "received_contract_document_evidence_v1";
 const MAX_AUTOMATIC_SEND_ATTEMPTS = 3;
 const DEFAULT_LIMIT = 20;
 const AUTOMATIC_REPORT_TYPES = ["morning_report", "evening_report"] as const;
@@ -116,6 +117,19 @@ export function isResponsibleOperationalApprovalAutoDrainCandidate(
 
   if (operationalApproval) return true;
 
+  const receivedContractDocument = (
+    cleanText(row.channel) === RESPONSIBLE_CHANNEL &&
+    normalizeText(row.notification_type) === "important_alert" &&
+    normalizeText(context.source) === RECEIVED_CONTRACT_DOCUMENT_SOURCE &&
+    normalizeText(context.reason) === "received_contract_document" &&
+    context.needs_human_action === true &&
+    cleanText(context.received_evidence_source_message_id) !== "" &&
+    cleanText(context.received_document_storage_bucket) !== "" &&
+    cleanText(context.received_document_storage_path) !== ""
+  );
+
+  if (receivedContractDocument) return true;
+
   const reportType = normalizeText(row.notification_type);
   const localDate = cleanText(context.local_date);
   return Boolean(
@@ -135,6 +149,23 @@ function isAutomaticReportCandidate(row: ResponsibleOperationalApprovalOutboxRow
   return (
     AUTOMATIC_REPORT_TYPES.includes(reportType as (typeof AUTOMATIC_REPORT_TYPES)[number]) &&
     isAutomaticReportSource(context)
+  );
+}
+
+function isReceivedContractDocumentInternalNotification(
+  notification: OperationalApprovalInternalNotificationRow,
+) {
+  const context = isRecord(notification.context) ? notification.context : {};
+  return Boolean(
+    cleanText(notification.notification_type) === "important_alert" &&
+      (cleanText(notification.priority) === "high" || cleanText(notification.priority) === "urgent") &&
+      cleanText(notification.status) !== "cancelled" &&
+      normalizeText(context.source) === RECEIVED_CONTRACT_DOCUMENT_SOURCE &&
+      normalizeText(context.reason) === "received_contract_document" &&
+      context.needs_human_action === true &&
+      cleanText(context.received_evidence_source_message_id) &&
+      cleanText(context.received_document_storage_bucket) &&
+      cleanText(context.received_document_storage_path),
   );
 }
 
@@ -260,7 +291,11 @@ async function materializeResponsibleOperationalApprovalNotifications(args: {
   const skippedReasons: Record<string, number> = {};
 
   for (const notification of notifications) {
-    if (!isOperationalApprovalInternalNotification(notification) && !isAutomaticReportInternalNotification(notification)) {
+    if (
+      !isOperationalApprovalInternalNotification(notification) &&
+      !isReceivedContractDocumentInternalNotification(notification) &&
+      !isAutomaticReportInternalNotification(notification)
+    ) {
       skipped += 1;
       incrementReason(
         skippedReasons,

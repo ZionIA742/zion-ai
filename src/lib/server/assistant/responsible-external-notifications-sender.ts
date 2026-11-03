@@ -108,6 +108,9 @@ const RESPONSIBLE_SEND_LOCKED_BY = "responsible_external_send_route";
 const AUTOMATIC_REPORT_TYPES = ["morning_report", "evening_report"] as const;
 const AUTOMATIC_REPORT_SOURCE = "assistant_automatic_reports";
 const AUTOMATIC_REPORT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const RECEIVED_CONTRACT_DOCUMENT_SOURCE = "received_contract_document_evidence_v1";
+const RECEIVED_CONTRACT_DOCUMENT_EVENT = "contract_uploaded";
+const RECEIVED_DOCUMENT_SIGNED_URL_SECONDS = 120;
 
 function getSupabaseAdmin() {
   if (!SUPABASE_URL) {
@@ -321,6 +324,94 @@ async function sendWhatsappTemplateMessage(params: {
       template: params.template,
     },
   });
+}
+
+async function sendWhatsappDocumentMessage(params: {
+  accessToken: string;
+  phoneNumberId: string;
+  to: string;
+  link: string;
+  filename: string;
+  caption: string;
+}) {
+  return sendWhatsappPayload({
+    accessToken: params.accessToken,
+    phoneNumberId: params.phoneNumberId,
+    to: params.to,
+    payload: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: params.to,
+      type: "document",
+      document: {
+        link: params.link,
+        filename: params.filename,
+        caption: params.caption,
+      },
+    },
+  });
+}
+
+async function resolveReceivedContractDocumentForSend(args: {
+  supabase: ReturnType<typeof getSupabaseAdmin>;
+  organizationId: string;
+  storeId: string;
+  notification: ResponsibleExternalNotificationRow;
+}) {
+  const context = args.notification.context || {};
+  if (
+    normalizeText(context.source) !== RECEIVED_CONTRACT_DOCUMENT_SOURCE ||
+    normalizeText(context.reason) !== "received_contract_document"
+  ) {
+    return null;
+  }
+
+  const sourceMessageId = cleanText(context.received_evidence_source_message_id);
+  const bucket = cleanText(context.received_document_storage_bucket);
+  const path = cleanText(context.received_document_storage_path);
+  if (!sourceMessageId || !bucket || !path || bucket !== "zion-store-files" || /^https?:\/\//i.test(path)) {
+    throw new Error("RECEIVED_DOCUMENT_FORWARDING_CONTEXT_INVALID");
+  }
+
+  const { data: evidence, error: evidenceError } = await args.supabase
+    .from("store_business_events")
+    .select("event_key, organization_id, store_id, event_payload")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("event_key", RECEIVED_CONTRACT_DOCUMENT_EVENT)
+    .contains("event_payload", {
+      schema: "received_contract_document_evidence",
+      source_message_id: sourceMessageId,
+    })
+    .maybeSingle();
+
+  if (evidenceError || !evidence || evidence.event_key !== RECEIVED_CONTRACT_DOCUMENT_EVENT) {
+    throw new Error("RECEIVED_DOCUMENT_EVIDENCE_NOT_FOUND");
+  }
+
+  const payload = evidence.event_payload && typeof evidence.event_payload === "object"
+    ? evidence.event_payload as Record<string, unknown>
+    : {};
+  const received = payload.received_document && typeof payload.received_document === "object"
+    ? payload.received_document as Record<string, unknown>
+    : {};
+  const persistedBucket = cleanText(received.storage_bucket || received.storageBucket);
+  const persistedPath = cleanText(received.storage_path || received.storagePath);
+  if (persistedBucket !== bucket || persistedPath !== path) {
+    throw new Error("RECEIVED_DOCUMENT_EVIDENCE_PATH_MISMATCH");
+  }
+
+  const { data: signed, error: signedError } = await args.supabase.storage
+    .from(bucket)
+    .createSignedUrl(path, RECEIVED_DOCUMENT_SIGNED_URL_SECONDS);
+  if (signedError || !signed?.signedUrl) {
+    throw new Error(signedError?.message || "RECEIVED_DOCUMENT_SIGNED_URL_FAILED");
+  }
+
+  return {
+    signedUrl: signed.signedUrl,
+    filename: cleanText(context.received_document_file_name) || "documento-recebido",
+  };
 }
 
 export type ResponsibleWhatsappPayload =
@@ -785,14 +876,32 @@ export async function sendResponsibleExternalNotification(
       .eq("store_id", storeId)
       .eq("status", "processing");
 
-    const externalMessageId = policy.mode === "free_form"
-      ? await sendWhatsappTextMessage({
+    const receivedDocument = await resolveReceivedContractDocumentForSend({
+      supabase,
+      organizationId,
+      storeId,
+      notification: claimedNotification,
+    });
+    if (receivedDocument && policy.mode !== "free_form") {
+      throw new Error("RECEIVED_DOCUMENT_WHATSAPP_WINDOW_CLOSED");
+    }
+    const externalMessageId = receivedDocument
+      ? await sendWhatsappDocumentMessage({
+          accessToken: integration.accessToken,
+          phoneNumberId: integration.phoneNumberId,
+          to: policy.responsible.whatsappNumber,
+          link: receivedDocument.signedUrl,
+          filename: receivedDocument.filename,
+          caption: cleanText(claimedNotification.rendered_message),
+        })
+      : policy.mode === "free_form"
+        ? await sendWhatsappTextMessage({
           accessToken: integration.accessToken,
           phoneNumberId: integration.phoneNumberId,
           to: policy.responsible.whatsappNumber,
           body: cleanText(claimedNotification.rendered_message),
         })
-      : await sendWhatsappTemplateMessage({
+        : await sendWhatsappTemplateMessage({
           accessToken: integration.accessToken,
           phoneNumberId: integration.phoneNumberId,
           to: policy.responsible.whatsappNumber,

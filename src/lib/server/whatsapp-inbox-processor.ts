@@ -107,6 +107,7 @@ async function registerReceivedContractDocumentEvidenceSafely(args: {
       },
       identificationStatus: persisted.record.identificationStatus,
       identificationReason: persisted.record.identificationReason,
+      forwardToResponsible: true,
     });
   } catch (error) {
     console.warn("[whatsapp_inbound] received contract document evidence skipped:", error);

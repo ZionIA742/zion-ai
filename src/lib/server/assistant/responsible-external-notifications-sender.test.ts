@@ -105,6 +105,26 @@ function createFetchStub(
       return jsonResponse(inboundRows ?? [recentInbound]);
     }
 
+    if (url.includes("/rest/v1/store_business_events")) {
+      return jsonResponse([{
+        event_key: "contract_uploaded",
+        organization_id: "org-1",
+        store_id: "store-1",
+        event_payload: {
+          schema: "received_contract_document_evidence",
+          source_message_id: "incoming-document-1",
+          received_document: {
+            storage_bucket: "zion-store-files",
+            storage_path: "inbound/signed-v2.pdf",
+          },
+        },
+      }]);
+    }
+
+    if (url.includes("/storage/v1/object/sign/")) {
+      return jsonResponse({ signedURL: "https://signed.test/inbound/signed-v2.pdf" });
+    }
+
     if (url.includes("/rest/v1/rpc/get_whatsapp_integration")) {
       return jsonResponse({ access_token: "token-1", phone_number_id: "phone-1" });
     }
@@ -179,6 +199,27 @@ async function main() {
 
   const successWithoutId = await runCase({ status: 200, body: JSON.stringify({ messages: [] }) }, { uncertainOnTransportFailure: true });
   assertReason(successWithoutId.result, "send_uncertain");
+
+  const receivedDocument = await runCase(
+    { status: 200, body: JSON.stringify({ messages: [{ id: "wamid-document-1" }] }) },
+    {
+      notificationOverrides: {
+        rendered_message: "Regina devolveu o contrato para conferencia.",
+        context: {
+          source: "received_contract_document_evidence_v1",
+          reason: "received_contract_document",
+          needs_human_action: true,
+          received_evidence_source_message_id: "incoming-document-1",
+          received_document_storage_bucket: "zion-store-files",
+          received_document_storage_path: "inbound/signed-v2.pdf",
+          received_document_file_name: "contrato-devolvido.pdf",
+        },
+      },
+    },
+  );
+  assert.equal(receivedDocument.result.ok, true);
+  assert.ok(receivedDocument.calls.some((call) => call.includes("graph.facebook.com") && call.includes('"type":"document"')));
+  assert.ok(receivedDocument.calls.some((call) => call.includes("https://signed.test/inbound/signed-v2.pdf")));
 
   const persistenceUncertain = await runCase(
     { status: 200, body: JSON.stringify({ messages: [{ id: "wamid-1" }] }) },
