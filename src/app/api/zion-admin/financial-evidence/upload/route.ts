@@ -10,7 +10,7 @@
  * Nao gera URL publica.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
 import {
@@ -151,10 +151,42 @@ async function uploadUnverifiedFile(
   }
 }
 
+async function verifyStoredUpload(
+  path: string,
+  expectedSha256: string,
+  expectedSize: number,
+): Promise<boolean> {
+  const db = createAdminClient();
+
+  // Download privado usando credenciais do servidor.
+  // Nenhuma URL publica ou assinada e criada.
+  const { data, error } = await db.storage
+    .from(FINANCIAL_EVIDENCE_BUCKET)
+    .download(path);
+
+  if (error || !data) {
+    return false;
+  }
+
+  const storedBytes = Buffer.from(
+    await data.arrayBuffer(),
+  );
+
+  if (storedBytes.length !== expectedSize) {
+    return false;
+  }
+
+  const actualSha256 = createHash("sha256")
+    .update(storedBytes)
+    .digest("hex");
+
+  return actualSha256 === expectedSha256;
+}
 export type FinancialEvidenceUploadDependencies = {
   authorize: typeof resolveZionAdminApiAccess;
   getPeriodState: typeof checkPeriod;
   upload: typeof uploadUnverifiedFile;
+  verifyStoredUpload: typeof verifyStoredUpload;
   register: typeof registerFinancialEvidenceUpload;
   generateId: () => string;
 };
@@ -166,6 +198,7 @@ export function createFinancialEvidenceUploadHandler(
     authorize: overrides.authorize ?? resolveZionAdminApiAccess,
     getPeriodState: overrides.getPeriodState ?? checkPeriod,
     upload: overrides.upload ?? uploadUnverifiedFile,
+    verifyStoredUpload: overrides.verifyStoredUpload ?? verifyStoredUpload,
     register: overrides.register ?? registerFinancialEvidenceUpload,
     generateId: overrides.generateId ?? randomUUID,
   };
@@ -377,12 +410,49 @@ export function createFinancialEvidenceUploadHandler(
         `${deps.generateId()}-${validated.sha256}.${validated.extension}`,
       ].join("/");
 
-      await deps.upload(
-        path,
-        bytes,
-        validated.mimeType,
-      );
+      try {
+        await deps.upload(
+          path,
+          bytes,
+          validated.mimeType,
+        );
+      } catch {
+        // O Storage pode ter persistido o arquivo
+        // antes de a resposta da rede falhar.
+        // Nunca presumir que ele nao existe.
+        let confirmed = false;
 
+        try {
+          confirmed = await deps.verifyStoredUpload(
+            path,
+            validated.sha256,
+            validated.sizeBytes,
+          );
+        } catch {
+          // Erro na verificacao nao comprova integridade.
+          // Preservar o caminho para reconciliacao.
+          confirmed = false;
+        }
+
+        if (!confirmed) {
+          return createZionAdminApiJsonResponse(
+            {
+              ok: false,
+              error: "FINANCIAL_EVIDENCE_UPLOAD_UNAVAILABLE",
+              status: "uploaded_unverified_requires_reconciliation",
+              bucket: FINANCIAL_EVIDENCE_BUCKET,
+              path,
+              sha256: validated.sha256,
+              verified: false,
+            },
+            503,
+          );
+        }
+      }
+
+      // O Storage confirmou o upload normalmente
+      // ou o conteudo foi recuperado e validado.
+      // O registro ainda depende da RPC protegida.
       let registration: Awaited<
         ReturnType<typeof registerFinancialEvidenceUpload>
       >;

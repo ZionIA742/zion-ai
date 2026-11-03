@@ -173,6 +173,7 @@ function setup(options = {}) {
     authorization: 0,
     periods: [],
     uploads: [],
+    verifications: [],
     registrations: [],
     cleanups: [],
   };
@@ -201,6 +202,19 @@ function setup(options = {}) {
       if (options.uploadError) {
         throw new Error("SIMULATED_STORAGE_FAILURE");
       }
+    },
+    verifyStoredUpload: async (path, sha256, sizeBytes) => {
+      calls.verifications.push({
+        path,
+        sha256,
+        sizeBytes,
+      });
+
+      if (options.verifyError) {
+        throw new Error("SIMULATED_VERIFICATION_FAILURE");
+      }
+
+      return options.verifiedInStorage ?? false;
     },
     register: async (payload) => {
       calls.registrations.push(payload);
@@ -521,7 +535,7 @@ test("22 - falha de Storage nao aprova arquivo", async () => {
     result.body.error,
     "FINANCIAL_EVIDENCE_UPLOAD_UNAVAILABLE",
   );
-  assert.equal(result.body.verified, undefined);
+  assert.equal(result.body.verified, false);
 });
 
 test("23 - nome original nao define caminho", async () => {
@@ -687,5 +701,122 @@ test("32 - revisao desatualizada impede todas as escritas", async () => {
   assert.equal(result.status, 409);
   assert.equal(ctx.calls.uploads.length, 0);
   assert.equal(ctx.calls.registrations.length, 0);
+  assert.equal(ctx.calls.cleanups.length, 0);
+});
+
+test("33 - upload normal nao precisa verificacao de recuperacao", async () => {
+  const ctx = setup();
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 201);
+  assert.equal(ctx.calls.uploads.length, 1);
+  assert.equal(ctx.calls.verifications.length, 0);
+  assert.equal(ctx.calls.registrations.length, 1);
+});
+
+test("34 - resposta interrompida com arquivo integro permite registro", async () => {
+  const ctx = setup({
+    uploadError: true,
+    verifiedInStorage: true,
+  });
+
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 201);
+  assert.equal(result.body.status, "uploaded_unverified");
+  assert.equal(result.body.verified, false);
+  assert.equal(result.body.uploadId, 7);
+
+  assert.equal(ctx.calls.uploads.length, 1);
+  assert.equal(ctx.calls.verifications.length, 1);
+  assert.equal(ctx.calls.registrations.length, 1);
+  assert.equal(ctx.calls.cleanups.length, 0);
+
+  const verification = ctx.calls.verifications[0];
+
+  assert.equal(verification.path, result.body.path);
+  assert.equal(verification.sha256, result.body.sha256);
+  assert.equal(verification.sizeBytes, result.body.sizeBytes);
+});
+
+test("35 - arquivo nao confirmado impede registro", async () => {
+  const ctx = setup({
+    uploadError: true,
+    verifiedInStorage: false,
+  });
+
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 503);
+  assert.equal(
+    result.body.error,
+    "FINANCIAL_EVIDENCE_UPLOAD_UNAVAILABLE",
+  );
+  assert.equal(
+    result.body.status,
+    "uploaded_unverified_requires_reconciliation",
+  );
+
+  assert.equal(result.body.verified, false);
+  assert.equal(ctx.calls.verifications.length, 1);
+  assert.equal(ctx.calls.registrations.length, 0);
+  assert.equal(ctx.calls.cleanups.length, 0);
+});
+
+test("36 - falha da verificacao preserva documento", async () => {
+  const ctx = setup({
+    uploadError: true,
+    verifyError: true,
+  });
+
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 503);
+  assert.equal(result.body.verified, false);
+  assert.equal(ctx.calls.verifications.length, 1);
+  assert.equal(ctx.calls.registrations.length, 0);
+  assert.equal(ctx.calls.cleanups.length, 0);
+});
+
+test("37 - recuperacao nao ignora rejeicao da RPC", async () => {
+  const ctx = setup({
+    uploadError: true,
+    verifiedInStorage: true,
+    registrationError: new TestRegistrationError(
+      "rejected",
+      "ZION_ADMIN_UPLOAD_STALE_REVISION",
+    ),
+  });
+
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 503);
+  assert.equal(
+    result.body.error,
+    "FINANCIAL_EVIDENCE_REGISTRATION_REJECTED",
+  );
+  assert.equal(ctx.calls.registrations.length, 1);
+  assert.equal(ctx.calls.cleanups.length, 0);
+});
+
+test("38 - recuperacao preserva resultado incerto da RPC", async () => {
+  const ctx = setup({
+    uploadError: true,
+    verifiedInStorage: true,
+    registrationError: new TestRegistrationError(
+      "uncertain",
+      "FINANCIAL_REGISTRATION_OUTCOME_UNKNOWN",
+    ),
+  });
+
+  const result = await execute(ctx.handler);
+
+  assert.equal(result.status, 503);
+  assert.equal(
+    result.body.error,
+    "FINANCIAL_EVIDENCE_REGISTRATION_UNCERTAIN",
+  );
+  assert.equal(result.body.verified, false);
+  assert.equal(ctx.calls.registrations.length, 1);
   assert.equal(ctx.calls.cleanups.length, 0);
 });
