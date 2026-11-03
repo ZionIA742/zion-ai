@@ -51,6 +51,7 @@ export type FinancialEvidenceBindingAssessment =
       source: FinancialProofSource;
       storagePath: string;
       documentSha256: string;
+      sizeBytes: number;
       candidate: FinancialProofDraft;
     }
   | {
@@ -230,6 +231,7 @@ export function assessFinancialEvidenceUploadBinding(
     source: draft.candidate.source,
     storagePath: path,
     documentSha256: sha,
+    sizeBytes: size,
     candidate: draft.candidate,
   };
 }
