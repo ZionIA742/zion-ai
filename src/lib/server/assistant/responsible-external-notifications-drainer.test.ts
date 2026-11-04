@@ -56,6 +56,20 @@ function reportCandidate(overrides: Record<string, unknown> = {}) {
   });
 }
 
+function receivedDocumentCandidate(overrides: Record<string, unknown> = {}) {
+  return candidate({
+    context: {
+      source: "received_contract_document_evidence_v1",
+      reason: "received_contract_document",
+      needs_human_action: true,
+      received_evidence_source_message_id: "message-1",
+      received_document_storage_bucket: "zion-store-files",
+      received_document_storage_path: "org-1/store-1/document.pdf",
+    },
+    ...overrides,
+  });
+}
+
 function successfulDeps(rows: any[], calls: string[]) {
   return {
     supabase: {},
@@ -107,6 +121,7 @@ type FakeOutboxQuery = {
   select: () => FakeOutboxQuery;
   eq: (field: string, value: string) => FakeOutboxQuery;
   in: (field: string, values: readonly string[]) => FakeOutboxQuery;
+  neq: (field: string, value: string) => FakeOutboxQuery;
   is: () => FakeOutboxQuery;
   order: () => FakeOutboxQuery;
   limit: (limit: number) => Promise<{ data: OutboxCandidate[]; error: null }>;
@@ -115,17 +130,31 @@ type FakeOutboxQuery = {
 function outboxReader(rows: OutboxCandidate[], queryLog: Array<{ notificationTypes: string[]; limit: number }>) {
   return {
     from: () => {
-      const state: { organizationId?: string; storeId?: string; notificationTypes?: string[]; limit?: number } = {};
+      const state: {
+        organizationId?: string;
+        storeId?: string;
+        notificationTypes?: string[];
+        contextFilters: Record<string, string>;
+        contextNonEmpty: string[];
+        limit?: number;
+      } = { contextFilters: {}, contextNonEmpty: [] };
       const query: FakeOutboxQuery = {
         select: () => query,
         eq: (field: string, value: string) => {
           if (field === "organization_id") state.organizationId = value;
           if (field === "store_id") state.storeId = value;
           if (field === "notification_type") state.notificationTypes = [value];
+          if (field.startsWith("context->>")) state.contextFilters[field.slice("context->>".length)] = value;
           return query;
         },
         in: (field: string, values: readonly string[]) => {
           if (field === "notification_type") state.notificationTypes = [...values];
+          return query;
+        },
+        neq: (field: string, value: string) => {
+          if (field.startsWith("context->>") && value === "") {
+            state.contextNonEmpty.push(field.slice("context->>".length));
+          }
           return query;
         },
         is: () => query,
@@ -137,8 +166,13 @@ function outboxReader(rows: OutboxCandidate[], queryLog: Array<{ notificationTyp
             data: rows
               .filter((row) => row.organization_id === state.organizationId && row.store_id === state.storeId)
               .filter((row) => state.notificationTypes?.includes(row.notification_type || ""))
+              .filter((row) => Object.entries(state.contextFilters).every(([key, value]) => String(row.context?.[key]) === value))
+              .filter((row) => state.contextNonEmpty.every((key) => String(row.context?.[key] || "") !== ""))
               .filter((row) => row.external_message_id === null && row.sent_at === null)
-              .sort((left, right) => String(left.created_at).localeCompare(String(right.created_at)))
+              .sort((left, right) =>
+                String(left.created_at).localeCompare(String(right.created_at)) ||
+                String(left.id).localeCompare(String(right.id)),
+              )
               .slice(0, limit),
             error: null,
           };
@@ -217,8 +251,8 @@ const tests: TestCase[] = [
       const loaderBlock = source.slice(loaderStart, loaderEnd);
       assert.match(loaderBlock, /\.in\("notification_type", AUTOMATIC_REPORT_TYPES\)/);
       assert.match(loaderBlock, /\.eq\("notification_type", "important_alert"\)/);
-      assert.match(loaderBlock, /const remainingLimit = Math\.max\(0, args\.limit - reports\.length\)/);
-      assert.match(loaderBlock, /\.limit\(remainingLimit\)/);
+      assert.match(loaderBlock, /context->>source/);
+      assert.match(loaderBlock, /\.limit\(args\.limit\)/);
       assert.match(source, /isResponsibleOperationalApprovalAutoDrainCandidate/);
       assert.match(source, /isAutomaticReportCandidate/);
     },
@@ -249,11 +283,12 @@ const tests: TestCase[] = [
         storeId: "store-1",
         limit: 20,
       });
-      assert.equal(rows.length, 20);
+      assert.equal(rows.length, 1);
       assert.equal(rows[0].id, "recent-report");
       assert.deepEqual(queryLog, [
         { notificationTypes: ["morning_report", "evening_report"], limit: 20 },
-        { notificationTypes: ["important_alert"], limit: 19 },
+        { notificationTypes: ["important_alert"], limit: 20 },
+        { notificationTypes: ["important_alert"], limit: 20 },
       ]);
 
       const calls: string[] = [];
@@ -264,7 +299,7 @@ const tests: TestCase[] = [
       assert.equal(result.eligible, 1);
       assert.equal(result.prepared, 1);
       assert.equal(result.sent, 1);
-      assert.equal(result.skippedReasons.not_operational_approval_allowlist, 19);
+      assert.equal(result.skippedReasons.not_operational_approval_allowlist || 0, 0);
       assert.deepEqual(calls.slice(0, 4), ["materialize", "load", "prepare:recent-report", "send:recent-report"]);
     },
   },
@@ -283,6 +318,68 @@ const tests: TestCase[] = [
         limit: 20,
       });
       assert.deepEqual(selected.map((row) => row.id), ["same-scope"]);
+    },
+  },
+  {
+    name: "forty old ineligible alerts do not starve a later received document",
+    run: async () => {
+      const oldAlerts = Array.from({ length: 40 }, (_, index) => candidate({
+        id: `old-generic-${index}`,
+        created_at: `2026-06-09T00:${String(index % 60).padStart(2, "0")}:00.000Z`,
+        context: { source: "historic_important_alert" },
+      }));
+      const document = receivedDocumentCandidate({
+        id: "regina-document",
+        created_at: "2026-06-10T00:00:00.000Z",
+      });
+      const selected = await loadResponsibleOperationalApprovalCandidates({
+        supabase: outboxReader([...oldAlerts, document], []),
+        organizationId: "org-1",
+        storeId: "store-1",
+        limit: 10,
+      });
+      assert.deepEqual(selected.map((row) => row.id), ["regina-document"]);
+      assert.equal(isResponsibleOperationalApprovalAutoDrainCandidate(document as OutboxCandidate), true);
+    },
+  },
+  {
+    name: "disabled received document delivery remains pending before preparation",
+    run: async () => {
+      const previousFlag = process.env.ZION_RECEIVED_CONTRACT_WHATSAPP_DELIVERY_ENABLED;
+      delete process.env.ZION_RECEIVED_CONTRACT_WHATSAPP_DELIVERY_ENABLED;
+      try {
+        const calls: string[] = [];
+        const result = await drainResponsibleOperationalApprovalNotifications(
+          { organizationId: "org-1", storeId: "store-1", limit: 10 },
+          successfulDeps(
+            [receivedDocumentCandidate({ status: "materialized" })],
+            calls,
+          ) as DrainDependencies,
+        );
+        assert.equal(result.sent, 0);
+        assert.equal(result.prepared, 0);
+        assert.equal(result.skippedReasons.received_contract_whatsapp_delivery_disabled, 1);
+        assert.deepEqual(calls, ["materialize", "load"]);
+      } finally {
+        if (previousFlag === undefined) delete process.env.ZION_RECEIVED_CONTRACT_WHATSAPP_DELIVERY_ENABLED;
+        else process.env.ZION_RECEIVED_CONTRACT_WHATSAPP_DELIVERY_ENABLED = previousFlag;
+      }
+    },
+  },
+  {
+    name: "eligible alerts keep FIFO order with deterministic id tie-breaker",
+    run: async () => {
+      const eligible = Array.from({ length: 6 }, (_, index) => candidate({
+        id: `approval-${index}`,
+        created_at: "2026-06-10T00:00:00.000Z",
+      }));
+      const selected = await loadResponsibleOperationalApprovalCandidates({
+        supabase: outboxReader(eligible.reverse(), []),
+        organizationId: "org-1",
+        storeId: "store-1",
+        limit: 3,
+      });
+      assert.deepEqual(selected.map((row) => row.id), ["approval-0", "approval-1", "approval-2"]);
     },
   },
   {

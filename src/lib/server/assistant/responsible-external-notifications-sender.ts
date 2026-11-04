@@ -111,6 +111,21 @@ const AUTOMATIC_REPORT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const RECEIVED_CONTRACT_DOCUMENT_SOURCE = "received_contract_document_evidence_v1";
 const RECEIVED_CONTRACT_DOCUMENT_EVENT = "contract_uploaded";
 const RECEIVED_DOCUMENT_SIGNED_URL_SECONDS = 120;
+export const RECEIVED_CONTRACT_WHATSAPP_DELIVERY_FLAG =
+  "ZION_RECEIVED_CONTRACT_WHATSAPP_DELIVERY_ENABLED";
+
+export function isReceivedContractDocumentNotification(notification: {
+  context?: Record<string, unknown> | null;
+}) {
+  return (
+    cleanText(notification.context?.source) === RECEIVED_CONTRACT_DOCUMENT_SOURCE &&
+    cleanText(notification.context?.reason) === "received_contract_document"
+  );
+}
+
+export function isReceivedContractWhatsappDeliveryEnabled() {
+  return process.env[RECEIVED_CONTRACT_WHATSAPP_DELIVERY_FLAG] === "true";
+}
 
 function getSupabaseAdmin() {
   if (!SUPABASE_URL) {
@@ -611,6 +626,18 @@ function validateNotificationBeforeSend(
       ok: false,
       sent: false,
       reason: "missing_rendered_message",
+      notificationId: notification.id,
+    };
+  }
+
+  if (
+    isReceivedContractDocumentNotification(notification) &&
+    !isReceivedContractWhatsappDeliveryEnabled()
+  ) {
+    return {
+      ok: false,
+      sent: false,
+      reason: "RECEIVED_CONTRACT_WHATSAPP_DELIVERY_DISABLED",
       notificationId: notification.id,
     };
   }

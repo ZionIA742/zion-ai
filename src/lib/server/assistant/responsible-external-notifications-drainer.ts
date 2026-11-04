@@ -5,7 +5,11 @@ import {
   prepareResponsibleExternalNotification,
   unlockStuckResponsibleExternalNotificationProcessing,
 } from "./responsible-external-notifications";
-import { sendResponsibleExternalNotification } from "./responsible-external-notifications-sender";
+import {
+  isReceivedContractDocumentNotification,
+  isReceivedContractWhatsappDeliveryEnabled,
+  sendResponsibleExternalNotification,
+} from "./responsible-external-notifications-sender";
 
 const RESPONSIBLE_CHANNEL = "whatsapp_responsible";
 const OPERATIONAL_APPROVAL_REASON =
@@ -191,10 +195,23 @@ export async function loadResponsibleOperationalApprovalCandidates(args: {
     "id, organization_id, store_id, channel, notification_type, status, context, attempts, external_message_id, sent_at, error_text, created_at";
   const statuses = ["materialized", "ready_to_send", "failed", "processing"];
 
-  // Reports use a distinct bounded query so old, non-allowlisted important
-  // alerts cannot consume their entire FIFO page before the in-process
-  // provenance check. Reports remain first because they expire after 24h.
+  const baseQuery = () =>
+    args.supabase
+      .from("store_responsible_external_notifications")
+      .select(select)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("channel", RESPONSIBLE_CHANNEL)
+      .in("status", statuses)
+      .is("external_message_id", null)
+      .is("sent_at", null)
+      .order("created_at", { ascending: true });
+
+  // Apply the allowlist's stable provenance fields in the query before the
+  // bounded page. The final in-memory allowlist remains authoritative for
+  // fields that are not safely expressible in the query.
   const reportsResult = await args.supabase
+    // Reports remain first because they expire after 24h.
     .from("store_responsible_external_notifications")
     .select(select)
     .eq("organization_id", args.organizationId)
@@ -217,26 +234,48 @@ export async function loadResponsibleOperationalApprovalCandidates(args: {
   const remainingLimit = Math.max(0, args.limit - reports.length);
   if (remainingLimit === 0) return reports;
 
-  const alertsResult = await args.supabase
-    .from("store_responsible_external_notifications")
-    .select(select)
-    .eq("organization_id", args.organizationId)
-    .eq("store_id", args.storeId)
-    .eq("channel", RESPONSIBLE_CHANNEL)
+  const operationalApprovalsResult = await baseQuery()
     .eq("notification_type", "important_alert")
-    .in("status", statuses)
-    .is("external_message_id", null)
-    .is("sent_at", null)
-    .order("created_at", { ascending: true })
-    .limit(remainingLimit);
+    .eq("context->>source", OPERATIONAL_APPROVAL_SOURCE)
+    .eq("context->>reason", OPERATIONAL_APPROVAL_REASON)
+    .eq("context->>classification", OPERATIONAL_APPROVAL_CLASSIFICATION)
+    .eq("context->>suggested_available", "true")
+    .limit(args.limit);
 
-  if (alertsResult.error) {
+  if (operationalApprovalsResult.error) {
     throw new Error(
-      `Falha ao carregar outbox de aprovacao operacional do responsavel: ${alertsResult.error.message}`,
+      `Falha ao carregar aprovacoes operacionais do responsavel: ${operationalApprovalsResult.error.message}`,
     );
   }
 
-  return [...reports, ...((alertsResult.data || []) as ResponsibleOperationalApprovalOutboxRow[])];
+  const receivedDocumentsResult = await baseQuery()
+    .eq("notification_type", "important_alert")
+    .eq("context->>source", RECEIVED_CONTRACT_DOCUMENT_SOURCE)
+    .eq("context->>reason", "received_contract_document")
+    .eq("context->>needs_human_action", "true")
+    .neq("context->>received_evidence_source_message_id", "")
+    .neq("context->>received_document_storage_bucket", "")
+    .neq("context->>received_document_storage_path", "")
+    .limit(args.limit);
+
+  if (receivedDocumentsResult.error) {
+    throw new Error(
+      `Falha ao carregar documentos recebidos do responsavel: ${receivedDocumentsResult.error.message}`,
+    );
+  }
+
+  const alerts = [
+    ...((operationalApprovalsResult.data || []) as ResponsibleOperationalApprovalOutboxRow[]),
+    ...((receivedDocumentsResult.data || []) as ResponsibleOperationalApprovalOutboxRow[]),
+  ]
+    .filter((row, index, rows) => rows.findIndex((candidate) => candidate.id === row.id) === index)
+    .sort((left, right) => {
+      const createdAt = String(left.created_at || "").localeCompare(String(right.created_at || ""));
+      return createdAt || String(left.id).localeCompare(String(right.id));
+    })
+    .slice(0, remainingLimit);
+
+  return [...reports, ...alerts];
 }
 
 function incrementReason(target: Record<string, number>, reason: string) {
@@ -426,6 +465,18 @@ export async function drainResponsibleOperationalApprovalNotifications(
     if (!isResponsibleOperationalApprovalAutoDrainCandidate(row)) {
       skipped += 1;
       incrementReason(skippedReasons, "not_operational_approval_allowlist");
+      continue;
+    }
+
+    if (
+      isReceivedContractDocumentNotification(row) &&
+      !isReceivedContractWhatsappDeliveryEnabled()
+    ) {
+      skipped += 1;
+      incrementReason(
+        skippedReasons,
+        "received_contract_whatsapp_delivery_disabled",
+      );
       continue;
     }
 

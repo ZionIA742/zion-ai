@@ -149,8 +149,13 @@ async function runCase(
     persistFailure?: boolean;
     notificationOverrides?: Partial<typeof notification>;
     inboundRows?: unknown[];
+    receivedContractDeliveryFlag?: string | null;
   } = {},
 ) {
+  const flagName = "ZION_RECEIVED_CONTRACT_WHATSAPP_DELIVERY_ENABLED";
+  const previousFlag = process.env[flagName];
+  if (options.receivedContractDeliveryFlag === null) delete process.env[flagName];
+  else if (options.receivedContractDeliveryFlag !== undefined) process.env[flagName] = options.receivedContractDeliveryFlag;
   const previousFetch = globalThis.fetch;
   const stub = createFetchStub(
     metaResponse,
@@ -172,6 +177,8 @@ async function runCase(
     return { result, calls: stub.calls };
   } finally {
     globalThis.fetch = previousFetch;
+    if (previousFlag === undefined) delete process.env[flagName];
+    else process.env[flagName] = previousFlag;
   }
 }
 
@@ -184,6 +191,34 @@ function assertReason(result: Awaited<ReturnType<typeof runCase>>["result"], rea
 async function main() {
   process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+  delete process.env.ZION_RECEIVED_CONTRACT_WHATSAPP_DELIVERY_ENABLED;
+
+  const receivedDocumentContext = {
+    source: "received_contract_document_evidence_v1",
+    reason: "received_contract_document",
+    needs_human_action: true,
+    received_evidence_source_message_id: "incoming-document-1",
+    received_document_storage_bucket: "zion-store-files",
+    received_document_storage_path: "inbound/signed-v2.pdf",
+    received_document_file_name: "contrato-devolvido.pdf",
+  };
+
+  for (const flag of [null, "false", "TRUE", "1", "yes"] as const) {
+    const disabled = await runCase(
+      { status: 200, body: JSON.stringify({ messages: [{ id: "must-not-send" }] }) },
+      {
+        receivedContractDeliveryFlag: flag,
+        notificationOverrides: {
+          rendered_message: "Regina devolveu o contrato para conferencia.",
+          context: receivedDocumentContext,
+        },
+      },
+    );
+    assertReason(disabled.result, "RECEIVED_CONTRACT_WHATSAPP_DELIVERY_DISABLED");
+    assert.equal(disabled.calls.some((call) => call.includes("graph.facebook.com")), false);
+    assert.equal(disabled.calls.some((call) => call.includes("/storage/v1/object/sign/")), false);
+    assert.equal(disabled.calls.some((call) => call.includes("PATCH")), false);
+  }
 
   const networkUncertain = await runCase("reject", { uncertainOnTransportFailure: true });
   assertReason(networkUncertain.result, "send_uncertain");
@@ -203,17 +238,10 @@ async function main() {
   const receivedDocument = await runCase(
     { status: 200, body: JSON.stringify({ messages: [{ id: "wamid-document-1" }] }) },
     {
+      receivedContractDeliveryFlag: "true",
       notificationOverrides: {
         rendered_message: "Regina devolveu o contrato para conferencia.",
-        context: {
-          source: "received_contract_document_evidence_v1",
-          reason: "received_contract_document",
-          needs_human_action: true,
-          received_evidence_source_message_id: "incoming-document-1",
-          received_document_storage_bucket: "zion-store-files",
-          received_document_storage_path: "inbound/signed-v2.pdf",
-          received_document_file_name: "contrato-devolvido.pdf",
-        },
+        context: receivedDocumentContext,
       },
     },
   );
@@ -311,6 +339,13 @@ async function main() {
   assert.match(senderSource, /policy\.mode !== "free_form"/);
   assert.match(senderSource, /templateContext: automaticReport\s*\? undefined/);
   assert.match(senderSource, /AUTOMATIC_REPORT_WHATSAPP_WINDOW_CLOSED/);
+  const receivedGuardIndex = senderSource.indexOf(
+    "RECEIVED_CONTRACT_WHATSAPP_DELIVERY_DISABLED",
+  );
+  const claimIndex = senderSource.indexOf(
+    "const claimedNotification = await claimResponsibleExternalNotification",
+  );
+  assert.ok(receivedGuardIndex >= 0 && receivedGuardIndex < claimIndex);
   console.log("responsible-external-notifications-sender: focused uncertainty tests passed");
 }
 
