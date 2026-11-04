@@ -88,9 +88,9 @@ type ContractRow = {
   id?: unknown;
   organization_id?: unknown;
   store_id?: unknown;
-  commercial_opportunity_id?: unknown;
   conversation_id?: unknown;
   current_version_id?: unknown;
+  metadata?: unknown;
 };
 
 type VersionRow = {
@@ -228,7 +228,10 @@ export function resolveReceivedContractDocumentIdentity(args: {
   if (contracts.length === 0) {
     return basePending({ organizationId, storeId, sourceMessageId, receivedAt, conversationId, reason: "no_contract_candidate", storageBucket, storagePath, mimeType, sha256, originalFileName });
   }
-  const opportunityIds = Array.from(new Set(contracts.map((contract) => text(contract.commercial_opportunity_id)).filter((id): id is string => Boolean(id))));
+  const opportunityIds = Array.from(new Set(contracts.map((contract) => {
+    const opportunityValue = record(contract.metadata).commercial_opportunity_id;
+    return typeof opportunityValue === "string" ? text(opportunityValue) : null;
+  }).filter((id): id is string => Boolean(id))));
   if (opportunityIds.length !== 1) {
     return basePending({ organizationId, storeId, sourceMessageId, receivedAt, conversationId, reason: "opportunity_missing", storageBucket, storagePath, mimeType, sha256, originalFileName, candidateContractIds });
   }
@@ -328,7 +331,7 @@ export async function identifyReceivedContractDocument(args: {
 
   const contractsQuery = await args.supabase
     .from("sales_contracts")
-    .select("id, organization_id, store_id, commercial_opportunity_id, conversation_id, current_version_id")
+    .select("id, organization_id, store_id, conversation_id, current_version_id, metadata")
     .eq("organization_id", organizationId)
     .eq("store_id", storeId)
     .eq("conversation_id", conversationId) as QueryResult;

@@ -90,7 +90,7 @@ test("executa o fluxo integrado da identificacao ate o registro canonico", async
   let messageReads = 0;
   const results: Record<string, unknown> = {
     messages: null,
-    sales_contracts: [{ id: "contract-1", organization_id: "org-1", store_id: "store-1", commercial_opportunity_id: "opportunity-1", conversation_id: "conversation-1" }],
+    sales_contracts: [{ id: "contract-1", organization_id: "org-1", store_id: "store-1", metadata: { commercial_opportunity_id: "opportunity-1" }, conversation_id: "conversation-1" }],
     sales_contract_versions: [{ id: "version-1", contract_id: "contract-1", organization_id: "org-1", store_id: "store-1", storage_bucket: "zion-store-files", storage_path: "outbound/original-v1.pdf", original_filename: "contract.pdf", mime_type: "application/pdf" }],
   };
   const supabase = {
