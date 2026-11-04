@@ -337,6 +337,14 @@ function isAutomaticReportQueueItem(item: { notification_type?: unknown; context
   return normalize(context?.report_source) === "assistant_automatic_reports";
 }
 
+function isTechnicalIncidentNotification(item: { notification_type?: unknown; context?: unknown }) {
+  const context = item.context && typeof item.context === "object" && !Array.isArray(item.context)
+    ? item.context as Record<string, unknown>
+    : null;
+  return normalize(item.notification_type) === "important_alert" &&
+    normalize(context?.reason) === "sales_ai_failed_final";
+}
+
 function pendingIdentity(item: ReportPendingItem) {
   const context = item.context || {};
   const reason = normalize(context.reason);
@@ -571,7 +579,7 @@ function reportPendingGroups(items: ReportPendingItem[]) {
 }
 
 function reportPendingPresentation(items: ReportPendingItem[]) {
-  const all = deduplicatePendingItems(items);
+  const all = deduplicatePendingItems(items.filter((item) => !isTechnicalIncidentNotification(item)));
   const attention = reportAttentionItems(all);
   const attentionKeys = new Set(attention.map(pendingIdentity));
   return { all, attention, pending: all.filter((item) => !attentionKeys.has(pendingIdentity(item))) };
@@ -838,9 +846,11 @@ async function loadReportData(supabase: ReportSupabase, settings: AutomaticRepor
   const rows = (appointments.data || []) as ReportAppointment[];
   const notificationRows = (notifications.data || []) as Array<{ id?: string; title?: string | null; body?: string | null; related_appointment_id?: string | null; related_lead_id?: string | null; created_at?: string | null; priority?: string | null; notification_type?: string | null; context?: unknown }>;
   const taskRows = (tasks.data || []) as Array<{ id?: string; title?: string | null; description?: string | null; related_appointment_id?: string | null; related_lead_id?: string | null; created_at?: string | null; task_type?: string | null; commercial_opportunity_id?: string | null }>;
+  const reportableNotificationRows = notificationRows.filter((row) =>
+    !isAutomaticReportQueueItem(row) && !isTechnicalIncidentNotification(row),
+  );
   const rawPendingItems: ReportPendingItem[] = [
-    ...notificationRows
-      .filter((row) => !isAutomaticReportQueueItem(row))
+    ...reportableNotificationRows
       .map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.body || null, related_appointment_id: row.related_appointment_id || null, related_lead_id: row.related_lead_id || null, created_at: row.created_at || null, kind: "notification" as const, priority: row.priority || null, notification_type: row.notification_type || null, context: row.context && typeof row.context === "object" && !Array.isArray(row.context) ? row.context as Record<string, unknown> : null })),
     ...taskRows.map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.description || null, related_appointment_id: row.related_appointment_id || null, related_lead_id: row.related_lead_id || null, created_at: row.created_at || null, kind: "task" as const, task_type: row.task_type || null, commercial_opportunity_id: row.commercial_opportunity_id || null })),
   ];
@@ -928,7 +938,7 @@ async function loadReportData(supabase: ReportSupabase, settings: AutomaticRepor
     completedAppointmentCount: enrichedRows.filter((row) => row.completion_evidence === true).length,
     cancelledAppointmentCount: normalized.filter((status) => ["cancelled", "canceled"].includes(status)).length,
     overdueAppointmentCount: enrichedRows.filter((row) => row.scheduled_end && Date.parse(row.scheduled_end) < nowMs && !row.completion_evidence && !["cancelled", "canceled"].includes(normalize(row.status))).length,
-    pendingNotificationCount: Array.isArray(notifications.data) ? notifications.data.length : 0,
+    pendingNotificationCount: reportableNotificationRows.length,
     pendingTaskCount: Array.isArray(tasks.data) ? tasks.data.length : 0,
     appointments: enrichedRows,
     pendingItems,

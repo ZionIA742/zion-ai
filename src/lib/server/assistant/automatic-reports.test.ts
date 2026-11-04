@@ -101,7 +101,7 @@ const acceptancePending = [
   { id: "contract-1", title: "Contrato aguardando revisão", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "notification" as const, lead_name: "João", category: "contract", context: { reason: "pending_review", related_contract_id: "11111111-1111-4111-8111-111111111111" } },
   { id: "contract-duplicate", title: "Outra origem técnica", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "task" as const, lead_name: "João", category: "contract", context: { reason: "pending_review", related_contract_id: "11111111-1111-4111-8111-111111111111" } },
   { id: "quote-2", title: "outro orçamento", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "notification" as const, lead_name: "Maria", category: "quote" as const },
-  { id: "technical-1", title: "ai_run_queue UUID 22222222-2222-4222-8222-222222222222", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "notification" as const, lead_name: "João", priority: "high", context: { reason: "sales_ai_failed_final", failure_source: "inbox" } },
+  { id: "technical-1", title: "ai_run_queue UUID 22222222-2222-4222-8222-222222222222", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "notification" as const, notification_type: "important_alert", lead_name: "João", priority: "high", context: { reason: "sales_ai_failed_final", failure_source: "inbox" } },
   { id: "same-name", title: "retorno", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "task" as const, lead_name: "Maria", category: "other" as const },
 ];
 acceptancePending.push({ id: "contract-distinct", title: "Segundo contrato", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "task", lead_name: "Joao", category: "contract", context: { reason: "pending_review", related_contract_id: "33333333-3333-4333-8333-333333333333", activity_label: "Contrato de manutencao" } });
@@ -112,6 +112,7 @@ assert.match(acceptanceMorning, /Orcamentos pendentes \(2\)/);
 assert.equal(acceptanceMorning.split("\\n").filter((line) => line.includes(": contrato aguardando conferencia.")).length, 1);
 assert.match(acceptanceMorning, /Jo.{0,3}o: contrato aguardando conferencia/);
 assert.doesNotMatch(acceptanceMorning, /Contratos pendentes/);
+assert.doesNotMatch(acceptanceMorning, /atendimento precisa de verificacao|falha definitiva/);
 assert.doesNotMatch(acceptanceMorning, /ai_run_queue|22222222-2222/);
 assert.match(buildAutomaticMorningReport({ appointmentCount: 0, openAppointmentCount: 0, completedAppointmentCount: 0, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 1, pendingTaskCount: 0, pendingItems: [{ id: "unnamed", title: "retorno", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "notification" }] }), /Cliente sem nome cadastrado/);
 const acceptanceNight = buildAutomaticEveningReport({ appointmentCount: 10, openAppointmentCount: 7, completedAppointmentCount: 1, cancelledAppointmentCount: 1, overdueAppointmentCount: 0, pendingNotificationCount: 0, pendingTaskCount: acceptancePending.length, appointments: acceptanceAppointments, pendingItems: acceptancePending, reportTimezone: "America/Sao_Paulo" });
@@ -119,6 +120,7 @@ assert.match(acceptanceNight, /Compromissos concluídos: 1/);
 assert.match(acceptanceNight, /Lead 0: visita tecnica concluída/);
 assert.match(acceptanceNight, /Lead 1: compromisso reagendado/);
 assert.match(acceptanceNight, /Lead 2: compromisso cancelado/);
+assert.doesNotMatch(acceptanceNight, /atendimento precisa de verificacao|falha definitiva/);
 assert.doesNotMatch(acceptanceNight, /Lead 4: visita tecnica concluída/);
 
 const largePending = Array.from({ length: 20 }, (_, index) => ({
@@ -280,8 +282,9 @@ async function runIntegrationTests() {
   const pendingNoise = createReportSupabaseMock({
     notifications: [
       { id: "report-queue", notification_type: "morning_report", title: "Relatorio da manha", context: { report_source: "assistant_automatic_reports" } },
-      { id: "failure-1", notification_type: "important_alert", title: "Falha definitiva no processamento da IA Vendedora", context: { reason: "sales_ai_failed_final", failure_source: "inbox", event_key: "failure:1" } },
-      { id: "failure-1-replay", notification_type: "important_alert", title: "Falha definitiva no processamento da IA Vendedora", context: { reason: "sales_ai_failed_final", failure_source: "inbox", event_key: "failure:1" } },
+      { id: "failure-1", notification_type: "important_alert", title: "Falha definitiva no processamento da IA Vendedora", context: { source: "assistant_enqueue_internal_notification", reason: "sales_ai_failed_final", failure_source: "inbox", needs_human_action: true, event_key: "failure:1" } },
+      { id: "failure-1-replay", notification_type: "important_alert", title: "Falha definitiva no processamento da IA Vendedora", context: { source: "assistant_enqueue_internal_notification", reason: "sales_ai_failed_final", failure_source: "inbox", needs_human_action: true, event_key: "failure:1" } },
+      { id: "failure-worker-with-identifiers", notification_type: "important_alert", title: "Falha definitiva no processamento da IA Vendedora", related_lead_id: "lead-1", context: { source: "sales_ai_worker", reason: "sales_ai_failed_final", failure_source: "ai_run_queue", failure_record_id: "queue-1", conversation_id: "conversation-1", needs_human_action: true, event_key: "failure:worker-with-identifiers" } },
       { id: "contract-review-old", notification_type: "important_alert", priority: "normal", title: "Contrato CTR-1 aguardando revisao", context: { reason: "pending_review", related_contract_id: "contract-1", document_version_id: "version-1", document_status: "pending_review", event_key: "contract-event-old" }, created_at: "2026-10-19T09:00:00Z" },
       { id: "contract-review-new", notification_type: "important_alert", priority: "high", title: "Contrato CTR-1 exige conferencia", context: { reason: "pending_review", related_contract_id: "contract-1", document_version_id: "version-1", document_status: "pending_review", event_key: "contract-event-new" }, created_at: "2026-10-19T10:00:00Z" },
       { id: "common-action", notification_type: "important_alert", priority: "normal", title: "Tarefa comum", context: { reason: "other_action", event_key: "common-action" }, created_at: "2026-10-19T11:00:00Z" },
@@ -292,8 +295,11 @@ async function runIntegrationTests() {
   const pendingNoiseBody = String(pendingNoise.calls.find((call) => call.name === "assistant_materialize_automatic_report")?.args.p_content || "");
   assert.equal(pendingNoiseResult.results[0]?.status, "generated");
   assert.doesNotMatch(pendingNoiseBody, /Relatorio da manha/);
-  assert.match(pendingNoiseBody, /atendimento precisa de verificacao/);
-  assert.doesNotMatch(pendingNoiseBody, /Contrato CTR-1|ai_run_queue|inbox|failure_source/);
+  assert.doesNotMatch(pendingNoiseBody, /atendimento precisa de verificacao|Falha definitiva|ai_run_queue|failure_source/);
+  const pendingNoiseSnapshot = pendingNoise.calls.find((call) => call.name === "assistant_materialize_automatic_report")?.args.p_metadata as Record<string, unknown>;
+  const pendingNoiseSnapshotItems = ((pendingNoiseSnapshot.automatic_report_snapshot as Record<string, unknown>)?.pending_items || []) as Array<Record<string, unknown>>;
+  assert.equal(pendingNoiseSnapshotItems.some((item) => ["failure-1", "failure-1-replay", "failure-worker-with-identifiers"].includes(String(item.id))), false);
+  assert.doesNotMatch(pendingNoiseBody, /failure:1|failure:worker-with-identifiers/);
   assert.match(pendingNoiseBody, /Cliente sem nome cadastrado/);
 
   const eveningSnapshot = {
