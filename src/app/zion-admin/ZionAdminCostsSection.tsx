@@ -86,6 +86,13 @@ function FinancialCard({label,value,sub,accent=false}:{label:string;value:string
   </div>;
 }
 
+type VariableCatalogChoice = {
+  id: string;
+  name: string;
+  category: string;
+  currency: "BRL" | "USD";
+  archived_at: string | null;
+};
 export default function ZionAdminCostsSection() {
   const [period,setPeriod]=useState<"day"|"week"|"month"|"year">("month");
   const [anchor,setAnchor]=useState(localToday);
@@ -107,6 +114,11 @@ export default function ZionAdminCostsSection() {
   const [variableCurrency,setVariableCurrency]=useState<"BRL"|"USD">("BRL");
   const [variableDate,setVariableDate]=useState(localToday);
   const variableOperationKey=useRef<string|null>(null);
+  const [variableCatalogItems,setVariableCatalogItems]=useState<VariableCatalogChoice[]|null>(null);
+  const [variableCatalogLoading,setVariableCatalogLoading]=useState(false);
+  const [variableCatalogError,setVariableCatalogError]=useState<string|null>(null);
+  const [selectedVariableCatalogId,setSelectedVariableCatalogId]=useState("");
+  const catalogRequestSequence=useRef(0);
 
   const year=Number(anchor.slice(0,4));
   const month=Number(anchor.slice(5,7));
@@ -138,8 +150,82 @@ export default function ZionAdminCostsSection() {
     if(item==="new"){setName("");setAmount("");setFrequency("monthly");}
     else {setName(item.name);setAmount((item.amount_cents/100).toFixed(2).replace(".",","));setFrequency(item.frequency);}
   }
+  async function loadVariableCatalog(requestId:number){
+    setVariableCatalogLoading(true);
+    try {
+      const response=await fetch("/api/zion-admin/costs/catalog",{
+        cache:"no-store",
+        credentials:"include",
+      });
+      const payload:unknown=await response.json().catch(()=>null);
+
+      if(!response.ok || !payload || typeof payload!=="object" ||
+         !("items" in payload) || !Array.isArray(payload.items)){
+        throw new Error("CATALOGO_INDISPONIVEL");
+      }
+
+      const choices:VariableCatalogChoice[]=[];
+      const ids=new Set<string>();
+
+      for(const raw of payload.items){
+        if(!raw || typeof raw!=="object"){
+          throw new Error("ITEM_CATALOGO_INVALIDO");
+        }
+        const item=raw as Record<string,unknown>;
+        const id=item.id;
+        const name=item.name;
+        const category=item.category;
+        const currency=item.currency;
+        const archivedAt=item.archived_at;
+
+        if(typeof id!=="string" ||
+           !/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(id) ||
+           ids.has(id) ||
+           typeof name!=="string" || !name.trim() ||
+           typeof category!=="string" || !category.trim() ||
+           (currency!=="BRL" && currency!=="USD") ||
+           (archivedAt!==null && typeof archivedAt!=="string")){
+          throw new Error("ITEM_CATALOGO_INVALIDO");
+        }
+
+        ids.add(id);
+
+        if(archivedAt===null){
+          choices.push({
+            id,
+            name,
+            category,
+            currency,
+            archived_at:null,
+          });
+        }
+      }
+
+      if(catalogRequestSequence.current===requestId){
+        setVariableCatalogItems(choices);
+        setVariableCatalogError(null);
+      }
+    } catch {
+      if(catalogRequestSequence.current===requestId){
+        setVariableCatalogItems(null);
+        setVariableCatalogError(
+          "Não foi possível carregar o catálogo. Nenhum lançamento foi autorizado."
+        );
+      }
+    } finally {
+      if(catalogRequestSequence.current===requestId){
+        setVariableCatalogLoading(false);
+      }
+    }
+  }
   function startVariableEditing(item: VariableExpense|"new"){
     setVariableEditing(item);setFeedback(null);variableOperationKey.current=null;
+    const requestId=++catalogRequestSequence.current;
+    setSelectedVariableCatalogId("");
+    setVariableCatalogItems(null);
+    setVariableCatalogError(null);
+    setVariableCatalogLoading(false);
+    if(item==="new") void loadVariableCatalog(requestId);
     if(item==="new"){setVariableName("");setVariableCategory("");setVariableDescription("");setVariableAmount("");setVariableCurrency("BRL");setVariableDate(localToday());}
     else {setVariableName(item.name);setVariableCategory(item.category);setVariableDescription(item.description||"");setVariableAmount((Number(item.amount_minor)/100).toFixed(2));setVariableCurrency(item.currency);setVariableDate(item.expense_date);}
   }
@@ -148,9 +234,21 @@ export default function ZionAdminCostsSection() {
     if(action==="cancel_variable" && !window.confirm("Cancelar esta despesa? O lançamento continuará disponível no histórico de auditoria.")) return;
     if(!variableOperationKey.current) variableOperationKey.current=`zion-admin-variable-${crypto.randomUUID()}`;
     if(action!=="cancel_variable" && (!variableName.trim() || !variableCategory.trim() || !/^\d+(?:[.,]\d{1,2})?$/.test(variableAmount.trim()) || !variableDate)) {setFeedback("Informe nome, categoria, valor e data válidos.");return;}
+    if(action==="add_variable"){
+      const chosen=variableCatalogItems?.find(
+        (entry)=>entry.id===selectedVariableCatalogId
+      );
+      if(variableCatalogLoading || variableCatalogError || !chosen ||
+         chosen.name!==variableName ||
+         chosen.category!==variableCategory ||
+         chosen.currency!==variableCurrency){
+        setFeedback("Selecione um nome permanente ativo e válido.");
+        return;
+      }
+    }
     setSaving(true);setFeedback(null);
     try {
-      const response=await fetch("/api/zion-admin/costs",{method:"POST",credentials:"include",headers:{"content-type":"application/json"},body:JSON.stringify({action,operationKey:variableOperationKey.current,id:item?.id,name:action==="cancel_variable"?undefined:variableName,category:action==="cancel_variable"?undefined:variableCategory,description:action==="cancel_variable"?undefined:variableDescription,amount:action==="cancel_variable"?undefined:variableAmount.replace(",","."),currency:action==="cancel_variable"?undefined:variableCurrency,expenseDate:action==="cancel_variable"?undefined:variableDate,competenceMonth:action==="cancel_variable"?undefined:`${variableDate.slice(0,7)}-01`,expectedUpdatedAt:action==="edit_variable"?item?.updated_at:undefined})});
+      const response=await fetch("/api/zion-admin/costs",{method:"POST",credentials:"include",headers:{"content-type":"application/json"},body:JSON.stringify({action,operationKey:variableOperationKey.current,catalogItemId:action==="add_variable"?selectedVariableCatalogId:undefined,id:item?.id,name:action==="cancel_variable"?undefined:variableName,category:action==="cancel_variable"?undefined:variableCategory,description:action==="cancel_variable"?undefined:variableDescription,amount:action==="cancel_variable"?undefined:variableAmount.replace(",","."),currency:action==="cancel_variable"?undefined:variableCurrency,expenseDate:action==="cancel_variable"?undefined:variableDate,competenceMonth:action==="cancel_variable"?undefined:`${variableDate.slice(0,7)}-01`,expectedUpdatedAt:action==="edit_variable"?item?.updated_at:undefined})});
       const payload=await response.json().catch(()=>null);
       if(!response.ok) throw new Error(payload?.error||"Não foi possível salvar a despesa variável.");
       setVariableEditing(null);variableOperationKey.current=null;setFeedback(action==="cancel_variable"?"Despesa cancelada e preservada no histórico.":"Despesa variável salva.");setCatalogRefreshKey((value)=>value+1);void fetchCosts();
@@ -225,6 +323,52 @@ export default function ZionAdminCostsSection() {
       <p className="text-[11px] leading-5 text-[#879da9]">{data.note} Fonte da cotação: {data.fxSource}. Para reconciliação com a fatura real de cartão, é necessário conferir a taxa efetivamente cobrada.</p>
     </>:null}
     {editing?<div role="dialog" aria-modal="true" aria-label="Editar despesa fixa" className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 px-3"><form onSubmit={e=>{e.preventDefault();void submitCost(editing==="new"?"add":"edit",editing==="new"?undefined:editing);}} className="w-full max-w-md space-y-3 rounded-2xl border border-[#3b7e8b] bg-[#0d1b24] p-5 shadow-2xl"><div><h3 className="text-base font-semibold text-white">{editing==="new"?"Adicionar despesa fixa":"Editar despesa fixa"}</h3><p className="mt-1 text-xs text-[#a2b8c3]">A alteração começará em {nextMonthLabel()}. Fechamentos antigos não serão modificados.</p></div><label className="block text-xs text-[#aebdc5]">Nome<input required maxLength={100} value={name} onChange={e=>setName(e.target.value)} className={`${PALETTE.input} mt-1 w-full`} placeholder="Ex.: Hospedagem"/></label><label className="block text-xs text-[#aebdc5]">Valor em reais<input required inputMode="decimal" value={amount} onChange={e=>setAmount(e.target.value)} className={`${PALETTE.input} mt-1 w-full`} placeholder="100,00"/></label><label className="block text-xs text-[#aebdc5]">Frequência<select value={frequency} onChange={e=>setFrequency(e.target.value as CostFrequency)} className={`${PALETTE.input} mt-1 w-full`}><option value="monthly">Mensal</option><option value="annual">Anual (dividido por 12)</option></select></label><div className="flex justify-end gap-2"><button type="button" className="rounded-lg border border-[#3e4b57] px-3 py-2 text-xs text-white" onClick={()=>setEditing(null)}>Cancelar</button><button disabled={saving} type="submit" className={PALETTE.action}>{saving?"Salvando...":"Salvar para o próximo mês"}</button></div></form></div>:null}
-    {variableEditing?<div role="dialog" aria-modal="true" aria-label="Editar despesa variável" className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 px-3"><form onSubmit={e=>{e.preventDefault();void submitVariable(variableEditing==="new"?"add_variable":"edit_variable",variableEditing==="new"?undefined:variableEditing);}} className="w-full max-w-md space-y-3 rounded-2xl border border-[#3b7e8b] bg-[#0d1b24] p-5 shadow-2xl"><h3 className="text-base font-semibold text-white">{variableEditing==="new"?"Adicionar despesa variável":"Editar despesa variável"}</h3><label className="block text-xs text-[#aebdc5]">Nome<input required maxLength={100} value={variableName} onChange={e=>setVariableName(e.target.value)} className={`${PALETTE.input} mt-1 w-full`} /></label><label className="block text-xs text-[#aebdc5]">Categoria<input required maxLength={80} value={variableCategory} onChange={e=>setVariableCategory(e.target.value)} className={`${PALETTE.input} mt-1 w-full`} /></label><label className="block text-xs text-[#aebdc5]">Descrição opcional<textarea maxLength={2000} value={variableDescription} onChange={e=>setVariableDescription(e.target.value)} className={`${PALETTE.input} mt-1 w-full`} /></label><div className="grid grid-cols-2 gap-2"><label className="block text-xs text-[#aebdc5]">Valor<input required inputMode="decimal" value={variableAmount} onChange={e=>setVariableAmount(e.target.value)} className={`${PALETTE.input} mt-1 w-full`} placeholder="100,00" /></label><label className="block text-xs text-[#aebdc5]">Moeda<select value={variableCurrency} onChange={e=>setVariableCurrency(e.target.value as "BRL"|"USD")} className={`${PALETTE.input} mt-1 w-full`}><option value="BRL">BRL</option><option value="USD">USD</option></select></label></div><label className="block text-xs text-[#aebdc5]">Data da despesa<input required type="date" value={variableDate} onChange={e=>setVariableDate(e.target.value)} className={`${PALETTE.input} mt-1 w-full`} /></label><p className="text-[11px] text-[#91a7b6]">Competência calculada: {variableDate?`${variableDate.slice(0,7)}-01`:"—"}</p><div className="flex justify-end gap-2"><button type="button" className="rounded-lg border border-[#3e4b57] px-3 py-2 text-xs text-white" onClick={()=>setVariableEditing(null)}>Cancelar</button><button disabled={saving} type="submit" className={PALETTE.action}>{saving?"Salvando...":"Salvar despesa"}</button></div></form></div>:null}
+    {variableEditing?<div role="dialog" aria-modal="true" aria-label="Editar despesa variável" className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 px-3"><form onSubmit={e=>{e.preventDefault();void submitVariable(variableEditing==="new"?"add_variable":"edit_variable",variableEditing==="new"?undefined:variableEditing);}} className="w-full max-w-md space-y-3 rounded-2xl border border-[#3b7e8b] bg-[#0d1b24] p-5 shadow-2xl"><h3 className="text-base font-semibold text-white">{variableEditing==="new"?"Adicionar despesa variável":"Editar despesa variável"}</h3>{variableEditing==="new"?(
+  <label className="block text-xs text-[#aebdc5]">
+    Nome permanente
+    <select
+      required
+      value={selectedVariableCatalogId}
+      disabled={saving||variableCatalogLoading||!!variableCatalogError}
+      onChange={event=>{
+        const chosen=variableCatalogItems?.find(
+          entry=>entry.id===event.target.value
+        );
+        setSelectedVariableCatalogId(chosen?.id||"");
+        setVariableName(chosen?.name||"");
+        setVariableCategory(chosen?.category||"");
+        setVariableCurrency(chosen?.currency||"BRL");
+        variableOperationKey.current=null;
+      }}
+      className={`${PALETTE.input} mt-1 w-full`}
+    >
+      <option value="">Selecione uma despesa cadastrada</option>
+      {(variableCatalogItems||[]).map(entry=>(
+        <option key={entry.id} value={entry.id}>
+          {entry.name} — {entry.category}
+        </option>
+      ))}
+    </select>
+  </label>
+):(
+  <div className="text-xs text-[#aebdc5]">
+    Nome: <span className="text-white">{variableName}</span>
+  </div>
+)}
+{variableEditing==="new" && variableCatalogLoading?(
+  <p role="status" className="text-xs text-[#91a7b6]">
+    Carregando nomes permanentes...
+  </p>
+):null}
+{variableEditing==="new" && variableCatalogError?(
+  <p role="alert" className="text-xs text-amber-200">
+    {variableCatalogError}
+  </p>
+):null}
+{variableEditing==="new" && variableCatalogItems?.length===0?(
+  <p className="text-xs text-amber-200">
+    Nenhum nome ativo cadastrado. Cadastre um nome antes de lançar a despesa.
+  </p>
+):null}<div className="text-xs text-[#aebdc5]">Categoria: <span className="text-white">{variableCategory||"—"}</span></div><label className="block text-xs text-[#aebdc5]">Descrição opcional<textarea maxLength={2000} value={variableDescription} onChange={e=>setVariableDescription(e.target.value)} className={`${PALETTE.input} mt-1 w-full`} /></label><div className="grid grid-cols-2 gap-2"><label className="block text-xs text-[#aebdc5]">Valor<input required inputMode="decimal" value={variableAmount} onChange={e=>setVariableAmount(e.target.value)} className={`${PALETTE.input} mt-1 w-full`} placeholder="100,00" /></label><div className="text-xs text-[#aebdc5]">Moeda: <span className="text-white">{variableCurrency}</span></div></div><label className="block text-xs text-[#aebdc5]">Data da despesa<input required type="date" value={variableDate} onChange={e=>setVariableDate(e.target.value)} className={`${PALETTE.input} mt-1 w-full`} /></label><p className="text-[11px] text-[#91a7b6]">Competência calculada: {variableDate?`${variableDate.slice(0,7)}-01`:"—"}</p><div className="flex justify-end gap-2"><button type="button" className="rounded-lg border border-[#3e4b57] px-3 py-2 text-xs text-white" onClick={()=>setVariableEditing(null)}>Cancelar</button><button disabled={saving||(variableEditing==="new"&&(!selectedVariableCatalogId||variableCatalogLoading||!!variableCatalogError))} type="submit" className={PALETTE.action}>{saving?"Salvando...":"Salvar despesa"}</button></div></form></div>:null}
   </section>;
 }
