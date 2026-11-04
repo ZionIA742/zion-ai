@@ -53,7 +53,10 @@ function mapCatalogError(message: string): [number, string] {
   return [503, "Não foi possível confirmar a operação do catálogo."];
 }
 
-export async function GET() {
+const CATALOG_PAGE_SIZE = 500;
+const CATALOG_MAX_PAGES = 40;
+
+export async function GET(request: Request) {
   const access = await resolveZionAdminApiAccess();
 
   if (!access.ok) {
@@ -67,23 +70,108 @@ export async function GET() {
     );
   }
 
+  const params = new URL(request.url).searchParams;
+  const months = params.getAll("month");
+  const month = months.length === 1 ? months[0] : null;
+
+  if (months.length > 1 ||
+      (month !== null &&
+       !/^20\d{2}-(0[1-9]|1[0-2])-01$/.test(month))) {
+    return createZionAdminApiJsonResponse(
+      { error: "Competência mensal inválida." },
+      400,
+    );
+  }
+
   try {
     const db = createServiceClient();
-    const { data, error } = await db
-      .from("zion_admin_variable_expense_catalog")
-      .select("id,name,category,currency,created_at,updated_at,archived_at")
-      .order("name", { ascending: true })
-      .order("category", { ascending: true });
+    const items: Record<string, unknown>[] = [];
+    let catalogComplete = false;
 
-    if (error) {
+    for (let pageIndex = 0;
+         pageIndex < CATALOG_MAX_PAGES;
+         pageIndex++) {
+      const offset = pageIndex * CATALOG_PAGE_SIZE;
+
+      const { data, error } = await db
+        .from("zion_admin_variable_expense_catalog")
+        .select("id,name,category,currency,created_at,updated_at,archived_at")
+        .order("name", { ascending: true })
+        .order("category", { ascending: true })
+        .order("id", { ascending: true })
+        .range(offset, offset + CATALOG_PAGE_SIZE - 1);
+
+      if (error || !Array.isArray(data)) {
+        return createZionAdminApiJsonResponse(
+          { error: "Catálogo temporariamente indisponível." },
+          503,
+        );
+      }
+
+      items.push(...data);
+
+      if (data.length < CATALOG_PAGE_SIZE) {
+        catalogComplete = true;
+        break;
+      }
+    }
+
+    if (!catalogComplete) {
       return createZionAdminApiJsonResponse(
-        { error: "Catálogo temporariamente indisponível." },
+        { error: "Catálogo excedeu o limite seguro de consulta." },
         503,
       );
     }
 
+    // Preserva o contrato GET original sem parâmetro.
+    if (month === null) {
+      return createZionAdminApiJsonResponse({ items }, 200);
+    }
+
+    // A competência é independente do filtro geral
+    // de dia, semana, mês ou ano do painel.
+    const monthlyExpenses: Record<string, unknown>[] = [];
+    let expensesComplete = false;
+
+    for (let pageIndex = 0;
+         pageIndex < CATALOG_MAX_PAGES;
+         pageIndex++) {
+      const offset = pageIndex * CATALOG_PAGE_SIZE;
+
+      const { data, error } = await db
+        .from("zion_admin_variable_expenses")
+        .select("id,catalog_item_id,idempotency_key,name,category,description,amount_minor,currency,expense_date,competence_month,source,status,created_at,updated_at,cancelled_at")
+        .eq("competence_month", month)
+        .order("id", { ascending: true })
+        .range(offset, offset + CATALOG_PAGE_SIZE - 1);
+
+      if (error || !Array.isArray(data)) {
+        return createZionAdminApiJsonResponse(
+          { error: "Lançamentos mensais indisponíveis." },
+          503,
+        );
+      }
+
+      monthlyExpenses.push(...data);
+
+      if (data.length < CATALOG_PAGE_SIZE) {
+        expensesComplete = true;
+        break;
+      }
+    }
+
+    if (!expensesComplete) {
+      return createZionAdminApiJsonResponse(
+        { error: "Lançamentos excederam o limite seguro de consulta." },
+        503,
+      );
+    }
+
+    // Retorna também cancelados e históricos sem vínculo.
+    // O consumidor deve somar apenas lançamentos ativos,
+    // agrupados pelo catalog_item_id real e pela moeda.
     return createZionAdminApiJsonResponse(
-      { items: data ?? [] },
+      { items, month, monthlyExpenses },
       200,
     );
   } catch {

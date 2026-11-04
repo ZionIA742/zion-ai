@@ -25,10 +25,51 @@ test("catalog mutations delegate to the audited RPC", () => {
   assert.match(source, /"created", "archived", "restored"/);
 });
 
-test("catalog endpoint does not mutate financial expenses", () => {
-  assert.doesNotMatch(source, /amount_minor|amount_cents/);
-  assert.doesNotMatch(source, /\.from\("zion_admin_variable_expenses"\)/);
-  assert.match(source, /from\("zion_admin_variable_expense_catalog"\)/);
+test("catalog reads monthly financial expenses without mutating them", () => {
+  const getStart = source.indexOf("export async function GET(");
+  const postStart = source.indexOf("export async function POST(");
+
+  assert.ok(getStart >= 0 && postStart > getStart);
+
+  const getSource = source.slice(getStart, postStart);
+  const postSource = source.slice(postStart);
+
+  assert.match(
+    getSource,
+    /\.from\("zion_admin_variable_expenses"\)/,
+  );
+
+  assert.match(
+    getSource,
+    /\.select\("id,catalog_item_id,[^"]*amount_minor/,
+  );
+
+  assert.match(
+    getSource,
+    /\.eq\("competence_month", month\)/,
+  );
+
+  assert.doesNotMatch(
+    getSource,
+    /\.(?:insert|update|upsert|delete)\s*\(/,
+  );
+
+  assert.doesNotMatch(getSource, /db\.rpc\(/);
+
+  assert.doesNotMatch(
+    postSource,
+    /\.from\("zion_admin_variable_expenses"\)/,
+  );
+
+  assert.doesNotMatch(
+    postSource,
+    /zion_admin_mutate_variable_expense/,
+  );
+
+  assert.match(
+    source,
+    /from\("zion_admin_variable_expense_catalog"\)/,
+  );
 });
 
 test("catalog errors remain non-success responses", () => {
