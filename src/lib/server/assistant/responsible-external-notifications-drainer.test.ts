@@ -251,7 +251,15 @@ const tests: TestCase[] = [
       const loaderBlock = source.slice(loaderStart, loaderEnd);
       assert.match(loaderBlock, /\.in\("notification_type", AUTOMATIC_REPORT_TYPES\)/);
       assert.match(loaderBlock, /\.eq\("notification_type", "important_alert"\)/);
-      assert.match(loaderBlock, /context->>source/);
+      assert.match(loaderBlock, /\.eq\("context->>source", OPERATIONAL_APPROVAL_SOURCE\)/);
+      assert.match(loaderBlock, /\.eq\("context->>reason", OPERATIONAL_APPROVAL_REASON\)/);
+      assert.match(loaderBlock, /\.eq\("context->>classification", OPERATIONAL_APPROVAL_CLASSIFICATION\)/);
+      assert.match(loaderBlock, /\.eq\("context->>suggested_available", "true"\)/);
+      assert.match(loaderBlock, /\.eq\("context->>source", RECEIVED_CONTRACT_DOCUMENT_SOURCE\)/);
+      assert.match(loaderBlock, /\.eq\("context->>needs_human_action", "true"\)/);
+      assert.match(loaderBlock, /\.neq\("context->>received_evidence_source_message_id", ""\)/);
+      assert.match(loaderBlock, /\.neq\("context->>received_document_storage_bucket", ""\)/);
+      assert.match(loaderBlock, /\.neq\("context->>received_document_storage_path", ""\)/);
       assert.match(loaderBlock, /\.limit\(args\.limit\)/);
       assert.match(source, /isResponsibleOperationalApprovalAutoDrainCandidate/);
       assert.match(source, /isAutomaticReportCandidate/);
@@ -340,6 +348,34 @@ const tests: TestCase[] = [
       });
       assert.deepEqual(selected.map((row) => row.id), ["regina-document"]);
       assert.equal(isResponsibleOperationalApprovalAutoDrainCandidate(document as OutboxCandidate), true);
+    },
+  },
+  {
+    name: "candidate loader deduplicates identical document rows and rejects invalid document context",
+    run: async () => {
+      const document = receivedDocumentCandidate({ id: "same-document" });
+      const selected = await loadResponsibleOperationalApprovalCandidates({
+        supabase: outboxReader([document, document], []),
+        organizationId: "org-1",
+        storeId: "store-1",
+        limit: 10,
+      });
+      assert.deepEqual(selected.map((row) => row.id), ["same-document"]);
+      assert.equal(
+        isResponsibleOperationalApprovalAutoDrainCandidate(
+          receivedDocumentCandidate({
+            context: {
+              source: "received_contract_document_evidence_v1",
+              reason: "received_contract_document",
+              needs_human_action: true,
+              received_evidence_source_message_id: "message-1",
+              received_document_storage_bucket: "zion-store-files",
+              received_document_storage_path: "",
+            },
+          }) as OutboxCandidate,
+        ),
+        false,
+      );
     },
   },
   {

@@ -249,6 +249,21 @@ async function main() {
   assert.ok(receivedDocument.calls.some((call) => call.includes("graph.facebook.com") && call.includes('"type":"document"')));
   assert.ok(receivedDocument.calls.some((call) => call.includes("https://signed.test/inbound/signed-v2.pdf")));
 
+  const receivedDocumentOutsideWindow = await runCase(
+    { status: 200, body: JSON.stringify({ messages: [{ id: "must-not-send" }] }) },
+    {
+      receivedContractDeliveryFlag: "true",
+      inboundRows: [],
+      notificationOverrides: {
+        rendered_message: "Regina devolveu o contrato para conferencia.",
+        context: receivedDocumentContext,
+      },
+    },
+  );
+  assertReason(receivedDocumentOutsideWindow.result, "send_failed");
+  assert.equal(receivedDocumentOutsideWindow.calls.some((call) => call.includes("graph.facebook.com")), false);
+  assert.equal(receivedDocumentOutsideWindow.calls.some((call) => call.includes('"type":"template"')), false);
+
   const persistenceUncertain = await runCase(
     { status: 200, body: JSON.stringify({ messages: [{ id: "wamid-1" }] }) },
     { uncertainOnTransportFailure: true, persistFailure: true },
