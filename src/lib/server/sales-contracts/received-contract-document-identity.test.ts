@@ -108,6 +108,139 @@ test("mantem pendente metadata de oportunidade vazio ou invalido", () => {
   assert.equal(result.reason, "opportunity_missing");
 });
 
+test("desempata duas versoes pelo nome do arquivo recebido contra a mensagem enviada", () => {
+  const result = resolve({
+    message: message({
+      metadata: {
+        ...message().metadata,
+        storage_path: "contracts/shared.pdf",
+        original_file_name: "contrato-v3.pdf",
+      },
+      media_url: "contracts/shared.pdf",
+    }),
+    sentDocuments: [
+      sent({
+        id: "sent-v1",
+        media_url: "contracts/shared.pdf",
+        metadata: {
+          storage_path: "contracts/shared.pdf",
+          original_file_name: "contrato-v1.pdf",
+        },
+      }),
+      sent({
+        id: "sent-v3",
+        media_url: "contracts/shared.pdf",
+        metadata: {
+          storage_path: "contracts/shared.pdf",
+          original_file_name: "contrato-v3.pdf",
+        },
+      }),
+    ],
+    versionsByContract: new Map([[
+      "contract-1",
+      [
+        version({ id: "version-1", storage_path: "contracts/shared.pdf", original_filename: "contrato-v1.pdf" }),
+        version({ id: "version-3", version_number: 3, storage_path: "contracts/shared.pdf", original_filename: "contrato-v3.pdf" }),
+      ],
+    ]]),
+  });
+  assert.equal(result.outcome, "identified");
+  if (result.outcome !== "identified") return;
+  assert.equal(result.contractVersionId, "version-3");
+  assert.equal(result.originalDocument.sourceMessageId, "sent-v3");
+});
+
+test("desempata duas versoes pelo nome do arquivo recebido para a versao 1", () => {
+  const result = resolve({
+    message: message({
+      metadata: {
+        ...message().metadata,
+        storage_path: "contracts/shared.pdf",
+        original_file_name: "contrato-v1.pdf",
+      },
+      media_url: "contracts/shared.pdf",
+    }),
+    sentDocuments: [
+      sent({
+        id: "sent-v1",
+        media_url: "contracts/shared.pdf",
+        metadata: {
+          storage_path: "contracts/shared.pdf",
+          original_file_name: "contrato-v1.pdf",
+        },
+      }),
+      sent({
+        id: "sent-v3",
+        media_url: "contracts/shared.pdf",
+        metadata: {
+          storage_path: "contracts/shared.pdf",
+          original_file_name: "contrato-v3.pdf",
+        },
+      }),
+    ],
+    versionsByContract: new Map([[
+      "contract-1",
+      [
+        version({ id: "version-1", storage_path: "contracts/shared.pdf", original_filename: "contrato-v1.pdf" }),
+        version({ id: "version-3", version_number: 3, storage_path: "contracts/shared.pdf", original_filename: "contrato-v3.pdf" }),
+      ],
+    ]]),
+  });
+  assert.equal(result.outcome, "identified");
+  if (result.outcome !== "identified") return;
+  assert.equal(result.contractVersionId, "version-1");
+  assert.equal(result.originalDocument.sourceMessageId, "sent-v1");
+});
+
+test("mantem pendente quando o nome recebido nao diferencia as versoes", () => {
+  const result = resolve({
+    message: message({
+      metadata: {
+        ...message().metadata,
+        storage_path: "contracts/shared.pdf",
+        original_file_name: "contrato-duplicado.pdf",
+      },
+      media_url: "contracts/shared.pdf",
+    }),
+    sentDocuments: [
+      sent({ id: "sent-v1", media_url: "contracts/shared.pdf", metadata: { storage_path: "contracts/shared.pdf", original_file_name: "contrato-duplicado.pdf" } }),
+      sent({ id: "sent-v3", media_url: "contracts/shared.pdf", metadata: { storage_path: "contracts/shared.pdf", original_file_name: "contrato-duplicado.pdf" } }),
+    ],
+    versionsByContract: new Map([[
+      "contract-1",
+      [version({ id: "version-1", storage_path: "contracts/shared.pdf" }), version({ id: "version-3", storage_path: "contracts/shared.pdf" })],
+    ]]),
+  });
+  assert.equal(result.outcome, "pending");
+  if (result.outcome !== "pending") return;
+  assert.equal(result.reason, "multiple_version_candidates");
+  assert.deepEqual(result.candidateVersionIds, ["version-1", "version-3"]);
+});
+
+test("mantem pendente quando o metadata de nome esta ausente ou invalido", () => {
+  const result = resolve({
+    message: message({
+      metadata: {
+        ...message().metadata,
+        storage_path: "contracts/shared.pdf",
+        original_file_name: { name: "contrato-v3.pdf" },
+      },
+      media_url: "contracts/shared.pdf",
+    }),
+    sentDocuments: [
+      sent({ id: "sent-v1", media_url: "contracts/shared.pdf", metadata: { storage_path: "contracts/shared.pdf", original_file_name: "contrato-v1.pdf" } }),
+      sent({ id: "sent-v3", media_url: "contracts/shared.pdf", metadata: { storage_path: "contracts/shared.pdf", original_file_name: "contrato-v3.pdf" } }),
+    ],
+    versionsByContract: new Map([[
+      "contract-1",
+      [version({ id: "version-1", storage_path: "contracts/shared.pdf" }), version({ id: "version-3", storage_path: "contracts/shared.pdf" })],
+    ]]),
+  });
+  assert.equal(result.outcome, "pending");
+  if (result.outcome !== "pending") return;
+  assert.equal(result.reason, "multiple_version_candidates");
+});
+
 test("separa arquivo recebido alterado da identidade do documento enviado", () => {
   const result = resolve({
     message: message({

@@ -242,7 +242,7 @@ export function resolveReceivedContractDocumentIdentity(args: {
   const contract = contracts[0];
   const contractId = text(contract.id) || "";
   const versions = args.versionsByContract.get(contractId) || [];
-  const sentVersionEvidence = (version: VersionRow) => args.sentDocuments.find((sent) => {
+  const isSentVersionEvidence = (version: VersionRow, sent: ReceivedMessageRow) => {
     if (
       text(sent.direction)?.toLowerCase() !== "outgoing" ||
       text(sent.message_type)?.toLowerCase() !== "document"
@@ -263,8 +263,24 @@ export function resolveReceivedContractDocumentIdentity(args: {
       text(version.contract_id) === contractId &&
       (!sentMetadata.storage_path || text(sentMetadata.storage_path) === text(version.storage_path))
     );
-  });
-  const matchingVersions = versions.filter((version) => Boolean(sentVersionEvidence(version)));
+  };
+  const sentVersionEvidence = (version: VersionRow) => args.sentDocuments.find((sent) => isSentVersionEvidence(version, sent));
+  const matchingVersionEvidence = versions
+    .map((version) => ({ version, sent: sentVersionEvidence(version) }))
+    .filter((entry): entry is { version: VersionRow; sent: ReceivedMessageRow } => Boolean(entry.sent));
+  let matchingVersions = matchingVersionEvidence.map((entry) => entry.version);
+  if (matchingVersions.length > 1 && originalFileName) {
+    const filenameMatchedEvidence = matchingVersions.filter((version) =>
+      args.sentDocuments.some((sent) =>
+        isSentVersionEvidence(version, sent) &&
+        text(record(sent.metadata).original_file_name) === originalFileName &&
+        text(version.original_filename) === originalFileName,
+      ),
+    );
+    if (filenameMatchedEvidence.length === 1) {
+      matchingVersions = filenameMatchedEvidence;
+    }
+  }
   const candidateVersionIds = matchingVersions.map((version) => text(version.id)).filter((id): id is string => Boolean(id));
   if (matchingVersions.length !== 1) {
     return basePending({ organizationId, storeId, sourceMessageId, receivedAt, conversationId, reason: matchingVersions.length > 1 ? "multiple_version_candidates" : "version_evidence_missing", storageBucket, storagePath, mimeType, sha256, originalFileName, candidateContractIds, candidateVersionIds });
@@ -272,7 +288,12 @@ export function resolveReceivedContractDocumentIdentity(args: {
 
   const version = matchingVersions[0];
   const versionId = text(version.id) || "";
-  const sentEvidence = sentVersionEvidence(version);
+  const sentEvidence = args.sentDocuments.find((sent) =>
+    isSentVersionEvidence(version, sent) &&
+    originalFileName !== null &&
+    text(version.original_filename) === originalFileName &&
+    text(record(sent.metadata).original_file_name) === originalFileName,
+  ) || matchingVersionEvidence.find((entry) => entry.version === version)?.sent;
   const duplicate = args.sentDocuments.find((sent) =>
     text(sent.id) !== sourceMessageId &&
     text(sent.direction)?.toLowerCase() === "incoming" &&
