@@ -83,6 +83,7 @@ export function parseDate(value: unknown): string | null {
 }
 
 export function mapVariableExpenseRpcError(message: string) {
+  if (/VARIABLE_CATALOG_ITEM_ARCHIVED|VARIABLE_CATALOG_ITEM_MISMATCH/i.test(message)) return [409, "O item do catálogo está arquivado ou não corresponde à despesa. Atualize os dados."] as const;
   if (/CLOSED|ALREADY_CLOSED|MONTH_ALREADY_CLOSED/i.test(message)) return [409, "A competência financeira já está fechada."] as const;
   if (/STALE_VERSION|VERSION_OR_MONTH|CHANGED_DURING_OPERATION/i.test(message)) return [409, "O lançamento foi alterado; recarregue os dados e tente novamente."] as const;
   if (/OPERATION_KEY_REUSED/i.test(message)) return [409, "A chave de idempotência já foi usada com outros dados."] as const;
@@ -383,6 +384,8 @@ export async function POST(request: Request) {
       : parseMinorAmount(payload.amountMinor !== undefined ? payload.amountMinor : payload.amount);
     const expectedUpdatedAt = payload.expectedUpdatedAt == null ? null : String(payload.expectedUpdatedAt);
     const reason = payload.reason == null ? null : String(payload.reason);
+    const catalogItemId = variableAction === "add_variable" ? payload.catalogItemId : null;
+    const validCatalogId = catalogItemId == null || isUuid(catalogItemId);
     const validCommon = operationKey.length >= 8 && operationKey.length <= 200;
     const validId = variableAction === "add_variable" ? id === null : isUuid(id);
     const validFields = variableAction === "cancel_variable"
@@ -395,11 +398,52 @@ export async function POST(request: Request) {
     if (!isUuid(access.sessionUserId)) {
       return createZionAdminApiJsonResponse({ error: "Identidade administrativa inválida." }, 403);
     }
-    if (!validCommon || !validId || !validFields) {
+    if (!validCommon || !validId || !validFields || !validCatalogId) {
       return createZionAdminApiJsonResponse({ error: "Dados da despesa variável inválidos." }, 400);
     }
     try {
       const db = createServiceClient();
+
+      if (variableAction === "add_variable" && isUuid(catalogItemId)) {
+        const { data: catalogItem, error: catalogError } = await db
+          .from("zion_admin_variable_expense_catalog")
+          .select("id,name,category,currency,archived_at")
+          .eq("id", catalogItemId)
+          .maybeSingle();
+
+        if (catalogError) {
+          return createZionAdminApiJsonResponse(
+            { error: "Não foi possível verificar o catálogo com segurança." },
+            503,
+          );
+        }
+
+        if (!catalogItem) {
+          return createZionAdminApiJsonResponse(
+            { error: "Item do catálogo não encontrado." },
+            404,
+          );
+        }
+
+        if (catalogItem.archived_at !== null) {
+          return createZionAdminApiJsonResponse(
+            { error: "Este item está arquivado. Reative-o antes de registrar novas despesas." },
+            409,
+          );
+        }
+
+        if (
+          catalogItem.name !== name ||
+          catalogItem.category !== category ||
+          catalogItem.currency !== currency
+        ) {
+          return createZionAdminApiJsonResponse(
+            { error: "Os dados da despesa não correspondem ao item selecionado. Atualize o catálogo." },
+            409,
+          );
+        }
+      }
+
       const { data, error } = await db.rpc("zion_admin_mutate_variable_expense", {
         p_action: variableAction === "add_variable" ? "created" : variableAction === "edit_variable" ? "edited" : "cancelled",
         p_operation_key: operationKey,
