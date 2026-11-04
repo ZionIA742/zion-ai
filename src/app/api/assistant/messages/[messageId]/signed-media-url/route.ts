@@ -122,7 +122,7 @@ export function createAssistantSignedMediaUrlGetHandler(
         metadata?.received_evidence_source_message_id || "",
       ).trim();
       const isReceivedEvidence =
-        message.sender_role === "system" &&
+        (message.sender_role === "system" || message.sender_role === "assistant_operational") &&
         metadata?.kind === "document_review" &&
         metadata?.origin === RECEIVED_EVIDENCE_SOURCE &&
         metadata?.channel === "whatsapp" &&
