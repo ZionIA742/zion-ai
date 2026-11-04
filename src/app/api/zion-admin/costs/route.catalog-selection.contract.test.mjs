@@ -11,16 +11,24 @@ const post = source.slice(
   source.indexOf("export async function POST("),
 );
 
-test("new expenses can carry a canonical catalog ID", () => {
+test("new expenses require a canonical catalog ID", () => {
   assert.match(
     post,
     /const catalogItemId = variableAction === "add_variable" \? payload\.catalogItemId : null/,
   );
   assert.match(
     post,
-    /catalogItemId == null \|\| isUuid\(catalogItemId\)/,
+    /variableAction !== "add_variable" \|\| isUuid\(catalogItemId\)/,
   );
   assert.match(post, /!validCatalogId/);
+  assert.match(
+    post,
+    /if \(!validCommon \|\| !validId \|\| !validFields \|\| !validCatalogId\)/,
+  );
+  assert.doesNotMatch(
+    post,
+    /catalogItemId == null \|\| isUuid\(catalogItemId\)/,
+  );
 });
 
 test("catalog identity is verified on the server", () => {

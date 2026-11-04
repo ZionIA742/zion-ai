@@ -385,7 +385,7 @@ export async function POST(request: Request) {
     const expectedUpdatedAt = payload.expectedUpdatedAt == null ? null : String(payload.expectedUpdatedAt);
     const reason = payload.reason == null ? null : String(payload.reason);
     const catalogItemId = variableAction === "add_variable" ? payload.catalogItemId : null;
-    const validCatalogId = catalogItemId == null || isUuid(catalogItemId);
+    const validCatalogId = variableAction !== "add_variable" || isUuid(catalogItemId);
     const validCommon = operationKey.length >= 8 && operationKey.length <= 200;
     const validId = variableAction === "add_variable" ? id === null : isUuid(id);
     const validFields = variableAction === "cancel_variable"
