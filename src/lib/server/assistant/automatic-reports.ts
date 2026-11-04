@@ -13,6 +13,9 @@ import type { StoreScheduleSettingsRow } from "./types";
 
 export type AutomaticReportType = "morning_report" | "evening_report";
 
+// WhatsApp text messages are kept below the provider limit with an explicit margin.
+export const AUTOMATIC_REPORT_SAFE_TEXT_LIMIT = 3800;
+
 export type AutomaticReportScheduleSettings = StoreScheduleSettingsForSalesAiWindow & StoreScheduleSettingsRow & {
   organization_id: string;
   store_id: string;
@@ -31,6 +34,9 @@ export type ReportAppointment = {
   customer_phone: string | null;
   address_text: string | null;
   created_at: string | null;
+  commercial_opportunity_id?: string | null;
+  lead_name?: string | null;
+  completion_evidence?: boolean;
 };
 
 export type ReportPendingItem = {
@@ -44,6 +50,9 @@ export type ReportPendingItem = {
   notification_type?: string | null;
   task_type?: string | null;
   commercial_opportunity_id?: string | null;
+  related_lead_id?: string | null;
+  lead_name?: string | null;
+  category?: "visit" | "quote" | "contract" | "other";
   context?: Record<string, unknown> | null;
 };
 
@@ -314,7 +323,7 @@ function formatPendingItems(items: ReportPendingItem[], reportLocalDate = "") {
     return `- ${label}${priority}${age}`;
   });
   for (const [source, count] of technicalFailures) {
-    lines.push(`- atendimento interrompido: ${count} falha(s) definitiva(s) da IA Vendedora (${source}); requer verificacao no painel`);
+    lines.push(`- atendimento interrompido: ${count === 1 ? "1 falha definitiva" : `${count} falhas definitivas`} da IA Vendedora (${source}); requer verificacao no painel`);
   }
   return lines;
 }
@@ -333,15 +342,15 @@ function pendingIdentity(item: ReportPendingItem) {
   const reason = normalize(context.reason);
   const contractId = cleanText(context.related_contract_id || context.document_id);
   if (contractId && reason) {
-    return `${item.kind}:contract:${contractId}:reason:${reason}:status:${normalize(context.document_status)}`;
+    return `contract:${contractId}:reason:${reason}:status:${normalize(context.document_status)}`;
   }
   const taskId = cleanText(context.task_id);
   const appointmentId = cleanText(item.related_appointment_id || context.related_appointment_id);
   if (taskId && reason && appointmentId) {
-    return `${item.kind}:task:${taskId}:appointment:${appointmentId}:reason:${reason}:classification:${normalize(context.classification)}`;
+    return `task:${taskId}:appointment:${appointmentId}:reason:${reason}:classification:${normalize(context.classification)}`;
   }
   const eventKey = cleanText(context.event_key || context.dedupe_key);
-  if (eventKey) return `${item.kind}:event:${eventKey}`;
+  if (eventKey) return `event:${eventKey}`;
   return `${item.kind}:row:${item.id}`;
 }
 
@@ -373,7 +382,7 @@ function deduplicatePendingItems(items: ReportPendingItem[]) {
   });
 }
 
-export function buildAutomaticMorningReport(data: ReportData) {
+function legacyBuildAutomaticMorningReport(data: ReportData) {
   const lines = [
     "PLANEJAMENTO OPERACIONAL DA MANHA",
     `Compromissos de hoje: ${data.appointmentCount}`,
@@ -452,7 +461,7 @@ export function compareMorningSnapshot(snapshot: {
   };
 }
 
-export function buildAutomaticEveningReport(data: ReportData) {
+function legacyBuildAutomaticEveningReport(data: ReportData) {
   const lines = [
     "RETROSPECTIVA OPERACIONAL DO FIM DO DIA",
     `Compromissos encontrados hoje: ${data.appointmentCount}`,
@@ -477,6 +486,310 @@ export function buildAutomaticEveningReport(data: ReportData) {
   }
   lines.push("Pendencias abertas e proximas acoes:", ...formatPendingItems(pendingItems, data.reportLocalDate));
   return lines.join("\n");
+}
+
+void legacyBuildAutomaticMorningReport;
+void legacyBuildAutomaticEveningReport;
+
+function reportLeadNameForDisplay(value: unknown) {
+  return cleanReportValue(value, "Cliente sem nome cadastrado");
+}
+
+function reportAppointmentTypeForDisplay(value: unknown) {
+  const valueNormalized = normalize(value);
+  if (valueNormalized.includes("technical") || valueNormalized.includes("tecnica")) return "visita tecnica";
+  if (valueNormalized.includes("commercial") || valueNormalized.includes("comercial")) return "visita comercial";
+  if (valueNormalized.includes("visit")) return "visita";
+  if (valueNormalized.includes("installation") || valueNormalized.includes("instalacao")) return "instalacao";
+  if (valueNormalized.includes("delivery") || valueNormalized.includes("entrega")) return "entrega";
+  return cleanReportValue(value, "compromisso");
+}
+
+function reportPendingCategory(item: ReportPendingItem) {
+  if (item.category) return item.category;
+  const value = normalize([
+    item.task_type,
+    item.notification_type,
+    item.title,
+    item.body,
+    item.context?.reason,
+    item.context?.document_type,
+    item.context?.related_contract_id,
+    item.context?.related_quote_id,
+  ].filter(Boolean).join(" "));
+  if (item.related_appointment_id || value.includes("visita") || value.includes("appointment")) return "visit" as const;
+  if (value.includes("contrat") || value.includes("document")) return "contract" as const;
+  if (value.includes("orcament") || value.includes("quote")) return "quote" as const;
+  return "other" as const;
+}
+
+function reportPendingSituation(item: ReportPendingItem) {
+  const reason = normalize(item.context?.reason);
+  if (reason === "sales_ai_failed_final" || reason.includes("failed") || reason.includes("error")) return "atendimento precisa de verificacao";
+  if (reportPendingCategory(item) === "visit") return "visita aguardando acompanhamento";
+  if (reportPendingCategory(item) === "quote") return "orcamento aguardando acompanhamento";
+  if (reportPendingCategory(item) === "contract") return "contrato aguardando conferencia";
+  return "atividade precisa de acompanhamento";
+}
+
+function reportPendingActivityDetail(item: ReportPendingItem) {
+  const context = item.context || {};
+  const candidate = [context.activity_label, context.document_number, context.contract_number, context.quote_number]
+    .map((value) => cleanText(value))
+    .find((value) => value && value.length <= 80);
+  if (!candidate || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(candidate) || /(ai_run_queue|inbox|snapshot|uuid|cerebro comercial)/i.test(candidate)) return null;
+  return candidate;
+}
+
+function reportPendingActivityText(item: ReportPendingItem) {
+  const situation = reportPendingSituation(item);
+  const detail = reportPendingActivityDetail(item);
+  return detail ? `${situation} (${detail})` : situation;
+}
+
+function reportPendingLine(item: ReportPendingItem) {
+  return `- ${reportLeadNameForDisplay(item.lead_name)}: ${reportPendingActivityText(item)}.`;
+}
+
+function reportAttentionItems(items: ReportPendingItem[]) {
+  return items.filter((item) => {
+    const priority = normalize(item.priority);
+    const reason = normalize(item.context?.reason);
+    return ["urgent", "high"].includes(priority) || reason === "sales_ai_failed_final" || reason.includes("failed") || reason.includes("error") || reason === "pending_review" || reason === "needs_clarification";
+  });
+}
+
+function reportPendingGroups(items: ReportPendingItem[]) {
+  const groups = new Map<ReturnType<typeof reportPendingCategory>, ReportPendingItem[]>();
+  for (const item of items) {
+    const category = reportPendingCategory(item);
+    const group = groups.get(category) || [];
+    group.push(item);
+    groups.set(category, group);
+  }
+  return groups;
+}
+
+function reportPendingPresentation(items: ReportPendingItem[]) {
+  const all = deduplicatePendingItems(items);
+  const attention = reportAttentionItems(all);
+  const attentionKeys = new Set(attention.map(pendingIdentity));
+  return { all, attention, pending: all.filter((item) => !attentionKeys.has(pendingIdentity(item))) };
+}
+
+function reportPendingCategoryCounts(items: ReportPendingItem[]) {
+  const groups = reportPendingGroups(items);
+  return {
+    visit: (groups.get("visit") || []).length,
+    quote: (groups.get("quote") || []).length,
+    contract: (groups.get("contract") || []).length,
+    other: (groups.get("other") || []).length,
+  };
+}
+
+function reportCountLabel(count: number, singular: string, plural: string) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function reportSummarySuggestions(data: ReportData) {
+  const presentation = reportPendingPresentation(data.pendingItems || []);
+  const counts = reportPendingCategoryCounts(presentation.all);
+  const suggestions: string[] = [];
+  if (presentation.attention.length) {
+    suggestions.push(`- Considere priorizar ${reportCountLabel(presentation.attention.length, "atividade", "atividades")} com prioridade alta ou urgente.`);
+  }
+  if (counts.visit) suggestions.push(`- Pode ser útil revisar ${reportCountLabel(counts.visit, "visita", "visitas")} pendente.`);
+  if (counts.quote) suggestions.push(`- Pode ser útil acompanhar ${reportCountLabel(counts.quote, "orçamento", "orçamentos")} pendente.`);
+  if (counts.contract) suggestions.push(`- Pode ser útil conferir ${reportCountLabel(counts.contract, "contrato", "contratos")} pendente.`);
+  if (counts.other) suggestions.push(`- Pode ser útil acompanhar ${reportCountLabel(counts.other, "outra pendência", "outras pendências")}.`);
+  if (!suggestions.length) suggestions.push("- Nenhuma recomendação prioritária foi identificada.");
+  return suggestions;
+}
+
+function reportCurrentOperationalDataInvitation() {
+  return [
+    "",
+    "\u{1f4ac} Quer saber mais?",
+    "- Pergunte sobre os dados operacionais atuais de compromissos, pendências ou outra área específica.",
+  ];
+}
+
+function buildAdaptiveAutomaticReport(full: string, summary: string) {
+  if (full.length <= AUTOMATIC_REPORT_SAFE_TEXT_LIMIT) return full;
+  if (summary.length <= AUTOMATIC_REPORT_SAFE_TEXT_LIMIT) return summary;
+  throw new Error("AUTOMATIC_REPORT_SUMMARY_EXCEEDS_SAFE_LIMIT");
+}
+
+function reportAppointmentLineForDisplay(appointment: ReportAppointment, timeZone = "America/Sao_Paulo") {
+  const time = appointment.scheduled_start
+    ? new Intl.DateTimeFormat("pt-BR", { timeZone: safeScheduleTimezone(timeZone), hour: "2-digit", minute: "2-digit" }).format(new Date(appointment.scheduled_start))
+    : "horario nao informado";
+  return `- ${time} — ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: ${reportAppointmentTypeForDisplay(appointment.appointment_type)}.`;
+}
+
+function reportSuggestions(data: ReportData) {
+  const presentation = reportPendingPresentation(data.pendingItems || []);
+  const groups = reportPendingGroups(presentation.pending);
+  const attention = presentation.attention;
+  const suggestions: string[] = [];
+  for (const item of attention) {
+    suggestions.push(`- Considere revisar ${reportLeadNameForDisplay(item.lead_name)}: ${reportPendingActivityText(item)}.`);
+  }
+  for (const category of ["visit", "quote", "contract", "other"] as const) {
+    const item = (groups.get(category) || [])[0];
+    if (item) suggestions.push(`- Pode ser útil acompanhar ${reportLeadNameForDisplay(item.lead_name)}: ${reportPendingActivityText(item)}.`);
+  }
+  if (!suggestions.length) suggestions.push("- Nenhuma acao prioritaria foi identificada.");
+  return suggestions;
+}
+
+function reportPlanningChanges(data: ReportData) {
+  if (!data.planningSnapshotAvailable || !data.planningComparison) return [] as string[];
+  const appointmentsById = new Map((data.appointments || []).map((appointment) => [appointment.id, appointment]));
+  const lines = ["Mudanças comparadas com o planejamento da manhã:"];
+  for (const item of data.planningComparison.planned) {
+    const appointment = appointmentsById.get(item.id);
+    const name = reportLeadNameForDisplay(appointment?.lead_name || appointment?.customer_name);
+    const outcome = normalize(item.outcome);
+    const description = outcome.includes("remarcado") ? "compromisso reagendado" : outcome.includes("cancelado") ? "compromisso cancelado" : outcome.includes("concluido") ? "conclusao registrada" : "situacao nao confirmada";
+    lines.push(`- ${name}: ${description}.`);
+  }
+  for (const id of data.planningComparison.newAppointments) {
+    const appointment = appointmentsById.get(id);
+    lines.push(`- ${reportLeadNameForDisplay(appointment?.lead_name || appointment?.customer_name)}: novo compromisso registrado.`);
+  }
+  if (data.planningComparison.newPendingItems.length) {
+    const count = data.planningComparison.newPendingItems.length;
+    lines.push(`- ${count === 1 ? "1 nova pendencia registrada" : `${count} novas pendencias registradas`}.`);
+  }
+  return lines;
+}
+
+function buildAutomaticMorningReportFull(data: ReportData) {
+  const appointments = data.appointments || [];
+  const presentation = reportPendingPresentation(data.pendingItems || []);
+  const groups = reportPendingGroups(presentation.pending);
+  const attention = presentation.attention;
+  const lines = [
+    "\u{1f305} *Relat\u00f3rio da manh\u00e3*",
+    `\u{1f4c5} *Compromissos de hoje — ${appointments.length}*`,
+    ...(appointments.length ? appointments.map((appointment) => reportAppointmentLineForDisplay(appointment, data.reportTimezone)) : ["- Nenhum compromisso registrado para hoje."]),
+    "",
+    `\u{1f6a8} *Precisa da sua aten\u00e7\u00e3o — ${attention.length}*`,
+    ...(attention.length ? attention.map(reportPendingLine) : ["- Nenhuma situacao urgente identificada."]),
+    "",
+    `\u{1f4cb} *Pend\u00eancias — ${presentation.pending.length}*`,
+  ];
+  for (const [category, label] of [["visit", "Visitas pendentes"], ["quote", "Orcamentos pendentes"], ["contract", "Contratos pendentes"], ["other", "Outras pendencias"]] as const) {
+    const group = groups.get(category) || [];
+    if (group.length) lines.push(`*${label} (${group.length})*`, ...group.map(reportPendingLine));
+  }
+  lines.push("", "\u{1f4a1} *Sugest\u00f5es do que fazer primeiro*", ...reportSuggestions(data));
+  return lines.join("\n");
+}
+
+function buildAutomaticMorningReportSummary(data: ReportData) {
+  const appointments = data.appointments || [];
+  const presentation = reportPendingPresentation(data.pendingItems || []);
+  const counts = reportPendingCategoryCounts(presentation.all);
+  const totalPending = presentation.all.length;
+  return [
+    "\u{1f305} *Relat\u00f3rio da manh\u00e3*",
+    `\u{1f4c5} *Compromissos de hoje — ${appointments.length}*`,
+    `- ${appointments.length === 1 ? "1 compromisso registrado" : `${appointments.length} compromissos registrados`}; detalhes individuais disponíveis sob consulta.`,
+    "",
+    `\u{1f6a8} *Precisa da sua aten\u00e7\u00e3o — ${presentation.attention.length}*`,
+    presentation.attention.length ? `- ${reportCountLabel(presentation.attention.length, "atividade", "atividades")} com prioridade alta ou urgente.` : "- Nenhuma prioridade urgente identificada.",
+    "",
+    `\u{1f4cb} *Pend\u00eancias — ${totalPending}*`,
+    `- Visitas: ${counts.visit} | Orcamentos: ${counts.quote} | Contratos: ${counts.contract} | Outras: ${counts.other}.`,
+    "",
+    "\u{1f4a1} *Sugest\u00f5es do que fazer primeiro*",
+    ...reportSummarySuggestions(data),
+    ...reportCurrentOperationalDataInvitation(),
+  ].join("\n");
+}
+
+export function buildAutomaticMorningReport(data: ReportData) {
+  return buildAdaptiveAutomaticReport(buildAutomaticMorningReportFull(data), buildAutomaticMorningReportSummary(data));
+}
+
+function buildAutomaticEveningReportFull(data: ReportData) {
+  const appointments = data.appointments || [];
+  const presentation = reportPendingPresentation(data.pendingItems || []);
+  const pendingItems = presentation.pending;
+  const completed = appointments.filter((appointment) => appointment.completion_evidence === true);
+  const cancelled = appointments.filter((appointment) => ["cancelled", "canceled"].includes(normalize(appointment.status)));
+  const rescheduled = appointments.filter((appointment) => ["rescheduled", "remarcado"].includes(normalize(appointment.status)));
+  const open = appointments.filter((appointment) => !completed.includes(appointment) && !cancelled.includes(appointment));
+  const attention = presentation.attention;
+  const lines = [
+    "\u{1f319} *Relat\u00f3rio da noite*",
+    "\u{1f4ca} *Como foi o dia*",
+    `- Compromissos registrados: ${appointments.length}`,
+    `- Compromissos conclu\u00eddos: ${completed.length}`,
+    `- Compromissos cancelados: ${cancelled.length}`,
+    `- Compromissos reagendados: ${rescheduled.length}`,
+    "",
+    `\u2705 *O que foi conclu\u00eddo — ${completed.length}*`,
+    ...(completed.length ? completed.map((appointment) => `- ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: ${reportAppointmentTypeForDisplay(appointment.appointment_type)} conclu\u00edda.`) : ["- Nenhuma conclusao registrada."]),
+    "",
+    `\u{1f504} *Mudancas e remarcacoes — ${rescheduled.length + cancelled.length}*`,
+    ...(rescheduled.length || cancelled.length ? [
+      ...rescheduled.map((appointment) => `- ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: compromisso reagendado para ${appointment.scheduled_start ? new Intl.DateTimeFormat("pt-BR", { timeZone: safeScheduleTimezone(data.reportTimezone || "America/Sao_Paulo"), dateStyle: "short", timeStyle: "short" }).format(new Date(appointment.scheduled_start)) : "novo horario nao informado"}.`),
+      ...cancelled.map((appointment) => `- ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: compromisso cancelado.`),
+    ] : ["- Nenhuma mudanca registrada."]),
+    ...(data.planningSnapshotAvailable ? reportPlanningChanges(data) : []),
+    "",
+    `\u{1f4cb} *O que ficou pendente — ${open.length + pendingItems.length}*`,
+    ...(open.length ? open.map((appointment) => `- ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: ${reportAppointmentTypeForDisplay(appointment.appointment_type)} ainda pendente.`) : []),
+    ...(pendingItems.length ? pendingItems.map(reportPendingLine) : ["- Nenhuma atividade pendente identificada."]),
+    "",
+    `\u{1f6a8} *Precisa de atencao — ${attention.length}*`,
+    ...(attention.length ? attention.map(reportPendingLine) : ["- Nenhum problema urgente identificado."]),
+    "",
+    "\u{1f4a1} *Sugest\u00f5es para amanh\u00e3*",
+    ...reportSuggestions(data),
+  ];
+  return lines.join("\n");
+}
+
+function buildAutomaticEveningReportSummary(data: ReportData) {
+  const appointments = data.appointments || [];
+  const presentation = reportPendingPresentation(data.pendingItems || []);
+  const completed = appointments.filter((appointment) => appointment.completion_evidence === true);
+  const cancelled = appointments.filter((appointment) => ["cancelled", "canceled"].includes(normalize(appointment.status)));
+  const rescheduled = appointments.filter((appointment) => ["rescheduled", "remarcado"].includes(normalize(appointment.status)));
+  const open = appointments.filter((appointment) => !completed.includes(appointment) && !cancelled.includes(appointment));
+  const counts = reportPendingCategoryCounts(presentation.all);
+  return [
+    "\u{1f319} *Relat\u00f3rio da noite*",
+    "\u{1f4ca} *Como foi o dia*",
+    `- Compromissos registrados: ${appointments.length}`,
+    `- Compromissos conclu\u00eddos: ${completed.length}`,
+    `- Compromissos cancelados: ${cancelled.length}`,
+    `- Compromissos reagendados: ${rescheduled.length}`,
+    "",
+    `\u2705 *O que foi conclu\u00eddo — ${completed.length}*`,
+    "- Detalhes dos compromissos concluidos disponiveis sob consulta.",
+    "",
+    `\u{1f504} *Mudancas e remarcacoes — ${rescheduled.length + cancelled.length}*`,
+    "- Quantidades preservadas; detalhes individuais disponiveis sob consulta.",
+    "",
+    `\u{1f4cb} *O que ficou pendente — ${open.length + presentation.all.length}*`,
+    `- Compromissos em aberto: ${open.length} | Visitas: ${counts.visit} | Orcamentos: ${counts.quote} | Contratos: ${counts.contract} | Outras: ${counts.other}.`,
+    "",
+    `\u{1f6a8} *Precisa de atencao — ${presentation.attention.length}*`,
+    presentation.attention.length ? `- ${reportCountLabel(presentation.attention.length, "atividade", "atividades")} com prioridade alta ou urgente.` : "- Nenhum problema urgente identificado.",
+    "",
+    "\u{1f4a1} *Sugest\u00f5es para amanh\u00e3*",
+    ...reportSummarySuggestions(data),
+    ...reportCurrentOperationalDataInvitation(),
+  ].join("\n");
+}
+
+export function buildAutomaticEveningReport(data: ReportData) {
+  return buildAdaptiveAutomaticReport(buildAutomaticEveningReportFull(data), buildAutomaticEveningReportSummary(data));
 }
 
 /* legacy builders retained below for review */
@@ -517,31 +830,107 @@ async function loadReportData(supabase: ReportSupabase, settings: AutomaticRepor
   const startIso = buildIsoFromDateAndTime({ year: parts.year, month: parts.month - 1, day: parts.day }, "00:00", settings);
   const endIso = buildIsoFromDateAndTime({ year: parts.year, month: parts.month - 1, day: parts.day }, "23:59", settings);
   const [appointments, notifications, tasks] = await Promise.all([
-    supabase.from("store_appointments").select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, created_at").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).gte("scheduled_start", startIso).lte("scheduled_start", endIso),
-    supabase.from("store_assistant_notification_queue").select("id, title, body, related_appointment_id, created_at, priority, notification_type, context").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).eq("status", "pending"),
-    supabase.from("store_assistant_operational_tasks").select("id, title, description, related_appointment_id, created_at, task_type, commercial_opportunity_id").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).in("status", ["open", "waiting_customer_response", "waiting_user_choice", "ready_to_execute", "in_progress"]),
+    supabase.from("store_appointments").select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, created_at, commercial_opportunity_id").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).gte("scheduled_start", startIso).lte("scheduled_start", endIso),
+    supabase.from("store_assistant_notification_queue").select("id, title, body, related_appointment_id, related_lead_id, created_at, priority, notification_type, context").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).eq("status", "pending"),
+    supabase.from("store_assistant_operational_tasks").select("id, title, description, related_appointment_id, related_lead_id, created_at, task_type, commercial_opportunity_id").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).in("status", ["open", "waiting_customer_response", "waiting_user_choice", "ready_to_execute", "in_progress"]),
   ]);
   if (appointments.error || notifications.error || tasks.error) throw new Error("AUTOMATIC_REPORT_DATA_LOAD_FAILED");
   const rows = (appointments.data || []) as ReportAppointment[];
-  const notificationRows = (notifications.data || []) as Array<{ id?: string; title?: string | null; body?: string | null; related_appointment_id?: string | null; created_at?: string | null; priority?: string | null; notification_type?: string | null; context?: unknown }>;
-  const taskRows = (tasks.data || []) as Array<{ id?: string; title?: string | null; description?: string | null; related_appointment_id?: string | null; created_at?: string | null; task_type?: string | null; commercial_opportunity_id?: string | null }>;
-  const pendingItems = deduplicatePendingItems([
+  const notificationRows = (notifications.data || []) as Array<{ id?: string; title?: string | null; body?: string | null; related_appointment_id?: string | null; related_lead_id?: string | null; created_at?: string | null; priority?: string | null; notification_type?: string | null; context?: unknown }>;
+  const taskRows = (tasks.data || []) as Array<{ id?: string; title?: string | null; description?: string | null; related_appointment_id?: string | null; related_lead_id?: string | null; created_at?: string | null; task_type?: string | null; commercial_opportunity_id?: string | null }>;
+  const rawPendingItems: ReportPendingItem[] = [
     ...notificationRows
       .filter((row) => !isAutomaticReportQueueItem(row))
-      .map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.body || null, related_appointment_id: row.related_appointment_id || null, created_at: row.created_at || null, kind: "notification" as const, priority: row.priority || null, notification_type: row.notification_type || null, context: row.context && typeof row.context === "object" && !Array.isArray(row.context) ? row.context as Record<string, unknown> : null })),
-    ...taskRows.map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.description || null, related_appointment_id: row.related_appointment_id || null, created_at: row.created_at || null, kind: "task" as const, task_type: row.task_type || null, commercial_opportunity_id: row.commercial_opportunity_id || null })),
+      .map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.body || null, related_appointment_id: row.related_appointment_id || null, related_lead_id: row.related_lead_id || null, created_at: row.created_at || null, kind: "notification" as const, priority: row.priority || null, notification_type: row.notification_type || null, context: row.context && typeof row.context === "object" && !Array.isArray(row.context) ? row.context as Record<string, unknown> : null })),
+    ...taskRows.map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.description || null, related_appointment_id: row.related_appointment_id || null, related_lead_id: row.related_lead_id || null, created_at: row.created_at || null, kind: "task" as const, task_type: row.task_type || null, commercial_opportunity_id: row.commercial_opportunity_id || null })),
+  ];
+
+  const uuidIds = (values: unknown[]) => Array.from(new Set(values.map(cleanText).filter((value) => UUID_PATTERN.test(value))));
+  const directLeadIds = uuidIds([
+    ...rawPendingItems.map((item) => item.related_lead_id),
   ]);
+  const opportunityIds = uuidIds([
+    ...rows.map((row) => row.commercial_opportunity_id),
+    ...rawPendingItems.map((item) => item.commercial_opportunity_id || item.context?.commercial_opportunity_id),
+  ]);
+  const contractIds = uuidIds(rawPendingItems.map((item) => item.context?.related_contract_id || item.context?.contract_id || item.context?.document_id));
+  const quoteIds = uuidIds(rawPendingItems.map((item) => item.context?.related_quote_id || item.context?.quote_id || item.context?.sales_quote_id));
+  const scopedRows = async (table: string, select: string, ids: string[], label: string) => {
+    if (!ids.length) return [] as Array<Record<string, unknown>>;
+    const result = await supabase.from(table).select(select).eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).in("id", ids);
+    if (result.error) throw new Error(`AUTOMATIC_REPORT_${label}_LOAD_FAILED`);
+    return (result.data || []) as Array<Record<string, unknown>>;
+  };
+  const [leadRows, opportunityRows, contractRows, quoteRows] = await Promise.all([
+    scopedRows("leads", "id, name", directLeadIds, "LEAD"),
+    scopedRows("commercial_opportunities", "id, origin_lead_id, customer_id", opportunityIds, "OPPORTUNITY"),
+    scopedRows("sales_contracts", "id, commercial_opportunity_id", contractIds, "CONTRACT"),
+    scopedRows("sales_quotes", "id, lead_id, commercial_opportunity_id", quoteIds, "QUOTE"),
+  ]);
+  const allLeadIds = uuidIds([
+    ...directLeadIds,
+    ...opportunityRows.map((row) => row.origin_lead_id),
+    ...quoteRows.map((row) => row.lead_id),
+  ]);
+  const extraLeadRows = allLeadIds.length > directLeadIds.length
+    ? await scopedRows("leads", "id, name", allLeadIds, "LEAD")
+    : leadRows;
+  const customerIds = uuidIds(opportunityRows.map((row) => row.customer_id));
+  const customerRows = await scopedRows("customers", "id, display_name", customerIds, "CUSTOMER");
+  const leadNames = new Map<string, string>();
+  for (const row of extraLeadRows) if (cleanText(row.id) && cleanText(row.name)) leadNames.set(cleanText(row.id), cleanText(row.name));
+  const customerNames = new Map<string, string>();
+  for (const row of customerRows) if (cleanText(row.id) && cleanText(row.display_name)) customerNames.set(cleanText(row.id), cleanText(row.display_name));
+  const opportunityById = new Map(opportunityRows.map((row) => [cleanText(row.id), row]));
+  const contractOpportunityById = new Map(contractRows.map((row) => [cleanText(row.id), cleanText(row.commercial_opportunity_id)]));
+  const quoteLeadById = new Map(quoteRows.map((row) => [cleanText(row.id), cleanText(row.lead_id)]));
+  const resolveLeadName = (leadId: unknown, opportunityId: unknown, entityId?: unknown) => {
+    const direct = leadNames.get(cleanText(leadId));
+    if (direct) return direct;
+    const opportunity = opportunityById.get(cleanText(opportunityId));
+    const opportunityLead = leadNames.get(cleanText(opportunity?.origin_lead_id));
+    if (opportunityLead) return opportunityLead;
+    const customerName = customerNames.get(cleanText(opportunity?.customer_id));
+    if (customerName) return customerName;
+    const quoteLead = leadNames.get(cleanText(entityId && quoteLeadById.get(cleanText(entityId))));
+    return quoteLead || null;
+  };
+  const pendingItems = deduplicatePendingItems(rawPendingItems.map((item) => {
+    const context = item.context || {};
+    const contractOpportunityId = contractOpportunityById.get(cleanText(context.related_contract_id || context.contract_id || context.document_id));
+    const opportunityId = item.commercial_opportunity_id || context.commercial_opportunity_id || contractOpportunityId || null;
+    const quoteId = context.related_quote_id || context.quote_id || context.sales_quote_id;
+    return { ...item, lead_name: resolveLeadName(item.related_lead_id, opportunityId, quoteId), commercial_opportunity_id: cleanText(opportunityId) || null };
+  }));
+  const appointmentOpportunityIds = uuidIds(rows.map((row) => row.commercial_opportunity_id));
+  const appointmentLeadRows = appointmentOpportunityIds.length && opportunityRows.length === 0
+    ? await scopedRows("commercial_opportunities", "id, origin_lead_id, customer_id", appointmentOpportunityIds, "OPPORTUNITY")
+    : opportunityRows;
+  for (const row of appointmentLeadRows) opportunityById.set(cleanText(row.id), row);
+  const completionEvidence = new Set<string>();
+  const appointmentIds = uuidIds(rows.map((row) => row.id));
+  if (appointmentIds.length) {
+    const current = await scopedRows("store_appointment_completion_current", "appointment_id, current_completion_event_id", appointmentIds, "APPOINTMENT_COMPLETION");
+    const eventIds = uuidIds(current.map((row) => row.current_completion_event_id));
+    const events = await scopedRows("store_appointment_completion_events", "id, appointment_id, completion_outcome", eventIds, "APPOINTMENT_COMPLETION_EVENT");
+    for (const event of events) if (["fully_completed", "needs_followup"].includes(normalize(event.completion_outcome))) completionEvidence.add(cleanText(event.appointment_id));
+  }
+  const enrichedRows = rows.map((row) => ({
+    ...row,
+    lead_name: resolveLeadName(null, row.commercial_opportunity_id),
+    completion_evidence: completionEvidence.has(row.id),
+  }));
   const nowMs = now.getTime();
-  const normalized = rows.map((row) => normalize(row.status));
+  const normalized = enrichedRows.map((row) => normalize(row.status));
   return {
-    appointmentCount: rows.length,
-    openAppointmentCount: normalized.filter((status) => !["completed", "fully_completed", "done", "cancelled", "canceled"].includes(status)).length,
-    completedAppointmentCount: normalized.filter((status) => ["completed", "fully_completed", "done"].includes(status)).length,
+    appointmentCount: enrichedRows.length,
+    openAppointmentCount: enrichedRows.filter((row) => !row.completion_evidence && !["cancelled", "canceled"].includes(normalize(row.status))).length,
+    completedAppointmentCount: enrichedRows.filter((row) => row.completion_evidence === true).length,
     cancelledAppointmentCount: normalized.filter((status) => ["cancelled", "canceled"].includes(status)).length,
-    overdueAppointmentCount: rows.filter((row) => row.scheduled_end && Date.parse(row.scheduled_end) < nowMs && !["completed", "fully_completed", "done", "cancelled", "canceled"].includes(normalize(row.status))).length,
+    overdueAppointmentCount: enrichedRows.filter((row) => row.scheduled_end && Date.parse(row.scheduled_end) < nowMs && !row.completion_evidence && !["cancelled", "canceled"].includes(normalize(row.status))).length,
     pendingNotificationCount: Array.isArray(notifications.data) ? notifications.data.length : 0,
     pendingTaskCount: Array.isArray(tasks.data) ? tasks.data.length : 0,
-    appointments: rows,
+    appointments: enrichedRows,
     pendingItems,
     planningSnapshotAvailable: false,
     reportLocalDate: localDateKey(parts),
