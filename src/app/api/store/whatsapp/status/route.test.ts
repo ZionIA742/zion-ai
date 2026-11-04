@@ -139,6 +139,19 @@ function createPrivilegedClientMock(
             limit: call.limit,
           });
 
+          const keyedResponse = responses?.[`${table}:${call.columns}`];
+          if (keyedResponse) {
+            if (Array.isArray(keyedResponse)) {
+              return keyedResponse.shift() ?? { data: [], error: null, count: null };
+            }
+            return keyedResponse;
+          }
+          if (
+            table === "channel_whatsapp_inbox" &&
+            call.columns === "processed_at, received_at, processing_error"
+          ) {
+            return { data: null, error: null, count: null };
+          }
           return takeResponse(table, { data: [], error: null, count: null });
         },
         select(columns: string) {
@@ -205,6 +218,25 @@ function createWhatsappQueryResponses(integrationRows: unknown[]): Partial<Recor
       { data: [], error: null, count: 0 },
       { data: null, error: null },
     ],
+    messages: [
+      { data: null, error: null },
+      { data: [], error: null, count: 0 },
+      { data: [], error: null, count: null },
+    ],
+  };
+}
+
+function createInboxEvidenceResponses(args: {
+  error?: QueryResult;
+  successful?: QueryResult;
+  lastInbound?: QueryResult;
+}) {
+  return {
+    "channel_whatsapp_inbox:received_at": args.lastInbound || { data: null, error: null },
+    "channel_whatsapp_inbox:id": { data: [], error: null, count: 0 },
+    "channel_whatsapp_inbox:processing_error, received_at": args.error || { data: null, error: null },
+    "channel_whatsapp_inbox:processed_at, received_at, processing_error":
+      args.successful || { data: null, error: null },
     messages: [
       { data: null, error: null },
       { data: [], error: null, count: 0 },
@@ -293,6 +325,10 @@ const tests: TestCase[] = [
       assert.equal(clientCreateCount, 1);
       assert.equal(body.ok, true);
       assert.equal(body.connected, true);
+      assert.equal(body.operationalState, "pending_attention");
+      assert.equal(body.attentionRequired, true);
+      assert.equal(Array.isArray(body.attentionReasons), true);
+      assert.equal(body.attentionReasons.includes("pending_outbound_messages"), true);
       assert.equal(body.lastInboundAt, "2026-08-06T12:00:00Z");
       assert.equal(body.lastOutboundAt, "2026-08-06T12:30:00Z");
       assert.equal(typeof body.pendingInboxCount, "number");
@@ -430,11 +466,123 @@ const tests: TestCase[] = [
       assert.equal(response.status, 200);
       assert.equal(body.ok, true);
       assert.equal(body.connected, false);
+      assert.equal(body.operationalState, "not_connected");
+      assert.equal(body.attentionRequired, false);
       assert.equal(body.provider, null);
       assert.equal(body.status, null);
       assert.equal(body.isActive, false);
       assert.equal(body.displayPhoneNumber, null);
       assert.equal(body.phoneNumberId, null);
+    },
+  },
+  {
+    name: "active integration does not claim worker health when no operational evidence exists",
+    run: async () => {
+      const client = createPrivilegedClientMock(createWhatsappQueryResponses([
+        {
+          provider: "whatsapp",
+          status: "active",
+          is_active: true,
+          display_phone_number: "+55 11 90000-0000",
+          phone_number_id: "phone-active",
+          whatsapp_business_account_id: "waba-active",
+        },
+      ]));
+      const handler = createStoreWhatsappStatusGetHandler({
+        resolveAccess: async () => createGrantedAccess(),
+        createPrivilegedClient: () => client as never,
+      });
+
+      const response = await handler(buildRequest("https://example.test/api/store/whatsapp/status"));
+      const body = (await response.json()) as Record<string, any>;
+
+      assert.equal(response.status, 200);
+      assert.equal(body.connected, true);
+      assert.equal(body.operationalState, "connected_unverified");
+      assert.equal(body.attentionRequired, false);
+      assert.equal(body.automaticWorker?.health, "not_verified");
+      assert.equal(body.automaticWorker?.scheduledAutomatically, null);
+      assert.equal(
+        body.automaticWorker?.reason,
+        "A rota existe, mas esta consulta nao verifica a execucao nem a saude do cron.",
+      );
+    },
+  },
+  {
+    name: "recent inbox error remains processing_error without later successful processing",
+    run: async () => {
+      const client = createPrivilegedClientMock({
+        external_integrations: {
+          data: [{ provider: "whatsapp", status: "active", is_active: true }],
+          error: null,
+        },
+        ...createInboxEvidenceResponses({
+          error: { data: { processing_error: "recent failure", received_at: "2026-08-06T12:00:00Z" }, error: null },
+          successful: { data: null, error: null },
+        }),
+      });
+      const handler = createStoreWhatsappStatusGetHandler({
+        resolveAccess: async () => createGrantedAccess(),
+        createPrivilegedClient: () => client as never,
+      });
+      const body = (await (await handler(buildRequest("https://example.test/status"))).json()) as Record<string, any>;
+      assert.equal(body.operationalState, "processing_error");
+    },
+  },
+  {
+    name: "successful inbox processing after an error clears the historical processing_error",
+    run: async () => {
+      const client = createPrivilegedClientMock({
+        external_integrations: { data: [{ provider: "whatsapp", status: "active", is_active: true }], error: null },
+        ...createInboxEvidenceResponses({
+          error: { data: { processing_error: "old failure", received_at: "2026-08-06T12:00:00Z" }, error: null },
+          successful: { data: { processed_at: "2026-08-06T13:00:00Z", received_at: "2026-08-06T12:30:00Z", processing_error: null }, error: null },
+        }),
+      });
+      const handler = createStoreWhatsappStatusGetHandler({ resolveAccess: async () => createGrantedAccess(), createPrivilegedClient: () => client as never });
+      const body = (await (await handler(buildRequest("https://example.test/status"))).json()) as Record<string, any>;
+      assert.equal(body.operationalState, "connected_unverified");
+    },
+  },
+  {
+    name: "later receipt without processed_at does not clear the inbox error",
+    run: async () => {
+      const client = createPrivilegedClientMock({
+        external_integrations: { data: [{ provider: "whatsapp", status: "active", is_active: true }], error: null },
+        ...createInboxEvidenceResponses({
+          lastInbound: { data: { received_at: "2026-08-06T13:00:00Z" }, error: null },
+          error: { data: { processing_error: "failure", received_at: "2026-08-06T12:00:00Z" }, error: null },
+        }),
+      });
+      const handler = createStoreWhatsappStatusGetHandler({ resolveAccess: async () => createGrantedAccess(), createPrivilegedClient: () => client as never });
+      const body = (await (await handler(buildRequest("https://example.test/status"))).json()) as Record<string, any>;
+      assert.equal(body.operationalState, "processing_error");
+    },
+  },
+  {
+    name: "successful processing query remains tenant scoped",
+    run: async () => {
+      const client = createPrivilegedClientMock({
+        external_integrations: { data: [{ provider: "whatsapp", status: "active", is_active: true }], error: null },
+        ...createInboxEvidenceResponses({
+          error: { data: { processing_error: "failure", received_at: "2026-08-06T12:00:00Z" }, error: null },
+          successful: { data: { processed_at: "2026-08-06T13:00:00Z", received_at: "2026-08-06T12:30:00Z", processing_error: null }, error: null },
+        }),
+      });
+      const handler = createStoreWhatsappStatusGetHandler({ resolveAccess: async () => createGrantedAccess(), createPrivilegedClient: () => client as never });
+      await handler(buildRequest("https://example.test/status"));
+      const successfulCall = client.calls.find((call) => call.columns === "processed_at, received_at, processing_error");
+      assert.equal(successfulCall?.filters.some((item) => item.column === "organization_id" && item.value === "access-org"), true);
+      assert.equal(successfulCall?.filters.some((item) => item.column === "store_id" && item.value === "access-store"), true);
+    },
+  },
+  {
+    name: "connected_unverified is presented as attention rather than healthy green status",
+    run: () => {
+      const source = readFileSync(join(__dirname, "../../../../(app)/configuracoes/page.tsx"), "utf8");
+      assert.match(source, /operationalState === "connected_unverified"/);
+      assert.match(source, /Conectado; processamento não verificado/);
+      assert.match(source, /tone: "amber"/);
     },
   },
   {

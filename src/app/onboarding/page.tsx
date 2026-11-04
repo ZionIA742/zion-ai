@@ -78,6 +78,8 @@ type StoreWhatsappStatusApiResponse = {
   lastInboundAt?: string | null;
   lastOutboundAt?: string | null;
   lastSafeError?: string | null;
+  operationalState?: string | null;
+  attentionRequired?: boolean;
   error?: string;
   message?: string;
 };
@@ -1899,6 +1901,20 @@ function OnboardingContent() {
                           : "Ainda não conectado"}
                     </p>
                   </div>
+                  {whatsappStatus?.operationalState && whatsappStatus.operationalState !== "connected_unverified" ? (
+                    <div className="rounded-xl border border-white/80 bg-white/80 p-4">
+                      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Processamento</p>
+                      <p className="mt-1 text-base font-semibold text-gray-900">
+                        {whatsappStatus.operationalState === "pending_attention"
+                          ? "Há mensagens pendentes"
+                          : whatsappStatus.operationalState === "processing_error"
+                            ? "Há falha no processamento"
+                            : whatsappStatus.operationalState === "integration_error"
+                              ? "Integração com falha"
+                              : "Não conectado"}
+                      </p>
+                    </div>
+                  ) : null}
                   <div className="rounded-xl border border-white/80 bg-white/80 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Número comercial</p>
                     <p className="mt-1 text-base font-semibold text-gray-900">

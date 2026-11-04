@@ -30,6 +30,12 @@ type InboxErrorRow = {
   received_at: string | null;
 };
 
+type InboxSuccessfulProcessingRow = {
+  processed_at: string | null;
+  received_at: string | null;
+  processing_error: string | null;
+};
+
 type OutboundTimestampRow = {
   created_at: string | null;
 };
@@ -94,6 +100,27 @@ function readWhatsappStatus(metadata: Record<string, unknown> | null | undefined
   return null;
 }
 
+function hasRecoveredAfterInboxError(
+  errorRow: InboxErrorRow | null | undefined,
+  successfulRow: InboxSuccessfulProcessingRow | null | undefined,
+) {
+  if (
+    !errorRow?.processing_error ||
+    !successfulRow?.processed_at ||
+    successfulRow.processing_error
+  ) {
+    return false;
+  }
+
+  const errorReceivedAt = Date.parse(errorRow.received_at || "");
+  const successfulProcessedAt = Date.parse(successfulRow.processed_at);
+  if (!Number.isFinite(errorReceivedAt) || !Number.isFinite(successfulProcessedAt)) {
+    return false;
+  }
+
+  return successfulProcessedAt > errorReceivedAt;
+}
+
 export function createStoreWhatsappStatusGetHandler(
   deps: Partial<StoreWhatsappStatusRouteDeps> = {},
 ) {
@@ -121,6 +148,7 @@ export function createStoreWhatsappStatusGetHandler(
         lastInboundResult,
         pendingInboxCountResult,
         lastInboxErrorResult,
+        lastSuccessfulInboxResult,
         lastOutboundResult,
         pendingOutboundCountResult,
         recentOutboundStatusesResult,
@@ -158,6 +186,16 @@ export function createStoreWhatsappStatusGetHandler(
           .order("received_at", { ascending: false })
           .limit(1)
           .maybeSingle<InboxErrorRow>(),
+        supabase
+          .from("channel_whatsapp_inbox")
+          .select("processed_at, received_at, processing_error")
+          .eq("organization_id", organizationId)
+          .eq("store_id", storeId)
+          .not("processed_at", "is", null)
+          .is("processing_error", null)
+          .order("processed_at", { ascending: false })
+          .limit(1)
+          .maybeSingle<InboxSuccessfulProcessingRow>(),
         supabase
           .from("messages")
           .select("created_at")
@@ -204,6 +242,7 @@ export function createStoreWhatsappStatusGetHandler(
         lastInboundResult.error ||
         pendingInboxCountResult.error ||
         lastInboxErrorResult.error ||
+        lastSuccessfulInboxResult.error ||
         lastOutboundResult.error ||
         pendingOutboundCountResult.error ||
         recentOutboundStatusesResult.error;
@@ -241,9 +280,35 @@ export function createStoreWhatsappStatusGetHandler(
         preferredIntegration?.is_active === true &&
         String(preferredIntegration?.status || "").trim().toLowerCase() === "active";
 
+      const pendingInboxCount = pendingInboxCountResult.count ?? 0;
+      const pendingOutboundCount = pendingOutboundCountResult.count ?? 0;
+      const hasProcessingError =
+        Boolean(lastInboxErrorResult.data?.processing_error) &&
+        !hasRecoveredAfterInboxError(
+          lastInboxErrorResult.data,
+          lastSuccessfulInboxResult.data,
+        );
+      const operationalState = !preferredIntegration
+        ? "not_connected"
+        : !connected
+          ? "integration_error"
+          : hasProcessingError
+            ? "processing_error"
+            : pendingInboxCount > 0 || pendingOutboundCount > 0
+              ? "pending_attention"
+              : "connected_unverified";
+      const attentionReasons = [
+        hasProcessingError ? "inbox_processing_error" : null,
+        pendingInboxCount > 0 ? "pending_inbound_messages" : null,
+        pendingOutboundCount > 0 ? "pending_outbound_messages" : null,
+      ].filter((reason): reason is string => Boolean(reason));
+
       return buildJsonResponse({
         ok: true,
         connected,
+        operationalState,
+        attentionRequired: attentionReasons.length > 0 || operationalState === "integration_error",
+        attentionReasons,
         provider: preferredIntegration?.provider || null,
         status: preferredIntegration?.status || null,
         isActive: preferredIntegration?.is_active === true,
@@ -253,8 +318,8 @@ export function createStoreWhatsappStatusGetHandler(
           preferredIntegration?.whatsapp_business_account_id || null,
         lastInboundAt: lastInboundResult.data?.received_at || null,
         lastOutboundAt: lastOutboundResult.data?.created_at || null,
-        pendingInboxCount: pendingInboxCountResult.count ?? 0,
-        pendingOutboundCount: pendingOutboundCountResult.count ?? 0,
+        pendingInboxCount,
+        pendingOutboundCount,
         lastSafeError: sanitizeSafeError(lastInboxErrorResult.data?.processing_error),
         recentDeliveryStatus: {
           sentCount,
@@ -263,8 +328,9 @@ export function createStoreWhatsappStatusGetHandler(
         },
         automaticWorker: {
           routeReady: true,
-          scheduledAutomatically: false,
-          reason: "Cron frequente desativado no plano Hobby da Vercel",
+          scheduledAutomatically: null,
+          health: "not_verified",
+          reason: "A rota existe, mas esta consulta nao verifica a execucao nem a saude do cron.",
         },
       });
     } catch (error: any) {

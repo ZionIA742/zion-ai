@@ -213,6 +213,9 @@ type StoreWhatsappStatusApiResponse = {
   lastOutboundAt?: string | null;
   pendingInboxCount?: number;
   pendingOutboundCount?: number;
+  operationalState?: string | null;
+  attentionRequired?: boolean;
+  attentionReasons?: string[];
   lastSafeError?: string | null;
   recentDeliveryStatus?: {
     sentCount?: number;
@@ -221,7 +224,8 @@ type StoreWhatsappStatusApiResponse = {
   } | null;
   automaticWorker?: {
     routeReady?: boolean;
-    scheduledAutomatically?: boolean;
+    scheduledAutomatically?: boolean | null;
+    health?: string | null;
     reason?: string | null;
   } | null;
   error?: string;
@@ -2279,6 +2283,26 @@ function formatImportDate(value: string | null | undefined) {
 
 function resolveStoreWhatsappVisualStatus(status: StoreWhatsappStatusApiResponse | null) {
   const normalizedStatus = cleanText(status?.status).toLowerCase();
+  const operationalState = cleanText(status?.operationalState).toLowerCase();
+
+  if (operationalState === "not_connected") {
+    return { label: "Desconectado", tone: "gray" as const };
+  }
+
+  if (operationalState === "processing_error" || operationalState === "integration_error") {
+    return { label: "Falha operacional", tone: "red" as const };
+  }
+
+  if (operationalState === "pending_attention") {
+    return { label: "Requer atenção", tone: "amber" as const };
+  }
+
+  if (operationalState === "connected_unverified") {
+    return {
+      label: "Conectado; processamento não verificado",
+      tone: "amber" as const,
+    };
+  }
 
   if (status?.connected && status?.isActive && normalizedStatus === "active") {
     return { label: "Conectado", tone: "green" as const };
@@ -11521,7 +11545,11 @@ export default function ConfiguracoesPage() {
         tone: storeWhatsappVisualStatus.tone,
         hint:
           cleanText(storeWhatsappStatus?.status) ||
-          (storeWhatsappStatus?.connected ? "Integracao operacional ativa." : "Integracao ainda nao conectada."),
+          (storeWhatsappStatus?.operationalState === "connected_unverified"
+            ? "Conectado; processamento não verificado"
+            : storeWhatsappStatus?.connected
+              ? "Conexao ativa."
+              : "Integracao ainda nao conectada."),
       },
       {
         label: "Numero conectado",
