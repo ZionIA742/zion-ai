@@ -734,7 +734,10 @@ export async function routeResponsibleWhatsappToAssistant(args: {
     });
 
     let inboundHookResult: (QuoteApprovalDecisionResult | ReceivedContractDocumentDecisionHandled) | null = null;
-    if (args.onInboundPersisted && args.messageType === "text") {
+    if (
+      args.onInboundPersisted &&
+      (args.messageType === "text" || args.messageType === "button" || args.messageType === "interactive")
+    ) {
       inboundHookResult = await args.onInboundPersisted({
         inboundMessageId: inbound.id,
         externalMessageId,

@@ -23,7 +23,10 @@ import { classifyIncomingMediaMessage } from "@/lib/server/media-classification"
 import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
 import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
 import { decideQuoteApprovalFromPersistedInbound } from "@/lib/server/sales-quotes/quote-approval-decision";
-import { tryHandleReceivedContractDocumentDecision } from "@/lib/server/assistant/received-contract-document-decision";
+import {
+  resolveReceivedContractDocumentDecision,
+  tryHandleReceivedContractDocumentDecision,
+} from "@/lib/server/assistant/received-contract-document-decision";
 import {
   registerReceivedContractDocumentEvidence,
   type ReceivedContractDocumentEvidencePersistence,
@@ -549,6 +552,22 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
   };
 }
 
+export function resolveResponsibleInboundContent(
+  extracted: ReturnType<typeof extractIncomingMessage>,
+): string {
+  if (extracted.rawMessageType !== "interactive" && extracted.rawMessageType !== "button") {
+    return extracted.textBody || "";
+  }
+
+  const buttonId = extracted.interactiveButtonId || "";
+  const buttonTitle = extracted.interactiveButtonTitle || "";
+  return resolveReceivedContractDocumentDecision(buttonId)
+    ? buttonId
+    : resolveReceivedContractDocumentDecision(buttonTitle)
+      ? buttonTitle
+      : buttonId || buttonTitle;
+}
+
 type CanonicalLocation = {
   latitude: number;
   longitude: number;
@@ -762,7 +781,7 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
       externalMessageId: args.extracted.messageId || args.inbox.external_event_id,
       fromPhone: args.extracted.fromPhoneRaw || "",
       phoneNumberId: args.extracted.phoneNumberId || "",
-      content: args.extracted.textBody || "",
+      content: resolveResponsibleInboundContent(args.extracted),
       messageType: args.extracted.rawMessageType || undefined,
       metadata: {
         source: "meta_whatsapp_webhook",

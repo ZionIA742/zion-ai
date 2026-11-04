@@ -10,6 +10,7 @@ import {
   extractIncomingMessage,
   processWhatsappInbox,
   resolveCustomerMessageForAiDispatch,
+  resolveResponsibleInboundContent,
   resolveWhatsappInboundThreadBySystem,
   isLikelyResponsibleAssistantQuestion,
   shouldSkipAiSalesReplyForReceivedContractDocument,
@@ -84,6 +85,57 @@ test("extracts the responsible WhatsApp quick reply without exposing it to custo
   const source = readProcessorSource();
   assert.match(source, /responsible_quick_reply: "CONTINUAR"/);
   assert.match(source, /interactive_message_not_supported_for_customer/);
+});
+
+test("normaliza respostas SIM/NÃO de interactive e template sem perder a correlação", () => {
+  const interactive = extractIncomingMessage({
+    source: "meta_whatsapp_webhook",
+    event_kind: "message",
+    phone_number_id: "phone-1",
+    message: {
+      id: "wamid-contract-interactive-1",
+      from: "5511999999999",
+      type: "interactive",
+      context: { id: "wamid-contract-notification-1" },
+      interactive: {
+        type: "button_reply",
+        button_reply: { id: "CONTRACT_CONFIRM", title: "SIM" },
+      },
+    },
+  } as never);
+  assert.equal(resolveResponsibleInboundContent(interactive), "SIM");
+  assert.equal(interactive.contextMessageId, "wamid-contract-notification-1");
+
+  const templateReply = extractIncomingMessage({
+    source: "meta_whatsapp_webhook",
+    event_kind: "message",
+    phone_number_id: "phone-1",
+    message: {
+      id: "wamid-contract-template-1",
+      from: "5511999999999",
+      type: "button",
+      context: { id: "wamid-contract-notification-2" },
+      button: { payload: "NAO", text: "Não" },
+    },
+  } as never);
+  assert.equal(resolveResponsibleInboundContent(templateReply), "NAO");
+  assert.equal(templateReply.contextMessageId, "wamid-contract-notification-2");
+
+  const unrelated = extractIncomingMessage({
+    source: "meta_whatsapp_webhook",
+    event_kind: "message",
+    phone_number_id: "phone-1",
+    message: {
+      id: "wamid-unrelated-button-1",
+      from: "5511999999999",
+      type: "interactive",
+      interactive: {
+        type: "button_reply",
+        button_reply: { id: "OTHER_ACTION", title: "Outra ação" },
+      },
+    },
+  } as never);
+  assert.equal(resolveResponsibleInboundContent(unrelated), "OTHER_ACTION");
 });
 
 function jsonFetchResponse(body: unknown, status = 200) {
