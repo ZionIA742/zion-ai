@@ -12,6 +12,7 @@ import {
   resolveCustomerMessageForAiDispatch,
   resolveWhatsappInboundThreadBySystem,
   isLikelyResponsibleAssistantQuestion,
+  shouldSkipAiSalesReplyForReceivedContractDocument,
 } from "./whatsapp-inbox-processor.js";
 
 function readProcessorSource() {
@@ -20,6 +21,23 @@ function readProcessorSource() {
     "utf8",
   );
 }
+
+test("documento contratual identificado ou pendente encerra o dispatch comercial", () => {
+  const record = { identificationStatus: "identified" };
+  assert.equal(
+    shouldSkipAiSalesReplyForReceivedContractDocument({ outcome: "persisted", record } as never),
+    true,
+  );
+  assert.equal(
+    shouldSkipAiSalesReplyForReceivedContractDocument({ outcome: "already_persisted", record } as never),
+    true,
+  );
+  assert.equal(
+    shouldSkipAiSalesReplyForReceivedContractDocument({ outcome: "not_contract_related" } as never),
+    false,
+  );
+  assert.equal(shouldSkipAiSalesReplyForReceivedContractDocument(null), false);
+});
 
 test("responsible decision hook returns its canonical result to stop assistant handling", () => {
   const source = readProcessorSource();

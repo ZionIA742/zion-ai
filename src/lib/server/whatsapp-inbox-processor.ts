@@ -24,7 +24,10 @@ import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-cust
 import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
 import { decideQuoteApprovalFromPersistedInbound } from "@/lib/server/sales-quotes/quote-approval-decision";
 import { tryHandleReceivedContractDocumentDecision } from "@/lib/server/assistant/received-contract-document-decision";
-import { registerReceivedContractDocumentEvidence } from "@/lib/server/sales-contracts/received-contract-document-evidence";
+import {
+  registerReceivedContractDocumentEvidence,
+  type ReceivedContractDocumentEvidencePersistence,
+} from "@/lib/server/sales-contracts/received-contract-document-evidence";
 import { pushAssistantReceivedContractDocumentMessage } from "@/lib/server/assistant/document-review-messages";
 import { formatSalesAiProcessingError } from "@/lib/server/sales-ai-error-diagnostics";
 import {
@@ -71,10 +74,11 @@ async function registerReceivedContractDocumentEvidenceSafely(args: {
   sourceMessageId: string;
   leadId?: string | null;
   customerMessage?: string | null;
-}) {
+}): Promise<ReceivedContractDocumentEvidencePersistence | null> {
+  let persisted: ReceivedContractDocumentEvidencePersistence | null = null;
   try {
-    const persisted = await registerReceivedContractDocumentEvidence(args);
-    if (persisted.outcome === "not_contract_related" || !persisted.record) return;
+    persisted = await registerReceivedContractDocumentEvidence(args);
+    if (persisted.outcome === "not_contract_related" || !persisted.record) return persisted;
 
     let customerName: string | null = null;
     if (args.leadId) {
@@ -110,9 +114,17 @@ async function registerReceivedContractDocumentEvidenceSafely(args: {
       identificationReason: persisted.record.identificationReason,
       forwardToResponsible: true,
     });
+    return persisted;
   } catch (error) {
     console.warn("[whatsapp_inbound] received contract document evidence skipped:", error);
+    return persisted;
   }
+}
+
+export function shouldSkipAiSalesReplyForReceivedContractDocument(
+  persistence: ReceivedContractDocumentEvidencePersistence | null,
+) {
+  return Boolean(persistence && persistence.outcome !== "not_contract_related" && persistence.record);
 }
 
 type LeadRow = {
@@ -323,6 +335,7 @@ type ProcessorAiStatus =
   | "skipped_human_active"
   | "skipped_ai_paused"
   | "skipped_not_text"
+  | "skipped_contract_document_review"
   | "skipped_duplicate"
   | "failed";
 
@@ -2384,7 +2397,7 @@ async function processSingleInboxRow(
       });
 
       if (existingMessageType === "document" || existingMessageType === "image") {
-        await registerReceivedContractDocumentEvidenceSafely({
+        const contractEvidence = await registerReceivedContractDocumentEvidenceSafely({
           supabase,
           organizationId: inbox.organization_id,
           storeId: inbox.store_id,
@@ -2392,6 +2405,22 @@ async function processSingleInboxRow(
           leadId: existingMessage.lead_id,
           customerMessage: existingMessage.content,
         });
+
+        if (shouldSkipAiSalesReplyForReceivedContractDocument(contractEvidence)) {
+          await markInboxProcessed(supabase, inbox);
+          return {
+            inbox_id: inbox.id,
+            external_event_id: inbox.external_event_id,
+            status: "succeeded",
+            detail: "received_contract_document_review_pending",
+            message_id: existingMessage.id,
+            lead_id: existingMessage.lead_id,
+            conversation_id: existingMessage.conversation_id,
+            ai_status: "skipped_contract_document_review",
+            ai_message_id: null,
+            ai_error: null,
+          };
+        }
       }
 
       const mediaAiResult = await dispatchAiSalesReplyForConversation({
@@ -2800,7 +2829,7 @@ async function processSingleInboxRow(
           null,
       });
 
-      await registerReceivedContractDocumentEvidenceSafely({
+      const contractEvidence = await registerReceivedContractDocumentEvidenceSafely({
         supabase,
         organizationId: inbox.organization_id,
         storeId: inbox.store_id,
@@ -2808,6 +2837,22 @@ async function processSingleInboxRow(
         leadId: persistedMessage.lead_id,
         customerMessage: persistedMessage.content,
       });
+
+      if (shouldSkipAiSalesReplyForReceivedContractDocument(contractEvidence)) {
+        await markInboxProcessed(supabase, inbox);
+        return {
+          inbox_id: inbox.id,
+          external_event_id: inbox.external_event_id,
+          status: "succeeded",
+          detail: "received_contract_document_review_pending",
+          message_id: inserted.id || null,
+          lead_id: lead.id,
+          conversation_id: conversation.id,
+          ai_status: "skipped_contract_document_review",
+          ai_message_id: null,
+          ai_error: null,
+        };
+      }
     }
 
     let aiDispatchResult: Pick<
