@@ -367,6 +367,44 @@ async function sendWhatsappDocumentMessage(params: {
   });
 }
 
+async function sendWhatsappInteractiveDocumentMessage(params: {
+  accessToken: string;
+  phoneNumberId: string;
+  to: string;
+  link: string;
+  filename: string;
+  body: string;
+}) {
+  return sendWhatsappPayload({
+    accessToken: params.accessToken,
+    phoneNumberId: params.phoneNumberId,
+    to: params.to,
+    payload: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: params.to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        header: {
+          type: "document",
+          document: {
+            link: params.link,
+            filename: params.filename,
+          },
+        },
+        body: { text: params.body },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: "SIM", title: "SIM" } },
+            { type: "reply", reply: { id: "NAO", title: "NÃO" } },
+          ],
+        },
+      },
+    },
+  });
+}
+
 async function resolveReceivedContractDocumentForSend(args: {
   supabase: ReturnType<typeof getSupabaseAdmin>;
   organizationId: string;
@@ -426,13 +464,16 @@ async function resolveReceivedContractDocumentForSend(args: {
   return {
     signedUrl: signed.signedUrl,
     filename: cleanText(context.received_document_file_name) || "documento-recebido",
+    identificationStatus: normalizeText(context.received_identification_status),
+    customerName: cleanText(context.customer_name),
   };
 }
 
 export type ResponsibleWhatsappPayload =
   | { type: "text"; body: string }
   | { type: "template"; template: Record<string, unknown> }
-  | { type: "document"; link: string; filename: string; caption?: string };
+  | { type: "document"; link: string; filename: string; caption?: string }
+  | { type: "interactive_document"; link: string; filename: string; body: string };
 
 export async function sendResponsibleWhatsappPayload(args: {
   organizationId: string;
@@ -475,6 +516,14 @@ export async function sendResponsibleWhatsappPayload(args: {
       ? await sendWhatsappTextMessage({ ...integration, to: destination, body: args.payload.body })
       : args.payload.type === "template"
         ? await sendWhatsappTemplateMessage({ ...integration, to: destination, template: args.payload.template })
+        : args.payload.type === "interactive_document"
+          ? await sendWhatsappInteractiveDocumentMessage({
+              ...integration,
+              to: destination,
+              link: args.payload.link,
+              filename: args.payload.filename,
+              body: args.payload.body,
+            })
         : await sendWhatsappPayload({
             ...integration,
             to: destination,
@@ -913,7 +962,18 @@ export async function sendResponsibleExternalNotification(
       throw new Error("RECEIVED_DOCUMENT_WHATSAPP_WINDOW_CLOSED");
     }
     const externalMessageId = receivedDocument
-      ? await sendWhatsappDocumentMessage({
+      ? receivedDocument.identificationStatus === "identified"
+        ? await sendWhatsappInteractiveDocumentMessage({
+          accessToken: integration.accessToken,
+          phoneNumberId: integration.phoneNumberId,
+          to: policy.responsible.whatsappNumber,
+          link: receivedDocument.signedUrl,
+          filename: receivedDocument.filename,
+          body: receivedDocument.customerName
+            ? `Recebemos o contrato de ${receivedDocument.customerName} para conferência.\n\nConfira o PDF anexado e selecione SIM se estiver correto ou NÃO se precisar de revisão.`
+            : "Recebemos um contrato para conferência.\n\nConfira o PDF anexado e selecione SIM se estiver correto ou NÃO se precisar de revisão.",
+        })
+        : await sendWhatsappDocumentMessage({
           accessToken: integration.accessToken,
           phoneNumberId: integration.phoneNumberId,
           to: policy.responsible.whatsappNumber,

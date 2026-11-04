@@ -196,6 +196,8 @@ async function main() {
   const receivedDocumentContext = {
     source: "received_contract_document_evidence_v1",
     reason: "received_contract_document",
+    received_identification_status: "identified",
+    customer_name: "Regina",
     needs_human_action: true,
     received_evidence_source_message_id: "incoming-document-1",
     received_document_storage_bucket: "zion-store-files",
@@ -246,8 +248,25 @@ async function main() {
     },
   );
   assert.equal(receivedDocument.result.ok, true);
-  assert.ok(receivedDocument.calls.some((call) => call.includes("graph.facebook.com") && call.includes('"type":"document"')));
+  assert.ok(receivedDocument.calls.some((call) => call.includes("graph.facebook.com") && call.includes('"type":"interactive"')));
+  assert.ok(receivedDocument.calls.some((call) => call.includes('"id":"SIM"') && call.includes('"id":"NAO"')));
+  assert.ok(receivedDocument.calls.some((call) => call.includes("Recebemos o contrato de Regina")));
   assert.ok(receivedDocument.calls.some((call) => call.includes("https://signed.test/inbound/signed-v2.pdf")));
+
+  const pendingDocument = await runCase(
+    { status: 200, body: JSON.stringify({ messages: [{ id: "wamid-pending-document-1" }] }) },
+    {
+      receivedContractDeliveryFlag: "true",
+      notificationOverrides: {
+        rendered_message: "Regina devolveu um documento para associacao.",
+        context: { ...receivedDocumentContext, received_identification_status: "pending_identification" },
+      },
+    },
+  );
+  assert.equal(pendingDocument.result.ok, true);
+  assert.ok(pendingDocument.calls.some((call) => call.includes('"type":"document"')));
+  assert.equal(pendingDocument.calls.some((call) => call.includes('"type":"interactive"')), false);
+  assert.equal(pendingDocument.calls.some((call) => call.includes('"id":"SIM"')), false);
 
   const receivedDocumentOutsideWindow = await runCase(
     { status: 200, body: JSON.stringify({ messages: [{ id: "must-not-send" }] }) },
