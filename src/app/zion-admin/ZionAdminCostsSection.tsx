@@ -10,7 +10,7 @@ type CostFrequency = "monthly" | "annual";
 type FixedCost = { id: string; name: string; amount_cents: number; frequency: CostFrequency; enabled: boolean; effective_month: string };
 type MonthlyRow = { month: string; closed: boolean; fixedCents: number; variableCents: number | null; totalCents: number | null; aiCostUsd: number | null; fxRate: number | null; executions: number; unpriced: number; tokens: number | null; costCompleteness: CostCompleteness; tokenCompleteness: CostCompleteness };
 type CostBreakdown = { usd: number | null; tokens: number | null; runs: number; costCompleteness: CostCompleteness; tokenCompleteness: CostCompleteness };
-type VariableExpense = { id: string; idempotency_key: string; name: string; category: string; description: string | null; amount_minor: number | string; currency: "BRL" | "USD"; expense_date: string; competence_month: string; source: "manual"; status: "active" | "cancelled"; created_at: string; updated_at: string; cancelled_at: string | null };
+type VariableExpense = { id: string; idempotency_key: string; catalog_item_id: string | null; name: string; category: string; description: string | null; amount_minor: number | string; currency: "BRL" | "USD"; expense_date: string; competence_month: string; source: "manual"; status: "active" | "cancelled"; created_at: string; updated_at: string; cancelled_at: string | null };
 type CostData = {
   months: MonthlyRow[];
   fixedCosts: FixedCost[];

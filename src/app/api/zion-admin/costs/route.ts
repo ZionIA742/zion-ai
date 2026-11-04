@@ -46,6 +46,7 @@ type Closure = {
 type VariableExpenseRow = {
   id: string;
   idempotency_key: string;
+  catalog_item_id: string | null;
   name: string;
   category: string;
   description: string | null;
@@ -205,7 +206,7 @@ export async function GET(request: Request) {
       countMessages(db,"messages",range.start,effectiveEnd,true),
       countMessages(db,"store_assistant_messages",range.start,effectiveEnd),
       db.from("zion_admin_variable_expenses")
-        .select("id,idempotency_key,name,category,description,amount_minor,currency,expense_date,competence_month,source,status,created_at,updated_at,cancelled_at")
+        .select("id,idempotency_key,catalog_item_id,name,category,description,amount_minor,currency,expense_date,competence_month,source,status,created_at,updated_at,cancelled_at")
         .gte("expense_date", range.startDate)
         .lt("expense_date", range.endDate)
         .order("expense_date", { ascending: false })
