@@ -42,10 +42,11 @@ test("documento contratual identificado ou pendente encerra o dispatch comercial
 
 test("responsible decision hook returns its canonical result to stop assistant handling", () => {
   const source = readProcessorSource();
-  const hookStart = source.indexOf("onInboundPersisted: async (inbound) =>");
+  const hookStart = source.indexOf("const onResponsibleInboundPersisted = async (inbound:");
   assert.ok(hookStart >= 0);
   const hook = source.slice(hookStart, hookStart + 1_200);
   assert.match(hook, /return decideQuoteApprovalFromPersistedInbound\(/);
+  assert.match(source, /onInboundPersisted: onResponsibleInboundPersisted/);
 });
 
 test("common responsible questions can use the Assistant fallback without weakening P9 identity gates", () => {
@@ -85,6 +86,15 @@ test("extracts the responsible WhatsApp quick reply without exposing it to custo
   const source = readProcessorSource();
   assert.match(source, /responsible_quick_reply: "CONTINUAR"/);
   assert.match(source, /interactive_message_not_supported_for_customer/);
+  const responsibleBridgeIndex = source.indexOf(
+    "const responsibleInbound = await handleResponsibleInboundBeforeCustomerThread({",
+  );
+  const interactiveFilterIndex = source.indexOf(
+    'if (extracted.rawMessageType === "button" || extracted.rawMessageType === "interactive")',
+  );
+  assert.ok(responsibleBridgeIndex >= 0);
+  assert.ok(interactiveFilterIndex >= 0);
+  assert.ok(responsibleBridgeIndex < interactiveFilterIndex);
 });
 
 test("normaliza respostas SIM/NÃO de interactive e template sem perder a correlação", () => {
@@ -429,6 +439,187 @@ test("responsible primary inbound is recorded before the customer thread path", 
       ),
       true,
     );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("responsible interactive inbound reaches the bridge before the customer interactive filter", async () => {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+
+  const previousFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method: string; body: string }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    const body = typeof init?.body === "string" ? init.body : "";
+    calls.push({ url, method, body });
+
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "inbox-responsible-interactive",
+        organization_id: "org-1",
+        store_id: "store-1",
+        provider: "whatsapp",
+        external_event_id: "event-responsible-interactive",
+        payload: {
+          source: "meta_whatsapp_webhook",
+          event_kind: "message",
+          phone_number_id: "phone-1",
+          message: {
+            id: "inbound-responsible-interactive",
+            from: "5511999999999",
+            type: "interactive",
+            context: { id: "outbound-contract-notification" },
+            interactive: {
+              type: "button_reply",
+              button_reply: { id: "CONTRACT_CONFIRM", title: "SIM" },
+            },
+          },
+        },
+        received_at: "2026-11-04T19:51:05.000Z",
+        processed_at: null,
+        processing_error: null,
+      }]);
+    }
+
+    if (url.includes("/rest/v1/store_responsibles") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "responsible-1",
+        name: "Responsável",
+        role: "owner",
+        whatsapp_number: "5511999999999",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_responsible_whatsapp_events") && method === "POST") {
+      return jsonFetchResponse([{
+        id: "responsible-event-1",
+        status: "received",
+        claim_token: null,
+        inbound_message_id: null,
+        assistant_message_id: null,
+        attempts: 1,
+        outbound_status: null,
+      }]);
+    }
+
+    if (url.includes("/rest/v1/rpc/claim_store_assistant_responsible_whatsapp_event")) {
+      return jsonFetchResponse([{ claimed: true, claim_token: "claim-1", status: "processing" }]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_threads") && method === "GET") {
+      return jsonFetchResponse([{ id: "thread-1" }]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_messages") && method === "GET") {
+      return url.includes("sender=eq.human")
+        ? jsonFetchResponse([{ id: "responsible-message-1", thread_id: "thread-1" }])
+        : jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_messages") && method === "POST") {
+      const inserted = JSON.parse(body) as Record<string, unknown>;
+      return jsonFetchResponse([{
+        id: "responsible-message-1",
+        thread_id: inserted.thread_id,
+        content: inserted.content,
+        metadata: inserted.metadata,
+      }]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_responsible_whatsapp_events") && method === "PATCH") {
+      return jsonFetchResponse([{ id: "responsible-event-1" }]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_notification_queue") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "notification-1",
+        thread_id: "thread-1",
+        status: "pending",
+        context: {
+          source: "received_contract_document_evidence_v1",
+          received_identification_status: "identified",
+          related_contract_id: "contract-1",
+          document_version_id: "version-1",
+          received_evidence_source_message_id: "evidence-1",
+          customer_name: "Cliente",
+        },
+      }]);
+    }
+
+    if (url.includes("/rest/v1/store_responsible_external_notifications") && method === "GET") {
+      return jsonFetchResponse([{ internal_notification_id: "notification-1" }]);
+    }
+
+    if (url.includes("/rest/v1/rpc/confirm_received_contract_document_by_system")) {
+      return jsonFetchResponse([{
+        outcome: "applied",
+        decision: "confirmed",
+        notification_id: "notification-1",
+        contract_id: "contract-1",
+        contract_version_id: "version-1",
+        evidence_source_message_id: "evidence-1",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") {
+      return jsonFetchResponse([]);
+    }
+
+    throw new Error(`unexpected interactive responsible fetch: ${method} ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await processWhatsappInbox({
+      organizationId: "org-1",
+      storeId: "store-1",
+      limit: 1,
+    });
+
+    assert.equal(result.succeeded, 1, JSON.stringify(result));
+    assert.equal(result.failed, 0, JSON.stringify(result));
+    assert.match(result.results[0]?.detail || "", /responsible_inbound_sent/);
+    assert.equal(
+      calls.some((call) => call.url.includes("resolve_whatsapp_inbound_thread_by_system")),
+      false,
+    );
+    assert.equal(
+      calls.some((call) => call.url.includes("interactive_message_not_supported_for_customer")),
+      false,
+    );
+
+    const eventInsert = calls.find(
+      (call) =>
+        call.url.includes("store_assistant_responsible_whatsapp_events") &&
+        call.method === "POST",
+    );
+    assert.ok(eventInsert);
+    const eventPayload = JSON.parse(eventInsert.body) as Record<string, unknown>;
+    assert.equal(eventPayload.organization_id, "org-1");
+    assert.equal(eventPayload.store_id, "store-1");
+    assert.equal(eventPayload.responsible_id, "responsible-1");
+    assert.equal(eventPayload.external_message_id, "inbound-responsible-interactive");
+
+    const messageInsert = calls.find(
+      (call) => call.url.includes("/rest/v1/store_assistant_messages") && call.method === "POST",
+    );
+    assert.ok(messageInsert);
+    const messagePayload = JSON.parse(messageInsert.body) as Record<string, unknown>;
+    assert.equal(messagePayload.content, "SIM");
+    const messageMetadata = messagePayload.metadata as Record<string, unknown>;
+    assert.equal(messageMetadata.context_message_id, "outbound-contract-notification");
+    assert.equal(messageMetadata.interactive_button_id, "CONTRACT_CONFIRM");
+    assert.equal(messageMetadata.interactive_button_title, "SIM");
+
+    const decisionCall = calls.find((call) =>
+      call.url.includes("/rest/v1/rpc/confirm_received_contract_document_by_system"),
+    );
+    assert.ok(decisionCall);
+    const decisionPayload = JSON.parse(decisionCall.body) as Record<string, unknown>;
+    assert.equal(decisionPayload.p_channel, "whatsapp_assistant");
+    assert.equal(decisionPayload.p_decision, "confirmed");
   } finally {
     globalThis.fetch = previousFetch;
   }

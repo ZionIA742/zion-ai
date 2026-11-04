@@ -717,6 +717,34 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
     };
   }
 
+  const onResponsibleInboundPersisted = async (inbound: {
+    inboundMessageId: string;
+    externalMessageId: string;
+    content: string;
+    contextMessageId: string | null;
+  }) => {
+    const contractDecision = await tryHandleReceivedContractDocumentDecision({
+      supabase: args.supabase,
+      organizationId: args.inbox.organization_id,
+      storeId: args.inbox.store_id,
+      decisionMessageId: inbound.inboundMessageId,
+      content: inbound.content,
+      channel: "whatsapp",
+      contextMessageId: inbound.contextMessageId,
+    });
+    if (contractDecision) return contractDecision;
+    return decideQuoteApprovalFromPersistedInbound({
+      supabase: args.supabase,
+      organizationId: args.inbox.organization_id,
+      storeId: args.inbox.store_id,
+      responsibleId: responsible.responsible.id,
+      inboundMessageId: inbound.inboundMessageId,
+      externalMessageId: inbound.externalMessageId,
+      content: inbound.content,
+      contextMessageId: inbound.contextMessageId,
+    });
+  };
+
   if (args.extracted.rawMessageType === "text") {
     let result: Awaited<ReturnType<typeof recordPostTechnicalVisitResponsibleInbound>>;
     try {
@@ -790,28 +818,7 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
         inbox_id: args.inbox.id,
         external_event_id: args.inbox.external_event_id,
       },
-      onInboundPersisted: async (inbound) => {
-        const contractDecision = await tryHandleReceivedContractDocumentDecision({
-          supabase: args.supabase,
-          organizationId: args.inbox.organization_id,
-          storeId: args.inbox.store_id,
-          decisionMessageId: inbound.inboundMessageId,
-          content: inbound.content,
-          channel: "whatsapp",
-          contextMessageId: inbound.contextMessageId,
-        });
-        if (contractDecision) return contractDecision;
-        return decideQuoteApprovalFromPersistedInbound({
-          supabase: args.supabase,
-          organizationId: args.inbox.organization_id,
-          storeId: args.inbox.store_id,
-          responsibleId: responsible.responsible.id,
-          inboundMessageId: inbound.inboundMessageId,
-          externalMessageId: inbound.externalMessageId,
-          content: inbound.content,
-          contextMessageId: inbound.contextMessageId,
-        });
-      },
+      onInboundPersisted: onResponsibleInboundPersisted,
     });
 
     return { isResponsible: true as const, result: { ...result, ...assistantResult } };
@@ -845,7 +852,11 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
             }
           : null;
 
-  if (!media) {
+  const isInteractiveResponsibleReply =
+    args.extracted.rawMessageType === "button" ||
+    args.extracted.rawMessageType === "interactive";
+
+  if (!media && !isInteractiveResponsibleReply) {
     throw new Error("RESPONSIBLE_MEDIA_UNSUPPORTED_OR_MISSING");
   }
 
@@ -857,7 +868,9 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
     externalMessageId: args.extracted.messageId || args.inbox.external_event_id,
     fromPhone: args.extracted.fromPhoneRaw || "",
     phoneNumberId: args.extracted.phoneNumberId || "",
-    content: args.extracted.textBody || "",
+    content: isInteractiveResponsibleReply
+      ? resolveResponsibleInboundContent(args.extracted)
+      : args.extracted.textBody || "",
     messageType: args.extracted.rawMessageType || undefined,
     media,
     metadata: {
@@ -866,7 +879,16 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
       context_message_id: args.extracted.contextMessageId,
       inbox_id: args.inbox.id,
       external_event_id: args.inbox.external_event_id,
+      ...(isInteractiveResponsibleReply
+        ? {
+            interactive_button_id: args.extracted.interactiveButtonId,
+            interactive_button_title: args.extracted.interactiveButtonTitle,
+          }
+        : {}),
     },
+    onInboundPersisted: isInteractiveResponsibleReply
+      ? onResponsibleInboundPersisted
+      : undefined,
   });
 
   return {
@@ -2367,6 +2389,22 @@ async function processSingleInboxRow(
     };
   }
 
+  const responsibleInbound = await handleResponsibleInboundBeforeCustomerThread({
+    supabase,
+    inbox,
+    extracted,
+    payload,
+  });
+  if (responsibleInbound.isResponsible) {
+    await markInboxProcessed(supabase, inbox);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "succeeded",
+      detail: `responsible_inbound_${responsibleInbound.result.correlationStatus}`,
+    };
+  }
+
   if (extracted.rawMessageType === "button" || extracted.rawMessageType === "interactive") {
     await markInboxProcessed(supabase, inbox);
     return {
@@ -2524,22 +2562,6 @@ async function processSingleInboxRow(
       lead_id: existingMessage.lead_id,
       conversation_id: existingMessage.conversation_id,
       ...duplicateAiResult,
-    };
-  }
-
-  const responsibleInbound = await handleResponsibleInboundBeforeCustomerThread({
-    supabase,
-    inbox,
-    extracted,
-    payload,
-  });
-  if (responsibleInbound.isResponsible) {
-    await markInboxProcessed(supabase, inbox);
-    return {
-      inbox_id: inbox.id,
-      external_event_id: inbox.external_event_id,
-      status: "succeeded",
-      detail: `responsible_inbound_${responsibleInbound.result.correlationStatus}`,
     };
   }
 
