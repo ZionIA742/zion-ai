@@ -88,6 +88,14 @@ function requiredContext(context: ReceivedContractDocumentDecisionContext) {
   }
 }
 
+function toRpcDecisionChannel(
+  channel: ReceivedContractDocumentDecisionChannel,
+): "whatsapp_assistant" | "assistant_chat" {
+  if (channel === "whatsapp") return "whatsapp_assistant";
+  if (channel === "assistant") return "assistant_chat";
+  throw new Error("RECEIVED_CONTRACT_DOCUMENT_DECISION_CHANNEL_INVALID");
+}
+
 /**
  * The database RPC is the only mutation authority. This adapter deliberately
  * does not update contract, version, signature, stage, or business-event rows.
@@ -99,6 +107,7 @@ export async function decideReceivedContractDocument(args: {
 }): Promise<ReceivedContractDocumentDecisionResult> {
   requiredContext(args.context);
   const context = args.context;
+  const rpcChannel = toRpcDecisionChannel(context.channel);
   const { data, error } = await args.supabase.rpc(
     RECEIVED_CONTRACT_DOCUMENT_DECISION_RPC,
     {
@@ -109,7 +118,7 @@ export async function decideReceivedContractDocument(args: {
       p_contract_version_id: context.contractVersionId,
       p_evidence_source_message_id: context.evidenceSourceMessageId,
       p_decision_message_id: context.decisionMessageId,
-      p_channel: context.channel,
+      p_channel: rpcChannel,
       p_decision: args.decision,
     },
   );

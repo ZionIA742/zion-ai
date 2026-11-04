@@ -54,7 +54,7 @@ test("envia identidade exata para a autoridade e aceita replay valido", async ()
   assert.equal(calls[0]?.name, RECEIVED_CONTRACT_DOCUMENT_DECISION_RPC);
   assert.equal(calls[0]?.args.p_contract_version_id, context.contractVersionId);
   assert.equal(calls[0]?.args.p_evidence_source_message_id, context.evidenceSourceMessageId);
-  assert.equal(calls[0]?.args.p_channel, "assistant");
+  assert.equal(calls[0]?.args.p_channel, "assistant_chat");
 });
 
 test("falha fechado para retorno vazio, cardinalidade ou identidade divergente", async () => {
@@ -99,6 +99,24 @@ test("nao executa com contexto incompleto", async () => {
     }),
     /RECEIVED_CONTRACT_DOCUMENT_DECISION_CONTEXT_INVALID/,
   );
+});
+
+test("rejeita canal fora do contrato RPC antes de qualquer chamada", async () => {
+  let rpcCalls = 0;
+  await assert.rejects(
+    decideReceivedContractDocument({
+      supabase: {
+        rpc: async () => {
+          rpcCalls += 1;
+          return { data: null, error: null };
+        },
+      } as never,
+      decision: "confirmed",
+      context: { ...context, channel: "whatsapp_legacy" as never },
+    }),
+    /RECEIVED_CONTRACT_DOCUMENT_DECISION_CHANNEL_INVALID/,
+  );
+  assert.equal(rpcCalls, 0);
 });
 
 function createResolverSupabase(args: {
@@ -185,7 +203,7 @@ test("integra SIM no WhatsApp com a notificacao externa exata", async () => {
   assert.equal(result?.result.decision, "confirmed");
   assert.equal(harness.calls[0]?.args.p_notification_id, "notification-1");
   assert.equal(harness.calls[0]?.args.p_decision_message_id, "decision-1");
-  assert.equal(harness.calls[0]?.args.p_channel, "whatsapp");
+  assert.equal(harness.calls[0]?.args.p_channel, "whatsapp_assistant");
 });
 
 test("integra NAO no chat interno pelo thread exato", async () => {
@@ -214,7 +232,7 @@ test("integra NAO no chat interno pelo thread exato", async () => {
   });
   assert.equal(result?.result.decision, "rejected");
   assert.equal(harness.calls[0]?.args.p_decision_message_id, "decision-2");
-  assert.equal(harness.calls[0]?.args.p_channel, "assistant");
+  assert.equal(harness.calls[0]?.args.p_channel, "assistant_chat");
 });
 
 test("permanece sem mutacao quando ha mais de uma notificacao candidata", async () => {
