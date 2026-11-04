@@ -181,6 +181,11 @@ export default function ZionAdminVariableExpenseCatalog({
   const [catalogSaving, setCatalogSaving] = useState(false);
   const [catalogFeedback, setCatalogFeedback] = useState<string | null>(null);
   const catalogOperationKey = useRef<string | null>(null);
+  const catalogStateOperation = useRef<{
+    action: "archived" | "restored";
+    itemId: string;
+    key: string;
+  } | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -306,6 +311,131 @@ export default function ZionAdminVariableExpenseCatalog({
         caught instanceof Error
           ? caught.message
           : "Não foi possível cadastrar o nome.",
+      );
+    } finally {
+      setCatalogSaving(false);
+    }
+  }
+  async function changeCatalogStatus(item: CatalogMonthlyRow) {
+    if (catalogSaving) return;
+
+    if (
+      !current ||
+      current.status !== "ready" ||
+      !current.snapshot.items.some(
+        (entry) =>
+          entry.id === item.id &&
+          entry.archived_at === item.archived_at
+      )
+    ) {
+      setCatalogFeedback(
+        "O catálogo mudou. Atualize os dados antes de continuar.",
+      );
+      return;
+    }
+
+    const action: "archived" | "restored" =
+      item.archived_at === null ? "archived" : "restored";
+
+    if (
+      action === "archived" &&
+      !window.confirm(
+        `Arquivar "${item.name}"? O nome continuará no histórico, mas não poderá receber novos lançamentos até ser reativado.`,
+      )
+    ) {
+      return;
+    }
+
+    let operation = catalogStateOperation.current;
+
+    if (
+      !operation ||
+      operation.action !== action ||
+      operation.itemId !== item.id
+    ) {
+      operation = {
+        action,
+        itemId: item.id,
+        key: `zion-admin-catalog-${crypto.randomUUID()}`,
+      };
+      catalogStateOperation.current = operation;
+    }
+
+    setCatalogSaving(true);
+    setCatalogFeedback(null);
+
+    try {
+      const response = await fetch(
+        "/api/zion-admin/costs/catalog",
+        {
+          method: "POST",
+          cache: "no-store",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action,
+            operationKey: operation.key,
+            id: item.id,
+          }),
+        },
+      );
+
+      const payload: unknown =
+        await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const message =
+          payload &&
+          typeof payload === "object" &&
+          "error" in payload &&
+          typeof payload.error === "string"
+            ? payload.error
+            : "Não foi possível atualizar o estado do nome.";
+
+        throw new Error(message);
+      }
+
+      const confirmed =
+        payload &&
+        typeof payload === "object" &&
+        "ok" in payload &&
+        payload.ok === true &&
+        "item" in payload &&
+        payload.item &&
+        typeof payload.item === "object" &&
+        "id" in payload.item &&
+        payload.item.id === item.id &&
+        "archived_at" in payload.item &&
+        (
+          action === "archived"
+            ? typeof payload.item.archived_at === "string"
+            : payload.item.archived_at === null
+        );
+
+      if (!confirmed) {
+        throw new Error(
+          "O servidor não confirmou a alteração do catálogo.",
+        );
+      }
+
+      catalogStateOperation.current = null;
+
+      // Recarregar os totais e o estado real do banco.
+      // O mês anterior não será exibido durante a leitura.
+      setCatalogRevision((value) => value + 1);
+
+      setCatalogFeedback(
+        action === "archived"
+          ? `"${item.name}" foi arquivado. O histórico foi preservado.`
+          : `"${item.name}" foi reativado para novos lançamentos.`,
+      );
+    } catch (caught) {
+      // Mantem a mesma chave para tentar novamente
+      // sem duplicar a operacao no servidor.
+      setCatalogFeedback(
+        caught instanceof Error
+          ? caught.message
+          : "Não foi possível atualizar o catálogo.",
       );
     } finally {
       setCatalogSaving(false);
@@ -437,6 +567,7 @@ export default function ZionAdminVariableExpenseCatalog({
                   <th className="pb-2">Categoria</th>
                   <th className="pb-2 text-right">Valor do mês</th>
                   <th className="pb-2 text-right">Estado</th>
+                  <th className="pb-2 text-right">Ações</th>
                 </tr>
               </thead>
               <tbody>
@@ -456,6 +587,17 @@ export default function ZionAdminVariableExpenseCatalog({
                     </td>
                     <td className="py-2.5 text-right text-[#9bb0bd]">
                       {item.archived_at ? "Arquivado" : "Ativo"}
+                    </td>
+                    <td className="py-2.5 text-right">
+                      <button
+                        type="button"
+                        disabled={catalogSaving}
+                        onClick={() => void changeCatalogStatus(item)}
+                        aria-label={`${item.archived_at ? "Reativar" : "Arquivar"} ${item.name}`}
+                        className="rounded-md border border-[#385563] px-2 py-1 text-[11px] font-semibold text-[#b4eaf0] hover:bg-[#153943] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {item.archived_at ? "Reativar" : "Arquivar"}
+                      </button>
                     </td>
                   </tr>
                 ))}
