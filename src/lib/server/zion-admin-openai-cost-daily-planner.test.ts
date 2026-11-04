@@ -15,13 +15,13 @@ function plan(existingQueryIdentities: string[] = []) {
   });
 }
 
-test("plans exactly one UTC day with a two-day lag", () => {
+test("plans exactly one UTC day with a one-day lag", () => {
   const result = plan();
 
   assert.equal(result.status, "prepare");
   if (result.status !== "prepare") return;
 
-  assert.equal(result.dateUtc, "2026-10-26");
+  assert.equal(result.dateUtc, "2026-10-27");
   assert.deepEqual(result.costsRequest.groupBy, [
     "line_item",
     "project_id",
@@ -34,6 +34,31 @@ test("plans exactly one UTC day with a two-day lag", () => {
   );
 });
 
+test("plans November final UTC day on December first", () => {
+  const result = planDailyOpenAiCostCollection({
+    now: new Date("2026-12-01T12:15:00.000Z"),
+    inventoryVerified: true,
+    existingQueryIdentities: [],
+  });
+
+  assert.equal(result.status, "prepare");
+  if (result.status !== "prepare") return;
+
+  assert.equal(result.dateUtc, "2026-11-30");
+});
+
+test("plans December final UTC day on January first", () => {
+  const result = planDailyOpenAiCostCollection({
+    now: new Date("2027-01-01T12:15:00.000Z"),
+    inventoryVerified: true,
+    existingQueryIdentities: [],
+  });
+
+  assert.equal(result.status, "prepare");
+  if (result.status !== "prepare") return;
+
+  assert.equal(result.dateUtc, "2026-12-31");
+});
 test("generates deterministic operation keys", () => {
   const first = plan();
   const second = plan();
@@ -44,7 +69,7 @@ test("generates deterministic operation keys", () => {
 
   assert.equal(
     first.operationKey,
-    "zion_admin_openai_costs_2026_10_26_utc_org_v1",
+    "zion_admin_openai_costs_2026_10_27_utc_org_v1",
   );
 });
 
@@ -99,7 +124,7 @@ test("does not confuse local timezone with UTC date", () => {
   assert.equal(result.status, "prepare");
   if (result.status !== "prepare") return;
 
-  assert.equal(result.dateUtc, "2026-10-25");
+  assert.equal(result.dateUtc, "2026-10-26");
 });
 
 test("rejects invalid inventory entries", () => {

@@ -137,7 +137,7 @@ test("rejects changed query parameters", () => {
 test("rejects a changed financial period", () => {
   const result = sample();
   result.operations[0].contract.periodEnd =
-    "2026-10-29T00:00:00.000Z";
+    "2026-10-30T00:00:00.000Z";
 
   assert.equal(
     validateDailyOpenAiCostClaim(result, ID, NOW),

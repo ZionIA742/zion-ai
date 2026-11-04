@@ -1,11 +1,10 @@
-import { createClient } from "@supabase/supabase-js";
+import { readOpenAiCostInventoryViaRpc } from "./zion-admin-openai-cost-inventory-rpc";
 
 import type {
   OpenAiCostOperationState,
 } from "./zion-admin-openai-cost-operation-preparer";
 
-const TABLE =
-  "zion_admin_openai_cost_collection_operations";
+
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -48,27 +47,7 @@ export type OpenAiCostInventoryDependencies = {
 async function defaultLoad(
   queryIdentity: string,
 ): Promise<QueryResponse> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !key) {
-    throw new Error("OPENAI_COST_INVENTORY_CONFIG_MISSING");
-  }
-
-  const client = createClient(url, key, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-  });
-
-  return client
-    .from(TABLE)
-    .select(
-      "id,operation_key,provider,source,query_identity,state",
-    )
-    .eq("query_identity", queryIdentity)
-    .limit(2);
+  return readOpenAiCostInventoryViaRpc(queryIdentity);
 }
 
 function validIdentity(value: unknown): value is string {

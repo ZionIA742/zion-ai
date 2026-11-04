@@ -406,7 +406,7 @@ test("invalid post-claim contract prevents collection", async () => {
         );
 
         contract.periodEnd =
-          "2026-10-29T00:00:00.000Z";
+          "2026-10-30T00:00:00.000Z";
 
         return {
           outcome: "claimed",

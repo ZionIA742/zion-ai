@@ -204,7 +204,7 @@ test("previous attempt is rejected after claim", async () => {
 test("wrong contract is rejected after claim", async () => {
   const result = claim();
   result.operations[0].contract.periodEnd =
-    "2026-10-29T00:00:00.000Z";
+    "2026-10-30T00:00:00.000Z";
 
   const h = setup({ claimResult: result });
 

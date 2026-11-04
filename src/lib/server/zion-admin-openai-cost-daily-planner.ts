@@ -32,7 +32,7 @@ export type DailyCostPlan =
     };
 
 const DAY_MS = 86400000;
-const REPORTING_LAG_DAYS = 2;
+const REPORTING_LAG_DAYS = 1;
 
 /**
  * Pure planner. Does not query the database, access OpenAI,
