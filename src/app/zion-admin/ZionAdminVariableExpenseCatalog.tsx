@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 type Currency = "BRL" | "USD";
 
@@ -23,8 +23,8 @@ type MonthlySnapshot = {
 };
 
 type LoadState =
-  | { month: string; refreshKey: number; status: "ready"; snapshot: MonthlySnapshot }
-  | { month: string; refreshKey: number; status: "error" };
+  | { month: string; refreshKey: number; catalogRevision: number; status: "ready"; snapshot: MonthlySnapshot }
+  | { month: string; refreshKey: number; catalogRevision: number; status: "error" };
 
 const MONTHS = [
   "Janeiro", "Fevereiro", "Março", "Abril",
@@ -173,6 +173,14 @@ export default function ZionAdminVariableExpenseCatalog({
   refreshKey: number;
 }) {
   const [load, setLoad] = useState<LoadState | null>(null);
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [draftCategory, setDraftCategory] = useState("");
+  const [draftCurrency, setDraftCurrency] = useState<Currency>("BRL");
+  const [catalogSaving, setCatalogSaving] = useState(false);
+  const [catalogFeedback, setCatalogFeedback] = useState<string | null>(null);
+  const catalogOperationKey = useRef<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -197,11 +205,11 @@ export default function ZionAdminVariableExpenseCatalog({
         const snapshot = buildSnapshot(payload, month);
 
         if (!controller.signal.aborted) {
-          setLoad({ month, refreshKey, status: "ready", snapshot });
+          setLoad({ month, refreshKey, catalogRevision, status: "ready", snapshot });
         }
       } catch {
         if (!controller.signal.aborted) {
-          setLoad({ month, refreshKey, status: "error" });
+          setLoad({ month, refreshKey, catalogRevision, status: "error" });
         }
       }
     }
@@ -209,13 +217,100 @@ export default function ZionAdminVariableExpenseCatalog({
     void fetchMonth();
 
     return () => controller.abort();
-  }, [month, refreshKey]);
+  }, [month, refreshKey, catalogRevision]);
 
-  const current = load?.month === month && load.refreshKey === refreshKey ? load : null;
+  const current = load?.month === month && load.refreshKey === refreshKey && load.catalogRevision === catalogRevision ? load : null;
   const monthNumber = Number(month.slice(5, 7));
   const monthLabel =
     `${MONTHS[monthNumber - 1] ?? "Mês"} de ${month.slice(0, 4)}`;
 
+  async function submitCatalogItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (catalogSaving) return;
+
+    const name = draftName.trim();
+    const category = draftCategory.trim();
+
+    if (!name || name.length > 100 ||
+        !category || category.length > 80) {
+      setCatalogFeedback("Informe um nome e uma categoria válidos.");
+      return;
+    }
+
+    if (!catalogOperationKey.current) {
+      catalogOperationKey.current =
+        `zion-admin-catalog-${crypto.randomUUID()}`;
+    }
+
+    setCatalogSaving(true);
+    setCatalogFeedback(null);
+
+    try {
+      const response = await fetch(
+        "/api/zion-admin/costs/catalog",
+        {
+          method: "POST",
+          cache: "no-store",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "created",
+            operationKey: catalogOperationKey.current,
+            name,
+            category,
+            currency: draftCurrency,
+          }),
+        },
+      );
+
+      const payload: unknown = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const error =
+          payload && typeof payload === "object" &&
+          "error" in payload && typeof payload.error === "string"
+            ? payload.error
+            : "Não foi possível cadastrar o nome.";
+
+        throw new Error(error);
+      }
+
+      const confirmed =
+        payload && typeof payload === "object" &&
+        "ok" in payload && payload.ok === true &&
+        "item" in payload &&
+        payload.item && typeof payload.item === "object" &&
+        "id" in payload.item &&
+        typeof payload.item.id === "string";
+
+      if (!confirmed) {
+        throw new Error("Cadastro não confirmado pelo servidor.");
+      }
+
+      catalogOperationKey.current = null;
+      setDraftName("");
+      setDraftCategory("");
+      setDraftCurrency("BRL");
+      setCreating(false);
+
+      // Uma nova revisão força a leitura do catálogo.
+      // Os totais antigos ficam ocultos até a resposta.
+      setCatalogRevision((value) => value + 1);
+
+      setCatalogFeedback(
+        "Nome cadastrado. Nenhuma despesa financeira foi lançada.",
+      );
+    } catch (caught) {
+      setCatalogFeedback(
+        caught instanceof Error
+          ? caught.message
+          : "Não foi possível cadastrar o nome.",
+      );
+    } finally {
+      setCatalogSaving(false);
+    }
+  }
   return (
     <div className="mt-3 rounded-lg border border-[#304650] bg-[#0b1820] p-3">
       <h4 className="text-xs font-semibold text-[#c7f5f7]">
@@ -228,6 +323,96 @@ export default function ZionAdminVariableExpenseCatalog({
         é apenas exibido e não é gravado.
       </p>
 
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={catalogSaving}
+          onClick={() => {
+            setCreating((value) => !value);
+            setCatalogFeedback(null);
+            catalogOperationKey.current = null;
+          }}
+          className="rounded-lg border border-[#378697] bg-[#153943] px-3 py-2 text-xs font-semibold text-[#b1f0f5] disabled:opacity-50"
+        >
+          {creating ? "Fechar cadastro" : "+ Cadastrar nome"}
+        </button>
+      </div>
+
+      {catalogFeedback ? (
+        <p role="status" className="mt-2 text-xs text-[#c2eaf0]">
+          {catalogFeedback}
+        </p>
+      ) : null}
+
+      {creating ? (
+        <form
+          onSubmit={(event) => void submitCatalogItem(event)}
+          className="mt-3 grid gap-2 rounded-lg border border-[#304650] p-3 sm:grid-cols-2"
+        >
+          <label className="text-xs text-[#aebdc5]">
+            Nome permanente
+            <input
+              required
+              maxLength={100}
+              disabled={catalogSaving}
+              value={draftName}
+              onChange={(event) => {
+                setDraftName(event.target.value);
+                catalogOperationKey.current = null;
+              }}
+              placeholder="Ex.: Gasolina"
+              className="mt-1 w-full rounded-lg border border-[#304650] bg-[#08131b] px-3 py-2 text-xs text-white"
+            />
+          </label>
+
+          <label className="text-xs text-[#aebdc5]">
+            Categoria
+            <input
+              required
+              maxLength={80}
+              disabled={catalogSaving}
+              value={draftCategory}
+              onChange={(event) => {
+                setDraftCategory(event.target.value);
+                catalogOperationKey.current = null;
+              }}
+              placeholder="Ex.: Transporte"
+              className="mt-1 w-full rounded-lg border border-[#304650] bg-[#08131b] px-3 py-2 text-xs text-white"
+            />
+          </label>
+
+          <label className="text-xs text-[#aebdc5]">
+            Moeda
+            <select
+              value={draftCurrency}
+              disabled={catalogSaving}
+              onChange={(event) => {
+                setDraftCurrency(event.target.value as Currency);
+                catalogOperationKey.current = null;
+              }}
+              className="mt-1 w-full rounded-lg border border-[#304650] bg-[#08131b] px-3 py-2 text-xs text-white"
+            >
+              <option value="BRL">BRL — Real</option>
+              <option value="USD">USD — Dólar</option>
+            </select>
+          </label>
+
+          <div className="flex items-end justify-end">
+            <button
+              type="submit"
+              disabled={catalogSaving}
+              className="rounded-lg border border-[#378697] bg-[#153943] px-4 py-2 text-xs font-semibold text-[#b1f0f5] disabled:opacity-50"
+            >
+              {catalogSaving ? "Salvando..." : "Salvar nome"}
+            </button>
+          </div>
+
+          <p className="text-[11px] text-[#91a7b6] sm:col-span-2">
+            Este cadastro cria apenas o nome permanente.
+            Os valores são lançados separadamente, por competência.
+          </p>
+        </form>
+      ) : null}
       {!current ? (
         <p className="mt-3 text-xs text-[#a5b9c5]">
           Carregando catálogo e lançamentos mensais...

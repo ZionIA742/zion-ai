@@ -28,7 +28,8 @@ test("only active expenses with canonical IDs are summed", () => {
 test("missing values are derived, not persisted", () => {
   assert.match(component, /totalMinor: 0/);
   assert.match(component, /money\(item\.totalMinor, item\.currency\)/);
-  assert.doesNotMatch(component, /method:\s*"(?:POST|PUT|PATCH|DELETE)"/);
+  assert.doesNotMatch(component, /"\/api\/zion-admin\/costs"\s*,/);
+  assert.doesNotMatch(component, /method:\s*"(?:PUT|PATCH|DELETE)"/);
   assert.doesNotMatch(component, /\.insert\(|\.update\(|\.upsert\(/);
 });
 
@@ -46,7 +47,7 @@ test("monthly values refresh after a successful financial mutation", () => {
   );
   assert.match(parent, /refreshKey=\{catalogRefreshKey\}/);
   assert.match(component, /refreshKey: number/);
-  assert.match(component, /\[month, refreshKey\]/);
+  assert.match(component, /\[month, refreshKey, catalogRevision\]/);
 });
 
 test("previous month values are hidden during a refresh", () => {
@@ -56,10 +57,56 @@ test("previous month values are hidden during a refresh", () => {
   );
   assert.match(
     component,
-    /setLoad\(\{ month, refreshKey, status: "ready", snapshot \}\)/,
+    /setLoad\(\{ month, refreshKey, catalogRevision, status: "ready", snapshot \}\)/,
   );
   assert.match(
     component,
-    /setLoad\(\{ month, refreshKey, status: "error" \}\)/,
+    /setLoad\(\{ month, refreshKey, catalogRevision, status: "error" \}\)/,
+  );
+});
+
+test("catalog registration uses the authorized catalog endpoint", () => {
+  assert.match(component, /async function submitCatalogItem/);
+  assert.match(component, /method: "POST"/);
+  assert.match(component, /action: "created"/);
+  assert.match(component, /operationKey: catalogOperationKey\.current/);
+  assert.match(component, /"\/api\/zion-admin\/costs\/catalog"/);
+});
+
+test("registration never creates financial expenses", () => {
+  assert.doesNotMatch(
+    component,
+    /zion_admin_mutate_variable_expense|add_variable/,
+  );
+  assert.match(
+    component,
+    /Nenhuma despesa financeira foi lançada/,
+  );
+});
+
+test("catalog retry key survives failures and resets after edits", () => {
+  assert.match(
+    component,
+    /if \(!catalogOperationKey\.current\)/,
+  );
+  assert.match(
+    component,
+    /catalogOperationKey\.current = null/,
+  );
+  assert.match(component, /setCatalogSaving\(false\)/);
+});
+
+test("successful registration refreshes monthly data safely", () => {
+  assert.match(
+    component,
+    /setCatalogRevision\(\(value\) => value \+ 1\)/,
+  );
+  assert.match(
+    component,
+    /\[month, refreshKey, catalogRevision\]/,
+  );
+  assert.match(
+    component,
+    /load\.catalogRevision === catalogRevision/,
   );
 });
