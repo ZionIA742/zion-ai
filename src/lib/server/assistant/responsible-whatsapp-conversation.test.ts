@@ -254,7 +254,7 @@ test("CONTINUAR remains scoped to the responsible Assistant flow", () => {
   assert.match(sync, /external_message_id/);
 });
 
-test("a canonical quote decision terminates the assistant bridge before generation or outbound", () => {
+test("a canonical decision terminates generation before its deterministic response", () => {
   const source = readFileSync(
     "src/lib/server/assistant/responsible-whatsapp-conversation.ts",
     "utf8",
@@ -262,7 +262,7 @@ test("a canonical quote decision terminates the assistant bridge before generati
 
   assert.match(source, /QuoteApprovalDecisionResult \| ReceivedContractDocumentDecisionHandled\) \| null/);
   assert.match(source, /decisionHandled: true/);
-  assert.match(source, /outbound_status: null/);
+  assert.match(source, /sendResponsibleAssistantText/);
 
   const decisionBranch = source.indexOf("if (inboundHookResult)");
   const assistantGeneration = source.indexOf("const { data: existingAssistant");
@@ -270,7 +270,7 @@ test("a canonical quote decision terminates the assistant bridge before generati
   assert.ok(assistantGeneration > decisionBranch);
   assert.match(
     source.slice(decisionBranch, assistantGeneration),
-    /return \{[\s\S]*decisionHandled: true[\s\S]*\} as const;/,
+    /decisionResponse[\s\S]*sendResponsibleAssistantText[\s\S]*return \{[\s\S]*decisionHandled: true[\s\S]*\} as const;/,
   );
 });
 

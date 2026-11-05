@@ -53,7 +53,9 @@ type AssistantReplyApiResponse = {
 type AssistantDocumentActionId =
   | "review"
   | "approve_and_send"
-  | "confirm_store_signature";
+  | "confirm_store_signature"
+  | "received_contract_confirm_yes"
+  | "received_contract_confirm_no";
 
 type AssistantDocumentActionApiResponse = {
   ok: boolean;
@@ -105,6 +107,10 @@ type AssistantDocumentReviewMetadata = {
   assistant_prompt?: string;
   available_actions?: AssistantDocumentActionMetadata[];
   source?: string;
+  origin?: string;
+  channel?: string;
+  received_evidence_source_message_id?: string;
+  received_identification_status?: string;
 };
 
 type AssistantContractWorkflowDecisionMetadata = {
@@ -465,6 +471,15 @@ function getDocumentActionMetadata(
         return id === "approve_and_send" || kind === "approve_and_send";
       }
 
+      if (
+        actionId === "received_contract_confirm_yes" ||
+        actionId === "received_contract_confirm_no"
+      ) {
+        return id === actionId ||
+          (kind === "received_contract_decision" &&
+            id === actionId);
+      }
+
       return (
         id === "confirm_store_signature" || kind === "confirm_store_signature"
       );
@@ -482,7 +497,11 @@ function getDocumentActionLabel(
       ? "Revisar"
       : actionId === "approve_and_send"
         ? "Aprovar e enviar"
-        : "Confirmar pela loja";
+        : actionId === "confirm_store_signature"
+          ? "Confirmar pela loja"
+          : actionId === "received_contract_confirm_yes"
+            ? "SIM"
+            : "NÃO";
   return getSafeString(action?.label) || fallback;
 }
 
@@ -1857,6 +1876,83 @@ export default function AssistantPage() {
     }
   }
 
+  async function handleReceivedContractDecision(
+    message: AssistantMessage,
+    decision: "SIM" | "NÃO",
+  ) {
+    const metadata = getAssistantDocumentReviewMetadata(message.metadata);
+    const scopeKey = assistantScopeKeyRef.current;
+    const actionId = decision === "SIM"
+      ? "received_contract_confirm_yes"
+      : "received_contract_confirm_no";
+
+    if (
+      !metadata ||
+      metadata.source !== "received_contract_document_evidence_v1" ||
+      metadata.origin !== "received_contract_document_evidence" ||
+      metadata.channel !== "whatsapp" ||
+      metadata.received_identification_status !== "identified" ||
+      !getSafeString(metadata.received_evidence_source_message_id) ||
+      !isDocumentActionEnabled(metadata, actionId) ||
+      !organizationId ||
+      !activeStoreId ||
+      !scopeKey
+    ) {
+      setDocumentActionFeedback((current) => ({
+        ...current,
+        [message.id]: {
+          tone: "error",
+          text: "Este documento nao possui uma correlacao segura para decisao.",
+        },
+      }));
+      return;
+    }
+
+    const actionKey = `${message.id}:${actionId}`;
+    setDocumentActionLoading(actionKey, true);
+    setDocumentActionFeedback((current) => {
+      const next = { ...current };
+      delete next[message.id];
+      return next;
+    });
+
+    try {
+      const { data, error } = await supabase.rpc("assistant_send_human_message", {
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_content: decision,
+      });
+      if (error) throw new Error(error.message);
+
+      const row = Array.isArray(data) ? data[0] : data;
+      const humanMessageId =
+        row && typeof row === "object" && "id" in row
+          ? String((row as { id?: unknown }).id || "").trim()
+          : "";
+      if (!humanMessageId) throw new Error("DECISION_MESSAGE_ID_MISSING");
+
+      setStatusText(`${decision} enviado para validacao da autoridade contratual...`);
+      setPendingHumanMessageId(humanMessageId);
+      forceScrollToBottomRef.current = true;
+      await loadAssistant({ silent: true });
+      if (!isCurrentAssistantScope(scopeKey)) return;
+      await requestAssistantReply(humanMessageId, scopeKey);
+    } catch (error: unknown) {
+      if (!isCurrentAssistantScope(scopeKey)) return;
+      setDocumentActionFeedback((current) => ({
+        ...current,
+        [message.id]: {
+          tone: "error",
+          text: getErrorMessage(error, "Nao foi possivel registrar a decisao.") ,
+        },
+      }));
+    } finally {
+      if (isCurrentAssistantScope(scopeKey)) {
+        setDocumentActionLoading(actionKey, false);
+      }
+    }
+  }
+
   async function handleContractWorkflowAction(
     message: AssistantMessage,
     actionId: AssistantContractWorkflowActionId
@@ -2710,6 +2806,33 @@ export default function AssistantPage() {
                                   documentMetadata,
                                   "confirm_store_signature"
                                 );
+                              const receivedContractDecisionEnabled =
+                                metadataComplete &&
+                                payload.documentType === "contract" &&
+                                documentMetadata.source ===
+                                  "received_contract_document_evidence_v1" &&
+                                documentMetadata.origin ===
+                                  "received_contract_document_evidence" &&
+                                documentMetadata.channel === "whatsapp" &&
+                                documentMetadata.received_identification_status ===
+                                  "identified" &&
+                                Boolean(
+                                  getSafeString(
+                                    documentMetadata.received_evidence_source_message_id
+                                  )
+                                );
+                              const receivedYesEnabled =
+                                receivedContractDecisionEnabled &&
+                                isDocumentActionEnabled(
+                                  documentMetadata,
+                                  "received_contract_confirm_yes"
+                                );
+                              const receivedNoEnabled =
+                                receivedContractDecisionEnabled &&
+                                isDocumentActionEnabled(
+                                  documentMetadata,
+                                  "received_contract_confirm_no"
+                                );
                               const reviewLoading =
                                 documentActionLoadingKeys[`${message.id}:review`] === true;
                               const approveLoading =
@@ -2719,6 +2842,14 @@ export default function AssistantPage() {
                               const confirmStoreSignatureLoading =
                                 documentActionLoadingKeys[
                                   `${message.id}:confirm_store_signature`
+                                ] === true;
+                              const receivedYesLoading =
+                                documentActionLoadingKeys[
+                                  `${message.id}:received_contract_confirm_yes`
+                                ] === true;
+                              const receivedNoLoading =
+                                documentActionLoadingKeys[
+                                  `${message.id}:received_contract_confirm_no`
                                 ] === true;
 
                               return (
@@ -2762,7 +2893,9 @@ export default function AssistantPage() {
 
                                   {reviewEnabled ||
                                   approveEnabled ||
-                                  confirmStoreSignatureEnabled ? (
+                                  confirmStoreSignatureEnabled ||
+                                  receivedYesEnabled ||
+                                  receivedNoEnabled ? (
                                     <div className="mt-3 flex flex-wrap gap-2">
                                       {reviewEnabled ? (
                                         <button
@@ -2774,7 +2907,9 @@ export default function AssistantPage() {
                                             !payload.isValid ||
                                             reviewLoading ||
                                             approveLoading ||
-                                            confirmStoreSignatureLoading
+                                            confirmStoreSignatureLoading ||
+                                            receivedYesLoading ||
+                                            receivedNoLoading
                                           }
                                           className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                                         >
@@ -2799,7 +2934,9 @@ export default function AssistantPage() {
                                             !payload.isValid ||
                                             reviewLoading ||
                                             approveLoading ||
-                                            confirmStoreSignatureLoading
+                                            confirmStoreSignatureLoading ||
+                                            receivedYesLoading ||
+                                            receivedNoLoading
                                           }
                                           className="rounded-full bg-black px-3 py-1.5 text-[11px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                                         >
@@ -2824,7 +2961,9 @@ export default function AssistantPage() {
                                             !payload.isValid ||
                                             reviewLoading ||
                                             approveLoading ||
-                                            confirmStoreSignatureLoading
+                                            confirmStoreSignatureLoading ||
+                                            receivedYesLoading ||
+                                            receivedNoLoading
                                           }
                                           className="rounded-full bg-black px-3 py-1.5 text-[11px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                                         >
@@ -2834,6 +2973,42 @@ export default function AssistantPage() {
                                                 documentMetadata,
                                                 "confirm_store_signature"
                                               )}
+                                        </button>
+                                      ) : null}
+                                      {receivedYesEnabled ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            void handleReceivedContractDecision(message, "SIM")
+                                          }
+                                          disabled={
+                                            receivedYesLoading ||
+                                            receivedNoLoading ||
+                                            reviewLoading ||
+                                            approveLoading ||
+                                            confirmStoreSignatureLoading
+                                          }
+                                          className="rounded-full bg-emerald-700 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          {receivedYesLoading ? "Processando..." : "SIM"}
+                                        </button>
+                                      ) : null}
+                                      {receivedNoEnabled ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            void handleReceivedContractDecision(message, "NÃO")
+                                          }
+                                          disabled={
+                                            receivedYesLoading ||
+                                            receivedNoLoading ||
+                                            reviewLoading ||
+                                            approveLoading ||
+                                            confirmStoreSignatureLoading
+                                          }
+                                          className="rounded-full bg-gray-700 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          {receivedNoLoading ? "Processando..." : "NÃO"}
                                         </button>
                                       ) : null}
                                     </div>

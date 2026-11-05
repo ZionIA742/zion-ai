@@ -32,6 +32,7 @@ import {
   type ReceivedContractDocumentEvidencePersistence,
 } from "@/lib/server/sales-contracts/received-contract-document-evidence";
 import { pushAssistantReceivedContractDocumentMessage } from "@/lib/server/assistant/document-review-messages";
+import { enqueueReceivedContractDocumentAcknowledgement } from "@/lib/server/assistant/received-contract-document-acknowledgement";
 import { formatSalesAiProcessingError } from "@/lib/server/sales-ai-error-diagnostics";
 import {
   enqueuePersistedSalesAiFailureAlerts,
@@ -117,6 +118,16 @@ async function registerReceivedContractDocumentEvidenceSafely(args: {
       identificationReason: persisted.record.identificationReason,
       forwardToResponsible: true,
     });
+    if (persisted.record.conversationId && persisted.record.sourceMessageId) {
+      await enqueueReceivedContractDocumentAcknowledgement({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: persisted.record.conversationId,
+        sourceMessageId: persisted.record.sourceMessageId,
+        customerName,
+      });
+    }
     return persisted;
   } catch (error) {
     console.warn("[whatsapp_inbound] received contract document evidence skipped:", error);
@@ -176,6 +187,13 @@ type StatusMessageRow = {
   delivered_at: string | null;
   read_at: string | null;
   metadata: Record<string, unknown> | null;
+};
+
+type ResponsibleExternalStatusRow = {
+  id: string;
+  delivered_at: string | null;
+  read_at: string | null;
+  context: Record<string, unknown> | null;
 };
 
 type MetaTextPayload = {
@@ -1059,6 +1077,86 @@ async function findMessageByExternalIdForStatus(
   }
 
   return (data as StatusMessageRow | null) ?? null;
+}
+
+async function findResponsibleExternalNotificationByExternalIdForStatus(
+  supabase: SupabaseClient,
+  organizationId: string,
+  storeId: string,
+  externalMessageId: string,
+) {
+  const { data, error } = await supabase
+    .from("store_responsible_external_notifications")
+    .select("id, delivered_at, read_at, context")
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .eq("external_message_id", externalMessageId)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Falha ao buscar notificacao externa por external_message_id: ${error.message}`,
+    );
+  }
+
+  return (data as ResponsibleExternalStatusRow | null) ?? null;
+}
+
+async function updateResponsibleExternalWhatsappStatus(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  notification: ResponsibleExternalStatusRow;
+  statusValue: "sent" | "delivered" | "read" | "failed";
+  statusTimestampIso: string;
+  recipientId: string | null;
+  conversation: Record<string, unknown> | null;
+  pricing: Record<string, unknown> | null;
+  errors: unknown[] | null;
+  rawStatusPayload: Record<string, unknown> | null;
+}) {
+  const currentContext = isRecord(args.notification.context)
+    ? args.notification.context
+    : {};
+  const nextContext: Record<string, unknown> = {
+    ...currentContext,
+    whatsapp_last_status: args.statusValue,
+    whatsapp_last_status_at: args.statusTimestampIso,
+    whatsapp_last_status_payload: args.rawStatusPayload,
+    ...(args.recipientId ? { whatsapp_recipient_id: args.recipientId } : {}),
+    ...(args.conversation ? { whatsapp_conversation: args.conversation } : {}),
+    ...(args.pricing ? { whatsapp_pricing: args.pricing } : {}),
+    ...(args.errors ? { whatsapp_status_errors: args.errors } : {}),
+  };
+
+  const updatePayload: Record<string, unknown> = {
+    context: nextContext,
+    updated_at: args.statusTimestampIso,
+  };
+
+  if (args.statusValue === "delivered" && !args.notification.delivered_at) {
+    updatePayload.delivered_at = args.statusTimestampIso;
+  }
+  if (args.statusValue === "read") {
+    if (!args.notification.delivered_at) updatePayload.delivered_at = args.statusTimestampIso;
+    if (!args.notification.read_at) updatePayload.read_at = args.statusTimestampIso;
+  }
+  if (args.statusValue === "failed") {
+    updatePayload.failed_at = args.statusTimestampIso;
+    updatePayload.error_text = "whatsapp_delivery_failed";
+  }
+
+  const { error } = await args.supabase
+    .from("store_responsible_external_notifications")
+    .update(updatePayload)
+    .eq("id", args.notification.id)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId);
+
+  if (error) {
+    throw new Error(`Falha ao atualizar status da notificacao externa: ${error.message}`);
+  }
 }
 
 async function updateMessageWhatsappStatus(args: {
@@ -2177,6 +2275,36 @@ async function processStatusInboxRow(
   );
 
   if (!message?.id) {
+    const externalNotification = await findResponsibleExternalNotificationByExternalIdForStatus(
+      supabase,
+      inbox.organization_id,
+      inbox.store_id,
+      extracted.statusId,
+    );
+
+    if (externalNotification?.id) {
+      await updateResponsibleExternalWhatsappStatus({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        notification: externalNotification,
+        statusValue: extracted.statusValue,
+        statusTimestampIso: extracted.statusTimestampIso,
+        recipientId: extracted.recipientId,
+        conversation: extracted.conversation,
+        pricing: extracted.pricing,
+        errors: extracted.errors,
+        rawStatusPayload: extracted.rawStatusPayload,
+      });
+      await markInboxProcessed(supabase, inbox);
+      return {
+        inbox_id: inbox.id,
+        external_event_id: inbox.external_event_id,
+        status: "succeeded",
+        detail: `external_notification_status_applied_${extracted.statusValue}`,
+      };
+    }
+
     const detail = "status_message_not_found_by_external_message_id";
     await markInboxError(supabase, inbox, detail);
     return {

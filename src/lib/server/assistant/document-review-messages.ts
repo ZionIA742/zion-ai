@@ -39,6 +39,12 @@ type AssistantDocumentReviewAction =
       label: string;
       kind: "confirm_store_signature";
       requires_confirmation: true;
+    }
+  | {
+      id: "received_contract_confirm_yes" | "received_contract_confirm_no";
+      label: string;
+      kind: "received_contract_decision";
+      requires_confirmation: true;
     };
 
 type PushAssistantDocumentReviewMessageInput = {
@@ -173,7 +179,24 @@ function buildDefaultAvailableActions(
       label: "Revisar",
       kind: "open_document",
     },
-    ...(input.documentType === "contract"
+    ...(input.sourceOverride === RECEIVED_CONTRACT_DOCUMENT_SOURCE &&
+    input.receivedEvidenceIdentificationStatus === "identified" &&
+    input.documentType === "contract"
+      ? ([
+          {
+            id: "received_contract_confirm_yes",
+            label: "SIM",
+            kind: "received_contract_decision",
+            requires_confirmation: true,
+          },
+          {
+            id: "received_contract_confirm_no",
+            label: "NÃO",
+            kind: "received_contract_decision",
+            requires_confirmation: true,
+          },
+        ] satisfies AssistantDocumentReviewAction[])
+      : input.documentType === "contract"
       ? ([
           {
             id: "approve_and_send",
@@ -357,7 +380,9 @@ async function findExistingDocumentReviewMessage(args: {
   documentVersionId: string;
   documentStatus?: string | null;
   source?: string | null;
+  receivedEvidenceSourceMessageId?: string | null;
 }) {
+  const source = cleanText(args.source) || DOCUMENT_REVIEW_SOURCE;
   const { data, error } = await args.supabase
     .from("store_assistant_messages")
     .select("id")
@@ -371,7 +396,15 @@ async function findExistingDocumentReviewMessage(args: {
       ...(cleanText(args.documentStatus)
         ? { document_status: cleanText(args.documentStatus) }
         : {}),
-      source: cleanText(args.source) || DOCUMENT_REVIEW_SOURCE,
+      source,
+      ...(source === RECEIVED_CONTRACT_DOCUMENT_SOURCE &&
+      cleanText(args.receivedEvidenceSourceMessageId)
+        ? {
+            received_evidence_source_message_id: cleanText(
+              args.receivedEvidenceSourceMessageId,
+            ),
+          }
+        : {}),
     })
     .order("created_at", { ascending: false })
     .limit(1)
@@ -495,6 +528,12 @@ async function enqueueDocumentReviewNotification(args: {
     cleanText(args.metadata.document_id) || "unknown",
     cleanText(args.metadata.document_version_id) || "unknown",
     cleanText(args.metadata.document_status) || "unknown",
+    ...(cleanText(args.metadata.source) === RECEIVED_CONTRACT_DOCUMENT_SOURCE
+      ? [
+          "source_message",
+          cleanText(args.metadata.received_evidence_source_message_id) || "unknown",
+        ]
+      : []),
   ].join(":");
 
   try {
@@ -640,6 +679,7 @@ export async function pushAssistantDocumentReviewMessage(
     documentVersionId: input.documentVersionId,
     documentStatus: input.documentStatus,
     source,
+    receivedEvidenceSourceMessageId: input.receivedEvidenceSourceMessageId,
   });
 
   if (existingMessageId) {
@@ -681,6 +721,7 @@ export async function pushAssistantDocumentReviewMessage(
         documentVersionId: input.documentVersionId,
         documentStatus: input.documentStatus,
         source,
+        receivedEvidenceSourceMessageId: input.receivedEvidenceSourceMessageId,
       });
 
       if (!concurrentMessageId) {
@@ -774,7 +815,21 @@ export async function pushAssistantReceivedContractDocumentMessage(
     contentOverride: content,
     assistantPromptOverride: "Conferir o documento recebido. Nao presumir assinatura valida nem concluir o contrato automaticamente.",
     availableActionsOverride: identified
-      ? [{ id: "review", label: "Abrir documento recebido", kind: "open_document" }]
+      ? [
+          { id: "review", label: "Abrir documento recebido", kind: "open_document" },
+          {
+            id: "received_contract_confirm_yes",
+            label: "SIM",
+            kind: "received_contract_decision",
+            requires_confirmation: true,
+          },
+          {
+            id: "received_contract_confirm_no",
+            label: "NÃO",
+            kind: "received_contract_decision",
+            requires_confirmation: true,
+          },
+        ]
       : [],
     sourceOverride: RECEIVED_CONTRACT_DOCUMENT_SOURCE,
     materializeExternalNotification: input.forwardToResponsible === true,

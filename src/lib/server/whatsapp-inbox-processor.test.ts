@@ -148,6 +148,17 @@ test("normaliza respostas SIM/NÃO de interactive e template sem perder a correl
   assert.equal(resolveResponsibleInboundContent(unrelated), "OTHER_ACTION");
 });
 
+test("status do sender externo usa a fila canonica quando nao ha message comum", () => {
+  const source = readProcessorSource();
+  assert.match(source, /findResponsibleExternalNotificationByExternalIdForStatus/);
+  assert.match(source, /updateResponsibleExternalWhatsappStatus/);
+  assert.match(source, /external_notification_status_applied_/);
+  assert.match(
+    source,
+    /if \(!message\?\.id\) \{[\s\S]*?findResponsibleExternalNotificationByExternalIdForStatus/,
+  );
+});
+
 function jsonFetchResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -501,7 +512,7 @@ test("responsible interactive inbound reaches the bridge before the customer int
         inbound_message_id: null,
         assistant_message_id: null,
         attempts: 1,
-        outbound_status: null,
+        outbound_status: "failed",
       }]);
     }
 
@@ -564,6 +575,14 @@ test("responsible interactive inbound reaches the bridge before the customer int
       }]);
     }
 
+    if (url.includes("/rest/v1/rpc/assistant_push_system_message")) {
+      return jsonFetchResponse([{ id: "decision-reply-1" }]);
+    }
+
+    if (url.includes("graph.facebook.com") && method === "POST") {
+      return jsonFetchResponse({ messages: [{ id: "wamid.decision-reply-1" }] });
+    }
+
     if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") {
       return jsonFetchResponse([]);
     }
@@ -580,7 +599,7 @@ test("responsible interactive inbound reaches the bridge before the customer int
 
     assert.equal(result.succeeded, 1, JSON.stringify(result));
     assert.equal(result.failed, 0, JSON.stringify(result));
-    assert.match(result.results[0]?.detail || "", /responsible_inbound_sent/);
+    assert.match(result.results[0]?.detail || "", /responsible_inbound_failed/);
     assert.equal(
       calls.some((call) => call.url.includes("resolve_whatsapp_inbound_thread_by_system")),
       false,

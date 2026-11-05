@@ -750,12 +750,110 @@ export async function routeResponsibleWhatsappToAssistant(args: {
     }
 
     if (inboundHookResult) {
+      if (event.external_response_id) {
+        await updateEvent(supabase, event.id, event.claim_token!, {
+          status: "sent",
+          outbound_status: "sent",
+          locked_at: null,
+          locked_by: null,
+        });
+        return {
+          handled: true,
+          duplicate: true,
+          status: "sent",
+          decisionHandled: true,
+          decision: inboundHookResult,
+          threadId: thread.threadId,
+        } as const;
+      }
+
+      // A provider uncertainty must never be retried blindly. The event is
+      // left available for explicit reconciliation instead.
+      if (event.outbound_status === "uncertain" || event.outbound_status === "failed") {
+        await updateEvent(supabase, event.id, event.claim_token!, {
+          status: event.outbound_status === "uncertain" ? "uncertain" : "failed",
+          outbound_status: event.outbound_status,
+          locked_at: null,
+          locked_by: null,
+        });
+        return {
+          handled: true,
+          duplicate: true,
+          status: event.outbound_status,
+          decisionHandled: true,
+          decision: inboundHookResult,
+          threadId: thread.threadId,
+        } as const;
+      }
+
+      const decisionResponse =
+        "responseText" in inboundHookResult
+          ? inboundHookResult.responseText
+          : null;
+      if (!decisionResponse) {
+        throw new Error("RESPONSIBLE_DECISION_RESPONSE_MISSING");
+      }
+
+      const { data: existingDecisionReply, error: existingDecisionReplyError } =
+        await supabase
+          .from("store_assistant_messages")
+          .select("id")
+          .eq("organization_id", organizationId)
+          .eq("store_id", storeId)
+          .eq("thread_id", inbound.thread_id)
+          .in("sender_role", ["assistant", "assistant_operational"])
+          .contains("metadata", {
+            source: "responsible_whatsapp_decision",
+            source_external_message_id: externalMessageId,
+          })
+          .limit(1)
+          .maybeSingle();
+      if (existingDecisionReplyError) throw new Error(existingDecisionReplyError.message);
+
+      if (!existingDecisionReply?.id) {
+        const { error: decisionReplyError } = await supabase.rpc(
+          "assistant_push_system_message",
+          {
+            p_organization_id: organizationId,
+            p_store_id: storeId,
+            p_content: decisionResponse,
+            p_message_type: "text",
+            p_related_lead_id: null,
+            p_related_conversation_id: null,
+            p_related_appointment_id: null,
+            p_metadata: {
+              source: "responsible_whatsapp_decision",
+              source_external_message_id: externalMessageId,
+              decision: inboundHookResult,
+            },
+          },
+        );
+        if (decisionReplyError) throw new Error(decisionReplyError.message);
+      }
+
+      await updateEvent(supabase, event.id, event.claim_token!, {
+        outbound_status: "sending",
+        outbound_attempt: event.attempts || 1,
+        outbound_started_at: new Date().toISOString(),
+        outbound_error: null,
+      });
+
+      const outbound = await sendResponsibleAssistantText({
+        organizationId,
+        storeId,
+        responsibleId,
+        destination: responsible.responsible.whatsappNumber,
+        text: decisionResponse,
+      });
+      if (!outbound.ok) throw new Error(outbound.reason);
+
       await updateEvent(supabase, event.id, event.claim_token!, {
         status: "sent",
-        outbound_status: null,
-        outbound_finished_at: null,
+        outbound_status: "sent",
+        outbound_finished_at: new Date().toISOString(),
         outbound_error: null,
         error_text: null,
+        external_response_id: outbound.externalMessageId,
         locked_at: null,
         locked_by: null,
       });

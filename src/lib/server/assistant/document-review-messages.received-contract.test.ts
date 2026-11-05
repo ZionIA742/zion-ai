@@ -4,13 +4,17 @@ import { pushAssistantReceivedContractDocumentMessage } from "./document-review-
 
 function harness(options: { existingMessage?: { id: string } | null } = {}) {
   const rpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
+  const containsCalls: Array<{ table: string; values: unknown }> = [];
   const updateCalls: Array<{ table: string; values: unknown }> = [];
   const supabase = {
     from(table: string) {
       const query: any = {
         select() { return query; },
         eq() { return query; },
-        contains() { return query; },
+        contains(_column: string, values: unknown) {
+          containsCalls.push({ table, values });
+          return query;
+        },
         order() { return query; },
         limit() { return query; },
         update(values: unknown) {
@@ -36,7 +40,7 @@ function harness(options: { existingMessage?: { id: string } | null } = {}) {
       return { data: null, error: null };
     },
   };
-  return { supabase, rpcCalls, updateCalls };
+  return { supabase, rpcCalls, updateCalls, containsCalls };
 }
 
 const baseInput = {
@@ -76,6 +80,12 @@ test("notifica documento identificado com o arquivo recebido e sem encaminhament
   assert.equal(metadata.origin, "received_contract_document_evidence");
   assert.equal(metadata.storage_path, "inbound/contracts/signed-v2.pdf");
   assert.equal(metadata.received_evidence_source_message_id, "message-1");
+  const actions = metadata.available_actions as Array<{ id: string }>;
+  assert.deepEqual(actions.map((action) => action.id), [
+    "review",
+    "received_contract_confirm_yes",
+    "received_contract_confirm_no",
+  ]);
   assert.equal(h.rpcCalls.some((call) => call.fn === "assistant_enqueue_internal_notification"), true);
   assert.equal(h.rpcCalls.some((call) => call.fn.includes("responsible")), false);
   assert.equal(h.updateCalls.some((call) => call.table === "sales_contracts"), false);
@@ -111,6 +121,53 @@ test("replay da mesma evidencia nao cria segunda mensagem", async () => {
   assert.equal(result.deduped, true);
   assert.equal(result.messageId, "message-assistant-1");
   assert.equal(h.rpcCalls.length, 0);
+});
+
+test("novo recebimento do mesmo arquivo usa uma identidade de ocorrencia distinta", async () => {
+  const first = harness();
+  await pushAssistantReceivedContractDocumentMessage({
+    supabase: first.supabase,
+    ...baseInput,
+    sourceMessageId: "message-1",
+  });
+
+  const second = harness();
+  await pushAssistantReceivedContractDocumentMessage({
+    supabase: second.supabase,
+    ...baseInput,
+    sourceMessageId: "message-2",
+  });
+
+  const firstNotification = first.rpcCalls.find(
+    (call) => call.fn === "assistant_enqueue_internal_notification",
+  );
+  const secondNotification = second.rpcCalls.find(
+    (call) => call.fn === "assistant_enqueue_internal_notification",
+  );
+  assert.ok(firstNotification);
+  assert.ok(secondNotification);
+  assert.notEqual(
+    firstNotification.payload.p_event_key,
+    secondNotification.payload.p_event_key,
+  );
+  assert.match(String(firstNotification.payload.p_event_key), /source_message:message-1$/);
+  assert.match(String(secondNotification.payload.p_event_key), /source_message:message-2$/);
+  const firstMessageLookup = first.containsCalls.find(
+    (call) => call.table === "store_assistant_messages",
+  );
+  const secondMessageLookup = second.containsCalls.find(
+    (call) => call.table === "store_assistant_messages",
+  );
+  assert.equal(
+    (firstMessageLookup?.values as Record<string, unknown>)
+      .received_evidence_source_message_id,
+    "message-1",
+  );
+  assert.equal(
+    (secondMessageLookup?.values as Record<string, unknown>)
+      .received_evidence_source_message_id,
+    "message-2",
+  );
 });
 
 console.log("document-review-messages.received-contract: PASS");
