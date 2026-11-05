@@ -545,7 +545,51 @@ const tests: TestCase[] = [
       assert.equal(saveBlock.includes("setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(nextScheduleSettings))"), true);
     },
   },
+  {
+    name: "supply card uses installed scoped RPCs and conditional fields",
+    run: () => {
+      const source = readPageSource();
+      const start = source.indexOf('title="Fornecimento e prazos"');
+      const end = source.indexOf('title="Instalação de piscina nova"', start);
+      assert.equal(start > -1, true);
+      assert.equal(end > start, true);
+      const card = source.slice(start, end);
+      const fetchStart = source.indexOf("const fetchPageData = useCallback");
+      const fetchBlock = source.slice(fetchStart, source.indexOf("if (poolsResult.error)", fetchStart));
+      assert.equal(card.includes('operationEditTarget === "supply"'), true);
+      assert.equal(fetchBlock.includes("read_store_supply_policy_scoped"), true);
+      assert.equal(card.includes("Sua loja mantém piscinas em estoque?"), true);
+      assert.equal(card.includes("Sua loja também vende piscinas sob encomenda?"), true);
+      assert.equal(card.includes("Sua loja vende piscinas sob encomenda?"), true);
+      assert.equal(card.includes("SUPPLY_LEAD_TIME_UNIT_OPTIONS"), true);
+      assert.equal(card.includes("SUPPLY_START_EVENT_OPTIONS"), true);
+      assert.equal(card.includes("SUPPLY_APPLIES_UNTIL_OPTIONS"), true);
+      assert.equal(card.includes("Não foi possível carregar a política de fornecimento desta loja"), true);
 
+      const saveStart = source.indexOf("const saveSupplyPolicyCard = useCallback");
+      const saveEnd = source.indexOf("  const saveAfterHoursCard", saveStart);
+      assert.equal(saveStart > -1, true);
+      assert.equal(saveEnd > saveStart, true);
+      const saveBlock = source.slice(saveStart, saveEnd);
+      assert.equal(saveBlock.includes("upsert_store_supply_policy_scoped"), true);
+      [
+        "p_pool_stock_enabled: stockEnabled",
+        "p_pool_order_enabled: orderEnabled",
+        "p_pool_supply_lead_time_days: leadTimeDays",
+        "p_pool_supply_lead_time_unit: leadTimeUnit",
+        "p_pool_supply_lead_time_start_event: leadTimeStartEvent",
+        "p_pool_supply_lead_time_start_event_other: leadTimeStartEventOther",
+        "p_pool_supply_lead_time_applies_until: leadTimeAppliesUntil",
+        "p_pool_factory_order_condition: factoryOrderCondition || null",
+        "setOperationEditTarget(null)",
+        "catch (error: unknown)",
+      ].forEach((fragment) => assert.equal(saveBlock.includes(fragment), true, fragment));
+      assert.equal(card.includes("A loja trabalha com estoque e encomenda. A modalidade de cada piscina deve ser confirmada individualmente"), true);
+      assert.equal(saveBlock.includes("parsedDays < 1 || parsedDays > 3650"), true);
+      assert.equal(saveBlock.includes('"A loja precisa trabalhar com estoque, encomenda ou ambos."'), true);
+      assert.equal(saveBlock.includes("P9_SUPPLY_STORE_CHANGE_CONFLICTS_WITH_POOL_OVERRIDES"), false);
+    },
+  },
   {
     name: "schedule refresh hydrates migrated operation cards from canonical row",
     run: () => {

@@ -32,6 +32,15 @@ export type StoreOperationSettingsRow = {
   technical_visit_fixed_fee_cents?: number | null;
   technical_visit_case_by_case_rule?: string | null;
   technical_visit_fee_deductible_from_purchase?: boolean | null;
+  pool_stock_enabled?: boolean | null;
+  pool_order_enabled?: boolean | null;
+  pool_supply_explanation?: string | null;
+  pool_supply_lead_time_days?: number | null;
+  pool_supply_lead_time_unit?: string | null;
+  pool_supply_lead_time_start_event?: string | null;
+  pool_supply_lead_time_start_event_other?: string | null;
+  pool_supply_lead_time_applies_until?: string | null;
+  pool_factory_order_condition?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };

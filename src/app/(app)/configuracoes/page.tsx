@@ -1777,6 +1777,91 @@ const DAYS_OF_WEEK_OPTIONS: Option[] = [
 const CANONICAL_OPERATION_DAYS = DAYS_OF_WEEK_OPTIONS.map((day) => day.value);
 const DEFAULT_SCHEDULE_TIMEZONE = "America/Sao_Paulo";
 
+type StoreSupplyPolicy = {
+  configured?: boolean;
+  store_supply_mode?: string | null;
+  store_stock_enabled?: boolean | null;
+  store_order_enabled?: boolean | null;
+  operational_explanation?: string | null;
+  factory_order_condition?: string | null;
+  store_lead_time_days?: number | null;
+  store_lead_time_unit?: string | null;
+  store_lead_time_start_event?: string | null;
+  store_lead_time_start_event_other?: string | null;
+  store_lead_time_applies_until?: string | null;
+};
+
+type StoreSupplyPolicyDraft = {
+  stockEnabled: string;
+  orderEnabled: string;
+  explanation: string;
+  leadTimeDays: string;
+  leadTimeUnit: string;
+  leadTimeStartEvent: string;
+  leadTimeStartEventOther: string;
+  leadTimeAppliesUntil: string;
+  factoryOrderCondition: string;
+};
+
+const SUPPLY_MODE_OPTIONS = [
+  { value: "Sim", label: "Sim" },
+  { value: "Não", label: "Não" },
+];
+
+const SUPPLY_LEAD_TIME_UNIT_OPTIONS = [
+  { value: "business_days", label: "Dias úteis" },
+  { value: "calendar_days", label: "Dias corridos" },
+];
+
+const SUPPLY_START_EVENT_OPTIONS = [
+  { value: "sale_confirmed", label: "Venda confirmada" },
+  { value: "entry_payment_confirmed", label: "Entrada confirmada" },
+  { value: "factory_order_placed", label: "Pedido realizado à fábrica" },
+  { value: "factory_order_confirmed", label: "Pedido confirmado pela fábrica" },
+  { value: "other", label: "Outro" },
+];
+
+const SUPPLY_APPLIES_UNTIL_OPTIONS = [
+  { value: "release", label: "Liberação pela fábrica" },
+  { value: "delivery", label: "Entrega ao cliente" },
+  { value: "installation", label: "Instalação" },
+];
+
+function createStoreSupplyPolicyDraft(policy?: StoreSupplyPolicy | null): StoreSupplyPolicyDraft {
+  return {
+    stockEnabled: policy?.store_stock_enabled == null ? "" : policy.store_stock_enabled ? "Sim" : "Não",
+    orderEnabled: policy?.store_order_enabled == null ? "" : policy.store_order_enabled ? "Sim" : "Não",
+    explanation: cleanText(policy?.operational_explanation),
+    leadTimeDays: policy?.store_lead_time_days == null ? "" : String(policy.store_lead_time_days),
+    leadTimeUnit: cleanText(policy?.store_lead_time_unit),
+    leadTimeStartEvent: cleanText(policy?.store_lead_time_start_event),
+    leadTimeStartEventOther: cleanText(policy?.store_lead_time_start_event_other),
+    leadTimeAppliesUntil: cleanText(policy?.store_lead_time_applies_until),
+    factoryOrderCondition: cleanText(policy?.factory_order_condition),
+  };
+}
+
+function supplyModeLabel(value: unknown) {
+  if (value === "stock") return "Estoque";
+  if (value === "on_order") return "Sob encomenda";
+  if (value === "mixed") return "Operação mista";
+  return "Não configurado";
+}
+
+function supplyLeadTimeUnitLabel(value: unknown) {
+  return SUPPLY_LEAD_TIME_UNIT_OPTIONS.find((option) => option.value === value)?.label || "";
+}
+
+function supplyLeadTimeEventLabel(value: unknown, other?: unknown) {
+  return value === "other"
+    ? cleanText(other) || "Outro evento"
+    : SUPPLY_START_EVENT_OPTIONS.find((option) => option.value === value)?.label || "";
+}
+
+function supplyAppliesUntilLabel(value: unknown) {
+  return SUPPLY_APPLIES_UNTIL_OPTIONS.find((option) => option.value === value)?.label || "";
+}
+
 const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
   { value: "precisa_agendar", label: "Precisa agendar antes" },
   { value: "confirmar_endereco", label: "Precisa confirmar endereço antes" },
@@ -4382,6 +4467,9 @@ export default function ConfiguracoesPage() {
   const [answers, setAnswers] = useState<AnswersMap>({});
   const [scheduleSettings, setScheduleSettings] = useState<ScheduleSettingsRow | null>(null);
   const [operationSettings, setOperationSettings] = useState<StoreOperationSettingsRow | null>(null);
+  const [supplyPolicy, setSupplyPolicy] = useState<StoreSupplyPolicy | null>(null);
+  const [supplyPolicyReadError, setSupplyPolicyReadError] = useState<string | null>(null);
+  const [supplyPolicyDraft, setSupplyPolicyDraft] = useState<StoreSupplyPolicyDraft>(createStoreSupplyPolicyDraft(null));
   const [strategySettings, setStrategySettings] = useState<StoreStrategySettingsRow | null>(null);
   const [channelSettings, setChannelSettings] = useState<StoreChannelSettingsRow | null>(null);
   const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettingsRow | null>(null);
@@ -4408,6 +4496,7 @@ export default function ConfiguracoesPage() {
   const [operationEditTarget, setOperationEditTarget] = useState<
     | "hours"
     | "assistant_reports"
+    | "supply"
     | "after_hours"
     | "agenda"
     | "reschedule_autonomy"
@@ -5186,6 +5275,9 @@ export default function ConfiguracoesPage() {
       setAnswers({});
       setScheduleSettings(null);
       setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(null));
+      setSupplyPolicy(null);
+      setSupplyPolicyReadError(null);
+      setSupplyPolicyDraft(createStoreSupplyPolicyDraft(null));
       setOperationSettings(null);
       setStrategySettings(null);
       setChannelSettings(null);
@@ -5223,6 +5315,7 @@ export default function ConfiguracoesPage() {
         answersResult,
         scheduleSettingsResult,
         operationSettingsResult,
+        supplyPolicyResult,
         strategySettingsResult,
         channelSettingsResult,
         paymentSettingsResult,
@@ -5262,11 +5355,15 @@ export default function ConfiguracoesPage() {
         supabase
           .from("store_operation_settings")
           .select(
-            "organization_id, store_id, offers_installation, average_installation_time_days, installation_days_rule, installation_process_notes, offers_technical_visit, technical_visit_days_rule, technical_visit_rules, technical_visit_rules_other, technical_visit_pricing_mode, technical_visit_fixed_fee_cents, technical_visit_case_by_case_rule, technical_visit_fee_deductible_from_purchase, created_at, updated_at",
+            "organization_id, store_id, offers_installation, average_installation_time_days, installation_days_rule, installation_process_notes, offers_technical_visit, technical_visit_days_rule, technical_visit_rules, technical_visit_rules_other, technical_visit_pricing_mode, technical_visit_fixed_fee_cents, technical_visit_case_by_case_rule, technical_visit_fee_deductible_from_purchase, pool_stock_enabled, pool_order_enabled, pool_supply_explanation, pool_supply_lead_time_days, pool_supply_lead_time_unit, pool_supply_lead_time_start_event, pool_supply_lead_time_start_event_other, pool_supply_lead_time_applies_until, pool_factory_order_condition, created_at, updated_at",
           )
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
           .maybeSingle(),
+        supabase.rpc("read_store_supply_policy_scoped", {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+        }),
         supabase
           .from("store_strategy_settings")
           .select(
@@ -5587,6 +5684,15 @@ export default function ConfiguracoesPage() {
       setOperationSettings(
         (operationSettingsResult.data ?? null) as StoreOperationSettingsRow | null,
       );
+      if (supplyPolicyResult.error) {
+        setSupplyPolicy(null);
+        setSupplyPolicyReadError(supplyPolicyResult.error.message || "Não foi possível carregar o fornecimento da loja.");
+      } else {
+        const nextSupplyPolicy = (supplyPolicyResult.data ?? null) as StoreSupplyPolicy | null;
+        setSupplyPolicy(nextSupplyPolicy);
+        setSupplyPolicyReadError(null);
+        setSupplyPolicyDraft(createStoreSupplyPolicyDraft(nextSupplyPolicy));
+      }
       setStrategySettings(nextStrategySettings);
       setChannelSettings((channelSettingsResult.data ?? null) as StoreChannelSettingsRow | null);
       setPaymentSettings((paymentSettingsResult.data ?? null) as StorePaymentSettingsRow | null);
@@ -8029,6 +8135,116 @@ export default function ConfiguracoesPage() {
     scheduleSettings,
   ]);
 
+  const saveSupplyPolicyCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar o fornecimento.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const stockEnabled = parseYesNoToNullableBoolean(supplyPolicyDraft.stockEnabled);
+    const orderEnabled = parseYesNoToNullableBoolean(supplyPolicyDraft.orderEnabled);
+    if (stockEnabled == null || orderEnabled == null) {
+      setErrorText("Responda se a loja mantém piscinas em estoque e se também vende sob encomenda.");
+      setSuccessText(null);
+      return false;
+    }
+    if (!stockEnabled && !orderEnabled) {
+      setErrorText("A loja precisa trabalhar com estoque, encomenda ou ambos.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const explanation = cleanText(supplyPolicyDraft.explanation);
+    const factoryOrderCondition = orderEnabled ? cleanText(supplyPolicyDraft.factoryOrderCondition) : "";
+    if (explanation.length > 4000 || factoryOrderCondition.length > 2000) {
+      setErrorText("A explicação operacional ou a condição do pedido excede o limite permitido.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const hasLeadTime = Boolean(
+      cleanText(supplyPolicyDraft.leadTimeDays) ||
+        cleanText(supplyPolicyDraft.leadTimeUnit) ||
+        cleanText(supplyPolicyDraft.leadTimeStartEvent) ||
+        cleanText(supplyPolicyDraft.leadTimeStartEventOther) ||
+        cleanText(supplyPolicyDraft.leadTimeAppliesUntil),
+    );
+    let leadTimeDays: number | null = null;
+    let leadTimeUnit: string | null = null;
+    let leadTimeStartEvent: string | null = null;
+    let leadTimeStartEventOther: string | null = null;
+    let leadTimeAppliesUntil: string | null = null;
+
+    if (orderEnabled && hasLeadTime) {
+      const parsedDays = Number.parseInt(cleanText(supplyPolicyDraft.leadTimeDays), 10);
+      if (!Number.isInteger(parsedDays) || parsedDays < 1 || parsedDays > 3650) {
+        setErrorText("O prazo estimado deve ser um número inteiro entre 1 e 3650 dias.");
+        setSuccessText(null);
+        return false;
+      }
+      if (!SUPPLY_LEAD_TIME_UNIT_OPTIONS.some((option) => option.value === supplyPolicyDraft.leadTimeUnit)) {
+        setErrorText("Escolha se o prazo é contado em dias úteis ou corridos.");
+        setSuccessText(null);
+        return false;
+      }
+      if (!SUPPLY_START_EVENT_OPTIONS.some((option) => option.value === supplyPolicyDraft.leadTimeStartEvent)) {
+        setErrorText("Escolha o evento que inicia a contagem do prazo.");
+        setSuccessText(null);
+        return false;
+      }
+      if (!SUPPLY_APPLIES_UNTIL_OPTIONS.some((option) => option.value === supplyPolicyDraft.leadTimeAppliesUntil)) {
+        setErrorText("Escolha até qual etapa o prazo se aplica.");
+        setSuccessText(null);
+        return false;
+      }
+      leadTimeDays = parsedDays;
+      leadTimeUnit = supplyPolicyDraft.leadTimeUnit;
+      leadTimeStartEvent = supplyPolicyDraft.leadTimeStartEvent;
+      leadTimeAppliesUntil = supplyPolicyDraft.leadTimeAppliesUntil;
+      if (leadTimeStartEvent === "other") {
+        leadTimeStartEventOther = cleanText(supplyPolicyDraft.leadTimeStartEventOther);
+        if (!leadTimeStartEventOther || leadTimeStartEventOther.length > 300) {
+          setErrorText("Descreva o evento Outro em até 300 caracteres.");
+          setSuccessText(null);
+          return false;
+        }
+      }
+    }
+
+    try {
+      const { data, error } = await supabase.rpc("upsert_store_supply_policy_scoped", {
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_pool_stock_enabled: stockEnabled,
+        p_pool_order_enabled: orderEnabled,
+        p_pool_supply_explanation: explanation || null,
+        p_pool_supply_lead_time_days: leadTimeDays,
+        p_pool_supply_lead_time_unit: leadTimeUnit,
+        p_pool_supply_lead_time_start_event: leadTimeStartEvent,
+        p_pool_supply_lead_time_start_event_other: leadTimeStartEventOther,
+        p_pool_supply_lead_time_applies_until: leadTimeAppliesUntil,
+        p_pool_factory_order_condition: factoryOrderCondition || null,
+      });
+      if (error) throw error;
+
+      const nextSupplyPolicy = (Array.isArray(data) ? data[0] ?? null : data ?? null) as StoreSupplyPolicy | null;
+      if (!nextSupplyPolicy) throw new Error("O servidor não retornou a política de fornecimento salva.");
+      setSupplyPolicy(nextSupplyPolicy);
+      setSupplyPolicyReadError(null);
+      setSupplyPolicyDraft(createStoreSupplyPolicyDraft(nextSupplyPolicy));
+      setErrorText(null);
+      setSuccessText("Fornecimento e prazos salvos com sucesso.");
+      setOperationEditTarget(null);
+      await fetchPageData();
+      return true;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Não foi possível salvar o fornecimento e os prazos.";
+      setErrorText(message);
+      setSuccessText(null);
+      return false;
+    }
+  }, [activeStoreId, fetchPageData, organizationId, supplyPolicyDraft]);
 
   const saveAfterHoursCard = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -14124,6 +14340,54 @@ export default function ConfiguracoesPage() {
             </div> : <SummaryList items={buildBulletRows([{label:"Oferece visita",value:yesNoLabel(operationSettingsInput.offersTechnicalVisit)},{label:"Obrigatória em",value:savedOperationExperience.visit_required_situations.length ? `${savedOperationExperience.visit_required_situations.length} ${savedOperationExperience.visit_required_situations.length === 1 ? "situação" : "situações"}` : "Não definido"},{label:"Tempo reservado",value:savedOperationExperience.visit_duration_minutes ? `${savedOperationExperience.visit_duration_minutes} min` : savedOperationExperience.visit_duration_mode === "varia" ? "Varia" : "Não definido"},{label:"Cobrança",value:savedOperationExperience.visit_pricing_mode ? optionLabel(savedOperationExperience.visit_pricing_mode,[{value:"free",label:"Gratuita"},{value:"fixed",label:"Valor fixo"},{value:"case_by_case",label:"Caso a caso"}]) : "Não definida"}])} />}
           </SectionBlock>
 
+          <SectionBlock
+            title="Fornecimento e prazos"
+            description="Informe se a loja trabalha com piscinas em estoque, sob encomenda ou nos dois modelos. O prazo informado é estimado e não registra pedido na fábrica."
+            tone={supplyPolicyReadError ? "red" : supplyPolicy?.configured ? "blue" : "yellow"}
+            status={supplyPolicyReadError ? "Erro de leitura" : supplyModeLabel(supplyPolicy?.store_supply_mode)}
+            className={operationEditTarget === "supply" ? "xl:col-span-2" : ""}
+            actions={supplyPolicyReadError ? null : operationEditTarget === "supply" ? <><button type="button" onClick={() => void saveSupplyPolicyCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setSupplyPolicyDraft(createStoreSupplyPolicyDraft(supplyPolicy)); setOperationEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setSupplyPolicyDraft(createStoreSupplyPolicyDraft(supplyPolicy)); setOperationEditTarget("supply"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {supplyPolicyReadError ? (
+              <p className="text-sm leading-5 text-red-700">Não foi possível carregar a política de fornecimento desta loja. A loja não foi considerada como não configurada.</p>
+            ) : operationEditTarget === "supply" ? (
+              <div className="space-y-4">
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Sua loja mantém piscinas em estoque?</div>
+                  <ChoiceButtonGroup value={supplyPolicyDraft.stockEnabled} onChange={(value) => setSupplyPolicyDraft((current) => ({ ...current, stockEnabled: value }))} options={SUPPLY_MODE_OPTIONS} />
+                </div>
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">{normalizeLoose(supplyPolicyDraft.stockEnabled) === "sim" ? "Sua loja também vende piscinas sob encomenda?" : "Sua loja vende piscinas sob encomenda?"}</div>
+                  <ChoiceButtonGroup value={supplyPolicyDraft.orderEnabled} onChange={(value) => setSupplyPolicyDraft((current) => ({ ...current, orderEnabled: value }))} options={SUPPLY_MODE_OPTIONS} />
+                </div>
+                {normalizeLoose(supplyPolicyDraft.stockEnabled) === "sim" && normalizeLoose(supplyPolicyDraft.orderEnabled) === "sim" ? (
+                  <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm leading-5 text-amber-900">A loja trabalha com estoque e encomenda. A modalidade de cada piscina deve ser confirmada individualmente; esta configuração geral não define automaticamente o fornecimento de um modelo específico.</p>
+                ) : null}
+                {normalizeLoose(supplyPolicyDraft.stockEnabled) === "sim" || normalizeLoose(supplyPolicyDraft.orderEnabled) === "sim" ? (
+                  <div className="space-y-4">
+                    <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como funciona o fornecimento da sua loja?</span><textarea maxLength={4000} rows={4} value={supplyPolicyDraft.explanation} onChange={(e) => setSupplyPolicyDraft((current) => ({ ...current, explanation: e.target.value }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                    {normalizeLoose(supplyPolicyDraft.orderEnabled) === "sim" ? <>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual é o prazo estimado?</span><input inputMode="numeric" maxLength={4} value={supplyPolicyDraft.leadTimeDays} onChange={(e) => setSupplyPolicyDraft((current) => ({ ...current, leadTimeDays: e.target.value.replace(/\D/g, "") }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                        <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Unidade do prazo</span><select value={supplyPolicyDraft.leadTimeUnit} onChange={(e) => setSupplyPolicyDraft((current) => ({ ...current, leadTimeUnit: e.target.value }))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm"><option value="">Selecione</option>{SUPPLY_LEAD_TIME_UNIT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                      </div>
+                      <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Início da contagem do prazo</div><ChoiceButtonGroup value={supplyPolicyDraft.leadTimeStartEvent} onChange={(value) => setSupplyPolicyDraft((current) => ({ ...current, leadTimeStartEvent: value }))} options={SUPPLY_START_EVENT_OPTIONS} />{supplyPolicyDraft.leadTimeStartEvent === "other" ? <label className="mt-3 block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Descreva o outro evento</span><input maxLength={300} value={supplyPolicyDraft.leadTimeStartEventOther} onChange={(e) => setSupplyPolicyDraft((current) => ({ ...current, leadTimeStartEventOther: e.target.value }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label> : null}</div>
+                      <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Até qual etapa o prazo se aplica?</div><ChoiceButtonGroup value={supplyPolicyDraft.leadTimeAppliesUntil} onChange={(value) => setSupplyPolicyDraft((current) => ({ ...current, leadTimeAppliesUntil: value }))} options={SUPPLY_APPLIES_UNTIL_OPTIONS} /></div>
+                      <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando a loja solicita a piscina à fábrica?</span><textarea maxLength={2000} rows={3} value={supplyPolicyDraft.factoryOrderCondition} onChange={(e) => setSupplyPolicyDraft((current) => ({ ...current, factoryOrderCondition: e.target.value }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                    </> : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <SummaryList items={buildBulletRows([
+                { label: "Modalidade", value: supplyModeLabel(supplyPolicy?.store_supply_mode) },
+                { label: "Prazo estimado", value: supplyPolicy?.store_lead_time_days != null ? `${supplyPolicy.store_lead_time_days} ${supplyLeadTimeUnitLabel(supplyPolicy.store_lead_time_unit)}` : "Não definido" },
+                { label: "Início da contagem", value: supplyPolicy?.store_lead_time_start_event ? supplyLeadTimeEventLabel(supplyPolicy.store_lead_time_start_event, supplyPolicy.store_lead_time_start_event_other) : "Não definido" },
+                { label: "Abrangência", value: supplyPolicy?.store_lead_time_applies_until ? supplyAppliesUntilLabel(supplyPolicy.store_lead_time_applies_until) : "Não definida" },
+                { label: "Resumo", value: cleanText(supplyPolicy?.operational_explanation) || "Não informado" },
+              ])} />
+            )}
+          </SectionBlock>
 
           <SectionBlock
             title="Instalação de piscina nova"
