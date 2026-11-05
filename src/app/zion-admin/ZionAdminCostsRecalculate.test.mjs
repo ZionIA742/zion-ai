@@ -37,11 +37,11 @@ test("valores incompletos nao viram gastos definitivos", () => {
   assert.match(child, /Não é o total efetivamente cobrado/);
 });
 
-test("botao conectado e consolidado legado identificado", () => {
+test("botao conectado ao resumo financeiro consolidado", () => {
   assert.match(parent, /ZionAdminCostsRecalculate/);
   assert.match(parent, /onRecalculated/);
-  assert.match(parent, /Total operacional estimado/);
-  assert.doesNotMatch(parent, /label="Total consolidado"/);
+  assert.match(parent, /Subtotal financeiro/);
+  assert.match(parent, /knownSubtotalCents/);
 });
 test("OpenAI considera somente dias UTC encerrados", () => {
   assert.match(child, /lastClosedUtcDay/);

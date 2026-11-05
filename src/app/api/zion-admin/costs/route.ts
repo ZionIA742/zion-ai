@@ -2,7 +2,10 @@ import { createClient } from "@supabase/supabase-js";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import { createZionAdminApiDeniedResponse, createZionAdminApiJsonResponse } from "@/lib/server/zion-admin-api-response";
 import {
+  aggregateManualExpenses,
+  aggregateOfficialDailyLedger,
   applicableFixedCosts,
+  areAllFinancialPeriodsComplete,
   classifyCostRun,
   monthlyAccrual,
   parseCostPeriod,
@@ -10,9 +13,12 @@ import {
   type AiCostCategory,
   type CostSourceAvailability,
   type CostCompleteness,
+  type OfficialMonthlyLedger,
   classifyCostCompleteness,
   toKnownCostNumber,
 } from "@/lib/server/zion-admin-costs";
+import { buildOfficialOpenAiCostReport } from "@/lib/server/zion-admin-openai-official-cost-report";
+import { loadDailyPtaxRates } from "@/lib/server/zion-admin-ptax-daily";
 
 export const dynamic = "force-dynamic";
 const TIMEZONE = "America/Sao_Paulo";
@@ -100,6 +106,17 @@ function createServiceClient() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
+type CostsServiceClient = ReturnType<typeof createServiceClient>;
+type CostsAccess = Awaited<ReturnType<typeof resolveZionAdminApiAccess>>;
+
+export type ZionAdminCostsGetHandlerDeps = {
+  resolveAccess?: () => Promise<CostsAccess>;
+  createServiceClient?: () => CostsServiceClient;
+  buildOfficialReport?: typeof buildOfficialOpenAiCostReport;
+  loadPtax?: typeof loadDailyPtaxRates;
+  today?: () => string;
+};
+
 function brazilToday(): string {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
   const part = (name: string) => parts.find((entry) => entry.type === name)?.value || "";
@@ -118,6 +135,12 @@ function enumerateMonths(startMonth: string, endExclusive: string, limit = 120) 
     if (months.length > limit) throw new Error("PERIOD_TOO_LARGE");
   }
   return months;
+}
+
+function previousUtcDate(value: string): string {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
 }
 
 /** Banco Central PTAX official sell quotations. Absence means BRL estimate is unavailable, not zero. */
@@ -178,11 +201,18 @@ function readMonthOf(timestamp: string) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: TIMEZONE, year: "numeric", month: "2-digit" }).format(new Date(timestamp)) + "-01";
 }
 
-export async function GET(request: Request) {
-  const access = await resolveZionAdminApiAccess();
+export function createZionAdminCostsGetHandler(deps: ZionAdminCostsGetHandlerDeps = {}) {
+  const resolveAccess = deps.resolveAccess ?? (() => resolveZionAdminApiAccess());
+  const makeServiceClient = deps.createServiceClient ?? createServiceClient;
+  const buildOfficialReport = deps.buildOfficialReport ?? buildOfficialOpenAiCostReport;
+  const loadPtax = deps.loadPtax ?? loadDailyPtaxRates;
+  const getToday = deps.today ?? brazilToday;
+
+  return async function GET(request: Request) {
+  const access = await resolveAccess();
   if (!access.ok) return createZionAdminApiDeniedResponse(access);
   const url = new URL(request.url);
-  const today = brazilToday();
+  const today = getToday();
   const period = url.searchParams.get("period") || "month";
   const anchor = url.searchParams.get("anchor") || today;
   let range: ReturnType<typeof parseCostPeriod>;
@@ -192,13 +222,20 @@ export async function GET(request: Request) {
   // No forecasts masquerading as incurred expenses.
   if (range.startDate > today) return createZionAdminApiJsonResponse({ error: "Período futuro não contém gasto realizado." }, 400);
   try {
-    const db = createServiceClient();
+    const db = makeServiceClient();
     const todayMonth = today.slice(0, 7) + "-01";
     const tomorrow = new Date(`${today}T00:00:00Z`);
     tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
     const tomorrowIso = tomorrow.toISOString().slice(0, 10);
     const effectiveEnd = new Date(`${tomorrowIso}T03:00:00Z`).toISOString() < range.end
       ? new Date(`${tomorrowIso}T03:00:00Z`).toISOString() : range.end;
+    const variableExpenseSelect = db.from("zion_admin_variable_expenses")
+      .select("id,idempotency_key,catalog_item_id,name,category,description,amount_minor,currency,expense_date,competence_month,source,status,created_at,updated_at,cancelled_at")
+      .order("expense_date", { ascending: false })
+      .order("id", { ascending: true });
+    const variableExpensesQuery = period === "day" || period === "week"
+      ? variableExpenseSelect.gte("expense_date", range.startDate).lt("expense_date", range.endDate)
+      : variableExpenseSelect.gte("competence_month", range.startMonth).lt("competence_month", range.endMonthExclusive);
     const [versionsResult, itemsResult, closureResult, runs, salesMessages, assistantMessages, variableExpensesResult] = await Promise.all([
       db.from("zion_admin_fixed_cost_versions").select("item_id,effective_month,name,amount_cents,frequency,enabled").order("effective_month", { ascending: true }),
       db.from("zion_admin_fixed_cost_items").select("id,starts_on"),
@@ -206,12 +243,7 @@ export async function GET(request: Request) {
       loadAllRuns(db,range.start,effectiveEnd),
       countMessages(db,"messages",range.start,effectiveEnd,true),
       countMessages(db,"store_assistant_messages",range.start,effectiveEnd),
-      db.from("zion_admin_variable_expenses")
-        .select("id,idempotency_key,catalog_item_id,name,category,description,amount_minor,currency,expense_date,competence_month,source,status,created_at,updated_at,cancelled_at")
-        .gte("expense_date", range.startDate)
-        .lt("expense_date", range.endDate)
-        .order("expense_date", { ascending: false })
-        .order("id", { ascending: true }),
+      variableExpensesQuery,
     ]);
     if (versionsResult.error || itemsResult.error || closureResult.error) throw new Error("COST_LEDGER_MIGRATION_REQUIRED");
     const startedOnById = new Map<string, string>((itemsResult.data ?? []).map((item) => [String(item.id), String(item.starts_on)] as const));
@@ -245,18 +277,42 @@ export async function GET(request: Request) {
       else { slot.tokenValuesKnown = false; slot.categories[category].tokenValuesKnown = false; }
     }
     const closureByMonth = new Map(closures.map((value) => [value.month, value]));
-    let fxRates: Record<string, number> = {};
     let fxUnavailable = false;
-    if (months.length > 0) {
-      try { fxRates = await loadPtaxMonths(months[0],months[months.length - 1]); }
-      catch { fxUnavailable = true; }
+    let rateByDay = new Map<string, string | null>();
+    let officialUnavailable = false;
+    let officialByMonth = new Map<string, OfficialMonthlyLedger>();
+    const officialTo = [previousUtcDate(range.endDate), previousUtcDate(today)]
+      .sort()[0];
+    if (range.startDate <= officialTo) {
+      try {
+        const official = await buildOfficialReport(db, range.startDate, officialTo);
+        try {
+          const dailyRates = await loadPtax(range.startDate, officialTo);
+          rateByDay = new Map(dailyRates.daily.map((rate) => [rate.date, rate.rate] as const));
+        } catch { fxUnavailable = true; }
+        officialByMonth = aggregateOfficialDailyLedger(official.daily, rateByDay);
+      } catch {
+        officialUnavailable = true;
+      }
     }
+    if (officialUnavailable) {
+      for (const month of months) {
+        officialByMonth.set(month, { usd: null, brlCents: null, complete: false, fxComplete: false });
+      }
+    }
+    const variableExpensesAvailable = !variableExpensesResult.error && Array.isArray(variableExpensesResult.data);
+    // Meta billing has no confirmed financial authority in Etapa 1; it is never treated as zero.
+    const metaFinancialEvidenceAvailable = false;
+    const manualByMonth = aggregateManualExpenses(
+      (variableExpensesAvailable ? variableExpensesResult.data : []) as VariableExpenseRow[],
+      new Set(months),
+    );
     const breakdown = TYPES.reduce((obj,type) => ({ ...obj, [type]: { usd: 0, tokens: 0, runs: 0, costValuesKnown: true, tokenValuesKnown: true } }), {} as Record<AiCostCategory, { usd: number; tokens: number; runs: number; costValuesKnown: boolean; tokenValuesKnown: boolean }>);
     const rows = months.map((month) => {
       const local = byMonth[month];
       const closure = closureByMonth.get(month);
-      const wholeMonthFixed = closure ? Number(closure.fixed_brl_cents) : applicableFixedCosts(versions,month)
-        .filter((fixed) => (startedOnById.get(fixed.cost_id) ?? month) <= (month === todayMonth ? today : `${month.slice(0,7)}-31`))
+      const closedMonthlyView = Boolean(closure) && period !== "day" && period !== "week";
+      const wholeMonthFixed = closedMonthlyView ? Number(closure?.fixed_brl_cents) : applicableFixedCosts(versions,month)
         .reduce((sum, fixed) => sum + fixed.monthly_cents, 0);
       // Day/week show fixed expenses ONLY after their real starts_on date.
       // November 2026 still contains the entire agreed monthly amount.
@@ -269,10 +325,18 @@ export async function GET(request: Request) {
             startedOnById.get(fixed.cost_id) ?? month,
           ), 0)
         : wholeMonthFixed;
-      const usd = closure && period !== "day" && period !== "week" ? Number(closure.ai_usd) : local.costUsd;
-      const fx = closure ? Number(closure.fx_usd_brl) : fxRates[month] ?? null;
-      const brlCents = closure && period !== "day" && period !== "week" ? Number(closure.variable_brl_cents) : fx == null || local.unpriced > 0 ? null : Math.round(local.costUsd * fx * 100);
-      const cost = closure && period !== "day" && period !== "week" ? Number(closure.total_brl_cents)
+      const official = officialByMonth.get(month) ?? { usd: null, brlCents: null, complete: false };
+      const manual = manualByMonth.get(month) ?? { brlCents: 0, usdCents: 0, hasUnconvertedUsd: false, hasInvalidActive: false };
+      const fx = closedMonthlyView ? Number(closure?.fx_usd_brl) : null;
+      const officialBrlCents = closedMonthlyView ? Number(closure?.variable_brl_cents) : official.brlCents;
+      const knownVariableCents = closedMonthlyView
+        ? Number(closure?.variable_brl_cents)
+        : manual.brlCents + (officialBrlCents ?? 0);
+      const financialSourcesComplete = closedMonthlyView
+        ? true
+        : metaFinancialEvidenceAvailable && variableExpensesAvailable && official.complete && officialBrlCents != null && !manual.hasUnconvertedUsd && !manual.hasInvalidActive;
+      const brlCents = financialSourcesComplete ? knownVariableCents : null;
+      const cost = closedMonthlyView ? Number(closure?.total_brl_cents)
         : brlCents == null ? null : fixedCents + brlCents;
       for (const type of TYPES) {
         breakdown[type].usd += local.categories[type].usd;
@@ -281,35 +345,42 @@ export async function GET(request: Request) {
         breakdown[type].costValuesKnown = breakdown[type].costValuesKnown && local.categories[type].costValuesKnown;
         breakdown[type].tokenValuesKnown = breakdown[type].tokenValuesKnown && local.categories[type].tokenValuesKnown;
       }
-      const closureComplete = Boolean(closure && period !== "day" && period !== "week"
-        && toKnownCostNumber(closure.ai_usd) != null
-        && toKnownCostNumber(closure.variable_brl_cents) != null
-        && toKnownCostNumber(closure.total_brl_cents) != null);
-      const costCompleteness = closureComplete ? "complete" : classifyCostCompleteness(local.runs, "available", local.costValuesKnown);
+      const closureComplete = Boolean(closedMonthlyView
+        && toKnownCostNumber(closure?.ai_usd) != null
+        && toKnownCostNumber(closure?.variable_brl_cents) != null
+        && toKnownCostNumber(closure?.total_brl_cents) != null);
+      const costCompleteness: CostCompleteness = closureComplete ? "complete" : financialSourcesComplete ? "complete" : "incomplete";
       const tokenCompleteness = classifyCostCompleteness(local.runs, "available", local.tokenValuesKnown);
       return {
-        month, closed: Boolean(closure) && period !== "day" && period !== "week", fixedCents,
-        aiCostUsd: closureComplete ? toKnownCostNumber(closure?.ai_usd) : costCompleteness === "complete" ? usd : null,
+        month, closed: closedMonthlyView, fixedCents,
+        aiCostUsd: local.costValuesKnown && local.runs > 0 ? local.costUsd : null,
+        officialOpenAiUsd: closureComplete ? toKnownCostNumber(closure?.ai_usd) : official.usd,
         fxRate: fx, variableCents: costCompleteness === "complete" ? brlCents : null, totalCents: costCompleteness === "complete" ? cost : null,
-        executions: closure && period !== "day" && period !== "week" ? Number(closure.ai_runs) : local.runs,
+        knownSubtotalCents: fixedCents + knownVariableCents,
+        manualBrlCents: manual.brlCents,
+        manualUsdCents: manual.usdCents,
+        executions: closedMonthlyView ? Number(closure?.ai_runs) : local.runs,
         unpriced: local.unpriced, tokens: tokenCompleteness === "complete" ? local.tokens : null,
-        costCompleteness, tokenCompleteness,
+        costCompleteness,
+        operationalCostCompleteness: classifyCostCompleteness(local.runs, "available", local.costValuesKnown),
+        tokenCompleteness,
       };
     });
     // Previous monthly totals take the frozen values, never a recalculation of modified cost policies.
     const fixedTotal = rows.reduce((n,r) => n + r.fixedCents, 0);
     const totalRuns = runs.length;
-    const allCostsKnown = totalRuns > 0 && runs.every((run) => toKnownCostNumber(run.cost_usd) != null);
     const allTokensKnown = totalRuns > 0 && runs.every((run) => toKnownCostNumber(run.tokens_prompt) != null && toKnownCostNumber(run.tokens_completion) != null);
-    const hasFrozenCost = rows.some((row) => row.closed && row.costCompleteness === "complete");
-    const aiCostCompleteness: CostCompleteness = totalRuns === 0 && hasFrozenCost
-      ? "complete"
-      : classifyCostCompleteness(totalRuns, "available", allCostsKnown);
+    const financialCompleteness: CostCompleteness = areAllFinancialPeriodsComplete(rows) ? "complete" : "incomplete";
+    const operationalCostCompleteness: CostCompleteness = classifyCostCompleteness(totalRuns, "available", runs.length > 0 && runs.every((run) => toKnownCostNumber(run.cost_usd) != null));
     const tokenCompleteness: CostCompleteness = classifyCostCompleteness(totalRuns, "available", allTokensKnown);
-    const aiCostUsd = aiCostCompleteness === "complete" ? rows.reduce((n,r) => n + (r.aiCostUsd ?? 0), 0) : null;
-    const variableTotal = aiCostCompleteness === "complete" && rows.every((r) => r.variableCents != null) ? rows.reduce((n,r) => n + (r.variableCents ?? 0), 0) : null;
+    const aiCostUsd = operationalCostCompleteness === "complete" ? rows.reduce((n,r) => n + (r.aiCostUsd ?? 0), 0) : null;
+    const officialOpenAiUsd = rows.some((row) => row.officialOpenAiUsd != null)
+      ? rows.reduce((n,r) => n + (r.officialOpenAiUsd ?? 0), 0)
+      : null;
+    const variableTotal = financialCompleteness === "complete" && rows.every((r) => r.variableCents != null) ? rows.reduce((n,r) => n + (r.variableCents ?? 0), 0) : null;
+    const knownSubtotalCents = rows.reduce((n, r) => n + r.knownSubtotalCents, 0);
     const grandTotal = variableTotal == null ? null : fixedTotal + variableTotal;
-    const ptaxUnavailable = fxUnavailable || rows.some((row) => !row.closed && row.fxRate == null);
+    const ptaxUnavailable = fxUnavailable || [...officialByMonth.values()].some((value) => !value.fxComplete && value.usd != null && value.usd > 0);
     const breakdownPayload = Object.fromEntries(TYPES.map((type) => {
       const item = breakdown[type];
       return [type, {
@@ -332,19 +403,21 @@ export async function GET(request: Request) {
     const selectedMonth = period === "month" ? rows[0] : null;
     return createZionAdminApiJsonResponse({
       period, anchor, timezone: TIMEZONE, range, initialFixedCostsStartDate: "2026-11-23",
-      source: "ai_runs.cost_usd", fxSource: "Banco Central do Brasil — PTAX venda (última cotação disponível de cada mês)",
+      source: "ai_runs.cost_usd", fxSource: "Banco Central do Brasil — PTAX venda diária aplicável a cada dia oficial",
       fxUnavailable, historicalClosures: closures, closeCandidates: candidateMonths,
       selectedMonth, months: rows, fixedCosts: configured, activeFixedCosts: applicableFixedCosts(versions,todayMonth),
       dataAvailability: {
         aiRuns: "available" as CostSourceAvailability,
         fixedCosts: "available" as CostSourceAvailability,
         ptax: ptaxUnavailable ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
+        officialOpenAi: officialUnavailable ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
+        metaFinancialEvidence: metaFinancialEvidenceAvailable ? "available" as CostSourceAvailability : "unavailable" as CostSourceAvailability,
         messagesSales: salesMessages == null ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
         messagesAssistant: assistantMessages == null ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
         variableExpenses: variableExpensesResult.error ? "unavailable" as CostSourceAvailability : "available" as CostSourceAvailability,
       },
-      totals: { fixedCents: fixedTotal, variableCents: variableTotal, totalCents: grandTotal, aiCostUsd,
-        costCompleteness: aiCostCompleteness, tokenCompleteness,
+      totals: { fixedCents: fixedTotal, variableCents: variableTotal, totalCents: grandTotal, knownSubtotalCents, aiCostUsd, officialOpenAiUsd,
+        costCompleteness: operationalCostCompleteness, financialCompleteness, operationalCostCompleteness, tokenCompleteness,
         executions: runs.length, unpricedExecutions: runs.filter((run)=>toKnownCostNumber(run.cost_usd) == null).length,
         tokens: tokenCompleteness === "complete" ? runs.reduce((n,r)=>n + (toKnownCostNumber(r.tokens_prompt) ?? 0) + (toKnownCostNumber(r.tokens_completion) ?? 0),0) : null,
         messagesSales: salesMessages, messagesAssistant: assistantMessages, breakdown: breakdownPayload,
@@ -357,7 +430,10 @@ export async function GET(request: Request) {
     const migration = message === "COST_LEDGER_MIGRATION_REQUIRED";
     return createZionAdminApiJsonResponse({ error: migration ? "A estrutura da Central de Custos ainda não foi aplicada no banco." : "Não foi possível verificar os custos com segurança.", code: migration ? "MIGRATION_PENDING" : "COSTS_UNAVAILABLE" }, 503);
   }
+  };
 }
+
+export const GET = createZionAdminCostsGetHandler();
 
 export async function POST(request: Request) {
   const access = await resolveZionAdminApiAccess();

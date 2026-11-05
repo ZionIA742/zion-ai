@@ -1,3 +1,5 @@
+import { convertOfficialUsdToBrl } from "./zion-admin-ptax-daily";
+
 /** Shared, side-effect-free accounting rules for the ZION Administrator ledger. */
 export type CostFrequency = "monthly" | "annual";
 export type CostVersion = {
@@ -154,4 +156,100 @@ export function monthlyAccrual(
 
 export function monthlyFixedSum(versions: CostVersion[], month: string): number {
   return applicableFixedCosts(versions, month).reduce((sum, item) => sum + item.monthly_cents, 0);
+}
+
+export function sumActiveManualBrlCents(
+  rows: Array<{ amount_minor: unknown; currency: unknown; status: unknown }>,
+): number {
+  return rows.reduce((sum, row) => {
+    if (row.status !== "active" || row.currency !== "BRL") return sum;
+    const amount = toKnownCostNumber(row.amount_minor);
+    return amount !== null && Number.isSafeInteger(amount) ? sum + amount : sum;
+  }, 0);
+}
+
+export type OfficialDailyLedgerInput = {
+  date: string;
+  status: "available" | "confirmed_empty" | "not_collected" | "unavailable";
+  totalUsd: string | null;
+};
+
+export type OfficialMonthlyLedger = {
+  usd: number | null;
+  brlCents: number | null;
+  complete: boolean;
+  fxComplete: boolean;
+};
+
+/** Aggregates confirmed official days while retaining USD if FX is unavailable. */
+export function aggregateOfficialDailyLedger(
+  days: OfficialDailyLedgerInput[],
+  ratesByDay: ReadonlyMap<string, string | null>,
+): Map<string, OfficialMonthlyLedger> {
+  const result = new Map<string, OfficialMonthlyLedger>();
+  for (const day of days) {
+    const month = `${day.date.slice(0, 7)}-01`;
+    const current = result.get(month) ?? { usd: null, brlCents: 0, complete: true, fxComplete: true };
+    if (day.status === "not_collected" || day.status === "unavailable") {
+      current.complete = false;
+    } else if (day.status === "confirmed_empty") {
+      current.usd = current.usd ?? 0;
+    } else if (day.status === "available") {
+      const usd = toKnownCostNumber(day.totalUsd);
+      if (usd == null) current.complete = false;
+      else {
+        current.usd = (current.usd ?? 0) + usd;
+        const rate = ratesByDay.get(day.date);
+        if (rate == null) {
+          current.fxComplete = false;
+          current.complete = false;
+        } else {
+          const converted = Number(convertOfficialUsdToBrl(day.totalUsd as string, rate)) * 100;
+          current.brlCents = (current.brlCents ?? 0) + converted;
+        }
+      }
+    }
+    result.set(month, current);
+  }
+  for (const value of result.values()) {
+    if (!value.fxComplete) value.brlCents = null;
+  }
+  return result;
+}
+
+export type ManualExpenseLedger = {
+  brlCents: number;
+  usdCents: number;
+  hasUnconvertedUsd: boolean;
+  hasInvalidActive: boolean;
+};
+
+export function aggregateManualExpenses(
+  rows: Array<{ amount_minor: unknown; currency: unknown; competence_month: unknown; status: unknown }>,
+  months: ReadonlySet<string>,
+): Map<string, ManualExpenseLedger> {
+  const result = new Map<string, ManualExpenseLedger>();
+  for (const row of rows) {
+    if (row.status !== "active") continue;
+    const month = typeof row.competence_month === "string" ? row.competence_month : "";
+    const amount = toKnownCostNumber(row.amount_minor);
+    const valid = /^\d{4}-\d{2}-01$/.test(month) && (row.currency === "BRL" || row.currency === "USD")
+      && amount != null && Number.isSafeInteger(amount);
+    const current = result.get(month) ?? { brlCents: 0, usdCents: 0, hasUnconvertedUsd: false, hasInvalidActive: false };
+    if (!valid) {
+      current.hasInvalidActive = true;
+    } else if (months.has(month)) {
+      if (row.currency === "BRL") current.brlCents += amount as number;
+      else {
+        current.usdCents += amount as number;
+        current.hasUnconvertedUsd = true;
+      }
+    }
+    result.set(month, current);
+  }
+  return result;
+}
+
+export function areAllFinancialPeriodsComplete(rows: Array<{ costCompleteness: CostCompleteness }>): boolean {
+  return rows.length > 0 && rows.every((row) => row.costCompleteness === "complete");
 }

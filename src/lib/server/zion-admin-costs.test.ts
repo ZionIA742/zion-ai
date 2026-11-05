@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-const { monthlyAllocation, applicableFixedCosts, parseCostPeriod, classifyCostRun, monthlyAccrual, toKnownCostNumber, classifyCostCompleteness, formatCostMetric } = await import(
+const { monthlyAllocation, applicableFixedCosts, parseCostPeriod, classifyCostRun, monthlyAccrual, toKnownCostNumber, classifyCostCompleteness, formatCostMetric, sumActiveManualBrlCents, aggregateOfficialDailyLedger, aggregateManualExpenses, areAllFinancialPeriodsComplete } = await import(
   new URL("./zion-admin-costs.ts", import.meta.url).href
 ) as typeof import("./zion-admin-costs");
 assert.equal(Array.from({length:12},(_,i)=>monthlyAllocation(4000,"annual",i+1)).reduce((a,b)=>a+b,0),4000);
@@ -48,6 +48,39 @@ assert.equal(monthlyAccrual(30400,"2026-11-01","2026-11-23","2026-11-24",start),
 assert.equal(monthlyAccrual(30400,"2026-12-01","2026-12-01","2027-01-01",start),30400);
 assert.equal(monthlyAccrual(30400,"2026-10-01","2026-10-01","2026-11-01",start),0);
 assert.equal(Array.from({length:8},(_,i)=>monthlyAccrual(333,"2026-11-01",`2026-11-${String(23+i).padStart(2,"0")}`,`2026-${i===7?"12-01":"11-"+String(24+i).padStart(2,"0")}`,start)).reduce((a,b)=>a+b,0),333);
+assert.equal(sumActiveManualBrlCents([
+  { amount_minor: 1250, currency: "BRL", status: "active" },
+  { amount_minor: 500, currency: "BRL", status: "cancelled" },
+  { amount_minor: 300, currency: "USD", status: "active" },
+]), 1250);
+
+const rates = new Map([['2026-11-03', '5.00'], ['2026-11-04', '5.10']]);
+const official = aggregateOfficialDailyLedger([
+  { date: '2026-11-03', status: 'available', totalUsd: '1.00' },
+  { date: '2026-11-04', status: 'available', totalUsd: '1.00' },
+], rates);
+assert.equal(official.get('2026-11-01')?.usd, 2);
+assert.equal(official.get('2026-11-01')?.brlCents, 1010);
+assert.equal(official.get('2026-11-01')?.complete, true);
+const officialWithoutPtax = aggregateOfficialDailyLedger([
+  { date: '2026-11-03', status: 'available', totalUsd: '2.50' },
+], new Map());
+assert.equal(officialWithoutPtax.get('2026-11-01')?.usd, 2.5);
+assert.equal(officialWithoutPtax.get('2026-11-01')?.brlCents, null);
+assert.equal(officialWithoutPtax.get('2026-11-01')?.complete, false);
+assert.equal(aggregateOfficialDailyLedger([
+  { date: '2026-11-03', status: 'not_collected', totalUsd: null },
+], rates).get('2026-11-01')?.usd, null);
+
+const manual = aggregateManualExpenses([
+  { amount_minor: 1250, currency: 'BRL', competence_month: '2026-11-01', status: 'active' },
+  { amount_minor: 500, currency: 'BRL', competence_month: '2026-11-01', status: 'cancelled' },
+  { amount_minor: 300, currency: 'USD', competence_month: '2026-11-01', status: 'active' },
+  { amount_minor: 'invalid', currency: 'BRL', competence_month: '2026-11-01', status: 'active' },
+], new Set(['2026-11-01']));
+assert.deepEqual(manual.get('2026-11-01'), { brlCents: 1250, usdCents: 300, hasUnconvertedUsd: true, hasInvalidActive: true });
+assert.equal(areAllFinancialPeriodsComplete([{ costCompleteness: 'complete' }, { costCompleteness: 'incomplete' }]), false);
+assert.equal(areAllFinancialPeriodsComplete([{ costCompleteness: 'complete' }, { costCompleteness: 'complete' }]), true);
 
 // Complete month coverage is essential for day/week and cross-month summaries.
 assert.equal(parseCostPeriod("day","2026-11-24").endMonthExclusive,"2026-12-01");

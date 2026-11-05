@@ -60,3 +60,16 @@ test("GET keeps manual expenses separate and fails their availability closed", (
   assert.match(source, /variableExpenses: variableExpensesResult\.error \? null/);
   assert.match(source, /source: "manual"/);
 });
+
+test("monthly fixed consolidation uses effective_month, not starts_on", () => {
+  assert.doesNotMatch(source, /applicableFixedCosts\(versions,month\)\s*\.filter\(\(fixed\).*startedOnById/);
+  assert.match(source, /period === "day" \|\| period === "week"/);
+  assert.match(source, /monthlyAccrual\(/);
+});
+
+test("financial summary does not reuse ai_runs as official OpenAI billing", () => {
+  assert.match(source, /buildOfficialOpenAiCostReport/);
+  assert.match(source, /officialByMonth/);
+  assert.match(source, /ai_runs/);
+  assert.match(source, /officialOpenAi/);
+});
