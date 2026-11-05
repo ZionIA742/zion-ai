@@ -1,3 +1,5 @@
+import type { MonthlyOpenAiPtaxResult } from "@/lib/server/zion-admin-monthly-openai-ptax";
+
 /**
  * ZION-ADM / 8-E.3
  *
@@ -26,6 +28,7 @@ export type OfficialOpenAiSource = {
   availability: "complete" | "partial" | "unavailable";
   confirmedDays: number;
   totalUsd: string | null;
+  conversion?: MonthlyOpenAiPtaxResult;
 };
 
 export type MonthlyPreclosureSources = {
@@ -47,6 +50,12 @@ function isValidUsd(value: unknown): value is string {
     typeof value === "string" &&
     /^\d+(?:\.\d{1,8})?$/.test(value)
   );
+}
+
+function toUsdUnits(value: string): bigint {
+  const [whole, fraction = ""] = value.split(".");
+  return BigInt(whole) * BigInt(100000000) +
+    BigInt(fraction.padEnd(8, "0"));
 }
 
 function daysInMonth(month: string): number {
@@ -121,6 +130,112 @@ export function prepareMonthlyPreclosureSnapshot(
     throw new Error("INVALID_OFFICIAL_OPENAI_AVAILABILITY");
   }
 
+  const conversion = openAi.conversion;
+  const confirmedZeroUsd =
+    openAiComplete && Number(openAi.totalUsd) === 0;
+
+  if (conversion !== undefined) {
+    const invalid =
+      typeof conversion.complete !== "boolean" ||
+      conversion.expectedDays !== expectedDays ||
+      conversion.confirmedDays !== openAi.confirmedDays ||
+      !isValidCents(conversion.knownBrlCents) ||
+      !Array.isArray(conversion.daily) ||
+      conversion.daily.length !== expectedDays ||
+      !Array.isArray(conversion.missingOfficialDays) ||
+      !Array.isArray(conversion.missingPtaxDays) ||
+      conversion.missingOfficialDays.length !==
+        expectedDays - conversion.confirmedDays ||
+      (conversion.complete &&
+        (!openAiComplete ||
+          !isValidCents(conversion.totalBrlCents) ||
+          conversion.totalBrlCents !== conversion.knownBrlCents ||
+          conversion.missingOfficialDays.length > 0 ||
+          conversion.missingPtaxDays.length > 0)) ||
+      (!conversion.complete && conversion.totalBrlCents !== null) ||
+      (confirmedZeroUsd &&
+        (!conversion.complete ||
+          conversion.knownBrlCents !== 0 ||
+          conversion.totalBrlCents !== 0));
+
+    if (invalid) {
+      throw new Error("INVALID_OPENAI_PTAX_CONVERSION");
+    }
+
+    let knownSum = 0;
+    let dailyUsdUnits = BigInt(0);
+    let observedConfirmedDays = 0;
+    const observedMissingOfficialDays: string[] = [];
+    const observedMissingPtaxDays: string[] = [];
+
+    for (let index = 0; index < expectedDays; index++) {
+      const day = conversion.daily[index];
+      const expectedDate =
+        `${month.slice(0, 7)}-${String(index + 1).padStart(2, "0")}`;
+
+      if (
+        !day ||
+        day.date !== expectedDate ||
+        (day.brlCents !== null && !isValidCents(day.brlCents)) ||
+        !Array.isArray(day.operationIds) ||
+        !Array.isArray(day.snapshotIds)
+      ) {
+        throw new Error("INVALID_OPENAI_PTAX_CONVERSION");
+      }
+
+      if (day.usd === null) {
+        if (day.brlCents !== null) {
+          throw new Error("INVALID_OPENAI_PTAX_CONVERSION");
+        }
+        observedMissingOfficialDays.push(expectedDate);
+      } else {
+        if (!isValidUsd(day.usd)) {
+          throw new Error("INVALID_OPENAI_PTAX_CONVERSION");
+        }
+
+        observedConfirmedDays++;
+        dailyUsdUnits += toUsdUnits(day.usd);
+
+        if (Number(day.usd) === 0 && day.brlCents !== 0) {
+          throw new Error("INVALID_OPENAI_PTAX_CONVERSION");
+        }
+
+        if (Number(day.usd) > 0 && day.brlCents === null) {
+          observedMissingPtaxDays.push(expectedDate);
+        }
+      }
+
+      knownSum += day.brlCents ?? 0;
+      if (!Number.isSafeInteger(knownSum)) {
+        throw new Error("INVALID_OPENAI_PTAX_CONVERSION");
+      }
+    }
+
+    if (
+      knownSum !== conversion.knownBrlCents ||
+      observedConfirmedDays !== conversion.confirmedDays ||
+      JSON.stringify(observedMissingOfficialDays) !==
+        JSON.stringify(conversion.missingOfficialDays) ||
+      JSON.stringify(observedMissingPtaxDays) !==
+        JSON.stringify(conversion.missingPtaxDays) ||
+      (openAiComplete &&
+        dailyUsdUnits !== toUsdUnits(openAi.totalUsd!))
+    ) {
+      throw new Error("INVALID_OPENAI_PTAX_CONVERSION");
+    }
+  }
+
+  const fxComplete =
+    confirmedZeroUsd ||
+    (openAiComplete && conversion?.complete === true);
+
+  const estimatedBrlCents = fxComplete
+    ? (conversion?.totalBrlCents ?? 0)
+    : null;
+
+  const knownBrlCents = conversion?.knownBrlCents ??
+    (confirmedZeroUsd ? 0 : null);
+
   const pendingSources: string[] = [];
 
   if (sources.fixed.availability !== "available") {
@@ -133,6 +248,13 @@ export function prepareMonthlyPreclosureSnapshot(
 
   if (!openAiComplete) {
     pendingSources.push("openai_official");
+  }
+
+  if (
+    !fxComplete &&
+    (openAiComplete || (conversion?.missingPtaxDays.length ?? 0) > 0)
+  ) {
+    pendingSources.push("openai_ptax");
   }
 
   // A integracao de comprovantes reais Meta ainda nao foi
@@ -164,6 +286,25 @@ export function prepareMonthlyPreclosureSnapshot(
         confirmedDays: openAi.confirmedDays,
         expectedDays,
         officialUsd: openAiComplete ? openAi.totalUsd : null,
+        estimatedBrlCents,
+        knownBrlCents,
+        fxStatus: confirmedZeroUsd
+          ? "not_required_zero"
+          : fxComplete
+            ? "complete"
+            : conversion
+              ? "partial"
+              : "unavailable",
+        missingPtaxDays: [...(conversion?.missingPtaxDays ?? [])],
+        dailyEvidence: conversion?.daily.map((day) => ({
+          date: day.date,
+          usd: day.usd,
+          estimatedBrlCents: day.brlCents,
+          quotationDate: day.quotationDate,
+          rate: day.rate,
+          operationIds: [...day.operationIds],
+          snapshotIds: [...day.snapshotIds],
+        })) ?? [],
         note: "Uso oficial OpenAI nao equivale a fatura ou cartao",
       },
       meta: {
