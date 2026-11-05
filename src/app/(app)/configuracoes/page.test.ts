@@ -512,6 +512,41 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "assistant report schedule card uses canonical fields and preserves editor state on failure",
+    run: () => {
+      const source = readPageSource();
+      const start = source.indexOf('title="Relatórios automáticos"');
+      const end = source.indexOf('title="IA fora do horário"', start);
+      assert.equal(start > -1, true);
+      assert.equal(end > start, true);
+      const card = source.slice(start, end);
+      assert.equal(card.includes('operationEditTarget === "assistant_reports"'), true);
+      assert.equal(card.includes("assistant_morning_report_time"), true);
+      assert.equal(card.includes("assistant_evening_report_time"), true);
+      assert.equal(card.includes("assistant_non_operating_report_policy"), true);
+      assert.equal(card.includes("Horário padrão da loja"), true);
+      assert.equal(card.includes("saveAssistantReportScheduleCard()"), true);
+      assert.equal(card.includes("createAssistantReportScheduleDraft(scheduleSettings)"), true);
+
+      const saveStart = source.indexOf("const saveAssistantReportScheduleCard = useCallback");
+      const saveEnd = source.indexOf("  const saveAfterHoursCard", saveStart);
+      assert.equal(saveStart > -1, true);
+      assert.equal(saveEnd > saveStart, true);
+      const saveBlock = source.slice(saveStart, saveEnd);
+      assert.equal(saveBlock.includes('"upsert_store_schedule_settings"'), true);
+      assert.equal(saveBlock.includes("p_assistant_morning_report_time: morningTime || null"), true);
+      assert.equal(saveBlock.includes("p_assistant_evening_report_time: eveningTime || null"), true);
+      assert.equal(saveBlock.includes("p_assistant_non_operating_report_policy: nonOperatingPolicy"), true);
+      assert.equal(saveBlock.includes("p_operating_days: scheduleSettings.operating_days ?? []"), true);
+      assert.equal(saveBlock.includes("p_operating_hours: scheduleSettings.operating_hours ?? {}"), true);
+      assert.equal(saveBlock.includes("p_timezone_name: scheduleSettings.timezone_name || DEFAULT_SCHEDULE_TIMEZONE"), true);
+      assert.equal(saveBlock.includes("setOperationEditTarget(null)"), true);
+      assert.equal(saveBlock.includes("catch (error: unknown)"), true);
+      assert.equal(saveBlock.includes("setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(nextScheduleSettings))"), true);
+    },
+  },
+
+  {
     name: "schedule refresh hydrates migrated operation cards from canonical row",
     run: () => {
       const source = readPageSource();

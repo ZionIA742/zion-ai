@@ -837,9 +837,59 @@ type ScheduleSettingsRow = {
   ai_after_hours_start?: string | null;
   ai_after_hours_end?: string | null;
   ai_attends_holidays?: boolean | null;
+  assistant_morning_report_time?: string | null;
+  assistant_evening_report_time?: string | null;
+  assistant_non_operating_report_policy?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
+
+type AssistantReportScheduleDraft = {
+  morningTime: string;
+  eveningTime: string;
+  nonOperatingPolicy: string;
+};
+
+const ASSISTANT_REPORT_POLICIES = [
+  {
+    value: "send_on_non_operating_ai_days",
+    label: "Enviar nos dias sem expediente quando a IA estiver ativa",
+  },
+  {
+    value: "skip_non_operating_days",
+    label: "Não enviar nos dias sem expediente",
+  },
+  {
+    value: "skip_and_consolidate_non_operating_days",
+    label: "Não enviar e consolidar as atividades no próximo relatório matinal elegível",
+  },
+] as const;
+
+function createAssistantReportScheduleDraft(
+  scheduleSettings?: ScheduleSettingsRow | null,
+): AssistantReportScheduleDraft {
+  return {
+    morningTime: normalizeTimeInput(scheduleSettings?.assistant_morning_report_time),
+    eveningTime: normalizeTimeInput(scheduleSettings?.assistant_evening_report_time),
+    nonOperatingPolicy:
+      cleanText(scheduleSettings?.assistant_non_operating_report_policy) ||
+      "skip_and_consolidate_non_operating_days",
+  };
+}
+
+function assistantReportPolicyLabel(value: unknown) {
+  return (
+    ASSISTANT_REPORT_POLICIES.find((option) => option.value === cleanText(value))?.label ||
+    "Não definida"
+  );
+}
+
+function isOptionalAssistantReportTimeValid(value: string) {
+  if (!value) return true;
+  if (!/^\d{2}:\d{2}$/.test(value)) return false;
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59;
+}
 
 
 type CommercialDraftState = {
@@ -4357,6 +4407,7 @@ export default function ConfiguracoesPage() {
   const [isOperationEditing, setIsOperationEditing] = useState(false);
   const [operationEditTarget, setOperationEditTarget] = useState<
     | "hours"
+    | "assistant_reports"
     | "after_hours"
     | "agenda"
     | "reschedule_autonomy"
@@ -4375,6 +4426,8 @@ export default function ConfiguracoesPage() {
   const [generalAddressCepLookupMessage, setGeneralAddressCepLookupMessage] = useState<string | null>(null);
   const [operationExperienceDraft, setOperationExperienceDraft] = useState<OperationExperienceDraftState>(createEmptyOperationExperienceDraft());
   const [savedOperationExperience, setSavedOperationExperience] = useState<OperationExperienceDraftState>(createEmptyOperationExperienceDraft());
+  const [assistantReportScheduleDraft, setAssistantReportScheduleDraft] =
+    useState<AssistantReportScheduleDraft>(createAssistantReportScheduleDraft(null));
   const [operationExecutionPolicies, setOperationExecutionPolicies] =
     useState<StoreOperationExecutionPoliciesRow | null>(null);
   const [overviewDraft, setOverviewDraft] = useState<Record<string, string>>({});
@@ -5132,6 +5185,7 @@ export default function ConfiguracoesPage() {
       setOnboarding(null);
       setAnswers({});
       setScheduleSettings(null);
+      setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(null));
       setOperationSettings(null);
       setStrategySettings(null);
       setChannelSettings(null);
@@ -5201,7 +5255,7 @@ export default function ConfiguracoesPage() {
         }),
         supabase
           .from("store_schedule_settings")
-          .select("id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, technical_visit_days, after_hours_behavior, notes, enforce_operating_window, timezone_name, holiday_mode, holiday_open_time, holiday_close_time, holiday_notes, human_schedule_configured_at, ai_after_hours_configured_at, agenda_capacity_configured_at, ai_can_accept_customer_reschedule_without_approval, customer_reschedule_autonomy_configured_at, daily_limit_mode, daily_limit, appointment_buffer_enabled, appointment_buffer_minutes, ai_after_hours_enabled, ai_after_hours_mode, ai_after_hours_start, ai_after_hours_end, ai_attends_holidays, created_at, updated_at")
+          .select("id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, technical_visit_days, after_hours_behavior, notes, enforce_operating_window, timezone_name, holiday_mode, holiday_open_time, holiday_close_time, holiday_notes, human_schedule_configured_at, ai_after_hours_configured_at, agenda_capacity_configured_at, ai_can_accept_customer_reschedule_without_approval, customer_reschedule_autonomy_configured_at, daily_limit_mode, daily_limit, appointment_buffer_enabled, appointment_buffer_minutes, ai_after_hours_enabled, ai_after_hours_mode, ai_after_hours_start, ai_after_hours_end, ai_attends_holidays, assistant_morning_report_time, assistant_evening_report_time, assistant_non_operating_report_policy, created_at, updated_at")
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
           .maybeSingle(),
@@ -5517,6 +5571,7 @@ export default function ConfiguracoesPage() {
       const nextScheduleSettings =
         (scheduleSettingsResult.data ?? null) as ScheduleSettingsRow | null;
       setScheduleSettings(nextScheduleSettings);
+      setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(nextScheduleSettings));
       setSavedOperationExperience((current) =>
         createScheduleOperationExperienceDraftFromSettings(
           nextScheduleSettings,
@@ -7898,6 +7953,82 @@ export default function ConfiguracoesPage() {
     organizationId,
     scheduleSettings,
   ]);
+
+  const saveAssistantReportScheduleCard = useCallback(async () => {
+    if (!organizationId || !activeStoreId || !scheduleSettings) {
+      setErrorText("Nenhuma configuração de loja foi encontrada para salvar os relatórios automáticos.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const morningTime = normalizeTimeInput(assistantReportScheduleDraft.morningTime);
+    const eveningTime = normalizeTimeInput(assistantReportScheduleDraft.eveningTime);
+    if (!isOptionalAssistantReportTimeValid(morningTime) || !isOptionalAssistantReportTimeValid(eveningTime)) {
+      setErrorText("Informe horários válidos no formato HH:mm ou deixe o campo vazio para usar o horário padrão da loja.");
+      setSuccessText(null);
+      return false;
+    }
+
+    const nonOperatingPolicy = ASSISTANT_REPORT_POLICIES.some(
+      (option) => option.value === assistantReportScheduleDraft.nonOperatingPolicy,
+    )
+      ? assistantReportScheduleDraft.nonOperatingPolicy
+      : null;
+    if (!nonOperatingPolicy) {
+      setErrorText("Escolha uma política válida para os dias sem expediente.");
+      setSuccessText(null);
+      return false;
+    }
+
+    try {
+      const { data, error } = await supabase.rpc("upsert_store_schedule_settings", {
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_allow_multiple_appointments_per_day: scheduleSettings.allow_multiple_appointments_per_day,
+        p_allow_same_time_appointments: scheduleSettings.allow_same_time_appointments,
+        p_same_time_capacity: scheduleSettings.same_time_capacity ?? 1,
+        p_attends_holidays: scheduleSettings.attends_holidays,
+        p_operating_days: scheduleSettings.operating_days ?? [],
+        p_operating_hours: scheduleSettings.operating_hours ?? {},
+        p_installation_days: scheduleSettings.installation_days ?? [],
+        p_after_hours_behavior: scheduleSettings.after_hours_behavior,
+        p_notes: scheduleSettings.notes,
+        p_enforce_operating_window: scheduleSettings.enforce_operating_window ?? false,
+        p_timezone_name: scheduleSettings.timezone_name || DEFAULT_SCHEDULE_TIMEZONE,
+        p_assistant_morning_report_time: morningTime || null,
+        p_assistant_evening_report_time: eveningTime || null,
+        p_assistant_non_operating_report_policy: nonOperatingPolicy,
+      });
+
+      if (error) throw error;
+      const nextScheduleSettings = (
+        Array.isArray(data) ? data[0] ?? null : data ?? null
+      ) as ScheduleSettingsRow | null;
+      if (!nextScheduleSettings) {
+        throw new Error("O servidor não retornou a configuração dos relatórios automáticos salva.");
+      }
+
+      setScheduleSettings(nextScheduleSettings);
+      setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(nextScheduleSettings));
+      setErrorText(null);
+      setSuccessText("Relatórios automáticos salvos com sucesso.");
+      setOperationEditTarget(null);
+      await fetchPageData();
+      return true;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Não foi possível salvar os relatórios automáticos.";
+      setErrorText(message);
+      setSuccessText(null);
+      return false;
+    }
+  }, [
+    activeStoreId,
+    assistantReportScheduleDraft,
+    fetchPageData,
+    organizationId,
+    scheduleSettings,
+  ]);
+
 
   const saveAfterHoursCard = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -13701,6 +13832,44 @@ export default function ConfiguracoesPage() {
           </SectionBlock>
 
           <SectionBlock
+            title="Relatórios automáticos"
+            description="Escolha quando a IA Assistente envia os relatórios matinal e noturno para esta loja. Os horários são locais e independentes do expediente da equipe."
+            tone={scheduleSettings ? "blue" : "yellow"}
+            status={scheduleSettings ? "Configurado" : "Aguardando configuração da loja"}
+            className={operationEditTarget === "assistant_reports" ? "xl:col-span-2" : ""}
+            actions={operationEditTarget === "assistant_reports" ? <><button type="button" onClick={() => void saveAssistantReportScheduleCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(scheduleSettings)); setOperationEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(scheduleSettings)); setOperationEditTarget("assistant_reports"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
+          >
+            {operationEditTarget === "assistant_reports" ? (
+              <div className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-1.5">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Relatório matinal</span>
+                    <input type="time" value={assistantReportScheduleDraft.morningTime} onChange={(e) => setAssistantReportScheduleDraft((current) => ({ ...current, morningTime: e.target.value }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" />
+                    <span className="block text-xs leading-5 text-gray-500">Vazio: usar o horário padrão da loja.</span>
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Relatório noturno</span>
+                    <input type="time" value={assistantReportScheduleDraft.eveningTime} onChange={(e) => setAssistantReportScheduleDraft((current) => ({ ...current, eveningTime: e.target.value }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" />
+                    <span className="block text-xs leading-5 text-gray-500">Vazio: usar o horário padrão da loja.</span>
+                  </label>
+                </div>
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dias sem expediente</div>
+                  <ChoiceButtonGroup value={assistantReportScheduleDraft.nonOperatingPolicy} onChange={(value) => setAssistantReportScheduleDraft((current) => ({ ...current, nonOperatingPolicy: value }))} options={ASSISTANT_REPORT_POLICIES.map((option) => ({ value: option.value, label: option.label }))} />
+                </div>
+                <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm"><span className="font-semibold">Fuso horário da loja:</span> {cleanText(scheduleSettings?.timezone_name) || DEFAULT_SCHEDULE_TIMEZONE}</div>
+              </div>
+            ) : (
+              <SummaryList items={buildBulletRows([
+                { label: "Relatório matinal", value: cleanText(scheduleSettings?.assistant_morning_report_time) || "Horário padrão da loja" },
+                { label: "Relatório noturno", value: cleanText(scheduleSettings?.assistant_evening_report_time) || "Horário padrão da loja" },
+                { label: "Dias sem expediente", value: assistantReportPolicyLabel(scheduleSettings?.assistant_non_operating_report_policy) },
+                { label: "Fuso horário", value: cleanText(scheduleSettings?.timezone_name) || DEFAULT_SCHEDULE_TIMEZONE },
+              ])} />
+            )}
+          </SectionBlock>
+
+          <SectionBlock
             title="IA fora do horário"
             description="Defina quando a IA pode continuar atendendo clientes enquanto a equipe humana estiver fechada."
             tone={resolveAfterHoursCardStatus(scheduleSettings).tone}
@@ -13954,6 +14123,7 @@ export default function ConfiguracoesPage() {
               </fieldset> : null}
             </div> : <SummaryList items={buildBulletRows([{label:"Oferece visita",value:yesNoLabel(operationSettingsInput.offersTechnicalVisit)},{label:"Obrigatória em",value:savedOperationExperience.visit_required_situations.length ? `${savedOperationExperience.visit_required_situations.length} ${savedOperationExperience.visit_required_situations.length === 1 ? "situação" : "situações"}` : "Não definido"},{label:"Tempo reservado",value:savedOperationExperience.visit_duration_minutes ? `${savedOperationExperience.visit_duration_minutes} min` : savedOperationExperience.visit_duration_mode === "varia" ? "Varia" : "Não definido"},{label:"Cobrança",value:savedOperationExperience.visit_pricing_mode ? optionLabel(savedOperationExperience.visit_pricing_mode,[{value:"free",label:"Gratuita"},{value:"fixed",label:"Valor fixo"},{value:"case_by_case",label:"Caso a caso"}]) : "Não definida"}])} />}
           </SectionBlock>
+
 
           <SectionBlock
             title="Instalação de piscina nova"
