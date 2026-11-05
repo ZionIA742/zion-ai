@@ -40,6 +40,8 @@ import {
   enqueueQuotePreparationTaskBySystem,
   type QuotePreparationQueueResult,
 } from "./sales-quotes/enqueue-quote-preparation-task-by-system";
+import { recordDetectedPhysicalSignaturePreference } from "./physical-contract-signature";
+import type { PhysicalSignatureSupabase } from "./physical-contract-signature";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -123,6 +125,7 @@ type GenerateAndSaveAiSalesReplyDeps = {
   createHumanAssistantHandoff: typeof createHumanAssistantHandoff;
   createCommercialAssistantHandoff: typeof createCommercialAssistantHandoff;
   loadSalesAiOperatingWindowAuthority: typeof loadSalesAiOperatingWindowAuthority;
+  recordPhysicalSignaturePreference: typeof recordDetectedPhysicalSignaturePreference;
 };
 
 const QUOTE_PREPARATION_AUTHORIZATION_ENABLED_ENV =
@@ -1179,12 +1182,14 @@ type MessageBoundaryRow = {
   id: string;
   sender: string | null;
   direction: string | null;
+  content?: string | null;
   created_at: string | null;
 };
 
 type ConversationMessageBoundaryState = {
   lastIncomingCustomerMessageId: string | null;
   lastIncomingCustomerMessageAt: string | null;
+  lastIncomingCustomerMessageContent?: string | null;
   lastAiMessageId: string | null;
   lastAiMessageAt: string | null;
 };
@@ -3159,7 +3164,7 @@ async function loadConversationMessageBoundaryState(args: {
 
   const { data, error } = await supabase
     .from("messages")
-    .select("id, sender, direction, created_at")
+    .select("id, sender, direction, content, created_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
     .limit(20);
@@ -3179,6 +3184,8 @@ async function loadConversationMessageBoundaryState(args: {
     lastIncomingCustomerMessageId: lastIncomingCustomerMessage?.id || null,
     lastIncomingCustomerMessageAt:
       lastIncomingCustomerMessage?.created_at || null,
+    lastIncomingCustomerMessageContent:
+      lastIncomingCustomerMessage?.content || null,
     lastAiMessageId: lastAiMessage?.id || null,
     lastAiMessageAt: lastAiMessage?.created_at || null,
   };
@@ -5876,6 +5883,7 @@ export async function generateAndSaveAiSalesReply(
       createHumanAssistantHandoff,
       createCommercialAssistantHandoff,
       loadSalesAiOperatingWindowAuthority,
+      recordPhysicalSignaturePreference: recordDetectedPhysicalSignaturePreference,
       ...deps,
     };
     const organizationId = String(params.organizationId || "").trim();
@@ -6100,6 +6108,18 @@ export async function generateAndSaveAiSalesReply(
     }
 
     if (!scheduledResumeContext) {
+      if (boundaryBeforeGeneration.lastIncomingCustomerMessageContent) {
+        await resolvedDeps.recordPhysicalSignaturePreference({
+          supabase: supabase as unknown as PhysicalSignatureSupabase,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          leadId: normalizedConversation.lead_id || null,
+          sourceMessageId: boundaryBeforeGeneration.lastIncomingCustomerMessageId,
+          message: boundaryBeforeGeneration.lastIncomingCustomerMessageContent,
+        });
+      }
+
       const contractAcceptanceResult =
         await resolvedDeps.tryHandleCustomerContractAcceptance({
           supabase,

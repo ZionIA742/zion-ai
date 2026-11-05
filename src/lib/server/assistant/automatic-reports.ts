@@ -628,11 +628,21 @@ function buildAdaptiveAutomaticReport(full: string, summary: string) {
   throw new Error("AUTOMATIC_REPORT_SUMMARY_EXCEEDS_SAFE_LIMIT");
 }
 
-function reportAppointmentLineForDisplay(appointment: ReportAppointment, timeZone = "America/Sao_Paulo") {
+function hasPhysicalSignatureReminder(items: ReportPendingItem[], appointmentId?: string) {
+  return items.some((item) =>
+    normalize(item.context?.reason) === "physical_contract_signature_pending" &&
+    (!appointmentId || item.related_appointment_id === appointmentId),
+  );
+}
+
+function reportAppointmentLineForDisplay(appointment: ReportAppointment, timeZone = "America/Sao_Paulo", pendingItems: ReportPendingItem[] = []) {
   const time = appointment.scheduled_start
     ? new Intl.DateTimeFormat("pt-BR", { timeZone: safeScheduleTimezone(timeZone), hour: "2-digit", minute: "2-digit" }).format(new Date(appointment.scheduled_start))
     : "horario nao informado";
-  return `- ${time} — ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: ${reportAppointmentTypeForDisplay(appointment.appointment_type)}.`;
+  const physicalReminder = hasPhysicalSignatureReminder(pendingItems, appointment.id)
+    ? " Levar o contrato fisico para assinatura."
+    : "";
+  return `- ${time} — ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: ${reportAppointmentTypeForDisplay(appointment.appointment_type)}.${physicalReminder}`;
 }
 
 function reportSuggestions(data: ReportData) {
@@ -676,12 +686,17 @@ function reportPlanningChanges(data: ReportData) {
 function buildAutomaticMorningReportFull(data: ReportData) {
   const appointments = data.appointments || [];
   const presentation = reportPendingPresentation(data.pendingItems || []);
+  const physicalSignaturePending = hasPhysicalSignatureReminder(presentation.all);
+  const physicalSignaturePendingWithoutAppointment = presentation.all.some((item) =>
+    normalize(item.context?.reason) === "physical_contract_signature_pending" && !item.related_appointment_id,
+  );
   const groups = reportPendingGroups(presentation.pending);
   const attention = presentation.attention;
   const lines = [
     "\u{1f305} *Relat\u00f3rio da manh\u00e3*",
     `\u{1f4c5} *Compromissos de hoje — ${appointments.length}*`,
-    ...(appointments.length ? appointments.map((appointment) => reportAppointmentLineForDisplay(appointment, data.reportTimezone)) : ["- Nenhum compromisso registrado para hoje."]),
+    ...(appointments.length ? appointments.map((appointment) => reportAppointmentLineForDisplay(appointment, data.reportTimezone, presentation.all)) : ["- Nenhum compromisso registrado para hoje."]),
+    ...(physicalSignaturePending && physicalSignaturePendingWithoutAppointment ? ["- Levar o contrato fisico para assinatura."] : []),
     "",
     `\u{1f6a8} *Precisa da sua aten\u00e7\u00e3o — ${attention.length}*`,
     ...(attention.length ? attention.map(reportPendingLine) : ["- Nenhuma situacao urgente identificada."]),
@@ -699,6 +714,7 @@ function buildAutomaticMorningReportFull(data: ReportData) {
 function buildAutomaticMorningReportSummary(data: ReportData) {
   const appointments = data.appointments || [];
   const presentation = reportPendingPresentation(data.pendingItems || []);
+  const physicalSignaturePending = hasPhysicalSignatureReminder(presentation.all);
   const counts = reportPendingCategoryCounts(presentation.all);
   const totalPending = presentation.all.length;
   return [
@@ -711,6 +727,7 @@ function buildAutomaticMorningReportSummary(data: ReportData) {
     "",
     `\u{1f4cb} *Pend\u00eancias — ${totalPending}*`,
     `- Visitas: ${counts.visit} | Orcamentos: ${counts.quote} | Contratos: ${counts.contract} | Outras: ${counts.other}.`,
+    ...(physicalSignaturePending ? ["- Há contrato físico pendente: levar o contrato para assinatura."] : []),
     "",
     "\u{1f4a1} *Sugest\u00f5es do que fazer primeiro*",
     ...reportSummarySuggestions(data),
@@ -835,23 +852,61 @@ function getSupabaseAdmin(): ReportSupabase {
 
 async function loadReportData(supabase: ReportSupabase, settings: AutomaticReportScheduleSettings, now: Date): Promise<ReportData> {
   const parts = getLocalParts(now, getScheduleTimezone(settings));
+  const reportLocalDate = localDateKey(parts);
   const startIso = buildIsoFromDateAndTime({ year: parts.year, month: parts.month - 1, day: parts.day }, "00:00", settings);
   const endIso = buildIsoFromDateAndTime({ year: parts.year, month: parts.month - 1, day: parts.day }, "23:59", settings);
-  const [appointments, notifications, tasks] = await Promise.all([
+  const [appointments, notifications, tasks, physicalPreferences] = await Promise.all([
     supabase.from("store_appointments").select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, created_at, commercial_opportunity_id").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).gte("scheduled_start", startIso).lte("scheduled_start", endIso),
     supabase.from("store_assistant_notification_queue").select("id, title, body, related_appointment_id, related_lead_id, created_at, priority, notification_type, context").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).eq("status", "pending"),
     supabase.from("store_assistant_operational_tasks").select("id, title, description, related_appointment_id, related_lead_id, created_at, task_type, commercial_opportunity_id").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).in("status", ["open", "waiting_customer_response", "waiting_user_choice", "ready_to_execute", "in_progress"]),
+    supabase.from("p9_physical_contract_signature_preferences").select("id, commercial_opportunity_id, sales_contract_id, sales_contract_version_id, planned_date, planned_time, status").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).eq("planned_date", reportLocalDate),
   ]);
-  if (appointments.error || notifications.error || tasks.error) throw new Error("AUTOMATIC_REPORT_DATA_LOAD_FAILED");
+  if (appointments.error || notifications.error || tasks.error || physicalPreferences.error) throw new Error("AUTOMATIC_REPORT_DATA_LOAD_FAILED");
   const rows = (appointments.data || []) as ReportAppointment[];
   const notificationRows = (notifications.data || []) as Array<{ id?: string; title?: string | null; body?: string | null; related_appointment_id?: string | null; related_lead_id?: string | null; created_at?: string | null; priority?: string | null; notification_type?: string | null; context?: unknown }>;
   const taskRows = (tasks.data || []) as Array<{ id?: string; title?: string | null; description?: string | null; related_appointment_id?: string | null; related_lead_id?: string | null; created_at?: string | null; task_type?: string | null; commercial_opportunity_id?: string | null }>;
+  const physicalRows = (physicalPreferences.data || []) as Array<{ id?: string; commercial_opportunity_id?: string | null; sales_contract_id?: string | null; sales_contract_version_id?: string | null; planned_date?: string | null; planned_time?: string | null; status?: string | null }>;
+  const pendingPhysicalRows = physicalRows.filter((row) => normalize(row.status) === "pending" && cleanText(row.planned_date) === reportLocalDate);
   const reportableNotificationRows = notificationRows.filter((row) =>
-    !isAutomaticReportQueueItem(row) && !isTechnicalIncidentNotification(row),
+    !isAutomaticReportQueueItem(row) && !isTechnicalIncidentNotification(row) && normalize(
+      row.context && typeof row.context === "object" && !Array.isArray(row.context)
+        ? (row.context as Record<string, unknown>).reason
+        : null,
+    ) !== "physical_contract_signature_pending",
   );
+  const physicalPendingItems: ReportPendingItem[] = pendingPhysicalRows.map((row) => {
+    const opportunityId = cleanText(row.commercial_opportunity_id) || null;
+    const appointment = rows.find((candidate) =>
+      opportunityId && cleanText(candidate.commercial_opportunity_id) === opportunityId &&
+      !["cancelled", "canceled"].includes(normalize(candidate.status)),
+    );
+    return {
+      id: `physical-signature:${cleanText(row.id)}`,
+      title: "Assinatura fisica pendente",
+      body: "Levar o contrato fisico para assinatura.",
+      related_appointment_id: appointment?.id || null,
+      related_lead_id: null,
+      created_at: null,
+      kind: "notification",
+      priority: "high",
+      notification_type: "physical_contract_signature_pending",
+      commercial_opportunity_id: opportunityId,
+      context: {
+        source: "p9_physical_signature_c6",
+        reason: "physical_contract_signature_pending",
+        related_contract_id: cleanText(row.sales_contract_id) || null,
+        document_version_id: cleanText(row.sales_contract_version_id) || null,
+        commercial_opportunity_id: opportunityId,
+        planned_date: cleanText(row.planned_date) || null,
+        planned_time: cleanText(row.planned_time) || null,
+        event_key: `p9-physical-signature:${cleanText(row.id)}:${reportLocalDate}`,
+      },
+    };
+  });
   const rawPendingItems: ReportPendingItem[] = [
     ...reportableNotificationRows
       .map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.body || null, related_appointment_id: row.related_appointment_id || null, related_lead_id: row.related_lead_id || null, created_at: row.created_at || null, kind: "notification" as const, priority: row.priority || null, notification_type: row.notification_type || null, context: row.context && typeof row.context === "object" && !Array.isArray(row.context) ? row.context as Record<string, unknown> : null })),
+    ...physicalPendingItems,
     ...taskRows.map((row) => ({ id: cleanText(row.id), title: row.title || null, body: row.description || null, related_appointment_id: row.related_appointment_id || null, related_lead_id: row.related_lead_id || null, created_at: row.created_at || null, kind: "task" as const, task_type: row.task_type || null, commercial_opportunity_id: row.commercial_opportunity_id || null })),
   ];
 
@@ -862,8 +917,12 @@ async function loadReportData(supabase: ReportSupabase, settings: AutomaticRepor
   const opportunityIds = uuidIds([
     ...rows.map((row) => row.commercial_opportunity_id),
     ...rawPendingItems.map((item) => item.commercial_opportunity_id || item.context?.commercial_opportunity_id),
+    ...pendingPhysicalRows.map((row) => row.commercial_opportunity_id),
   ]);
-  const contractIds = uuidIds(rawPendingItems.map((item) => item.context?.related_contract_id || item.context?.contract_id || item.context?.document_id));
+  const contractIds = uuidIds([
+    ...rawPendingItems.map((item) => item.context?.related_contract_id || item.context?.contract_id || item.context?.document_id),
+    ...pendingPhysicalRows.map((row) => row.sales_contract_id),
+  ]);
   const quoteIds = uuidIds(rawPendingItems.map((item) => item.context?.related_quote_id || item.context?.quote_id || item.context?.sales_quote_id));
   const scopedRows = async (table: string, select: string, ids: string[], label: string) => {
     if (!ids.length) return [] as Array<Record<string, unknown>>;
@@ -943,7 +1002,7 @@ async function loadReportData(supabase: ReportSupabase, settings: AutomaticRepor
     appointments: enrichedRows,
     pendingItems,
     planningSnapshotAvailable: false,
-    reportLocalDate: localDateKey(parts),
+    reportLocalDate,
     reportTimezone: getScheduleTimezone(settings),
   };
 }

@@ -210,12 +210,18 @@ function createReportSupabaseMock(options: {
   schedules?: Array<Partial<typeof base>>;
   notifications?: unknown[];
   tasks?: unknown[];
+  appointments?: unknown[];
+  physicalPreferences?: unknown[];
+  opportunities?: unknown[];
+  contracts?: unknown[];
+  leads?: unknown[];
+  customers?: unknown[];
 } = {}) {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
   const inCalls: Array<{ column: string; values: unknown[] }> = [];
   const claims = [...(options.claims || [{ result: "claimed", claim_id: claimId, claim_token: claimToken, attempt_count: 1 }])];
   const schedules = (options.schedules || [{ ...base, ...options.schedule }]).map((schedule) => ({ ...base, ...schedule, ai_after_hours_mode: "all_closed_hours" }));
-  const responseFor = (table: string, allowedStoreIds?: unknown[]) => table === "store_schedule_settings"
+  const responseFor = (table: string, allowedStoreIds?: unknown[], filters: Array<[string, unknown]> = []) => table === "store_schedule_settings"
     ? { data: allowedStoreIds ? schedules.filter((schedule) => allowedStoreIds.includes(schedule.store_id)) : schedules, error: null }
     : table === "store_schedule_blocks"
       ? { data: options.holidayBlocks || [], error: null }
@@ -224,18 +230,32 @@ function createReportSupabaseMock(options: {
       : table === "store_assistant_messages"
         ? { data: options.morningSnapshot ? [{ metadata: { automatic_report_snapshot: options.morningSnapshot } }] : [], error: null }
         : table === "store_appointments"
-      ? { data: options.appointmentError ? null : [{ status: "open", scheduled_end: "2026-10-19T12:00:00Z" }], error: options.appointmentError ? { message: options.appointmentError } : null }
+      ? { data: options.appointmentError ? null : (options.appointments || [{ status: "open", scheduled_end: "2026-10-19T12:00:00Z" }]), error: options.appointmentError ? { message: options.appointmentError } : null }
       : table === "store_assistant_notification_queue"
         ? { data: options.notifications || [], error: null }
         : table === "store_assistant_operational_tasks"
           ? { data: options.tasks || [], error: null }
+      : table === "p9_physical_contract_signature_preferences"
+        ? { data: (options.physicalPreferences || []).filter((row) => filters.filter(([column]) => column === "planned_date").every(([column, value]) => (row as Record<string, unknown>)[column] === value)), error: null }
+      : table === "commercial_opportunities"
+        ? { data: options.opportunities || [], error: null }
+      : table === "sales_contracts"
+        ? { data: options.contracts || [], error: null }
+      : table === "leads"
+        ? { data: options.leads || [], error: null }
+      : table === "customers"
+        ? { data: options.customers || [], error: null }
       : { data: [], error: null };
   const supabase = {
     from(table: string) {
       let allowedStoreIds: unknown[] | undefined;
+      const filters: Array<[string, unknown]> = [];
       const query = {
         select: () => query,
-        eq: () => query,
+        eq: (column: string, value: unknown) => {
+          if (table === "p9_physical_contract_signature_preferences") filters.push([column, value]);
+          return query;
+        },
         gte: () => query,
         lte: () => query,
         gt: () => query,
@@ -245,7 +265,7 @@ function createReportSupabaseMock(options: {
           if (table === "store_schedule_settings" && column === "store_id") allowedStoreIds = values;
           return query;
         },
-        then: (onfulfilled?: (value: ReturnType<typeof responseFor>) => unknown, onrejected?: (reason: unknown) => unknown) => Promise.resolve(responseFor(table, allowedStoreIds)).then(onfulfilled, onrejected),
+        then: (onfulfilled?: (value: ReturnType<typeof responseFor>) => unknown, onrejected?: (reason: unknown) => unknown) => Promise.resolve(responseFor(table, allowedStoreIds, filters)).then(onfulfilled, onrejected),
       };
       return query;
     },
@@ -278,6 +298,83 @@ async function runIntegrationTests() {
   assert.equal(generatedSnapshot.local_date, "2026-10-19");
   assert.ok(Array.isArray(generatedSnapshot.appointments));
   assert.ok(Array.isArray(generatedSnapshot.pending_items));
+
+  const physicalContract = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const physicalVersion = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const physicalOpportunity = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const physicalAppointment = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const physical = createReportSupabaseMock({
+    appointments: [{ id: physicalAppointment, status: "open", appointment_type: "installation", scheduled_start: "2026-10-19T13:00:00Z", scheduled_end: "2026-10-19T14:00:00Z", customer_name: null, commercial_opportunity_id: physicalOpportunity }],
+    physicalPreferences: [{ id: "physical-preference-1", commercial_opportunity_id: physicalOpportunity, sales_contract_id: physicalContract, sales_contract_version_id: physicalVersion, planned_date: "2026-10-19", planned_time: "10:00", status: "pending" }],
+    opportunities: [{ id: physicalOpportunity, origin_lead_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", customer_id: null }],
+    leads: [{ id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", name: "Regina" }],
+    contracts: [{ id: physicalContract, commercial_opportunity_id: physicalOpportunity }],
+    notifications: [{ id: "physical-queue-1", title: "Assinatura fisica pendente", context: { reason: "physical_contract_signature_pending", related_contract_id: physicalContract, document_version_id: physicalVersion } }],
+  });
+  const physicalResult = await processAutomaticAssistantReports({ now: reportNow, supabase: physical.supabase });
+  const physicalBody = String(physical.calls.find((call) => call.name === "assistant_materialize_automatic_report")?.args.p_content || "");
+  assert.equal(physicalResult.results[0]?.status, "generated");
+  assert.match(physicalBody, /Regina/);
+  assert.match(physicalBody, /10:00/);
+  assert.equal((physicalBody.match(/Levar o contrato/g) || []).length, 1);
+  assert.deepEqual(physical.calls.map((call) => call.name), ["assistant_claim_automatic_report", "assistant_materialize_automatic_report"]);
+
+  const physicalNotToday = createReportSupabaseMock({
+    physicalPreferences: [{ id: "physical-preference-other-day", sales_contract_id: physicalContract, sales_contract_version_id: physicalVersion, planned_date: "2026-10-20", status: "pending" }],
+    notifications: [{ id: "physical-old-date", title: "Assinatura fisica pendente", context: { reason: "physical_contract_signature_pending", related_contract_id: physicalContract, document_version_id: physicalVersion } }],
+  });
+  const physicalNotTodayResult = await processAutomaticAssistantReports({ now: reportNow, supabase: physicalNotToday.supabase });
+  const physicalNotTodayBody = String(physicalNotToday.calls.find((call) => call.name === "assistant_materialize_automatic_report")?.args.p_content || "");
+  assert.equal(physicalNotTodayResult.results[0]?.status, "generated");
+  assert.doesNotMatch(physicalNotTodayBody, /contrato fisico/);
+
+  const physicalNoTime = createReportSupabaseMock({
+    appointments: [{ id: physicalAppointment, status: "open", appointment_type: "installation", scheduled_start: null, scheduled_end: null, customer_name: "Cliente sem horario", commercial_opportunity_id: physicalOpportunity }],
+    physicalPreferences: [{ id: "physical-preference-no-time", commercial_opportunity_id: physicalOpportunity, sales_contract_id: physicalContract, sales_contract_version_id: physicalVersion, planned_date: "2026-10-19", planned_time: null, status: "pending" }],
+  });
+  const physicalNoTimeResult = await processAutomaticAssistantReports({ now: reportNow, supabase: physicalNoTime.supabase });
+  const physicalNoTimeBody = String(physicalNoTime.calls.find((call) => call.name === "assistant_materialize_automatic_report")?.args.p_content || "");
+  assert.equal(physicalNoTimeResult.results[0]?.status, "generated");
+  assert.match(physicalNoTimeBody, /Cliente sem horario/);
+  assert.match(physicalNoTimeBody, /horario nao informado/);
+  assert.doesNotMatch(physicalNoTimeBody, /10:00/);
+
+  for (const status of ["confirmed", "cancelled"] as const) {
+    const closedPhysical = createReportSupabaseMock({
+      physicalPreferences: [{ id: `physical-${status}`, sales_contract_id: physicalContract, sales_contract_version_id: physicalVersion, planned_date: "2026-10-19", status }],
+      notifications: [{ id: `physical-${status}-queue`, title: "Assinatura fisica pendente", context: { reason: "physical_contract_signature_pending", related_contract_id: physicalContract, document_version_id: physicalVersion } }],
+    });
+    await processAutomaticAssistantReports({ now: reportNow, supabase: closedPhysical.supabase });
+    const closedBody = String(closedPhysical.calls.find((call) => call.name === "assistant_materialize_automatic_report")?.args.p_content || "");
+    assert.doesNotMatch(closedBody, /contrato fisico/);
+  }
+
+  const rescheduled = createReportSupabaseMock({
+    physicalPreferences: [{ id: "physical-rescheduled", sales_contract_id: physicalContract, sales_contract_version_id: physicalVersion, planned_date: "2026-10-21", status: "pending" }],
+    notifications: [{ id: "physical-rescheduled-old", title: "Assinatura fisica pendente", context: { reason: "physical_contract_signature_pending", related_contract_id: physicalContract, document_version_id: physicalVersion } }],
+  });
+  await processAutomaticAssistantReports({ now: reportNow, supabase: rescheduled.supabase });
+  const rescheduledBody = String(rescheduled.calls.find((call) => call.name === "assistant_materialize_automatic_report")?.args.p_content || "");
+  assert.doesNotMatch(rescheduledBody, /contrato fisico/);
+
+  const twoPhysical = createReportSupabaseMock({
+    physicalPreferences: [
+      { id: "physical-two-1", sales_contract_id: physicalContract, planned_date: "2026-10-19", status: "pending" },
+      { id: "physical-two-2", sales_contract_id: "ffffffff-ffff-4fff-8fff-ffffffffffff", planned_date: "2026-10-19", status: "pending" },
+    ],
+    opportunities: [{ id: physicalOpportunity, origin_lead_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", customer_id: null }],
+    leads: [{ id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", name: "Regina" }],
+    contracts: [{ id: physicalContract, commercial_opportunity_id: physicalOpportunity }, { id: "ffffffff-ffff-4fff-8fff-ffffffffffff", commercial_opportunity_id: "99999999-9999-4999-8999-999999999999" }],
+  });
+  await processAutomaticAssistantReports({ now: reportNow, supabase: twoPhysical.supabase });
+  const twoPhysicalBody = String(twoPhysical.calls.find((call) => call.name === "assistant_materialize_automatic_report")?.args.p_content || "");
+  assert.equal((twoPhysicalBody.match(/contrato fisico/g) || []).length, 2);
+
+  const compactPhysical = buildAutomaticMorningReport({ appointmentCount: 0, openAppointmentCount: 0, completedAppointmentCount: 0, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 101, pendingTaskCount: 0, pendingItems: [
+    ...Array.from({ length: 100 }, (_, index) => ({ id: `compact-${index}`, title: "atividade", body: null, related_appointment_id: null, created_at: null, kind: "notification" as const, lead_name: `Cliente ${index}`, category: "other" as const, context: { activity_label: `Atividade compacta ${index} ${"x".repeat(30)}` } })),
+    { id: "compact-physical", title: "Assinatura fisica", body: null, related_appointment_id: null, created_at: null, kind: "notification" as const, lead_name: "Regina", category: "contract" as const, context: { reason: "physical_contract_signature_pending", related_contract_id: physicalContract } },
+  ] });
+  assert.match(compactPhysical, /contrato .* pendente/);
 
   const pendingNoise = createReportSupabaseMock({
     notifications: [
