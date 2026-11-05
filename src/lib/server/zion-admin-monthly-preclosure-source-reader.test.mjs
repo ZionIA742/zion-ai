@@ -405,7 +405,7 @@ test("leitor integra PTAX diaria e preserva origem", async () => {
     snapshot.sourceSnapshot.openai.dailyEvidence[1].snapshotIds[0],
     "snapshot-2",
   );
-  assert.deepEqual(Array.from(snapshot.pendingSources), ["meta_invoice"]);
+  assert.deepEqual(Array.from(snapshot.pendingSources), ["meta_financial_authority"]);
   assert.equal(snapshot.readyForFinalClose, false);
 });
 

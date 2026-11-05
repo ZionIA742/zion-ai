@@ -55,7 +55,7 @@ test("zero registrado permanece zero e outras fontes ficam pendentes", () => {
   assert.equal(result.sourceSnapshot.meta.billedBrlCents, null);
   assert.deepEqual(result.pendingSources, [
     "openai_official",
-    "meta_invoice",
+    "meta_financial_authority",
   ]);
   assert.equal(result.readyForFinalClose, false);
 });
@@ -93,7 +93,7 @@ test("OpenAI oficialmente completa permite total zero confirmado", () => {
 
   assert.equal(result.sourceSnapshot.openai.officialUsd, "0");
   assert.ok(!result.pendingSources.includes("openai_official"));
-  assert.ok(result.pendingSources.includes("meta_invoice"));
+  assert.ok(result.pendingSources.includes("meta_financial_authority"));
   assert.equal(result.readyForFinalClose, false);
 });
 
@@ -184,7 +184,7 @@ test("OpenAI positiva sem PTAX permanece pendente", () => {
   );
 
   assert.ok(result.pendingSources.includes("openai_ptax"));
-  assert.ok(result.pendingSources.includes("meta_invoice"));
+  assert.ok(result.pendingSources.includes("meta_financial_authority"));
   assert.equal(result.sourceSnapshot.openai.estimatedBrlCents, null);
   assert.equal(result.readyForFinalClose, false);
 });
@@ -209,7 +209,7 @@ test("snapshot recebe BRL diario e referencias oficiais", () => {
     result.sourceSnapshot.openai.dailyEvidence[0].operationIds[0],
     "operation-0",
   );
-  assert.deepEqual(result.pendingSources, ["meta_invoice"]);
+  assert.deepEqual(result.pendingSources, ["meta_financial_authority"]);
   assert.equal(result.readyForFinalClose, false);
 });
 

@@ -113,7 +113,7 @@ test("USD zero confirmado dispensa PTAX", () => {
 
 test("pre-fechamento com pendencias bloqueia", () => {
   const input = base();
-  input.preclosure.pendingSources = ["meta_invoice"];
+  input.preclosure.pendingSources = ["meta_financial_authority"];
   assert.ok(
     evaluateMonthlyFinalCloseEligibility(input).blockers.includes(
       "pending_preclosure_sources",

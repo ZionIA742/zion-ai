@@ -257,9 +257,9 @@ export function prepareMonthlyPreclosureSnapshot(
     pendingSources.push("openai_ptax");
   }
 
-  // A integracao de comprovantes reais Meta ainda nao foi
-  // implementada. Nao aceitar estimativas como fatura.
-  pendingSources.push("meta_invoice");
+  // A autoridade financeira mensal da Meta ainda nao foi
+  // comprovada. Nao transformar estimativas em custos confirmados.
+  pendingSources.push("meta_financial_authority");
 
   return {
     sourceSnapshot: {
@@ -308,7 +308,7 @@ export function prepareMonthlyPreclosureSnapshot(
         note: "Uso oficial OpenAI nao equivale a fatura ou cartao",
       },
       meta: {
-        status: "invoice_not_verified",
+        status: "financial_authority_unknown",
         billedBrlCents: null,
       },
     },

@@ -183,7 +183,7 @@ export function createMonthlyPreclosureExecutionRunner(
     // Meta ainda e obrigatoriamente pendente.
     if (
       prepared.readyForFinalClose !== false ||
-      !prepared.pendingSources.includes("meta_invoice")
+      !prepared.pendingSources.includes("meta_financial_authority")
     ) {
       return {
         status: "needs_review",

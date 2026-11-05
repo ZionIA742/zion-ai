@@ -181,7 +181,7 @@ test("liga leitor, preparador e writer no horario correto", async () => {
 
   assert.deepEqual(
     Array.from(calls[1].args.p_pending_sources),
-    ["openai_official", "meta_invoice"],
+    ["openai_official", "meta_financial_authority"],
   );
 
   assert.equal(
@@ -205,7 +205,7 @@ test("zero oficial conhecido permanece zero e Meta pendente", async () => {
   assert.equal(snapshot.meta.billedBrlCents, null);
   assert.deepEqual(
     Array.from(calls[1].args.p_pending_sources),
-    ["meta_invoice"],
+    ["meta_financial_authority"],
   );
 });
 
@@ -245,7 +245,7 @@ test("fontes desconhecidas permanecem nulas e pendentes", async () => {
       "fixed_costs",
       "manual_expenses",
       "openai_official",
-      "meta_invoice",
+      "meta_financial_authority",
     ],
   );
 });
