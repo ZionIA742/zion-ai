@@ -41,7 +41,14 @@ function compile(source, dependencies = {}) {
   return exports;
 }
 
-const costs = compile(costSource);
+const ptaxSource = readFileSync(
+  new URL("./zion-admin-ptax-daily.ts", import.meta.url),
+  "utf8",
+);
+const ptax = compile(ptaxSource);
+const costs = compile(costSource, {
+  "./zion-admin-ptax-daily": ptax,
+});
 
 const dates = Array.from(
   { length: 31 },
