@@ -89,6 +89,20 @@ export type ReportData = {
   reportLocalDate?: string;
   reportTimezone?: string;
   planningComparison?: PlanningComparison;
+  consolidatedNonOperatingActivities?: HistoricalReportActivity[];
+  consolidatedNonOperatingDates?: string[];
+};
+
+export type HistoricalReportActivity = {
+  id: string;
+  localDate: string;
+  eventOccurredAt: string | null;
+  appointmentType: string | null;
+  status: string | null;
+  scheduledStart: string | null;
+  customerName: string | null;
+  commercialOpportunityId: string | null;
+  evidenceSource: "appointment" | "completion_event";
 };
 
 type ReportSupabase = {
@@ -173,6 +187,144 @@ function getLocalParts(now: Date, timeZone: string) {
 
 function localDateKey(parts: { year: number; month: number; day: number }) {
   return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+}
+
+function shiftLocalDate(localDate: string, days: number) {
+  const value = new Date(`${localDate}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function localDateForInstant(value: unknown, timeZone: string) {
+  const timestamp = Date.parse(String(value || ""));
+  if (!Number.isFinite(timestamp)) return null;
+  const parts = getLocalParts(new Date(timestamp), timeZone);
+  return localDateKey(parts);
+}
+
+function isOperatingLocalDate(settings: AutomaticReportScheduleSettings, localDate: string) {
+  const value = new Date(`${localDate}T12:00:00Z`);
+  const dayKey = DAY_KEYS[value.getUTCDay()] || "domingo";
+  return Array.isArray(settings.operating_days)
+    && settings.operating_days.map(normalize).includes(dayKey);
+}
+
+async function loadConsolidatedNonOperatingDates(
+  supabase: ReportSupabase,
+  settings: AutomaticReportScheduleSettings,
+  currentLocalDate: string,
+) {
+  const claims = await supabase
+    .from("store_assistant_automatic_report_claims")
+    .select("local_date, message_id, status")
+    .eq("organization_id", settings.organization_id)
+    .eq("store_id", settings.store_id)
+    .eq("report_type", "morning_report")
+    .eq("status", "completed");
+  if (claims.error) throw new Error(`AUTOMATIC_REPORT_HISTORY_CLAIM_LOAD_FAILED: ${claims.error.message || "unknown"}`);
+
+  const claimRows = (claims.data || []) as Array<{ local_date?: string | null; message_id?: string | null; status?: string | null }>;
+  const completedDates = claimRows
+    .map((row) => cleanText(row.local_date))
+    .filter((date) => Boolean(date) && date < currentLocalDate)
+    .sort();
+  const lastCompletedMorningDate = completedDates.at(-1) || null;
+  if (!lastCompletedMorningDate) return { lastCompletedMorningDate: null, consolidatedDates: new Set<string>() };
+
+  const messageIds = Array.from(new Set(claimRows.map((row) => cleanText(row.message_id)).filter(Boolean)));
+  if (!messageIds.length) return { lastCompletedMorningDate, consolidatedDates: new Set<string>() };
+  const messages = await supabase
+    .from("store_assistant_messages")
+    .select("id, metadata")
+    .eq("organization_id", settings.organization_id)
+    .eq("store_id", settings.store_id)
+    .in("id", messageIds);
+  if (messages.error) throw new Error(`AUTOMATIC_REPORT_HISTORY_MESSAGE_LOAD_FAILED: ${messages.error.message || "unknown"}`);
+
+  const consolidatedDates = new Set<string>();
+  for (const row of ((messages.data || []) as Array<{ metadata?: unknown }>)) {
+    const metadata = row.metadata;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) continue;
+    const dates = (metadata as Record<string, unknown>).consolidated_non_operating_dates;
+    if (!Array.isArray(dates)) continue;
+    for (const date of dates) if (/^\d{4}-\d{2}-\d{2}$/.test(String(date))) consolidatedDates.add(String(date));
+  }
+  return { lastCompletedMorningDate, consolidatedDates };
+}
+
+async function loadHistoricalNonOperatingActivities(
+  supabase: ReportSupabase,
+  settings: AutomaticReportScheduleSettings,
+  currentLocalDate: string,
+) {
+  if (normalize(settings.assistant_non_operating_report_policy) !== "skip_and_consolidate_non_operating_days") {
+    return { activities: [] as HistoricalReportActivity[], dates: [] as string[] };
+  }
+
+  const frontier = await loadConsolidatedNonOperatingDates(supabase, settings, currentLocalDate);
+  if (!frontier.lastCompletedMorningDate) return { activities: [], dates: [] as string[] };
+
+  const candidateDates: string[] = [];
+  for (let date = shiftLocalDate(frontier.lastCompletedMorningDate, 1); date < currentLocalDate; date = shiftLocalDate(date, 1)) {
+    if (!frontier.consolidatedDates.has(date)) candidateDates.push(date);
+  }
+  if (!candidateDates.length) return { activities: [], dates: [] };
+
+  const nonOperatingDates: string[] = [];
+  for (const date of candidateDates) {
+    const dateParts = { year: Number(date.slice(0, 4)), month: Number(date.slice(5, 7)) - 1, day: Number(date.slice(8, 10)) };
+    const holidayProbe = new Date(buildIsoFromDateAndTime(dateParts, "12:00", settings));
+    const holidayBlocks = await loadAutomaticReportHolidayBlocks(supabase, settings, holidayProbe);
+    if (!isOperatingLocalDate(settings, date) || holidayBlocks.length > 0) nonOperatingDates.push(date);
+  }
+  if (!nonOperatingDates.length) return { activities: [], dates: [] };
+
+  const firstDate = nonOperatingDates[0];
+  const lastDate = shiftLocalDate(nonOperatingDates.at(-1) || firstDate, 1);
+  const rangeStart = buildIsoFromDateAndTime({ year: Number(firstDate.slice(0, 4)), month: Number(firstDate.slice(5, 7)) - 1, day: Number(firstDate.slice(8, 10)) }, "00:00", settings);
+  const rangeEnd = buildIsoFromDateAndTime({ year: Number(lastDate.slice(0, 4)), month: Number(lastDate.slice(5, 7)) - 1, day: Number(lastDate.slice(8, 10)) }, "00:00", settings);
+  const [appointments, completionEvents] = await Promise.all([
+    supabase.from("store_appointments").select("id, appointment_type, status, scheduled_start, customer_name, commercial_opportunity_id").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).gte("scheduled_start", rangeStart).lt("scheduled_start", rangeEnd),
+    supabase.from("store_appointment_completion_events").select("id, appointment_id, commercial_opportunity_id, completion_outcome, appointment_type_snapshot, scheduled_start_snapshot, created_at").eq("organization_id", settings.organization_id).eq("store_id", settings.store_id).gte("scheduled_start_snapshot", rangeStart).lt("scheduled_start_snapshot", rangeEnd),
+  ]);
+  if (appointments.error || completionEvents.error) throw new Error("AUTOMATIC_REPORT_HISTORY_ACTIVITY_LOAD_FAILED");
+
+  const candidateSet = new Set(nonOperatingDates);
+  const activities = new Map<string, HistoricalReportActivity>();
+  for (const row of ((appointments.data || []) as Array<Record<string, unknown>>)) {
+    const localDate = localDateForInstant(row.scheduled_start, getScheduleTimezone(settings));
+    if (!localDate || !candidateSet.has(localDate)) continue;
+    activities.set(`${cleanText(row.id)}:${localDate}`, {
+      id: cleanText(row.id),
+      localDate,
+      eventOccurredAt: null,
+      appointmentType: cleanText(row.appointment_type) || null,
+      status: cleanText(row.status) || null,
+      scheduledStart: cleanText(row.scheduled_start) || null,
+      customerName: cleanText(row.customer_name) || null,
+      commercialOpportunityId: cleanText(row.commercial_opportunity_id) || null,
+      evidenceSource: "appointment",
+    });
+  }
+  for (const row of ((completionEvents.data || []) as Array<Record<string, unknown>>)) {
+    const eventOccurredAt = cleanText(row.created_at) || null;
+    const localDate = localDateForInstant(eventOccurredAt, getScheduleTimezone(settings));
+    if (!localDate || !candidateSet.has(localDate)) continue;
+    const id = cleanText(row.appointment_id);
+    if (!id) continue;
+    activities.set(`${id}:${localDate}`, {
+      id,
+      localDate,
+      eventOccurredAt,
+      appointmentType: cleanText(row.appointment_type_snapshot) || null,
+      status: cleanText(row.completion_outcome) || null,
+      scheduledStart: cleanText(row.scheduled_start_snapshot) || null,
+      customerName: null,
+      commercialOpportunityId: cleanText(row.commercial_opportunity_id) || null,
+      evidenceSource: "completion_event",
+    });
+  }
+  return { activities: Array.from(activities.values()), dates: nonOperatingDates };
 }
 
 function localDayKey(parts: { year: number; month: number; day: number }) {
@@ -708,6 +860,45 @@ function reportPlanningChanges(data: ReportData) {
   return lines;
 }
 
+function historicalActivityStatus(value: string | null) {
+  const status = normalize(value);
+  if (status === "fully_completed") return "concluída";
+  if (status === "needs_followup") return "requer acompanhamento";
+  if (["cancelled", "canceled"].includes(status)) return "cancelada";
+  if (["rescheduled", "remarcado"].includes(status)) return "remarcada";
+  return value ? `situação: ${value}` : "situação não definida";
+}
+
+function historicalActivityLine(activity: HistoricalReportActivity, timeZone = "America/Sao_Paulo") {
+  const displayInstant = activity.eventOccurredAt || activity.scheduledStart;
+  const time = displayInstant
+    ? new Intl.DateTimeFormat("pt-BR", { timeZone: safeScheduleTimezone(timeZone), hour: "2-digit", minute: "2-digit" }).format(new Date(displayInstant))
+    : "horário não definido";
+  return `- ${activity.localDate} ${time} — ${reportLeadNameForDisplay(activity.customerName)}: ${reportAppointmentTypeForDisplay(activity.appointmentType)}; ${historicalActivityStatus(activity.status)}.`;
+}
+
+function historicalConsolidationFullLines(data: ReportData) {
+  const activities = data.consolidatedNonOperatingActivities || [];
+  const dates = data.consolidatedNonOperatingDates || [];
+  if (!dates.length) return [];
+  return [
+    "",
+    `\u{1f4da} *Histórico de dias sem expediente — ${activities.length} atividade(s), ${dates.length} dia(s)*`,
+    ...(activities.length ? activities.map((activity) => historicalActivityLine(activity, data.reportTimezone)) : ["- Nenhuma atividade comprovada nesses dias."]),
+  ];
+}
+
+function historicalConsolidationSummaryLines(data: ReportData) {
+  const activities = data.consolidatedNonOperatingActivities || [];
+  const dates = data.consolidatedNonOperatingDates || [];
+  if (!dates.length) return [];
+  return [
+    "",
+    `\u{1f4da} *Histórico consolidado — ${activities.length} atividade(s) em ${dates.length} dia(s)*`,
+    `- Dias: ${dates.join(", ")}. Detalhes disponíveis sob consulta.`,
+  ];
+}
+
 function buildAutomaticMorningReportFull(data: ReportData) {
   const appointments = data.appointments || [];
   const presentation = reportPendingPresentation(data.pendingItems || []);
@@ -732,6 +923,7 @@ function buildAutomaticMorningReportFull(data: ReportData) {
     const group = groups.get(category) || [];
     if (group.length) lines.push(`*${label} (${group.length})*`, ...group.map(reportPendingLine));
   }
+  lines.push(...historicalConsolidationFullLines(data));
   lines.push("", "\u{1f4a1} *Sugest\u00f5es do que fazer primeiro*", ...reportSuggestions(data));
   return lines.join("\n");
 }
@@ -755,6 +947,7 @@ function buildAutomaticMorningReportSummary(data: ReportData) {
     ...(physicalSignaturePending ? ["- Há contrato físico pendente: levar o contrato para assinatura."] : []),
     "",
     "\u{1f4a1} *Sugest\u00f5es do que fazer primeiro*",
+    ...historicalConsolidationSummaryLines(data),
     ...reportSummarySuggestions(data),
     ...reportCurrentOperationalDataInvitation(),
   ].join("\n");
@@ -875,7 +1068,7 @@ function getSupabaseAdmin(): ReportSupabase {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } }) as unknown as ReportSupabase;
 }
 
-async function loadReportData(supabase: ReportSupabase, settings: AutomaticReportScheduleSettings, now: Date): Promise<ReportData> {
+async function loadReportData(supabase: ReportSupabase, settings: AutomaticReportScheduleSettings, now: Date, includeHistoricalConsolidation = false): Promise<ReportData> {
   const parts = getLocalParts(now, getScheduleTimezone(settings));
   const reportLocalDate = localDateKey(parts);
   const startIso = buildIsoFromDateAndTime({ year: parts.year, month: parts.month - 1, day: parts.day }, "00:00", settings);
@@ -892,6 +1085,9 @@ async function loadReportData(supabase: ReportSupabase, settings: AutomaticRepor
   const taskRows = (tasks.data || []) as Array<{ id?: string; title?: string | null; description?: string | null; related_appointment_id?: string | null; related_lead_id?: string | null; created_at?: string | null; task_type?: string | null; commercial_opportunity_id?: string | null }>;
   const physicalRows = (physicalPreferences.data || []) as Array<{ id?: string; commercial_opportunity_id?: string | null; sales_contract_id?: string | null; sales_contract_version_id?: string | null; planned_date?: string | null; planned_time?: string | null; status?: string | null }>;
   const pendingPhysicalRows = physicalRows.filter((row) => normalize(row.status) === "pending" && cleanText(row.planned_date) === reportLocalDate);
+  const historical = includeHistoricalConsolidation
+    ? await loadHistoricalNonOperatingActivities(supabase, settings, reportLocalDate)
+    : { activities: [] as HistoricalReportActivity[], dates: [] as string[] };
   const reportableNotificationRows = notificationRows.filter((row) =>
     !isAutomaticReportQueueItem(row) && !isTechnicalIncidentNotification(row) && normalize(
       row.context && typeof row.context === "object" && !Array.isArray(row.context)
@@ -941,6 +1137,7 @@ async function loadReportData(supabase: ReportSupabase, settings: AutomaticRepor
   ]);
   const opportunityIds = uuidIds([
     ...rows.map((row) => row.commercial_opportunity_id),
+    ...historical.activities.map((activity) => activity.commercialOpportunityId),
     ...rawPendingItems.map((item) => item.commercial_opportunity_id || item.context?.commercial_opportunity_id),
     ...pendingPhysicalRows.map((row) => row.commercial_opportunity_id),
   ]);
@@ -1014,6 +1211,10 @@ async function loadReportData(supabase: ReportSupabase, settings: AutomaticRepor
     lead_name: resolveLeadName(null, row.commercial_opportunity_id),
     completion_evidence: completionEvidence.has(row.id),
   }));
+  const enrichedHistoricalActivities = historical.activities.map((activity) => ({
+    ...activity,
+    customerName: activity.customerName || resolveLeadName(null, activity.commercialOpportunityId),
+  }));
   const nowMs = now.getTime();
   const normalized = enrichedRows.map((row) => normalize(row.status));
   return {
@@ -1026,6 +1227,8 @@ async function loadReportData(supabase: ReportSupabase, settings: AutomaticRepor
     pendingTaskCount: Array.isArray(tasks.data) ? tasks.data.length : 0,
     appointments: enrichedRows,
     pendingItems,
+    consolidatedNonOperatingActivities: enrichedHistoricalActivities,
+    consolidatedNonOperatingDates: historical.dates,
     planningSnapshotAvailable: false,
     reportLocalDate,
     reportTimezone: getScheduleTimezone(settings),
@@ -1182,7 +1385,7 @@ export async function processAutomaticAssistantReports(args: { now?: Date; limit
       const claimToken = claimResult.claim_token;
       let reportData: ReportData;
       try {
-        reportData = await loadReportData(supabase, settings, now);
+        reportData = await loadReportData(supabase, settings, now, item.type === "morning_report");
       } catch (error) {
         await markAutomaticReportRetryable({ supabase, settings, item, claimToken, errorCode: "AUTOMATIC_REPORT_GENERATION_FAILED" });
         throw new Error(`AUTOMATIC_REPORT_GENERATION_FAILED: ${errorMessage(error)}`);
@@ -1197,6 +1400,9 @@ export async function processAutomaticAssistantReports(args: { now?: Date; limit
       };
       if (item.type === "morning_report") {
         reportMetadata.automatic_report_snapshot = buildMorningSnapshot(reportData);
+        if ((reportData.consolidatedNonOperatingDates || []).length) {
+          reportMetadata.consolidated_non_operating_dates = reportData.consolidatedNonOperatingDates;
+        }
       } else {
         const snapshot = await loadMorningSnapshot(supabase, settings, item.localDate);
         if (snapshot) {

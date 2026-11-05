@@ -11,6 +11,11 @@ const base = {
 const tests = [
   () => { const result = resolveAutomaticReportDue({ settings: base, now: new Date("2026-10-19T11:00:00Z") }); assert.deepEqual(result.map((item) => item.reason), ["due", "not_due"]); },
   () => {
+    const body = buildAutomaticMorningReport({ appointmentCount: 0, openAppointmentCount: 0, completedAppointmentCount: 0, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 0, pendingTaskCount: 0, appointments: [], pendingItems: [], consolidatedNonOperatingActivities: [], consolidatedNonOperatingDates: ["2026-10-18"] });
+    assert.match(body, /Hist.*dias sem expediente/);
+    assert.match(body, /Nenhuma atividade comprovada/);
+  },
+  () => {
     const settings = { ...base, assistant_morning_report_time: "06:30", assistant_evening_report_time: "22:30" };
     const morning = resolveAutomaticReportDue({ settings, now: new Date("2026-10-19T09:30:00Z") });
     const evening = resolveAutomaticReportDue({ settings, now: new Date("2026-10-20T01:30:00Z") });
@@ -252,6 +257,9 @@ function createReportSupabaseMock(options: {
   contracts?: unknown[];
   leads?: unknown[];
   customers?: unknown[];
+  historyClaims?: unknown[];
+  historyMessages?: unknown[];
+  completionEvents?: unknown[];
 } = {}) {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
   const inCalls: Array<{ column: string; values: unknown[] }> = [];
@@ -262,15 +270,17 @@ function createReportSupabaseMock(options: {
     : table === "store_schedule_blocks"
       ? { data: options.holidayBlocks || [], error: null }
     : table === "store_assistant_automatic_report_claims"
-      ? { data: options.morningSnapshot ? [{ message_id: "morning-message", status: "completed" }] : [], error: null }
+      ? { data: options.morningSnapshot ? [{ message_id: "morning-message", status: "completed", local_date: "2026-10-19" }] : (options.historyClaims || []), error: null }
       : table === "store_assistant_messages"
-        ? { data: options.morningSnapshot ? [{ metadata: { automatic_report_snapshot: options.morningSnapshot } }] : [], error: null }
+        ? { data: [...(options.historyMessages || []), ...(options.morningSnapshot ? [{ metadata: { automatic_report_snapshot: options.morningSnapshot } }] : [])], error: null }
         : table === "store_appointments"
       ? { data: options.appointmentError ? null : (options.appointments || [{ status: "open", scheduled_end: "2026-10-19T12:00:00Z" }]), error: options.appointmentError ? { message: options.appointmentError } : null }
       : table === "store_assistant_notification_queue"
         ? { data: options.notifications || [], error: null }
         : table === "store_assistant_operational_tasks"
           ? { data: options.tasks || [], error: null }
+      : table === "store_appointment_completion_events"
+        ? { data: options.completionEvents || [], error: null }
       : table === "p9_physical_contract_signature_preferences"
         ? { data: (options.physicalPreferences || []).filter((row) => filters.filter(([column]) => column === "planned_date").every(([column, value]) => (row as Record<string, unknown>)[column] === value)), error: null }
       : table === "commercial_opportunities"
@@ -334,6 +344,56 @@ async function runIntegrationTests() {
   assert.equal(generatedSnapshot.local_date, "2026-10-19");
   assert.ok(Array.isArray(generatedSnapshot.appointments));
   assert.ok(Array.isArray(generatedSnapshot.pending_items));
+
+  const consolidated = createReportSupabaseMock({
+    schedule: { assistant_non_operating_report_policy: "skip_and_consolidate_non_operating_days" },
+    historyClaims: [{ local_date: "2026-10-16", message_id: "history-message", status: "completed" }],
+    historyMessages: [{ metadata: { consolidated_non_operating_dates: [] } }],
+    appointments: [{ id: "sunday-appointment", appointment_type: "visita tecnica", status: "open", scheduled_start: "2026-10-18T13:00:00Z", customer_name: "Cliente Domingo", commercial_opportunity_id: null }],
+    completionEvents: [{ id: "sunday-completion", appointment_id: "sunday-appointment", commercial_opportunity_id: null, completion_outcome: "fully_completed", appointment_type_snapshot: "visita tecnica", scheduled_start_snapshot: "2026-10-18T13:00:00Z", created_at: "2026-10-18T13:30:00Z" }],
+  });
+  const consolidatedResult = await processAutomaticAssistantReports({ now: reportNow, supabase: consolidated.supabase });
+  const consolidatedMaterialization = consolidated.calls.find((call) => call.name === "assistant_materialize_automatic_report");
+  assert.equal(consolidatedResult.results[0]?.status, "generated");
+  assert.deepEqual((consolidatedMaterialization?.args.p_metadata as Record<string, unknown>).consolidated_non_operating_dates, ["2026-10-17", "2026-10-18"]);
+  assert.match(String(consolidatedMaterialization?.args.p_content), /Hist.*dias sem expediente/);
+  assert.match(String(consolidatedMaterialization?.args.p_content), /Cliente Domingo/);
+
+  const completionAfterScheduledDate = createReportSupabaseMock({
+    schedule: { assistant_non_operating_report_policy: "skip_and_consolidate_non_operating_days" },
+    historyClaims: [{ local_date: "2026-10-16", message_id: "history-message", status: "completed" }],
+    historyMessages: [{ metadata: { consolidated_non_operating_dates: [] } }],
+    appointments: [],
+    completionEvents: [{ id: "late-sunday-completion", appointment_id: "sunday-appointment", commercial_opportunity_id: null, completion_outcome: "fully_completed", appointment_type_snapshot: "visita tecnica", scheduled_start_snapshot: "2026-10-18T13:00:00Z", created_at: "2026-10-19T13:30:00Z" }],
+  });
+  const completionAfterScheduledDateResult = await processAutomaticAssistantReports({ now: reportNow, supabase: completionAfterScheduledDate.supabase });
+  const completionAfterScheduledDateMaterialization = completionAfterScheduledDate.calls.find((call) => call.name === "assistant_materialize_automatic_report");
+  assert.equal(completionAfterScheduledDateResult.results[0]?.status, "generated");
+  assert.match(String(completionAfterScheduledDateMaterialization?.args.p_content), /Nenhuma atividade comprovada/);
+  assert.doesNotMatch(String(completionAfterScheduledDateMaterialization?.args.p_content), /visita tecnica/);
+
+  const noConsolidation = createReportSupabaseMock({
+    schedule: { assistant_non_operating_report_policy: "skip_non_operating_days" },
+    historyClaims: [{ local_date: "2026-10-16", message_id: "history-message", status: "completed" }],
+    historyMessages: [{ metadata: { consolidated_non_operating_dates: [] } }],
+    appointments: [{ id: "sunday-appointment", scheduled_start: "2026-10-18T13:00:00Z", status: "open", appointment_type: "visita tecnica", customer_name: "Cliente Domingo", commercial_opportunity_id: null }],
+  });
+  const noConsolidationResult = await processAutomaticAssistantReports({ now: reportNow, supabase: noConsolidation.supabase });
+  const noConsolidationMaterialization = noConsolidation.calls.find((call) => call.name === "assistant_materialize_automatic_report");
+  assert.equal(noConsolidationResult.results[0]?.status, "generated");
+  assert.equal((noConsolidationMaterialization?.args.p_metadata as Record<string, unknown>).consolidated_non_operating_dates, undefined);
+  assert.doesNotMatch(String(noConsolidationMaterialization?.args.p_content), /Hist.*dias sem expediente/);
+
+  const alreadyConsolidated = createReportSupabaseMock({
+    schedule: { assistant_non_operating_report_policy: "skip_and_consolidate_non_operating_days" },
+    historyClaims: [{ local_date: "2026-10-16", message_id: "history-message", status: "completed" }],
+    historyMessages: [{ metadata: { consolidated_non_operating_dates: ["2026-10-17", "2026-10-18"] } }],
+    appointments: [{ id: "sunday-appointment", scheduled_start: "2026-10-18T13:00:00Z", status: "open", appointment_type: "visita tecnica", customer_name: "Cliente Domingo", commercial_opportunity_id: null }],
+  });
+  await processAutomaticAssistantReports({ now: reportNow, supabase: alreadyConsolidated.supabase });
+  const alreadyConsolidatedMaterialization = alreadyConsolidated.calls.find((call) => call.name === "assistant_materialize_automatic_report");
+  assert.equal((alreadyConsolidatedMaterialization?.args.p_metadata as Record<string, unknown>).consolidated_non_operating_dates, undefined);
+  assert.doesNotMatch(String(alreadyConsolidatedMaterialization?.args.p_content), /Hist.*dias sem expediente/);
 
   const physicalContract = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const physicalVersion = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -552,7 +612,7 @@ try {
   const selectedBeforeLimitResult = await processAutomaticAssistantReports({ now: reportNow, supabase: selectedBeforeLimit.supabase });
   assert.equal(selectedBeforeLimitResult.processed, 1);
   assert.deepEqual(selectedBeforeLimit.inCalls[0], { column: "store_id", values: [base.store_id] });
-  console.log(`automatic-reports: ${tests.length + 16}/${tests.length + 16} PASS`);
+  console.log(`automatic-reports: ${tests.length + 19}/${tests.length + 19} PASS`);
 } finally {
   if (previousEnabledFlag === undefined) {
     delete process.env.ASSISTANT_AUTOMATIC_REPORTS_ENABLED;
