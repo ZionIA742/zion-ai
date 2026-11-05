@@ -50,6 +50,20 @@ const costs = compile(costSource, {
   "./zion-admin-ptax-daily": ptax,
 });
 
+const monthlyPtaxSource = readFileSync(
+  new URL("./zion-admin-monthly-openai-ptax.ts", import.meta.url),
+  "utf8",
+);
+
+const monthlyPtax = compile(monthlyPtaxSource);
+
+const preparationSource = readFileSync(
+  new URL("./zion-admin-monthly-preclosure-preparation.ts", import.meta.url),
+  "utf8",
+);
+
+const preparation = compile(preparationSource);
+
 const dates = Array.from(
   { length: 31 },
   (_, i) => `2026-10-${String(i + 1).padStart(2, "0")}`,
@@ -81,6 +95,7 @@ function setup({
   fixedItems = [],
   manual = [],
   official = makeOfficial(),
+  ptaxDaily = null,
   failures = [],
 } = {}) {
   const tables = {
@@ -140,6 +155,27 @@ function setup({
       createServiceSupabaseClient: () => db,
     },
     "@/lib/server/zion-admin-costs": costs,
+    "@/lib/server/zion-admin-monthly-openai-ptax": monthlyPtax,
+    "@/lib/server/zion-admin-ptax-daily": {
+      convertOfficialUsdToBrl: ptax.convertOfficialUsdToBrl,
+      async loadDailyPtaxRates(from, to) {
+        calls.push(`ptax:${from}:${to}`);
+
+        if (failures.includes("ptax")) {
+          throw new Error("PTAX_UNAVAILABLE");
+        }
+
+        return {
+          source: "bcb_ptax_venda",
+          daily: ptaxDaily ?? official.daily.map((day) => ({
+            date: day.date,
+            quotationDate: day.date,
+            rate: "5.00",
+            status: "same_day",
+          })),
+        };
+      },
+    },
     "@/lib/server/zion-admin-openai-official-cost-report": {
       async buildOfficialOpenAiCostReport(_, from, to) {
         calls.push(`official:${from}:${to}`);
@@ -310,4 +346,134 @@ test("leitor nao coleta nem grava", () => {
   assert.doesNotMatch(readerSource, /\.insert\s*\(/);
   assert.doesNotMatch(readerSource, /\.upsert\s*\(/);
   assert.doesNotMatch(readerSource, /\/api\/cron\//);
+});
+
+function positiveOfficial() {
+  const official = makeOfficial(true);
+
+  official.daily[0] = {
+    ...official.daily[0],
+    status: "available",
+    totalUsd: "0.01",
+    operationIds: ["operation-1"],
+    snapshotIds: ["snapshot-1"],
+  };
+
+  official.daily[1] = {
+    ...official.daily[1],
+    status: "available",
+    totalUsd: "0.01",
+    operationIds: ["operation-2"],
+    snapshotIds: ["snapshot-2"],
+  };
+
+  official.totalUsd = "0.02";
+
+  return official;
+}
+
+test("leitor integra PTAX diaria e preserva origem", async () => {
+  const official = positiveOfficial();
+
+  const ptaxDaily = official.daily.map((day, index) => ({
+    date: day.date,
+    quotationDate: day.date,
+    rate: index === 0 ? "5.25" : "5.55",
+    status: "same_day",
+  }));
+
+  const { read, calls } = setup({ official, ptaxDaily });
+  const result = await read("2026-10-01");
+
+  assert.equal(result.openAi.availability, "complete");
+  assert.equal(result.openAi.totalUsd, "0.02");
+  assert.equal(result.openAi.conversion.complete, true);
+  assert.equal(result.openAi.conversion.totalBrlCents, 11);
+  assert.equal(
+    result.openAi.conversion.daily[0].operationIds[0],
+    "operation-1",
+  );
+  assert.ok(calls.includes("ptax:2026-10-01:2026-10-31"));
+
+  const snapshot = preparation.prepareMonthlyPreclosureSnapshot(
+    "2026-10-01",
+    result,
+  );
+
+  assert.equal(snapshot.sourceSnapshot.openai.estimatedBrlCents, 11);
+  assert.equal(
+    snapshot.sourceSnapshot.openai.dailyEvidence[1].snapshotIds[0],
+    "snapshot-2",
+  );
+  assert.deepEqual(Array.from(snapshot.pendingSources), ["meta_invoice"]);
+  assert.equal(snapshot.readyForFinalClose, false);
+});
+
+test("falha PTAX preserva USD e marca cambio pendente", async () => {
+  const official = positiveOfficial();
+  const { read } = setup({
+    official,
+    failures: ["ptax"],
+  });
+
+  const result = await read("2026-10-01");
+
+  assert.equal(result.openAi.availability, "complete");
+  assert.equal(result.openAi.totalUsd, "0.02");
+  assert.equal(result.openAi.conversion.complete, false);
+  assert.equal(result.openAi.conversion.totalBrlCents, null);
+  assert.deepEqual(
+    Array.from(result.openAi.conversion.missingPtaxDays),
+    ["2026-10-01", "2026-10-02"],
+  );
+
+  const snapshot = preparation.prepareMonthlyPreclosureSnapshot(
+    "2026-10-01",
+    result,
+  );
+
+  assert.ok(snapshot.pendingSources.includes("openai_ptax"));
+  assert.equal(snapshot.sourceSnapshot.openai.officialUsd, "0.02");
+  assert.equal(snapshot.sourceSnapshot.openai.estimatedBrlCents, null);
+});
+
+test("zero oficialmente confirmado nao consulta PTAX", async () => {
+  const { read, calls } = setup({
+    official: makeOfficial(true),
+  });
+
+  const result = await read("2026-10-01");
+
+  assert.equal(result.openAi.conversion.totalBrlCents, 0);
+  assert.equal(
+    calls.some((call) => call.startsWith("ptax:")),
+    false,
+  );
+});
+
+test("OpenAI parcial preserva BRL conhecido sem fechar", async () => {
+  const official = makeOfficial(false);
+
+  official.daily[0] = {
+    ...official.daily[0],
+    status: "available",
+    totalUsd: "0.50",
+  };
+
+  const { read } = setup({ official });
+  const result = await read("2026-10-01");
+
+  assert.equal(result.openAi.availability, "partial");
+  assert.equal(result.openAi.totalUsd, null);
+  assert.equal(result.openAi.conversion.knownBrlCents, 250);
+  assert.equal(result.openAi.conversion.totalBrlCents, null);
+
+  const snapshot = preparation.prepareMonthlyPreclosureSnapshot(
+    "2026-10-01",
+    result,
+  );
+
+  assert.ok(snapshot.pendingSources.includes("openai_official"));
+  assert.equal(snapshot.sourceSnapshot.openai.knownBrlCents, 250);
+  assert.equal(snapshot.readyForFinalClose, false);
 });

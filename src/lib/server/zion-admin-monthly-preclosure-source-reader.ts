@@ -6,6 +6,14 @@
 import { createServiceSupabaseClient } from "@/lib/server/zion-account-provisioning";
 import { applicableFixedCosts, type CostVersion } from "@/lib/server/zion-admin-costs";
 import { buildOfficialOpenAiCostReport } from "@/lib/server/zion-admin-openai-official-cost-report";
+import {
+  convertOfficialUsdToBrl,
+  loadDailyPtaxRates,
+  type DailyPtaxRate,
+} from "@/lib/server/zion-admin-ptax-daily";
+import {
+  summarizeMonthlyOpenAiPtax,
+} from "@/lib/server/zion-admin-monthly-openai-ptax";
 import type {
   MonthlyPreclosureSources,
   RegisteredBrlSource,
@@ -259,6 +267,8 @@ async function readOpenAi(
         day.status === "confirmed_empty",
     ).length;
 
+    let result: OfficialOpenAiSource;
+
     if (report.availability === "complete") {
       if (
         confirmedDays !== expected ||
@@ -268,25 +278,97 @@ async function readOpenAi(
         return UNKNOWN_OPENAI;
       }
 
-      return {
+      result = {
         availability: "complete",
         confirmedDays,
         totalUsd: report.totalUsd,
       };
-    }
-
-    if (
+    } else if (
       report.availability === "partial" ||
       report.availability === "unavailable"
     ) {
-      return {
+      result = {
         availability: report.availability,
         confirmedDays,
         totalUsd: null,
       };
+    } else {
+      return UNKNOWN_OPENAI;
     }
 
-    return UNKNOWN_OPENAI;
+    // Ausencia de PTAX preserva o USD oficialmente confirmado.
+    const unavailableRates: DailyPtaxRate[] = report.daily.map(
+      (day) => ({
+        date: day.date,
+        quotationDate: null,
+        rate: null,
+        status: "unavailable" as const,
+      }),
+    );
+
+    let rates = unavailableRates;
+
+    // Dias com custo zero confirmado nao precisam de cotacao.
+    const hasPositiveOfficialUsd = report.daily.some(
+      (day) =>
+        day.status === "available" &&
+        typeof day.totalUsd === "string" &&
+        Number(day.totalUsd) > 0,
+    );
+
+    if (hasPositiveOfficialUsd) {
+      try {
+        const ptax = await loadDailyPtaxRates(month, monthEnd);
+
+        if (
+          ptax.source === "bcb_ptax_venda" &&
+          Array.isArray(ptax.daily)
+        ) {
+          rates = ptax.daily;
+        }
+      } catch {
+        // Fonte cambial indisponivel nao apaga os custos USD.
+      }
+    }
+
+    let conversion: ReturnType<
+      typeof summarizeMonthlyOpenAiPtax
+    >;
+
+    try {
+      conversion = summarizeMonthlyOpenAiPtax(
+        month,
+        report.daily,
+        rates,
+        convertOfficialUsdToBrl,
+      );
+    } catch {
+      // Cotacoes invalidas nao podem gerar custo em BRL.
+      // Tentar novamente com PTAX indisponivel.
+      if (rates === unavailableRates) {
+        return UNKNOWN_OPENAI;
+      }
+
+      try {
+        conversion = summarizeMonthlyOpenAiPtax(
+          month,
+          report.daily,
+          unavailableRates,
+          convertOfficialUsdToBrl,
+        );
+      } catch {
+        return UNKNOWN_OPENAI;
+      }
+    }
+
+    if (conversion.confirmedDays !== confirmedDays) {
+      return UNKNOWN_OPENAI;
+    }
+
+    return {
+      ...result,
+      conversion,
+    };
   } catch {
     return UNKNOWN_OPENAI;
   }
