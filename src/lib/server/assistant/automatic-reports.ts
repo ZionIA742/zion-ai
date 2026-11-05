@@ -459,7 +459,7 @@ export function resolveAutomaticReportDue(args: {
   return result;
 }
 
-function cleanReportValue(value: unknown, fallback = "nao informado") {
+function cleanReportValue(value: unknown, fallback = "não informado") {
   const text = cleanText(value);
   return text || fallback;
 }
@@ -467,12 +467,12 @@ function cleanReportValue(value: unknown, fallback = "nao informado") {
 function formatAppointmentLine(appointment: ReportAppointment, timeZone = "America/Sao_Paulo", pendingItems: ReportPendingItem[] = []) {
   const time = appointment.scheduled_start
     ? new Intl.DateTimeFormat("pt-BR", { timeZone: safeScheduleTimezone(timeZone), hour: "2-digit", minute: "2-digit" }).format(new Date(appointment.scheduled_start))
-    : "horario nao informado";
+    : "horário não definido";
   const parts = [
     time,
     cleanReportValue(appointment.customer_name, "cliente nao identificado"),
-    cleanReportValue(appointment.appointment_type, "tipo nao informado"),
-    `situacao: ${cleanReportValue(appointment.status)}`,
+    cleanReportValue(appointment.appointment_type, "tipo não informado"),
+    `situação: ${cleanReportValue(appointment.status)}`,
   ];
   if (appointment.customer_phone) parts.push(`contato: ${appointment.customer_phone}`);
   if (appointment.address_text) parts.push(`local: ${appointment.address_text}`);
@@ -482,7 +482,7 @@ function formatAppointmentLine(appointment: ReportAppointment, timeZone = "Ameri
 }
 
 function formatPendingItems(items: ReportPendingItem[], reportLocalDate = "") {
-  if (!items.length) return ["- nenhuma pendencia interna aberta identificada"];
+  if (!items.length) return ["- nenhuma pendência interna aberta identificada"];
   const technicalFailures = new Map<string, number>();
   const ordinaryItems: ReportPendingItem[] = [];
   for (const item of items) {
@@ -494,13 +494,13 @@ function formatPendingItems(items: ReportPendingItem[], reportLocalDate = "") {
     }
   }
   const lines = ordinaryItems.map((item) => {
-    const label = cleanReportValue(item.title || item.body, "pendencia sem descricao");
-    const age = item.created_at && item.created_at.slice(0, 10) !== reportLocalDate ? " (pendencia anterior)" : "";
+    const label = cleanReportValue(item.title || item.body, "pendência sem descrição");
+    const age = item.created_at && item.created_at.slice(0, 10) !== reportLocalDate ? " (pendência anterior)" : "";
     const priority = ["urgent", "high"].includes(normalize(item.priority)) ? " [prioridade alta]" : "";
     return `- ${label}${priority}${age}`;
   });
   for (const [source, count] of technicalFailures) {
-    lines.push(`- atendimento interrompido: ${count === 1 ? "1 falha definitiva" : `${count} falhas definitivas`} da IA Vendedora (${source}); requer verificacao no painel`);
+    lines.push(`- atendimento interrompido: ${count === 1 ? "1 falha definitiva" : `${count} falhas definitivas`} da IA Vendedora (${source}); requer verificação no painel`);
   }
   return lines;
 }
@@ -590,10 +590,10 @@ function legacyBuildAutomaticMorningReport(data: ReportData) {
 
 function eveningStatus(status: string | null) {
   const normalized = normalize(status);
-  if (["completed", "fully_completed", "done"].includes(normalized)) return "concluido no cadastro; resultado operacional nao inferido";
+  if (["completed", "fully_completed", "done"].includes(normalized)) return "concluído no cadastro; resultado operacional não inferido";
   if (["cancelled", "canceled"].includes(normalized)) return "cancelado no cadastro";
   if (["rescheduled", "remarcado"].includes(normalized)) return "remarcado no cadastro";
-  return `situacao atual: ${cleanReportValue(status)}`;
+  return `situação atual: ${cleanReportValue(status)}`;
 }
 
 function buildMorningSnapshot(data: ReportData): MorningSnapshot {
@@ -630,10 +630,10 @@ export function compareMorningSnapshot(snapshot: {
   const currentById = new Map((current.appointments || []).map((appointment) => [appointment.id, appointment]));
   const planned = snapshot.appointments.map((plannedAppointment) => {
     const appointment = currentById.get(plannedAppointment.id);
-    if (!appointment) return { id: plannedAppointment.id, outcome: "nao localizado; resultado nao inferido" };
+    if (!appointment) return { id: plannedAppointment.id, outcome: "não localizado; resultado não inferido" };
     const currentStart = appointment.scheduled_start;
     if (currentStart && plannedAppointment.scheduled_start && currentStart !== plannedAppointment.scheduled_start) {
-      return { id: plannedAppointment.id, outcome: `remarcado; novo horario ${currentStart}` };
+      return { id: plannedAppointment.id, outcome: `remarcado; novo horário ${currentStart}` };
     }
     return { id: plannedAppointment.id, outcome: eveningStatus(appointment.status) };
   });
@@ -667,7 +667,7 @@ function legacyBuildAutomaticEveningReport(data: ReportData) {
     lines.push("Comparacao por ID canonico com o planejamento matinal:");
     for (const item of data.planningComparison.planned) lines.push(`- ${item.id}: ${item.outcome}`);
     if (data.planningComparison.newAppointments.length) lines.push(`- novos compromissos apos a manha: ${data.planningComparison.newAppointments.join(", ")}`);
-    if (data.planningComparison.newPendingItems.length) lines.push(`- novas pendencias apos a manha: ${data.planningComparison.newPendingItems.join(", ")}`);
+    if (data.planningComparison.newPendingItems.length) lines.push(`- novas pendências após a manhã: ${data.planningComparison.newPendingItems.join(", ")}`);
   }
   lines.push("Pendencias abertas e proximas acoes:", ...formatPendingItems(pendingItems, data.reportLocalDate));
   return lines.join("\n");
@@ -682,10 +682,10 @@ function reportLeadNameForDisplay(value: unknown) {
 
 function reportAppointmentTypeForDisplay(value: unknown) {
   const valueNormalized = normalize(value);
-  if (valueNormalized.includes("technical") || valueNormalized.includes("tecnica")) return "visita tecnica";
+  if (valueNormalized.includes("technical") || valueNormalized.includes("tecnica")) return "visita técnica";
   if (valueNormalized.includes("commercial") || valueNormalized.includes("comercial")) return "visita comercial";
   if (valueNormalized.includes("visit")) return "visita";
-  if (valueNormalized.includes("installation") || valueNormalized.includes("instalacao")) return "instalacao";
+  if (valueNormalized.includes("installation") || valueNormalized.includes("instalacao")) return "instalação";
   if (valueNormalized.includes("delivery") || valueNormalized.includes("entrega")) return "entrega";
   return cleanReportValue(value, "compromisso");
 }
@@ -710,10 +710,10 @@ function reportPendingCategory(item: ReportPendingItem) {
 
 function reportPendingSituation(item: ReportPendingItem) {
   const reason = normalize(item.context?.reason);
-  if (reason === "sales_ai_failed_final" || reason.includes("failed") || reason.includes("error")) return "atendimento precisa de verificacao";
+  if (reason === "sales_ai_failed_final" || reason.includes("failed") || reason.includes("error")) return "atendimento precisa de verificação";
   if (reportPendingCategory(item) === "visit") return "visita aguardando acompanhamento";
-  if (reportPendingCategory(item) === "quote") return "orcamento aguardando acompanhamento";
-  if (reportPendingCategory(item) === "contract") return "contrato aguardando conferencia";
+  if (reportPendingCategory(item) === "quote") return "orçamento aguardando acompanhamento";
+  if (reportPendingCategory(item) === "contract") return "contrato aguardando conferência";
   return "atividade precisa de acompanhamento";
 }
 
@@ -815,9 +815,9 @@ function hasPhysicalSignatureReminder(items: ReportPendingItem[], appointmentId?
 function reportAppointmentLineForDisplay(appointment: ReportAppointment, timeZone = "America/Sao_Paulo", pendingItems: ReportPendingItem[] = []) {
   const time = appointment.scheduled_start
     ? new Intl.DateTimeFormat("pt-BR", { timeZone: safeScheduleTimezone(timeZone), hour: "2-digit", minute: "2-digit" }).format(new Date(appointment.scheduled_start))
-    : "horario nao informado";
+    : "horário não definido";
   const physicalReminder = hasPhysicalSignatureReminder(pendingItems, appointment.id)
-    ? " Levar o contrato fisico para assinatura."
+    ? " Levar o contrato físico para assinatura."
     : "";
   return `- ${time} — ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: ${reportAppointmentTypeForDisplay(appointment.appointment_type)}.${physicalReminder}`;
 }
@@ -828,7 +828,14 @@ function reportSuggestions(data: ReportData) {
   const attention = presentation.attention;
   const suggestions: string[] = [];
   for (const item of attention) {
-    suggestions.push(`- Considere revisar ${reportLeadNameForDisplay(item.lead_name)}: ${reportPendingActivityText(item)}.`);
+    const action = reportPendingCategory(item) === "quote"
+      ? "Verifique o orçamento pendente de"
+      : reportPendingCategory(item) === "visit"
+        ? "Acompanhe a visita pendente de"
+        : reportPendingCategory(item) === "contract"
+          ? "Confira o contrato pendente de"
+          : "Acompanhe a pendência de";
+    suggestions.push(`- ${action} ${reportLeadNameForDisplay(item.lead_name)}: ${reportPendingActivityText(item)}.`);
   }
   for (const category of ["visit", "quote", "contract", "other"] as const) {
     const item = (groups.get(category) || [])[0];
@@ -846,7 +853,7 @@ function reportPlanningChanges(data: ReportData) {
     const appointment = appointmentsById.get(item.id);
     const name = reportLeadNameForDisplay(appointment?.lead_name || appointment?.customer_name);
     const outcome = normalize(item.outcome);
-    const description = outcome.includes("remarcado") ? "compromisso reagendado" : outcome.includes("cancelado") ? "compromisso cancelado" : outcome.includes("concluido") ? "conclusao registrada" : "situacao nao confirmada";
+    const description = outcome.includes("remarcado") ? "compromisso reagendado" : outcome.includes("cancelado") ? "compromisso cancelado" : outcome.includes("concluido") ? "conclusão registrada" : "situação não confirmada";
     lines.push(`- ${name}: ${description}.`);
   }
   for (const id of data.planningComparison.newAppointments) {
@@ -855,7 +862,7 @@ function reportPlanningChanges(data: ReportData) {
   }
   if (data.planningComparison.newPendingItems.length) {
     const count = data.planningComparison.newPendingItems.length;
-    lines.push(`- ${count === 1 ? "1 nova pendencia registrada" : `${count} novas pendencias registradas`}.`);
+    lines.push(`- ${count === 1 ? "1 nova pendência registrada" : `${count} novas pendências registradas`}.`);
   }
   return lines;
 }
@@ -912,14 +919,14 @@ function buildAutomaticMorningReportFull(data: ReportData) {
     "\u{1f305} *Relat\u00f3rio da manh\u00e3*",
     `\u{1f4c5} *Compromissos de hoje — ${appointments.length}*`,
     ...(appointments.length ? appointments.map((appointment) => reportAppointmentLineForDisplay(appointment, data.reportTimezone, presentation.all)) : ["- Nenhum compromisso registrado para hoje."]),
-    ...(physicalSignaturePending && physicalSignaturePendingWithoutAppointment ? ["- Levar o contrato fisico para assinatura."] : []),
+    ...(physicalSignaturePending && physicalSignaturePendingWithoutAppointment ? ["- Levar o contrato físico para assinatura."] : []),
     "",
     `\u{1f6a8} *Precisa da sua aten\u00e7\u00e3o — ${attention.length}*`,
-    ...(attention.length ? attention.map(reportPendingLine) : ["- Nenhuma situacao urgente identificada."]),
+    ...(attention.length ? attention.map(reportPendingLine) : ["- Nenhuma situação urgente identificada."]),
     "",
     `\u{1f4cb} *Pend\u00eancias — ${presentation.pending.length}*`,
   ];
-  for (const [category, label] of [["visit", "Visitas pendentes"], ["quote", "Orcamentos pendentes"], ["contract", "Contratos pendentes"], ["other", "Outras pendencias"]] as const) {
+  for (const [category, label] of [["visit", "Visitas pendentes"], ["quote", "Orçamentos pendentes"], ["contract", "Contratos pendentes"], ["other", "Outras pendências"]] as const) {
     const group = groups.get(category) || [];
     if (group.length) lines.push(`*${label} (${group.length})*`, ...group.map(reportPendingLine));
   }
@@ -943,7 +950,7 @@ function buildAutomaticMorningReportSummary(data: ReportData) {
     presentation.attention.length ? `- ${reportCountLabel(presentation.attention.length, "atividade", "atividades")} com prioridade alta ou urgente.` : "- Nenhuma prioridade urgente identificada.",
     "",
     `\u{1f4cb} *Pend\u00eancias — ${totalPending}*`,
-    `- Visitas: ${counts.visit} | Orcamentos: ${counts.quote} | Contratos: ${counts.contract} | Outras: ${counts.other}.`,
+    `- Visitas: ${counts.visit} | Orçamentos: ${counts.quote} | Contratos: ${counts.contract} | Outras: ${counts.other}.`,
     ...(physicalSignaturePending ? ["- Há contrato físico pendente: levar o contrato para assinatura."] : []),
     "",
     "\u{1f4a1} *Sugest\u00f5es do que fazer primeiro*",
@@ -975,11 +982,11 @@ function buildAutomaticEveningReportFull(data: ReportData) {
     `- Compromissos reagendados: ${rescheduled.length}`,
     "",
     `\u2705 *O que foi conclu\u00eddo — ${completed.length}*`,
-    ...(completed.length ? completed.map((appointment) => `- ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: ${reportAppointmentTypeForDisplay(appointment.appointment_type)} conclu\u00edda.`) : ["- Nenhuma conclusao registrada."]),
+    ...(completed.length ? completed.map((appointment) => `- ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: ${reportAppointmentTypeForDisplay(appointment.appointment_type)} conclu\u00edda.`) : ["- Nenhuma conclusão registrada."]),
     "",
     `\u{1f504} *Mudancas e remarcacoes — ${rescheduled.length + cancelled.length}*`,
     ...(rescheduled.length || cancelled.length ? [
-      ...rescheduled.map((appointment) => `- ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: compromisso reagendado para ${appointment.scheduled_start ? new Intl.DateTimeFormat("pt-BR", { timeZone: safeScheduleTimezone(data.reportTimezone || "America/Sao_Paulo"), dateStyle: "short", timeStyle: "short" }).format(new Date(appointment.scheduled_start)) : "novo horario nao informado"}.`),
+      ...rescheduled.map((appointment) => `- ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: compromisso reagendado para ${appointment.scheduled_start ? new Intl.DateTimeFormat("pt-BR", { timeZone: safeScheduleTimezone(data.reportTimezone || "America/Sao_Paulo"), dateStyle: "short", timeStyle: "short" }).format(new Date(appointment.scheduled_start)) : "novo horário não definido"}.`),
       ...cancelled.map((appointment) => `- ${reportLeadNameForDisplay(appointment.lead_name || appointment.customer_name)}: compromisso cancelado.`),
     ] : ["- Nenhuma mudanca registrada."]),
     ...(data.planningSnapshotAvailable ? reportPlanningChanges(data) : []),
@@ -1014,13 +1021,13 @@ function buildAutomaticEveningReportSummary(data: ReportData) {
     `- Compromissos reagendados: ${rescheduled.length}`,
     "",
     `\u2705 *O que foi conclu\u00eddo — ${completed.length}*`,
-    "- Detalhes dos compromissos concluidos disponiveis sob consulta.",
+    "- Detalhes dos compromissos concluídos disponíveis sob consulta.",
     "",
     `\u{1f504} *Mudancas e remarcacoes — ${rescheduled.length + cancelled.length}*`,
-    "- Quantidades preservadas; detalhes individuais disponiveis sob consulta.",
+    "- Quantidades preservadas; detalhes individuais disponíveis sob consulta.",
     "",
     `\u{1f4cb} *O que ficou pendente — ${open.length + presentation.all.length}*`,
-    `- Compromissos em aberto: ${open.length} | Visitas: ${counts.visit} | Orcamentos: ${counts.quote} | Contratos: ${counts.contract} | Outras: ${counts.other}.`,
+    `- Compromissos em aberto: ${open.length} | Visitas: ${counts.visit} | Orçamentos: ${counts.quote} | Contratos: ${counts.contract} | Outras: ${counts.other}.`,
     "",
     `\u{1f6a8} *Precisa de atencao — ${presentation.attention.length}*`,
     presentation.attention.length ? `- ${reportCountLabel(presentation.attention.length, "atividade", "atividades")} com prioridade alta ou urgente.` : "- Nenhum problema urgente identificado.",
@@ -1104,7 +1111,7 @@ async function loadReportData(supabase: ReportSupabase, settings: AutomaticRepor
     return {
       id: `physical-signature:${cleanText(row.id)}`,
       title: "Assinatura fisica pendente",
-      body: "Levar o contrato fisico para assinatura.",
+      body: "Levar o contrato físico para assinatura.",
       related_appointment_id: appointment?.id || null,
       related_lead_id: null,
       created_at: null,

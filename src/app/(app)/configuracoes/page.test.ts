@@ -524,6 +524,8 @@ const tests: TestCase[] = [
       assert.equal(card.includes("assistant_morning_report_time"), true);
       assert.equal(card.includes("assistant_evening_report_time"), true);
       assert.equal(card.includes("assistant_non_operating_report_policy"), true);
+      assert.equal(card.includes("formatTimeForDisplay(scheduleSettings?.assistant_morning_report_time)"), true);
+      assert.equal(card.includes("formatTimeForDisplay(scheduleSettings?.assistant_evening_report_time)"), true);
       assert.equal(card.includes("Horário padrão da loja"), true);
       assert.equal(card.includes("saveAssistantReportScheduleCard()"), true);
       assert.equal(card.includes("createAssistantReportScheduleDraft(scheduleSettings)"), true);
@@ -585,8 +587,14 @@ const tests: TestCase[] = [
         "catch (error: unknown)",
       ].forEach((fragment) => assert.equal(saveBlock.includes(fragment), true, fragment));
       assert.equal(card.includes("A loja trabalha com estoque e encomenda. A modalidade de cada piscina deve ser confirmada individualmente"), true);
+      assert.equal(card.includes("resolveSupplyCardStatus(supplyPolicy, supplyPolicyReadError)"), true);
+      assert.equal(card.includes("buildSupplySummaryItems(supplyPolicy)"), true);
+      assert.equal(card.includes("supplyExplanationError"), true);
+      assert.equal(card.includes("aria-invalid={Boolean(supplyExplanationError)}"), true);
       assert.equal(saveBlock.includes("parsedDays < 1 || parsedDays > 3650"), true);
       assert.equal(saveBlock.includes('"A loja precisa trabalhar com estoque, encomenda ou ambos."'), true);
+      assert.equal(saveBlock.includes("if (!explanation)"), true);
+      assert.equal(saveBlock.includes("Explique como a loja trabalha com o fornecimento."), true);
       assert.equal(saveBlock.includes("P9_SUPPLY_STORE_CHANGE_CONFLICTS_WITH_POOL_OVERRIDES"), false);
     },
   },
@@ -630,7 +638,8 @@ const tests: TestCase[] = [
       assert.equal(cards.includes("resolveHumanScheduleCardStatus(scheduleSettings)"), true);
       assert.equal(cards.includes("resolveAfterHoursCardStatus(scheduleSettings)"), true);
       assert.equal(cards.includes("resolveAgendaCapacityCardStatus(scheduleSettings)"), true);
-      assert.equal(cards.includes('tone={scheduleSettings ? "blue" : "yellow"}'), false);
+      assert.equal(cards.includes("resolveAssistantReportsCardStatus(scheduleSettings, scheduleSettingsReadError)"), true);
+      assert.equal(cards.includes('title="Relatórios automáticos"'), true);
     },
   },
   {

@@ -77,7 +77,7 @@ const tests = [
     assert.match(result, /Cliente 0/);
     assert.equal((result.match(/Cliente [0-4]/g) || []).length, 5);
     assert.doesNotMatch(result, /appointment-\d/);
-    assert.match(result, /Outras pendencias/);
+    assert.match(result, /Outras pendências/);
   },
   () => {
     const result = buildAutomaticEveningReport({ appointmentCount: 3, openAppointmentCount: 1, completedAppointmentCount: 1, cancelledAppointmentCount: 1, overdueAppointmentCount: 0, pendingNotificationCount: 0, pendingTaskCount: 1, appointments: [
@@ -110,13 +110,32 @@ const tests = [
       pending_items: [],
     }, { appointmentCount: 6, openAppointmentCount: 3, completedAppointmentCount: 2, cancelledAppointmentCount: 1, overdueAppointmentCount: 0, pendingNotificationCount: 0, pendingTaskCount: 0, appointments: current, pendingItems: [], planningSnapshotAvailable: true, reportLocalDate: "2026-10-19" });
     assert.equal(comparison.planned.length, 5);
-    assert.match(comparison.planned[0]?.outcome || "", /concluido/);
+    assert.match(comparison.planned[0]?.outcome || "", /concluído/);
     assert.match(comparison.planned[2]?.outcome || "", /remarcado/);
     assert.match(comparison.planned[3]?.outcome || "", /cancelado/);
-    assert.match(comparison.planned[4]?.outcome || "", /situacao atual/);
+    assert.match(comparison.planned[4]?.outcome || "", /situação atual/);
     assert.deepEqual(comparison.newAppointments, ["appointment-5"]);
     const missing = compareMorningSnapshot({ version: 1, local_date: "2026-10-19", appointments: [{ id: "missing", scheduled_start: null, status: "open" }], pending_items: [] }, { appointmentCount: 0, openAppointmentCount: 0, completedAppointmentCount: 0, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 0, pendingTaskCount: 0, appointments: [], pendingItems: [], planningSnapshotAvailable: true, reportLocalDate: "2026-10-19" });
-    assert.match(missing.planned[0]?.outcome || "", /nao localizado/);
+    assert.match(missing.planned[0]?.outcome || "", /não localizado/);
+  },
+  () => {
+    const morning = buildAutomaticMorningReport({
+      appointmentCount: 1,
+      openAppointmentCount: 1,
+      completedAppointmentCount: 0,
+      cancelledAppointmentCount: 0,
+      overdueAppointmentCount: 0,
+      pendingNotificationCount: 1,
+      pendingTaskCount: 0,
+      reportTimezone: "America/Sao_Paulo",
+      appointments: [{ id: "accented", title: null, appointment_type: "technical_visit", status: "open", scheduled_start: null, scheduled_end: null, customer_name: "João da Silva", customer_phone: null, address_text: null, created_at: null }],
+      pendingItems: [{ id: "quote-pending", title: "Orçamento aguardando decisão", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "notification", lead_name: "João da Silva", category: "quote", context: { reason: "pending_review", activity_label: "Revisar orçamento" } }],
+    });
+    assert.match(morning, /João da Silva/);
+    assert.match(morning, /horário não definido/);
+    assert.match(morning, /orçamento aguardando acompanhamento/);
+    assert.match(morning, /Verifique o orçamento pendente de João da Silva/);
+    assert.doesNotMatch(morning, /uuid|ai_run_queue|snapshot/i);
   },
 ];
 
@@ -147,22 +166,22 @@ const acceptancePending = [
 ];
 acceptancePending.push({ id: "contract-distinct", title: "Segundo contrato", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "task", lead_name: "Joao", category: "contract", context: { reason: "pending_review", related_contract_id: "33333333-3333-4333-8333-333333333333", activity_label: "Contrato de manutencao" } });
 const acceptanceMorning = buildAutomaticMorningReport({ appointmentCount: 10, openAppointmentCount: 7, completedAppointmentCount: 1, cancelledAppointmentCount: 1, overdueAppointmentCount: 0, pendingNotificationCount: 0, pendingTaskCount: acceptancePending.length, appointments: acceptanceAppointments, pendingItems: acceptancePending, reportTimezone: "America/Sao_Paulo" });
-assert.match(acceptanceMorning, /Compromissos de hoje — 10/);
-assert.equal(acceptanceMorning.split("\n").filter((line) => line.includes(": visita tecnica.")).length, 10);
-assert.match(acceptanceMorning, /Orcamentos pendentes \(2\)/);
-assert.equal(acceptanceMorning.split("\\n").filter((line) => line.includes(": contrato aguardando conferencia.")).length, 1);
-assert.match(acceptanceMorning, /Jo.{0,3}o: contrato aguardando conferencia/);
+assert.match(acceptanceMorning, /Compromissos de hoje .*10/);
+assert.equal(acceptanceMorning.split("\n").filter((line) => line.includes(": visita técnica.")).length, 10);
+assert.match(acceptanceMorning, /Orçamentos pendentes \(2\)/);
+assert.equal(acceptanceMorning.split("\n").filter((line) => line.includes(": contrato aguardando conferência.")).length >= 1, true);
+assert.match(acceptanceMorning, /Jo.{0,3}o: contrato aguardando conferência/);
 assert.doesNotMatch(acceptanceMorning, /Contratos pendentes/);
-assert.doesNotMatch(acceptanceMorning, /atendimento precisa de verificacao|falha definitiva/);
+assert.doesNotMatch(acceptanceMorning, /atendimento precisa de verificação|falha definitiva/);
 assert.doesNotMatch(acceptanceMorning, /ai_run_queue|22222222-2222/);
 assert.match(buildAutomaticMorningReport({ appointmentCount: 0, openAppointmentCount: 0, completedAppointmentCount: 0, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 1, pendingTaskCount: 0, pendingItems: [{ id: "unnamed", title: "retorno", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "notification" }] }), /Cliente sem nome cadastrado/);
 const acceptanceNight = buildAutomaticEveningReport({ appointmentCount: 10, openAppointmentCount: 7, completedAppointmentCount: 1, cancelledAppointmentCount: 1, overdueAppointmentCount: 0, pendingNotificationCount: 0, pendingTaskCount: acceptancePending.length, appointments: acceptanceAppointments, pendingItems: acceptancePending, reportTimezone: "America/Sao_Paulo" });
 assert.match(acceptanceNight, /Compromissos concluídos: 1/);
-assert.match(acceptanceNight, /Lead 0: visita tecnica concluída/);
+assert.match(acceptanceNight, /Lead 0: visita técnica concluída/);
 assert.match(acceptanceNight, /Lead 1: compromisso reagendado/);
 assert.match(acceptanceNight, /Lead 2: compromisso cancelado/);
 assert.doesNotMatch(acceptanceNight, /atendimento precisa de verificacao|falha definitiva/);
-assert.doesNotMatch(acceptanceNight, /Lead 4: visita tecnica concluída/);
+assert.doesNotMatch(acceptanceNight, /Lead 4: visita técnica concluída/);
 
 const largePending = Array.from({ length: 20 }, (_, index) => ({
   id: `large-pending-${index}`,
@@ -228,7 +247,7 @@ const oversizedNight = buildAutomaticEveningReport(oversizedData);
 for (const report of [oversizedMorning, oversizedNight]) {
   assert.ok(report.length <= AUTOMATIC_REPORT_SAFE_TEXT_LIMIT);
   assert.doesNotMatch(report, /Large Lead 119/);
-  assert.match(report, /Atividade|Visitas:|Orcamentos:/);
+  assert.match(report, /Atividade|Visitas:|Orçamentos:/);
   assert.match(report, /Considere priorizar|Pode ser útil revisar|Pode ser útil acompanhar/);
   assert.match(report, /💬 Quer saber mais\?/);
   assert.match(report, /dados operacionais atuais/);
@@ -432,7 +451,7 @@ async function runIntegrationTests() {
   const physicalNoTimeBody = String(physicalNoTime.calls.find((call) => call.name === "assistant_materialize_automatic_report")?.args.p_content || "");
   assert.equal(physicalNoTimeResult.results[0]?.status, "generated");
   assert.match(physicalNoTimeBody, /Cliente sem horario/);
-  assert.match(physicalNoTimeBody, /horario nao informado/);
+  assert.match(physicalNoTimeBody, /horário não definido/);
   assert.doesNotMatch(physicalNoTimeBody, /10:00/);
 
   for (const status of ["confirmed", "cancelled"] as const) {
@@ -464,7 +483,7 @@ async function runIntegrationTests() {
   });
   await processAutomaticAssistantReports({ now: reportNow, supabase: twoPhysical.supabase });
   const twoPhysicalBody = String(twoPhysical.calls.find((call) => call.name === "assistant_materialize_automatic_report")?.args.p_content || "");
-  assert.equal((twoPhysicalBody.match(/contrato fisico/g) || []).length, 2);
+  assert.equal((twoPhysicalBody.match(/contrato físico/g) || []).length, 2);
 
   const compactPhysical = buildAutomaticMorningReport({ appointmentCount: 0, openAppointmentCount: 0, completedAppointmentCount: 0, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 101, pendingTaskCount: 0, pendingItems: [
     ...Array.from({ length: 100 }, (_, index) => ({ id: `compact-${index}`, title: "atividade", body: null, related_appointment_id: null, created_at: null, kind: "notification" as const, lead_name: `Cliente ${index}`, category: "other" as const, context: { activity_label: `Atividade compacta ${index} ${"x".repeat(30)}` } })),

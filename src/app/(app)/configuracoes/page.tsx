@@ -1848,6 +1848,47 @@ function supplyModeLabel(value: unknown) {
   return "Não configurado";
 }
 
+function resolveSupplyCardStatus(
+  policy?: StoreSupplyPolicy | null,
+  readError?: string | null,
+): { tone: ConfigurationCardTone; status: string } {
+  if (readError) return { tone: "red", status: "Erro de leitura" };
+  if (!policy?.store_supply_mode) return { tone: "yellow", status: "Não configurado" };
+  if (!cleanText(policy.operational_explanation)) return { tone: "yellow", status: "Pendente" };
+  return { tone: "blue", status: "Completo" };
+}
+
+function buildSupplySummaryItems(policy?: StoreSupplyPolicy | null) {
+  const mode = cleanText(policy?.store_supply_mode);
+  if (!mode) {
+    return [{ label: "Orientação", value: "Edite o cartão para informar como a loja trabalha com estoque e encomenda." }];
+  }
+
+  const items: Array<{ label: string; value: string }> = [
+    { label: "Modalidade", value: supplyModeLabel(mode) },
+    { label: "Como funciona o fornecimento", value: cleanText(policy?.operational_explanation) || "Explicação pendente" },
+  ];
+  if (mode !== "stock") {
+    if (policy?.store_lead_time_days != null) {
+      items.push({ label: "Prazo estimado", value: `${policy.store_lead_time_days} ${supplyLeadTimeUnitLabel(policy.store_lead_time_unit)}`.trim() });
+    }
+    if (policy?.store_lead_time_start_event) {
+      items.push({ label: "Início da contagem", value: supplyLeadTimeEventLabel(policy.store_lead_time_start_event, policy.store_lead_time_start_event_other) });
+    }
+    if (policy?.store_lead_time_applies_until) {
+      items.push({ label: "Abrangência", value: supplyAppliesUntilLabel(policy.store_lead_time_applies_until) });
+    }
+    const factoryCondition = cleanText(policy?.factory_order_condition);
+    if (factoryCondition) {
+      items.push({ label: "Condição para pedir à fábrica", value: factoryCondition });
+    }
+    if (mode === "mixed") {
+      items.push({ label: "Atenção", value: "A modalidade de cada piscina deve ser confirmada individualmente." });
+    }
+  }
+  return items;
+}
+
 function supplyLeadTimeUnitLabel(value: unknown) {
   return SUPPLY_LEAD_TIME_UNIT_OPTIONS.find((option) => option.value === value)?.label || "";
 }
@@ -3568,6 +3609,11 @@ function normalizeTimeInput(value: unknown) {
   return cleanText(value).slice(0, 5);
 }
 
+function formatTimeForDisplay(value: unknown) {
+  const normalized = cleanText(value);
+  return normalized ? normalized.slice(0, 5) : "";
+}
+
 function isValidTimeRange(open: string, close: string) {
   return Boolean(open && close && open < close);
 }
@@ -3710,6 +3756,23 @@ function resolveHumanScheduleCardStatus(scheduleSettings?: ScheduleSettingsRow |
   }
   if (!hasHumanScheduleCanonicalShape(scheduleSettings)) {
     return { tone: "red", status: "Configuração crítica" };
+  }
+  return { tone: "blue", status: "Completo" };
+}
+
+function resolveAssistantReportsCardStatus(
+  scheduleSettings?: ScheduleSettingsRow | null,
+  readError?: string | null,
+): { tone: ConfigurationCardTone; status: string } {
+  if (readError) return { tone: "red", status: "Erro de leitura" };
+  if (!scheduleSettings) return { tone: "yellow", status: "Não configurado" };
+  if (
+    !cleanText(scheduleSettings.timezone_name) ||
+    !ASSISTANT_REPORT_POLICIES.some(
+      (option) => option.value === cleanText(scheduleSettings.assistant_non_operating_report_policy),
+    )
+  ) {
+    return { tone: "yellow", status: "Pendente" };
   }
   return { tone: "blue", status: "Completo" };
 }
@@ -4466,9 +4529,11 @@ export default function ConfiguracoesPage() {
   const [onboarding, setOnboarding] = useState<OnboardingRow | null>(null);
   const [answers, setAnswers] = useState<AnswersMap>({});
   const [scheduleSettings, setScheduleSettings] = useState<ScheduleSettingsRow | null>(null);
+  const [scheduleSettingsReadError, setScheduleSettingsReadError] = useState<string | null>(null);
   const [operationSettings, setOperationSettings] = useState<StoreOperationSettingsRow | null>(null);
   const [supplyPolicy, setSupplyPolicy] = useState<StoreSupplyPolicy | null>(null);
   const [supplyPolicyReadError, setSupplyPolicyReadError] = useState<string | null>(null);
+  const [supplyExplanationError, setSupplyExplanationError] = useState<string | null>(null);
   const [supplyPolicyDraft, setSupplyPolicyDraft] = useState<StoreSupplyPolicyDraft>(createStoreSupplyPolicyDraft(null));
   const [strategySettings, setStrategySettings] = useState<StoreStrategySettingsRow | null>(null);
   const [channelSettings, setChannelSettings] = useState<StoreChannelSettingsRow | null>(null);
@@ -5274,6 +5339,7 @@ export default function ConfiguracoesPage() {
       setOnboarding(null);
       setAnswers({});
       setScheduleSettings(null);
+      setScheduleSettingsReadError(null);
       setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(null));
       setSupplyPolicy(null);
       setSupplyPolicyReadError(null);
@@ -5446,7 +5512,10 @@ export default function ConfiguracoesPage() {
       if (catalogResult.error) throw catalogResult.error;
       if (onboardingResult.error) throw onboardingResult.error;
       if (answersResult.error) throw answersResult.error;
-      if (scheduleSettingsResult.error) throw scheduleSettingsResult.error;
+      if (scheduleSettingsResult.error) {
+        setScheduleSettingsReadError(scheduleSettingsResult.error.message || "Não foi possível ler os relatórios automáticos da loja.");
+        throw scheduleSettingsResult.error;
+      }
       if (operationSettingsResult.error) throw operationSettingsResult.error;
       if (strategySettingsResult.error) throw strategySettingsResult.error;
       if (channelSettingsResult.error) throw channelSettingsResult.error;
@@ -5668,6 +5737,7 @@ export default function ConfiguracoesPage() {
       const nextScheduleSettings =
         (scheduleSettingsResult.data ?? null) as ScheduleSettingsRow | null;
       setScheduleSettings(nextScheduleSettings);
+      setScheduleSettingsReadError(null);
       setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(nextScheduleSettings));
       setSavedOperationExperience((current) =>
         createScheduleOperationExperienceDraftFromSettings(
@@ -8157,7 +8227,16 @@ export default function ConfiguracoesPage() {
 
     const explanation = cleanText(supplyPolicyDraft.explanation);
     const factoryOrderCondition = orderEnabled ? cleanText(supplyPolicyDraft.factoryOrderCondition) : "";
+    setSupplyExplanationError(null);
+    if (!explanation) {
+      const message = "Explique como a loja trabalha com o fornecimento.";
+      setSupplyExplanationError(message);
+      setErrorText(message);
+      setSuccessText(null);
+      return false;
+    }
     if (explanation.length > 4000 || factoryOrderCondition.length > 2000) {
+      setSupplyExplanationError(explanation.length > 4000 ? "A explicação deve ter no máximo 4000 caracteres." : null);
       setErrorText("A explicação operacional ou a condição do pedido excede o limite permitido.");
       setSuccessText(null);
       return false;
@@ -8232,6 +8311,7 @@ export default function ConfiguracoesPage() {
       if (!nextSupplyPolicy) throw new Error("O servidor não retornou a política de fornecimento salva.");
       setSupplyPolicy(nextSupplyPolicy);
       setSupplyPolicyReadError(null);
+      setSupplyExplanationError(null);
       setSupplyPolicyDraft(createStoreSupplyPolicyDraft(nextSupplyPolicy));
       setErrorText(null);
       setSuccessText("Fornecimento e prazos salvos com sucesso.");
@@ -14050,8 +14130,8 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Relatórios automáticos"
             description="Escolha quando a IA Assistente envia os relatórios matinal e noturno para esta loja. Os horários são locais e independentes do expediente da equipe."
-            tone={scheduleSettings ? "blue" : "yellow"}
-            status={scheduleSettings ? "Configurado" : "Aguardando configuração da loja"}
+            tone={resolveAssistantReportsCardStatus(scheduleSettings, scheduleSettingsReadError).tone}
+            status={resolveAssistantReportsCardStatus(scheduleSettings, scheduleSettingsReadError).status}
             className={operationEditTarget === "assistant_reports" ? "xl:col-span-2" : ""}
             actions={operationEditTarget === "assistant_reports" ? <><button type="button" onClick={() => void saveAssistantReportScheduleCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(scheduleSettings)); setOperationEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setAssistantReportScheduleDraft(createAssistantReportScheduleDraft(scheduleSettings)); setOperationEditTarget("assistant_reports"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
@@ -14077,8 +14157,8 @@ export default function ConfiguracoesPage() {
               </div>
             ) : (
               <SummaryList items={buildBulletRows([
-                { label: "Relatório matinal", value: cleanText(scheduleSettings?.assistant_morning_report_time) || "Horário padrão da loja" },
-                { label: "Relatório noturno", value: cleanText(scheduleSettings?.assistant_evening_report_time) || "Horário padrão da loja" },
+                { label: "Relatório matinal", value: formatTimeForDisplay(scheduleSettings?.assistant_morning_report_time) || "Horário padrão da loja" },
+                { label: "Relatório noturno", value: formatTimeForDisplay(scheduleSettings?.assistant_evening_report_time) || "Horário padrão da loja" },
                 { label: "Dias sem expediente", value: assistantReportPolicyLabel(scheduleSettings?.assistant_non_operating_report_policy) },
                 { label: "Fuso horário", value: cleanText(scheduleSettings?.timezone_name) || DEFAULT_SCHEDULE_TIMEZONE },
               ])} />
@@ -14343,8 +14423,8 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Fornecimento e prazos"
             description="Informe se a loja trabalha com piscinas em estoque, sob encomenda ou nos dois modelos. O prazo informado é estimado e não registra pedido na fábrica."
-            tone={supplyPolicyReadError ? "red" : supplyPolicy?.configured ? "blue" : "yellow"}
-            status={supplyPolicyReadError ? "Erro de leitura" : supplyModeLabel(supplyPolicy?.store_supply_mode)}
+            tone={resolveSupplyCardStatus(supplyPolicy, supplyPolicyReadError).tone}
+            status={resolveSupplyCardStatus(supplyPolicy, supplyPolicyReadError).status}
             className={operationEditTarget === "supply" ? "xl:col-span-2" : ""}
             actions={supplyPolicyReadError ? null : operationEditTarget === "supply" ? <><button type="button" onClick={() => void saveSupplyPolicyCard()} className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white">Salvar</button><button type="button" onClick={() => { setSupplyPolicyDraft(createStoreSupplyPolicyDraft(supplyPolicy)); setOperationEditTarget(null); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Cancelar</button></> : <button type="button" onClick={() => { setSupplyPolicyDraft(createStoreSupplyPolicyDraft(supplyPolicy)); setOperationEditTarget("supply"); }} className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold">Editar</button>}
           >
@@ -14365,7 +14445,7 @@ export default function ConfiguracoesPage() {
                 ) : null}
                 {normalizeLoose(supplyPolicyDraft.stockEnabled) === "sim" || normalizeLoose(supplyPolicyDraft.orderEnabled) === "sim" ? (
                   <div className="space-y-4">
-                    <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como funciona o fornecimento da sua loja?</span><textarea maxLength={4000} rows={4} value={supplyPolicyDraft.explanation} onChange={(e) => setSupplyPolicyDraft((current) => ({ ...current, explanation: e.target.value }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
+                    <label className="block space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como funciona o fornecimento da sua loja?</span><textarea maxLength={4000} rows={4} value={supplyPolicyDraft.explanation} onChange={(e) => { setSupplyExplanationError(null); setSupplyPolicyDraft((current) => ({ ...current, explanation: e.target.value })); }} aria-invalid={Boolean(supplyExplanationError)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" />{supplyExplanationError ? <span className="text-sm text-red-700">{supplyExplanationError}</span> : null}</label>
                     {normalizeLoose(supplyPolicyDraft.orderEnabled) === "sim" ? <>
                       <div className="grid gap-3 sm:grid-cols-2">
                         <label className="space-y-1.5"><span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual é o prazo estimado?</span><input inputMode="numeric" maxLength={4} value={supplyPolicyDraft.leadTimeDays} onChange={(e) => setSupplyPolicyDraft((current) => ({ ...current, leadTimeDays: e.target.value.replace(/\D/g, "") }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" /></label>
@@ -14379,13 +14459,7 @@ export default function ConfiguracoesPage() {
                 ) : null}
               </div>
             ) : (
-              <SummaryList items={buildBulletRows([
-                { label: "Modalidade", value: supplyModeLabel(supplyPolicy?.store_supply_mode) },
-                { label: "Prazo estimado", value: supplyPolicy?.store_lead_time_days != null ? `${supplyPolicy.store_lead_time_days} ${supplyLeadTimeUnitLabel(supplyPolicy.store_lead_time_unit)}` : "Não definido" },
-                { label: "Início da contagem", value: supplyPolicy?.store_lead_time_start_event ? supplyLeadTimeEventLabel(supplyPolicy.store_lead_time_start_event, supplyPolicy.store_lead_time_start_event_other) : "Não definido" },
-                { label: "Abrangência", value: supplyPolicy?.store_lead_time_applies_until ? supplyAppliesUntilLabel(supplyPolicy.store_lead_time_applies_until) : "Não definida" },
-                { label: "Resumo", value: cleanText(supplyPolicy?.operational_explanation) || "Não informado" },
-              ])} />
+              <SummaryList items={buildBulletRows(buildSupplySummaryItems(supplyPolicy))} />
             )}
           </SectionBlock>
 
