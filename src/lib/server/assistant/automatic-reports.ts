@@ -128,7 +128,7 @@ const AUTOMATIC_REPORTS_ALLOWED_STORE_IDS_ENV = "ASSISTANT_AUTOMATIC_REPORTS_ALL
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DAY_KEYS = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
-const REPORT_DUE_WINDOW_MS = 2 * 60 * 1000;
+export const AUTOMATIC_REPORT_DUE_WINDOW_MS = 15 * 60 * 1000;
 
 export function isAutomaticAssistantReportsEnabled(
   value = process.env[AUTOMATIC_REPORTS_ENABLED_ENV],
@@ -210,6 +210,38 @@ function resolveHabitualHours(settings: AutomaticReportScheduleSettings, dayKey:
   return { hours: { start, end }, ambiguous: false };
 }
 
+function resolveLegacyEveningReportTime(end: string | null) {
+  const endMinutes = parseSalesAiScheduleTimeToMinutes(end);
+  if (endMinutes === null) return null;
+  const reportMinutes = (endMinutes + 1430) % 1440;
+  return `${String(Math.floor(reportMinutes / 60)).padStart(2, "0")}:${String(reportMinutes % 60).padStart(2, "0")}`;
+}
+
+function resolveReportTime(
+  settings: AutomaticReportScheduleSettings,
+  type: AutomaticReportType,
+  habitualHours: ReportTime,
+) {
+  const configured = type === "morning_report"
+    ? validTime(settings.assistant_morning_report_time)
+    : validTime(settings.assistant_evening_report_time);
+  if (configured) return configured;
+  return type === "morning_report"
+    ? habitualHours.start || null
+    : resolveLegacyEveningReportTime(habitualHours.end || null);
+}
+
+function resolveNonOperatingReportPolicy(settings: AutomaticReportScheduleSettings) {
+  const policy = normalize(settings.assistant_non_operating_report_policy);
+  return [
+    "send_on_non_operating_ai_days",
+    "skip_non_operating_days",
+    "skip_and_consolidate_non_operating_days",
+  ].includes(policy)
+    ? policy
+    : "send_on_non_operating_ai_days";
+}
+
 function insideWindow(minute: number, start: number | null, end: number | null) {
   if (start === null || end === null || start === end) return false;
   return start < end ? minute >= start && minute < end : minute >= start || minute < end;
@@ -239,20 +271,9 @@ export function resolveAutomaticReportDue(args: {
   const result: DueReport[] = [];
 
   for (const type of ["morning_report", "evening_report"] as const) {
-    if (habitual.ambiguous || !habitual.hours) {
-      result.push({ type, localDate: dateKey, targetIso: "", reason: habitual.ambiguous ? "ambiguous_hours" : "missing_schedule" });
-      continue;
-    }
-
-    const targetTime = type === "morning_report"
-      ? habitual.hours.start
-      : (() => {
-          const endMinutes = parseSalesAiScheduleTimeToMinutes(habitual.hours?.end);
-          const reportMinutes = endMinutes === null ? null : (endMinutes + 1430) % 1440;
-          return reportMinutes === null ? null : `${String(Math.floor(reportMinutes / 60)).padStart(2, "0")}:${String(reportMinutes % 60).padStart(2, "0")}`;
-        })();
+    const targetTime = resolveReportTime(args.settings, type, habitual.hours || {});
     if (!targetTime) {
-      result.push({ type, localDate: dateKey, targetIso: "", reason: "missing_schedule" });
+      result.push({ type, localDate: dateKey, targetIso: "", reason: habitual.ambiguous ? "ambiguous_hours" : "missing_schedule" });
       continue;
     }
 
@@ -271,12 +292,16 @@ export function resolveAutomaticReportDue(args: {
         parseSalesAiScheduleTimeToMinutes(args.settings.ai_after_hours_end),
       ))
     );
-    const authorized = humanDay || aiAllowed;
+    const nonOperatingDay = !humanDay || holiday;
+    const policy = resolveNonOperatingReportPolicy(args.settings);
+    const authorized = !nonOperatingDay
+      ? true
+      : policy === "send_on_non_operating_ai_days" && aiAllowed;
     result.push({
       type,
       localDate: dateKey,
       targetIso,
-      reason: !authorized ? "not_authorized" : Math.abs(now.getTime() - Date.parse(targetIso)) <= REPORT_DUE_WINDOW_MS ? "due" : "not_due",
+      reason: !authorized ? "not_authorized" : Math.abs(now.getTime() - Date.parse(targetIso)) <= AUTOMATIC_REPORT_DUE_WINDOW_MS ? "due" : "not_due",
     });
   }
   return result;
@@ -1133,7 +1158,7 @@ export async function processAutomaticAssistantReports(args: { now?: Date; limit
 
   const supabase = args.supabase || getSupabaseAdmin();
   const now = args.now || new Date();
-  const { data, error } = await supabase.from("store_schedule_settings").select("organization_id, store_id, operating_days, operating_hours, timezone_name, holiday_mode, holiday_open_time, holiday_close_time, attends_holidays, ai_after_hours_enabled, ai_after_hours_mode, ai_after_hours_start, ai_after_hours_end, ai_attends_holidays, ai_after_hours_configured_at").in("store_id", allowedStoreIds);
+  const { data, error } = await supabase.from("store_schedule_settings").select("organization_id, store_id, operating_days, operating_hours, timezone_name, holiday_mode, holiday_open_time, holiday_close_time, attends_holidays, ai_after_hours_enabled, ai_after_hours_mode, ai_after_hours_start, ai_after_hours_end, ai_attends_holidays, ai_after_hours_configured_at, assistant_morning_report_time, assistant_evening_report_time, assistant_non_operating_report_policy").in("store_id", allowedStoreIds);
   if (error) throw new Error(`AUTOMATIC_REPORT_SCHEDULE_LOAD_FAILED: ${error.message || "unknown"}`);
   const results: Array<Record<string, unknown>> = [];
   for (const settings of ((data || []) as AutomaticReportScheduleSettings[]).slice(0, args.limit || 100)) {

@@ -40,6 +40,9 @@ export type StoreScheduleSettingsRow = {
   operating_days: string[] | null;
   operating_hours: Record<string, { start?: string; end?: string }> | null;
   timezone_name: string | null;
+  assistant_morning_report_time?: string | null;
+  assistant_evening_report_time?: string | null;
+  assistant_non_operating_report_policy?: string | null;
 };
 
 export type StoreScheduleBlockRow = {

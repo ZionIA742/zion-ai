@@ -10,6 +10,42 @@ const base = {
 
 const tests = [
   () => { const result = resolveAutomaticReportDue({ settings: base, now: new Date("2026-10-19T11:00:00Z") }); assert.deepEqual(result.map((item) => item.reason), ["due", "not_due"]); },
+  () => {
+    const settings = { ...base, assistant_morning_report_time: "06:30", assistant_evening_report_time: "22:30" };
+    const morning = resolveAutomaticReportDue({ settings, now: new Date("2026-10-19T09:30:00Z") });
+    const evening = resolveAutomaticReportDue({ settings, now: new Date("2026-10-20T01:30:00Z") });
+    assert.equal(morning[0]?.reason, "due");
+    assert.equal(evening[1]?.reason, "due");
+    assert.equal(morning[0]?.targetIso, "2026-10-19T09:30:00.000Z");
+    assert.equal(evening[1]?.targetIso, "2026-10-20T01:30:00.000Z");
+  },
+  () => {
+    const settings = { ...base, operating_hours: null, assistant_morning_report_time: "06:30", assistant_evening_report_time: "22:30" };
+    const result = resolveAutomaticReportDue({ settings, now: new Date("2026-10-19T09:30:00Z") });
+    assert.equal(result[0]?.reason, "due");
+    assert.equal(result[1]?.reason, "not_due");
+  },
+  () => {
+    const settings = { ...base, timezone_name: "America/New_York", assistant_morning_report_time: "05:30", assistant_evening_report_time: "22:15" };
+    const result = resolveAutomaticReportDue({ settings, now: new Date("2026-10-19T09:30:00Z") });
+    assert.equal(result[0]?.reason, "due");
+    assert.equal(result[0]?.targetIso, "2026-10-19T09:30:00.000Z");
+  },
+  () => {
+    const settings = { ...base, assistant_morning_report_time: "06:30" };
+    const withinTolerance = resolveAutomaticReportDue({ settings, now: new Date("2026-10-19T09:40:00Z") });
+    const outsideTolerance = resolveAutomaticReportDue({ settings, now: new Date("2026-10-19T09:46:00Z") });
+    assert.equal(withinTolerance[0]?.reason, "due");
+    assert.equal(outsideTolerance[0]?.reason, "not_due");
+  },
+  () => {
+    const send = resolveAutomaticReportDue({ settings: { ...base, assistant_morning_report_time: "06:30", assistant_non_operating_report_policy: "send_on_non_operating_ai_days" }, now: new Date("2026-10-18T09:30:00Z") });
+    const skip = resolveAutomaticReportDue({ settings: { ...base, assistant_morning_report_time: "06:30", assistant_non_operating_report_policy: "skip_non_operating_days" }, now: new Date("2026-10-18T09:30:00Z") });
+    const consolidate = resolveAutomaticReportDue({ settings: { ...base, assistant_morning_report_time: "06:30", assistant_non_operating_report_policy: "skip_and_consolidate_non_operating_days" }, now: new Date("2026-10-18T09:30:00Z") });
+    assert.equal(send[0]?.reason, "due");
+    assert.equal(skip[0]?.reason, "not_authorized");
+    assert.equal(consolidate[0]?.reason, "not_authorized");
+  },
   () => { const result = resolveAutomaticReportDue({ settings: base, now: new Date("2026-10-18T11:00:00Z") }); assert.deepEqual(result.map((item) => item.reason), ["due", "not_due"]); },
   () => { const settings = { ...base, ai_after_hours_enabled: false }; const result = resolveAutomaticReportDue({ settings, now: new Date("2026-10-18T11:00:00Z") }); assert.deepEqual(result.map((item) => item.reason), ["not_authorized", "not_authorized"]); },
   () => { const result = resolveAutomaticReportDue({ settings: base, now: new Date("2026-10-19T20:50:00Z") }); assert.deepEqual(result.map((item) => item.targetIso), ["2026-10-19T11:00:00.000Z", "2026-10-19T20:50:00.000Z"]); },
