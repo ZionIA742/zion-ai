@@ -11,6 +11,7 @@
 
 import { createServiceSupabaseClient } from "@/lib/server/zion-account-provisioning";
 import { readMonthlyPreclosureSources } from "@/lib/server/zion-admin-monthly-preclosure-source-reader";
+import { collectAndPersistValidatedPtax } from "@/lib/server/zion-admin-ptax-evidence-persist";
 import { prepareMonthlyPreclosureSnapshot } from "@/lib/server/zion-admin-monthly-preclosure-preparation";
 
 type RegisterInput = {
@@ -128,12 +129,22 @@ async function registerInDatabase(
   };
 }
 
+/** Exclusivo do executor mensal: preserva o leitor comum sem escrita. */
+async function readSourcesWithPersistedPtax(month: string) {
+  return readMonthlyPreclosureSources(month, {
+    loadPtax: async (from, to) => {
+      const persisted = await collectAndPersistValidatedPtax(from, to);
+      return persisted.report;
+    },
+  });
+}
+
 export function createMonthlyPreclosureExecutionRunner(
   overrides: Partial<ExecutionDependencies> = {},
 ) {
   const now = overrides.now ?? (() => new Date());
   const readSources =
-    overrides.readSources ?? readMonthlyPreclosureSources;
+    overrides.readSources ?? readSourcesWithPersistedPtax;
   const register =
     overrides.register ?? registerInDatabase;
 

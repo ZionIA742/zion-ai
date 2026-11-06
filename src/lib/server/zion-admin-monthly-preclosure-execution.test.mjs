@@ -31,7 +31,14 @@ function compile(source, dependencies = {}) {
     exports,
     require: (id) => {
       if (!(id in dependencies)) {
-        throw new Error(`Unexpected dependency: ${id}`);
+        if (id === "@/lib/server/zion-admin-ptax-evidence-persist") {
+            return {
+              collectAndPersistValidatedPtax: async () => {
+                throw new Error("UNEXPECTED_PTAX_COLLECTION_IN_LEGACY_TEST");
+              },
+            };
+          }
+          throw new Error(`Unexpected dependency: ${id}`);
       }
 
       return dependencies[id];
