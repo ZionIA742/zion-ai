@@ -248,10 +248,25 @@ for (const report of [oversizedMorning, oversizedNight]) {
   assert.ok(report.length <= AUTOMATIC_REPORT_SAFE_TEXT_LIMIT);
   assert.doesNotMatch(report, /Large Lead 119/);
   assert.match(report, /Atividade|Visitas:|Orçamentos:/);
-  assert.match(report, /Considere priorizar|Pode ser útil revisar|Pode ser útil acompanhar/);
+  assert.match(report, /Considere priorizar|Verifique (as|os) /);
+  assert.doesNotMatch(report, /Pode ser útil acompanhar|Pode ser útil revisar/);
   assert.match(report, /💬 Quer saber mais\?/);
   assert.match(report, /dados operacionais atuais/);
   assert.doesNotMatch(report, /compromisso\(s\)|atividade\(s\)/);
+}
+
+const problematicPending = [
+  { id: "problematic-visit", title: "visita aguardando acompanhamento", body: null, related_appointment_id: "problematic-appointment", related_lead_id: null, created_at: null, kind: "task" as const, lead_name: "Teste Pilar 9 - Cerebro Checkpoint Final", category: "visit" as const },
+  { id: "problematic-quote", title: "orçamento aguardando acompanhamento", body: null, related_appointment_id: null, related_lead_id: null, created_at: null, kind: "notification" as const, lead_name: "Teste Pilar 9 - Cerebro Comercial V1 Ajuste", category: "quote" as const },
+];
+const problematicMorning = buildAutomaticMorningReport({ appointmentCount: 0, openAppointmentCount: 0, completedAppointmentCount: 0, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 1, pendingTaskCount: 1, pendingItems: problematicPending });
+const problematicNight = buildAutomaticEveningReport({ appointmentCount: 0, openAppointmentCount: 0, completedAppointmentCount: 0, cancelledAppointmentCount: 0, overdueAppointmentCount: 0, pendingNotificationCount: 1, pendingTaskCount: 1, pendingItems: problematicPending });
+for (const report of [problematicMorning, problematicNight]) {
+  const suggestions = report.split("💡")[1] || "";
+  assert.match(suggestions, /Verifique a visita pendente de Teste Pilar 9 - Cerebro Checkpoint Final/);
+  assert.match(suggestions, /Verifique o orçamento pendente de Teste Pilar 9 - Cerebro Comercial V1 Ajuste/);
+  assert.doesNotMatch(suggestions, /Pode ser útil acompanhar/);
+  assert.doesNotMatch(suggestions, /visita aguardando acompanhamento|orçamento aguardando acompanhamento/);
 }
 
 type TestSupabase = NonNullable<Parameters<typeof processAutomaticAssistantReports>[0]["supabase"]>;

@@ -776,17 +776,43 @@ function reportCountLabel(count: number, singular: string, plural: string) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
+function reportPendingSuggestedAction(item: ReportPendingItem) {
+  const category = reportPendingCategory(item);
+  const name = reportLeadNameForDisplay(item.lead_name);
+  const detail = reportPendingActivityDetail(item);
+  const normalizedDetail = normalize(detail);
+  const normalizedSituation = normalize(reportPendingSituation(item));
+  const usefulDetail = detail &&
+    normalizedDetail !== normalizedSituation &&
+    !normalizedDetail.includes("aguardando acompanhamento") &&
+    !normalizedDetail.includes("precisa de acompanhamento") &&
+    !normalizedDetail.includes("pendente");
+  const suffix = usefulDetail ? `: ${detail}` : "";
+  if (category === "quote") return `- Verifique o orçamento pendente de ${name}${suffix}.`;
+  if (category === "visit") return `- Verifique a visita pendente de ${name}${suffix}.`;
+  if (category === "contract") return `- Confira o contrato pendente de ${name}${suffix}.`;
+  return `- Acompanhe a pendência de ${name}${suffix}.`;
+}
+
+function reportPendingCategorySuggestion(category: ReturnType<typeof reportPendingCategory>, items: ReportPendingItem[]) {
+  if (items.length === 1 && items[0]) return reportPendingSuggestedAction(items[0]);
+  if (category === "visit") return `- Verifique as ${items.length} visitas pendentes.`;
+  if (category === "quote") return `- Verifique os ${items.length} orçamentos pendentes.`;
+  if (category === "contract") return `- Confira os ${items.length} contratos pendentes.`;
+  return `- Acompanhe as ${items.length} pendências sem categoria definida.`;
+}
+
 function reportSummarySuggestions(data: ReportData) {
   const presentation = reportPendingPresentation(data.pendingItems || []);
-  const counts = reportPendingCategoryCounts(presentation.all);
+  const groups = reportPendingGroups(presentation.all);
   const suggestions: string[] = [];
   if (presentation.attention.length) {
     suggestions.push(`- Considere priorizar ${reportCountLabel(presentation.attention.length, "atividade", "atividades")} com prioridade alta ou urgente.`);
   }
-  if (counts.visit) suggestions.push(`- Pode ser útil revisar ${reportCountLabel(counts.visit, "visita", "visitas")} pendente.`);
-  if (counts.quote) suggestions.push(`- Pode ser útil acompanhar ${reportCountLabel(counts.quote, "orçamento", "orçamentos")} pendente.`);
-  if (counts.contract) suggestions.push(`- Pode ser útil conferir ${reportCountLabel(counts.contract, "contrato", "contratos")} pendente.`);
-  if (counts.other) suggestions.push(`- Pode ser útil acompanhar ${reportCountLabel(counts.other, "outra pendência", "outras pendências")}.`);
+  for (const category of ["visit", "quote", "contract", "other"] as const) {
+    const items = groups.get(category) || [];
+    if (items.length) suggestions.push(reportPendingCategorySuggestion(category, items));
+  }
   if (!suggestions.length) suggestions.push("- Nenhuma recomendação prioritária foi identificada.");
   return suggestions;
 }
@@ -828,18 +854,11 @@ function reportSuggestions(data: ReportData) {
   const attention = presentation.attention;
   const suggestions: string[] = [];
   for (const item of attention) {
-    const action = reportPendingCategory(item) === "quote"
-      ? "Verifique o orçamento pendente de"
-      : reportPendingCategory(item) === "visit"
-        ? "Acompanhe a visita pendente de"
-        : reportPendingCategory(item) === "contract"
-          ? "Confira o contrato pendente de"
-          : "Acompanhe a pendência de";
-    suggestions.push(`- ${action} ${reportLeadNameForDisplay(item.lead_name)}: ${reportPendingActivityText(item)}.`);
+    suggestions.push(reportPendingSuggestedAction(item));
   }
   for (const category of ["visit", "quote", "contract", "other"] as const) {
     const item = (groups.get(category) || [])[0];
-    if (item) suggestions.push(`- Pode ser útil acompanhar ${reportLeadNameForDisplay(item.lead_name)}: ${reportPendingActivityText(item)}.`);
+    if (item) suggestions.push(reportPendingSuggestedAction(item));
   }
   if (!suggestions.length) suggestions.push("- Nenhuma acao prioritaria foi identificada.");
   return suggestions;
