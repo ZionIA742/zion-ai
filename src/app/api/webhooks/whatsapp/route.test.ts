@@ -24,7 +24,7 @@ function payload(field: string, message: Record<string, unknown>) {
   };
 }
 
-test("coexistence echo is identified and never becomes a processable message", () => {
+test("coexistence echo is identified as a processable message event", () => {
   const events = extractEventsFromPayload(
     payload("smb_message_echoes", {
       id: "echo-1",
@@ -36,6 +36,31 @@ test("coexistence echo is identified and never becomes a processable message", (
 
   assert.equal(events.length, 1);
   assert.equal(events[0]?.eventKind, "message_echo");
+});
+
+test("coexistence echo payload is read from smb_message_echoes", () => {
+  const events = extractEventsFromPayload({
+    entry: [{
+      id: "entry-echo",
+      changes: [{
+        field: "smb_message_echoes",
+        value: {
+          metadata: { phone_number_id: "phone-1" },
+          smb_message_echoes: [{
+            id: "echo-real-1",
+            from: "5511900000000",
+            to: "5511999999999",
+            type: "text",
+            text: { body: "intervenção humana" },
+          }],
+        },
+      }],
+    }],
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.eventKind, "message_echo");
+  assert.equal(events[0]?.message?.to, "5511999999999");
 });
 
 test("history and app-state sync are identified but remain non-processable", () => {

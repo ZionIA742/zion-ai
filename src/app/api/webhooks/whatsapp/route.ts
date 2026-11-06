@@ -481,6 +481,7 @@ export async function POST(request: Request) {
 
       if (
         event.eventKind !== "message" &&
+        event.eventKind !== "message_echo" &&
         event.eventKind !== "status"
       ) {
         continue;
