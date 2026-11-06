@@ -35,7 +35,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type EmbeddedSignupRequestBody = {
-  attemptId?: unknown;
   code?: unknown;
   whatsappBusinessAccountId?: unknown;
   phoneNumberId?: unknown;
@@ -66,20 +65,6 @@ type MaterializedWhatsappBindingCandidate = {
 };
 
 type PrivilegedClient = ReturnType<typeof createClient>;
-type EmbeddedSignupAttemptQuery = {
-  update: (values: Record<string, unknown>) => EmbeddedSignupAttemptQuery;
-  eq: (column: string, value: unknown) => EmbeddedSignupAttemptQuery;
-  gt: (column: string, value: unknown) => EmbeddedSignupAttemptQuery;
-  select: (columns: string) => EmbeddedSignupAttemptQuery;
-  maybeSingle: () => Promise<{
-    data: Record<string, unknown> | null;
-    error: { message: string } | null;
-  }>;
-};
-type EmbeddedSignupAttemptClient = {
-  from: (table: string) => EmbeddedSignupAttemptQuery;
-};
-
 type EmbeddedSignupRouteDeps = {
   resolveAccess: (params: {
     requirement: "active_or_onboarding";
@@ -99,16 +84,6 @@ type EmbeddedSignupRouteDeps = {
   readActiveBinding?: (client: PrivilegedClient, access: StoreApiAccessGranted) => Promise<{
     ok: true;
     hasActiveBinding: boolean;
-  } | { ok: false; error: string }>;
-  claimAttempt?: (
-    client: PrivilegedClient,
-    access: StoreApiAccessGranted,
-    attemptId: string,
-  ) => Promise<{
-    ok: true;
-    connectionMode: MetaWhatsappEmbeddedSignupConnectionMode;
-    metaAppId: string;
-    metaConfigId: string;
   } | { ok: false; error: string }>;
 };
 
@@ -311,53 +286,11 @@ function validatePayload(body: EmbeddedSignupRequestBody) {
     input: {
       code,
       whatsappBusinessAccountId,
-      attemptId: trimInputString(body.attemptId),
       ...(phoneNumberId ? { phoneNumberId } : {}),
       connectionMode: connectionMode as MetaWhatsappEmbeddedSignupConnectionMode,
       recovery: body.recovery === true,
     },
   };
-}
-
-async function defaultClaimAttempt(
-  client: PrivilegedClient,
-  access: StoreApiAccessGranted,
-  attemptId: string,
-) {
-  const attemptClient = client as unknown as EmbeddedSignupAttemptClient;
-  const { data, error } = await attemptClient
-    .from("whatsapp_embedded_signup_attempts")
-    .update({ status: "processing", updated_at: new Date().toISOString() })
-    .eq("id", attemptId)
-    .eq("organization_id", access.organizationId)
-    .eq("store_id", access.storeId)
-    .eq("user_id", access.sessionUserId)
-    .eq("status", "issued")
-    .gt("expires_at", new Date().toISOString())
-    .select("connection_mode, meta_app_id, meta_config_id")
-    .maybeSingle();
-
-  if (error) return { ok: false as const, error: error.message };
-  if (!data) return { ok: false as const, error: "ATTEMPT_NOT_FOUND_OR_REPLAYED" };
-  return {
-    ok: true as const,
-    connectionMode: data.connection_mode as MetaWhatsappEmbeddedSignupConnectionMode,
-    metaAppId: String(data.meta_app_id || ""),
-    metaConfigId: String(data.meta_config_id || ""),
-  };
-}
-
-async function markAttemptConsumed(
-  client: unknown,
-  attemptId: string,
-) {
-  if (typeof (client as unknown as { from?: unknown }).from !== "function") return;
-  const attemptClient = client as unknown as EmbeddedSignupAttemptClient;
-  await attemptClient
-    .from("whatsapp_embedded_signup_attempts")
-    .update({ status: "consumed", consumed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-    .eq("id", attemptId)
-    .eq("status", "processing");
 }
 
 function mapWriterError(error: { message?: string | null } | null | undefined) {
@@ -521,9 +454,6 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
     });
   const readActiveBinding: NonNullable<EmbeddedSignupRouteDeps["readActiveBinding"]> =
     deps.readActiveBinding ?? defaultReadActiveBinding;
-  const claimAttempt: NonNullable<EmbeddedSignupRouteDeps["claimAttempt"]> =
-    deps.claimAttempt ?? defaultClaimAttempt;
-
   return async function POST(request: Request) {
     const attemptId = randomUUID();
     const startedAt = Date.now();
@@ -562,60 +492,20 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
       );
     }
 
-    const privilegedClient = createClientWithPrivileges();
-    let onboardingAttempt: Awaited<ReturnType<typeof claimAttempt>> | null = null;
-    if (!payloadResult.input.recovery) {
-      if (!payloadResult.input.attemptId) {
-        return createJsonResponse(
-          {
-            ok: false,
-            error: "EMBEDDED_SIGNUP_ATTEMPT_REQUIRED",
-            message: "A tentativa autenticada do Embedded Signup e obrigatoria.",
-          },
-          409,
-        );
-      }
-
-      onboardingAttempt = await claimAttempt(
-        privilegedClient as Parameters<typeof claimAttempt>[0],
-        access,
-        payloadResult.input.attemptId,
+    if (
+      !payloadResult.input.recovery &&
+      payloadResult.input.connectionMode === "business_app_coexistence"
+    ) {
+      return createJsonResponse(
+        {
+          ok: false,
+          error: "WHATSAPP_COEXISTENCE_MODE_UNVERIFIED",
+          message: "A modalidade de coexistencia ainda nao possui evidencia independente suficiente.",
+        },
+        409,
       );
-      if (!onboardingAttempt.ok) {
-        return createJsonResponse(
-          {
-            ok: false,
-            error: "EMBEDDED_SIGNUP_ATTEMPT_INVALID",
-            message: "A tentativa expirou, ja foi usada ou nao pertence a esta loja.",
-          },
-          409,
-        );
-      }
-
-      if (payloadResult.input.connectionMode !== onboardingAttempt.connectionMode) {
-        return createJsonResponse(
-          {
-            ok: false,
-            error: "EMBEDDED_SIGNUP_CONNECTION_MODE_MISMATCH",
-            message: "A modalidade recebida nao corresponde a tentativa autorizada.",
-          },
-          409,
-        );
-      }
-
-      // No independent Meta proof exists in the current integration. Keep
-      // coexistence fail-closed before any Graph mutation or local materialization.
-      if (onboardingAttempt.connectionMode === "business_app_coexistence") {
-        return createJsonResponse(
-          {
-            ok: false,
-            error: "WHATSAPP_COEXISTENCE_MODE_UNVERIFIED",
-            message: "A modalidade de coexistencia ainda nao possui evidencia independente suficiente.",
-          },
-          409,
-        );
-      }
     }
+    const privilegedClient = createClientWithPrivileges();
     const activeBindingResult = await readActiveBinding(
       privilegedClient as Parameters<typeof readActiveBinding>[0],
       access,
@@ -701,20 +591,6 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
           ok: false,
           error: "WHATSAPP_CONTROLLED_RECOVERY_REQUIRED",
           message: "Este telefone possui um fluxo controlado de regularizacao.",
-        },
-        409,
-      );
-    }
-
-    if (
-      onboardingAttempt &&
-      validated.appId !== onboardingAttempt.metaAppId
-    ) {
-      return createJsonResponse(
-        {
-          ok: false,
-          error: "EMBEDDED_SIGNUP_APP_MISMATCH",
-          message: "A aplicacao Meta validada nao corresponde a tentativa autorizada.",
         },
         409,
       );
@@ -838,8 +714,7 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
         );
       }
 
-      const usesStandardPhoneRegistration =
-        (onboardingAttempt?.connectionMode ?? validated.connectionMode) === "standard";
+      const usesStandardPhoneRegistration = validated.connectionMode === "standard";
       if (!usesStandardPhoneRegistration || validated.connectionMode !== "standard") {
         return createJsonResponse(
           {
@@ -928,10 +803,6 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
           phoneNumberId: integration.phone_number_id,
           externalIntegrationId: integration.integration_id,
         });
-      }
-
-      if (onboardingAttempt && payloadResult.input.attemptId) {
-        await markAttemptConsumed(privilegedClient, payloadResult.input.attemptId);
       }
 
       return createJsonResponse({
