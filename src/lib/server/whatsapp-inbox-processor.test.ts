@@ -1339,6 +1339,70 @@ test("processor marks self-originated and group messages as non-AI inputs", () =
   assert.equal(groupMessage.isGroupMessage, true);
 });
 
+test("business app echo resolves the customer target, records human outgoing and takes over without AI", async () => {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+  const previousFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method: string; body: string }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    const body = typeof init?.body === "string" ? init.body : "";
+    calls.push({ url, method, body });
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "GET") {
+      return url.includes("message_echo")
+        ? jsonFetchResponse([{
+            id: "inbox-echo-1",
+            organization_id: "org-1",
+            store_id: "store-1",
+            provider: "meta",
+            external_event_id: "message:echo-1",
+            payload: {
+              source: "meta_whatsapp_webhook",
+              event_kind: "message_echo",
+              phone_number_id: "phone-1",
+              display_phone_number: "+55 11 90000-0000",
+              message: {
+                id: "echo-1",
+                from: "5511900000000",
+                to: "5511999999999",
+                type: "text",
+                text: { body: "Vou verificar isso agora" },
+              },
+            },
+            received_at: "2026-11-06T12:00:00.000Z",
+            processed_at: null,
+            processing_error: null,
+          }])
+        : jsonFetchResponse([]);
+    }
+    if (url.includes("/rest/v1/messages") && method === "GET") return jsonFetchResponse([]);
+    if (url.includes("/rest/v1/rpc/resolve_whatsapp_inbound_thread_by_system")) {
+      return jsonFetchResponse([{ lead_id: "lead-1", conversation_id: "conversation-1", normalized_whatsapp_identity: "5511999999999", thread_state: "existing_active_thread" }]);
+    }
+    if (url.includes("/rest/v1/rpc/human_takeover_conversation")) return jsonFetchResponse(null);
+    if (url.includes("/rest/v1/rpc/insert_message")) {
+      const payload = JSON.parse(body) as Record<string, unknown>;
+      assert.equal(payload.p_sender, "human");
+      assert.equal(payload.p_direction, "outgoing");
+      assert.equal((payload.p_metadata as Record<string, unknown>).origin, "whatsapp_business_app");
+      return jsonFetchResponse({ id: "message-echo-1" });
+    }
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") return jsonFetchResponse([]);
+    throw new Error(`unexpected echo fetch: ${method} ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await processWhatsappInbox({ organizationId: "org-1", storeId: "store-1", limit: 1 });
+    assert.equal(result.succeeded, 1, JSON.stringify(result));
+    assert.equal(result.results[0]?.ai_status, "skipped_human_active");
+    assert.equal(calls.some((call) => call.url.includes("api.openai.com")), false);
+    assert.equal(calls.filter((call) => call.url.includes("insert_message")).length, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("extractIncomingMessage preserves context id for customer inbound messages", () => {
   const extracted = extractIncomingMessage({
     source: "meta_whatsapp_webhook",

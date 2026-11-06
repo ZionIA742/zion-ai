@@ -519,6 +519,7 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
   );
   const isSelfOriginated = Boolean(
     payload.event_kind === "smb_message_echoes" ||
+      payload.event_kind === "message_echo" ||
       messageRecord?.from_me === true ||
       messageRecord?.fromMe === true ||
       messageRecord?.is_from_me === true ||
@@ -532,7 +533,11 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
     messageId,
     contextMessageId: asTrimmedString(contextNode?.id),
     fromPhoneRaw,
+    toPhoneRaw: asTrimmedString(message?.to),
     fromPhoneNormalized: fromPhoneRaw ? normalizePhone(fromPhoneRaw) : null,
+    toPhoneNormalized: asTrimmedString(message?.to)
+      ? normalizePhone(asTrimmedString(message?.to) || "")
+      : null,
     isGroupMessage,
     isSelfOriginated,
     rawMessageType,
@@ -952,10 +957,7 @@ async function listPendingInboxRows(
 
   const [{ data: messageRows, error: messageError }, { data: statusRows, error: statusError }] =
     await Promise.all([
-      buildBaseQuery().contains("payload", {
-        source: "meta_whatsapp_webhook",
-        event_kind: "message",
-      }),
+      buildBaseQuery().in("payload->>event_kind", ["message", "message_echo"]),
       buildBaseQuery().contains("payload", {
         source: "meta_whatsapp_webhook",
         event_kind: "status",
@@ -970,7 +972,10 @@ async function listPendingInboxRows(
     throw new Error(`Falha ao carregar inbox pendente de status: ${statusError.message}`);
   }
 
-  const rows = [...((messageRows || []) as InboxRow[]), ...((statusRows || []) as InboxRow[])]
+  const rows = [
+    ...((messageRows || []) as InboxRow[]),
+    ...((statusRows || []) as InboxRow[]),
+  ]
     .sort((a, b) => {
       const left = Date.parse(a.received_at || "") || 0;
       const right = Date.parse(b.received_at || "") || 0;
@@ -1507,6 +1512,124 @@ async function insertIncomingMessage(args: {
   }
 
   return row as InsertMessageResult;
+}
+
+async function insertHumanAppEchoMessage(args: {
+  supabase: SupabaseClient;
+  conversationId: string;
+  inbox: InboxRow;
+  messageId: string;
+  content: string;
+  fromPhone: string;
+  toPhone: string;
+  phoneNumberId: string;
+  contactName: string | null;
+  rawMessageType: string;
+  whatsappBusinessAccountId: string | null;
+  displayPhoneNumber: string | null;
+}) {
+  const { data, error } = await args.supabase.rpc("insert_message", {
+    p_conversation_id: args.conversationId,
+    p_sender: "human",
+    p_direction: "outgoing",
+    p_message_type: args.rawMessageType,
+    p_content: args.content,
+    p_external_message_id: args.messageId,
+    p_media_url: null,
+    p_metadata: {
+      source: "meta_whatsapp_webhook",
+      external_channel: "whatsapp",
+      channel: "whatsapp",
+      provider: "meta",
+      origin: "whatsapp_business_app",
+      event_kind: "message_echo",
+      inbox_id: args.inbox.id,
+      external_event_id: args.inbox.external_event_id,
+      whatsapp_from: args.fromPhone,
+      whatsapp_to: args.toPhone,
+      phone_number_id: args.phoneNumberId,
+      whatsapp_business_account_id: args.whatsappBusinessAccountId,
+      display_phone_number: args.displayPhoneNumber,
+      contact_name: args.contactName,
+    },
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row?.id) throw new Error("insert_message nao retornou message.id.");
+  return row as InsertMessageResult;
+}
+
+async function processHumanAppEcho(args: {
+  supabase: SupabaseClient;
+  inbox: InboxRow;
+  extracted: ReturnType<typeof extractIncomingMessage>;
+}) {
+  const { extracted } = args;
+  const businessPhone = normalizePhone(extracted.displayPhoneNumber || "");
+  if (
+    !extracted.toPhoneNormalized ||
+    !businessPhone ||
+    extracted.fromPhoneNormalized !== businessPhone ||
+    !extracted.textBody
+  ) {
+    throw new Error("invalid_business_app_message_echo_identity");
+  }
+
+  const thread = await resolveWhatsappInboundThreadBySystem({
+    supabase: args.supabase,
+    organizationId: args.inbox.organization_id,
+    storeId: args.inbox.store_id,
+    whatsappIdentity: extracted.toPhoneNormalized,
+    contactName: extracted.contactName,
+  });
+
+  const existing = await findExistingMessageByExternalId(
+    args.supabase,
+    args.inbox.organization_id,
+    args.inbox.store_id,
+    extracted.messageId || args.inbox.external_event_id,
+  );
+  if (existing?.id && existing.conversation_id !== thread.conversationId) {
+    throw new Error("business_app_echo_conversation_scope_mismatch");
+  }
+
+  const { error: takeoverError } = await args.supabase.rpc(
+    "human_takeover_conversation",
+    {
+      p_conversation_id: thread.conversationId,
+      p_reason: "whatsapp_business_app_intervention",
+    },
+  );
+  if (takeoverError) throw takeoverError;
+
+  if (existing?.id) {
+    return {
+      messageId: existing.id,
+      leadId: existing.lead_id || thread.leadId,
+      conversationId: existing.conversation_id,
+    };
+  }
+
+  const inserted = await insertHumanAppEchoMessage({
+    supabase: args.supabase,
+    conversationId: thread.conversationId,
+    inbox: args.inbox,
+    messageId: extracted.messageId || args.inbox.external_event_id,
+    content: extracted.textBody,
+    fromPhone: extracted.fromPhoneRaw || "",
+    toPhone: extracted.toPhoneRaw || "",
+    phoneNumberId: extracted.phoneNumberId || "",
+    contactName: extracted.contactName,
+    rawMessageType: extracted.rawMessageType || "text",
+    whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
+    displayPhoneNumber: extracted.displayPhoneNumber,
+  });
+
+  return {
+    messageId: inserted.id,
+    leadId: thread.leadId,
+    conversationId: thread.conversationId,
+  };
 }
 
 async function insertIncomingImageMessage(args: {
@@ -2380,7 +2503,7 @@ async function processSingleInboxRow(
     return processStatusInboxRow(supabase, inbox, payload);
   }
 
-  if (eventKind !== "message") {
+  if (eventKind !== "message" && eventKind !== "message_echo") {
     const detail = "unsupported_inbox_payload";
     await markInboxError(supabase, inbox, detail);
     return {
@@ -2445,6 +2568,33 @@ async function processSingleInboxRow(
       external_event_id: inbox.external_event_id,
       status: "skipped",
       detail,
+    };
+  }
+
+  if (eventKind === "message_echo") {
+    if (extracted.rawMessageType !== "text") {
+      await markInboxProcessed(supabase, inbox);
+      return {
+        inbox_id: inbox.id,
+        external_event_id: inbox.external_event_id,
+        status: "skipped",
+        detail: "business_app_echo_type_not_supported",
+        ai_status: "skipped_not_text",
+      };
+    }
+    const echoed = await processHumanAppEcho({ supabase, inbox, extracted });
+    await markInboxProcessed(supabase, inbox);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "succeeded",
+      detail: "business_app_human_intervention_recorded",
+      message_id: echoed.messageId,
+      lead_id: echoed.leadId,
+      conversation_id: echoed.conversationId,
+      ai_status: "skipped_human_active",
+      ai_message_id: null,
+      ai_error: null,
     };
   }
 
