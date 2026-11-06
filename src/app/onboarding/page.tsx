@@ -554,6 +554,7 @@ function OnboardingContent() {
   const [whatsappStatusLoading, setWhatsappStatusLoading] = useState(false);
   const [whatsappStatusError, setWhatsappStatusError] = useState<string | null>(null);
   const [embeddedSignupCode, setEmbeddedSignupCode] = useState("");
+  const [embeddedSignupAttemptId, setEmbeddedSignupAttemptId] = useState<string | null>(null);
   const [embeddedSignupIntent, setEmbeddedSignupIntent] = useState<"connect" | "verify-existing">("connect");
   const [embeddedSignupSession, setEmbeddedSignupSession] =
     useState<MetaEmbeddedSignupSession | null>(null);
@@ -1154,6 +1155,7 @@ function OnboardingContent() {
 
   const clearEmbeddedSignupSensitiveState = useCallback(() => {
     setEmbeddedSignupCode("");
+    setEmbeddedSignupAttemptId(null);
   }, []);
 
   useEffect(() => {
@@ -1319,7 +1321,10 @@ function OnboardingContent() {
     }
   }, [activeStore?.id, organizationId]);
 
-  async function startMetaEmbeddedSignup(intent: "connect" | "verify-existing" = "connect") {
+  async function startMetaEmbeddedSignup(
+    intent: "connect" | "verify-existing" = "connect",
+    connectionMode: "standard" | "business_app_coexistence" = "standard",
+  ) {
     if (embeddedSignupAttemptRef.current || embeddedSignupSubmittingRef.current) return;
 
     setFormError(null);
@@ -1328,6 +1333,7 @@ function OnboardingContent() {
     setEmbeddedSignupMessage(null);
     setEmbeddedSignupSession(null);
     setEmbeddedSignupCode("");
+    setEmbeddedSignupAttemptId(null);
     setEmbeddedSignupIntent(intent);
 
     if (!metaEmbeddedSignupConfig.appId || !metaEmbeddedSignupConfig.configId) {
@@ -1342,6 +1348,26 @@ function OnboardingContent() {
 
       if (!window.FB?.login) {
         throw new Error("FACEBOOK_SDK_LOGIN_UNAVAILABLE");
+      }
+
+      if (intent === "connect") {
+        const attemptResponse = await fetch("/api/store/whatsapp/embedded-signup/attempt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            connectionMode,
+            appId: metaEmbeddedSignupConfig.appId,
+            configId: metaEmbeddedSignupConfig.configId,
+          }),
+        });
+        const attemptResult = (await attemptResponse.json().catch(() => null)) as
+          | { ok?: boolean; attemptId?: string }
+          | null;
+        if (!attemptResponse.ok || !attemptResult?.ok || !attemptResult.attemptId) {
+          throw new Error("EMBEDDED_SIGNUP_ATTEMPT_UNAVAILABLE");
+        }
+        setEmbeddedSignupAttemptId(attemptResult.attemptId);
       }
 
       window.FB.login(
@@ -1370,7 +1396,9 @@ function OnboardingContent() {
           override_default_response_type: true,
           extras: {
             version: "v4",
-            featureType: "whatsapp_business_app_onboarding",
+            ...(connectionMode === "business_app_coexistence"
+              ? { featureType: "whatsapp_business_app_onboarding" }
+              : {}),
             sessionInfoVersion: "3",
           },
         },
@@ -1437,6 +1465,7 @@ function OnboardingContent() {
           credentials: "include",
           body: JSON.stringify({
             code: embeddedSignupCode,
+            ...(embeddedSignupAttemptId ? { attemptId: embeddedSignupAttemptId } : {}),
             whatsappBusinessAccountId: embeddedSignupSession.whatsappBusinessAccountId,
             ...(embeddedSignupSession.phoneNumberId
               ? { phoneNumberId: embeddedSignupSession.phoneNumberId }
@@ -1554,6 +1583,7 @@ function OnboardingContent() {
     activeStore?.id,
     clearEmbeddedSignupSensitiveState,
     embeddedSignupCode,
+    embeddedSignupAttemptId,
     embeddedSignupIntent,
     embeddedSignupSession,
     fetchWhatsappStatus,
@@ -1929,19 +1959,27 @@ function OnboardingContent() {
 
                 {!whatsappStatusConnected ? (
                   <div className="mt-4 space-y-4 rounded-xl border border-amber-200 bg-white p-4">
-                    <button
-                      type="button"
-                      onClick={() => startMetaEmbeddedSignup("connect")}
-                      disabled={
-                        embeddedSignupLoading ||
-                        embeddedSignupSubmitting
-                      }
-                      className="w-full rounded-xl bg-black px-5 py-2.5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40 md:w-auto"
-                    >
-                      {embeddedSignupLoading || embeddedSignupSubmitting
-                        ? "Conectando com a Meta..."
-                        : "Conectar WhatsApp pela Meta"}
-                    </button>
+                    <p className="text-sm leading-6 text-gray-600">
+                      Escolha explicitamente como este numero sera conectado.
+                    </p>
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => startMetaEmbeddedSignup("connect", "business_app_coexistence")}
+                        disabled={embeddedSignupLoading || embeddedSignupSubmitting}
+                        className="rounded-xl border border-amber-400 bg-amber-50 px-5 py-2.5 text-sm font-semibold text-amber-950 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Manter WhatsApp Business + Cloud API
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => startMetaEmbeddedSignup("connect", "standard")}
+                        disabled={embeddedSignupLoading || embeddedSignupSubmitting}
+                        className="rounded-xl bg-black px-5 py-2.5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Conectar Cloud API convencional
+                      </button>
+                    </div>
 
                     {embeddedSignupMessage ? (
                       <p className="text-sm leading-6 text-emerald-800">{embeddedSignupMessage}</p>

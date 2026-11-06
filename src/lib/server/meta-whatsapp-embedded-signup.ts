@@ -717,10 +717,11 @@ export async function exchangeAndValidateMetaWhatsappBinding(
   const code = cleanText(input.code);
   const expectedWabaId = normalizeMetaId(input.whatsappBusinessAccountId);
   const expectedPhoneId = normalizeMetaId(input.phoneNumberId);
-  const connectionMode = input.connectionMode ?? "standard";
+  const connectionMode = input.connectionMode;
   if (
     !code ||
     !expectedWabaId ||
+    !connectionMode ||
     (connectionMode === "standard" && !expectedPhoneId)
   ) {
     throw new MetaWhatsappEmbeddedSignupError(
