@@ -554,7 +554,6 @@ function OnboardingContent() {
   const [whatsappStatusLoading, setWhatsappStatusLoading] = useState(false);
   const [whatsappStatusError, setWhatsappStatusError] = useState<string | null>(null);
   const [embeddedSignupCode, setEmbeddedSignupCode] = useState("");
-  const [embeddedSignupAttemptId, setEmbeddedSignupAttemptId] = useState<string | null>(null);
   const [embeddedSignupIntent, setEmbeddedSignupIntent] = useState<"connect" | "verify-existing">("connect");
   const [embeddedSignupSession, setEmbeddedSignupSession] =
     useState<MetaEmbeddedSignupSession | null>(null);
@@ -1155,7 +1154,6 @@ function OnboardingContent() {
 
   const clearEmbeddedSignupSensitiveState = useCallback(() => {
     setEmbeddedSignupCode("");
-    setEmbeddedSignupAttemptId(null);
   }, []);
 
   useEffect(() => {
@@ -1323,9 +1321,16 @@ function OnboardingContent() {
 
   async function startMetaEmbeddedSignup(
     intent: "connect" | "verify-existing" = "connect",
-    connectionMode: "standard" | "business_app_coexistence" = "standard",
+    connectionMode: "standard" | "business_app_coexistence",
   ) {
     if (embeddedSignupAttemptRef.current || embeddedSignupSubmittingRef.current) return;
+
+    if (connectionMode === "business_app_coexistence") {
+      setEmbeddedSignupError(
+        "A coexistencia permanece bloqueada ate haver comprovacao independente da Meta.",
+      );
+      return;
+    }
 
     setFormError(null);
     setSuccessMessage(null);
@@ -1333,7 +1338,6 @@ function OnboardingContent() {
     setEmbeddedSignupMessage(null);
     setEmbeddedSignupSession(null);
     setEmbeddedSignupCode("");
-    setEmbeddedSignupAttemptId(null);
     setEmbeddedSignupIntent(intent);
 
     if (!metaEmbeddedSignupConfig.appId || !metaEmbeddedSignupConfig.configId) {
@@ -1348,26 +1352,6 @@ function OnboardingContent() {
 
       if (!window.FB?.login) {
         throw new Error("FACEBOOK_SDK_LOGIN_UNAVAILABLE");
-      }
-
-      if (intent === "connect") {
-        const attemptResponse = await fetch("/api/store/whatsapp/embedded-signup/attempt", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            connectionMode,
-            appId: metaEmbeddedSignupConfig.appId,
-            configId: metaEmbeddedSignupConfig.configId,
-          }),
-        });
-        const attemptResult = (await attemptResponse.json().catch(() => null)) as
-          | { ok?: boolean; attemptId?: string }
-          | null;
-        if (!attemptResponse.ok || !attemptResult?.ok || !attemptResult.attemptId) {
-          throw new Error("EMBEDDED_SIGNUP_ATTEMPT_UNAVAILABLE");
-        }
-        setEmbeddedSignupAttemptId(attemptResult.attemptId);
       }
 
       window.FB.login(
@@ -1396,9 +1380,7 @@ function OnboardingContent() {
           override_default_response_type: true,
           extras: {
             version: "v4",
-            ...(connectionMode === "business_app_coexistence"
-              ? { featureType: "whatsapp_business_app_onboarding" }
-              : {}),
+            featureType: "whatsapp_business_app_onboarding",
             sessionInfoVersion: "3",
           },
         },
@@ -1465,7 +1447,6 @@ function OnboardingContent() {
           credentials: "include",
           body: JSON.stringify({
             code: embeddedSignupCode,
-            ...(embeddedSignupAttemptId ? { attemptId: embeddedSignupAttemptId } : {}),
             whatsappBusinessAccountId: embeddedSignupSession.whatsappBusinessAccountId,
             ...(embeddedSignupSession.phoneNumberId
               ? { phoneNumberId: embeddedSignupSession.phoneNumberId }
@@ -1583,7 +1564,6 @@ function OnboardingContent() {
     activeStore?.id,
     clearEmbeddedSignupSensitiveState,
     embeddedSignupCode,
-    embeddedSignupAttemptId,
     embeddedSignupIntent,
     embeddedSignupSession,
     fetchWhatsappStatus,
@@ -2001,7 +1981,7 @@ function OnboardingContent() {
                     </div>
                     <button
                       type="button"
-                      onClick={() => startMetaEmbeddedSignup("verify-existing")}
+                      onClick={() => startMetaEmbeddedSignup("verify-existing", "standard")}
                       disabled={embeddedSignupLoading || embeddedSignupSubmitting}
                       className="rounded-xl border border-blue-300 px-5 py-2.5 text-sm font-semibold text-blue-900 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
                     >

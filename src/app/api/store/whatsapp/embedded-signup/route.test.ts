@@ -274,16 +274,6 @@ function createRouteHandler(args?: {
     validated: ReturnType<typeof createSuccessfulValidation>,
   ) => Promise<unknown>;
   readActiveBinding?: () => Promise<{ ok: true; hasActiveBinding: boolean }>;
-  claimAttempt?: (
-    _client: unknown,
-    _access: unknown,
-    attemptId: string,
-  ) => Promise<{
-    ok: true;
-    connectionMode: "standard" | "business_app_coexistence";
-    metaAppId: string;
-    metaConfigId: string;
-  } | { ok: false; error: string }>;
 }) {
   const rpc = createPrivilegedClientMock({
     rpcError: args?.rpcError,
@@ -332,12 +322,6 @@ function createRouteHandler(args?: {
       }
     },
     readActiveBinding: args?.readActiveBinding,
-    claimAttempt: args?.claimAttempt ?? (async (_client, _access, attemptId) => ({
-      ok: true as const,
-      connectionMode: attemptId === "attempt-coexistence" ? "business_app_coexistence" : "standard",
-      metaAppId: "fake-app-id",
-      metaConfigId: "fake-config-id",
-    })),
   });
 
   return {
@@ -1445,100 +1429,18 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "missing attempt is rejected before Meta validation or persistence",
-    run: async () => {
-      let validationCalls = 0;
-      const { handler, rpcCalls } = createRouteHandler({
-        validate: async () => {
-          validationCalls += 1;
-          return createSuccessfulValidation();
-        },
-      });
-      const response = await handler(new Request("https://example.test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          code: "auth-code",
-          whatsappBusinessAccountId: "claimed-waba",
-          phoneNumberId: "claimed-phone",
-          connectionMode: "standard",
-        }),
-      }));
-      const body = await parseBody(response);
-      assert.equal(response.status, 409);
-      assert.equal(body.error, "EMBEDDED_SIGNUP_ATTEMPT_REQUIRED");
-      assert.equal(validationCalls, 0);
-      assert.equal(rpcCalls.length, 0);
-    },
-  },
-  {
-    name: "invalid or replayed attempt is rejected before Meta validation",
-    run: async () => {
-      let validationCalls = 0;
-      const { handler, rpcCalls } = createRouteHandler({
-        validate: async () => {
-          validationCalls += 1;
-          return createSuccessfulValidation();
-        },
-        claimAttempt: async () => ({ ok: false as const, error: "ATTEMPT_NOT_FOUND_OR_REPLAYED" }),
-      });
-      const response = await handler(createJsonRequest({
-        code: "auth-code",
-        whatsappBusinessAccountId: "claimed-waba",
-        phoneNumberId: "claimed-phone",
-        connectionMode: "standard",
-      }));
-      const body = await parseBody(response);
-      assert.equal(response.status, 409);
-      assert.equal(body.error, "EMBEDDED_SIGNUP_ATTEMPT_INVALID");
-      assert.equal(validationCalls, 0);
-      assert.equal(rpcCalls.length, 0);
-    },
-  },
-  {
-    name: "attempt mode mismatch is rejected before Meta validation",
-    run: async () => {
-      let validationCalls = 0;
-      const { handler, rpcCalls } = createRouteHandler({
-        validate: async () => {
-          validationCalls += 1;
-          return createSuccessfulValidation();
-        },
-        claimAttempt: async () => ({
-          ok: true as const,
-          connectionMode: "standard" as const,
-          metaAppId: "fake-app-id",
-          metaConfigId: "fake-config-id",
-        }),
-      });
-      const response = await handler(new Request("https://example.test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          attemptId: "attempt-standard",
-          code: "auth-code",
-          whatsappBusinessAccountId: "claimed-waba",
-          phoneNumberId: "claimed-phone",
-          connectionMode: "business_app_coexistence",
-        }),
-      }));
-      const body = await parseBody(response);
-      assert.equal(response.status, 409);
-      assert.equal(body.error, "EMBEDDED_SIGNUP_CONNECTION_MODE_MISMATCH");
-      assert.equal(validationCalls, 0);
-      assert.equal(rpcCalls.length, 0);
-    },
-  },
-  {
     name: "coexistence remains blocked without independent Meta mode evidence",
     run: async () => {
+      let validationCalls = 0;
       let registrationBoundaryCalls = 0;
       const { handler, rpcCalls, secretRpcCalls } = createRouteHandler({
-        validate: async () =>
-          createSuccessfulValidation({
-            connectionMode: "business_app_coexistence",
-            phoneNumberId: "coexistence-phone",
-          }),
+        validate: async () => {
+          validationCalls += 1;
+          return createSuccessfulValidation({
+              connectionMode: "business_app_coexistence",
+              phoneNumberId: "coexistence-phone",
+            });
+        },
         register: async () => {
           registrationBoundaryCalls += 1;
         },
@@ -1555,6 +1457,7 @@ const tests: TestCase[] = [
 
       assert.equal(response.status, 409);
       assert.equal(body.error, "WHATSAPP_COEXISTENCE_MODE_UNVERIFIED");
+      assert.equal(validationCalls, 0);
       assert.equal(registrationBoundaryCalls, 0);
       assert.equal(secretRpcCalls.length, 0);
       assert.equal(rpcCalls.length, 0);
