@@ -104,12 +104,27 @@ function createGrantedAccess(
 }
 
 function createJsonRequest(body: unknown) {
+  const enrichedBody = body && typeof body === "object"
+    ? {
+        ...(body as Record<string, unknown>),
+        ...(Object.prototype.hasOwnProperty.call(body, "code")
+          ? {
+              attemptId:
+                (body as Record<string, unknown>).connectionMode === "business_app_coexistence"
+                  ? "attempt-coexistence"
+                  : "attempt-standard",
+              connectionMode:
+                (body as Record<string, unknown>).connectionMode || "standard",
+            }
+          : {}),
+      }
+    : body;
   return new Request("https://example.test/api/store/whatsapp/embedded-signup", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(enrichedBody),
   });
 }
 
@@ -259,6 +274,16 @@ function createRouteHandler(args?: {
     validated: ReturnType<typeof createSuccessfulValidation>,
   ) => Promise<unknown>;
   readActiveBinding?: () => Promise<{ ok: true; hasActiveBinding: boolean }>;
+  claimAttempt?: (
+    _client: unknown,
+    _access: unknown,
+    attemptId: string,
+  ) => Promise<{
+    ok: true;
+    connectionMode: "standard" | "business_app_coexistence";
+    metaAppId: string;
+    metaConfigId: string;
+  } | { ok: false; error: string }>;
 }) {
   const rpc = createPrivilegedClientMock({
     rpcError: args?.rpcError,
@@ -307,6 +332,12 @@ function createRouteHandler(args?: {
       }
     },
     readActiveBinding: args?.readActiveBinding,
+    claimAttempt: args?.claimAttempt ?? (async (_client, _access, attemptId) => ({
+      ok: true as const,
+      connectionMode: attemptId === "attempt-coexistence" ? "business_app_coexistence" : "standard",
+      metaAppId: "fake-app-id",
+      metaConfigId: "fake-config-id",
+    })),
   });
 
   return {
@@ -1063,6 +1094,7 @@ const tests: TestCase[] = [
           code: "secret-auth-code",
           whatsappBusinessAccountId: "meta-waba",
           phoneNumberId: "meta-phone",
+          connectionMode: "standard",
           twoStepPin: "123456",
         },
         {
@@ -1127,6 +1159,7 @@ const tests: TestCase[] = [
               code: "secret-single-use-code",
               whatsappBusinessAccountId: "meta-waba",
               phoneNumberId: "meta-phone",
+              connectionMode: "standard",
               twoStepPin: "123456",
             },
             {
@@ -1190,6 +1223,7 @@ const tests: TestCase[] = [
           code: "auth-code",
           whatsappBusinessAccountId: "meta-waba",
           phoneNumberId: "meta-phone",
+          connectionMode: "standard",
           twoStepPin: "123456",
         },
         {
@@ -1235,6 +1269,7 @@ const tests: TestCase[] = [
               code: "auth-code",
               whatsappBusinessAccountId: "meta-waba",
               phoneNumberId: "meta-phone",
+              connectionMode: "standard",
               twoStepPin: "123456",
             },
             {
@@ -1270,6 +1305,7 @@ const tests: TestCase[] = [
               code: "auth-code",
               whatsappBusinessAccountId: "meta-waba",
               phoneNumberId: "meta-phone",
+              connectionMode: "standard",
               twoStepPin: "123456",
             },
             {
@@ -1409,7 +1445,92 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "coexistence materializes without standard registration or PIN secret",
+    name: "missing attempt is rejected before Meta validation or persistence",
+    run: async () => {
+      let validationCalls = 0;
+      const { handler, rpcCalls } = createRouteHandler({
+        validate: async () => {
+          validationCalls += 1;
+          return createSuccessfulValidation();
+        },
+      });
+      const response = await handler(new Request("https://example.test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "standard",
+        }),
+      }));
+      const body = await parseBody(response);
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "EMBEDDED_SIGNUP_ATTEMPT_REQUIRED");
+      assert.equal(validationCalls, 0);
+      assert.equal(rpcCalls.length, 0);
+    },
+  },
+  {
+    name: "invalid or replayed attempt is rejected before Meta validation",
+    run: async () => {
+      let validationCalls = 0;
+      const { handler, rpcCalls } = createRouteHandler({
+        validate: async () => {
+          validationCalls += 1;
+          return createSuccessfulValidation();
+        },
+        claimAttempt: async () => ({ ok: false as const, error: "ATTEMPT_NOT_FOUND_OR_REPLAYED" }),
+      });
+      const response = await handler(createJsonRequest({
+        code: "auth-code",
+        whatsappBusinessAccountId: "claimed-waba",
+        phoneNumberId: "claimed-phone",
+        connectionMode: "standard",
+      }));
+      const body = await parseBody(response);
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "EMBEDDED_SIGNUP_ATTEMPT_INVALID");
+      assert.equal(validationCalls, 0);
+      assert.equal(rpcCalls.length, 0);
+    },
+  },
+  {
+    name: "attempt mode mismatch is rejected before Meta validation",
+    run: async () => {
+      let validationCalls = 0;
+      const { handler, rpcCalls } = createRouteHandler({
+        validate: async () => {
+          validationCalls += 1;
+          return createSuccessfulValidation();
+        },
+        claimAttempt: async () => ({
+          ok: true as const,
+          connectionMode: "standard" as const,
+          metaAppId: "fake-app-id",
+          metaConfigId: "fake-config-id",
+        }),
+      });
+      const response = await handler(new Request("https://example.test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          attemptId: "attempt-standard",
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "business_app_coexistence",
+        }),
+      }));
+      const body = await parseBody(response);
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "EMBEDDED_SIGNUP_CONNECTION_MODE_MISMATCH");
+      assert.equal(validationCalls, 0);
+      assert.equal(rpcCalls.length, 0);
+    },
+  },
+  {
+    name: "coexistence remains blocked without independent Meta mode evidence",
     run: async () => {
       let registrationBoundaryCalls = 0;
       const { handler, rpcCalls, secretRpcCalls } = createRouteHandler({
@@ -1432,12 +1553,11 @@ const tests: TestCase[] = [
       );
       const body = await parseBody(response);
 
-      assert.equal(response.status, 200);
-      assert.equal(body.connectionMode, "business_app_coexistence");
-      assert.equal(body.connectionScenario, "business_app_meta_flow");
-      assert.equal(registrationBoundaryCalls, 1);
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "WHATSAPP_COEXISTENCE_MODE_UNVERIFIED");
+      assert.equal(registrationBoundaryCalls, 0);
       assert.equal(secretRpcCalls.length, 0);
-      assert.equal(rpcCalls.some((call) => call.name === "materialize_store_whatsapp_embedded_signup_by_system"), true);
+      assert.equal(rpcCalls.length, 0);
     },
   },
   {
