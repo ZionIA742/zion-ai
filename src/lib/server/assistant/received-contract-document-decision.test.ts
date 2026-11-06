@@ -12,6 +12,7 @@ import {
 const context = {
   organizationId: "org-1",
   storeId: "store-1",
+  conversationId: "conversation-1",
   notificationId: "notification-1",
   contractId: "contract-1",
   contractVersionId: "version-1",
@@ -124,6 +125,7 @@ function createResolverSupabase(args: {
   notifications?: Array<Record<string, unknown>>;
   externalNotifications?: Array<Record<string, unknown>>;
   rpcResult?: { data: unknown; error: unknown };
+  confirmationRpcResult?: { data: unknown; error: unknown };
 }) {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
   const rows = args.message ?? null;
@@ -137,6 +139,14 @@ function createResolverSupabase(args: {
       contract_id: "contract-1",
       contract_version_id: "version-1",
       evidence_source_message_id: "message-1",
+    },
+    error: null,
+  };
+  const confirmationRpcResult = args.confirmationRpcResult ?? {
+    data: {
+      message_id: "confirmation-1",
+      outbound_idempotency_key: "confirmation-key",
+      outcome: "queued",
     },
     error: null,
   };
@@ -165,6 +175,9 @@ function createResolverSupabase(args: {
       from: (table: string) => query(table),
       rpc: async (name: string, rpcArgs: Record<string, unknown>) => {
         calls.push({ name, args: rpcArgs });
+        if (name === "enqueue_received_contract_document_confirmation_by_system") {
+          return confirmationRpcResult;
+        }
         return rpcResult;
       },
     },
@@ -182,8 +195,125 @@ const identifiedNotification = {
     document_version_id: "version-1",
     received_evidence_source_message_id: "message-1",
     customer_name: "Regina",
+    related_conversation_id: "conversation-1",
   },
 };
+
+const identifiedNotificationWithConversation = {
+  ...identifiedNotification,
+  context: {
+    ...identifiedNotification.context,
+    related_conversation_id: "conversation-1",
+  },
+};
+
+test("SIM confirmado enfileira uma unica mensagem depois da decisao persistida", async () => {
+  const harness = createResolverSupabase({
+    message: { id: "decision-confirmation-1", thread_id: "thread-1" },
+    notifications: [identifiedNotificationWithConversation],
+  });
+  const result = await tryHandleReceivedContractDocumentDecision({
+    supabase: harness.supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    decisionMessageId: "decision-confirmation-1",
+    content: "SIM",
+    channel: "assistant",
+  });
+
+  assert.equal(result?.result.decision, "confirmed");
+  assert.deepEqual(
+    harness.calls.map((call) => call.name),
+    [
+      "confirm_received_contract_document_by_system",
+      "enqueue_received_contract_document_confirmation_by_system",
+    ],
+  );
+});
+
+test("NAO nao enfileira mensagem ao cliente", async () => {
+  const harness = createResolverSupabase({
+    message: { id: "decision-confirmation-2", thread_id: "thread-1" },
+    notifications: [identifiedNotificationWithConversation],
+    rpcResult: {
+      data: {
+        outcome: "applied",
+        decision: "rejected",
+        notification_id: "notification-1",
+        contract_id: "contract-1",
+        contract_version_id: "version-1",
+        evidence_source_message_id: "message-1",
+      },
+      error: null,
+    },
+  });
+  const result = await tryHandleReceivedContractDocumentDecision({
+    supabase: harness.supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    decisionMessageId: "decision-confirmation-2",
+    content: "NAO",
+    channel: "assistant",
+  });
+
+  assert.equal(result?.result.decision, "rejected");
+  assert.deepEqual(
+    harness.calls.map((call) => call.name),
+    ["confirm_received_contract_document_by_system"],
+  );
+});
+
+test("falha de materializacao nao desfaz SIM ja persistido nem vira fracasso ao responsavel", async () => {
+  const harness = createResolverSupabase({
+    message: { id: "decision-confirmation-failure", thread_id: "thread-1" },
+    notifications: [identifiedNotificationWithConversation],
+    confirmationRpcResult: {
+      data: null,
+      error: { message: "materialization unavailable" },
+    },
+  });
+
+  const result = await tryHandleReceivedContractDocumentDecision({
+    supabase: harness.supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    decisionMessageId: "decision-confirmation-failure",
+    content: "SIM",
+    channel: "assistant",
+  });
+
+  assert.equal(result?.result.decision, "confirmed");
+  assert.match(result?.responseText || "", /marcado como concluido/);
+});
+
+test("nao persiste SIM sem conversa relacionada", async () => {
+  let rpcCalls = 0;
+  const harness = createResolverSupabase({
+    message: { id: "decision-without-conversation", thread_id: "thread-1" },
+    notifications: [{
+      ...identifiedNotification,
+      context: { ...identifiedNotification.context, related_conversation_id: "" },
+    }],
+  });
+  const originalRpc = harness.supabase.rpc;
+  harness.supabase.rpc = async (...args: Parameters<typeof originalRpc>) => {
+    rpcCalls += 1;
+    return originalRpc(...args);
+  };
+
+  await assert.rejects(
+    tryHandleReceivedContractDocumentDecision({
+      supabase: harness.supabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      decisionMessageId: "decision-without-conversation",
+      content: "SIM",
+      channel: "assistant",
+    }),
+    /RECEIVED_CONTRACT_DOCUMENT_CONFIRMATION_CONTEXT_INVALID/,
+  );
+  assert.equal(rpcCalls, 0);
+});
 
 test("integra SIM no WhatsApp com a notificacao externa exata", async () => {
   const harness = createResolverSupabase({

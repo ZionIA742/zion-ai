@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { enqueueReceivedContractDocumentConfirmation } from "./received-contract-document-confirmation";
 
 export const RECEIVED_CONTRACT_DOCUMENT_DECISION_RPC =
   "confirm_received_contract_document_by_system" as const;
@@ -11,6 +12,7 @@ export type ReceivedContractDocumentDecisionChannel =
 export type ReceivedContractDocumentDecisionContext = {
   organizationId: string;
   storeId: string;
+  conversationId: string;
   notificationId: string;
   contractId: string;
   contractVersionId: string;
@@ -76,6 +78,7 @@ function requiredContext(context: ReceivedContractDocumentDecisionContext) {
   const values = [
     context.organizationId,
     context.storeId,
+    context.conversationId,
     context.notificationId,
     context.contractId,
     context.contractVersionId,
@@ -113,6 +116,7 @@ export async function decideReceivedContractDocument(args: {
     {
       p_organization_id: context.organizationId,
       p_store_id: context.storeId,
+      p_conversation_id: context.conversationId,
       p_notification_id: context.notificationId,
       p_contract_id: context.contractId,
       p_contract_version_id: context.contractVersionId,
@@ -278,12 +282,17 @@ export async function tryHandleReceivedContractDocumentDecision(args: {
   const contractId = contextText(context, "related_contract_id");
   const contractVersionId = contextText(context, "document_version_id");
   const evidenceSourceMessageId = contextText(context, "received_evidence_source_message_id");
+  const relatedConversationId = contextText(context, "related_conversation_id");
+  if (!relatedConversationId) {
+    throw new Error("RECEIVED_CONTRACT_DOCUMENT_CONFIRMATION_CONTEXT_INVALID");
+  }
   const result = await decideReceivedContractDocument({
     supabase: args.supabase,
     decision,
     context: {
       organizationId: args.organizationId,
       storeId: args.storeId,
+      conversationId: relatedConversationId,
       notificationId: clean(notification.id),
       contractId,
       contractVersionId,
@@ -292,6 +301,26 @@ export async function tryHandleReceivedContractDocumentDecision(args: {
       channel: args.channel,
     },
   });
+  if (decision === "confirmed") {
+    try {
+      await enqueueReceivedContractDocumentConfirmation({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: relatedConversationId,
+        notificationId: clean(notification.id),
+        contractId,
+        contractVersionId,
+        evidenceSourceMessageId,
+        customerName: contextText(context, "customer_name"),
+      });
+    } catch (error) {
+      console.error(
+        "[received-contract-document] confirmation materialization failed after decision commit",
+        error instanceof Error ? error.message : "unknown_error",
+      );
+    }
+  }
   const customerName = contextText(context, "customer_name") || "o cliente";
   return {
     kind: "received_contract_document_decision",
