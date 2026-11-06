@@ -12,6 +12,10 @@ type TestCase = { name: string; run: () => Promise<void> | void };
 
 type MessageOverrides = Partial<Record<string, unknown>>;
 const senderPath = join(process.cwd(), "src/lib/server/whatsapp-external-sender.ts");
+const takeoverGateMigrationPath = join(
+  process.cwd(),
+  "supabase/migrations/20261106210000_p19a_human_takeover_external_send_gate.sql",
+);
 
 function createMessage(overrides?: MessageOverrides) {
   return {
@@ -1014,6 +1018,37 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "takeover discovered after preparation blocks the Meta POST",
+    run: async () => {
+      const harness = createHarness({
+        preflightImpl: async () => ({
+          ok: true,
+          decision: "send",
+          reason: "within_window",
+        }),
+        gateImpl: async () => ({
+          ok: true,
+          decision: "blocked",
+          reason: "human_takeover_active",
+        }),
+      });
+
+      const result = await harness.process({ organizationId: "org-1", storeId: "store-1" });
+
+      assert.deepEqual(harness.calls.order, [
+        "CLAIM",
+        "PREFLIGHT 24H",
+        "PREPARE",
+        "STRICT INTEGRATION",
+        "FINAL SQL GATE",
+      ]);
+      assert.deepEqual(harness.calls.send, []);
+      assert.deepEqual(harness.calls.attemptStarted, []);
+      assert.equal(result.failed, 1);
+      assert.equal(result.results.at(-1)?.detail, "ZION_EXTERNAL_SEND_BLOCKED:human_takeover_active");
+    },
+  },
+  {
     name: "integration failure before final window gate does not POST and releases claim",
     run: async () => {
       const harness = createHarness({
@@ -1359,6 +1394,19 @@ const tests: TestCase[] = [
         false,
         "production sender must not bypass v2 by calling the legacy gate directly",
       );
+    },
+  },
+  {
+    name: "takeover gate serializes the conversation and blocks active human ownership",
+    run: () => {
+      const migration = readFileSync(takeoverGateMigrationPath, "utf8");
+
+      assert.equal(migration.includes("for update of conversation_row"), true);
+      assert.equal(migration.includes("v_conversation_is_human_active"), true);
+      assert.equal(migration.includes("= ''humano_assumiu''"), true);
+      assert.equal(migration.includes("'human_takeover_active'"), true);
+      assert.equal(migration.includes("v_message.sender = ''ai''"), true);
+      assert.equal(migration.includes("to service_role"), true);
     },
   },
 ];
