@@ -4,6 +4,8 @@ import {
   enqueueReceivedContractDocumentAcknowledgement,
   RECEIVED_CONTRACT_DOCUMENT_ACK_RPC,
 } from "./received-contract-document-acknowledgement";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 test("enfileira o agradecimento do cliente com a ocorrência documental exata", async () => {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
@@ -32,6 +34,42 @@ test("enfileira o agradecimento do cliente com a ocorrência documental exata", 
   assert.equal(calls[0]?.name, RECEIVED_CONTRACT_DOCUMENT_ACK_RPC);
   assert.equal(calls[0]?.args.p_source_message_id, "source-1");
   assert.equal(calls[0]?.args.p_conversation_id, "conversation-1");
+});
+
+test("ACK operacional usa classificacao propria e nao uma classificacao comercial", () => {
+  const historicalAckMigration = readFileSync(
+    resolve(
+      process.cwd(),
+      "supabase/migrations/20261104211500_p9_9_16_received_document_customer_ack.sql",
+    ),
+    "utf8",
+  );
+  const guardMigration = readFileSync(
+    resolve(
+      process.cwd(),
+      "supabase/migrations/20261106140000_p9_9_3_c5_received_document_ack_outbound_kind.sql",
+    ),
+    "utf8",
+  );
+
+  assert.match(historicalAckMigration, /'outbound_origin', 'received_contract_document_ack'/);
+  assert.doesNotMatch(
+    historicalAckMigration,
+    /'outbound_kind', 'received_contract_document_ack'/,
+  );
+  assert.match(
+    guardMigration,
+    /enqueue_received_contract_document_ack_by_system\(uuid,uuid,uuid,uuid,text\)/,
+  );
+  assert.match(
+    guardMigration,
+    /'outbound_kind', 'received_contract_document_ack'/,
+  );
+  assert.doesNotMatch(guardMigration, /'outbound_kind', 'reactive_ai_reply'/);
+  assert.match(guardMigration, /received_document_ack_source_scope_mismatch/);
+  assert.match(guardMigration, /received_document_ack_origin_mismatch/);
+  assert.match(guardMigration, /v_initial_outbound_kind <> 'received_contract_document_ack'/);
+  assert.match(guardMigration, /v_outbound_kind <> 'received_contract_document_ack'/);
 });
 
 test("falha fechado sem contexto de organização, loja, conversa ou ocorrência", async () => {
