@@ -39,11 +39,20 @@ function harness(overrides = {}) {
     '@/lib/server/zion-admin-monthly-preclosure-preparation': {
       prepareMonthlyPreclosureSnapshot: () => prepared,
     },
+    '@/lib/server/zion-admin-ptax-evidence-reconcile': {
+      reconcilePersistedPtaxCollection: async (_from, _to, persisted) => ({
+        ...persisted,
+      }),
+    },
     '@/lib/server/zion-admin-ptax-evidence-persist': {
       collectAndPersistValidatedPtax: async (from, to) => {
         calls.push(['ptax', from, to]);
         if (overrides.rejectPtax) throw new Error('SIMULATED_PERSISTENCE_FAILURE');
-        return { report: { source: 'bcb_ptax_venda', daily: [] } };
+        return {
+          collectionId: '12345678-1234-4234-8234-123456789abc',
+          collectionKey: `bcb_ptax_venda:v1:${'a'.repeat(64)}`,
+          report: { source: 'bcb_ptax_venda', daily: [] },
+        };
       },
     },
   };

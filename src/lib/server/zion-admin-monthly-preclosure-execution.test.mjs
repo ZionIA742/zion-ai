@@ -31,7 +31,14 @@ function compile(source, dependencies = {}) {
     exports,
     require: (id) => {
       if (!(id in dependencies)) {
-        if (id === "@/lib/server/zion-admin-ptax-evidence-persist") {
+        if (id === "@/lib/server/zion-admin-ptax-evidence-reconcile") {
+            return {
+              reconcilePersistedPtaxCollection: async () => {
+                throw new Error("UNEXPECTED_PTAX_RECONCILIATION_IN_LEGACY_TEST");
+              },
+            };
+          }
+          if (id === "@/lib/server/zion-admin-ptax-evidence-persist") {
             return {
               collectAndPersistValidatedPtax: async () => {
                 throw new Error("UNEXPECTED_PTAX_COLLECTION_IN_LEGACY_TEST");

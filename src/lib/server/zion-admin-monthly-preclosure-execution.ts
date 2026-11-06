@@ -12,7 +12,11 @@
 import { createServiceSupabaseClient } from "@/lib/server/zion-account-provisioning";
 import { readMonthlyPreclosureSources } from "@/lib/server/zion-admin-monthly-preclosure-source-reader";
 import { collectAndPersistValidatedPtax } from "@/lib/server/zion-admin-ptax-evidence-persist";
-import { prepareMonthlyPreclosureSnapshot } from "@/lib/server/zion-admin-monthly-preclosure-preparation";
+import { reconcilePersistedPtaxCollection } from "@/lib/server/zion-admin-ptax-evidence-reconcile";
+import {
+  prepareMonthlyPreclosureSnapshot,
+  type MonthlyPreclosureSources,
+} from "@/lib/server/zion-admin-monthly-preclosure-preparation";
 
 type RegisterInput = {
   month: string;
@@ -28,7 +32,9 @@ type RegisterResponse = {
 
 type ExecutionDependencies = {
   now: () => Date;
-  readSources: typeof readMonthlyPreclosureSources;
+  readSources: (month: string) => Promise<MonthlyPreclosureSources & {
+    ptaxEvidence?: { collectionId: string; collectionKey: string };
+  }>;
   register: (input: RegisterInput) => Promise<RegisterResponse>;
 };
 
@@ -129,14 +135,22 @@ async function registerInDatabase(
   };
 }
 
-/** Exclusivo do executor mensal: preserva o leitor comum sem escrita. */
+/** Apenas executor mensal autorizado, sem alterar rotas de leitura. */
 async function readSourcesWithPersistedPtax(month: string) {
-  return readMonthlyPreclosureSources(month, {
+  let ptaxEvidence: { collectionId: string; collectionKey: string } | undefined;
+  const sources = await readMonthlyPreclosureSources(month, {
     loadPtax: async (from, to) => {
       const persisted = await collectAndPersistValidatedPtax(from, to);
-      return persisted.report;
+      // Uma leitura independente do banco deve confirmar o que foi gravado.
+      const reconciled = await reconcilePersistedPtaxCollection(from, to, persisted);
+      ptaxEvidence = {
+        collectionId: reconciled.collectionId,
+        collectionKey: reconciled.collectionKey,
+      };
+      return reconciled.report;
     },
   });
+  return { ...sources, ptaxEvidence };
 }
 
 export function createMonthlyPreclosureExecutionRunner(
@@ -175,6 +189,8 @@ export function createMonthlyPreclosureExecutionRunner(
     let prepared: ReturnType<
       typeof prepareMonthlyPreclosureSnapshot
     >;
+    // Snapshot adicional aceita metadata sem alterar o contrato tipado do preparador.
+    let snapshotWithEvidence: Record<string, unknown> | null = null;
 
     try {
       const sources = await readSources(clock.month);
@@ -182,6 +198,21 @@ export function createMonthlyPreclosureExecutionRunner(
         clock.month,
         sources,
       );
+      if (sources.ptaxEvidence) {
+        // Vinculo de proveniencia: somente resposta revalidada e persistida.
+        // Nao equivale a fatura Meta/OpenAI nem autoriza fechamento final.
+        snapshotWithEvidence = {
+          ...prepared.sourceSnapshot,
+          openai: {
+            ...prepared.sourceSnapshot.openai,
+            ptaxEvidence: {
+              status: "reconciled_payload",
+              collectionId: sources.ptaxEvidence.collectionId,
+              collectionKey: sources.ptaxEvidence.collectionKey,
+            },
+          },
+        };
+      }
     } catch {
       return {
         status: "needs_review",
@@ -208,7 +239,7 @@ export function createMonthlyPreclosureExecutionRunner(
     try {
       result = await register({
         month: clock.month,
-        sourceSnapshot: prepared.sourceSnapshot,
+        sourceSnapshot: snapshotWithEvidence ?? prepared.sourceSnapshot,
         pendingSources: prepared.pendingSources,
         reason: "automatic_month_end_preclosure",
       });
