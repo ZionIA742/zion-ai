@@ -444,6 +444,12 @@ export async function POST(request: Request) {
   let payload: Record<string, unknown>;
   try { payload = await request.json(); } catch { return createZionAdminApiJsonResponse({error:"Corpo inválido."},400); }
   const action = String(payload.action ?? "");
+  if (action === "close") {
+    return createZionAdminApiJsonResponse({
+      error: "O fechamento antigo foi desativado. O fechamento financeiro auditado ainda nao esta disponivel.",
+      code: "LEGACY_COST_CLOSE_DISABLED",
+    }, 409);
+  }
   if (!["add", "edit", "remove", "close", ...VARIABLE_MUTATION_ACTIONS].includes(action)) return createZionAdminApiJsonResponse({error:"Ação inválida."},400);
   if ((VARIABLE_MUTATION_ACTIONS as readonly string[]).includes(action)) {
     const variableAction = action as VariableMutationAction;
