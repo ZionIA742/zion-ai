@@ -1,6 +1,6 @@
 import {
   buildWhatsappNumberChangeLink,
-  createDisabledWhatsappNumberChangeEmailTransport,
+  createConfiguredWhatsappNumberChangeEmailTransport,
   createWhatsappNumberChangeToken,
   hashWhatsappNumberChangeToken,
   WHATSAPP_NUMBER_CHANGE_LINK_TTL_MS,
@@ -146,7 +146,7 @@ export function createWhatsappNumberChangeRouteHandler(overrides: Partial<Whatsa
     createServiceSupabase: () => { throw new Error("service client unavailable"); },
     now: () => new Date(),
     createToken: createWhatsappNumberChangeToken,
-    sendEmail: createDisabledWhatsappNumberChangeEmailTransport(),
+    sendEmail: createConfiguredWhatsappNumberChangeEmailTransport(),
     baseUrl: () => process.env.NEXT_PUBLIC_SITE_URL?.trim() || null,
     ...overrides,
   };

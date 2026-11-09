@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import { resolveStoreApiAccess } from "@/lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 import { createServiceSupabaseClient } from "@/lib/server/zion-account-provisioning";
@@ -12,12 +11,26 @@ function json(body: Record<string, unknown>, status = 200) {
   return NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
 }
 
+type NumberChangeSupabaseClient = {
+  from(table: string): NumberChangeQuery;
+  rpc(name: string, args: Record<string, unknown>): Promise<{
+    data: unknown;
+    error: { message?: string | null } | null;
+  }>;
+};
+
+type NumberChangeQuery = {
+  select(columns: string): NumberChangeQuery;
+  eq(column: string, value: unknown): NumberChangeQuery;
+  maybeSingle(): PromiseLike<{ data: unknown; error: unknown | null }>;
+};
+
 function tokenFrom(request: Request) {
   return new URL(request.url).searchParams.get("token")?.trim() || "";
 }
 
 function serviceClient() {
-  return createServiceSupabaseClient() as ReturnType<typeof createClient>;
+  return createServiceSupabaseClient() as unknown as NumberChangeSupabaseClient;
 }
 
 async function resolveLink(request: Request) {
