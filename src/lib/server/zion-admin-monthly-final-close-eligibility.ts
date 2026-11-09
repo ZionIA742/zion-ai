@@ -167,7 +167,7 @@ export function evaluateMonthlyFinalCloseEligibility(
     blockers.push("meta_unverified");
   } else if (
     input.meta.status === "verified_not_applicable" &&
-    (!validMetaAuthority || input.meta.brlCents !== null)
+    (!validMetaAuthority || input.meta.brlCents !== 0)
   ) {
     blockers.push("meta_unverified");
   } else if (

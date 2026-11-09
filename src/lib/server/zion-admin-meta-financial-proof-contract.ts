@@ -27,6 +27,23 @@ function validCents(value: unknown): value is number {
     value >= 0;
 }
 
+function validUploadId(value: unknown): boolean {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0;
+  }
+
+  if (
+    typeof value !== "string" ||
+    !/^[1-9][0-9]{0,18}$/.test(value)
+  ) {
+    return false;
+  }
+
+  const maxBigint = "9223372036854775807";
+
+  return value.length < maxBigint.length ||
+    value <= maxBigint;
+}
 export type MetaFinancialProofContractResult = {
   structurallyCompatible: boolean;
   blockers: string[];
@@ -62,8 +79,7 @@ export function assessMetaFinancialProofContract(
 
   if (
     input.source !== "meta_invoice" ||
-    typeof input.uploadId !== "string" ||
-    !UUID.test(input.uploadId) ||
+    !validUploadId(input.uploadId) ||
     typeof input.documentSha256 !== "string" ||
     !SHA256.test(input.documentSha256) ||
     typeof input.authorityKey !== "string" ||
@@ -86,7 +102,7 @@ export function assessMetaFinancialProofContract(
     }
   } else if (input.status === "verified_not_applicable") {
     if (
-      input.amountBrlCents !== null ||
+      input.amountBrlCents !== 0 ||
       input.proofAmountBrlCents !== 0 ||
       input.proofType !== "supplier_statement"
     ) {

@@ -39,7 +39,7 @@ function base() {
     },
     meta: {
       status: "verified_not_applicable",
-      brlCents: null,
+      brlCents: 0,
       authorityKey: "trusted-system-fixture",
     },
   };
@@ -202,4 +202,13 @@ test("resultado puro e deterministico", () => {
   const first = evaluateMonthlyFinalCloseEligibility(input);
   const second = evaluateMonthlyFinalCloseEligibility(input);
   assert.deepEqual(first, second);
+});
+test("Meta nao aplicavel exige zero explicito", () => {
+  const input = base();
+  input.meta.brlCents = null;
+
+  const result = evaluateMonthlyFinalCloseEligibility(input);
+
+  assert.equal(result.eligible, false);
+  assert.ok(result.blockers.includes("meta_unverified"));
 });

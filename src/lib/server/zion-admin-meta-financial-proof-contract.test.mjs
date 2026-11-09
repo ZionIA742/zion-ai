@@ -12,7 +12,7 @@ function base() {
     month,
     preclosureRevision: revision,
     source: "meta_invoice",
-    uploadId: "11111111-1111-4111-8111-111111111111",
+    uploadId: "123",
     documentSha256: "a".repeat(64),
     authorityKey: "22222222-2222-4222-8222-222222222222",
     status: "verified_amount",
@@ -35,7 +35,7 @@ test("fatura com valores coincidentes e estruturalmente compativel", () => {
 test("demonstrativo financeiro pode comprovar ausencia de cobranca", () => {
   const input = base();
   input.status = "verified_not_applicable";
-  input.amountBrlCents = null;
+  input.amountBrlCents = 0;
   input.proofAmountBrlCents = 0;
   input.proofType = "supplier_statement";
   assert.equal(assess(input).structurallyCompatible, true);
@@ -48,7 +48,7 @@ test("ausencia de documento nao comprova zero", () => {
 test("fatura nao substitui demonstrativo de nao aplicabilidade", () => {
   const input = base();
   input.status = "verified_not_applicable";
-  input.amountBrlCents = null;
+  input.amountBrlCents = 0;
   input.proofAmountBrlCents = 0;
   assert.equal(assess(input).structurallyCompatible, false);
 });
@@ -56,7 +56,7 @@ test("fatura nao substitui demonstrativo de nao aplicabilidade", () => {
 test("nao aplicabilidade nao aceita valor positivo", () => {
   const input = base();
   input.status = "verified_not_applicable";
-  input.amountBrlCents = null;
+  input.amountBrlCents = 0;
   input.proofType = "supplier_statement";
   assert.equal(assess(input).structurallyCompatible, false);
 });
@@ -84,5 +84,47 @@ test("estado desconhecido nao autoriza zero", () => {
   input.status = "unknown";
   input.amountBrlCents = 0;
   input.proofAmountBrlCents = 0;
+  assert.equal(assess(input).structurallyCompatible, false);
+});
+test("upload aceita bigint canonico em texto", () => {
+  const input = base();
+  input.uploadId = "9223372036854775807";
+  assert.equal(assess(input).structurallyCompatible, true);
+});
+
+test("upload aceita numero inteiro seguro", () => {
+  const input = base();
+  input.uploadId = 123;
+  assert.equal(assess(input).structurallyCompatible, true);
+});
+
+test("upload rejeita UUID, zero e inteiro inseguro", () => {
+  const input = base();
+
+  for (const value of [
+    "11111111-1111-4111-8111-111111111111",
+    "0",
+    "000123",
+    "9223372036854775808",
+    0,
+    -1,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    input.uploadId = value;
+    assert.equal(
+      assess(input).structurallyCompatible,
+      false,
+      String(value)
+    );
+  }
+});
+
+test("Meta nao aplicavel nao aceita BRL nulo", () => {
+  const input = base();
+  input.status = "verified_not_applicable";
+  input.amountBrlCents = null;
+  input.proofAmountBrlCents = 0;
+  input.proofType = "supplier_statement";
+
   assert.equal(assess(input).structurallyCompatible, false);
 });
