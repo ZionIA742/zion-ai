@@ -19,10 +19,10 @@ test("reutiliza a tabela canonica de evidencias", () => {
 });
 
 test("distingue cobranca e nao aplicabilidade", () => {
-  assert.match(sql, /meta_financial_status/);
+  assert.match(sql, /meta_financial_status IS NOT NULL/);
   assert.match(sql, /'verified_amount'/);
   assert.match(sql, /'verified_not_applicable'/);
-  assert.match(sql, /amount_brl_cents = 0/);
+  assert.match(sql, /amount_brl_cents IS NOT DISTINCT FROM 0/);
   assert.match(sql, /amount_usd IS NULL/);
   assert.match(sql, /proof_type = 'supplier_statement'/);
 });

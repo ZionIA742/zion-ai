@@ -46,6 +46,7 @@ CHECK (
     OR
     (
         source = 'meta_invoice'
+        AND meta_financial_status IS NOT NULL
         AND meta_financial_status IN (
             'verified_amount',
             'verified_not_applicable'
@@ -62,7 +63,7 @@ CHECK (
             (
                 meta_financial_status =
                     'verified_not_applicable'
-                AND amount_brl_cents = 0
+                AND amount_brl_cents IS NOT DISTINCT FROM 0
                 AND amount_usd IS NULL
                 AND proof_type = 'supplier_statement'
             )
