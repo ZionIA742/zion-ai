@@ -22,6 +22,12 @@ function base() {
       brlCents: 5000,
       usdCents: 0,
     },
+    manualRevenue: {
+      status: "confirmed",
+      amountBrlCents: 0,
+      revision: 1,
+    },
+
     openAi: {
       availability: "complete",
       confirmedDays: 31,
@@ -43,6 +49,56 @@ test("fontes completas podem ser elegiveis", () => {
   const result = evaluateMonthlyFinalCloseEligibility(base());
   assert.equal(result.eligible, true);
   assert.deepEqual(result.blockers, []);
+});
+
+test("receita zero confirmada permite elegibilidade", () => {
+  const input = base();
+  input.manualRevenue.amountBrlCents = 0;
+  assert.equal(evaluateMonthlyFinalCloseEligibility(input).eligible, true);
+});
+
+test("receita positiva confirmada permite elegibilidade", () => {
+  const input = base();
+  input.manualRevenue.amountBrlCents = 250000;
+  assert.equal(evaluateMonthlyFinalCloseEligibility(input).eligible, true);
+});
+
+test("receita nao informada bloqueia fechamento", () => {
+  const input = base();
+  input.manualRevenue.status = "not_reported";
+  input.manualRevenue.amountBrlCents = null;
+  input.manualRevenue.revision = null;
+  const result = evaluateMonthlyFinalCloseEligibility(input);
+  assert.equal(result.eligible, false);
+  assert.ok(result.blockers.includes("manual_revenue_unconfirmed"));
+});
+
+test("receita ausente bloqueia sem causar excecao", () => {
+  const input = base();
+  delete input.manualRevenue;
+  const result = evaluateMonthlyFinalCloseEligibility(input);
+  assert.equal(result.eligible, false);
+  assert.ok(result.blockers.includes("manual_revenue_unconfirmed"));
+});
+
+test("receita negativa ou revisao invalida bloqueia", () => {
+  const input = base();
+
+  input.manualRevenue.amountBrlCents = -100;
+  assert.ok(
+    evaluateMonthlyFinalCloseEligibility(input).blockers.includes(
+      "manual_revenue_unconfirmed"
+    )
+  );
+
+  input.manualRevenue.amountBrlCents = 100;
+  input.manualRevenue.revision = 0;
+
+  assert.ok(
+    evaluateMonthlyFinalCloseEligibility(input).blockers.includes(
+      "manual_revenue_unconfirmed"
+    )
+  );
 });
 
 test("Meta desconhecida bloqueia fechamento", () => {

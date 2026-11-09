@@ -14,6 +14,12 @@ export type MonthlyFinalCloseEligibilityInput = {
     brlCents: number | null;
     usdCents: number | null;
   };
+  manualRevenue: {
+    status: "confirmed" | "not_reported";
+    amountBrlCents: number | null;
+    revision: number | null;
+  };
+
   openAi: {
     availability: "complete" | "partial" | "unavailable";
     confirmedDays: number;
@@ -109,6 +115,20 @@ export function evaluateMonthlyFinalCloseEligibility(
     blockers.push("manual_expenses_unavailable");
   } else if (input.manual.usdCents > 0) {
     blockers.push("manual_usd_conversion_undefined");
+  }
+
+  // Receita ausente nao equivale a receita zero.
+  // A autoridade da receita sera conferida novamente
+  // pelo futuro executor transacional.
+  if (
+    !input.manualRevenue ||
+    input.manualRevenue.status !== "confirmed" ||
+    !validCents(input.manualRevenue.amountBrlCents) ||
+    typeof input.manualRevenue.revision !== "number" ||
+    !Number.isSafeInteger(input.manualRevenue.revision) ||
+    input.manualRevenue.revision < 1
+  ) {
+    blockers.push("manual_revenue_unconfirmed");
   }
 
   const openAiComplete =
