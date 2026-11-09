@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- Teste Node executado como CommonJS (.cjs) */
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -67,4 +68,50 @@ test("componente esta integrado apenas ao periodo mensal", () => {
     section,
     /\{data && period==="month" \? <ZionAdminFinancialHistory \/> : null\}/
   );
+});
+test("D13C_MONTH_FORMAT_TEST: mes em portugues sem capitalizar de", () => {
+  assert.match(component, /formattedMonth\.charAt\(0\)\.toLocaleUpperCase\("pt-BR"\)/);
+  assert.match(component, /formattedMonth\.slice\(1\)/);
+  assert.doesNotMatch(component, /font-semibold capitalize text-white/);
+});
+
+test("D13C: meta_invoice tem rotulo legivel", () => {
+  assert.match(
+    component,
+    /meta_invoice: "Comprovação financeira da Meta"/,
+  );
+});
+test("D13C_FUNCTIONAL_MONTH_TEST: formatacao real do mes", () => {
+  const ts = require("typescript");
+  const vm = require("node:vm");
+
+  const declaration = component.match(
+    /^function monthName\(month: string\): string \{[\s\S]*?^\}/m
+  );
+
+  assert.ok(declaration, "Funcao monthName nao encontrada");
+
+  const compiled = ts.transpileModule(
+    declaration[0] + "\nmodule.exports = monthName;",
+    {
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.CommonJS,
+      },
+    }
+  ).outputText;
+
+  const context = {
+    module: { exports: null },
+    Intl,
+    Date,
+  };
+
+  vm.runInNewContext(compiled, context);
+
+  const format = context.module.exports;
+
+  assert.equal(format("2026-10-01"), "Outubro de 2026");
+  assert.equal(format("2026-11-01"), "Novembro de 2026");
+  assert.equal(format("2025-12-01"), "Dezembro de 2025");
 });

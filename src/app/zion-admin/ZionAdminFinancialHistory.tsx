@@ -156,11 +156,13 @@ function monthName(month: string): string {
   const year = Number(month.slice(0, 4));
   const number = Number(month.slice(5, 7));
 
-  return new Intl.DateTimeFormat("pt-BR", {
+  const formattedMonth = new Intl.DateTimeFormat("pt-BR", {
     month: "long",
     year: "numeric",
     timeZone: "UTC",
   }).format(new Date(Date.UTC(year, number - 1, 1)));
+  return formattedMonth.charAt(0).toLocaleUpperCase("pt-BR") +
+    formattedMonth.slice(1);
 }
 
 const pendingLabels: Record<string, string> = {
@@ -170,6 +172,7 @@ const pendingLabels: Record<string, string> = {
   openai_official: "Apuração oficial OpenAI",
   openai_ptax: "Conversão PTAX",
   meta_financial_authority: "Comprovação financeira da Meta",
+  meta_invoice: "Comprovação financeira da Meta",
 };
 
 function snapshotRevenueLabel(item: HistoryMonth): string {
@@ -246,7 +249,7 @@ export default function ZionAdminFinancialHistory() {
             >
               <summary className="grid cursor-pointer gap-3 px-3 py-3 text-sm sm:grid-cols-4 sm:items-center">
                 <div>
-                  <span className="block font-semibold capitalize text-white">
+                  <span className="block font-semibold text-white">
                     {monthName(item.month)}
                   </span>
                   <span className="text-xs text-[#9fb6c2]">
