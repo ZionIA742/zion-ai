@@ -562,6 +562,7 @@ function OnboardingContent() {
   const embeddedSignupMountedRef = useRef(true);
   const embeddedSignupSubmittingRef = useRef(false);
   const embeddedSignupAttemptRef = useRef<Promise<void> | null>(null);
+  const embeddedSignupRequestedModeRef = useRef<"standard" | "business_app_coexistence" | null>(null);
   const [embeddedSignupError, setEmbeddedSignupError] = useState<string | null>(null);
   const [embeddedSignupMessage, setEmbeddedSignupMessage] = useState<string | null>(null);
 
@@ -1169,6 +1170,18 @@ function OnboardingContent() {
     const handleEmbeddedSignupMessage = (event: MessageEvent) => {
       const session = extractMetaEmbeddedSignupSession(event);
       if (session) {
+        if (
+          !embeddedSignupRequestedModeRef.current ||
+          session.connectionMode !== embeddedSignupRequestedModeRef.current
+        ) {
+          setEmbeddedSignupLoading(false);
+          setEmbeddedSignupSubmitting(false);
+          setEmbeddedSignupSession(null);
+          clearEmbeddedSignupSensitiveState();
+          embeddedSignupRequestedModeRef.current = null;
+          setEmbeddedSignupError("A Meta retornou uma modalidade diferente da solicitada.");
+          return;
+        }
         setEmbeddedSignupSession(session);
         setEmbeddedSignupError(null);
         setEmbeddedSignupMessage("Sessao Meta recebida. Finalizando a conexao oficial.");
@@ -1325,12 +1338,7 @@ function OnboardingContent() {
   ) {
     if (embeddedSignupAttemptRef.current || embeddedSignupSubmittingRef.current) return;
 
-    if (connectionMode === "business_app_coexistence") {
-      setEmbeddedSignupError(
-        "A coexistencia permanece bloqueada ate haver comprovacao independente da Meta.",
-      );
-      return;
-    }
+    embeddedSignupRequestedModeRef.current = connectionMode;
 
     setFormError(null);
     setSuccessMessage(null);
@@ -1386,6 +1394,7 @@ function OnboardingContent() {
         },
       );
     } catch {
+      embeddedSignupRequestedModeRef.current = null;
       if (!embeddedSignupMountedRef.current) return;
       setEmbeddedSignupLoading(false);
       setEmbeddedSignupSubmitting(false);
@@ -1406,6 +1415,7 @@ function OnboardingContent() {
       clearEmbeddedSignupSensitiveState();
       setEmbeddedSignupMessage(null);
       setEmbeddedSignupError("Sessao Meta incompleta. Reinicie o Embedded Signup.");
+      embeddedSignupRequestedModeRef.current = null;
     }, 10000);
 
     return () => {
@@ -1553,6 +1563,7 @@ function OnboardingContent() {
       .finally(() => {
         if (embeddedSignupAttemptRef.current !== attempt) return;
         embeddedSignupAttemptRef.current = null;
+        embeddedSignupRequestedModeRef.current = null;
         embeddedSignupSubmittingRef.current = false;
         if (embeddedSignupMountedRef.current) {
           setEmbeddedSignupLoading(false);
