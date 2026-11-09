@@ -7,6 +7,7 @@ import ZionAdminMetaCosts from "./ZionAdminMetaCosts";
 import ZionAdminCostsRecalculate from "./ZionAdminCostsRecalculate";
 import ZionAdminVariableExpenseCatalog from "./ZionAdminVariableExpenseCatalog";
 import ZionAdminManualRevenue from "./ZionAdminManualRevenue";
+import ZionAdminFinancialHistory from "./ZionAdminFinancialHistory";
 
 type CostFrequency = "monthly" | "annual";
 type FixedCost = { id: string; name: string; amount_cents: number; frequency: CostFrequency; enabled: boolean; effective_month: string };
@@ -300,6 +301,7 @@ export default function ZionAdminCostsSection() {
     <ZionAdminOpenAiOfficialCosts />
     <ZionAdminMetaCosts />
     {data && period==="month" ? <ZionAdminManualRevenue key={`${anchor.slice(0,7)}-01`} month={`${anchor.slice(0,7)}-01`} totalCostCents={data.totals.totalCents} knownSubtotalCents={data.totals.knownSubtotalCents} costsComplete={data.totals.totalCents !== null && data.dataAvailability?.metaFinancialEvidence==="available"} /> : null}
+    {data && period==="month" ? <ZionAdminFinancialHistory /> : null}
     {data?<>
       <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
         <FinancialCard label="Custos fixos" value={brl(data.totals.fixedCents)} sub="Despesas cadastradas, conforme a vigência" />
