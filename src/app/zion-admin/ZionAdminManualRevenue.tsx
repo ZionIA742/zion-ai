@@ -183,7 +183,7 @@ export default function ZionAdminManualRevenue({
           <button className="rounded-lg border border-[#465966] px-4 py-2 text-xs text-white disabled:opacity-50" type="button" disabled={saving} onClick={() => { setEditing(false); setError(null); operationKey.current = null; }}>Cancelar</button>
           <p className="w-full text-[11px] text-[#9bb4c1]">Para meses sem vendas, salve 0,00. Sem registro significa receita desconhecida.</p>
         </form> : null}
-        {data.history.length > 0 ? <details className="text-xs text-[#a4c1cb]"><summary className="cursor-pointer">Histórico de alterações ({data.history.length} últimas revisões)</summary><ul className="mt-2 space-y-1">{data.history.map((row) => <li key={row.revision}>Revisão {row.revision}: {brl(row.amountBrlCents)} — {new Date(row.recordedAt).toLocaleString("pt-BR")}</li>)}</ul></details> : null}
+        {data.history.length > 0 ? <details className="text-xs text-[#a4c1cb]"><summary className="cursor-pointer">Histórico de alterações ({data.history.length} {(data.history.length) === 1 ? "revisão" : "revisões"})</summary><ul className="mt-2 space-y-1">{data.history.map((row) => <li key={row.revision}>Revisão {row.revision}: {brl(row.amountBrlCents)} — {new Date(row.recordedAt).toLocaleString("pt-BR")}</li>)}</ul></details> : null}
       </> : null}
     </section>
   );
