@@ -492,19 +492,6 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
       );
     }
 
-    if (
-      !payloadResult.input.recovery &&
-      payloadResult.input.connectionMode === "business_app_coexistence"
-    ) {
-      return createJsonResponse(
-        {
-          ok: false,
-          error: "WHATSAPP_COEXISTENCE_MODE_UNVERIFIED",
-          message: "A modalidade de coexistencia ainda nao possui evidencia independente suficiente.",
-        },
-        409,
-      );
-    }
     const privilegedClient = createClientWithPrivileges();
     const activeBindingResult = await readActiveBinding(
       privilegedClient as Parameters<typeof readActiveBinding>[0],
@@ -715,16 +702,6 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
       }
 
       const usesStandardPhoneRegistration = validated.connectionMode === "standard";
-      if (!usesStandardPhoneRegistration || validated.connectionMode !== "standard") {
-        return createJsonResponse(
-          {
-            ok: false,
-            error: "WHATSAPP_CONNECTION_MODE_UNVERIFIED",
-            message: "A modalidade nao foi comprovada para este onboarding.",
-          },
-          409,
-        );
-      }
       let pin = usesStandardPhoneRegistration ? generateWhatsappTwoStepPin() : "";
       const pendingSecret = usesStandardPhoneRegistration
         ? await createPendingWhatsappTwoStepPinSecret({
@@ -808,8 +785,11 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
       return createJsonResponse({
         ok: true,
         outcome: integration.outcome,
-        connectionScenario: "standard_first_connection",
-        connectionMode: "standard",
+        connectionScenario:
+          validated.connectionMode === "business_app_coexistence"
+            ? "business_app_coexistence_first_connection"
+            : "standard_first_connection",
+        connectionMode: validated.connectionMode,
         canRetry: false,
         requiresUserAction: false,
         integration: {

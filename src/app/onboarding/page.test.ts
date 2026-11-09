@@ -69,7 +69,7 @@ function getMetaSignupSessionParserBlock(source: string) {
 function getStartMetaSignupBlock(source: string) {
   return getFunctionBlock(
     source,
-    "  async function startMetaEmbeddedSignup(intent: \"connect\" | \"verify-existing\" = \"connect\") {",
+    "  async function startMetaEmbeddedSignup(\n    intent: \"connect\" | \"verify-existing\" = \"connect\",\n    connectionMode: \"standard\" | \"business_app_coexistence\",\n  ) {",
     "  useEffect(() => {",
   );
 }
@@ -426,7 +426,7 @@ const tests: TestCase[] = [
     name: "Embedded Signup button depends only on request state",
     run: () => {
       const source = readPageSource();
-      const buttonStart = source.indexOf('onClick={() => startMetaEmbeddedSignup("connect")}');
+      const buttonStart = source.indexOf('onClick={() => startMetaEmbeddedSignup("connect", "standard")}');
       const buttonEnd = source.indexOf("className=", buttonStart);
       const buttonBlock = source.slice(buttonStart, buttonEnd);
 
@@ -434,6 +434,15 @@ const tests: TestCase[] = [
       assert.equal(buttonBlock.includes("embeddedSignupLoading"), true);
       assert.equal(buttonBlock.includes("embeddedSignupSubmitting"), true);
       assert.equal(buttonBlock.includes("embeddedSignupPin"), false);
+    },
+  },
+  {
+    name: "Embedded Signup rejects a Meta mode different from the requested mode",
+    run: () => {
+      const source = readPageSource();
+      assert.equal(source.includes("embeddedSignupRequestedModeRef"), true);
+      assert.equal(source.includes("session.connectionMode !== embeddedSignupRequestedModeRef.current"), true);
+      assert.equal(source.includes("A Meta retornou uma modalidade diferente da solicitada."), true);
     },
   },
   {
@@ -597,7 +606,7 @@ const tests: TestCase[] = [
 
       assert.equal(source.includes('organizationId === META_RECOVERY_ORGANIZATION_ID'), true);
       assert.equal(source.includes('activeStore.id === META_RECOVERY_STORE_ID'), true);
-      assert.equal(source.includes('onClick={() => startMetaEmbeddedSignup("verify-existing")}'), true);
+      assert.equal(source.includes('onClick={() => startMetaEmbeddedSignup("verify-existing", "standard")}'), true);
       assert.equal(startBlock.includes('window.FB.login('), true);
       assert.equal(startBlock.includes('setEmbeddedSignupIntent(intent);'), true);
       assert.equal(submitBlock.includes('...(isRecoveryVerification ? { recovery: true } : {})'), true);

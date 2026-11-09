@@ -1429,7 +1429,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "coexistence remains blocked without independent Meta mode evidence",
+    name: "validated coexistence skips PIN and conventional phone registration",
     run: async () => {
       let validationCalls = 0;
       let registrationBoundaryCalls = 0;
@@ -1455,12 +1455,14 @@ const tests: TestCase[] = [
       );
       const body = await parseBody(response);
 
-      assert.equal(response.status, 409);
-      assert.equal(body.error, "WHATSAPP_COEXISTENCE_MODE_UNVERIFIED");
-      assert.equal(validationCalls, 0);
-      assert.equal(registrationBoundaryCalls, 0);
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.connectionMode, "business_app_coexistence");
+      assert.equal(body.connectionScenario, "business_app_coexistence_first_connection");
+      assert.equal(validationCalls, 1);
+      assert.equal(registrationBoundaryCalls, 1);
       assert.equal(secretRpcCalls.length, 0);
-      assert.equal(rpcCalls.length, 0);
+      assert.equal(rpcCalls.length, 1);
     },
   },
   {

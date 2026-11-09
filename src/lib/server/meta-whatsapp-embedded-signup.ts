@@ -498,6 +498,55 @@ async function listWabaPhoneNumbers(params: {
   );
 }
 
+async function confirmMetaWhatsappBusinessAppCoexistence(
+  validated: MetaWhatsappEmbeddedSignupValidationResult,
+  deps: MetaWhatsappEmbeddedSignupDeps,
+) {
+  const url = new URL(
+    `${graphBaseUrl(validated.graphApiVersion)}/${encodeURIComponent(validated.phoneNumberId)}`,
+  );
+  url.searchParams.set("fields", "id,is_on_biz_app,platform_type");
+
+  const response = await fetchJsonWithTimeout(
+    url.toString(),
+    {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${validated.accessToken}`,
+      },
+    },
+    deps,
+    "read_business_app_coexistence_state",
+  );
+
+  requireMetaOk(
+    response,
+    "META_COEXISTENCE_STATE_READ_FAILED",
+    "Nao foi possivel confirmar o estado de coexistencia na Meta.",
+    "read_business_app_coexistence_state",
+  );
+
+  const phoneId =
+    typeof response.body?.id === "string" ? normalizeMetaId(response.body.id) : "";
+  const isOnBizApp = response.body?.is_on_biz_app === true;
+  const platformType =
+    typeof response.body?.platform_type === "string"
+      ? cleanText(response.body.platform_type).toUpperCase()
+      : "";
+
+  if (phoneId !== validated.phoneNumberId || !isOnBizApp || platformType !== "CLOUD_API") {
+    throw new MetaWhatsappEmbeddedSignupError(
+      "META_COEXISTENCE_STATE_UNCONFIRMED",
+      "A Meta nao confirmou a coexistencia oficial deste telefone.",
+      422,
+      {
+        operation: "read_business_app_coexistence_state",
+      },
+    );
+  }
+}
+
 export async function confirmMetaWhatsappPhoneRegistration(
   validated: MetaWhatsappEmbeddedSignupValidationResult,
   options?: {
@@ -838,7 +887,7 @@ export async function exchangeAndValidateMetaWhatsappBinding(
     );
   }
 
-  return {
+  const validated = {
     accessToken,
     whatsappBusinessAccountId: confirmedWabaId,
     phoneNumberId: listedPhoneId,
@@ -849,6 +898,12 @@ export async function exchangeAndValidateMetaWhatsappBinding(
     validatedAt: deps.now().toISOString(),
     ...(oauthDiagnostic ? { oauthDiagnostic } : {}),
   };
+
+  if (connectionMode === "business_app_coexistence") {
+    await confirmMetaWhatsappBusinessAppCoexistence(validated, deps);
+  }
+
+  return validated;
 }
 
 export async function exchangeAndValidateMetaWhatsappEmbeddedSignup(

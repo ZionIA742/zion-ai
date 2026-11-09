@@ -16,6 +16,28 @@ function depsFor(fetch: typeof globalThis.fetch) {
   };
 }
 
+test("binding validation rejects an absent connection mode without external calls", async () => {
+  let fetchCalls = 0;
+  await assert.rejects(
+    exchangeAndValidateMetaWhatsappBinding(
+      {
+        code: "code",
+        whatsappBusinessAccountId: "waba",
+        phoneNumberId: "phone",
+      },
+      {
+        config: { graphApiVersion: "v99.0", appId: "app", appSecret: "secret" },
+        deps: depsFor(async () => {
+          fetchCalls += 1;
+          return Response.json({});
+        }),
+      },
+    ),
+    /Payload do Embedded Signup incompleto\./,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
 test("fresh-token helper exchanges and validates without Embedded Signup side effects", async () => {
   const urls: string[] = [];
   const result = await exchangeAndValidateMetaWhatsappBinding(
@@ -23,6 +45,7 @@ test("fresh-token helper exchanges and validates without Embedded Signup side ef
       code: "fresh-code-sentinel",
       whatsappBusinessAccountId: "waba-candidate",
       phoneNumberId: "phone-candidate",
+      connectionMode: "standard",
     },
     {
       config: {
@@ -64,6 +87,7 @@ test("fresh-token helper rejects a phone outside the candidate WABA", async () =
         code: "fresh-code-sentinel",
         whatsappBusinessAccountId: "waba-candidate",
         phoneNumberId: "phone-attacker",
+        connectionMode: "standard",
       },
       {
         config: {
@@ -149,6 +173,7 @@ async function exchangeRecoveryToken(fetch: typeof globalThis.fetch) {
       code: "recovery-code",
       whatsappBusinessAccountId: "waba-recovery",
       phoneNumberId: "phone-recovery",
+      connectionMode: "standard",
       recovery: true,
     },
     {
@@ -278,6 +303,13 @@ test("coexistence discovers the sole WABA phone and skips standard registration"
         if (url.endsWith("/waba-coexistence?fields=id")) {
           return Response.json({ id: "waba-coexistence" });
         }
+        if (url.endsWith("/phone-coexistence?fields=id%2Cis_on_biz_app%2Cplatform_type")) {
+          return Response.json({
+            id: "phone-coexistence",
+            is_on_biz_app: true,
+            platform_type: "CLOUD_API",
+          });
+        }
         if (url.includes("/waba-coexistence/phone_numbers")) {
           return Response.json({
             data: [{ id: "phone-coexistence", display_phone_number: "+5511888888888" }],
@@ -291,6 +323,10 @@ test("coexistence discovers the sole WABA phone and skips standard registration"
 
   assert.equal(validated.connectionMode, "business_app_coexistence");
   assert.equal(validated.phoneNumberId, "phone-coexistence");
+  assert.equal(
+    urls.some((url) => url.endsWith("/phone-coexistence?fields=id%2Cis_on_biz_app%2Cplatform_type")),
+    true,
+  );
 
   await registerMetaWhatsappEmbeddedSignup(validated, "", {
     deps: depsFor(async (input: RequestInfo | URL) => {
@@ -303,6 +339,85 @@ test("coexistence discovers the sole WABA phone and skips standard registration"
   });
 
   assert.equal(urls.some((url) => url.includes("/register")), false);
+});
+
+async function exchangeCoexistenceWithPhoneState(
+  phoneState: Record<string, unknown> | null,
+  status = 200,
+) {
+  return exchangeAndValidateMetaWhatsappBinding(
+    {
+      code: "coexistence-code",
+      whatsappBusinessAccountId: "waba-coexistence",
+      phoneNumberId: "phone-coexistence",
+      connectionMode: "business_app_coexistence",
+    },
+    {
+      config: {
+        graphApiVersion: "v99.0",
+        appId: "app-test",
+        appSecret: "secret-test",
+      },
+      deps: depsFor(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/oauth/access_token")) return Response.json({ access_token: "coexistence-token" });
+        if (url.endsWith("/waba-coexistence?fields=id")) return Response.json({ id: "waba-coexistence" });
+        if (url.includes("/waba-coexistence/phone_numbers")) {
+          return Response.json({ data: [{ id: "phone-coexistence", display_phone_number: "+5511888888888" }] });
+        }
+        if (url.includes("/phone-coexistence?fields=id%2Cis_on_biz_app%2Cplatform_type")) {
+          return phoneState === null
+            ? new Response("unavailable", { status })
+            : Response.json(phoneState, { status });
+        }
+        return new Response(JSON.stringify({}), { status: 500 });
+      }),
+    },
+  );
+}
+
+test("coexistence requires Meta is_on_biz_app true and CLOUD_API", async () => {
+  await assert.rejects(
+    exchangeCoexistenceWithPhoneState({
+      id: "phone-coexistence",
+      is_on_biz_app: false,
+      platform_type: "CLOUD_API",
+    }),
+    (error: unknown) =>
+      error instanceof MetaWhatsappEmbeddedSignupError &&
+      error.code === "META_COEXISTENCE_STATE_UNCONFIRMED",
+  );
+});
+
+test("coexistence rejects absent Meta mode fields", async () => {
+  await assert.rejects(
+    exchangeCoexistenceWithPhoneState({ id: "phone-coexistence" }),
+    (error: unknown) =>
+      error instanceof MetaWhatsappEmbeddedSignupError &&
+      error.code === "META_COEXISTENCE_STATE_UNCONFIRMED",
+  );
+});
+
+test("coexistence rejects a divergent phone returned by Meta", async () => {
+  await assert.rejects(
+    exchangeCoexistenceWithPhoneState({
+      id: "phone-other",
+      is_on_biz_app: true,
+      platform_type: "CLOUD_API",
+    }),
+    (error: unknown) =>
+      error instanceof MetaWhatsappEmbeddedSignupError &&
+      error.code === "META_COEXISTENCE_STATE_UNCONFIRMED",
+  );
+});
+
+test("coexistence rejects a failed Meta state query", async () => {
+  await assert.rejects(
+    exchangeCoexistenceWithPhoneState(null, 503),
+    (error: unknown) =>
+      error instanceof MetaWhatsappEmbeddedSignupError &&
+      error.code === "META_UNAVAILABLE",
+  );
 });
 
 test("Meta error evidence is preserved safely without retaining raw payload", async () => {
