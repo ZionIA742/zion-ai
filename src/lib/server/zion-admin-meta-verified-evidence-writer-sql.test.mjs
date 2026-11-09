@@ -49,3 +49,32 @@ test("writer permanece sem permissao de execucao", () => {
   assert.doesNotMatch(sql, /^\s*GRANT\s+EXECUTE\b/im);
   assert.doesNotMatch(sql, /INSERT INTO public\.zion_admin_monthly_final_closures/i);
 });
+
+test("impede duas evidencias Meta para o mesmo mes e revisao", () => {
+  assert.match(
+    sql,
+    /CREATE UNIQUE INDEX zamfe_meta_period_unique/,
+  );
+  assert.match(
+    sql,
+    /WHERE source = 'meta_invoice'/,
+  );
+  assert.match(
+    sql,
+    /ZION_ADMIN_META_EVIDENCE_ALREADY_VERIFIED/,
+  );
+  assert.match(
+    sql,
+    /WHERE month = p_month\s+AND preclosure_revision = p_preclosure_revision\s+AND source = 'meta_invoice'/,
+  );
+});
+
+test("idempotencia continua antes da rejeicao de duplicidade", () => {
+  const replay = sql.indexOf("'outcome', 'replayed'");
+  const duplicate = sql.indexOf(
+    "'ZION_ADMIN_META_EVIDENCE_ALREADY_VERIFIED'"
+  );
+
+  assert.ok(replay >= 0);
+  assert.ok(duplicate > replay);
+});

@@ -71,6 +71,12 @@ CREATE UNIQUE INDEX zamfe_meta_operation_unique
 ON public.zion_admin_monthly_final_evidence(meta_operation_key)
 WHERE source = 'meta_invoice';
 
+CREATE UNIQUE INDEX zamfe_meta_period_unique
+ON public.zion_admin_monthly_final_evidence(
+  month, preclosure_revision
+)
+WHERE source = 'meta_invoice';
+
 CREATE INDEX zamfe_meta_period_lookup
 ON public.zion_admin_monthly_final_evidence(
   month, preclosure_revision
@@ -211,6 +217,17 @@ BEGIN
       'outcome', 'replayed',
       'evidence_id', v_previous.id
     );
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.zion_admin_monthly_final_evidence
+    WHERE month = p_month
+      AND preclosure_revision = p_preclosure_revision
+      AND source = 'meta_invoice'
+  ) THEN
+    RAISE EXCEPTION
+      'ZION_ADMIN_META_EVIDENCE_ALREADY_VERIFIED';
   END IF;
 
   IF EXISTS (
