@@ -1407,6 +1407,59 @@ const tests: TestCase[] = [
       assert.equal(migration.includes("'human_takeover_active'"), true);
       assert.equal(migration.includes("v_message.sender = ''ai''"), true);
       assert.equal(migration.includes("to service_role"), true);
+      assert.equal(migration.includes("regexp_replace"), true);
+      assert.equal(migration.includes("regexp_matches"), true);
+      assert.equal(
+        migration.includes("P19A_HUMAN_TAKEOVER_GATE_LOCK_PATTERN_COUNT_INVALID"),
+        true,
+      );
+      assert.equal(migration.includes("v_lock_position"), true);
+    },
+  },
+  {
+    name: "takeover gate materializes literal newline escapes before dynamic execution",
+    run: () => {
+      const migration = readFileSync(takeoverGateMigrationPath, "utf8");
+      const newlineNormalization = String.raw`|| pg_catalog.replace(v_lock_insertion, E'\\n', E'\n')`;
+
+      assert.equal(migration.includes(newlineNormalization), true);
+      assert.equal(migration.includes("|| v_lock_insertion"), false);
+    },
+  },
+  {
+    name: "generated takeover function declarations contain real newlines",
+    run: () => {
+      const migration = readFileSync(takeoverGateMigrationPath, "utf8");
+      const declarationBlockStart = migration.indexOf(
+        "v_declaration_replacement constant text :=",
+      );
+      const declarationBlockEnd = migration.indexOf("\nbegin", declarationBlockStart);
+      const declarationBlock = migration.slice(declarationBlockStart, declarationBlockEnd);
+      const generatedDeclarationReplacement = [
+        "  v_real_whatsapp boolean := false;",
+        String.raw`  v_conversation_is_human_active boolean;\n`,
+        "  v_conversation_status text;",
+      ].join("").replaceAll(String.raw`\n`, "\n");
+      const generatedFunctionDefinition = [
+        "create function public.validate_or_cancel_whatsapp_external_send_by_system()",
+        "returns void",
+        "as $$",
+        "declare",
+        generatedDeclarationReplacement,
+        "begin",
+        "  null;",
+        "end;",
+        "$$ language plpgsql;",
+      ].join("\n");
+
+      assert.equal(declarationBlock.includes("pg_catalog.replace("), true);
+      assert.equal(declarationBlock.includes("E'\\\\n'"), true);
+      assert.equal(declarationBlock.includes("E'\\n'"), true);
+      assert.equal(generatedFunctionDefinition.includes(String.raw`\n`), false);
+      assert.match(
+        generatedFunctionDefinition,
+        /v_conversation_is_human_active boolean;\n  v_conversation_status text;/,
+      );
     },
   },
 ];
