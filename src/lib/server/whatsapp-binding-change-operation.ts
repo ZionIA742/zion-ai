@@ -1,5 +1,6 @@
 import {
   exchangeAndValidateMetaWhatsappBinding,
+  type MetaWhatsappEmbeddedSignupConnectionMode,
   type MetaWhatsappEmbeddedSignupValidationResult,
 } from "./meta-whatsapp-embedded-signup";
 
@@ -72,6 +73,7 @@ export type WhatsappBindingFreshTokenValidator = (input: {
   code: string;
   whatsappBusinessAccountId: string;
   phoneNumberId: string;
+  connectionMode?: MetaWhatsappEmbeddedSignupConnectionMode;
 }) => Promise<MetaWhatsappEmbeddedSignupValidationResult>;
 
 export class WhatsappBindingChangeOperationError extends Error {
@@ -368,6 +370,7 @@ export async function cutoverWhatsappBindingChangeRequest(args: {
   requestId: string;
   authorizationCode?: string | null;
   validateFreshToken?: WhatsappBindingFreshTokenValidator;
+  connectionMode?: MetaWhatsappEmbeddedSignupConnectionMode;
   now?: Date;
 }) {
   const request = await readWhatsappBindingChangeRequest(args);
@@ -415,10 +418,31 @@ export async function cutoverWhatsappBindingChangeRequest(args: {
 
   const validateFreshToken =
     args.validateFreshToken ?? exchangeAndValidateMetaWhatsappBinding;
+  if (args.connectionMode === "business_app_coexistence") {
+    const pending = await args.supabase.rpc("get_pending_external_messages_v2", {
+      p_organization_id: request.organization_id,
+      p_store_id: request.store_id,
+      p_limit: 1,
+      p_processing_lease_seconds: 600,
+    });
+    if (pending.error) {
+      throw new WhatsappBindingChangeOperationError(
+        "WHATSAPP_BINDING_CHANGE_PENDING_LOOKUP_FAILED",
+        503,
+      );
+    }
+    if (Array.isArray(pending.data) && pending.data.length > 0) {
+      throw new WhatsappBindingChangeOperationError(
+        "WHATSAPP_BINDING_CHANGE_PENDING_EXTERNAL_MESSAGES",
+        409,
+      );
+    }
+  }
   const validated = await validateFreshToken({
     code: authorizationCode,
     whatsappBusinessAccountId: request.candidate_whatsapp_business_account_id!,
     phoneNumberId: request.candidate_phone_number_id!,
+    connectionMode: args.connectionMode ?? "standard",
   });
 
   if (

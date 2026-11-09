@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { useRouter } from "next/navigation";
 import ZionAdminCostsSection from "./ZionAdminCostsSection";
 import ZionAdminPinRotationControls from "./ZionAdminPinRotationControls";
+import ZionAdminWhatsappNumberChange from "./ZionAdminWhatsappNumberChange";
 import {
   ensureFacebookSdkLoaded,
   classifyMetaEmbeddedSignupMessage,
@@ -2368,6 +2369,16 @@ function StoreDetailsDrawer({
                   : storeActionLabel}
               </button>
             ) : null}
+            </div>
+
+            <div>
+              <ZionAdminWhatsappNumberChange
+                organizationId={store.organizationId}
+                storeId={store.id}
+                storeName={store.name}
+                emailMasked={accountAccess?.emailMasked || ""}
+                canAccess={canManageAccounts}
+              />
             </div>
 
             <div>
