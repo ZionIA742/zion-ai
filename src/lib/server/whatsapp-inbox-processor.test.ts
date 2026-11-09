@@ -505,7 +505,7 @@ test("responsible interactive inbound reaches the bridge before the customer int
     }
 
     if (url.includes("/rest/v1/store_assistant_responsible_whatsapp_events") && method === "POST") {
-      return jsonFetchResponse([{
+      return jsonFetchResponse({
         id: "responsible-event-1",
         status: "received",
         claim_token: null,
@@ -513,7 +513,7 @@ test("responsible interactive inbound reaches the bridge before the customer int
         assistant_message_id: null,
         attempts: 1,
         outbound_status: "failed",
-      }]);
+      });
     }
 
     if (url.includes("/rest/v1/rpc/claim_store_assistant_responsible_whatsapp_event")) {
@@ -532,16 +532,16 @@ test("responsible interactive inbound reaches the bridge before the customer int
 
     if (url.includes("/rest/v1/store_assistant_messages") && method === "POST") {
       const inserted = JSON.parse(body) as Record<string, unknown>;
-      return jsonFetchResponse([{
+      return jsonFetchResponse({
         id: "responsible-message-1",
         thread_id: inserted.thread_id,
         content: inserted.content,
         metadata: inserted.metadata,
-      }]);
+      });
     }
 
     if (url.includes("/rest/v1/store_assistant_responsible_whatsapp_events") && method === "PATCH") {
-      return jsonFetchResponse([{ id: "responsible-event-1" }]);
+      return jsonFetchResponse({ id: "responsible-event-1" });
     }
 
     if (url.includes("/rest/v1/store_assistant_notification_queue") && method === "GET") {
@@ -556,12 +556,49 @@ test("responsible interactive inbound reaches the bridge before the customer int
           document_version_id: "version-1",
           received_evidence_source_message_id: "evidence-1",
           customer_name: "Cliente",
+          related_conversation_id: "conversation-1",
         },
       }]);
     }
 
     if (url.includes("/rest/v1/store_responsible_external_notifications") && method === "GET") {
       return jsonFetchResponse([{ internal_notification_id: "notification-1" }]);
+    }
+
+    if (url.includes("/rest/v1/sales_contracts") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "contract-1",
+        status: "completed",
+        completed_at: "2026-11-04T19:50:00.000Z",
+        current_version_id: "version-1",
+        conversation_id: "conversation-1",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/sales_contract_versions") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "version-1",
+        contract_id: "contract-1",
+        status: "completed",
+        organization_id: "org-1",
+        store_id: "store-1",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/store_business_events") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "decision-event-1",
+        conversation_id: "conversation-1",
+        event_key: "contrato_conferencia_documental",
+        event_payload: {
+          schema: "received_contract_document_decision_v1",
+          decision: "confirmed",
+          notification_id: "notification-1",
+          contract_id: "contract-1",
+          contract_version_id: "version-1",
+          evidence_source_message_id: "evidence-1",
+        },
+      }]);
     }
 
     if (url.includes("/rest/v1/rpc/confirm_received_contract_document_by_system")) {
@@ -572,6 +609,14 @@ test("responsible interactive inbound reaches the bridge before the customer int
         contract_id: "contract-1",
         contract_version_id: "version-1",
         evidence_source_message_id: "evidence-1",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/rpc/enqueue_received_contract_document_confirmation_by_system")) {
+      return jsonFetchResponse([{
+        message_id: "confirmation-1",
+        outbound_idempotency_key: "confirmation-key",
+        outcome: "queued",
       }]);
     }
 

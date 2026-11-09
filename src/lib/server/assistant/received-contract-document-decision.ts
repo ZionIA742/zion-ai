@@ -116,7 +116,6 @@ export async function decideReceivedContractDocument(args: {
     {
       p_organization_id: context.organizationId,
       p_store_id: context.storeId,
-      p_conversation_id: context.conversationId,
       p_notification_id: context.notificationId,
       p_contract_id: context.contractId,
       p_contract_version_id: context.contractVersionId,
@@ -233,6 +232,71 @@ async function resolveWhatsappNotificationId(args: {
   return ids.length === 1 ? ids[0] : null;
 }
 
+async function assertConfirmedDecisionPersisted(args: {
+  supabase: Pick<SupabaseClient, "from">;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  notificationId: string;
+  contractId: string;
+  contractVersionId: string;
+  evidenceSourceMessageId: string;
+}) {
+  const contractResult = await args.supabase
+    .from("sales_contracts")
+    .select("id, status, completed_at, current_version_id, conversation_id")
+    .eq("id", args.contractId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .maybeSingle();
+  if (contractResult.error) {
+    throw new Error(`RECEIVED_CONTRACT_DOCUMENT_PERSISTENCE_LOOKUP_FAILED:${contractResult.error.message}`);
+  }
+
+  const versionResult = await args.supabase
+    .from("sales_contract_versions")
+    .select("id, contract_id, status, organization_id, store_id")
+    .eq("id", args.contractVersionId)
+    .eq("contract_id", args.contractId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+  if (versionResult.error) {
+    throw new Error(`RECEIVED_CONTRACT_DOCUMENT_PERSISTENCE_LOOKUP_FAILED:${versionResult.error.message}`);
+  }
+
+  const eventResult = await args.supabase
+    .from("store_business_events")
+    .select("id, conversation_id, event_payload")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .eq("event_key", "contrato_conferencia_documental")
+    .contains("event_payload", {
+      schema: "received_contract_document_decision_v1",
+      decision: "confirmed",
+      notification_id: args.notificationId,
+      contract_id: args.contractId,
+      contract_version_id: args.contractVersionId,
+      evidence_source_message_id: args.evidenceSourceMessageId,
+    })
+    .limit(1);
+  if (eventResult.error) {
+    throw new Error(`RECEIVED_CONTRACT_DOCUMENT_PERSISTENCE_LOOKUP_FAILED:${eventResult.error.message}`);
+  }
+
+  if (
+    contractResult.data?.status !== "completed" ||
+    !contractResult.data?.completed_at ||
+    contractResult.data?.current_version_id !== args.contractVersionId ||
+    versionResult.data?.status !== "completed" ||
+    (eventResult.data || []).length === 0
+  ) {
+    throw new Error("RECEIVED_CONTRACT_DOCUMENT_DECISION_NOT_PERSISTED");
+  }
+}
+
 export async function tryHandleReceivedContractDocumentDecision(args: {
   supabase: any;
   organizationId: string;
@@ -302,6 +366,16 @@ export async function tryHandleReceivedContractDocumentDecision(args: {
     },
   });
   if (decision === "confirmed") {
+    await assertConfirmedDecisionPersisted({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: relatedConversationId,
+      notificationId: clean(notification.id),
+      contractId,
+      contractVersionId,
+      evidenceSourceMessageId,
+    });
     try {
       await enqueueReceivedContractDocumentConfirmation({
         supabase: args.supabase,
@@ -325,8 +399,8 @@ export async function tryHandleReceivedContractDocumentDecision(args: {
   return {
     kind: "received_contract_document_decision",
     responseText: decision === "confirmed"
-      ? `Contrato de ${customerName} marcado como concluido.`
-      : `O contrato de ${customerName} continua pendente de conferencia.`,
+      ? `Contrato de ${customerName} marcado como concluido`
+      : `O contrato de ${customerName} continua pendente de conferencia`,
     result,
   };
 }

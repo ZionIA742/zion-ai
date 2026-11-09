@@ -53,6 +53,18 @@ test("envia identidade exata para a autoridade e aceita replay valido", async ()
   });
   assert.equal(result.outcome, "replayed");
   assert.equal(calls[0]?.name, RECEIVED_CONTRACT_DOCUMENT_DECISION_RPC);
+  assert.deepEqual(Object.keys(calls[0]?.args || {}).sort(), [
+    "p_channel",
+    "p_contract_id",
+    "p_contract_version_id",
+    "p_decision",
+    "p_decision_message_id",
+    "p_evidence_source_message_id",
+    "p_notification_id",
+    "p_organization_id",
+    "p_store_id",
+  ]);
+  assert.equal("p_conversation_id" in (calls[0]?.args || {}), false);
   assert.equal(calls[0]?.args.p_contract_version_id, context.contractVersionId);
   assert.equal(calls[0]?.args.p_evidence_source_message_id, context.evidenceSourceMessageId);
   assert.equal(calls[0]?.args.p_channel, "assistant_chat");
@@ -126,8 +138,12 @@ function createResolverSupabase(args: {
   externalNotifications?: Array<Record<string, unknown>>;
   rpcResult?: { data: unknown; error: unknown };
   confirmationRpcResult?: { data: unknown; error: unknown };
+  persistedContract?: Record<string, unknown> | null;
+  persistedVersion?: Record<string, unknown> | null;
+  persistedEvents?: Array<Record<string, unknown>>;
 }) {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const businessEventQueries: Array<{ contains: unknown; limit: number | undefined }> = [];
   const rows = args.message ?? null;
   const notifications = args.notifications ?? [];
   const externalNotifications = args.externalNotifications ?? [];
@@ -150,27 +166,87 @@ function createResolverSupabase(args: {
     },
     error: null,
   };
+  const persistedContract = args.persistedContract ?? {
+    id: "contract-1",
+    status: "completed",
+    completed_at: "2026-11-06T16:40:00.000Z",
+    current_version_id: "version-1",
+    conversation_id: "conversation-1",
+  };
+  const persistedVersion = args.persistedVersion ?? {
+    id: "version-1",
+    contract_id: "contract-1",
+    status: "completed",
+    organization_id: "org-1",
+    store_id: "store-1",
+  };
+  const persistedEvents = args.persistedEvents ?? [{
+    id: "decision-event-1",
+    conversation_id: "conversation-1",
+    event_payload: {
+      schema: "received_contract_document_decision_v1",
+      decision: "confirmed",
+      notification_id: "notification-1",
+      contract_id: "contract-1",
+      contract_version_id: "version-1",
+      evidence_source_message_id: "message-1",
+    },
+  }];
 
   const query = (table: string) => {
+    let eventPayloadFilter: unknown = undefined;
     const builder = {
       select: () => builder,
       eq: () => builder,
-      contains: () => builder,
+      contains: (column: string, value: unknown) => {
+        if (table === "store_business_events" && column === "event_payload") {
+          eventPayloadFilter = value;
+        }
+        return builder;
+      },
       neq: () => builder,
       order: () => builder,
-      limit: async () => ({
-        data: table === "store_assistant_notification_queue"
-          ? notifications
-          : externalNotifications,
+      limit: async (count?: number) => {
+        if (table === "store_business_events") {
+          businessEventQueries.push({ contains: eventPayloadFilter, limit: count });
+        }
+        const eventRows = eventPayloadFilter && typeof eventPayloadFilter === "object"
+          ? persistedEvents.filter((event) => {
+              const payload = event.event_payload;
+              return payload && typeof payload === "object" &&
+                Object.entries(eventPayloadFilter).every(([key, value]) =>
+                  (payload as Record<string, unknown>)[key] === value,
+                );
+            })
+          : persistedEvents;
+        return {
+          data: table === "store_assistant_notification_queue"
+            ? notifications
+            : table === "store_responsible_external_notifications"
+              ? externalNotifications
+              : table === "store_business_events"
+                ? eventRows.slice(0, count ?? eventRows.length)
+                : [],
+          error: null,
+        };
+      },
+      maybeSingle: async () => ({
+        data: table === "store_assistant_messages"
+          ? rows
+          : table === "sales_contracts"
+            ? persistedContract
+            : table === "sales_contract_versions"
+              ? persistedVersion
+              : rows,
         error: null,
       }),
-      maybeSingle: async () => ({ data: rows, error: null }),
     };
     return builder;
   };
 
   return {
     calls,
+    businessEventQueries,
     supabase: {
       from: (table: string) => query(table),
       rpc: async (name: string, rpcArgs: Record<string, unknown>) => {
@@ -228,6 +304,140 @@ test("SIM confirmado enfileira uma unica mensagem depois da decisao persistida",
       "confirm_received_contract_document_by_system",
       "enqueue_received_contract_document_confirmation_by_system",
     ],
+  );
+});
+
+test("nao responde conclusao quando a RPC retorna sucesso sem estado persistido", async () => {
+  const harness = createResolverSupabase({
+    message: { id: "decision-false-success", thread_id: "thread-1" },
+    notifications: [identifiedNotificationWithConversation],
+    persistedContract: {
+      id: "contract-1",
+      status: "sent_to_customer",
+      completed_at: null,
+      current_version_id: "version-1",
+      conversation_id: "conversation-1",
+    },
+    persistedVersion: {
+      id: "version-1",
+      contract_id: "contract-1",
+      status: "sent",
+      organization_id: "org-1",
+      store_id: "store-1",
+    },
+    persistedEvents: [],
+  });
+
+  await assert.rejects(
+    tryHandleReceivedContractDocumentDecision({
+      supabase: harness.supabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      decisionMessageId: "decision-false-success",
+      content: "SIM",
+      channel: "assistant",
+    }),
+    /RECEIVED_CONTRACT_DOCUMENT_DECISION_NOT_PERSISTED/,
+  );
+  assert.deepEqual(
+    harness.calls.map((call) => call.name),
+    ["confirm_received_contract_document_by_system"],
+  );
+});
+
+test("aceita confirmacao legitima apos mais de 20 eventos na conversa", async () => {
+  const targetEvent = {
+    id: "decision-event-21",
+    conversation_id: "conversation-1",
+    event_payload: {
+      schema: "received_contract_document_decision_v1",
+      decision: "confirmed",
+      notification_id: "notification-1",
+      contract_id: "contract-1",
+      contract_version_id: "version-1",
+      evidence_source_message_id: "message-1",
+    },
+  };
+  const harness = createResolverSupabase({
+    message: { id: "decision-after-20-events", thread_id: "thread-1" },
+    notifications: [identifiedNotificationWithConversation],
+    persistedEvents: [
+      ...Array.from({ length: 20 }, (_, index) => ({
+        id: `noise-event-${index + 1}`,
+        conversation_id: "conversation-1",
+        event_payload: {
+          schema: "received_contract_document_decision_v1",
+          decision: "confirmed",
+          notification_id: `other-notification-${index + 1}`,
+          contract_id: "contract-1",
+          contract_version_id: "version-1",
+          evidence_source_message_id: "message-1",
+        },
+      })),
+      targetEvent,
+    ],
+  });
+
+  const result = await tryHandleReceivedContractDocumentDecision({
+    supabase: harness.supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    decisionMessageId: "decision-after-20-events",
+    content: "SIM",
+    channel: "assistant",
+  });
+
+  assert.equal(result?.result.decision, "confirmed");
+  assert.equal(harness.businessEventQueries[0]?.limit, 1);
+  assert.deepEqual(harness.businessEventQueries[0]?.contains, {
+    schema: "received_contract_document_decision_v1",
+    decision: "confirmed",
+    notification_id: "notification-1",
+    contract_id: "contract-1",
+    contract_version_id: "version-1",
+    evidence_source_message_id: "message-1",
+  });
+});
+
+test("nao conclui outro contrato quando a identidade persistida nao corresponde", async () => {
+  const harness = createResolverSupabase({
+    message: { id: "decision-other-contract", thread_id: "thread-1" },
+    notifications: [{
+      ...identifiedNotificationWithConversation,
+      context: {
+        ...identifiedNotificationWithConversation.context,
+        related_contract_id: "contract-2",
+        document_version_id: "version-2",
+        received_evidence_source_message_id: "message-2",
+      },
+    }],
+    rpcResult: {
+      data: {
+        outcome: "applied",
+        decision: "confirmed",
+        notification_id: "notification-1",
+        contract_id: "contract-2",
+        contract_version_id: "version-2",
+        evidence_source_message_id: "message-2",
+      },
+      error: null,
+    },
+  });
+
+  await assert.rejects(
+    tryHandleReceivedContractDocumentDecision({
+      supabase: harness.supabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      decisionMessageId: "decision-other-contract",
+      content: "SIM",
+      channel: "assistant",
+    }),
+    /RECEIVED_CONTRACT_DOCUMENT_DECISION_NOT_PERSISTED/,
+  );
+  assert.deepEqual(
+    harness.calls.map((call) => call.name),
+    ["confirm_received_contract_document_by_system"],
   );
 });
 

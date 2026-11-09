@@ -2679,7 +2679,7 @@ async function processSingleInboxRow(
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
       status: "succeeded",
-      detail: `responsible_inbound_${responsibleInbound.result.correlationStatus}`,
+      detail: `responsible_inbound_${responsibleInbound.result.correlationStatus ?? ("status" in responsibleInbound.result ? responsibleInbound.result.status : undefined) ?? "failed"}`,
     };
   }
 

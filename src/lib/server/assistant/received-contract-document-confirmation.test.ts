@@ -139,3 +139,14 @@ test("a migration nova parte do guard resultante do ACK e falha fechado por patc
   assert.match(migration, /v_message\.metadata ->> 'outbound_origin'/);
   assert.match(migration, /event_row\.conversation_id = p_conversation_id/);
 });
+
+test("texto incremental da confirmacao remove o ponto final", () => {
+  const migration = readFileSync(
+    resolve(process.cwd(), "supabase/migrations/20261106220000_p9_9_3_c5_contract_message_text_no_period.sql"),
+    "utf8",
+  );
+
+  assert.match(migration, /está tudo certo com seu contrato/);
+  assert.equal(migration.includes("$$v_name || ', está tudo certo com seu contrato'$$"), true);
+  assert.equal(migration.includes("$$'Está tudo certo com seu contrato'$$"), true);
+});

@@ -72,6 +72,19 @@ test("ACK operacional usa classificacao propria e nao uma classificacao comercia
   assert.match(guardMigration, /v_outbound_kind <> 'received_contract_document_ack'/);
 });
 
+test("texto incremental do ACK nao usa ponto final", () => {
+  const migration = readFileSync(
+    resolve(
+      process.cwd(),
+      "supabase/migrations/20261106220000_p9_9_3_c5_contract_message_text_no_period.sql",
+    ),
+    "utf8",
+  );
+
+  assert.match(migration, /Me dê alguns minutos para verificar esse arquivo/);
+  assert.match(migration, /v_new CONSTANT text[\s\S]*Me dê alguns minutos para verificar esse arquivo/);
+});
+
 test("falha fechado sem contexto de organização, loja, conversa ou ocorrência", async () => {
   await assert.rejects(
     enqueueReceivedContractDocumentAcknowledgement({
