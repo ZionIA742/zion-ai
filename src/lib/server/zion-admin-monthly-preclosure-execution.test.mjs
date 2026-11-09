@@ -91,6 +91,21 @@ function setup({
   const calls = [];
 
   const db = {
+    // MANUAL_REVENUE_MOCK_ABSENT
+    // Ausencia de registro nao significa receita zero confirmada.
+    from(table) {
+      if (table !== "zion_admin_monthly_manual_revenue") {
+        throw new Error(`Unexpected table: ${table}`);
+      }
+
+      return {
+        select() { return this; },
+        eq() { return this; },
+        async maybeSingle() {
+          return { data: null, error: null };
+        },
+      };
+    },
     async rpc(name, args) {
       calls.push({ type: "rpc", name, args });
 
@@ -195,7 +210,7 @@ test("liga leitor, preparador e writer no horario correto", async () => {
 
   assert.deepEqual(
     Array.from(calls[1].args.p_pending_sources),
-    ["openai_official", "meta_financial_authority"],
+    ["openai_official", "meta_financial_authority", "manual_revenue"],
   );
 
   assert.equal(
@@ -219,7 +234,7 @@ test("zero oficial conhecido permanece zero e Meta pendente", async () => {
   assert.equal(snapshot.meta.billedBrlCents, null);
   assert.deepEqual(
     Array.from(calls[1].args.p_pending_sources),
-    ["meta_financial_authority"],
+    ["meta_financial_authority", "manual_revenue"],
   );
 });
 
@@ -259,7 +274,7 @@ test("fontes desconhecidas permanecem nulas e pendentes", async () => {
       "fixed_costs",
       "manual_expenses",
       "openai_official",
-      "meta_financial_authority",
+      "meta_financial_authority", "manual_revenue",
     ],
   );
 });
