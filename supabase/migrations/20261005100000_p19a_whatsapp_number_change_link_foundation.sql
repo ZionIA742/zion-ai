@@ -160,8 +160,9 @@ begin
   end;
 
   return query
-    select id, organization_id, store_id, provider, status, expires_at
-      from public.whatsapp_number_change_links where id = v_id;
+    select link.id, link.organization_id, link.store_id, link.provider, link.status, link.expires_at
+      from public.whatsapp_number_change_links as link
+     where link.id = v_id;
 end;
 $function$;
 
@@ -196,8 +197,6 @@ begin
     raise exception using errcode = '22023', message = 'ZION_WHATSAPP_NUMBER_CHANGE_LINK_NOT_ACTIVE';
   end if;
   if v_link.expires_at <= clock_timestamp() then
-    update public.whatsapp_number_change_links set status = 'expired', updated_at = clock_timestamp()
-     where id = v_link.id;
     raise exception using errcode = '22023', message = 'ZION_WHATSAPP_NUMBER_CHANGE_LINK_EXPIRED';
   end if;
   return query select v_link.id, v_link.organization_id, v_link.store_id, v_link.provider,
@@ -227,7 +226,6 @@ begin
   end if;
   if v_link.status in ('completed', 'revoked', 'expired') then raise exception using errcode = '22023', message = 'ZION_WHATSAPP_NUMBER_CHANGE_LINK_TERMINAL'; end if;
   if v_link.expires_at <= clock_timestamp() then
-    update public.whatsapp_number_change_links set status = 'expired', updated_at = clock_timestamp() where id = v_link.id;
     raise exception using errcode = '22023', message = 'ZION_WHATSAPP_NUMBER_CHANGE_LINK_EXPIRED';
   end if;
   if v_link.status = 'issued' then
