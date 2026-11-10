@@ -173,6 +173,65 @@ async function body(response: Response) {
 
 const tests = [
   {
+    name: "history preserves real values, optional fields, reversals and settlements",
+    run: async () => {
+      const { mergePaymentHistory } = await routeModulePromise;
+      const history = mergePaymentHistory(
+        [
+          {
+            id: "payment-2",
+            event_type: "reversal",
+            amount_cents: 2500,
+            payment_method: null,
+            reversed_payment_event_id: "payment-1",
+            source_type: "settings_action",
+            reason_code: "payment_reversed",
+            notes: null,
+            metadata: {},
+            created_at: "2026-11-10T12:00:00.000Z",
+          },
+          {
+            id: "payment-1",
+            event_type: "confirmation",
+            amount_cents: 2500,
+            payment_method: "pix",
+            reversed_payment_event_id: null,
+            source_type: "settings_action",
+            reason_code: "payment_event_recorded",
+            notes: "Entrada",
+            metadata: { payment_kind: "entry", source: "crm_payment_action" },
+            created_at: "2026-11-10T11:00:00.000Z",
+          },
+        ],
+        [
+          {
+            id: "settlement-1",
+            settlement_state: "satisfied",
+            reason_code: "payment_settlement_recorded",
+            notes: null,
+            metadata: {},
+            created_at: "2026-11-10T13:00:00.000Z",
+          },
+        ],
+      );
+
+      assert.deepEqual(
+        history.map((item) => item.id),
+        ["payment-1", "payment-2", "settlement-1"],
+      );
+      assert.equal(history[0].amountCents, 2500);
+      assert.equal(history[0].paymentMethod, "pix");
+      assert.equal(history[0].paymentKind, "entry");
+      assert.equal(history[0].source, "crm_payment_action");
+      assert.equal(history[1].eventType, "reversal");
+      assert.equal(history[1].amountCents, 2500);
+      assert.equal(history[1].paymentMethod, null);
+      assert.equal(history[2].eventKind, "settlement");
+      assert.equal(history[2].amountCents, null);
+    },
+  },
+
+  {
     name: "denied access does not read POST body",
     run: async () => {
       const { createPaymentPostHandler } = await routeModulePromise;
@@ -361,6 +420,24 @@ const tests = [
       const serviceCalls: any[] = [];
 
       const serviceSupabase = {
+        from(table: string) {
+          return {
+            select(columns: string) {
+              const filters: Array<{ column: string; value: unknown }> = [];
+              const query = {
+                eq(column: string, value: unknown) {
+                  filters.push({ column, value });
+                  return query;
+                },
+                order() {
+                  serviceCalls.push({ table, columns, filters: [...filters] });
+                  return Promise.resolve({ data: [], error: null });
+                },
+              };
+              return query;
+            },
+          };
+        },
         async rpc(fn: string, args: Record<string, unknown>) {
           serviceCalls.push({ fn, args });
 
@@ -399,6 +476,17 @@ const tests = [
       assert.equal(result.payment.progressState, "in_progress");
       assert.equal(result.payment.confirmedAmountCents, 15000);
       assert.equal(result.payment.obligationSatisfied, false);
+      assert.deepEqual(result.paymentHistory, []);
+      assert.equal(serviceCalls[1].table, "commercial_opportunity_payment_events");
+      assert.equal(serviceCalls[2].table, "commercial_opportunity_payment_settlement_events");
+      for (const call of serviceCalls.slice(1)) {
+        assert.deepEqual(call.filters, [
+          { column: "organization_id", value: "org-1" },
+          { column: "store_id", value: "store-1" },
+          { column: "commercial_opportunity_id", value: "opp-1" },
+          { column: "lifecycle_cycle", value: 3 },
+        ]);
+      }
       assert.equal(
         serviceCalls[0].fn,
         "p9_resolve_payment_progress_internal",

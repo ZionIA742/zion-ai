@@ -339,11 +339,28 @@ type PaymentProgressState = {
   settlementEventCount: number;
 };
 
+type PaymentHistoryItem = {
+  id: string;
+  eventKind: "payment" | "settlement";
+  eventType: "confirmation" | "reversal" | null;
+  amountCents: number | null;
+  paymentMethod: string | null;
+  paymentKind: "entry" | "partial" | "full" | "other" | null;
+  source: string | null;
+  sourceType: string | null;
+  reasonCode: string | null;
+  notes: string | null;
+  reversedPaymentEventId: string | null;
+  settlementState: "satisfied" | "reopened" | null;
+  createdAt: string;
+};
+
 type PaymentGetResponse = {
   ok: boolean;
   commercialOpportunityId?: string;
   lifecycleCycle?: number | null;
   payment?: PaymentProgressState;
+  paymentHistory?: PaymentHistoryItem[];
   error?: string;
   message?: string;
 };
@@ -1014,6 +1031,14 @@ function formatCurrencyBRL(value: number) {
   }).format(value);
 }
 
+function formatPaymentKindLabel(value: PaymentHistoryItem["paymentKind"]) {
+  if (value === "entry") return "Entrada";
+  if (value === "partial") return "Parcial";
+  if (value === "full") return "Total";
+  if (value === "other") return "Outro";
+  return "Nao informado";
+}
+
 function formatMoneyInputFromCents(cents: number | null | undefined) {
   const safeValue = typeof cents === "number" && Number.isFinite(cents) ? cents / 100 : 0;
   return safeValue.toFixed(2).replace(".", ",");
@@ -1637,6 +1662,7 @@ export default function LeadPage() {
     useState<GeneratedPdfTab>("quotes");
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [paymentState, setPaymentState] = useState<PaymentProgressState | null>(null);
+  const [paymentHistory, setPaymentHistory] = useState<PaymentHistoryItem[]>([]);
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
   const [paymentAmountReais, setPaymentAmountReais] = useState("");
@@ -2380,6 +2406,7 @@ export default function LeadPage() {
     paymentScopeRef.current = opportunityId;
     quoteEditScopeRef.current = null;
     setPaymentState(null);
+    setPaymentHistory([]);
     setPaymentLoading(false);
     setPaymentError(null);
     setPaymentSuccess(null);
@@ -2463,12 +2490,16 @@ export default function LeadPage() {
       }
 
       setPaymentState(result.payment);
+      setPaymentHistory(
+        Array.isArray(result.paymentHistory) ? result.paymentHistory : [],
+      );
     } catch (error: any) {
       if (paymentScopeRef.current !== scopedPaymentKey) {
         return;
       }
 
       setPaymentState(null);
+      setPaymentHistory([]);
       setPaymentError(
         error?.message || "Nao foi possivel carregar o estado do pagamento.",
       );
@@ -5929,6 +5960,7 @@ export default function LeadPage() {
 
     void fetchGeneratedQuotes();
     void fetchGeneratedContracts();
+    void loadSelectedOpportunityPayment();
     void fetchContractTemplateSource();
     void fetchContractDraftState({ silent: true });
   }, [activeDetailsTab, documentScopeKey]);
@@ -6198,6 +6230,36 @@ export default function LeadPage() {
           : "arquivos listados",
     },
   ];
+
+  const acceptedQuoteTotalCents =
+    acceptedQuoteSummary.status === "accepted" &&
+    acceptedQuoteSummary.quote &&
+    Number.isInteger(acceptedQuoteSummary.quote.total_cents) &&
+    Number(acceptedQuoteSummary.quote.total_cents) >= 0
+      ? Number(acceptedQuoteSummary.quote.total_cents)
+      : null;
+  const confirmedPaymentCents = paymentState
+    ? Number.isInteger(paymentState.confirmedAmountCents) &&
+      paymentState.confirmedAmountCents >= 0
+      ? paymentState.confirmedAmountCents
+      : null
+    : null;
+  const paymentBalanceCents =
+    acceptedQuoteTotalCents !== null && confirmedPaymentCents !== null
+      ? acceptedQuoteTotalCents - confirmedPaymentCents
+      : null;
+  const paymentHasValueDivergence =
+    paymentBalanceCents !== null && paymentBalanceCents < 0;
+  const paymentSituation =
+    paymentHasValueDivergence
+      ? "Divergencia: pagamentos acima do valor vigente"
+      : paymentState?.obligationSatisfied
+        ? "Quitado pela loja"
+        : paymentState?.progressState === "in_progress"
+          ? "Pagamento parcial"
+          : paymentState?.progressState === "not_started"
+            ? "Nenhum pagamento confirmado"
+            : paymentState?.progressState || "Indisponivel";
 
   return (
     <div className="min-h-screen bg-white -mx-4 -mt-4 lg:-mx-6 lg:-mt-6">
@@ -7031,6 +7093,181 @@ export default function LeadPage() {
 
                   {activeDetailsTab === "pdfs" ? (
                     <div className="space-y-5">
+                      <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <h2 className="text-base font-bold text-gray-950">
+                              Financeiro da oportunidade
+                            </h2>
+                            <p className="mt-1 text-xs leading-5 text-gray-500">
+                              Valores derivados somente do orcamento aceito vigente e do estado financeiro resolvido desta oportunidade.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={openPaymentModal}
+                            disabled={
+                              working ||
+                              refreshing ||
+                              simulatingCustomer ||
+                              paymentSubmitting ||
+                              !selectedOpportunity
+                            }
+                            className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Abrir pagamento
+                          </button>
+                        </div>
+
+                        {acceptedQuoteSummary.status === "loading" || paymentLoading ? (
+                          <div className="mt-4 rounded-xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                            Carregando dados financeiros...
+                          </div>
+                        ) : !paymentState || confirmedPaymentCents === null ? (
+                          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                            Estado dos pagamentos indisponivel. Nenhum saldo foi presumido.
+                          </div>
+                        ) : (
+                          <div className="mt-4 space-y-3">
+                            <div className="grid gap-3 md:grid-cols-4">
+                              <InfoCard
+                                label="Orcamento aceito"
+                                value={
+                                  acceptedQuoteTotalCents === null
+                                    ? "Valor aprovado indisponivel"
+                                    : acceptedQuoteSummary.quote?.title ||
+                                  acceptedQuoteSummary.quote?.quote_number ||
+                                  "Versao aceita vigente"
+                                }
+                              />
+                              <InfoCard
+                                label="Valor aprovado"
+                                value={
+                                  acceptedQuoteTotalCents === null
+                                    ? "Indisponivel"
+                                    : formatCurrencyBRL(acceptedQuoteTotalCents / 100)
+                                }
+                              />
+                              <InfoCard
+                                label="Pagamentos confirmados"
+                                value={formatCurrencyBRL(confirmedPaymentCents / 100)}
+                              />
+                              <InfoCard
+                                label="Saldo restante"
+                                value={
+                                  paymentBalanceCents === null
+                                    ? "Indisponivel: sem valor aprovado confiavel"
+                                    : paymentHasValueDivergence
+                                    ? `Divergencia de ${formatCurrencyBRL(Math.abs(paymentBalanceCents || 0) / 100)}`
+                                    : formatCurrencyBRL((paymentBalanceCents || 0) / 100)
+                                }
+                              />
+                            </div>
+
+                            <div className="grid gap-3 md:grid-cols-2">
+                              <InfoCard label="Situacao financeira" value={paymentSituation} />
+                              <InfoCard
+                                label="Historico financeiro"
+                                value={`${paymentHistory.length} registro(s) no historico financeiro`}
+                              />
+                            </div>
+
+                            {acceptedQuoteTotalCents === null ? (
+                              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                                Pagamentos confirmados disponiveis, mas nao ha orcamento aceito vigente comprovado para calcular o saldo.
+                              </div>
+                            ) : null}
+
+                            {paymentHasValueDivergence ? (
+                              <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-900">
+                                Os pagamentos confirmados superam o valor do orcamento aceito vigente. Revise a divergencia comercial; o saldo nao foi tratado como divida negativa.
+                              </div>
+                            ) : null}
+
+                            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <h3 className="text-sm font-bold text-gray-950">
+                                    Historico detalhado
+                                  </h3>
+                                  <p className="mt-1 text-xs text-gray-500">
+                                    Recebimentos, estornos e eventos de quitacao deste ciclo da oportunidade.
+                                  </p>
+                                </div>
+                                <span className="text-xs font-semibold text-gray-500">
+                                  {paymentHistory.length} registro(s)
+                                </span>
+                              </div>
+
+                              {paymentHistory.length === 0 ? (
+                                <div className="mt-3 rounded-xl bg-white p-3 text-sm text-gray-600 ring-1 ring-black/5">
+                                  Nenhum evento financeiro registrado neste ciclo.
+                                </div>
+                              ) : (
+                                <div className="mt-3 space-y-2">
+                                  {paymentHistory.map((event) => {
+                                    const isSettlement = event.eventKind === "settlement";
+                                    const isReversal = event.eventType === "reversal";
+                                    const title = isSettlement
+                                      ? event.settlementState === "satisfied"
+                                        ? "Quitacao confirmada"
+                                        : "Quitacao reaberta"
+                                      : isReversal
+                                        ? "Estorno de pagamento"
+                                        : "Pagamento confirmado";
+
+                                    return (
+                                      <div
+                                        key={`${event.eventKind}:${event.id}`}
+                                        className="rounded-xl bg-white p-3 ring-1 ring-black/5"
+                                      >
+                                        <div className="flex flex-wrap items-start justify-between gap-2">
+                                          <div>
+                                            <div className="text-sm font-semibold text-gray-900">
+                                              {title}
+                                            </div>
+                                            <div className="mt-1 text-xs text-gray-500">
+                                              {formatDateTime(event.createdAt)}
+                                            </div>
+                                          </div>
+                                          <div className="text-sm font-bold text-gray-900">
+                                            {event.amountCents === null
+                                              ? "Sem valor"
+                                              : `${isReversal ? "-" : ""}${formatCurrencyBRL(event.amountCents / 100)}`}
+                                          </div>
+                                        </div>
+
+                                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
+                                          {!isSettlement ? (
+                                            <span>Forma: {event.paymentMethod || "Nao informado"}</span>
+                                          ) : null}
+                                          {!isSettlement ? (
+                                            <span>Classificacao: {formatPaymentKindLabel(event.paymentKind)}</span>
+                                          ) : null}
+                                          {event.source ? <span>Origem: {event.source}</span> : null}
+                                          {event.reasonCode ? <span>Motivo: {event.reasonCode}</span> : null}
+                                        </div>
+
+                                        {event.reversedPaymentEventId ? (
+                                          <div className="mt-2 text-xs text-amber-700">
+                                            Ajuste vinculado ao evento {event.reversedPaymentEventId}.
+                                          </div>
+                                        ) : null}
+                                        {event.notes ? (
+                                          <div className="mt-2 text-xs leading-5 text-gray-600">
+                                            Observacao: {event.notes}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </section>
+
                       <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-gray-50 p-2 ring-1 ring-black/5">
                         <button
                           type="button"
