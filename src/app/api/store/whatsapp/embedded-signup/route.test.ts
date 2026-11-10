@@ -1,4 +1,4 @@
-﻿import { strict as assert } from "node:assert";
+import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -1336,6 +1336,115 @@ const tests: TestCase[] = [
       assert.equal(body.connectionScenario, "existing_zion_binding");
       assert.equal(validationCalls, 0);
       assert.equal(candidateRpcCalls.length, 0);
+    },
+  },
+  {
+    name: "number change link rejects standard mode before Meta validation",
+    run: async () => {
+      let validationCalls = 0;
+      let registerCalls = 0;
+
+      const { handler, rpcCalls, candidateRpcCalls, secretRpcCalls } =
+        createRouteHandler({
+          readActiveBinding: async () => ({
+            ok: true,
+            hasActiveBinding: true,
+          }),
+          validate: async () => {
+            validationCalls += 1;
+            return createSuccessfulValidation();
+          },
+          register: async () => {
+            registerCalls += 1;
+          },
+        });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "standard",
+          numberChangeLinkToken: "test-link-token",
+        }),
+      );
+
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 400);
+      assert.equal(
+        body.error,
+        "WHATSAPP_NUMBER_CHANGE_REQUIRES_COEXISTENCE",
+      );
+      assert.equal(validationCalls, 0);
+      assert.equal(registerCalls, 0);
+      assert.equal(rpcCalls.length, 0);
+      assert.equal(candidateRpcCalls.length, 0);
+      assert.equal(secretRpcCalls.length, 0);
+    },
+  },
+  {
+    name: "number change link rejects validated standard mode before materialization",
+    run: async () => {
+      const access = createGrantedAccess();
+      let validationCalls = 0;
+      let registerCalls = 0;
+
+      const { handler, rpcCalls, candidateRpcCalls, secretRpcCalls } =
+        createRouteHandler({
+          access,
+          readActiveBinding: async () => ({
+            ok: true,
+            hasActiveBinding: true,
+          }),
+          rpcData: [
+            {
+              link_id: "test-link-id",
+              organization_id: access.organizationId,
+              store_id: access.storeId,
+              provider: "whatsapp",
+              responsible_user_id: access.sessionUserId,
+            },
+          ],
+          validate: async () => {
+            validationCalls += 1;
+            return createSuccessfulValidation({
+              connectionMode: "standard",
+            });
+          },
+          register: async () => {
+            registerCalls += 1;
+          },
+        });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "business_app_coexistence",
+          numberChangeLinkToken: "test-link-token",
+        }),
+      );
+
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(
+        body.error,
+        "WHATSAPP_NUMBER_CHANGE_VALIDATED_MODE_INVALID",
+      );
+      assert.equal(validationCalls, 1);
+      assert.equal(registerCalls, 0);
+      assert.deepEqual(
+        rpcCalls.map((call) => call.name),
+        [
+          "resolve_whatsapp_number_change_link_by_system",
+          "start_whatsapp_number_change_link_by_system",
+        ],
+      );
+      assert.equal(candidateRpcCalls.length, 0);
+      assert.equal(secretRpcCalls.length, 0);
     },
   },
   {

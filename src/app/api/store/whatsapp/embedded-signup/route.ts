@@ -518,6 +518,11 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
     const preflightScenario = classifyWhatsappConnectionScenario({
       hasActiveZionBinding: activeBindingResult.hasActiveBinding,
     });
+    if (payloadResult.input.numberChangeLinkToken &&
+        (payloadResult.input.recovery ||
+         payloadResult.input.connectionMode !== "business_app_coexistence")) {
+      return createJsonResponse({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_REQUIRES_COEXISTENCE" }, 400);
+    }
     let authorizedNumberChangeLink: { linkId: string } | null = null;
     if (payloadResult.input.numberChangeLinkToken) {
       const resolved = await privilegedClient.rpc("resolve_whatsapp_number_change_link_by_system", {
@@ -601,6 +606,10 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
         },
         502,
       );
+    }
+
+    if (authorizedNumberChangeLink && validated.connectionMode !== "business_app_coexistence") {
+      return createJsonResponse({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_VALIDATED_MODE_INVALID" }, 409);
     }
 
     // This phone is reserved for the controlled recovery flow. The check uses
