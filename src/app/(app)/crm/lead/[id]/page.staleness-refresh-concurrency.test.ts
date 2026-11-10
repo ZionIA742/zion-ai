@@ -347,6 +347,8 @@ const pagePath = join(process.cwd(), "src/app/(app)/crm/lead/[id]/page.tsx");
 const source = readFileSync(pagePath, "utf8");
 
 assert.equal(source.includes("const paymentScopeRef = useRef<string | null>(null);"), true);
+assert.equal(source.includes("const [paymentHistory, setPaymentHistory]"), true);
+assert.equal(source.includes("setPaymentHistory([]);"), true);
 assert.equal(source.includes("const quoteEditScopeRef = useRef<string | null>(null);"), true);
 assert.equal(source.includes("async function refreshCurrentScreenSnapshot()"), true);
 assert.equal(source.includes("void refreshCurrentScreenSnapshot();"), true);

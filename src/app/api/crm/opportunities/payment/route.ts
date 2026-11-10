@@ -48,6 +48,63 @@ type PaymentProgressRow = {
   reason_code: string;
 };
 
+export type PaymentHistoryItem = {
+  id: string;
+  eventKind: "payment" | "settlement";
+  eventType: "confirmation" | "reversal" | null;
+  amountCents: number | null;
+  paymentMethod: string | null;
+  paymentKind: "entry" | "partial" | "full" | "other" | null;
+  source: string | null;
+  sourceType: string | null;
+  reasonCode: string | null;
+  notes: string | null;
+  reversedPaymentEventId: string | null;
+  settlementState: "satisfied" | "reopened" | null;
+  createdAt: string;
+};
+
+type PaymentEventHistoryRow = {
+  id: string;
+  event_type: "confirmation" | "reversal";
+  amount_cents: number;
+  payment_method: string | null;
+  reversed_payment_event_id: string | null;
+  source_type: string | null;
+  reason_code: string | null;
+  notes: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+};
+
+type PaymentSettlementHistoryRow = {
+  id: string;
+  settlement_state: "satisfied" | "reopened";
+  reason_code: string | null;
+  notes: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+};
+
+type PaymentHistoryQueryResult = {
+  data: unknown[] | null;
+  error: { message?: string } | null;
+};
+
+type PaymentHistoryQuery = {
+  eq: (column: string, value: unknown) => PaymentHistoryQuery;
+  order: (
+    column: string,
+    options: { ascending: boolean },
+  ) => Promise<PaymentHistoryQueryResult>;
+};
+
+type PaymentHistorySupabase = {
+  from: (table: string) => {
+    select: (columns: string) => PaymentHistoryQuery;
+  };
+};
+
 type PaymentRouteDeps = {
   resolveAccess: (params: {
     requirement: "active";
@@ -121,6 +178,123 @@ function buildFingerprint(value: Record<string, unknown>) {
   return createHash("sha256")
     .update(JSON.stringify(value))
     .digest("hex");
+}
+
+function cleanOptionalText(value: unknown) {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+}
+
+function readPaymentKind(metadata: Record<string, unknown> | null) {
+  const value = cleanOptionalText(metadata?.payment_kind);
+  return value === "entry" || value === "partial" || value === "full" || value === "other"
+    ? value
+    : null;
+}
+
+function readPaymentSource(
+  metadata: Record<string, unknown> | null,
+  sourceType: string | null,
+) {
+  return cleanOptionalText(metadata?.source) || cleanOptionalText(sourceType);
+}
+
+export function mergePaymentHistory(
+  paymentEvents: PaymentEventHistoryRow[],
+  settlementEvents: PaymentSettlementHistoryRow[],
+): PaymentHistoryItem[] {
+  const payments: PaymentHistoryItem[] = paymentEvents.map((event) => ({
+    id: event.id,
+    eventKind: "payment",
+    eventType: event.event_type,
+    amountCents: Number.isInteger(event.amount_cents) ? event.amount_cents : null,
+    paymentMethod: cleanOptionalText(event.payment_method),
+    paymentKind: readPaymentKind(event.metadata),
+    source: readPaymentSource(event.metadata, event.source_type),
+    sourceType: cleanOptionalText(event.source_type),
+    reasonCode: cleanOptionalText(event.reason_code),
+    notes: cleanOptionalText(event.notes),
+    reversedPaymentEventId: cleanOptionalText(event.reversed_payment_event_id),
+    settlementState: null,
+    createdAt: event.created_at,
+  }));
+
+  const settlements: PaymentHistoryItem[] = settlementEvents.map((event) => ({
+    id: event.id,
+    eventKind: "settlement",
+    eventType: null,
+    amountCents: null,
+    paymentMethod: null,
+    paymentKind: null,
+    source: readPaymentSource(event.metadata, null),
+    sourceType: null,
+    reasonCode: cleanOptionalText(event.reason_code),
+    notes: cleanOptionalText(event.notes),
+    reversedPaymentEventId: null,
+    settlementState: event.settlement_state,
+    createdAt: event.created_at,
+  }));
+
+  return [...payments, ...settlements].sort((left, right) => {
+    const byDate = left.createdAt.localeCompare(right.createdAt);
+    return byDate || left.id.localeCompare(right.id);
+  });
+}
+
+async function loadPaymentHistory(args: {
+  supabase: PaymentHistorySupabase;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+  lifecycleCycle: number | null;
+}) {
+  if (!Number.isInteger(args.lifecycleCycle)) {
+    return { ok: true as const, history: [] as PaymentHistoryItem[] };
+  }
+
+  const scope = (query: PaymentHistoryQuery) =>
+    query
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("commercial_opportunity_id", args.commercialOpportunityId)
+      .eq("lifecycle_cycle", args.lifecycleCycle)
+      .order("created_at", { ascending: true });
+
+  const [paymentResult, settlementResult] = await Promise.all([
+    scope(
+      args.supabase
+        .from("commercial_opportunity_payment_events")
+        .select(
+          "id, event_type, amount_cents, payment_method, reversed_payment_event_id, source_type, reason_code, notes, metadata, created_at",
+        ),
+    ),
+    scope(
+      args.supabase
+        .from("commercial_opportunity_payment_settlement_events")
+        .select(
+          "id, settlement_state, reason_code, notes, metadata, created_at",
+        ),
+    ),
+  ]);
+
+  if (paymentResult.error || settlementResult.error) {
+    return {
+      ok: false as const,
+      error: paymentResult.error || settlementResult.error,
+    };
+  }
+
+  return {
+    ok: true as const,
+    history: mergePaymentHistory(
+      (Array.isArray(paymentResult.data)
+        ? paymentResult.data
+        : []) as PaymentEventHistoryRow[],
+      (Array.isArray(settlementResult.data)
+        ? settlementResult.data
+        : []) as PaymentSettlementHistoryRow[],
+    ),
+  };
 }
 
 async function loadScopedOpportunity(args: {
@@ -257,8 +431,9 @@ export function createPaymentGetHandler(
         );
       }
 
+      const serviceSupabase = makeServiceSupabase();
       const resolution = await resolvePaymentProgress({
-        supabase: makeServiceSupabase(),
+        supabase: serviceSupabase,
         organizationId: access.organizationId,
         storeId: access.storeId,
         commercialOpportunityId: opportunity.id,
@@ -275,11 +450,31 @@ export function createPaymentGetHandler(
         );
       }
 
+      const history = await loadPaymentHistory({
+        supabase: serviceSupabase,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        commercialOpportunityId: opportunity.id,
+        lifecycleCycle: opportunity.lifecycle_cycle,
+      });
+
+      if (!history.ok) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "PAYMENT_HISTORY_UNAVAILABLE",
+            message: "Nao foi possivel carregar o historico do pagamento.",
+          },
+          503,
+        );
+      }
+
       return buildJsonResponse({
         ok: true,
         commercialOpportunityId: opportunity.id,
         lifecycleCycle: opportunity.lifecycle_cycle,
         payment: resolution.payment,
+        paymentHistory: history.history,
       });
     } catch {
       return buildJsonResponse(
