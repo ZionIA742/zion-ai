@@ -27,11 +27,16 @@ import {
   assessFinancialEvidenceReviewConfirmation,
 } from "./zion-admin-financial-evidence-review-confirmation";
 
+import {
+  readMetaCandidateAccounts,
+} from "./zion-admin-meta-candidate-account-reader";
+
 type Dependencies = {
   authorize: typeof resolveZionAdminApiAccess;
   createDb: typeof createServiceSupabaseClient;
   prepare: typeof buildFinancialEvidenceReviewPreparation;
   confirm: typeof assessFinancialEvidenceReviewConfirmation;
+  readCandidateAccounts: typeof readMetaCandidateAccounts;
 };
 
 const MAX_BYTES = 32768;
@@ -214,6 +219,9 @@ export function createMetaDocumentBatchReviewHandler(
       buildFinancialEvidenceReviewPreparation,
     confirm: overrides.confirm ??
       assessFinancialEvidenceReviewConfirmation,
+    readCandidateAccounts:
+      overrides.readCandidateAccounts ??
+      readMetaCandidateAccounts,
   };
 
   return async function POST(request: Request): Promise<Response> {
@@ -393,6 +401,66 @@ export function createMetaDocumentBatchReviewHandler(
         });
       }
 
+      // Cobertura candidata, lida exclusivamente do banco.
+      // Nao e prova de faturamento ou cobertura oficial.
+      const census = await deps.readCandidateAccounts(db);
+
+      const reviewed = new Set(
+        lines.map((line) =>
+          JSON.stringify([
+            line.financialAccountType,
+            line.financialAccountId,
+          ])
+        ),
+      );
+
+      let accountCoverage: {
+        status: "candidate_covered_unverified" | "unknown";
+        scope: "current_active_integrations";
+        expectedAccounts: number | null;
+        reviewedAccounts: number;
+        missingCandidateAccounts: number | null;
+        unmatchedCandidateAccounts: number | null;
+      } = {
+        status: "unknown",
+        scope: "current_active_integrations",
+        expectedAccounts: null,
+        reviewedAccounts: reviewed.size,
+        missingCandidateAccounts: null,
+        unmatchedCandidateAccounts: null,
+      };
+
+      if (census.ok) {
+        const expected = new Set(
+          census.accounts.map((account) =>
+            JSON.stringify([
+              account.financialAccountType,
+              account.financialAccountId,
+            ])
+          ),
+        );
+
+        const missing = [...expected].filter(
+          (account) => !reviewed.has(account),
+        );
+
+        const unmatched = [...reviewed].filter(
+          (account) => !expected.has(account),
+        );
+
+        accountCoverage = {
+          status: missing.length === 0 &&
+            unmatched.length === 0
+            ? "candidate_covered_unverified"
+            : "unknown",
+          scope: census.scope,
+          expectedAccounts: expected.size,
+          reviewedAccounts: reviewed.size,
+          missingCandidateAccounts: missing.length,
+          unmatchedCandidateAccounts: unmatched.length,
+        };
+      }
+
       return reply(200, {
         ok: true,
         status: "administrative_confirmation_unverified",
@@ -400,6 +468,7 @@ export function createMetaDocumentBatchReviewHandler(
         preclosureRevision: revision,
         candidateTotalBrlCents: total,
         accountAuthority: "unverified",
+        accountCoverage,
         financialAuthority: "unverified",
         registrationAuthorized: false,
         finalClosureAuthorized: false,

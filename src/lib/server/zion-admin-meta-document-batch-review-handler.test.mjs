@@ -46,6 +46,11 @@ const imports = {
       throw new Error("Default preparation forbidden");
     },
   },
+  "./zion-admin-meta-candidate-account-reader": {
+    readMetaCandidateAccounts: async () => {
+      throw new Error("Default candidate reader forbidden");
+    },
+  },
   "./zion-admin-financial-evidence-review-confirmation": {
     assessFinancialEvidenceReviewConfirmation: () => {
       throw new Error("Default confirmation forbidden");
@@ -161,6 +166,22 @@ function harness(options = {}) {
           },
         };
       },
+      readCandidateAccounts: async () =>
+        options.candidateResult ?? {
+          ok: true,
+          status: "candidate_only",
+          scope: "current_active_integrations",
+          accounts: [
+            {
+              financialAccountType: "messaging_account",
+              financialAccountId: "CONTA_1",
+            },
+            {
+              financialAccountType: "messaging_account",
+              financialAccountId: "CONTA_2",
+            },
+          ],
+        },
       confirm: (_context, confirmation) => {
         calls.confirm++;
 
@@ -275,4 +296,71 @@ test("rota publica apenas a revisao conjunta", () => {
 
   assert.match(route, /createMetaDocumentBatchReviewHandler/);
   assert.match(route, /export const POST/);
+});
+
+test("cobertura candidata completa nao libera aprovacao", async () => {
+  const { handler } = harness();
+  const result = await handler(request());
+  const body = await result.json();
+
+  assert.equal(result.status, 200);
+  assert.equal(
+    body.accountCoverage.status,
+    "candidate_covered_unverified",
+  );
+  assert.equal(body.accountCoverage.expectedAccounts, 2);
+  assert.equal(body.accountCoverage.reviewedAccounts, 2);
+  assert.equal(body.registrationAuthorized, false);
+  assert.equal(body.finalClosureAuthorized, false);
+});
+
+test("conta candidata ausente impede cobertura completa", async () => {
+  const { handler } = harness();
+  const body = await (
+    await handler(request({
+      month: "2026-10-01",
+      items: [item(1, 100)],
+    }))
+  ).json();
+
+  assert.equal(body.accountCoverage.status, "unknown");
+  assert.equal(body.accountCoverage.missingCandidateAccounts, 1);
+  assert.equal(body.registrationAuthorized, false);
+});
+
+test("conta desconhecida nao vira autoridade", async () => {
+  const { handler } = harness({
+    candidateResult: {
+      ok: true,
+      scope: "current_active_integrations",
+      status: "candidate_only",
+      accounts: [{
+        financialAccountType: "messaging_account",
+        financialAccountId: "CONTA_1",
+      }],
+    },
+  });
+
+  const body = await (await handler(request())).json();
+
+  assert.equal(body.accountCoverage.status, "unknown");
+  assert.equal(body.accountCoverage.unmatchedCandidateAccounts, 1);
+  assert.equal(body.financialAuthority, "unverified");
+});
+
+test("falha na leitura das contas nao autoriza cobertura", async () => {
+  const { handler } = harness({
+    candidateResult: {
+      ok: false,
+      reason: "CENSUS_UNAVAILABLE",
+    },
+  });
+
+  const result = await handler(request());
+  const body = await result.json();
+
+  assert.equal(result.status, 200);
+  assert.equal(body.accountCoverage.status, "unknown");
+  assert.equal(body.accountCoverage.expectedAccounts, null);
+  assert.equal(body.registrationAuthorized, false);
 });
