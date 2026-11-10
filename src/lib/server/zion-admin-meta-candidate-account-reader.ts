@@ -66,7 +66,6 @@ export async function readMetaCandidateAccounts(
         .select("id,whatsapp_business_account_id")
         .eq("provider", "whatsapp")
         .eq("is_active", true)
-        .not("whatsapp_business_account_id", "is", null)
         .order("id", { ascending: true })
         .range(offset, offset + PAGE - 1);
 
