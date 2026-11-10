@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
-import { requestNumberChangeLinkStart } from "./number-change-link-start";
+import {
+  requestNumberChangeLinkStart,
+  resolveNumberChangeResumeState,
+} from "./number-change-link-start";
 
 function mockResponse(body: unknown, ok: boolean) {
   return { ok, json: async () => body };
@@ -71,3 +74,73 @@ await assert.rejects(
 );
 
 console.log(`whatsapp-number-change start: ${tests.length + 1} tests passed`);
+
+const baseRequest = {
+  id: "request-1",
+  organization_id: "org-1",
+  store_id: "store-1",
+  provider: "whatsapp",
+  status: "candidate_received",
+  candidate_whatsapp_business_account_id: "waba-1",
+  candidate_phone_number_id: "phone-1",
+  candidate_display_phone_number: "+5511999999999",
+};
+
+assert.deepEqual(
+  resolveNumberChangeResumeState({ requestId: null, changeRequest: null }),
+  { requestId: null, phase: "initial", blocked: false },
+  "new link loads the initial phase",
+);
+assert.equal(
+  resolveNumberChangeResumeState({
+    requestId: "request-1",
+    changeRequest: baseRequest,
+  }).phase,
+  "cutover",
+  "existing candidate restores the cutover phase",
+);
+assert.equal(
+  resolveNumberChangeResumeState({
+    requestId: "request-1",
+    changeRequest: baseRequest,
+  }).requestId,
+  "request-1",
+  "existing request id is restored",
+);
+for (const status of ["expired", "revoked", "cancelled"]) {
+  const result = resolveNumberChangeResumeState({
+    linkStatus: status === "cancelled" ? "started" : status,
+    requestId: "request-1",
+    changeRequest: { ...baseRequest, status },
+  });
+  assert.equal(result.blocked, true, `${status} state blocks resume`);
+}
+assert.equal(
+  resolveNumberChangeResumeState({
+    requestId: "request-1",
+    changeRequest: { ...baseRequest, store_id: "other-store" },
+    organizationId: "org-1",
+    storeId: "store-1",
+  }).blocked,
+  true,
+  "another store cannot restore the request",
+);
+assert.equal(
+  resolveNumberChangeResumeState({
+    requestId: "request-1",
+    changeRequest: { ...baseRequest, organization_id: "other-org" },
+    organizationId: "org-1",
+    storeId: "store-1",
+  }).blocked,
+  true,
+  "another responsible scope cannot restore the request",
+);
+assert.equal(
+  resolveNumberChangeResumeState({
+    requestId: "request-1",
+    changeRequest: { ...baseRequest, candidate_phone_number_id: null },
+  }).blocked,
+  true,
+  "inconsistent candidate state blocks safely",
+);
+console.log("whatsapp-number-change resume: 8 tests passed");

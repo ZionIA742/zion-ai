@@ -3,6 +3,10 @@ import { resolveStoreApiAccess } from "@/lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 import { createServiceSupabaseClient } from "@/lib/server/zion-account-provisioning";
 import { hashWhatsappNumberChangeToken } from "@/lib/server/whatsapp-number-change-link";
+import {
+  readWhatsappBindingChangeRequest,
+  WhatsappBindingChangeOperationError,
+} from "@/lib/server/whatsapp-binding-change-operation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,6 +35,13 @@ function tokenFrom(request: Request) {
 
 function serviceClient() {
   return createServiceSupabaseClient() as unknown as NumberChangeSupabaseClient;
+}
+
+function operationErrorResponse(error: unknown) {
+  if (error instanceof WhatsappBindingChangeOperationError) {
+    return json({ ok: false, error: error.code }, error.httpStatus);
+  }
+  return json({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_STATE_UNAVAILABLE" }, 503);
 }
 
 async function resolveLink(request: Request) {
@@ -63,9 +74,25 @@ export async function GET(request: Request) {
   try {
     const resolved = await resolveLink(request);
     if ("response" in resolved) return resolved.response;
+    let changeRequest: Awaited<ReturnType<typeof readWhatsappBindingChangeRequest>> | null = null;
+    if (resolved.row.binding_change_request_id) {
+      try {
+        changeRequest = await readWhatsappBindingChangeRequest({
+          supabase: resolved.client as never,
+          organizationId: resolved.access.organizationId,
+          storeId: resolved.access.storeId,
+          requestId: resolved.row.binding_change_request_id,
+        });
+      } catch (error) {
+        return operationErrorResponse(error);
+      }
+      if (changeRequest.provider !== "whatsapp" || changeRequest.id !== resolved.row.binding_change_request_id) {
+        return json({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_STATE_INCONSISTENT" }, 409);
+      }
+    }
     const store = await resolved.client.from("stores").select("id, name").eq("id", resolved.access.storeId).maybeSingle();
     const integration = await resolved.client.from("external_integrations").select("status, is_active, phone_number_id, display_phone_number").eq("organization_id", resolved.access.organizationId).eq("store_id", resolved.access.storeId).eq("provider", "whatsapp").eq("is_active", true).maybeSingle();
-    return json({ ok: true, link: { status: resolved.row.status, expiresAt: resolved.row.expires_at, startedAt: resolved.row.started_at, requestId: resolved.row.binding_change_request_id }, store: store.data, integration: integration.data });
+    return json({ ok: true, link: { status: resolved.row.status, expiresAt: resolved.row.expires_at, startedAt: resolved.row.started_at, requestId: resolved.row.binding_change_request_id }, changeRequest, store: store.data, integration: integration.data });
   } catch (error) {
     return json({ ok: false, error: error instanceof Error ? error.message : "WHATSAPP_NUMBER_CHANGE_LINK_READ_FAILED" }, 503);
   }

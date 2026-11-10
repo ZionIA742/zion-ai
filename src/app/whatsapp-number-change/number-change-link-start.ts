@@ -5,6 +5,54 @@ type NumberChangeLinkStartBody = {
   message?: unknown;
 };
 
+export type NumberChangeResumeRequest = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  provider: string;
+  status: string;
+  candidate_whatsapp_business_account_id: string | null;
+  candidate_phone_number_id: string | null;
+  candidate_display_phone_number: string | null;
+};
+
+export function resolveNumberChangeResumeState(args: {
+  linkStatus?: string;
+  requestId: string | null;
+  changeRequest: NumberChangeResumeRequest | null;
+  organizationId?: string;
+  storeId?: string;
+}): { requestId: string | null; phase: "initial" | "cutover"; blocked: false } | { blocked: true; message: string } {
+  if (["completed", "revoked", "expired"].includes(args.linkStatus || "")) {
+    return { blocked: true, message: "Este link de troca não pode mais ser retomado." };
+  }
+  if (!args.requestId) return { requestId: null, phase: "initial", blocked: false };
+  if (args.linkStatus && args.linkStatus !== "started") {
+    return { blocked: true, message: "O link e o pedido de troca estão em estados incompatíveis." };
+  }
+
+  const request = args.changeRequest;
+  if (!request || request.id !== args.requestId || request.provider !== "whatsapp" ||
+      (args.organizationId !== undefined && request.organization_id !== args.organizationId) ||
+      (args.storeId !== undefined && request.store_id !== args.storeId)) {
+    return { blocked: true, message: "O estado salvo da troca não pôde ser confirmado com segurança." };
+  }
+  if (["completed", "failed", "cancelled", "expired"].includes(request.status)) {
+    return { blocked: true, message: "Este pedido de troca não pode mais ser retomado." };
+  }
+
+  const hasCompleteCandidate = Boolean(
+    request.candidate_whatsapp_business_account_id &&
+      request.candidate_phone_number_id &&
+      request.candidate_display_phone_number,
+  );
+  if (["candidate_received", "validating", "ready_to_cutover"].includes(request.status) && !hasCompleteCandidate) {
+    return { blocked: true, message: "O estado do candidato está inconsistente; a troca foi bloqueada por segurança." };
+  }
+
+  return { requestId: request.id, phase: hasCompleteCandidate ? "cutover" : "initial", blocked: false };
+}
+
 function cleanStartError(value: unknown) {
   const normalized = String(value || "").trim();
   return normalized || null;
