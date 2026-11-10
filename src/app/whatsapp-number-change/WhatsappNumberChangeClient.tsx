@@ -8,6 +8,7 @@ import {
   classifyMetaEmbeddedSignupMessage,
   type MetaEmbeddedSignupSession,
 } from "@/lib/client/meta-embedded-signup";
+import { requestNumberChangeLinkStart } from "./number-change-link-start";
 
 export default function WhatsappNumberChangeClient({ token }: { token: string }) {
   const [loading, setLoading] = useState(true);
@@ -71,7 +72,8 @@ export default function WhatsappNumberChangeClient({ token }: { token: string })
     setBusy(true); setError(null); codeRef.current = ""; sessionRef.current = null;
     const config = getMetaEmbeddedSignupConfig();
     try {
-      await fetch(`/api/store/whatsapp/number-change-link?token=${encodeURIComponent(token)}`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "start" }) });
+      await requestNumberChangeLinkStart({ token });
+
       await ensureFacebookSdkLoaded(config.appId);
       if (!window.FB?.login) throw new Error("FACEBOOK_SDK_LOGIN_UNAVAILABLE");
       const result = await new Promise<{ code: string; session: MetaEmbeddedSignupSession }>((resolve, reject) => {
