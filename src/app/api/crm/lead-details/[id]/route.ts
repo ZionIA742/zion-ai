@@ -122,6 +122,7 @@ type OpportunityRow = {
   origin_lead_id: string | null;
   primary_conversation_id: string | null;
   stage: string | null;
+  lifecycle_cycle: number | null;
   stage_changed_at: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -316,7 +317,7 @@ export async function GET(request: Request) {
     const { data: opportunitiesData, error: opportunitiesError } = await supabase
       .from("commercial_opportunities")
       .select(
-        "id, organization_id, store_id, origin_lead_id, primary_conversation_id, stage, stage_changed_at, created_at, updated_at"
+        "id, organization_id, store_id, origin_lead_id, primary_conversation_id, stage, lifecycle_cycle, stage_changed_at, created_at, updated_at"
       )
       .eq("organization_id", leadData.organization_id)
       .eq("store_id", leadStoreId)
@@ -343,6 +344,7 @@ export async function GET(request: Request) {
           leadId: row.origin_lead_id || "",
           conversationId: row.primary_conversation_id || null,
           stage: row.stage,
+          lifecycleCycle: row.lifecycle_cycle,
           stageChangedAt: row.stage_changed_at,
           createdAt: row.created_at,
           updatedAt: row.updated_at,

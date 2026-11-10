@@ -14,6 +14,7 @@ export type LeadOpportunityContextRow = {
   leadId: string;
   conversationId: string | null;
   stage: string | null;
+  lifecycleCycle?: number | null;
   stageChangedAt: string | null;
   createdAt: string | null;
   updatedAt: string | null;

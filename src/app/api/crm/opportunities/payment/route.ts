@@ -86,23 +86,26 @@ type PaymentSettlementHistoryRow = {
   created_at: string;
 };
 
-type PaymentHistoryQueryResult = {
-  data: unknown[] | null;
-  error: { message?: string } | null;
-};
-
-type PaymentHistoryQuery = {
-  eq: (column: string, value: unknown) => PaymentHistoryQuery;
-  order: (
-    column: string,
-    options: { ascending: boolean },
-  ) => Promise<PaymentHistoryQueryResult>;
+type PaymentHistoryRpcRow = {
+  event_kind: "payment" | "settlement";
+  id: string;
+  event_type: "confirmation" | "reversal" | null;
+  amount_cents: number | null;
+  payment_method: string | null;
+  reversed_payment_event_id: string | null;
+  source_type: string | null;
+  reason_code: string | null;
+  notes: string | null;
+  metadata: Record<string, unknown> | null;
+  settlement_state: "satisfied" | "reopened" | null;
+  created_at: string;
 };
 
 type PaymentHistorySupabase = {
-  from: (table: string) => {
-    select: (columns: string) => PaymentHistoryQuery;
-  };
+  rpc: (
+    functionName: string,
+    args: Record<string, unknown>,
+  ) => Promise<{ data: unknown; error: { message?: string } | null }>;
 };
 
 type PaymentRouteDeps = {
@@ -252,47 +255,52 @@ async function loadPaymentHistory(args: {
     return { ok: true as const, history: [] as PaymentHistoryItem[] };
   }
 
-  const scope = (query: PaymentHistoryQuery) =>
-    query
-      .eq("organization_id", args.organizationId)
-      .eq("store_id", args.storeId)
-      .eq("commercial_opportunity_id", args.commercialOpportunityId)
-      .eq("lifecycle_cycle", args.lifecycleCycle)
-      .order("created_at", { ascending: true });
+  const { data, error } = await args.supabase.rpc(
+    "p9_read_payment_history_internal",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+      p_lifecycle_cycle: args.lifecycleCycle,
+    },
+  );
 
-  const [paymentResult, settlementResult] = await Promise.all([
-    scope(
-      args.supabase
-        .from("commercial_opportunity_payment_events")
-        .select(
-          "id, event_type, amount_cents, payment_method, reversed_payment_event_id, source_type, reason_code, notes, metadata, created_at",
-        ),
-    ),
-    scope(
-      args.supabase
-        .from("commercial_opportunity_payment_settlement_events")
-        .select(
-          "id, settlement_state, reason_code, notes, metadata, created_at",
-        ),
-    ),
-  ]);
-
-  if (paymentResult.error || settlementResult.error) {
+  if (error || !Array.isArray(data)) {
     return {
       ok: false as const,
-      error: paymentResult.error || settlementResult.error,
+      error: error || { message: "PAYMENT_HISTORY_INVALID_RESPONSE" },
     };
   }
+
+  const rows = data as PaymentHistoryRpcRow[];
 
   return {
     ok: true as const,
     history: mergePaymentHistory(
-      (Array.isArray(paymentResult.data)
-        ? paymentResult.data
-        : []) as PaymentEventHistoryRow[],
-      (Array.isArray(settlementResult.data)
-        ? settlementResult.data
-        : []) as PaymentSettlementHistoryRow[],
+      rows
+        .filter((row) => row.event_kind === "payment")
+        .map((row) => ({
+          id: row.id,
+          event_type: row.event_type as "confirmation" | "reversal",
+          amount_cents: row.amount_cents as number,
+          payment_method: row.payment_method,
+          reversed_payment_event_id: row.reversed_payment_event_id,
+          source_type: row.source_type,
+          reason_code: row.reason_code,
+          notes: row.notes,
+          metadata: row.metadata,
+          created_at: row.created_at,
+        })) as PaymentEventHistoryRow[],
+      rows
+        .filter((row) => row.event_kind === "settlement")
+        .map((row) => ({
+          id: row.id,
+          settlement_state: row.settlement_state as "satisfied" | "reopened",
+          reason_code: row.reason_code,
+          notes: row.notes,
+          metadata: row.metadata,
+          created_at: row.created_at,
+        })) as PaymentSettlementHistoryRow[],
     ),
   };
 }
