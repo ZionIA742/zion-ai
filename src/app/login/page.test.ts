@@ -11,8 +11,9 @@ function findBlock(startPattern: string) {
   const start = source.indexOf(startPattern);
   assert.equal(start > -1, true, `Pattern not found: ${startPattern}`);
 
-  const end = source.indexOf("\n  }\n", start);
-  assert.equal(end > start, true, `Block end not found: ${startPattern}`);
+  const relativeEnd = source.slice(start).search(/\r?\n  }\r?\n/);
+  assert.equal(relativeEnd > -1, true, `Block end not found: ${startPattern}`);
+  const end = start + relativeEnd;
 
   return source.slice(start, end);
 }
@@ -63,6 +64,13 @@ const tests = [
           block.indexOf("const access = await ensureAccountSetup();"),
         true,
       );
+    },
+  },
+  {
+    name: "successful login prefers the safe requested destination over CRM",
+    run: () => {
+      assert.equal(source.includes("getSafeInternalLoginRedirect"), true);
+      assert.equal(source.includes("router.push(getPostLoginDestination() || access.destination);"), true);
     },
   },
 ];

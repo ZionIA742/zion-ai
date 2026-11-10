@@ -6,6 +6,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { getSafeInternalLoginRedirect } from "@/lib/auth-safe-redirect";
 
 type LoginMode = "password" | "code" | "verifyCode" | "forgot";
 
@@ -34,6 +35,13 @@ function getBaseUrl() {
 
 function normalizeEmail(value: string) {
   return String(value || "").trim().toLowerCase();
+}
+
+function getPostLoginDestination() {
+  if (typeof window === "undefined") return null;
+  return getSafeInternalLoginRedirect(
+    new URLSearchParams(window.location.search).get("redirectTo"),
+  );
 }
 
 function clearStoredStoreSelection() {
@@ -215,7 +223,7 @@ export default function LoginPage() {
       clearStoredStoreSelection();
       const access = await ensureAccountSetup();
 
-      router.push(access.destination);
+      router.push(getPostLoginDestination() || access.destination);
       router.refresh();
     } catch (authError: unknown) {
       setError(
@@ -290,7 +298,7 @@ export default function LoginPage() {
       clearStoredStoreSelection();
       const access = await ensureAccountSetup();
 
-      router.push(access.destination);
+      router.push(getPostLoginDestination() || access.destination);
       router.refresh();
     } catch (authError: unknown) {
       setError(

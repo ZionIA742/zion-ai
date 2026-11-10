@@ -100,12 +100,20 @@ export function buildRedirectUrl(
   requestUrl: string,
   requestPathname: string,
   decision: Extract<MiddlewarePolicyDecision, { action: "redirect" }>,
+  requestSearch = "",
 ) {
   const url = new URL(decision.destination, requestUrl);
   url.search = "";
 
   if (decision.preserveRedirectTo) {
-    url.searchParams.set("redirectTo", requestPathname);
+    const sourceSearch = new URLSearchParams(requestSearch);
+    const token = requestPathname === "/whatsapp-number-change"
+      ? sourceSearch.get("token")?.trim() || ""
+      : "";
+    const target = token
+      ? `${requestPathname}?token=${encodeURIComponent(token)}`
+      : requestPathname;
+    url.searchParams.set("redirectTo", target);
   }
 
   return url.toString();
@@ -114,11 +122,12 @@ export function buildRedirectUrl(
 function buildRedirectResponse(
   requestUrl: string,
   requestPathname: string,
+  requestSearch: string,
   baseResponse: NextResponse,
   decision: Extract<MiddlewarePolicyDecision, { action: "redirect" }>,
 ): NextResponse {
   const redirectResponse = NextResponse.redirect(
-    buildRedirectUrl(requestUrl, requestPathname, decision),
+    buildRedirectUrl(requestUrl, requestPathname, decision, requestSearch),
   );
   applySessionCookies(baseResponse, redirectResponse);
   return redirectResponse;
@@ -137,7 +146,7 @@ export async function middleware(req: NextRequest) {
 
   if (shouldBypassAuthLookup(path)) {
     return NextResponse.redirect(
-      buildRedirectUrl(req.url, req.nextUrl.pathname, initialDecision),
+      buildRedirectUrl(req.url, req.nextUrl.pathname, initialDecision, req.nextUrl.search),
     );
   }
 
@@ -171,7 +180,7 @@ export async function middleware(req: NextRequest) {
   });
 
   if (result.decision.action === "redirect") {
-    return buildRedirectResponse(req.url, req.nextUrl.pathname, res, result.decision);
+    return buildRedirectResponse(req.url, req.nextUrl.pathname, req.nextUrl.search, res, result.decision);
   }
 
   return res;
