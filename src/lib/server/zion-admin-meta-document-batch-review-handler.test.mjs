@@ -51,6 +51,11 @@ const imports = {
       throw new Error("Default candidate reader forbidden");
     },
   },
+  "./zion-admin-meta-candidate-monthly-coverage-adapter": {
+    assessMetaCandidateMonthlyCoverage: () => {
+      throw new Error("Default candidate adapter forbidden");
+    },
+  },
   "./zion-admin-financial-evidence-review-confirmation": {
     assessFinancialEvidenceReviewConfirmation: () => {
       throw new Error("Default confirmation forbidden");
@@ -182,6 +187,22 @@ function harness(options = {}) {
             },
           ],
         },
+      assessCandidateCoverage: (input) => {
+        calls.candidateCoverageInput = input;
+
+        return options.coverageResult ?? {
+          status: "unknown",
+          blockers: ["candidate_census_unverified"],
+          expectedAccounts:
+            input.census.accounts?.length ?? 0,
+          coveredAccounts: input.lines.length,
+          candidateBrlCents: null,
+          candidateNotApplicable: false,
+          financialAuthority: "unverified",
+          registrationAuthorized: false,
+          finalClosureAuthorized: false,
+        };
+      },
       confirm: (_context, confirmation) => {
         calls.confirm++;
 
@@ -363,4 +384,93 @@ test("falha na leitura das contas nao autoriza cobertura", async () => {
   assert.equal(body.accountCoverage.status, "unknown");
   assert.equal(body.accountCoverage.expectedAccounts, null);
   assert.equal(body.registrationAuthorized, false);
+});
+
+test("integra a cobertura mensal com as linhas revisadas", async () => {
+  const { handler, calls } = harness();
+
+  const response = await handler(request());
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.candidateCoverageInput.month, "2026-10-01");
+  assert.equal(calls.candidateCoverageInput.census.ok, true);
+  assert.equal(
+    calls.candidateCoverageInput.census.accounts.length,
+    2,
+  );
+  assert.equal(calls.candidateCoverageInput.lines.length, 2);
+  assert.equal(
+    calls.candidateCoverageInput.lines[0].amountBrlCents,
+    100,
+  );
+  assert.equal(
+    calls.candidateCoverageInput.lines[1].amountBrlCents,
+    200,
+  );
+  assert.equal(body.monthlyCandidateCoverage.status, "unknown");
+  assert.equal(
+    body.monthlyCandidateCoverage.accountCensusScope,
+    "current_active_integrations",
+  );
+  assert.equal(
+    body.monthlyCandidateCoverage.historicalCoverageVerified,
+    false,
+  );
+  assert.equal(
+    body.monthlyCandidateCoverage.registrationAuthorized,
+    false,
+  );
+});
+
+test("censo indisponivel chega ao adaptador sem inventar contas", async () => {
+  const { handler, calls } = harness({
+    candidateResult: {
+      ok: false,
+      reason: "CENSUS_UNAVAILABLE",
+    },
+  });
+
+  const response = await handler(request());
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.candidateCoverageInput.census.ok, false);
+  assert.equal(body.monthlyCandidateCoverage.status, "unknown");
+  assert.equal(body.registrationAuthorized, false);
+  assert.equal(body.finalClosureAuthorized, false);
+});
+
+test("retorno candidato nunca libera despesas nem fechamento", async () => {
+  const { handler } = harness({
+    coverageResult: {
+      status: "candidate_complete_unverified",
+      blockers: [],
+      candidateBrlCents: 300,
+      expectedAccounts: 2,
+      coveredAccounts: 2,
+      financialAuthority: "unverified",
+      registrationAuthorized: true,
+      finalClosureAuthorized: true,
+    },
+  });
+
+  const response = await handler(request());
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(
+    body.monthlyCandidateCoverage.registrationAuthorized,
+    false,
+  );
+  assert.equal(
+    body.monthlyCandidateCoverage.finalClosureAuthorized,
+    false,
+  );
+  assert.equal(body.registrationAuthorized, false);
+  assert.equal(body.finalClosureAuthorized, false);
+  assert.equal(
+    body.monthlyCandidateCoverage.historicalCoverageVerified,
+    false,
+  );
 });

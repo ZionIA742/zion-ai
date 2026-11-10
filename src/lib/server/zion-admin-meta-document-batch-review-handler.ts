@@ -31,12 +31,17 @@ import {
   readMetaCandidateAccounts,
 } from "./zion-admin-meta-candidate-account-reader";
 
+import {
+  assessMetaCandidateMonthlyCoverage,
+} from "./zion-admin-meta-candidate-monthly-coverage-adapter";
+
 type Dependencies = {
   authorize: typeof resolveZionAdminApiAccess;
   createDb: typeof createServiceSupabaseClient;
   prepare: typeof buildFinancialEvidenceReviewPreparation;
   confirm: typeof assessFinancialEvidenceReviewConfirmation;
   readCandidateAccounts: typeof readMetaCandidateAccounts;
+  assessCandidateCoverage: typeof assessMetaCandidateMonthlyCoverage;
 };
 
 const MAX_BYTES = 32768;
@@ -222,6 +227,9 @@ export function createMetaDocumentBatchReviewHandler(
     readCandidateAccounts:
       overrides.readCandidateAccounts ??
       readMetaCandidateAccounts,
+    assessCandidateCoverage:
+      overrides.assessCandidateCoverage ??
+      assessMetaCandidateMonthlyCoverage,
   };
 
   return async function POST(request: Request): Promise<Response> {
@@ -461,6 +469,24 @@ export function createMetaDocumentBatchReviewHandler(
         };
       }
 
+      const monthlyCandidateCoverage = deps.assessCandidateCoverage({
+        month,
+        census: census.ok
+          ? {
+              ok: true,
+              accounts: census.accounts,
+            }
+          : {
+              ok: false,
+            },
+        lines: lines.map((line) => ({
+          financialAccountType: line.financialAccountType,
+          financialAccountId: line.financialAccountId,
+          recordKind: line.recordKind,
+          amountBrlCents: line.amountBrlCents,
+        })),
+      });
+
       return reply(200, {
         ok: true,
         status: "administrative_confirmation_unverified",
@@ -469,6 +495,13 @@ export function createMetaDocumentBatchReviewHandler(
         candidateTotalBrlCents: total,
         accountAuthority: "unverified",
         accountCoverage,
+        monthlyCandidateCoverage: {
+          ...monthlyCandidateCoverage,
+          accountCensusScope: "current_active_integrations",
+          historicalCoverageVerified: false,
+          registrationAuthorized: false,
+          finalClosureAuthorized: false,
+        },
         financialAuthority: "unverified",
         registrationAuthorized: false,
         finalClosureAuthorized: false,
