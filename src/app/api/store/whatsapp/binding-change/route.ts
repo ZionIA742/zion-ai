@@ -18,6 +18,7 @@ import {
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 import { exchangeAndValidateMetaWhatsappBinding } from "@/lib/server/meta-whatsapp-embedded-signup";
 import type { WhatsappBindingFreshTokenValidator } from "@/lib/server/whatsapp-binding-change-operation";
+import { hashWhatsappNumberChangeToken } from "@/lib/server/whatsapp-number-change-link";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -194,6 +195,33 @@ export function createWhatsappBindingChangeRouteHandler(
           storeId: access.storeId,
           requestId,
         };
+        let connectionMode: "standard" | "business_app_coexistence" = "standard";
+        let numberChangeLinkId: string | null = null;
+        if (action === "cutover" && cleanText(body.numberChangeLinkToken)) {
+          const resolved = await operationArgs.supabase.rpc("resolve_whatsapp_number_change_link_by_system", {
+            p_token_hash: hashWhatsappNumberChangeToken(cleanText(body.numberChangeLinkToken)),
+          });
+          const link = (Array.isArray(resolved.data) ? resolved.data[0] : resolved.data) as {
+            link_id?: string;
+            organization_id?: string;
+            store_id?: string;
+            provider?: string;
+            responsible_user_id?: string;
+            binding_change_request_id?: string | null;
+          } | null;
+          if (
+            resolved.error ||
+            link?.organization_id !== access.organizationId ||
+            link.store_id !== access.storeId ||
+            link.provider !== "whatsapp" ||
+            link.responsible_user_id !== access.sessionUserId ||
+            link.binding_change_request_id !== requestId
+          ) {
+            throw new WhatsappBindingChangeOperationError("WHATSAPP_NUMBER_CHANGE_LINK_UNAUTHORIZED", 403);
+          }
+          numberChangeLinkId = link.link_id ?? null;
+          connectionMode = "business_app_coexistence";
+        }
 
         const bindingRequest =
           action === "validate"
@@ -211,11 +239,23 @@ export function createWhatsappBindingChangeRouteHandler(
                     ...operationArgs,
                     authorizationCode: cleanText(body.authorizationCode),
                     validateFreshToken,
+                    connectionMode,
                   })
                 : action === "cancel"
                   ? await cancelWhatsappBindingChangeRequest(operationArgs)
                   : await expireWhatsappBindingChangeRequest(operationArgs);
 
+        if (action === "cutover" && numberChangeLinkId) {
+          const completedLink = await operationArgs.supabase.rpc("complete_whatsapp_number_change_link_by_system", {
+            p_link_id: numberChangeLinkId,
+            p_organization_id: access.organizationId,
+            p_store_id: access.storeId,
+            p_provider: "whatsapp",
+          });
+          if (completedLink.error) {
+            throw new WhatsappBindingChangeOperationError("WHATSAPP_NUMBER_CHANGE_LINK_COMPLETION_FAILED", 409);
+          }
+        }
         return response({ ok: true, action, request: bindingRequest });
       } catch (error) {
         return toErrorResponse(error);

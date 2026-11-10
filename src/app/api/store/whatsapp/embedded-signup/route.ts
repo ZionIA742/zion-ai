@@ -30,6 +30,7 @@ import {
   classifyWhatsappConnectionScenario,
   type WhatsappConnectionScenarioResult,
 } from "@/lib/server/whatsapp-connection-scenario-router";
+import { hashWhatsappNumberChangeToken } from "@/lib/server/whatsapp-number-change-link";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +41,7 @@ type EmbeddedSignupRequestBody = {
   phoneNumberId?: unknown;
   connectionMode?: unknown;
   changeRequestIdempotencyKey?: unknown;
+  numberChangeLinkToken?: unknown;
   recovery?: unknown;
 };
 
@@ -207,6 +209,7 @@ function validatePayload(body: EmbeddedSignupRequestBody) {
   const whatsappBusinessAccountId = trimInputString(body.whatsappBusinessAccountId);
   const phoneNumberId = trimInputString(body.phoneNumberId);
   const connectionMode = trimInputString(body.connectionMode);
+  const numberChangeLinkToken = trimInputString(body.numberChangeLinkToken);
 
   if (!code) {
     return {
@@ -289,6 +292,7 @@ function validatePayload(body: EmbeddedSignupRequestBody) {
       ...(phoneNumberId ? { phoneNumberId } : {}),
       connectionMode: connectionMode as MetaWhatsappEmbeddedSignupConnectionMode,
       recovery: body.recovery === true,
+      ...(numberChangeLinkToken ? { numberChangeLinkToken } : {}),
     },
   };
 }
@@ -514,7 +518,45 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
     const preflightScenario = classifyWhatsappConnectionScenario({
       hasActiveZionBinding: activeBindingResult.hasActiveBinding,
     });
-    if (!payloadResult.input.recovery && preflightScenario.scenario === "existing_zion_binding") {
+    if (payloadResult.input.numberChangeLinkToken &&
+        (payloadResult.input.recovery ||
+         payloadResult.input.connectionMode !== "business_app_coexistence")) {
+      return createJsonResponse({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_REQUIRES_COEXISTENCE" }, 400);
+    }
+    let authorizedNumberChangeLink: { linkId: string } | null = null;
+    if (payloadResult.input.numberChangeLinkToken) {
+      const resolved = await privilegedClient.rpc("resolve_whatsapp_number_change_link_by_system", {
+        p_token_hash: hashWhatsappNumberChangeToken(payloadResult.input.numberChangeLinkToken),
+      });
+      const linkRow = Array.isArray(resolved.data) ? resolved.data[0] : resolved.data;
+      const link = linkRow as {
+        link_id?: string;
+        organization_id?: string;
+        store_id?: string;
+        provider?: string;
+        responsible_user_id?: string;
+      } | null;
+      if (
+        resolved.error ||
+        !link?.link_id ||
+        link.organization_id !== access.organizationId ||
+        link.store_id !== access.storeId ||
+        link.provider !== "whatsapp" ||
+        link.responsible_user_id !== access.sessionUserId
+      ) {
+        return createJsonResponse({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_LINK_UNAUTHORIZED" }, 403);
+      }
+      const started = await privilegedClient.rpc("start_whatsapp_number_change_link_by_system", {
+        p_link_id: link.link_id,
+        p_organization_id: access.organizationId,
+        p_store_id: access.storeId,
+        p_provider: "whatsapp",
+        p_responsible_user_id: access.sessionUserId,
+      });
+      if (started.error) return createJsonResponse({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_LINK_START_FAILED" }, 409);
+      authorizedNumberChangeLink = { linkId: link.link_id };
+    }
+    if (!payloadResult.input.recovery && !authorizedNumberChangeLink && preflightScenario.scenario === "existing_zion_binding") {
       return createJsonResponse(
         {
           ok: false,
@@ -564,6 +606,10 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
         },
         502,
       );
+    }
+
+    if (authorizedNumberChangeLink && validated.connectionMode !== "business_app_coexistence") {
+      return createJsonResponse({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_VALIDATED_MODE_INVALID" }, 409);
     }
 
     // This phone is reserved for the controlled recovery flow. The check uses
@@ -641,6 +687,7 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
 
       const idempotencyKey =
         trimInputString(bodyResult.body.changeRequestIdempotencyKey) ||
+        (authorizedNumberChangeLink ? `whatsapp-number-change:${authorizedNumberChangeLink.linkId}` : null) ||
         `embedded-signup:${validated.phoneNumberId}`;
       const candidateResult = await privilegedClient.rpc(
         "materialize_whatsapp_binding_candidate_by_system",
@@ -667,6 +714,17 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
 
         if (!candidateRow) {
           throw new Error("Candidate writer returned no change request.");
+        }
+
+        if (authorizedNumberChangeLink) {
+          const bound = await privilegedClient.rpc("bind_whatsapp_number_change_link_by_system", {
+            p_link_id: authorizedNumberChangeLink.linkId,
+            p_organization_id: access.organizationId,
+            p_store_id: access.storeId,
+            p_provider: "whatsapp",
+            p_binding_change_request_id: candidateRow.request_id,
+          });
+          if (bound.error) return createJsonResponse({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_LINK_BIND_FAILED" }, 409);
         }
 
         return createJsonResponse({
