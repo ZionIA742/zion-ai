@@ -137,6 +137,16 @@ assert.equal(
   true,
   "lead detail response must return the selected opportunity qualification facts snapshot"
 );
+assert.equal(
+  source.includes("lifecycle_cycle"),
+  true,
+  "lead detail must select the commercial opportunity lifecycle cycle"
+);
+assert.equal(
+  source.includes("lifecycleCycle: row.lifecycle_cycle"),
+  true,
+  "lead detail must map lifecycle_cycle to the frontend opportunity snapshot"
+);
 
 const storeMismatch = resolveLeadConversationOpportunityContext({
   organizationId: "org-1",

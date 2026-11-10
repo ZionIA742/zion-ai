@@ -420,26 +420,12 @@ const tests = [
       const serviceCalls: any[] = [];
 
       const serviceSupabase = {
-        from(table: string) {
-          return {
-            select(columns: string) {
-              const filters: Array<{ column: string; value: unknown }> = [];
-              const query = {
-                eq(column: string, value: unknown) {
-                  filters.push({ column, value });
-                  return query;
-                },
-                order() {
-                  serviceCalls.push({ table, columns, filters: [...filters] });
-                  return Promise.resolve({ data: [], error: null });
-                },
-              };
-              return query;
-            },
-          };
-        },
         async rpc(fn: string, args: Record<string, unknown>) {
           serviceCalls.push({ fn, args });
+
+          if (fn === "p9_read_payment_history_internal") {
+            return { data: [], error: null };
+          }
 
           return {
             data: [{
@@ -477,16 +463,6 @@ const tests = [
       assert.equal(result.payment.confirmedAmountCents, 15000);
       assert.equal(result.payment.obligationSatisfied, false);
       assert.deepEqual(result.paymentHistory, []);
-      assert.equal(serviceCalls[1].table, "commercial_opportunity_payment_events");
-      assert.equal(serviceCalls[2].table, "commercial_opportunity_payment_settlement_events");
-      for (const call of serviceCalls.slice(1)) {
-        assert.deepEqual(call.filters, [
-          { column: "organization_id", value: "org-1" },
-          { column: "store_id", value: "store-1" },
-          { column: "commercial_opportunity_id", value: "opp-1" },
-          { column: "lifecycle_cycle", value: 3 },
-        ]);
-      }
       assert.equal(
         serviceCalls[0].fn,
         "p9_resolve_payment_progress_internal",
@@ -496,6 +472,60 @@ const tests = [
         p_store_id: "store-1",
         p_commercial_opportunity_id: "opp-1",
       });
+      assert.equal(serviceCalls[1].fn, "p9_read_payment_history_internal");
+      assert.deepEqual(serviceCalls[1].args, {
+        p_organization_id: "org-1",
+        p_store_id: "store-1",
+        p_commercial_opportunity_id: "opp-1",
+        p_lifecycle_cycle: 3,
+      });
+    },
+  },
+
+  {
+    name: "GET fails closed when the read-only history authority fails",
+    run: async () => {
+      const { createPaymentGetHandler } = await routeModulePromise;
+      const userSupabase = createSupabaseMock();
+      const serviceSupabase = {
+        async rpc(fn: string) {
+          if (fn === "p9_read_payment_history_internal") {
+            return {
+              data: null,
+              error: { message: "READ_AUTHORITY_UNAVAILABLE" },
+            };
+          }
+
+          return {
+            data: [{
+              assessment_state: "determined",
+              progress_state: "not_started",
+              resolver_key: "payment",
+              resolver_version: 2,
+              authority_fingerprint: "fp",
+              reason_code: "payment_not_confirmed",
+              resolution_basis: {
+                confirmed_amount_cents: 0,
+                event_count: 0,
+                payment_obligation_satisfied: false,
+                settlement_event_count: 0,
+              },
+            }],
+            error: null,
+          };
+        },
+      };
+
+      const response = await createPaymentGetHandler({
+        resolveAccess: async () => granted(userSupabase),
+        createServiceSupabaseClient: () => serviceSupabase,
+      })(new Request(
+        "http://localhost/api/crm/opportunities/payment?commercialOpportunityId=opp-1",
+      ));
+
+      const result = await body(response);
+      assert.equal(response.status, 503);
+      assert.equal(result.error, "PAYMENT_HISTORY_UNAVAILABLE");
     },
   },
 ];
