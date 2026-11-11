@@ -51,6 +51,43 @@ function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
 }
 
+function readTextCorrectionIdentity(snapshot: unknown, provenance: Record<string, unknown>) {
+  if (provenance.text_representation !== "manual_contract_corrected_text_utf8_exact") {
+    return null;
+  }
+  if (!isRecord(snapshot) || !isRecord(snapshot.text_correction)) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_TEXT_PROVENANCE_INVALID",
+      "A proveniencia da correcao textual da versao contratual e inconsistente.",
+    );
+  }
+  const correction = snapshot.text_correction;
+  const previousVersionId = String(correction.previous_version_id || "").trim();
+  const kind = String(correction.kind || "").trim();
+  const previousTextSha256 = String(correction.previous_text_sha256 || "").trim().toLowerCase();
+  const correctedTextSha256 = String(correction.corrected_text_sha256 || "").trim().toLowerCase();
+  if (
+    kind !== "full_text" ||
+    !previousVersionId ||
+    !isSha256(previousTextSha256) ||
+    !isSha256(correctedTextSha256) ||
+    correctedTextSha256 !== String(provenance.text_sha256 || "").trim().toLowerCase()
+  ) {
+    throw new ContractAccessError(
+      409,
+      "CONTRACT_TEXT_PROVENANCE_INVALID",
+      "A proveniencia da correcao textual da versao contratual e inconsistente.",
+    );
+  }
+  return {
+    kind: "full_text" as const,
+    previousVersionId,
+    previousTextSha256,
+    correctedTextSha256,
+  };
+}
+
 function readExpectedContractVersionId(request: Request) {
   const raw = new URL(request.url).searchParams.get("expectedContractVersionId");
   if (raw == null || !raw.trim()) return null;
@@ -105,6 +142,7 @@ function buildVersionIdentity(version: Record<string, unknown>, contractId: stri
     );
   }
 
+  const textCorrection = readTextCorrectionIdentity(snapshot, provenance);
   return {
     contractVersionId: String(version.id || ""),
     pdfSha256: versionPdfSha256,
@@ -115,6 +153,7 @@ function buildVersionIdentity(version: Record<string, unknown>, contractId: stri
       textSha256: String(provenance.text_sha256),
       templateVersionId: String(provenance.template_version_id),
     },
+    ...(textCorrection ? { textCorrection } : {}),
   };
 }
 

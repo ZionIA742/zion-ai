@@ -658,9 +658,26 @@ type SignedContractPdfUrlResponse = {
     textSha256?: string;
     templateVersionId?: string;
   } | null;
+  textCorrection?: {
+    kind: "full_text";
+    previousVersionId: string;
+    previousTextSha256: string;
+    correctedTextSha256: string;
+  } | null;
   originalFilename?: string | null;
   mimeType?: string | null;
   expiresIn?: number;
+  error?: string;
+  message?: string;
+};
+
+type ContractDetailResponse = {
+  ok: boolean;
+  recoverable_text_correction?: {
+    sourceVersionId: string;
+    versionNumber: number;
+    correctedTextSha256: string;
+  } | null;
   error?: string;
   message?: string;
 };
@@ -4046,17 +4063,15 @@ export default function LeadPage() {
       : contractDraftState?.revision
         ? contractDraftState
         : await fetchContractDraftState({ silent: true });
-    if (!draftState && normalizedStatus === "approved") {
-      return { handled: false, prepared: null };
-    }
     if (
+      draftState &&
       !draftState?.ready ||
-      !draftState.draftId ||
-      !draftState.draftSha256 ||
-      !/^[0-9a-f]{64}$/u.test(draftState.draftSha256) ||
-      !draftState.revision ||
-      draftState.changed ||
-      draftState.conflict
+      !draftState?.draftId ||
+      !draftState?.draftSha256 ||
+      !/^[0-9a-f]{64}$/u.test(draftState?.draftSha256 || "") ||
+      !draftState?.revision ||
+      draftState?.changed ||
+      draftState?.conflict
     ) {
       setContractActionError(
         draftState?.changed
@@ -4068,6 +4083,7 @@ export default function LeadPage() {
     }
 
     if (
+      draftState &&
       ["pending_review", "generated", "approved"].includes(normalizedStatus) &&
       contract.current_version_id
     ) {
@@ -4080,6 +4096,14 @@ export default function LeadPage() {
         url.searchParams.set("expectedContractVersionId", currentVersionId);
         const currentSignedResponse = await fetch(url.toString(), { method: "GET", cache: "no-store" });
         const currentSigned = (await currentSignedResponse.json().catch(() => null)) as SignedContractPdfUrlResponse | null;
+        if (
+          !currentSignedResponse.ok &&
+          currentSigned?.error === "CONTRACT_TEXT_PROVENANCE_INVALID"
+        ) {
+          throw new Error(
+            "A versao textual atual possui proveniencia inconsistente. O envio foi bloqueado; nenhuma versao anterior sera reutilizada.",
+          );
+        }
         const currentProvenance = currentSigned?.textProvenance;
         const currentPdfSha256 = String(currentSigned?.pdfSha256 || "").trim().toLowerCase();
         const currentVersionMatchesDraft =
@@ -4096,7 +4120,23 @@ export default function LeadPage() {
           currentProvenance.textSha256 === draftState.draftSha256 &&
           currentProvenance.templateVersionId === draftState.templateVersionId;
 
-        if (currentVersionMatchesDraft && currentProvenance && currentSigned?.signedUrl) {
+        const currentVersionMatchesApprovedCorrection =
+          currentSignedResponse.ok &&
+          currentSigned?.ok === true &&
+          Boolean(currentSigned.signedUrl) &&
+          currentSigned.contractVersionId === currentVersionId &&
+          /^[0-9a-f]{64}$/u.test(currentPdfSha256) &&
+          currentSigned.isTextDraftVersion === true &&
+          currentProvenance !== null &&
+          currentProvenance !== undefined &&
+          currentSigned.textCorrection?.kind === "full_text" &&
+          currentSigned.textCorrection.correctedTextSha256 === currentProvenance.textSha256;
+
+        if (
+          (currentVersionMatchesDraft || currentVersionMatchesApprovedCorrection) &&
+          currentProvenance &&
+          currentSigned?.signedUrl
+        ) {
           const identity: ContractVersionIdentity = {
             contractVersionId: currentVersionId,
             pdfSha256: currentPdfSha256,
@@ -4119,15 +4159,109 @@ export default function LeadPage() {
           });
           setPreparedContractSend(prepared);
           setContractActionSuccess(
-            normalizedStatus === "approved"
+            currentVersionMatchesApprovedCorrection
+              ? "A versao corrigida e aprovada corresponde ao PDF atual. Confira e confirme o envio desta mesma versao."
+              : normalizedStatus === "approved"
               ? "A versao aprovada corresponde exatamente a revisao salva. Confira o PDF e confirme o envio desta mesma versao."
               : "A versao gerada corresponde exatamente a revisao salva. Confira o PDF e aprove antes de confirmar o envio desta mesma versao.",
           );
           return { handled: true, prepared };
         }
-      } catch {
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes("A versao textual atual possui proveniencia inconsistente")
+        ) {
+          throw error;
+        }
         // Falha ao consultar a versao atual nao autoriza seu reaproveitamento.
       }
+    }
+
+    const detailResponse = await fetch(
+      `/api/sales-contracts/${encodeURIComponent(safeContractId)}`,
+      { method: "GET", cache: "no-store" },
+    );
+    const detail = (await detailResponse.json().catch(() => null)) as ContractDetailResponse | null;
+    const recovery = detailResponse.ok && detail?.ok ? detail.recoverable_text_correction : null;
+    if (recovery?.sourceVersionId && /^[0-9a-f]{64}$/u.test(recovery.correctedTextSha256)) {
+      if (!window.confirm(
+        "Foi encontrada uma edicao textual aprovada que nao e mais a versao atual. Recuperar essa edicao em uma nova versao para conferencia?",
+      )) {
+        return { handled: true, prepared: null };
+      }
+      setContractActionLoadingId(safeContractId);
+      setContractActionLoadingType("prepare_send");
+      setContractActionError(null);
+      setContractActionSuccess(null);
+      setPreparedContractSend(null);
+      try {
+        const response = await fetch(
+          `/api/sales-contracts/${encodeURIComponent(safeContractId)}/generate-pdf`,
+          {
+            method: "POST",
+            cache: "no-store",
+            headers: {
+              "Content-Type": "application/json",
+              "x-zion-contract-operation-id": crypto.randomUUID(),
+            },
+            body: JSON.stringify({
+              mode: "approved_text_correction_recovery",
+              sourceVersionId: recovery.sourceVersionId,
+            }),
+          },
+        );
+        const result = (await response.json().catch(() => null)) as
+          (SalesContractActionResponse & { version?: Record<string, unknown>; correctedTextSha256?: string }) | null;
+        const version = result?.version;
+        const versionId = String(version?.id || "").trim();
+        const pdfSha256 = String(version?.pdf_sha256 || "").trim().toLowerCase();
+        if (!response.ok || !result?.ok || !versionId || !/^[0-9a-f]{64}$/u.test(pdfSha256) ||
+            result.correctedTextSha256 !== recovery.correctedTextSha256 ||
+            String(result.contract?.current_version_id || "").toLowerCase() !== versionId.toLowerCase()) {
+          throw new Error(result?.message || "Nao foi possivel recuperar a edicao textual aprovada.");
+        }
+        const signedResponse = await fetch(
+          `/api/sales-contracts/${encodeURIComponent(safeContractId)}/signed-pdf-url?expectedContractVersionId=${encodeURIComponent(versionId)}`,
+          { method: "GET", cache: "no-store" },
+        );
+        const signed = (await signedResponse.json().catch(() => null)) as SignedContractPdfUrlResponse | null;
+        if (!signedResponse.ok || !signed?.ok || !signed.signedUrl || signed.contractVersionId !== versionId ||
+            signed.pdfSha256 !== pdfSha256 || signed.textProvenance?.textSha256 !== recovery.correctedTextSha256) {
+          throw new Error(signed?.message || "A versao recuperada nao corresponde ao PDF persistido.");
+        }
+        const provenance = signed.textProvenance;
+        if (!provenance) throw new Error("A versao recuperada nao possui proveniencia textual verificavel.");
+        setContractPreview({
+          kind: "contract",
+          contractId: safeContractId,
+          signedUrl: signed.signedUrl,
+          identity: { contractVersionId: versionId, pdfSha256, isTextDraftVersion: true, textProvenance: provenance },
+        });
+        setPreparedContractSend({
+          contractId: safeContractId,
+          contractVersionId: versionId,
+          pdfSha256,
+          signedUrl: signed.signedUrl,
+          requiresApproval: true,
+          textProvenance: provenance,
+        });
+        setContractActionSuccess("A edicao aprovada foi recuperada em nova versao. Confira o PDF e aprove antes de enviar.");
+        return { handled: true, prepared: { contractId: safeContractId, contractVersionId: versionId, pdfSha256, signedUrl: signed.signedUrl, requiresApproval: true, textProvenance: provenance } };
+      } catch (error: unknown) {
+        setContractActionError(error instanceof Error ? error.message : "Nao foi possivel recuperar a edicao textual aprovada.");
+        setContractActionSuccess(null);
+        return { handled: true, prepared: null };
+      } finally {
+        setContractActionLoadingId(null);
+        setContractActionLoadingType(null);
+      }
+    }
+
+    if (!draftState) {
+      setContractActionError("Nao existe uma revisao textual salva e valida para este contrato.");
+      setContractActionSuccess(null);
+      return { handled: true, prepared: null };
     }
 
     if (normalizedStatus === "approved" && !window.confirm(
