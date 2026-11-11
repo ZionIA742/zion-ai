@@ -75,6 +75,7 @@ type PushAssistantDocumentReviewMessageInput = {
   receivedEvidenceSourceMessageId?: string | null;
   receivedEvidenceIdentificationStatus?: "identified" | "pending_identification" | null;
   receivedCustomerSignatureDeclared?: boolean;
+  receivedDocumentSha256?: string | null;
 };
 
 export type ReceivedContractDocumentAssistantNotificationInput = {
@@ -94,6 +95,7 @@ export type ReceivedContractDocumentAssistantNotificationInput = {
     storagePath: string | null;
     mimeType: string | null;
     originalFileName: string | null;
+    sha256?: string | null;
   };
   identificationStatus: "identified" | "pending_identification";
   identificationReason?: string | null;
@@ -252,6 +254,7 @@ function buildDocumentReviewMetadata(input: PushAssistantDocumentReviewMessageIn
           channel: "whatsapp",
           received_evidence_source_message_id: cleanText(input.receivedEvidenceSourceMessageId),
           received_identification_status: cleanText(input.receivedEvidenceIdentificationStatus),
+          received_document_sha256: cleanText(input.receivedDocumentSha256),
           customer_signature_declared: input.receivedCustomerSignatureDeclared === true,
         }
       : {}),
@@ -813,6 +816,7 @@ export async function pushAssistantReceivedContractDocumentMessage(
     storageBucket: input.receivedDocument.storageBucket,
     storagePath: input.receivedDocument.storagePath,
     contentOverride: content,
+    receivedDocumentSha256: input.receivedDocument.sha256,
     assistantPromptOverride: "Conferir o documento recebido. Nao presumir assinatura valida nem concluir o contrato automaticamente.",
     availableActionsOverride: identified
       ? [

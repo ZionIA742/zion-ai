@@ -14,6 +14,7 @@ import {
   resolveWhatsappInboundThreadBySystem,
   isLikelyResponsibleAssistantQuestion,
   shouldSkipAiSalesReplyForReceivedContractDocument,
+  normalizeWhatsappSha256,
 } from "./whatsapp-inbox-processor.js";
 
 function readProcessorSource() {
@@ -38,6 +39,15 @@ test("documento contratual identificado ou pendente encerra o dispatch comercial
     false,
   );
   assert.equal(shouldSkipAiSalesReplyForReceivedContractDocument(null), false);
+});
+
+test("normaliza SHA-256 Base64 do documento WhatsApp para hexadecimal", () => {
+  const base64 = "R3jJGXq0oCgbBSD5MYrfDmMYSf4O4/DfQqTicuYj9Gk=";
+  const expectedHex = Buffer.from(base64, "base64").toString("hex");
+
+  assert.equal(normalizeWhatsappSha256(base64), expectedHex);
+  assert.equal(normalizeWhatsappSha256(expectedHex.toUpperCase()), expectedHex);
+  assert.equal(normalizeWhatsappSha256("not-a-sha"), null);
 });
 
 test("responsible decision hook returns its canonical result to stop assistant handling", () => {

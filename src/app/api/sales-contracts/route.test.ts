@@ -146,7 +146,7 @@ function createFixtureSupabase() {
         status: "pending_review",
         title: "Contract 1",
         total_cents: 1000,
-        current_version_id: null,
+        current_version_id: "version-1",
         created_at: "2026-09-12T10:00:00.000Z",
       },
       {
@@ -299,6 +299,24 @@ function createFixtureSupabase() {
         created_at: "2026-09-12T14:00:00.000Z",
       },
     ],
+    sales_contract_versions: [
+      {
+        id: "version-1",
+        contract_id: "contract-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        version_number: 2,
+        status: "approved",
+        original_filename: "contract-1-v2.pdf",
+        mime_type: "application/pdf",
+        size_bytes: 1234,
+        storage_bucket: "sales-contracts",
+        storage_path: "contracts/contract-1-v2.pdf",
+        created_at: "2026-09-12T10:05:00.000Z",
+        approved_at: "2026-09-12T10:06:00.000Z",
+        sent_at: null,
+      },
+    ],
   };
 
   const queryLog: string[] = [];
@@ -433,6 +451,24 @@ const tests: TestCase[] = [
         (contracts[0]?.manual_provenance as Record<string, unknown>)?.draft_id,
         "draft-manual",
       );
+    },
+  },
+  {
+    name: "returns the canonical current version details for the CRM",
+    run: async () => {
+      const { response, body } = await requestContracts({
+        query: { leadId: "lead-a", commercialOpportunityId: "opp-1" },
+      });
+      const contracts = body.contracts as Array<Record<string, unknown>>;
+      const contract = contracts.find((item) => item.id === "contract-1");
+      const currentVersion = contract?.current_version as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(contract?.current_version_id, "version-1");
+      assert.equal(currentVersion?.id, "version-1");
+      assert.equal(currentVersion?.version_number, 2);
+      assert.equal(currentVersion?.status, "approved");
+      assert.equal(currentVersion?.original_filename, "contract-1-v2.pdf");
     },
   },
   {

@@ -113,6 +113,7 @@ async function registerReceivedContractDocumentEvidenceSafely(args: {
         storagePath: persisted.record.receivedDocument.storagePath,
         mimeType: persisted.record.receivedDocument.mimeType,
         originalFileName: persisted.record.receivedDocument.originalFileName,
+        sha256: persisted.record.receivedDocument.sha256,
       },
       identificationStatus: persisted.record.identificationStatus,
       identificationReason: persisted.record.identificationReason,
@@ -412,6 +413,22 @@ function asTrimmedString(value: unknown): string | null {
   return trimmed || null;
 }
 
+export function normalizeWhatsappSha256(value: unknown): string | null {
+  const normalized = asTrimmedString(value);
+  if (!normalized) return null;
+  if (/^[0-9a-f]{64}$/iu.test(normalized)) return normalized.toLowerCase();
+
+  const compactBase64 = normalized.replace(/\s+/g, "");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(compactBase64)) return null;
+  try {
+    const bytes = Buffer.from(compactBase64, "base64");
+    if (bytes.length !== 32 || bytes.toString("base64") !== compactBase64) return null;
+    return bytes.toString("hex");
+  } catch {
+    return null;
+  }
+}
+
 function asBoolean(value: unknown): boolean | null {
   if (typeof value === "boolean") return value;
   return null;
@@ -560,7 +577,7 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
     videoCaption: asTrimmedString(videoNode?.caption),
     documentMediaId: asTrimmedString(documentNode?.id),
     documentMimeType: asTrimmedString(documentNode?.mime_type),
-    documentSha256: asTrimmedString(documentNode?.sha256),
+    documentSha256: normalizeWhatsappSha256(documentNode?.sha256),
     documentFilename: asTrimmedString(documentNode?.filename),
     documentCaption: asTrimmedString(documentNode?.caption),
     locationLatitude: locationNode?.latitude,
@@ -3044,7 +3061,7 @@ async function processSingleInboxRow(
         displayPhoneNumber: extracted.displayPhoneNumber,
         mediaId: extracted.documentMediaId,
         mimeType: storedMedia.mimeType || extracted.documentMimeType,
-        sha256: extracted.documentSha256 || storedMedia.sha256,
+        sha256: normalizeWhatsappSha256(extracted.documentSha256 || storedMedia.sha256),
         caption: extracted.documentCaption,
         fileName: extracted.documentFilename || storedMedia.originalFileName,
         storageBucket: storedMedia.storageBucket,

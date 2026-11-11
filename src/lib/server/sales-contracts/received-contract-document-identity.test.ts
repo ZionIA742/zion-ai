@@ -285,6 +285,31 @@ test("separa arquivo recebido alterado da identidade do documento enviado", () =
   });
 });
 
+test("identifica o PDF devolvido pelo SHA quando a mensagem enviada preserva a impressão digital", () => {
+  const pdfSha256 = "f".repeat(64);
+  const result = resolve({
+    message: message({
+      media_url: "inbound/contracts/devolvido.pdf",
+      metadata: {
+        ...message().metadata,
+        storage_path: "inbound/contracts/devolvido.pdf",
+        sha256: pdfSha256,
+      },
+    }),
+    sentDocuments: [sent({
+      media_url: "outbound/contracts/v2.pdf",
+      metadata: { storage_path: "outbound/contracts/v2.pdf", pdf_sha256: pdfSha256 },
+    })],
+    versionsByContract: new Map([["contract-1", [version({
+      storage_path: "outbound/contracts/v2.pdf",
+      pdf_sha256: pdfSha256,
+    })]]]),
+  });
+  assert.equal(result.outcome, "identified");
+  if (result.outcome !== "identified") return;
+  assert.equal(result.contractVersionId, "version-1");
+});
+
 test("nao escolhe automaticamente entre contratos possiveis", () => {
   const result = resolve({ contracts: [contract(), contract({ id: "contract-2" })] });
   assert.deepEqual(result, {

@@ -9,6 +9,7 @@ export function buildContractPdfMessageMetadata(args: {
   storagePath: string;
   originalFilename: string;
   sizeBytes: number;
+  pdfSha256?: string | null;
 }) {
   return {
     attachment_kind: "file",
@@ -17,6 +18,7 @@ export function buildContractPdfMessageMetadata(args: {
     mime_type: "application/pdf",
     original_file_name: args.originalFilename,
     size_bytes: args.sizeBytes,
+    ...(args.pdfSha256 ? { pdf_sha256: args.pdfSha256 } : {}),
     file_kind: "sales_contract_pdf",
     contract_id: args.contractId,
     contract_version_id: args.versionId,

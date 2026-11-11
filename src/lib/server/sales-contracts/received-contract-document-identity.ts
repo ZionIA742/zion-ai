@@ -105,6 +105,7 @@ type VersionRow = {
   original_filename?: unknown;
   mime_type?: unknown;
   size_bytes?: unknown;
+  pdf_sha256?: unknown;
 };
 
 type QueryResult = { data: unknown; error: { message: string } | null };
@@ -250,13 +251,23 @@ export function resolveReceivedContractDocumentIdentity(args: {
     const sentMetadata = record(sent.metadata);
     const sentContractId = text(sentMetadata.sales_contract_id) || text(sentMetadata.contract_id);
     const sentVersionId = text(sentMetadata.sales_contract_version_id) || text(sentMetadata.contract_version_id);
+    const versionPdfSha256 = text(version.pdf_sha256)?.toLowerCase() || null;
+    const receivedPdfSha256 = sha256?.toLowerCase() || null;
+    const sentPdfSha256 = text(sentMetadata.pdf_sha256)?.toLowerCase() || null;
     const explicitIdentity = sentContractId === contractId && sentVersionId === text(version.id);
     const legacyPathIdentity =
       text(version.storage_bucket) === storageBucket &&
       text(version.storage_path) === storagePath &&
       text(sent.media_url) === storagePath &&
       text(sentMetadata.storage_path) === storagePath;
-    if (!explicitIdentity && !legacyPathIdentity) return false;
+    const hashIdentity = Boolean(
+      versionPdfSha256 && /^[0-9a-f]{64}$/.test(versionPdfSha256) &&
+        receivedPdfSha256 && /^[0-9a-f]{64}$/.test(receivedPdfSha256) &&
+        sentPdfSha256 && /^[0-9a-f]{64}$/.test(sentPdfSha256) &&
+        versionPdfSha256 === receivedPdfSha256 &&
+        sentPdfSha256 === versionPdfSha256,
+    );
+    if (!explicitIdentity && !legacyPathIdentity && !hashIdentity) return false;
     return (
       text(version.organization_id) === organizationId &&
       text(version.store_id) === storeId &&
@@ -363,7 +374,7 @@ export async function identifyReceivedContractDocument(args: {
   for (const contractId of contractIds) {
     const versionsQuery = await args.supabase
       .from("sales_contract_versions")
-      .select("id, contract_id, organization_id, store_id, version_number, status, storage_bucket, storage_path, original_filename, mime_type")
+      .select("id, contract_id, organization_id, store_id, version_number, status, storage_bucket, storage_path, original_filename, mime_type, pdf_sha256")
       .eq("contract_id", contractId)
       .eq("organization_id", organizationId)
       .eq("store_id", storeId) as QueryResult;
