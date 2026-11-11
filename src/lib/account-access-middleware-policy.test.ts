@@ -407,6 +407,28 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "number-change redirect preserves only its token query",
+    run: () => {
+      const url = new URL(
+        buildRedirectUrl(
+          "https://example.test/whatsapp-number-change?token=secret&noise=ignored",
+          "/whatsapp-number-change",
+          {
+            action: "redirect",
+            destination: "/login",
+            preserveRedirectTo: true,
+          },
+          "?token=secret&noise=ignored",
+        ),
+      );
+
+      assert.equal(
+        url.searchParams.get("redirectTo"),
+        "/whatsapp-number-change?token=secret",
+      );
+    },
+  },
+  {
     name: "unavailable redirect receives no query and no redirectTo",
     run: () => {
       const url = new URL(

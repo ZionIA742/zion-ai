@@ -8,6 +8,7 @@ import {
   classifyMetaEmbeddedSignupMessage,
   type MetaEmbeddedSignupSession,
 } from "@/lib/client/meta-embedded-signup";
+import { completeNumberChangeLink, requestNumberChangeLinkStart, resolveNumberChangeResumeState } from "./number-change-link-start";
 
 export default function WhatsappNumberChangeClient({ token }: { token: string }) {
   const [loading, setLoading] = useState(true);
@@ -16,8 +17,9 @@ export default function WhatsappNumberChangeClient({ token }: { token: string })
   const [status, setStatus] = useState<string | null>(null);
   const [storeName, setStoreName] = useState("Sua loja");
   const [currentPhone, setCurrentPhone] = useState("Não informado");
+  const [linkAuthorized, setLinkAuthorized] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
-  const [phase, setPhase] = useState<"initial" | "cutover">("initial");
+  const [phase, setPhase] = useState<"initial" | "cutover" | "complete_link">("initial");
   const codeRef = useRef("");
   const sessionRef = useRef<MetaEmbeddedSignupSession | null>(null);
 
@@ -29,9 +31,18 @@ export default function WhatsappNumberChangeClient({ token }: { token: string })
         if (!response.ok || !body?.ok) throw new Error(body?.error || "Link inválido ou não autorizado.");
         setStoreName(body.store?.name || "Sua loja");
         setCurrentPhone(body.integration?.display_phone_number || "Não informado");
-        setStatus(body.link?.status === "started" ? "Troca iniciada" : "Autorização disponível");
+        const resume = resolveNumberChangeResumeState({
+          linkStatus: body.link?.status,
+          requestId: typeof body.link?.requestId === "string" ? body.link.requestId : null,
+          changeRequest: body.changeRequest ?? null,
+        });
+        if (resume.blocked) throw new Error(resume.message);
+        setLinkAuthorized(true);
+        setRequestId(resume.requestId);
+        setPhase(resume.phase);
+        setStatus(resume.requestId ? (resume.phase === "cutover" ? "Pedido recuperado. Autorize a conclusão na Meta." : resume.phase === "complete_link" ? "Cutover concluído. Confirme a conclusão segura do link." : "Troca iniciada. Continue a autorização na Meta.") : "Autorização disponível");
       })
-      .catch((cause) => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Não foi possível validar o link."); })
+      .catch((cause) => { if (!controller.signal.aborted) { setLinkAuthorized(false); setError(cause instanceof Error ? cause.message : "Não foi possível validar o link."); } })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [token]);
@@ -67,11 +78,18 @@ export default function WhatsappNumberChangeClient({ token }: { token: string })
   }
 
   async function startMeta() {
-    if (busy) return;
+    if (busy || !linkAuthorized) return;
     setBusy(true); setError(null); codeRef.current = ""; sessionRef.current = null;
-    const config = getMetaEmbeddedSignupConfig();
     try {
-      await fetch(`/api/store/whatsapp/number-change-link?token=${encodeURIComponent(token)}`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "start" }) });
+      if (phase === "complete_link") {
+        await completeNumberChangeLink({ token });
+        setStatus("Troca concluída com sucesso.");
+        setLinkAuthorized(false);
+        return;
+      }
+      const config = getMetaEmbeddedSignupConfig();
+      await requestNumberChangeLinkStart({ token });
+
       await ensureFacebookSdkLoaded(config.appId);
       if (!window.FB?.login) throw new Error("FACEBOOK_SDK_LOGIN_UNAVAILABLE");
       const result = await new Promise<{ code: string; session: MetaEmbeddedSignupSession }>((resolve, reject) => {
@@ -115,7 +133,7 @@ export default function WhatsappNumberChangeClient({ token }: { token: string })
         <ol className="mt-6 list-decimal space-y-2 pl-5 text-sm text-zinc-400"><li>Abra a autorização oficial da Meta.</li><li>Confirme o WABA e o novo telefone.</li><li>Aguarde a validação server-side e a conclusão do cutover.</li></ol>
         {status ? <p className="mt-5 rounded-xl border border-emerald-400/20 bg-emerald-400/5 p-3 text-sm text-emerald-200">{status}</p> : null}
         {error ? <p className="mt-5 rounded-xl border border-red-400/20 bg-red-400/5 p-3 text-sm text-red-200">{error}</p> : null}
-        <button type="button" onClick={() => void startMeta()} disabled={busy} className="mt-6 w-full rounded-xl bg-cyan-300 px-4 py-3 text-sm font-semibold text-zinc-950 disabled:opacity-50">{busy ? "Aguardando Meta..." : phase === "initial" ? "Iniciar troca de WhatsApp" : "Autorizar conclusão na Meta"}</button>
+        <button type="button" onClick={() => void startMeta()} disabled={busy || !linkAuthorized} className="mt-6 w-full rounded-xl bg-cyan-300 px-4 py-3 text-sm font-semibold text-zinc-950 disabled:opacity-50">{busy ? (phase === "complete_link" ? "Confirmando conclusão..." : "Aguardando Meta...") : phase === "initial" ? "Iniciar troca de WhatsApp" : phase === "complete_link" ? "Confirmar conclusão" : "Autorizar conclusão na Meta"}</button>
         <p className="mt-5 text-xs leading-5 text-zinc-500">Em caso de dúvida, interrompa e procure o suporte humano. Este link é temporário e vinculado ao responsável autenticado.</p>
       </div>
     </main>
