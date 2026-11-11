@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createWhatsappNumberChangeLinkRouteHandler } from "./route";
+import { createWhatsappNumberChangeLinkRouteHandler } from "./route-handler";
 
 const ORG = "org-1";
 const STORE = "store-1";
