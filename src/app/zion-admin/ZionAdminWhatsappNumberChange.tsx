@@ -43,12 +43,12 @@ export default function ZionAdminWhatsappNumberChange({
   }
 
   return (
-    <div className="flex min-w-0 flex-col rounded-xl border border-[#29313b] bg-[#10141b] p-3 text-sm text-zinc-300">
+    <div className="rounded-xl border border-[#29313b] bg-[#10141b] p-3 text-sm text-zinc-300">
       <div className="flex items-start gap-2.5">
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#18313c] text-[#7bd9e2]">↔</span>
         <div>
-          <h4 className="text-[12px] font-semibold text-zinc-100">Troca de WhatsApp</h4>
-          <p className="mt-0.5 text-[10px] leading-4 text-[#8e98aa]">Autorize o responsável a conectar o novo número pela Meta.</p>
+          <h4 className="text-[12px] font-semibold text-zinc-100">Trocar número comercial</h4>
+          <p className="mt-0.5 text-[10px] leading-4 text-[#8e98aa]">Envie um link seguro para o responsável conectar um novo número de WhatsApp.</p>
         </div>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-1.5">
@@ -56,7 +56,7 @@ export default function ZionAdminWhatsappNumberChange({
         <div><div className="text-[10px] text-zinc-500">Escopo</div><div className="text-xs text-zinc-200">{storeName}</div></div>
       </div>
       <button type="button" onClick={() => void sendLink()} disabled={!canAccess || busy || !emailMasked} className="mt-3 w-full rounded-lg border border-cyan-400/30 bg-cyan-500/15 px-3 py-2 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-50">
-        {busy ? "Preparando..." : "Enviar link de troca"}
+        {busy ? "Preparando..." : "Trocar WhatsApp"}
       </button>
       {message ? <p className="mt-2 text-[10px] leading-4 text-emerald-200">{message}</p> : null}
       {error ? <p className="mt-2 text-[10px] leading-4 text-red-200">{error}</p> : null}

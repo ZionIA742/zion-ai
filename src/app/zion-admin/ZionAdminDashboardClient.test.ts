@@ -622,7 +622,7 @@ const tests: TestCase[] = [
         "function isWhatsappPinRecoveryTargetStore",
         "isWhatsappPinRecoveryTargetStore(store) ?",
         "nenhuma operação será iniciada",
-        "if (!canAccess) return null",
+        "Recuperação indisponível: a permissão administrativa necessária não está presente.",
         'wabaId: "1642288770859048"',
         'phoneNumberId: "1322472314288518"',
         "metaExecutionEnabled",
@@ -673,6 +673,15 @@ const tests: TestCase[] = [
       assert.equal(recoveryBlock.includes("controller.abort()"), true);
       assert.equal(recoveryBlock.includes(".finally(() =>"), true);
       assert.equal(recoveryBlock.includes("payload.pin"), false);
+      const stepsStart = recoveryBlock.indexOf("<ol className=\"mt-3 flex");
+      const stepsEnd = recoveryBlock.indexOf("</ol>", stepsStart);
+      assert.ok(stepsStart >= 0 && stepsEnd > stepsStart);
+      const steps = recoveryBlock.slice(stepsStart, stepsEnd);
+      assert.equal(steps.includes("min-w-0 flex-col"), true);
+      assert.equal(steps.includes("grid-cols-"), false);
+      assert.ok(steps.indexOf('"1"') < steps.indexOf('"2"'));
+      assert.ok(steps.indexOf('"2"') < steps.indexOf('"3"'));
+      assert.ok(steps.indexOf('"3"') < steps.indexOf('"4"'));
       assert.equal(recoveryBlock.includes("localStorage"), false);
       assert.equal(recoveryBlock.includes("window.location"), false);
     },
@@ -803,9 +812,9 @@ const tests: TestCase[] = [
       assert.equal(storeDetailsSource.includes("compact"), true);
       const actionOrder = [
         storeDetailsSource.indexOf("Operação da loja"),
+        storeDetailsSource.indexOf("Regularização do WhatsApp"),
         storeDetailsSource.indexOf("WhatsappPinsSection"),
         storeDetailsSource.indexOf("Conta responsável"),
-        storeDetailsSource.indexOf("Regularização do WhatsApp"),
       ];
       assert.equal(actionOrder.every((index) => index >= 0), true);
       assert.equal(
@@ -815,6 +824,20 @@ const tests: TestCase[] = [
         true,
         `actions must follow the DOM order: ${actionOrder.join(", ")}`,
       );
+      const regularizationStart = storeDetailsSource.indexOf("Regularização do WhatsApp");
+      const pinBlockStart = storeDetailsSource.indexOf("<div>\n              <WhatsappPinsSection", regularizationStart);
+      assert.ok(regularizationStart >= 0);
+      assert.ok(pinBlockStart > regularizationStart);
+      const regularizationBlock = storeDetailsSource.slice(regularizationStart, pinBlockStart);
+      assert.ok(
+        regularizationBlock.indexOf("ZionAdminWhatsappNumberChange") <
+          regularizationBlock.indexOf("Recuperar conexão existente"),
+      );
+      assert.equal(regularizationBlock.includes("WhatsappPinsSection"), false);
+      assert.equal(regularizationBlock.includes("Conta responsável"), false);
+      assert.equal(storeDetailsSource.includes("order-2"), false);
+      assert.equal(storeDetailsSource.includes("order-3"), false);
+      assert.equal(storeDetailsSource.includes("order-4"), false);
       assert.equal(storeDetailsSource.includes("order-first"), false);
       assert.equal(storeDetailsSource.includes("xl:order-none"), false);
       assert.equal(source.includes("!selectedStore && activeGlobalSection === \"stores\""), true);
@@ -867,7 +890,10 @@ const pinVisibilityTests: TestCase[] = [
       // A recuperacao Meta permanece separada e protegida por permissao.
       const recoveryStart = source.indexOf("function WhatsappPinRecoverySection({");
       const recovery = source.slice(recoveryStart, start);
-      assert.equal(recovery.includes("if (!canAccess) return null;"), true);
+      assert.equal(
+        recovery.includes("Recuperação indisponível: a permissão administrativa necessária não está presente."),
+        true,
+      );
       assert.equal(recovery.includes("Autorizar na Meta e executar"), true);
       assert.equal(recovery.includes("Autorizar novamente e materializar"), true);
     },
