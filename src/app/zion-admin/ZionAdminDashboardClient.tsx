@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { useRouter } from "next/navigation";
 import ZionAdminCostsSection from "./ZionAdminCostsSection";
 import ZionAdminPinRotationControls from "./ZionAdminPinRotationControls";
+import ZionAdminWhatsappNumberChange from "./ZionAdminWhatsappNumberChange";
 import {
   ensureFacebookSdkLoaded,
   classifyMetaEmbeddedSignupMessage,
@@ -2370,6 +2371,57 @@ function StoreDetailsDrawer({
             ) : null}
             </div>
 
+            <div className="flex min-w-0 flex-col rounded-xl border border-[#29313b] bg-[#10141b] p-3 text-sm text-zinc-300">
+              <div className="flex items-start gap-2.5">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#18313c] text-[#7bd9e2]"><AdminIcon name="whatsapp" className="h-[19px] w-[19px]" /></span>
+                <div>
+                  <h4 className="text-sm font-semibold text-zinc-100">Regularização do WhatsApp</h4>
+                  <p className="mt-1 text-xs leading-5 text-zinc-500">Gerencie a conexão e o número comercial da loja.</p>
+                </div>
+              </div>
+              <div className="mt-3 space-y-3">
+                <ZionAdminWhatsappNumberChange
+                organizationId={store.organizationId}
+                storeId={store.id}
+                storeName={store.name}
+                emailMasked={accountAccess?.emailMasked || ""}
+                canAccess={canManageAccounts}
+                />
+                {!isWhatsappPinRecoveryTargetStore(store) ? <div className="rounded-xl border border-[#29313b] bg-[#0b1218] p-3 text-sm text-zinc-300">
+                  <div className="flex items-start gap-2">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-400/10 text-zinc-300"><AdminIcon name="whatsapp" className="h-4 w-4" /></span>
+                    <div>
+                      <h4 className="text-[12px] font-semibold text-zinc-100">Recuperar conexão existente</h4>
+                      <p className="mt-1 text-[10px] leading-4 text-zinc-500">Recuperação não disponível para esta loja no contrato autorizado.</p>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-zinc-500">O alvo de recuperação não está vinculado a esta loja; nenhuma operação será iniciada.</p>
+                </div> : null}
+                {isWhatsappPinRecoveryTargetStore(store) ? <div className="rounded-xl border border-[#29313b] bg-[#0b1218] p-3 text-sm text-zinc-300">
+                  <div className="flex items-start gap-2">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-400/10 text-emerald-300"><AdminIcon name="whatsapp" className="h-4 w-4" /></span>
+                    <div>
+                      <h4 className="text-[12px] font-semibold text-zinc-100">Recuperar conexão existente</h4>
+                      <p className="mt-1 text-[10px] leading-4 text-zinc-500">Recuperação controlada para o telefone autorizado da loja.</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-1.5">
+                    <DetailItem label="WABA do contrato" value="Vinculada" />
+                    <DetailItem label="Phone ID do contrato" value="Vinculado" />
+                  </div>
+                  <details className="mt-2 rounded-lg border border-[#26343d] bg-[#0b1218] px-2 py-1.5">
+                    <summary className="cursor-pointer text-[10px] text-[#9bcbd3]">Ver detalhes do telefone autorizado</summary>
+                    <DetailItem label="WABA" value={WHATSAPP_PIN_RECOVERY_TARGET.wabaId} />
+                    <DetailItem label="Phone ID" value={maskWhatsappRecoveryPhoneNumberId(WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId)} />
+                  </details>
+                  <details className="mt-auto rounded-lg border border-[#325d68] bg-[#153440] px-2 py-1.5">
+                    <summary className="cursor-pointer text-xs font-semibold text-emerald-200">Preparar recuperação</summary>
+                    <WhatsappPinRecoverySection canAccess={canManageWhatsappPins} metaExecutionEnabled={whatsappPinRecoveryMetaEnabled} />
+                  </details>
+                </div> : null}
+              </div>
+            </div>
+
             <div>
               <WhatsappPinsSection
                 key={store.id}
@@ -2527,38 +2579,6 @@ function StoreDetailsDrawer({
             ) : null}
 
             </div>
-            {!isWhatsappPinRecoveryTargetStore(store) ? <div className="flex min-w-0 flex-col rounded-xl border border-[#29313b] bg-[#10141b] p-3 text-sm text-zinc-300">
-              <div className="flex items-start gap-2">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-400/10 text-zinc-300"><AdminIcon name="whatsapp" className="h-4 w-4" /></span>
-                <div>
-                  <h4 className="text-sm font-semibold text-zinc-200">Regularização do WhatsApp</h4>
-                  <p className="mt-1 text-xs leading-5 text-zinc-500">Recuperação não disponível para esta loja no contrato autorizado.</p>
-                </div>
-              </div>
-              <p className="mt-3 text-xs leading-5 text-zinc-500">O alvo de recuperação não está vinculado a esta loja; nenhuma operação será iniciada.</p>
-            </div> : null}
-            {isWhatsappPinRecoveryTargetStore(store) ? <div className="flex min-w-0 flex-col rounded-xl border border-[#29313b] bg-[#10141b] p-3 text-sm text-zinc-300">
-              <div className="flex items-start gap-2">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-400/10 text-emerald-300"><AdminIcon name="whatsapp" className="h-4 w-4" /></span>
-                <div>
-                  <h4 className="text-sm font-semibold text-zinc-200">Regularização do WhatsApp</h4>
-                  <p className="mt-1 text-xs leading-5 text-zinc-500">Recuperação controlada para o telefone autorizado da loja.</p>
-                </div>
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-1.5">
-                <DetailItem label="WABA do contrato" value="Vinculada" />
-                <DetailItem label="Phone ID do contrato" value="Vinculado" />
-              </div>
-              <details className="mt-2 rounded-lg border border-[#26343d] bg-[#0b1218] px-2 py-1.5">
-                <summary className="cursor-pointer text-[10px] text-[#9bcbd3]">Ver detalhes do telefone autorizado</summary>
-                <DetailItem label="WABA" value={WHATSAPP_PIN_RECOVERY_TARGET.wabaId} />
-                <DetailItem label="Phone ID" value={maskWhatsappRecoveryPhoneNumberId(WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId)} />
-              </details>
-              <details className="mt-auto rounded-lg border border-[#325d68] bg-[#153440] px-2 py-1.5">
-                <summary className="cursor-pointer text-xs font-semibold text-emerald-200">Preparar recuperação</summary>
-                <WhatsappPinRecoverySection canAccess={canManageWhatsappPins} metaExecutionEnabled={whatsappPinRecoveryMetaEnabled} />
-              </details>
-            </div> : null}
           </div>
           <div className="mt-3 flex items-start gap-2 rounded-2xl border border-sky-400/20 bg-sky-500/[0.08] p-3 text-xs leading-5 text-sky-100">
             <AdminIcon name="info" className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" />
@@ -4701,17 +4721,23 @@ function WhatsappPinRecoverySection({
     }
   }
 
-  if (!canAccess) return null;
+  if (!canAccess) {
+    return (
+      <p className="mt-3 text-xs leading-5 text-amber-100">
+        Recuperação indisponível: a permissão administrativa necessária não está presente.
+      </p>
+    );
+  }
 
   return (
-    <section className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/[0.06] p-4">
+    <section className="mt-4 w-full min-w-0 rounded-2xl border border-amber-400/20 bg-amber-500/[0.06] p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-200/70">
             Recuperação controlada
           </div>
-          <h2 className="mt-1 text-lg font-semibold text-zinc-100">
-            Regularização do WhatsApp
+          <h2 className="mt-1 text-sm font-semibold text-zinc-100">
+            Recuperar conexão existente
           </h2>
           <p className="mt-1 max-w-3xl text-xs leading-5 text-zinc-400">
             A Meta registra este telefone, mas ele ainda não está vinculado à integração do ZION.
@@ -4736,14 +4762,14 @@ function WhatsappPinRecoverySection({
         </div>
       </div>
 
-      <ol className="mt-3 grid gap-2 text-xs text-zinc-400 sm:grid-cols-4">
+      <ol className="mt-3 flex min-w-0 flex-col gap-2 text-xs text-zinc-400">
         {[
           ["1", "Preparar", "consentimento e autorização local"],
           ["2", "Autorizar na Meta", "novo OAuth, sem reutilizar código"],
           ["3", "Executar", "operação remota com resultado explícito"],
           ["4", "Materializar", "somente após confirmação remota"],
         ].map(([number, title, description]) => (
-          <li key={number} className="rounded-xl border border-white/10 bg-zinc-950/40 p-3">
+          <li key={number} className="min-w-0 rounded-xl border border-white/10 bg-zinc-950/40 p-3">
             <span className="font-semibold text-zinc-200">{number}. {title}</span>
             <span className="mt-1 block leading-5">{description}</span>
           </li>
