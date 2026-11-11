@@ -455,7 +455,7 @@ test("responsible primary inbound is recorded before the customer thread path", 
   }
 });
 
-test("responsible interactive inbound reaches the bridge before the customer interactive filter", async () => {
+test("responsible interactive inbound with real SIM id reaches the contract decision before the customer filter", async () => {
   process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
 
@@ -485,7 +485,7 @@ test("responsible interactive inbound reaches the bridge before the customer int
             context: { id: "outbound-contract-notification" },
             interactive: {
               type: "button_reply",
-              button_reply: { id: "CONTRACT_CONFIRM", title: "SIM" },
+              button_reply: { id: "SIM", title: "SIM" },
             },
           },
         },
@@ -674,7 +674,7 @@ test("responsible interactive inbound reaches the bridge before the customer int
     assert.equal(messagePayload.content, "SIM");
     const messageMetadata = messagePayload.metadata as Record<string, unknown>;
     assert.equal(messageMetadata.context_message_id, "outbound-contract-notification");
-    assert.equal(messageMetadata.interactive_button_id, "CONTRACT_CONFIRM");
+    assert.equal(messageMetadata.interactive_button_id, "SIM");
     assert.equal(messageMetadata.interactive_button_title, "SIM");
 
     const decisionCall = calls.find((call) =>

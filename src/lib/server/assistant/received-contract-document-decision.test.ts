@@ -4,6 +4,7 @@ import test from "node:test";
 import { join } from "node:path";
 import {
   decideReceivedContractDocument,
+  protectUnpersistedContractCompletion,
   RECEIVED_CONTRACT_DOCUMENT_DECISION_RPC,
   resolveReceivedContractDocumentDecision,
   tryHandleReceivedContractDocumentDecision,
@@ -27,6 +28,30 @@ test("aceita somente SIM/NAO standalone e preserva acentuacao", () => {
   assert.equal(resolveReceivedContractDocumentDecision("sim, pode"), null);
   assert.equal(resolveReceivedContractDocumentDecision("assinei"), null);
   assert.equal(resolveReceivedContractDocumentDecision(""), null);
+});
+
+test("protege conclusao contratual gerada pelo fallback sem bloquear outros SIM/NAO", () => {
+  assert.match(
+    protectUnpersistedContractCompletion({
+      input: "SIM",
+      assistantText: "Está tudo certo com seu contrato.",
+    }),
+    /permanece pendente/,
+  );
+  assert.equal(
+    protectUnpersistedContractCompletion({
+      input: "SIM",
+      assistantText: "A confirmação da agenda foi registrada.",
+    }),
+    "A confirmação da agenda foi registrada.",
+  );
+  assert.equal(
+    protectUnpersistedContractCompletion({
+      input: "O contrato continua pendente.",
+      assistantText: "Está tudo certo com seu contrato.",
+    }),
+    "Está tudo certo com seu contrato.",
+  );
 });
 
 test("envia identidade exata para a autoridade e aceita replay valido", async () => {
@@ -546,6 +571,95 @@ test("integra SIM no WhatsApp com a notificacao externa exata", async () => {
   assert.equal(harness.calls[0]?.args.p_channel, "whatsapp_assistant");
 });
 
+test("reproduz o caso Vinicius com envio correto e notificacao anterior materializada", async () => {
+  const viniciusNotification = {
+    id: "ff5c34aa-e83e-4c79-be95-d9a9572a27be",
+    thread_id: "thread-vinicius",
+    status: "sent",
+    context: {
+      source: "received_contract_document_evidence_v1",
+      reason: "received_contract_document",
+      received_identification_status: "identified",
+      related_contract_id: "36c18224-5bdc-4f67-b8b6-5959887fb06b",
+      document_version_id: "db599232-d110-40dc-ab9a-7817f9d20e73",
+      received_evidence_source_message_id: "evidence-vinicius",
+      related_conversation_id: "3654eed6-37f3-4f32-aff2-b4b538570cd0",
+      customer_name: "Vinicius",
+    },
+  };
+  const harness = createResolverSupabase({
+    message: {
+      id: "16511dc1-8c07-41e1-808d-6f070ddd3e45",
+      thread_id: "thread-vinicius",
+    },
+    notifications: [
+      viniciusNotification,
+      {
+        id: "9a7d00dd-fd3a-418c-8f4a-2b21fe04ea17",
+        thread_id: "thread-vinicius",
+        status: "materialized",
+        context: { source: "assistant_document_workflow_v1" },
+      },
+    ],
+    externalNotifications: [{
+      id: "6c6d80f7-2075-40c4-8e3e-3b10bd14e121",
+      internal_notification_id: viniciusNotification.id,
+      external_message_id: "wamid.vinicius-document-confirmation",
+    }],
+    rpcResult: {
+      data: {
+        outcome: "applied",
+        decision: "confirmed",
+        notification_id: viniciusNotification.id,
+        contract_id: "36c18224-5bdc-4f67-b8b6-5959887fb06b",
+        contract_version_id: "db599232-d110-40dc-ab9a-7817f9d20e73",
+        evidence_source_message_id: "evidence-vinicius",
+      },
+      error: null,
+    },
+    persistedContract: {
+      id: "36c18224-5bdc-4f67-b8b6-5959887fb06b",
+      status: "completed",
+      completed_at: "2026-11-10T21:20:00.000Z",
+      current_version_id: "db599232-d110-40dc-ab9a-7817f9d20e73",
+      conversation_id: "3654eed6-37f3-4f32-aff2-b4b538570cd0",
+    },
+    persistedVersion: {
+      id: "db599232-d110-40dc-ab9a-7817f9d20e73",
+      contract_id: "36c18224-5bdc-4f67-b8b6-5959887fb06b",
+      status: "completed",
+      organization_id: "org-1",
+      store_id: "store-1",
+    },
+    persistedEvents: [{
+      id: "decision-event-vinicius",
+      conversation_id: "3654eed6-37f3-4f32-aff2-b4b538570cd0",
+      event_payload: {
+        schema: "received_contract_document_decision_v1",
+        decision: "confirmed",
+        notification_id: "ff5c34aa-e83e-4c79-be95-d9a9572a27be",
+        contract_id: "36c18224-5bdc-4f67-b8b6-5959887fb06b",
+        contract_version_id: "db599232-d110-40dc-ab9a-7817f9d20e73",
+        evidence_source_message_id: "evidence-vinicius",
+      },
+    }],
+  });
+
+  const result = await tryHandleReceivedContractDocumentDecision({
+    supabase: harness.supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    decisionMessageId: "16511dc1-8c07-41e1-808d-6f070ddd3e45",
+    content: "SIM",
+    channel: "whatsapp",
+    contextMessageId: "wamid.vinicius-document-confirmation",
+  });
+
+  assert.equal(result?.result.notificationId, viniciusNotification.id);
+  assert.equal(result?.result.contractId, "36c18224-5bdc-4f67-b8b6-5959887fb06b");
+  assert.equal(harness.calls[0]?.name, "confirm_received_contract_document_by_system");
+});
+
 test("integra NAO no chat interno pelo thread exato", async () => {
   const harness = createResolverSupabase({
     message: { id: "decision-2", thread_id: "thread-1" },
@@ -575,7 +689,7 @@ test("integra NAO no chat interno pelo thread exato", async () => {
   assert.equal(harness.calls[0]?.args.p_channel, "assistant_chat");
 });
 
-test("permanece sem mutacao quando ha mais de uma notificacao candidata", async () => {
+test("bloqueia o fallback quando ha mais de uma notificacao contratual candidata", async () => {
   const harness = createResolverSupabase({
     message: { id: "decision-3", thread_id: "thread-1" },
     notifications: [identifiedNotification, { ...identifiedNotification, id: "notification-2" }],
@@ -585,6 +699,25 @@ test("permanece sem mutacao quando ha mais de uma notificacao candidata", async 
     organizationId: "org-1",
     storeId: "store-1",
     decisionMessageId: "decision-3",
+    content: "SIM",
+    channel: "assistant",
+  });
+  assert.equal(result?.kind, "received_contract_document_decision_blocked");
+  assert.equal(result?.result.outcome, "blocked");
+  assert.match(result?.responseText || "", /permanece pendente/);
+  assert.equal(harness.calls.length, 0);
+});
+
+test("mantem SIM sem contexto contratual no fluxo normal", async () => {
+  const harness = createResolverSupabase({
+    message: { id: "decision-unrelated-sim", thread_id: "thread-other" },
+    notifications: [identifiedNotification],
+  });
+  const result = await tryHandleReceivedContractDocumentDecision({
+    supabase: harness.supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    decisionMessageId: "decision-unrelated-sim",
     content: "SIM",
     channel: "assistant",
   });

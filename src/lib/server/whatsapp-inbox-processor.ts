@@ -689,6 +689,7 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
   payload: StoredInboxPayload;
 }) {
   const responsible = await loadCanonicalActivePrimaryStoreResponsible({
+    supabase: args.supabase,
     organizationId: args.inbox.organization_id,
     storeId: args.inbox.store_id,
   });

@@ -74,12 +74,13 @@ BEGIN
 
   v_definition := pg_catalog.pg_get_functiondef(v_signature::regprocedure);
 
-  IF pg_catalog.length(v_definition) -
-       pg_catalog.length(pg_catalog.replace(v_definition, v_named_old, ''))
-       <> pg_catalog.length(v_named_old)
-     OR pg_catalog.length(v_definition) -
-       pg_catalog.length(pg_catalog.replace(v_definition, v_unnamed_old, ''))
-       <> pg_catalog.length(v_unnamed_old) THEN
+  IF pg_catalog.strpos(v_definition, v_named_new) > 0
+     AND pg_catalog.strpos(v_definition, v_unnamed_new) > 0 THEN
+    RETURN;
+  END IF;
+
+  IF pg_catalog.strpos(v_definition, v_named_old) = 0
+     OR pg_catalog.strpos(v_definition, v_unnamed_old) = 0 THEN
     RAISE EXCEPTION 'P9_9_3_C5_CONFIRMATION_TEXT_PATCH_PATTERN_COUNT_INVALID';
   END IF;
 

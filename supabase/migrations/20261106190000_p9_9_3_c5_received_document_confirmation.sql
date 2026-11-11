@@ -138,8 +138,8 @@ BEGIN
         'outgoing',
         'text',
         CASE
-          WHEN v_name IS NULL THEN 'Está tudo certo com seu contrato.'
-          ELSE v_name || ', está tudo certo com seu contrato.'
+          WHEN v_name IS NULL THEN 'Está tudo certo com seu contrato'
+          ELSE v_name || ', está tudo certo com seu contrato'
         END,
         NULL,
         NULL,
@@ -210,7 +210,10 @@ DECLARE
     'public.confirm_received_contract_document_by_system(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)';
   v_definition text;
   v_patched text;
-  v_before text;
+  v_old constant text := $$    p_organization_id, p_store_id, v_c.lead_id, NULL,
+    'contrato_conferencia_documental'$$;
+  v_new constant text := $$    p_organization_id, p_store_id, v_c.lead_id, v_c.conversation_id,
+    'contrato_conferencia_documental'$$;
 BEGIN
   SELECT pg_catalog.pg_get_functiondef(v_signature::regprocedure)
     INTO v_definition;
@@ -220,27 +223,26 @@ BEGIN
       message = 'P9_9_3_C5_DECISION_RPC_NOT_FOUND';
   END IF;
 
-  IF pg_catalog.strpos(
-    v_definition,
-    $$    p_organization_id, p_store_id, v_c.lead_id, NULL,
-    'contrato_conferencia_documental'$$
-  ) = 0 THEN
+  IF pg_catalog.strpos(v_definition, v_new) > 0
+     AND pg_catalog.strpos(v_definition, v_old) = 0 THEN
+    RETURN;
+  END IF;
+
+  IF pg_catalog.strpos(v_definition, v_old) = 0
+     OR pg_catalog.strpos(v_definition, v_new) > 0 THEN
     RAISE EXCEPTION USING
       errcode = 'P0001',
       message = 'P9_9_3_C5_DECISION_CONVERSATION_SCOPE_PATCH_PATTERN_NOT_FOUND';
   END IF;
 
-  v_before := v_definition;
   v_patched := pg_catalog.replace(
     v_definition,
-    $$    p_organization_id, p_store_id, v_c.lead_id, NULL,
-    'contrato_conferencia_documental'$$,
-    $$    p_organization_id, p_store_id, v_c.lead_id, v_c.conversation_id,
-    'contrato_conferencia_documental'$$
+    v_old,
+    v_new
   );
 
-  IF v_patched = v_before
-     OR pg_catalog.strpos(v_patched, 'v_c.conversation_id') = 0 THEN
+  IF v_patched = v_definition
+     OR pg_catalog.strpos(v_patched, v_new) = 0 THEN
     RAISE EXCEPTION USING
       errcode = 'P0001',
       message = 'P9_9_3_C5_DECISION_CONVERSATION_SCOPE_PATCH_NOT_APPLIED';
@@ -259,6 +261,7 @@ DECLARE
   v_definition text;
   v_patched text;
   v_before text;
+  v_changed boolean := false;
 BEGIN
   SELECT pg_catalog.pg_get_functiondef(v_signature::regprocedure)
     INTO v_definition;
@@ -271,78 +274,105 @@ BEGIN
   IF pg_catalog.strpos(
     v_definition,
     $$      'canonical_followup',
-      'received_contract_document_ack'
-    )$$
-  ) = 0 THEN
-    RAISE EXCEPTION USING errcode = 'P0001',
-      message = 'P9_9_3_C5_CONFIRMATION_CLASSIFICATION_PATCH_PATTERN_NOT_FOUND';
-  END IF;
-  v_before := v_definition;
-  v_patched := pg_catalog.replace(
-    v_definition,
-    $$      'canonical_followup',
-      'received_contract_document_ack'
-    )$$,
-    $$      'canonical_followup',
       'received_contract_document_ack',
       'received_contract_document_confirmation'
     )$$
-  );
-  IF v_patched = v_before THEN
+  ) > 0 THEN
+    v_patched := v_definition;
+  ELSIF pg_catalog.strpos(
+    v_definition,
+    $$      'canonical_followup',
+      'received_contract_document_ack'
+    )$$
+  ) > 0 THEN
+    v_patched := pg_catalog.replace(
+      v_definition,
+      $$      'canonical_followup',
+      'received_contract_document_ack'
+    )$$,
+      $$      'canonical_followup',
+      'received_contract_document_ack',
+      'received_contract_document_confirmation'
+    )$$
+    );
+    IF v_patched = v_definition THEN
+      RAISE EXCEPTION USING errcode = 'P0001',
+        message = 'P9_9_3_C5_CONFIRMATION_CLASSIFICATION_PATCH_NOT_APPLIED';
+    END IF;
+    v_changed := true;
+  ELSE
     RAISE EXCEPTION USING errcode = 'P0001',
-      message = 'P9_9_3_C5_CONFIRMATION_CLASSIFICATION_PATCH_NOT_APPLIED';
+      message = 'P9_9_3_C5_CONFIRMATION_CLASSIFICATION_PATCH_PATTERN_NOT_FOUND';
   END IF;
 
   IF pg_catalog.strpos(
     v_patched,
+    $$     and v_initial_outbound_kind <> 'received_contract_document_ack'
+     and v_initial_outbound_kind <> 'received_contract_document_confirmation' then$$
+  ) > 0 THEN
+    NULL;
+  ELSIF pg_catalog.strpos(
+    v_patched,
     $$     and v_initial_outbound_kind <> 'received_contract_document_ack' then$$
-  ) = 0 THEN
+  ) > 0 THEN
+    v_before := v_patched;
+    v_patched := pg_catalog.replace(
+      v_patched,
+      $$     and v_initial_outbound_kind <> 'received_contract_document_ack' then$$,
+      $$     and v_initial_outbound_kind <> 'received_contract_document_ack'
+     and v_initial_outbound_kind <> 'received_contract_document_confirmation' then$$
+    );
+    IF v_patched = v_before THEN
+      RAISE EXCEPTION USING errcode = 'P0001',
+        message = 'P9_9_3_C5_CONFIRMATION_INITIAL_OPPORTUNITY_PATCH_NOT_APPLIED';
+    END IF;
+    v_changed := true;
+  ELSE
     RAISE EXCEPTION USING errcode = 'P0001',
       message = 'P9_9_3_C5_CONFIRMATION_INITIAL_OPPORTUNITY_PATCH_PATTERN_NOT_FOUND';
   END IF;
-  v_before := v_patched;
-  v_patched := pg_catalog.replace(
-    v_patched,
-    $$     and v_initial_outbound_kind <> 'received_contract_document_ack' then$$,
-    $$     and v_initial_outbound_kind <> 'received_contract_document_ack'
-     and v_initial_outbound_kind <> 'received_contract_document_confirmation' then$$
-  );
-  IF v_patched = v_before THEN
-    RAISE EXCEPTION USING errcode = 'P0001',
-      message = 'P9_9_3_C5_CONFIRMATION_INITIAL_OPPORTUNITY_PATCH_NOT_APPLIED';
-  END IF;
 
   IF pg_catalog.strpos(
     v_patched,
+    $$     and v_outbound_kind <> 'received_contract_document_ack'
+     and v_outbound_kind <> 'received_contract_document_confirmation' then$$
+  ) > 0 THEN
+    NULL;
+  ELSIF pg_catalog.strpos(
+    v_patched,
     $$     and v_outbound_kind <> 'received_contract_document_ack' then$$
-  ) = 0 THEN
+  ) > 0 THEN
+    v_before := v_patched;
+    v_patched := pg_catalog.replace(
+      v_patched,
+      $$     and v_outbound_kind <> 'received_contract_document_ack' then$$,
+      $$     and v_outbound_kind <> 'received_contract_document_ack'
+     and v_outbound_kind <> 'received_contract_document_confirmation' then$$
+    );
+    IF v_patched = v_before THEN
+      RAISE EXCEPTION USING errcode = 'P0001',
+        message = 'P9_9_3_C5_CONFIRMATION_FINAL_OPPORTUNITY_PATCH_NOT_APPLIED';
+    END IF;
+    v_changed := true;
+  ELSE
     RAISE EXCEPTION USING errcode = 'P0001',
       message = 'P9_9_3_C5_CONFIRMATION_FINAL_OPPORTUNITY_PATCH_PATTERN_NOT_FOUND';
   END IF;
-  v_before := v_patched;
-  v_patched := pg_catalog.replace(
-    v_patched,
-    $$     and v_outbound_kind <> 'received_contract_document_ack' then$$,
-    $$     and v_outbound_kind <> 'received_contract_document_ack'
-     and v_outbound_kind <> 'received_contract_document_confirmation' then$$
-  );
-  IF v_patched = v_before THEN
-    RAISE EXCEPTION USING errcode = 'P0001',
-      message = 'P9_9_3_C5_CONFIRMATION_FINAL_OPPORTUNITY_PATCH_NOT_APPLIED';
-  END IF;
 
   IF pg_catalog.strpos(
     v_patched,
-    $$    if v_outbound_kind in ('reactive_ai_reply', 'stop_contact_ack') then$$
-  ) = 0 THEN
-    RAISE EXCEPTION USING errcode = 'P0001',
-      message = 'P9_9_3_C5_CONFIRMATION_BRANCH_ANCHOR_NOT_FOUND';
-  END IF;
-  v_before := v_patched;
-  v_patched := pg_catalog.replace(
+    $$    if v_outbound_kind = 'received_contract_document_confirmation' then$$
+  ) > 0 THEN
+    NULL;
+  ELSIF pg_catalog.strpos(
     v_patched,
-    $$    if v_outbound_kind in ('reactive_ai_reply', 'stop_contact_ack') then$$,
-    $$    if v_outbound_kind = 'received_contract_document_confirmation' then
+    $$    if v_outbound_kind in ('reactive_ai_reply', 'stop_contact_ack') then$$
+  ) > 0 THEN
+    v_before := v_patched;
+    v_patched := pg_catalog.replace(
+      v_patched,
+      $$    if v_outbound_kind in ('reactive_ai_reply', 'stop_contact_ack') then$$,
+      $$    if v_outbound_kind = 'received_contract_document_confirmation' then
       if nullif(pg_catalog.btrim(coalesce(v_message.metadata ->> 'outbound_origin', '')), '') is distinct from 'received_contract_document_confirmation' then
         v_block_reason := 'received_contract_confirmation_origin_mismatch';
       elsif nullif(pg_catalog.btrim(coalesce(v_message.metadata ->> 'confirmation_event_id', '')), '') is null
@@ -401,17 +431,27 @@ BEGIN
         v_block_reason := 'received_contract_confirmation_source_scope_mismatch';
       end if;
     elsif v_outbound_kind in ('reactive_ai_reply', 'stop_contact_ack') then$$
-  );
+    );
+    IF v_patched = v_before THEN
+      RAISE EXCEPTION USING errcode = 'P0001',
+        message = 'P9_9_3_C5_CONFIRMATION_GUARD_PATCH_NOT_APPLIED';
+    END IF;
+    v_changed := true;
+  ELSE
+    RAISE EXCEPTION USING errcode = 'P0001',
+      message = 'P9_9_3_C5_CONFIRMATION_BRANCH_ANCHOR_NOT_FOUND';
+  END IF;
 
-  IF v_patched = v_before
-     OR v_patched = v_definition
+  IF v_patched IS NULL
      OR pg_catalog.strpos(v_patched, 'received_contract_document_confirmation') = 0
      OR pg_catalog.strpos(v_patched, 'received_contract_confirmation_origin_mismatch') = 0 THEN
     RAISE EXCEPTION USING
       errcode = 'P0001',
       message = 'P9_9_3_C5_CONFIRMATION_GUARD_PATCH_NOT_APPLIED';
   END IF;
-  EXECUTE v_patched;
+  IF v_changed THEN
+    EXECUTE v_patched;
+  END IF;
 END;
 $guard_patch$;
 

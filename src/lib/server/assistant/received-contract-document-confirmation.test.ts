@@ -78,7 +78,8 @@ test("a migration fixa a mensagem, a classificacao e a chave por confirmacao", (
     "utf8",
   );
 
-  assert.match(migration, /está tudo certo com seu contrato\./);
+  assert.match(migration, /está tudo certo com seu contrato/);
+  assert.doesNotMatch(migration, /está tudo certo com seu contrato\.'/);
   assert.match(migration, /'outbound_kind', 'received_contract_document_confirmation'/);
   assert.match(migration, /contract_row\.conversation_id = p_conversation_id/);
   assert.match(migration, /v_c\.conversation_id/);
@@ -142,7 +143,10 @@ test("a migration nova parte do guard resultante do ACK e falha fechado por patc
 
 test("texto incremental da confirmacao remove o ponto final", () => {
   const migration = readFileSync(
-    resolve(process.cwd(), "supabase/migrations/20261106220000_p9_9_3_c5_contract_message_text_no_period.sql"),
+    resolve(
+      process.cwd(),
+      "supabase/migrations/20261106220000_p9_9_3_c5_contract_message_text_no_period.sql",
+    ),
     "utf8",
   );
 

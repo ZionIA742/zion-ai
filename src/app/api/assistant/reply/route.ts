@@ -90,7 +90,10 @@ import {
   readStoreContractUsagePolicyBySystem,
   type StoreContractUsagePolicy,
 } from "@/lib/server/store-contract-usage-policy";
-import { tryHandleReceivedContractDocumentDecision } from "@/lib/server/assistant/received-contract-document-decision";
+import {
+  protectUnpersistedContractCompletion,
+  tryHandleReceivedContractDocumentDecision,
+} from "@/lib/server/assistant/received-contract-document-decision";
 
 export const runtime = "nodejs";
 
@@ -10834,6 +10837,11 @@ export async function generateAssistantReply(params: {
     } else if (aiTextFromModel && hasUnsupportedOperationalSuccessClaim(aiText)) {
       aiText = buildUnsafeOperationalSuccessClaimFallback();
     }
+
+    aiText = protectUnpersistedContractCompletion({
+      input: lastHumanMessage,
+      assistantText: aiText,
+    });
 
     const isContextMessage =
       asksAboutToday(lastHumanMessage) ||
