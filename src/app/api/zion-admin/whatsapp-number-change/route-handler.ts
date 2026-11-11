@@ -62,7 +62,7 @@ async function readBody(request: Request) {
   }
 }
 
-async function readStoreOwner(client: ServiceClient, storeId: string) {
+async function readStoreOwner(client: ServiceClient, storeId: string, sessionUserId: string) {
   const storeResult = await client.from("stores").select("id, organization_id, name").eq("id", storeId).maybeSingle();
   if (storeResult.error || !storeResult.data) throw new Error("WHATSAPP_NUMBER_CHANGE_STORE_NOT_FOUND");
   const store = storeResult.data as { id: string; organization_id: string; name?: string | null };
@@ -75,9 +75,16 @@ async function readStoreOwner(client: ServiceClient, storeId: string) {
   const owners = ((membershipResult.data ?? []) as OwnerMembership[]).filter((row) => row.is_active !== false);
   if (owners.length !== 1 || !text(owners[0]?.user_id)) throw new Error("WHATSAPP_NUMBER_CHANGE_OWNER_AMBIGUOUS");
   const owner = owners[0];
-  const internalAdmin = await client.from("zion_internal_admins").select("user_id").eq("user_id", owner.user_id).maybeSingle();
+  const internalAdmin = await client
+    .from("zion_internal_admins")
+    .select("user_id")
+    .eq("user_id", owner.user_id)
+    .eq("is_active", true)
+    .maybeSingle();
   if (internalAdmin.error) throw new Error("WHATSAPP_NUMBER_CHANGE_OWNER_LOOKUP_FAILED");
-  if (internalAdmin.data) throw new Error("WHATSAPP_NUMBER_CHANGE_INTERNAL_OWNER");
+  if (internalAdmin.data && owner.user_id !== sessionUserId) {
+    throw new Error("WHATSAPP_NUMBER_CHANGE_INTERNAL_OWNER");
+  }
   const auth = await client.auth.admin.getUserById(owner.user_id);
   if (auth.error || !auth.data.user || !text(auth.data.user.email)) throw new Error("WHATSAPP_NUMBER_CHANGE_OWNER_EMAIL_UNAVAILABLE");
   return { store, owner, email: text(auth.data.user.email).toLowerCase() };
@@ -87,7 +94,7 @@ async function createLink(body: Record<string, unknown>, access: Extract<ZionAdm
   const storeId = text(body.storeId);
   if (!storeId) return response({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_STORE_REQUIRED" }, 400);
   const client = deps.createServiceSupabase();
-  const { store, owner, email } = await readStoreOwner(client, storeId);
+  const { store, owner, email } = await readStoreOwner(client, storeId, access.sessionUserId);
   const baseUrl = deps.baseUrl();
   if (!baseUrl) return response({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_BASE_URL_UNAVAILABLE" }, 503);
   const token = deps.createToken();
