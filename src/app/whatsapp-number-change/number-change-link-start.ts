@@ -22,7 +22,7 @@ export function resolveNumberChangeResumeState(args: {
   changeRequest: NumberChangeResumeRequest | null;
   organizationId?: string;
   storeId?: string;
-}): { requestId: string | null; phase: "initial" | "cutover"; blocked: false } | { blocked: true; message: string } {
+}): { requestId: string | null; phase: "initial" | "cutover" | "complete_link"; blocked: false } | { blocked: true; message: string } {
   if (["completed", "revoked", "expired"].includes(args.linkStatus || "")) {
     return { blocked: true, message: "Este link de troca não pode mais ser retomado." };
   }
@@ -37,7 +37,13 @@ export function resolveNumberChangeResumeState(args: {
       (args.storeId !== undefined && request.store_id !== args.storeId)) {
     return { blocked: true, message: "O estado salvo da troca não pôde ser confirmado com segurança." };
   }
-  if (["completed", "failed", "cancelled", "expired"].includes(request.status)) {
+  if (request.status === "completed") {
+    if (args.linkStatus !== "started") {
+      return { blocked: true, message: "O pedido foi concluído, mas o estado do link não pôde ser confirmado com segurança." };
+    }
+    return { requestId: request.id, phase: "complete_link", blocked: false };
+  }
+  if (["failed", "cancelled", "expired"].includes(request.status)) {
     return { blocked: true, message: "Este pedido de troca não pode mais ser retomado." };
   }
 
@@ -51,6 +57,31 @@ export function resolveNumberChangeResumeState(args: {
   }
 
   return { requestId: request.id, phase: hasCompleteCandidate ? "cutover" : "initial", blocked: false };
+}
+
+type NumberChangeLinkCompletionBody = {
+  ok?: unknown;
+  status?: unknown;
+  error?: unknown;
+};
+
+export async function completeNumberChangeLink(args: {
+  token: string;
+  fetcher?: NumberChangeLinkStartFetcher;
+}) {
+  const fetcher = args.fetcher ?? (globalThis.fetch as NumberChangeLinkStartFetcher);
+  const response = await fetcher(
+    `/api/store/whatsapp/number-change-link?token=${encodeURIComponent(args.token)}`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "complete" }),
+    },
+  );
+  const body = await response.json().catch(() => null) as NumberChangeLinkCompletionBody | null;
+  if (response.ok && body?.ok === true && body.status === "completed") return;
+  throw new Error(typeof body?.error === "string" ? body.error : "Não foi possível confirmar a conclusão da troca.");
 }
 
 function cleanStartError(value: unknown) {

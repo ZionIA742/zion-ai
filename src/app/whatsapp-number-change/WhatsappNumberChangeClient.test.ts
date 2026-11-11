@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import {
+  completeNumberChangeLink,
   requestNumberChangeLinkStart,
   resolveNumberChangeResumeState,
 } from "./number-change-link-start";
@@ -144,3 +145,40 @@ assert.equal(
   "inconsistent candidate state blocks safely",
 );
 console.log("whatsapp-number-change resume: 8 tests passed");
+
+assert.equal(
+  resolveNumberChangeResumeState({
+    linkStatus: "started",
+    requestId: "request-1",
+    changeRequest: { ...baseRequest, status: "completed" },
+  }).phase,
+  "complete_link",
+  "completed cutover with started link resumes only link completion",
+);
+assert.equal(
+  resolveNumberChangeResumeState({
+    linkStatus: "issued",
+    requestId: "request-1",
+    changeRequest: { ...baseRequest, status: "completed" },
+  }).blocked,
+  true,
+  "inconsistent completed request cannot invent link progress",
+);
+
+let completionCalls = 0;
+await completeNumberChangeLink({
+  token: "token-without-storage",
+  fetcher: async (_input, init) => {
+    completionCalls += 1;
+    assert.equal(init.method, "POST");
+    assert.equal(init.body, JSON.stringify({ action: "complete" }));
+    return mockResponse({ ok: true, status: "completed" }, true);
+  },
+});
+assert.equal(completionCalls, 1, "link recovery performs one server-side completion call");
+await assert.rejects(
+  () => completeNumberChangeLink({ token: "token", fetcher: async () => mockResponse({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_LINK_COMPLETION_FAILED" }, false) }),
+  /WHATSAPP_NUMBER_CHANGE_LINK_COMPLETION_FAILED/,
+  "link completion failure is not reported as success",
+);
+console.log("whatsapp-number-change completion recovery: 4 tests passed");
