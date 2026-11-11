@@ -41,6 +41,22 @@ type HistoryMonth = {
   };
 };
 
+type AccumulatedFinancialHistory = {
+  status: "partial" | "unavailable";
+  definitive: false;
+  evaluatedMonths: number;
+  includedMonths: string[];
+  excludedMonths: string[];
+  revenueBrlCents: number | null;
+  knownCostsBrlCents: number | null;
+  netBrlCents: number | null;
+  basis: "confirmed_revenues_and_latest_preclosure_known_costs";
+};
+
+type FinancialHistoryPayload = {
+  months: HistoryMonth[];
+  accumulated: AccumulatedFinancialHistory;
+};
 function asObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -122,7 +138,106 @@ function validateHistory(raw: unknown): HistoryMonth[] {
   return payload.history as HistoryMonth[];
 }
 
-async function loadHistory(signal: AbortSignal): Promise<HistoryMonth[]> {
+function validateAccumulated(
+  raw: unknown,
+  history: HistoryMonth[],
+): AccumulatedFinancialHistory {
+  const payload = asObject(raw);
+  const accumulated = asObject(payload?.accumulated);
+
+  if (
+    !accumulated ||
+    accumulated.definitive !== false ||
+    accumulated.basis !==
+      "confirmed_revenues_and_latest_preclosure_known_costs" ||
+    accumulated.evaluatedMonths !== history.length ||
+    !["partial", "unavailable"].includes(String(accumulated.status)) ||
+    !Array.isArray(accumulated.includedMonths) ||
+    !Array.isArray(accumulated.excludedMonths)
+  ) {
+    throw new Error("Acumulado financeiro invalido.");
+  }
+
+  const included: string[] = [];
+  const excluded: string[] = [];
+  let revenueTotal = 0;
+  let costsTotal = 0;
+  let netTotal = 0;
+
+  for (const item of history) {
+    if (
+      item.result.definitive !== false ||
+      item.costs.complete !== false
+    ) {
+      throw new Error("Acumulado financeiro invalido.");
+    }
+
+    const revenue = item.revenue.amountBrlCents;
+    const costs = item.costs.knownSubtotalBrlCents;
+    const net = item.result.netBrlCents;
+
+    if (
+      item.revenue.status !== "confirmed" ||
+      revenue === null ||
+      costs === null ||
+      item.result.status !== "partial" ||
+      net === null
+    ) {
+      excluded.push(item.month);
+      continue;
+    }
+
+    if (
+      !Number.isSafeInteger(revenue) ||
+      revenue < 0 ||
+      !Number.isSafeInteger(costs) ||
+      costs < 0 ||
+      !Number.isSafeInteger(net) ||
+      revenue - costs !== net
+    ) {
+      throw new Error("Acumulado financeiro inconsistente.");
+    }
+
+    const nextRevenue = revenueTotal + revenue;
+    const nextCosts = costsTotal + costs;
+    const nextNet = netTotal + net;
+
+    if (
+      !Number.isSafeInteger(nextRevenue) ||
+      !Number.isSafeInteger(nextCosts) ||
+      !Number.isSafeInteger(nextNet)
+    ) {
+      throw new Error("Acumulado financeiro excedeu o limite.");
+    }
+
+    revenueTotal = nextRevenue;
+    costsTotal = nextCosts;
+    netTotal = nextNet;
+    included.push(item.month);
+  }
+
+  const available = included.length > 0;
+
+  if (
+    accumulated.includedMonths.length !== included.length ||
+    accumulated.excludedMonths.length !== excluded.length ||
+    accumulated.includedMonths.some(
+      (value: unknown, index: number) => value !== included[index],
+    ) ||
+    accumulated.excludedMonths.some(
+      (value: unknown, index: number) => value !== excluded[index],
+    ) ||
+    accumulated.status !== (available ? "partial" : "unavailable") ||
+    accumulated.revenueBrlCents !== (available ? revenueTotal : null) ||
+    accumulated.knownCostsBrlCents !== (available ? costsTotal : null) ||
+    accumulated.netBrlCents !== (available ? netTotal : null)
+  ) {
+    throw new Error("Acumulado financeiro nao confere com o historico.");
+  }
+
+  return accumulated as AccumulatedFinancialHistory;
+}
+async function loadHistory(signal: AbortSignal): Promise<FinancialHistoryPayload> {
   const response = await fetch("/api/zion-admin/financial-history", {
     credentials: "include",
     cache: "no-store",
@@ -140,7 +255,9 @@ async function loadHistory(signal: AbortSignal): Promise<HistoryMonth[]> {
     );
   }
 
-  return validateHistory(payload);
+  const months = validateHistory(payload);
+  const accumulated = validateAccumulated(payload, months);
+  return { months, accumulated };
 }
 
 function brl(value: number | null): string {
@@ -191,7 +308,7 @@ function snapshotRevenueLabel(item: HistoryMonth): string {
 }
 
 export default function ZionAdminFinancialHistory() {
-  const [history, setHistory] = useState<HistoryMonth[] | null>(null);
+  const [history, setHistory] = useState<FinancialHistoryPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -236,13 +353,66 @@ export default function ZionAdminFinancialHistory() {
         <p role="status" className="mt-4 text-sm text-[#9fb6c2]">
           Carregando histórico financeiro...
         </p>
-      ) : history.length === 0 ? (
+      ) : history.months.length === 0 ? (
         <p className="mt-4 text-sm text-[#9fb6c2]">
           Nenhuma competência disponível.
         </p>
       ) : (
         <div className="mt-4 space-y-2">
-          {history.map((item) => (
+          <div
+            role="group"
+            aria-label="Resumo financeiro acumulado parcial"
+            className="rounded-xl border border-cyan-500/20 bg-white/[0.03] p-3"
+          >
+            <h4 className="text-sm font-semibold text-white">
+              Acumulado parcial — últimos 12 meses
+            </h4>
+            <p className="mt-1 text-xs text-[#9fb6c2]">
+              {history.accumulated.includedMonths.length} de{" "}
+              {history.accumulated.evaluatedMonths} competências
+              com valores comparáveis
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <div>
+                <p className="text-xs text-[#9fb6c2]">
+                  Receitas confirmadas
+                </p>
+                <p className="font-semibold text-white">
+                  {brl(history.accumulated.revenueBrlCents)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-[#9fb6c2]">
+                  Custos conhecidos
+                </p>
+                <p className="font-semibold text-white">
+                  {brl(history.accumulated.knownCostsBrlCents)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-[#9fb6c2]">
+                  Saldo parcial acumulado
+                </p>
+                <p className="font-semibold text-white">
+                  {brl(history.accumulated.netBrlCents)}
+                </p>
+              </div>
+            </div>
+            {history.accumulated.excludedMonths.length > 0 ? (
+              <p className="mt-3 text-xs text-amber-200">
+                Competências excluídas por falta de dados:{" "}
+                {history.accumulated.excludedMonths
+                  .map(monthName)
+                  .join(", ")}
+              </p>
+            ) : null}
+            <p className="mt-3 text-xs leading-5 text-[#9fb6c2]">
+              Apenas receitas confirmadas e custos conhecidos.
+              Fontes pendentes não são tratadas como zero.
+              Não representa lucro ou prejuízo definitivo.
+            </p>
+          </div>
+          {history.months.map((item) => (
             <details
               key={item.month}
               className="rounded-xl border border-white/10 bg-white/[0.03]"

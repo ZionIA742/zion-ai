@@ -6,6 +6,7 @@ import {
 } from "@/lib/server/zion-admin-api-response";
 import {
   buildMonthlyFinancialHistory,
+  buildAccumulatedFinancialHistory,
 } from "@/lib/server/zion-admin-financial-history";
 
 export const dynamic = "force-dynamic";
@@ -105,11 +106,14 @@ export async function GET() {
       revenueAudits: revenueAudits.data,
     });
 
+    const accumulated = buildAccumulatedFinancialHistory(history);
+
     return createZionAdminApiJsonResponse({
       ok: true,
       timezone: "America/Sao_Paulo",
       definitiveFinancialCloseAvailable: false,
       history,
+      accumulated,
     }, 200);
   } catch {
     return createZionAdminApiJsonResponse({
