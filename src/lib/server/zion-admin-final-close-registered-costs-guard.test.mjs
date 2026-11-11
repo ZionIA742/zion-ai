@@ -79,3 +79,18 @@ test("blocks unsupported USD conversion and finalization", () => {
     /^\s*(?:INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|TRUNCATE\s+)/im,
   );
 });
+test("PostgreSQL special expression syntax: EXTRACT", () => {
+  assert.doesNotMatch(sql, /pg_catalog\.extract\s*\(/i);
+  assert.equal(
+    (sql.match(/EXTRACT\(MONTH FROM p_month\)/g) ?? []).length,
+    2,
+  );
+});
+
+test("PostgreSQL special expression syntax: COALESCE", () => {
+  assert.doesNotMatch(sql, /pg_catalog\.coalesce\s*\(/i);
+  assert.equal(
+    (sql.match(/\bCOALESCE\s*\(/g) ?? []).length,
+    3,
+  );
+});

@@ -134,7 +134,7 @@ BEGIN
         WHERE v.effective_month <= p_month
         ORDER BY v.item_id, v.effective_month DESC
     )
-    SELECT pg_catalog.coalesce(
+    SELECT COALESCE(
         pg_catalog.sum(
             CASE
                 WHEN NOT a.enabled OR a.starts_on > v_month_end
@@ -145,13 +145,13 @@ BEGIN
                     THEN
                         pg_catalog.floor(
                             a.amount_cents::numeric *
-                            pg_catalog.extract(month FROM p_month) / 12
+                            EXTRACT(MONTH FROM p_month) / 12
                         )
                         -
                         pg_catalog.floor(
                             a.amount_cents::numeric *
                             (
-                                pg_catalog.extract(month FROM p_month) - 1
+                                EXTRACT(MONTH FROM p_month) - 1
                             ) / 12
                         )
                 ELSE NULL
@@ -180,7 +180,7 @@ BEGIN
                OR amount_minor < 0
                OR amount_minor > 9007199254740991
         ),
-        pg_catalog.coalesce(
+        COALESCE(
             pg_catalog.sum(
                 CASE WHEN currency = 'BRL'
                     THEN amount_minor::numeric
@@ -188,7 +188,7 @@ BEGIN
                 END
             ), 0::numeric
         ),
-        pg_catalog.coalesce(
+        COALESCE(
             pg_catalog.sum(
                 CASE WHEN currency = 'USD'
                     THEN amount_minor::numeric
