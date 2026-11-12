@@ -453,6 +453,7 @@ const tests: TestCase[] = [
       assert.equal(startBlock.includes("embeddedSignupAttemptIdRef.current = attemptId;"), true);
       assert.equal(startBlock.includes("embeddedSignupFlowRef.current = createMetaEmbeddedSignupFlowCoordinator"), true);
       assert.equal(startBlock.includes("embeddedSignupTimeoutRef.current = window.setTimeout"), true);
+      assert.equal(startBlock.includes("isMetaEmbeddedSignupFlowActive({"), true);
       assert.equal(
         startBlock.indexOf("embeddedSignupTimeoutRef.current = window.setTimeout") <
           startBlock.indexOf("window.FB.login("),
@@ -470,6 +471,15 @@ const tests: TestCase[] = [
       assert.equal(source.includes("https://www.facebook.com/pages/create"), true);
       assert.equal(source.includes("siteOrFacebookPageSelection"), true);
       assert.equal(source.includes("type=\"url\""), false);
+    },
+  },
+  {
+    name: "cancellation is decided by the coordinator and cannot bypass submitting state",
+    run: () => {
+      const source = readPageSource();
+      assert.equal(source.includes("isMetaEmbeddedSignupCancellation"), false);
+      assert.equal(source.includes('if (diagnostic === "cancelled")'), true);
+      assert.equal(source.includes('if (diagnostic === "cancelled" ||'), false);
     },
   },
   {

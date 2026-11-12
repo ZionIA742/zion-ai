@@ -22,7 +22,7 @@ import {
   createMetaEmbeddedSignupFlowCoordinator,
   ensureFacebookSdkLoaded,
   getMetaEmbeddedSignupConfig,
-  isMetaEmbeddedSignupCancellation,
+  isMetaEmbeddedSignupFlowActive,
   type MetaEmbeddedSignupFlowCoordinator,
   type MetaEmbeddedSignupSession,
 } from "@/lib/client/meta-embedded-signup";
@@ -1196,6 +1196,11 @@ function OnboardingContent() {
       const flow = embeddedSignupFlowRef.current;
       if (!flow) return;
 
+      // Meta does not include a stable attempt id in WA_EMBEDDED_SIGNUP and
+      // FB.login does not expose the authorizing popup reference. Therefore
+      // event.source cannot be bound safely to this attempt. Keep the
+      // strongest compatible boundary: active flow, trusted origin, payload
+      // validation and server-side WABA/phone validation.
       const diagnostic = flow.acceptMessage(event);
       const session = diagnostic === "finish_valid" ? flow.getSnapshot().session : null;
       if (session) {
@@ -1217,7 +1222,7 @@ function OnboardingContent() {
         return;
       }
 
-      if (diagnostic === "cancelled" || isMetaEmbeddedSignupCancellation(event)) {
+      if (diagnostic === "cancelled") {
         closeEmbeddedSignupAttempt(embeddedSignupAttemptIdRef.current);
         setEmbeddedSignupLoading(false);
         setEmbeddedSignupSubmitting(false);
@@ -1415,6 +1420,18 @@ function OnboardingContent() {
 
     try {
       await ensureFacebookSdkLoaded(metaEmbeddedSignupConfig.appId);
+
+      if (
+        !embeddedSignupMountedRef.current ||
+        !embeddedSignupFlowRef.current ||
+        !isMetaEmbeddedSignupFlowActive({
+          expectedFlowId: attemptId,
+          currentFlowId: embeddedSignupAttemptIdRef.current,
+          status: embeddedSignupFlowRef.current.getSnapshot().status,
+        })
+      ) {
+        return;
+      }
 
       if (!window.FB?.login) {
         throw new Error("FACEBOOK_SDK_LOGIN_UNAVAILABLE");

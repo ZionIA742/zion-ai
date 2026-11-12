@@ -24,6 +24,7 @@ const tests = [
     name: "ignores callbacks from a previous flow and closes safely on timeout",
     run() {
       assert.equal(isMetaEmbeddedSignupFlowActive({ expectedFlowId: 2, currentFlowId: 1, status: "authorizing" }), false);
+      assert.equal(isMetaEmbeddedSignupFlowActive({ expectedFlowId: 2, currentFlowId: 2, status: "authorizing" }), true);
       assert.equal(isMetaEmbeddedSignupFlowActive({ expectedFlowId: 2, currentFlowId: 2, status: "submitting" }), false);
       const flow = createMetaEmbeddedSignupFlowCoordinator(target);
       assert.equal(flow.acceptOAuthCode("oauth-code"), true);
@@ -78,6 +79,23 @@ const tests = [
       });
       assert.equal(flow.acceptMessage(finishEvent), "target_rejected");
       assert.equal(flow.canSubmit(), false);
+    },
+  },
+  {
+    name: "ignores cancellation after submission has started",
+    run() {
+      const flow = createMetaEmbeddedSignupFlowCoordinator(target);
+      assert.equal(flow.acceptOAuthCode("oauth-code"), true);
+      assert.equal(flow.acceptMessage(finishEvent), "finish_valid");
+      assert.equal(flow.markSubmitting(), true);
+      assert.equal(
+        flow.acceptMessage({
+          origin: trustedOrigin,
+          data: { type: "WA_EMBEDDED_SIGNUP", event: "CANCELLED" },
+        }),
+        "ignored_message",
+      );
+      assert.equal(flow.getSnapshot().status, "submitting");
     },
   },
   {
