@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -32,6 +33,7 @@ import {
   recoverEmbeddedSignupStatus,
 } from "@/lib/client/embedded-signup-recovery";
 import { formatOfficialWhatsappDisplay } from "./whatsapp-display";
+import { useOnboardingScope } from "./onboarding-scope";
 
 type AnswersMap = Record<string, unknown>;
 
@@ -547,6 +549,11 @@ function OnboardingContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { activeStore, organizationId, loading: storeLoading, refreshStores } = useStoreContext();
+  const {
+    key: onboardingScopeKey,
+    capture: captureOnboardingScope,
+    isCurrent: isCurrentOnboardingScope,
+  } = useOnboardingScope(organizationId, activeStore?.id ?? null);
 
   const [currentStep, setCurrentStep] = useState(1);
   const [saving, setSaving] = useState(false);
@@ -626,6 +633,38 @@ function OnboardingContent() {
     responsible_whatsapp: "",
   });
 
+  useLayoutEffect(() => {
+    setSaving(false);
+    setFatalError(null);
+    setFormError(null);
+    setSuccessMessage(null);
+    setAnswers({});
+    setOnboardingStatus("");
+    setStrategySettings(null);
+    setPrimaryResponsible(null);
+    setWhatsappStatus(null);
+    setWhatsappStatusLoading(false);
+    setWhatsappStatusError(null);
+    setOnboardingActivationState(null);
+    setOnboardingActivationLoading(false);
+    setStep1Form({
+      store_display_name: "",
+      store_description: "",
+      city: "",
+      state: "",
+    });
+    setStep2Form({
+      store_services: [],
+      store_services_other: "",
+      brands_worked: [],
+      brands_worked_other: "",
+    });
+    setStep3Form({
+      responsible_name: "",
+      responsible_whatsapp: "",
+    });
+  }, [onboardingScopeKey]);
+
   const storagePrefix = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_v2:${organizationId}:${activeStore.id}`;
@@ -668,25 +707,34 @@ function OnboardingContent() {
   };
 
   const loadOnboardingStatus = useCallback(async () => {
-    if (!organizationId || !activeStore?.id) return "";
+    const scope = captureOnboardingScope();
+    if (!scope) return "";
 
-    const { data, error } = await supabase.rpc("onboarding_get_store_onboarding_scoped", {
-      p_organization_id: organizationId,
-      p_store_id: activeStore.id,
-    });
+    try {
+      const { data, error } = await supabase.rpc("onboarding_get_store_onboarding_scoped", {
+        p_organization_id: scope.organizationId,
+        p_store_id: scope.storeId,
+      });
 
-    if (error) {
+      if (error) {
+        console.error("[OnboardingPage] loadOnboardingStatus error:", error);
+        return "";
+      }
+
+      const status = cleanText(Array.isArray(data) ? data[0]?.status : data?.status).toLowerCase();
+      if (!isCurrentOnboardingScope(scope)) return "";
+      setOnboardingStatus(status);
+      return status;
+    } catch (error) {
       console.error("[OnboardingPage] loadOnboardingStatus error:", error);
+      if (isCurrentOnboardingScope(scope)) setOnboardingStatus("");
       return "";
     }
-
-    const status = cleanText(Array.isArray(data) ? data[0]?.status : data?.status).toLowerCase();
-    setOnboardingStatus(status);
-    return status;
-  }, [organizationId, activeStore?.id]);
+  }, [captureOnboardingScope, isCurrentOnboardingScope]);
 
   const fetchWhatsappStatus = useCallback(async (options?: { timeoutMs?: number }): Promise<StoreWhatsappStatusApiResponse | null> => {
-    if (!activeStore?.id) return null;
+    const scope = captureOnboardingScope();
+    if (!scope) return null;
 
     if (!embeddedSignupMountedRef.current) return null;
     setWhatsappStatusLoading(true);
@@ -699,7 +747,7 @@ function OnboardingContent() {
 
     try {
       const response = await fetch(
-        `/api/store/whatsapp/status?storeId=${encodeURIComponent(activeStore.id)}`,
+        `/api/store/whatsapp/status?storeId=${encodeURIComponent(scope.storeId)}`,
         {
           method: "GET",
           cache: "no-store",
@@ -710,7 +758,7 @@ function OnboardingContent() {
 
       const result = (await response.json().catch(() => null)) as StoreWhatsappStatusApiResponse | null;
 
-      if (!embeddedSignupMountedRef.current) return null;
+      if (!embeddedSignupMountedRef.current || !isCurrentOnboardingScope(scope)) return null;
 
       if (result && isKnownWhatsappOperationalUnavailability(response, result)) {
         setWhatsappStatus({
@@ -735,32 +783,36 @@ function OnboardingContent() {
       return result;
     } catch (error) {
       console.error("[OnboardingPage] fetchWhatsappStatus error:", error);
-      if (!embeddedSignupMountedRef.current) return null;
+      if (!embeddedSignupMountedRef.current || !isCurrentOnboardingScope(scope)) return null;
       setWhatsappStatus(null);
       setWhatsappStatusError(WHATSAPP_STATUS_UNAVAILABLE_MESSAGE);
       return null;
     } finally {
       window.clearTimeout(statusTimeoutId);
-      if (embeddedSignupMountedRef.current) setWhatsappStatusLoading(false);
+      if (embeddedSignupMountedRef.current && isCurrentOnboardingScope(scope)) {
+        setWhatsappStatusLoading(false);
+      }
     }
-  }, [activeStore?.id, embeddedSignupMountedRef]);
+  }, [captureOnboardingScope, embeddedSignupMountedRef, isCurrentOnboardingScope]);
 
   const loadBaseData = useCallback(async () => {
-    if (!organizationId || !activeStore?.id) return;
+    const scope = captureOnboardingScope();
+    if (!scope) return;
+    const storeName = cleanText(activeStore?.name);
 
     try {
       const [answersResult, strategySettingsResult, responsibleResponse] = await Promise.all([
         supabase.rpc("onboarding_get_answers_scoped", {
-          p_organization_id: organizationId,
-          p_store_id: activeStore.id,
+          p_organization_id: scope.organizationId,
+          p_store_id: scope.storeId,
         }),
         supabase
           .from("store_strategy_settings")
           .select(
             "organization_id, store_id, city, state, service_regions, service_region_modes, service_region_primary_mode, service_region_outside_consultation, service_region_notes, store_services, store_services_other, store_description, main_store_brand, brands_worked, strategy_service_exclusions, strategy_primary_focus, strategy_sell_more, strategy_common_customer, strategy_ideal_customer, strategy_ticket_range, strategy_positioning, strategy_priority_brands, strategy_non_worked_brands, strategy_top_lines, strategy_top_products, strategy_differentials, strategy_promise_limits, strategy_ai_presentation, strategy_ai_priorities, strategy_ai_never_forget, created_at, updated_at",
           )
-          .eq("organization_id", organizationId)
-          .eq("store_id", activeStore.id)
+          .eq("organization_id", scope.organizationId)
+          .eq("store_id", scope.storeId)
           .maybeSingle(),
         fetch("/api/store/primary-responsible", {
           method: "GET",
@@ -771,10 +823,13 @@ function OnboardingContent() {
 
       if (answersResult.error) throw answersResult.error;
       if (strategySettingsResult.error) throw strategySettingsResult.error;
+      if (!isCurrentOnboardingScope(scope)) return;
 
       const responsibleResult = (await responsibleResponse.json().catch(() => null)) as
         | StorePrimaryResponsibleApiResponse
         | null;
+
+      if (!isCurrentOnboardingScope(scope)) return;
 
       if (!responsibleResponse.ok || !responsibleResult?.ok) {
         throw new Error(
@@ -790,6 +845,7 @@ function OnboardingContent() {
       });
       const nextResponsible = responsibleResult.responsible ?? null;
 
+      if (!isCurrentOnboardingScope(scope)) return;
       setAnswers(nextAnswers);
       setStrategySettings(nextStrategySettings);
       setPrimaryResponsible(nextResponsible);
@@ -801,7 +857,7 @@ function OnboardingContent() {
 
       setStep1Form((current) => ({
         store_display_name:
-          current.store_display_name || cleanText(activeStore.name),
+          current.store_display_name || storeName,
         store_description:
           current.store_description || cleanText(strategyInput.storeDescription),
         city: current.city || strategyInput.city,
@@ -837,9 +893,11 @@ function OnboardingContent() {
       }));
     } catch (error) {
       console.error("[OnboardingPage] loadBaseData error:", error);
-      setFatalError("Falha ao carregar os dados iniciais do onboarding.");
+      if (isCurrentOnboardingScope(scope)) {
+        setFatalError("Falha ao carregar os dados iniciais do onboarding.");
+      }
     }
-  }, [organizationId, activeStore?.id, activeStore?.name]);
+  }, [activeStore?.name, captureOnboardingScope, isCurrentOnboardingScope]);
 
   useEffect(() => {
     loadBaseData();
@@ -947,7 +1005,8 @@ function OnboardingContent() {
   }, [step3Form, step3DraftStorageKey]);
 
   async function saveStrategySettingsPartial(patch: Partial<StoreStrategySettingsInput>) {
-    if (!organizationId || !activeStore?.id) return null;
+    const scope = captureOnboardingScope();
+    if (!scope) return null;
 
     const normalized = normalizeStoreStrategySettingsInput({
       ...createStoreStrategySettingsInputFromSources({
@@ -960,8 +1019,8 @@ function OnboardingContent() {
     const { data, error } = await supabase.rpc(
       "upsert_store_strategy_settings_with_legacy_mirror_scoped",
       {
-        p_organization_id: organizationId,
-        p_store_id: activeStore.id,
+        p_organization_id: scope.organizationId,
+        p_store_id: scope.storeId,
         p_city: normalized.value.city,
         p_state: normalized.value.state,
         p_service_regions: normalized.value.serviceRegions,
@@ -998,6 +1057,7 @@ function OnboardingContent() {
       throw new Error("Falha ao sincronizar as informações essenciais da loja.");
     }
 
+    if (!isCurrentOnboardingScope(scope)) return null;
     const saved = (data ?? null) as StoreStrategySettingsRow | null;
     setStrategySettings(saved);
     return saved;
@@ -1007,18 +1067,21 @@ function OnboardingContent() {
     payloads: Array<[string, unknown]>,
     nextStatus?: "in_progress",
   ) {
-    if (!organizationId || !activeStore?.id) return;
+    const scope = captureOnboardingScope();
+    if (!scope) return;
 
     for (const [questionKey, answer] of payloads) {
       const { error } = await supabase.rpc("onboarding_upsert_answer_scoped", {
-        p_organization_id: organizationId,
-        p_store_id: activeStore.id,
+        p_organization_id: scope.organizationId,
+        p_store_id: scope.storeId,
         p_question_key: questionKey,
         p_answer: answer,
       });
 
       if (error) throw new Error(`Falha ao salvar campo: ${questionKey}`);
     }
+
+    if (!isCurrentOnboardingScope(scope)) return;
 
     if (payloads.length > 0) {
       setAnswers((current) => ({
@@ -1033,14 +1096,14 @@ function OnboardingContent() {
     const { error: statusError } = await supabase.rpc(
       "onboarding_upsert_store_onboarding_scoped",
       {
-        p_organization_id: organizationId,
-        p_store_id: activeStore.id,
+        p_organization_id: scope.organizationId,
+        p_store_id: scope.storeId,
         p_status: resolvedStatus,
       },
     );
 
     if (statusError) throw new Error("Falha ao atualizar o status do onboarding.");
-    setOnboardingStatus(resolvedStatus);
+    if (isCurrentOnboardingScope(scope)) setOnboardingStatus(resolvedStatus);
   }
 
   async function saveStep1(event: FormEvent) {
@@ -1058,7 +1121,8 @@ function OnboardingContent() {
       setFormError("Preencha o estado da loja.");
       return;
     }
-    if (!organizationId || !activeStore?.id) return;
+    const scope = captureOnboardingScope();
+    if (!scope) return;
 
     setSaving(true);
     setFormError(null);
@@ -1070,12 +1134,13 @@ function OnboardingContent() {
         city: step1Form.city.trim(),
         state: step1Form.state.trim(),
       });
+      if (!isCurrentOnboardingScope(scope)) return;
 
       const response = await fetch("/api/store/update-name", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          storeId: activeStore.id,
+          storeId: scope.storeId,
           name: step1Form.store_display_name.trim(),
         }),
       });
@@ -1086,17 +1151,22 @@ function OnboardingContent() {
       if (!response.ok || !result?.ok) {
         throw new Error(result?.message || "Falha ao atualizar o nome oficial da loja.");
       }
+      if (!isCurrentOnboardingScope(scope)) return;
 
       await persistAnswers([["store_display_name", step1Form.store_display_name.trim()]]);
+      if (!isCurrentOnboardingScope(scope)) return;
       await refreshStores();
+      if (!isCurrentOnboardingScope(scope)) return;
 
       setSuccessMessage("Informações essenciais da loja salvas.");
       changeStep(2);
     } catch (error) {
       console.error("[OnboardingPage] saveStep1 error:", error);
-      setFormError(error instanceof Error ? error.message : "Erro ao salvar a etapa.");
+      if (isCurrentOnboardingScope(scope)) {
+        setFormError(error instanceof Error ? error.message : "Erro ao salvar a etapa.");
+      }
     } finally {
-      setSaving(false);
+      if (isCurrentOnboardingScope(scope)) setSaving(false);
     }
   }
 
@@ -1117,6 +1187,9 @@ function OnboardingContent() {
       return;
     }
 
+    const scope = captureOnboardingScope();
+    if (!scope) return;
+
     setSaving(true);
     setFormError(null);
     setSuccessMessage(null);
@@ -1135,15 +1208,19 @@ function OnboardingContent() {
           : "",
         brandsWorked,
       });
+      if (!isCurrentOnboardingScope(scope)) return;
       await persistAnswers([]);
+      if (!isCurrentOnboardingScope(scope)) return;
 
       setSuccessMessage("Essência comercial da loja salva.");
       changeStep(3);
     } catch (error) {
       console.error("[OnboardingPage] saveStep2 error:", error);
-      setFormError(error instanceof Error ? error.message : "Erro ao salvar a etapa.");
+      if (isCurrentOnboardingScope(scope)) {
+        setFormError(error instanceof Error ? error.message : "Erro ao salvar a etapa.");
+      }
     } finally {
-      setSaving(false);
+      if (isCurrentOnboardingScope(scope)) setSaving(false);
     }
   }
 
@@ -1158,7 +1235,8 @@ function OnboardingContent() {
       setFormError("Preencha o WhatsApp autorizado do responsável.");
       return;
     }
-    if (!organizationId || !activeStore?.id) return;
+    const scope = captureOnboardingScope();
+    if (!scope) return;
 
     setSaving(true);
     setFormError(null);
@@ -1168,8 +1246,8 @@ function OnboardingContent() {
       const { error: responsibleError } = await supabase.rpc(
         "upsert_store_primary_responsible_with_legacy_mirror_scoped",
         {
-          p_organization_id: organizationId,
-          p_store_id: activeStore.id,
+          p_organization_id: scope.organizationId,
+          p_store_id: scope.storeId,
           p_name: step3Form.responsible_name.trim(),
           p_whatsapp_number: normalizeWhatsappDigits(step3Form.responsible_whatsapp),
         },
@@ -1179,7 +1257,9 @@ function OnboardingContent() {
         throw new Error("Falha ao sincronizar o responsável principal.");
       }
 
+      if (!isCurrentOnboardingScope(scope)) return;
       await persistAnswers([]);
+      if (!isCurrentOnboardingScope(scope)) return;
       setPrimaryResponsible({
         name: step3Form.responsible_name.trim(),
         whatsappNumber: normalizeWhatsappDigits(step3Form.responsible_whatsapp),
@@ -1190,9 +1270,11 @@ function OnboardingContent() {
       changeStep(4);
     } catch (error) {
       console.error("[OnboardingPage] saveStep3 error:", error);
-      setFormError(error instanceof Error ? error.message : "Erro ao salvar a etapa.");
+      if (isCurrentOnboardingScope(scope)) {
+        setFormError(error instanceof Error ? error.message : "Erro ao salvar a etapa.");
+      }
     } finally {
-      setSaving(false);
+      if (isCurrentOnboardingScope(scope)) setSaving(false);
     }
   }
 
@@ -1271,7 +1353,8 @@ function OnboardingContent() {
   const [onboardingActivationLoading, setOnboardingActivationLoading] = useState(false);
 
   useEffect(() => {
-    if (!organizationId || !activeStore?.id || currentStep !== 4) return;
+    const scope = captureOnboardingScope();
+    if (!scope || currentStep !== 4) return;
 
     let cancelled = false;
 
@@ -1296,6 +1379,8 @@ function OnboardingContent() {
             }
           | null;
 
+        if (cancelled || !isCurrentOnboardingScope(scope)) return;
+
         if (!response.ok || payload?.ok !== true) {
           throw new Error("P19A_ONBOARDING_ACTIVATION_READINESS_REQUEST_FAILED");
         }
@@ -1308,20 +1393,20 @@ function OnboardingContent() {
           throw new Error("P19A_ONBOARDING_ACTIVATION_READINESS_MISSING");
         }
 
-        if (!cancelled) {
+        if (!cancelled && isCurrentOnboardingScope(scope)) {
           setOnboardingActivationState(activationState);
         }
       } catch (error) {
         console.error("[OnboardingPage] activation readiness error:", error);
 
-        if (!cancelled) {
+        if (!cancelled && isCurrentOnboardingScope(scope)) {
           setOnboardingActivationState(null);
           setFormError(
             "Não foi possível verificar se o onboarding está pronto para ativação.",
           );
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && isCurrentOnboardingScope(scope)) {
           setOnboardingActivationLoading(false);
         }
       }
@@ -1331,9 +1416,9 @@ function OnboardingContent() {
       cancelled = true;
     };
   }, [
-    organizationId,
-    activeStore?.id,
+    captureOnboardingScope,
     currentStep,
+    isCurrentOnboardingScope,
     whatsappStatus?.connected,
     whatsappStatus?.isActive,
     whatsappStatus?.status,
@@ -1344,7 +1429,8 @@ function OnboardingContent() {
     !onboardingActivationLoading && onboardingActivationState === "ready";
 
   const refreshActivationReadinessAfterEmbeddedSignup = useCallback(async (attemptId: number) => {
-    if (!organizationId || !activeStore?.id) return false;
+    const scope = captureOnboardingScope();
+    if (!scope) return false;
     if (!isEmbeddedSignupAttemptCurrent(attemptId)) return false;
 
     setOnboardingActivationLoading(true);
@@ -1367,7 +1453,7 @@ function OnboardingContent() {
           }
         | null;
 
-      if (!isEmbeddedSignupAttemptCurrent(attemptId)) return false;
+      if (!isEmbeddedSignupAttemptCurrent(attemptId) || !isCurrentOnboardingScope(scope)) return false;
 
       if (!response.ok || payload?.ok !== true) {
         throw new Error("P19A_ONBOARDING_ACTIVATION_READINESS_REQUEST_FAILED");
@@ -1378,19 +1464,23 @@ function OnboardingContent() {
       );
       if (!activationState) throw new Error("P19A_ONBOARDING_ACTIVATION_READINESS_MISSING");
 
-      if (isEmbeddedSignupAttemptCurrent(attemptId)) setOnboardingActivationState(activationState);
+      if (isEmbeddedSignupAttemptCurrent(attemptId) && isCurrentOnboardingScope(scope)) {
+        setOnboardingActivationState(activationState);
+      }
       return activationState === "ready";
     } catch (error) {
       console.error("[OnboardingPage] activation readiness error:", error);
-      if (!isEmbeddedSignupAttemptCurrent(attemptId)) return false;
+      if (!isEmbeddedSignupAttemptCurrent(attemptId) || !isCurrentOnboardingScope(scope)) return false;
       setOnboardingActivationState(null);
       setFormError(
         "NÃ£o foi possÃ­vel verificar se o onboarding estÃ¡ pronto para ativaÃ§Ã£o.",
       );
     } finally {
-      if (isEmbeddedSignupAttemptCurrent(attemptId)) setOnboardingActivationLoading(false);
+      if (isEmbeddedSignupAttemptCurrent(attemptId) && isCurrentOnboardingScope(scope)) {
+        setOnboardingActivationLoading(false);
+      }
     }
-  }, [activeStore?.id, isEmbeddedSignupAttemptCurrent, organizationId]);
+  }, [captureOnboardingScope, isCurrentOnboardingScope, isEmbeddedSignupAttemptCurrent]);
 
   const finalizeEmbeddedSignupConnection = useCallback(
     async (
@@ -1767,7 +1857,8 @@ function OnboardingContent() {
   ]);
 
   async function activateZion() {
-    if (!organizationId || !activeStore?.id) return;
+    const scope = captureOnboardingScope();
+    if (!scope) return;
 
     if (!canActivate) {
       setFormError("Revise os dados obrigatórios do onboarding antes de ativar o ZION.");
@@ -1782,8 +1873,8 @@ function OnboardingContent() {
       const { data, error } = await supabase.rpc(
         "onboarding_complete_store_onboarding_scoped",
         {
-          p_organization_id: organizationId,
-          p_store_id: activeStore.id,
+          p_organization_id: scope.organizationId,
+          p_store_id: scope.storeId,
         },
       );
 
@@ -1793,6 +1884,8 @@ function OnboardingContent() {
       if (completedStatus !== "completed") {
         throw new Error("P19A_ONBOARDING_COMPLETION_STATUS_UNEXPECTED");
       }
+
+      if (!isCurrentOnboardingScope(scope)) return;
 
       setOnboardingStatus(completedStatus);
 
@@ -1812,9 +1905,9 @@ function OnboardingContent() {
       }, 900);
     } catch (error) {
       console.error("[OnboardingPage] activateZion error:", error);
-      setFormError(mapOnboardingCompletionError(error));
+      if (isCurrentOnboardingScope(scope)) setFormError(mapOnboardingCompletionError(error));
     } finally {
-      setSaving(false);
+      if (isCurrentOnboardingScope(scope)) setSaving(false);
     }
   }
 
