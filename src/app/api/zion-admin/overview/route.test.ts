@@ -149,6 +149,25 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "store payload includes settings readiness without changing operational totals",
+    run: () => {
+      const source = readSource(routePath);
+
+      for (const token of [
+        "loadStoreSettingsReadiness(",
+        "settingsReadinessByStoreId",
+        "settingsReadiness:",
+        "operationalHealth,",
+        "configurationIssues: metrics.configurationIssues",
+        "const totalOperationalIssues =",
+      ]) {
+        assert.equal(source.includes(token), true, `missing readiness contract token: ${token}`);
+      }
+
+      assert.equal(source.includes("totalOperationalIssues + settingsReadiness"), false);
+    },
+  },
+  {
     name: "operational health source failures fail closed independently",
     run: () => {
       const source = readSource(routePath);
