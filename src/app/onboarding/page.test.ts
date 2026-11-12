@@ -541,13 +541,16 @@ const tests: TestCase[] = [
     run: () => {
       const source = readPageSource();
       const block = getEmbeddedSignupSubmitBlock(source);
-      assert.equal(block.includes('throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED")'), false);
+      assert.equal(block.includes('throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED")'), true);
       assert.equal(source.includes('throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED")'), true);
       assert.equal(source.includes('throw new Error("ONBOARDING_READINESS_NOT_CONFIRMED")'), true);
       assert.equal(source.includes('"WhatsApp conectado pela Meta."'), true);
       assert.equal(source.includes("WHATSAPP_STATUS_UNAVAILABLE_MESSAGE"), true);
       assert.equal(source.includes("EMBEDDED_SIGNUP_STATUS_NOT_CONFIRMED_MESSAGE"), true);
       assert.equal(source.includes("EMBEDDED_SIGNUP_READINESS_NOT_CONFIRMED_MESSAGE"), true);
+      assert.equal(source.includes("responseBodyRead"), true);
+      assert.equal(source.includes("isEmbeddedSignupResponseUncertain"), true);
+      assert.equal(source.includes("result?.integration"), true);
     },
   },
   {
@@ -623,7 +626,7 @@ const tests: TestCase[] = [
       const confirmedIndex = block.indexOf('result?.error === "WHATSAPP_RECOVERY_REQUIRES_NEW_PIN_AUTHORIZATION"');
       const confirmationMessageIndex = block.indexOf("A Meta confirmou que o telefone", confirmedIndex);
       const confirmationReturnIndex = block.indexOf("return;", confirmationMessageIndex);
-      const normalConnectionStatusIndex = source.indexOf("finalizeEmbeddedSignupConnection(embeddedSignupSession)", confirmationReturnIndex);
+      const normalConnectionStatusIndex = source.indexOf("finalizeEmbeddedSignupConnection(", confirmationReturnIndex);
       const noMutationCopyIndex = source.indexOf("não salva uma integração e não consulta nem reutiliza PIN.");
 
       assert.equal(confirmedIndex > -1, true);

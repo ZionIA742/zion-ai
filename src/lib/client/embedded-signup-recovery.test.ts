@@ -1,5 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
+  enrichEmbeddedSignupSessionWithBackendIdentity,
+  isEmbeddedSignupResponseUncertain,
   isEmbeddedSignupStatusForSession,
   recoverEmbeddedSignupStatus,
 } from "./embedded-signup-recovery";
@@ -76,6 +78,91 @@ const tests = [
         false,
       );
       assert.equal(isEmbeddedSignupStatusForSession({ ...active, phoneNumberId: "other-phone" }, session), false);
+    },
+  },
+  {
+    name: "coexistence without a phone id never accepts an active number by WABA alone",
+    async run() {
+      const result = await recoverEmbeddedSignupStatus({
+        session: { whatsappBusinessAccountId: "waba-1" },
+        fetchStatus: async () => ({ ...active, phoneNumberId: "other-phone" }),
+        isMounted: () => true,
+        attempts: 1,
+        wait: async () => undefined,
+      });
+      assert.equal(result.outcome, "inconclusive");
+      assert.equal(
+        isEmbeddedSignupStatusForSession(
+          { ...active, phoneNumberId: "other-phone" },
+          { whatsappBusinessAccountId: "waba-1" },
+        ),
+        false,
+      );
+    },
+  },
+  {
+    name: "backend-resolved phone id can safely complete a coexistence session",
+    run() {
+      const resolved = enrichEmbeddedSignupSessionWithBackendIdentity(
+        { whatsappBusinessAccountId: "waba-1" },
+        { whatsappBusinessAccountId: "waba-1", phoneNumberId: "phone-1" },
+      );
+      assert.ok(resolved);
+      assert.deepEqual(resolved, {
+        whatsappBusinessAccountId: "waba-1",
+        phoneNumberId: "phone-1",
+      });
+      assert.equal(
+        isEmbeddedSignupStatusForSession(active, resolved),
+        true,
+      );
+    },
+  },
+  {
+    name: "backend identity from another WABA is rejected",
+    run() {
+      assert.equal(
+        enrichEmbeddedSignupSessionWithBackendIdentity(
+          { whatsappBusinessAccountId: "waba-1" },
+          { whatsappBusinessAccountId: "other-waba", phoneNumberId: "phone-1" },
+        ),
+        null,
+      );
+    },
+  },
+  {
+    name: "truncated successful response is transport-uncertain but definitive 4xx is not",
+    run() {
+      assert.equal(
+        isEmbeddedSignupResponseUncertain({
+          responseStatus: 200,
+          responseBodyRead: false,
+          timedOut: false,
+          errorName: "EMBEDDED_SIGNUP_RESPONSE_BODY_UNREADABLE",
+        }),
+        true,
+      );
+      assert.equal(
+        isEmbeddedSignupResponseUncertain({
+          responseStatus: 422,
+          responseBodyRead: false,
+          timedOut: false,
+          errorName: "EMBEDDED_SIGNUP_RESPONSE_BODY_UNREADABLE",
+        }),
+        false,
+      );
+    },
+  },
+  {
+    name: "a recovered phone identity cannot be substituted by a different phone",
+    run() {
+      assert.equal(
+        enrichEmbeddedSignupSessionWithBackendIdentity(
+          { whatsappBusinessAccountId: "waba-1", phoneNumberId: "phone-1" },
+          { whatsappBusinessAccountId: "waba-1", phoneNumberId: "other-phone" },
+        ),
+        null,
+      );
     },
   },
   {

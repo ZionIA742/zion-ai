@@ -12,6 +12,11 @@ export type EmbeddedSignupRecoveryStatus = {
   whatsappBusinessAccountId?: string | null;
 };
 
+export type EmbeddedSignupBackendIdentity = {
+  phoneNumberId?: string | null;
+  whatsappBusinessAccountId?: string | null;
+};
+
 export type EmbeddedSignupRecoveryResult =
   | { outcome: "active"; status: EmbeddedSignupRecoveryStatus }
   | { outcome: "absent"; status: EmbeddedSignupRecoveryStatus | null }
@@ -23,6 +28,29 @@ export const EMBEDDED_SIGNUP_STATUS_RECOVERY_DELAY_MS = 500;
 
 function clean(value: unknown) {
   return String(value ?? "").trim();
+}
+
+export function enrichEmbeddedSignupSessionWithBackendIdentity<T extends EmbeddedSignupRecoverySession>(
+  session: T,
+  identity: EmbeddedSignupBackendIdentity | null | undefined,
+): T | null {
+  const phoneNumberId = clean(identity?.phoneNumberId);
+  const whatsappBusinessAccountId = clean(identity?.whatsappBusinessAccountId);
+
+  if (
+    whatsappBusinessAccountId &&
+    whatsappBusinessAccountId !== clean(session.whatsappBusinessAccountId)
+  ) {
+    return null;
+  }
+
+  if (session.phoneNumberId && phoneNumberId && phoneNumberId !== clean(session.phoneNumberId)) {
+    return null;
+  }
+
+  return phoneNumberId
+    ? { ...session, phoneNumberId }
+    : session;
 }
 
 export function isEmbeddedSignupStatusForSession(
@@ -38,6 +66,8 @@ export function isEmbeddedSignupStatusForSession(
   ) {
     return false;
   }
+
+  if (!clean(session.phoneNumberId)) return false;
 
   if (
     clean(status.whatsappBusinessAccountId) &&
@@ -66,6 +96,7 @@ export async function recoverEmbeddedSignupStatus(args: {
   const wait = args.wait ?? ((delay: number) => new Promise<void>((resolve) => setTimeout(resolve, delay)));
   let lastStatus: EmbeddedSignupRecoveryStatus | null = null;
   let receivedAnyStatus = false;
+  let activeStatusWithoutSessionPhone = false;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (!args.isMounted()) return { outcome: "inconclusive", status: lastStatus };
@@ -77,6 +108,15 @@ export async function recoverEmbeddedSignupStatus(args: {
       if (isEmbeddedSignupStatusForSession(status, args.session)) {
         return { outcome: "active", status };
       }
+      if (
+        !args.session.phoneNumberId &&
+        status.ok === true &&
+        status.connected === true &&
+        status.isActive === true &&
+        clean(status.status).toLowerCase() === "active"
+      ) {
+        activeStatusWithoutSessionPhone = true;
+      }
     }
 
     if (attempt + 1 < attempts) {
@@ -84,7 +124,26 @@ export async function recoverEmbeddedSignupStatus(args: {
     }
   }
 
-  return receivedAnyStatus
+  return receivedAnyStatus && !activeStatusWithoutSessionPhone
     ? { outcome: "absent", status: lastStatus }
-    : { outcome: "inconclusive", status: null };
+    : { outcome: "inconclusive", status: lastStatus };
+}
+
+export function isEmbeddedSignupResponseUncertain(args: {
+  responseStatus: number | null;
+  responseBodyRead: boolean;
+  timedOut: boolean;
+  errorName?: string | null;
+}) {
+  if (args.timedOut || args.responseBodyRead) return args.timedOut;
+  if (
+    args.responseStatus !== null &&
+    args.responseStatus >= 400 &&
+    args.responseStatus < 500
+  ) {
+    return false;
+  }
+  return ["AbortError", "TypeError", "SyntaxError", "EMBEDDED_SIGNUP_RESPONSE_BODY_UNREADABLE"].includes(
+    clean(args.errorName),
+  );
 }

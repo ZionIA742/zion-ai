@@ -26,7 +26,9 @@ import {
 import { useMetaEmbeddedSignupAttempt } from "@/lib/client/use-meta-embedded-signup-attempt";
 import {
   EMBEDDED_SIGNUP_SUBMISSION_TIMEOUT_MS,
+  enrichEmbeddedSignupSessionWithBackendIdentity,
   isEmbeddedSignupStatusForSession,
+  isEmbeddedSignupResponseUncertain,
   recoverEmbeddedSignupStatus,
 } from "@/lib/client/embedded-signup-recovery";
 import { formatOfficialWhatsappDisplay } from "./whatsapp-display";
@@ -1537,7 +1539,8 @@ function OnboardingContent() {
     const submissionController = new AbortController();
     let submissionTimeoutId: number | null = null;
     let submissionTimedOut = false;
-    let responseReceived = false;
+    let responseStatus: number | null = null;
+    let responseBodyRead = false;
 
     const attempt = (async () => {
       try {
@@ -1573,18 +1576,26 @@ function OnboardingContent() {
             ...(isRecoveryVerification ? { recovery: true } : {}),
           }),
         });
-        responseReceived = true;
+        responseStatus = response.status;
 
-        const result = (await response.json().catch(() => null)) as
-          | {
-              ok?: boolean;
-              message?: string;
-              error?: string;
-              phoneRegistrationConfirmed?: boolean;
-              connectionScenario?: string;
-              connectionMode?: "standard" | "business_app_coexistence";
-            }
-          | null;
+        let result: {
+          ok?: boolean;
+          message?: string;
+          error?: string;
+          phoneRegistrationConfirmed?: boolean;
+          connectionScenario?: string;
+          connectionMode?: "standard" | "business_app_coexistence";
+          integration?: {
+            phoneNumberId?: string | null;
+            whatsappBusinessAccountId?: string | null;
+          } | null;
+        } | null;
+        try {
+          result = (await response.json()) as typeof result;
+          responseBodyRead = true;
+        } catch {
+          throw new Error("EMBEDDED_SIGNUP_RESPONSE_BODY_UNREADABLE");
+        }
 
         if (
           isRecoveryVerification &&
@@ -1624,14 +1635,28 @@ function OnboardingContent() {
         }
 
         if (!embeddedSignupMountedRef.current) return;
-        await finalizeEmbeddedSignupConnection(embeddedSignupSession);
+        const confirmedSession = enrichEmbeddedSignupSessionWithBackendIdentity(
+          embeddedSignupSession,
+          result?.integration,
+        );
+        if (!confirmedSession) {
+          throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED");
+        }
+        await finalizeEmbeddedSignupConnection(confirmedSession);
       } catch (error) {
         if (!embeddedSignupMountedRef.current) return;
 
-        const isAbortError = error instanceof Error && error.name === "AbortError";
-        const uncertainSubmission =
-          !responseReceived &&
-          (submissionTimedOut || isAbortError || error instanceof TypeError);
+        const uncertainSubmission = isEmbeddedSignupResponseUncertain({
+          responseStatus,
+          responseBodyRead,
+          timedOut: submissionTimedOut,
+          errorName:
+            error instanceof Error
+              ? error.name === "Error"
+                ? error.message
+                : error.name
+              : null,
+        });
 
         if (uncertainSubmission && !isRecoveryVerification) {
           const recovery = await recoverUncertainEmbeddedSignup(embeddedSignupSession);
