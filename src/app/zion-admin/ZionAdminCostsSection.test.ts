@@ -42,7 +42,9 @@ assert.equal(source.includes("expectedUpdatedAt"), true);
 assert.equal(source.includes("data.variableExpenses===null"), true);
 assert.equal(source.includes("Nenhuma despesa manual encontrada"), true);
 assert.equal(source.includes("O lançamento continuará disponível no histórico"), true);
-assert.equal(source.includes("Não entram automaticamente no total consolidado"), true);
+assert.equal(source.includes("Não entram automaticamente no total consolidado"), false);
+assert.equal(source.includes("Despesas ativas em BRL entram no subtotal conhecido."), true);
+assert.equal(source.includes("Valores em USD dependem de conversão disponível."), true);
 assert.equal(source.includes("IA variável"), true);
 
 // Os blocos ficam simultaneamente acessíveis, com empilhamento responsivo.

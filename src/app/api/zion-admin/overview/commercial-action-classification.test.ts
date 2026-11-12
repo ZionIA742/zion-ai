@@ -163,7 +163,7 @@ test("does not expose action identifiers or sensitive data", () => {
 
 test("does not classify an error as definitive failure", () => {
   const result = classify([row({ processing_error: "error" })]);
-  assert.equal(codes(result).includes("failed_final"), false);
+  assert.equal(codes(result).join(",").includes("failed_final"), false);
   assert.equal(codes(result).includes("processing_error_recorded"), true);
 });
 

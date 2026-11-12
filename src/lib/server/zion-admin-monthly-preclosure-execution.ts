@@ -11,7 +11,12 @@
 
 import { createServiceSupabaseClient } from "@/lib/server/zion-account-provisioning";
 import { readMonthlyPreclosureSources } from "@/lib/server/zion-admin-monthly-preclosure-source-reader";
-import { prepareMonthlyPreclosureSnapshot } from "@/lib/server/zion-admin-monthly-preclosure-preparation";
+import { collectAndPersistValidatedPtax } from "@/lib/server/zion-admin-ptax-evidence-persist";
+import { reconcilePersistedPtaxCollection } from "@/lib/server/zion-admin-ptax-evidence-reconcile";
+import {
+  prepareMonthlyPreclosureSnapshot,
+  type MonthlyPreclosureSources,
+} from "@/lib/server/zion-admin-monthly-preclosure-preparation";
 
 type RegisterInput = {
   month: string;
@@ -27,7 +32,9 @@ type RegisterResponse = {
 
 type ExecutionDependencies = {
   now: () => Date;
-  readSources: typeof readMonthlyPreclosureSources;
+  readSources: (month: string) => Promise<MonthlyPreclosureSources & {
+    ptaxEvidence?: { collectionId: string; collectionKey: string };
+  }>;
   register: (input: RegisterInput) => Promise<RegisterResponse>;
 };
 
@@ -128,14 +135,232 @@ async function registerInDatabase(
   };
 }
 
+/** Apenas executor mensal autorizado, sem alterar rotas de leitura. */
+async function readSourcesWithPersistedPtax(month: string) {
+  let ptaxEvidence: { collectionId: string; collectionKey: string } | undefined;
+  const sources = await readMonthlyPreclosureSources(month, {
+    loadPtax: async (from, to) => {
+      const persisted = await collectAndPersistValidatedPtax(from, to);
+      // Uma leitura independente do banco deve confirmar o que foi gravado.
+      const reconciled = await reconcilePersistedPtaxCollection(from, to, persisted);
+      ptaxEvidence = {
+        collectionId: reconciled.collectionId,
+        collectionKey: reconciled.collectionKey,
+      };
+      return reconciled.report;
+    },
+  });
+  return { ...sources, ptaxEvidence };
+}
+
+type PreclosureRevenue = {
+  amountBrlCents: number;
+  revision: number;
+  updatedAt: string | null;
+};
+
+function revenueCents(value: unknown): number | null {
+  if (
+    typeof value !== "number" &&
+    (typeof value !== "string" || !/^\d+$/.test(value))
+  ) return null;
+
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) &&
+    amount >= 0 && amount <= 100000000000
+      ? amount
+      : null;
+}
+
+function revenueObject(
+  value: unknown,
+): Record<string, unknown> | null {
+  return value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+}
+
+/**
+ * Adiciona receita declarada ao snapshot preliminar.
+ * Nunca concede autoridade de fechamento definitivo.
+ * Preserva a evidencia PTAX reconciliada.
+ */
+export function withManualRevenueOnPreclosure(
+  input: RegisterInput,
+  revenue: PreclosureRevenue | null,
+): RegisterInput {
+  if (
+    input.sourceSnapshot.month !== input.month ||
+    !Array.isArray(input.pendingSources)
+  ) {
+    throw new Error("MANUAL_REVENUE_INVALID_PRECLOSURE");
+  }
+
+  if (
+    revenue !== null &&
+    (
+      revenueCents(revenue.amountBrlCents) === null ||
+      !Number.isSafeInteger(revenue.revision) ||
+      revenue.revision < 1
+    )
+  ) {
+    throw new Error("MANUAL_REVENUE_INVALID_EVIDENCE");
+  }
+
+  const fixed = revenueObject(input.sourceSnapshot.fixed);
+  const manual = revenueObject(input.sourceSnapshot.manual);
+  const openAi = revenueObject(input.sourceSnapshot.openai);
+
+  if (!fixed || !manual || !openAi) {
+    throw new Error("MANUAL_REVENUE_INVALID_COST_SNAPSHOT");
+  }
+
+  const fixedKnown = fixed.status === "registered"
+    ? revenueCents(fixed.registeredBrlCents)
+    : null;
+
+  const manualKnown = manual.status === "registered"
+    ? revenueCents(manual.registeredBrlCents)
+    : null;
+
+  const openAiKnown = revenueCents(openAi.knownBrlCents);
+
+  if (
+    (fixed.status === "registered" && fixedKnown === null) ||
+    (manual.status === "registered" && manualKnown === null)
+  ) {
+    throw new Error("MANUAL_REVENUE_INVALID_COST_BASIS");
+  }
+
+  const available = [fixedKnown, manualKnown, openAiKnown]
+    .filter((value): value is number => value !== null);
+
+  const knownExpensesBrlCents = available.length > 0
+    ? available.reduce((sum, value) => sum + value, 0)
+    : null;
+
+  if (
+    knownExpensesBrlCents !== null &&
+    !Number.isSafeInteger(knownExpensesBrlCents)
+  ) {
+    throw new Error("MANUAL_REVENUE_COST_OVERFLOW");
+  }
+
+  const resultBrlCents =
+    revenue !== null && knownExpensesBrlCents !== null
+      ? revenue.amountBrlCents - knownExpensesBrlCents
+      : null;
+
+  const pendingSources = [...input.pendingSources];
+
+  if (
+    revenue === null &&
+    !pendingSources.includes("manual_revenue")
+  ) {
+    pendingSources.push("manual_revenue");
+  }
+
+  return {
+    ...input,
+    pendingSources,
+    sourceSnapshot: {
+      ...input.sourceSnapshot,
+      manualRevenue: {
+        source: "manual_subscription_revenue",
+        status: revenue === null ? "not_reported" : "confirmed",
+        amountBrlCents: revenue?.amountBrlCents ?? null,
+        revision: revenue?.revision ?? null,
+        updatedAt: revenue?.updatedAt ?? null,
+      },
+      financialResult: {
+        status: resultBrlCents === null
+          ? "unavailable"
+          : "partial",
+        revenueBrlCents: revenue?.amountBrlCents ?? null,
+        knownExpensesBrlCents,
+        resultBrlCents,
+        definitive: false,
+        note: "Resultado parcial; fontes ausentes nao equivalem a zero",
+      },
+    },
+  };
+}
+
+/**
+ * Confere registro e auditoria antes de escrever o pre-fechamento.
+ * Nao consulta fornecedores externos ou executa cobrancas.
+ */
+async function registerWithManualRevenue(
+  input: RegisterInput,
+): Promise<RegisterResponse> {
+  const db = createServiceSupabaseClient();
+
+  const record = await db
+    .from("zion_admin_monthly_manual_revenue")
+    .select("month,amount_brl_cents,revision,updated_at")
+    .eq("month", input.month)
+    .maybeSingle();
+
+  if (record.error) {
+    throw new Error("MANUAL_REVENUE_READ_FAILED");
+  }
+
+  let revenue: PreclosureRevenue | null = null;
+
+  if (record.data !== null) {
+    const row = revenueObject(record.data);
+    const amount = revenueCents(row?.amount_brl_cents);
+    const revision = row?.revision;
+
+    if (
+      row?.month !== input.month ||
+      amount === null ||
+      typeof revision !== "number" ||
+      !Number.isSafeInteger(revision) ||
+      revision < 1 ||
+      typeof row?.updated_at !== "string"
+    ) {
+      throw new Error("MANUAL_REVENUE_INVALID_RECORD");
+    }
+
+    const audit = await db
+      .from("zion_admin_monthly_manual_revenue_audit")
+      .select("month,revision,amount_brl_cents")
+      .eq("month", input.month)
+      .eq("revision", revision)
+      .maybeSingle();
+
+    if (
+      audit.error ||
+      audit.data === null ||
+      audit.data.month !== input.month ||
+      audit.data.revision !== revision ||
+      revenueCents(audit.data.amount_brl_cents) !== amount
+    ) {
+      throw new Error("MANUAL_REVENUE_AUDIT_MISMATCH");
+    }
+
+    revenue = {
+      amountBrlCents: amount,
+      revision,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  const enriched = withManualRevenueOnPreclosure(input, revenue);
+
+  return registerInDatabase(enriched);
+}
+
 export function createMonthlyPreclosureExecutionRunner(
   overrides: Partial<ExecutionDependencies> = {},
 ) {
   const now = overrides.now ?? (() => new Date());
   const readSources =
-    overrides.readSources ?? readMonthlyPreclosureSources;
-  const register =
-    overrides.register ?? registerInDatabase;
+    overrides.readSources ?? readSourcesWithPersistedPtax;
+  const register = overrides.register ?? registerWithManualRevenue;
 
   return async function runMonthlyPreclosure():
     Promise<MonthlyPreclosureExecutionResult> {
@@ -164,6 +389,8 @@ export function createMonthlyPreclosureExecutionRunner(
     let prepared: ReturnType<
       typeof prepareMonthlyPreclosureSnapshot
     >;
+    // Snapshot adicional aceita metadata sem alterar o contrato tipado do preparador.
+    let snapshotWithEvidence: Record<string, unknown> | null = null;
 
     try {
       const sources = await readSources(clock.month);
@@ -171,6 +398,21 @@ export function createMonthlyPreclosureExecutionRunner(
         clock.month,
         sources,
       );
+      if (sources.ptaxEvidence) {
+        // Vinculo de proveniencia: somente resposta revalidada e persistida.
+        // Nao equivale a fatura Meta/OpenAI nem autoriza fechamento final.
+        snapshotWithEvidence = {
+          ...prepared.sourceSnapshot,
+          openai: {
+            ...prepared.sourceSnapshot.openai,
+            ptaxEvidence: {
+              status: "reconciled_payload",
+              collectionId: sources.ptaxEvidence.collectionId,
+              collectionKey: sources.ptaxEvidence.collectionKey,
+            },
+          },
+        };
+      }
     } catch {
       return {
         status: "needs_review",
@@ -197,7 +439,7 @@ export function createMonthlyPreclosureExecutionRunner(
     try {
       result = await register({
         month: clock.month,
-        sourceSnapshot: prepared.sourceSnapshot,
+        sourceSnapshot: snapshotWithEvidence ?? prepared.sourceSnapshot,
         pendingSources: prepared.pendingSources,
         reason: "automatic_month_end_preclosure",
       });

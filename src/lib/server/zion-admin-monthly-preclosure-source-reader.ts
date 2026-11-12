@@ -240,6 +240,7 @@ async function readOpenAi(
   db: Db,
   month: string,
   monthEnd: string,
+  loadPtax: typeof loadDailyPtaxRates,
 ): Promise<OfficialOpenAiSource> {
   try {
     const report = await buildOfficialOpenAiCostReport(
@@ -318,7 +319,7 @@ async function readOpenAi(
 
     if (hasPositiveOfficialUsd) {
       try {
-        const ptax = await loadDailyPtaxRates(month, monthEnd);
+        const ptax = await loadPtax(month, monthEnd);
 
         if (
           ptax.source === "bcb_ptax_venda" &&
@@ -376,6 +377,7 @@ async function readOpenAi(
 
 export async function readMonthlyPreclosureSources(
   month: string,
+  options: { loadPtax?: typeof loadDailyPtaxRates } = {},
 ): Promise<MonthlyPreclosureSources> {
   const monthEnd = lastDay(month);
   const db = createServiceSupabaseClient();
@@ -383,7 +385,7 @@ export async function readMonthlyPreclosureSources(
   const [fixed, manual, openAi] = await Promise.all([
     readFixed(db, month, monthEnd),
     readManual(db, month),
-    readOpenAi(db, month, monthEnd),
+    readOpenAi(db, month, monthEnd, options.loadPtax ?? loadDailyPtaxRates),
   ]);
 
   return { fixed, manual, openAi };
