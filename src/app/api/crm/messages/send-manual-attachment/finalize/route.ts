@@ -86,9 +86,12 @@ export async function handleManualAttachmentFinalizePost(
         : errorResponse(503, "attachment_storage_unavailable");
     }
     if (!objectInfo.data) return errorResponse(503, "attachment_storage_unavailable");
-    const objectSize = Number(objectInfo.data.size);
+    const objectData = objectInfo.data as typeof objectInfo.data & {
+      mimetype?: string | null;
+    };
+    const objectSize = Number(objectData.size);
     const objectMime = normalizeManualAttachmentMimeType(
-      objectInfo.data.contentType ?? objectInfo.data.mimetype ?? objectInfo.data.metadata?.mimetype ?? objectInfo.data.metadata?.contentType,
+      objectData.contentType ?? objectData.mimetype ?? objectData.metadata?.mimetype ?? objectData.metadata?.contentType,
     );
     if (!Number.isInteger(objectSize) || objectSize <= 0 || objectSize > MANUAL_ATTACHMENT_MAX_FILE_SIZE_BYTES || objectSize !== authorization.sizeBytes) {
       return errorResponse(400, "attachment_size_mismatch");
