@@ -318,3 +318,115 @@ export function buildMonthlyFinancialHistory(input: HistoryInput) {
     };
   });
 }
+
+/**
+ * Acumula apenas receitas confirmadas e custos conhecidos.
+ * Meses sem dados comparaveis sao identificados e excluidos.
+ * Nunca representa fechamento financeiro definitivo.
+ */
+export function buildAccumulatedFinancialHistory(
+  history: ReturnType<typeof buildMonthlyFinancialHistory>,
+) {
+  if (
+    !Array.isArray(history) ||
+    history.length < 1 ||
+    history.length > 24
+  ) {
+    throw new Error("FINANCIAL_HISTORY_ACCUMULATED_INVALID_INPUT");
+  }
+
+  const seen = new Set<string>();
+  const includedMonths: string[] = [];
+  const excludedMonths: string[] = [];
+
+  let revenueTotal = 0;
+  let costsTotal = 0;
+  let netTotal = 0;
+
+  for (const row of history) {
+    if (
+      !row ||
+      typeof row.month !== "string" ||
+      !/^20\d{2}-(0[1-9]|1[0-2])-01$/.test(row.month) ||
+      seen.has(row.month)
+    ) {
+      throw new Error("FINANCIAL_HISTORY_ACCUMULATED_INVALID_MONTHS");
+    }
+
+    seen.add(row.month);
+
+    if (
+      row.result.definitive !== false ||
+      row.costs.complete !== false
+    ) {
+      throw new Error(
+        "FINANCIAL_HISTORY_ACCUMULATED_UNEXPECTED_FINALIZED",
+      );
+    }
+
+    const revenue = row.revenue.amountBrlCents;
+    const costs = row.costs.knownSubtotalBrlCents;
+    const net = row.result.netBrlCents;
+
+    if (
+      row.revenue.status !== "confirmed" ||
+      revenue === null ||
+      costs === null ||
+      row.result.status !== "partial" ||
+      net === null
+    ) {
+      excludedMonths.push(row.month);
+      continue;
+    }
+
+    if (
+      !Number.isSafeInteger(revenue) ||
+      revenue < 0 ||
+      !Number.isSafeInteger(costs) ||
+      costs < 0 ||
+      !Number.isSafeInteger(net) ||
+      revenue - costs !== net
+    ) {
+      throw new Error(
+        "FINANCIAL_HISTORY_ACCUMULATED_INVALID_RESULT",
+      );
+    }
+
+    const nextRevenue = revenueTotal + revenue;
+    const nextCosts = costsTotal + costs;
+    const nextNet = netTotal + net;
+
+    if (
+      !Number.isSafeInteger(nextRevenue) ||
+      !Number.isSafeInteger(nextCosts) ||
+      !Number.isSafeInteger(nextNet)
+    ) {
+      throw new Error(
+        "FINANCIAL_HISTORY_ACCUMULATED_OVERFLOW",
+      );
+    }
+
+    revenueTotal = nextRevenue;
+    costsTotal = nextCosts;
+    netTotal = nextNet;
+
+    includedMonths.push(row.month);
+  }
+
+  const available = includedMonths.length > 0;
+
+  return {
+    status: available
+      ? "partial" as const
+      : "unavailable" as const,
+    definitive: false as const,
+    evaluatedMonths: history.length,
+    includedMonths,
+    excludedMonths,
+    revenueBrlCents: available ? revenueTotal : null,
+    knownCostsBrlCents: available ? costsTotal : null,
+    netBrlCents: available ? netTotal : null,
+    basis:
+      "confirmed_revenues_and_latest_preclosure_known_costs" as const,
+  };
+}

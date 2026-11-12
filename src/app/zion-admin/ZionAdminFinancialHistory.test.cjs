@@ -115,3 +115,113 @@ test("D13C_FUNCTIONAL_MONTH_TEST: formatacao real do mes", () => {
   assert.equal(format("2026-11-01"), "Novembro de 2026");
   assert.equal(format("2025-12-01"), "Dezembro de 2025");
 });
+
+test("API retorna acumulado calculado pelo leitor canonico", () => {
+  const api = fs.readFileSync(
+    "src/app/api/zion-admin/financial-history/route.ts",
+    "utf8",
+  );
+
+  assert.match(api, /buildAccumulatedFinancialHistory\(history\)/);
+  assert.match(api, /\baccumulated,/);
+  assert.doesNotMatch(api, /\.insert\(|\.update\(|\.delete\(|\.rpc\(/);
+});
+
+test("resumo parcial aparece no historico financeiro", () => {
+  assert.match(component, /Resumo financeiro acumulado parcial/);
+  assert.match(component, /Acumulado parcial — últimos 12 meses/);
+  assert.match(component, /Saldo parcial acumulado/);
+  assert.match(component, /history\.accumulated\.excludedMonths/);
+  assert.match(component, /Não representa lucro ou prejuízo definitivo/);
+});
+
+test("validador independente detecta acumulado adulterado", () => {
+  const ts = require("typescript");
+  const vm = require("node:vm");
+
+  const definitions = [
+    /^function asObject\([\s\S]*?^\}/m,
+    /^function validateAccumulated\([\s\S]*?^\}/m,
+  ];
+
+  const declarations = definitions.map((pattern) => {
+    const match = component.match(pattern);
+    assert.ok(match, "Validador nao encontrado");
+    return match[0];
+  });
+
+  const js = ts.transpileModule(
+    declarations.join("\n\n") +
+      "\nmodule.exports = validateAccumulated;",
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  ).outputText;
+
+  const context = { module: { exports: null } };
+  vm.runInNewContext(js, context);
+  const validate = context.module.exports;
+
+  const history = [{
+    month: "2026-11-01",
+    revenue: {
+      status: "confirmed",
+      amountBrlCents: 0,
+    },
+    costs: {
+      complete: false,
+      knownSubtotalBrlCents: 250,
+    },
+    result: {
+      status: "partial",
+      definitive: false,
+      netBrlCents: -250,
+    },
+  }];
+
+  const payload = {
+    accumulated: {
+      status: "partial",
+      definitive: false,
+      evaluatedMonths: 1,
+      includedMonths: ["2026-11-01"],
+      excludedMonths: [],
+      revenueBrlCents: 0,
+      knownCostsBrlCents: 250,
+      netBrlCents: -250,
+      basis:
+        "confirmed_revenues_and_latest_preclosure_known_costs",
+    },
+  };
+
+  assert.equal(
+    validate(payload, history).netBrlCents, -250,
+  );
+
+  const altered = structuredClone(payload);
+  altered.accumulated.netBrlCents = 0;
+
+  assert.throws(
+    () => validate(altered, history),
+    /nao confere/,
+  );
+
+  const missing = structuredClone(payload);
+  missing.accumulated.includedMonths = [];
+
+  assert.throws(
+    () => validate(missing, history),
+    /nao confere/,
+  );
+
+  const falseFinal = structuredClone(payload);
+  falseFinal.accumulated.definitive = true;
+
+  assert.throws(
+    () => validate(falseFinal, history),
+    /Acumulado financeiro invalido/,
+  );
+});

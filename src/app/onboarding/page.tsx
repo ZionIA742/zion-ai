@@ -1290,6 +1290,13 @@ function OnboardingContent() {
   }, []);
 
   useEffect(() => {
+    embeddedSignupMountedRef.current = true;
+    return () => {
+      embeddedSignupMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
 
     const handleEmbeddedSignupMessage = (event: MessageEvent) => {
@@ -1313,6 +1320,7 @@ function OnboardingContent() {
           setEmbeddedSignupSubmitting(false);
           setEmbeddedSignupSession(null);
           clearEmbeddedSignupSensitiveState();
+          embeddedSignupRequestedModeRef.current = null;
           setEmbeddedSignupError("A Meta retornou uma modalidade diferente da solicitada.");
           return;
         }
@@ -1550,6 +1558,8 @@ function OnboardingContent() {
     const attemptId = beginEmbeddedSignupAttempt(connectionMode);
     embeddedSignupRequestedModeRef.current = connectionMode;
 
+    embeddedSignupRequestedModeRef.current = connectionMode;
+
     setFormError(null);
     setSuccessMessage(null);
     setEmbeddedSignupError(null);
@@ -1629,6 +1639,7 @@ function OnboardingContent() {
       );
     } catch {
       closeEmbeddedSignupAttempt(attemptId);
+      embeddedSignupRequestedModeRef.current = null;
       if (!embeddedSignupMountedRef.current) return;
       setEmbeddedSignupLoading(false);
       setEmbeddedSignupSubmitting(false);
@@ -1637,6 +1648,25 @@ function OnboardingContent() {
       setEmbeddedSignupError("Nao foi possivel carregar o SDK da Meta. Tente novamente.");
     }
   }
+
+  useEffect(() => {
+    if (!embeddedSignupCode) return;
+    if (embeddedSignupSession) return;
+
+    const timeout = window.setTimeout(() => {
+      setEmbeddedSignupLoading(false);
+      setEmbeddedSignupSubmitting(false);
+      setEmbeddedSignupSession(null);
+      clearEmbeddedSignupSensitiveState();
+      setEmbeddedSignupMessage(null);
+      setEmbeddedSignupError("Sessao Meta incompleta. Reinicie o Embedded Signup.");
+      embeddedSignupRequestedModeRef.current = null;
+    }, 10000);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [clearEmbeddedSignupSensitiveState, embeddedSignupCode, embeddedSignupSession]);
 
   useEffect(() => {
     if (!embeddedSignupCode || !embeddedSignupSession) return;

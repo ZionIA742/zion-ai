@@ -160,3 +160,121 @@ test("API preserva indisponibilidade e usa 12 competencias", () => {
   assert.match(route, /FINANCIAL_HISTORY_READ_FAILED/);
   assert.match(route, /}, 503\)/);
 });
+
+const accumulate = mod.exports.buildAccumulatedFinancialHistory;
+
+function monthForAccumulation(
+  value,
+  revenueValue,
+  fixedValue = 30000,
+  hasPreclosure = true,
+) {
+  const data = fixture();
+
+  data.months = [value];
+  data.preclosures[0].month = value;
+  data.preclosures[0].source_snapshot.sources.month = value;
+  data.preclosures[0].source_snapshot.sources.fixed.registeredBrlCents =
+    fixedValue;
+
+  data.preclosureAudits[0].month = value;
+  data.revenues[0].month = value;
+  data.revenues[0].amount_brl_cents = revenueValue ?? 0;
+  data.revenueAudits[0].month = value;
+  data.revenueAudits[0].amount_brl_cents = revenueValue ?? 0;
+
+  if (revenueValue === null) {
+    data.revenues = [];
+    data.revenueAudits = [];
+  }
+
+  if (!hasPreclosure) {
+    data.preclosures = [];
+    data.preclosureAudits = [];
+  }
+
+  return build(data)[0];
+}
+
+test("acumulado soma meses e aceita receita zero confirmada", () => {
+  const nov = monthForAccumulation("2026-11-01", 0, 30000);
+  const oct = monthForAccumulation("2026-10-01", 25000, 10000);
+
+  const summary = accumulate([nov, oct]);
+
+  assert.equal(summary.status, "partial");
+  assert.equal(summary.definitive, false);
+  assert.equal(summary.revenueBrlCents, 25000);
+  assert.equal(summary.knownCostsBrlCents, 40420);
+  assert.equal(summary.netBrlCents, -15420);
+  assert.equal(summary.evaluatedMonths, 2);
+
+  assert.deepEqual(
+    Array.from(summary.includedMonths),
+    ["2026-11-01", "2026-10-01"],
+  );
+});
+
+test("acumulado identifica meses sem dados suficientes", () => {
+  const nov = monthForAccumulation("2026-11-01", 0);
+  const oct = monthForAccumulation("2026-10-01", null);
+  const sep = monthForAccumulation(
+    "2026-09-01", 20000, 30000, false,
+  );
+
+  const summary = accumulate([nov, oct, sep]);
+
+  assert.deepEqual(
+    Array.from(summary.includedMonths),
+    ["2026-11-01"],
+  );
+
+  assert.deepEqual(
+    Array.from(summary.excludedMonths),
+    ["2026-10-01", "2026-09-01"],
+  );
+
+  assert.equal(summary.revenueBrlCents, 0);
+  assert.equal(summary.knownCostsBrlCents, 30210);
+  assert.equal(summary.netBrlCents, -30210);
+  assert.equal(summary.definitive, false);
+});
+
+test("sem meses comparaveis nao presume saldo zero", () => {
+  const oct = monthForAccumulation("2026-10-01", null);
+  const summary = accumulate([oct]);
+
+  assert.equal(summary.status, "unavailable");
+  assert.equal(summary.revenueBrlCents, null);
+  assert.equal(summary.knownCostsBrlCents, null);
+  assert.equal(summary.netBrlCents, null);
+});
+
+test("acumulado bloqueia overflow e meses duplicados", () => {
+  const oct = monthForAccumulation(
+    "2026-10-01", 0, 5000000000000000,
+  );
+  const nov = monthForAccumulation(
+    "2026-11-01", 0, 5000000000000000,
+  );
+
+  assert.throws(
+    () => accumulate([oct, nov]),
+    /ACCUMULATED_OVERFLOW/,
+  );
+
+  assert.throws(
+    () => accumulate([oct, oct]),
+    /ACCUMULATED_INVALID_MONTHS/,
+  );
+});
+
+test("acumulado rejeita classificacao definitiva inesperada", () => {
+  const nov = monthForAccumulation("2026-11-01", 0);
+  nov.result.definitive = true;
+
+  assert.throws(
+    () => accumulate([nov]),
+    /ACCUMULATED_UNEXPECTED_FINALIZED/,
+  );
+});
