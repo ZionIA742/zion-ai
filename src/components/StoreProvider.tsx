@@ -285,8 +285,24 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      if (currentUserIdRef.current && currentUserIdRef.current !== nextUserId) {
-        clearStoredStoreSelection(currentUserIdRef.current);
+      const previousUserId = currentUserIdRef.current;
+      const identityChanged = previousUserId !== nextUserId;
+
+      if (identityChanged) {
+        loadGenerationRef.current += 1;
+        currentUserIdRef.current = null;
+
+        if (previousUserId) {
+          clearStoredStoreSelection(previousUserId);
+        }
+
+        if (mountedRef.current) {
+          setOrganizationId(null);
+          setStores([]);
+          setActiveStoreIdState(null);
+          setError(null);
+          setLoading(true);
+        }
       }
 
       void load(nextUserId);
