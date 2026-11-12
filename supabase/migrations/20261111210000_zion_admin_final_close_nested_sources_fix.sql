@@ -133,7 +133,7 @@ BEGIN
     END IF;
 
     v_snapshot_revenue :=
-        v_preclosure.source_snapshot #> '{sources,manualRevenue}';
+        v_preclosure.source_snapshot -> 'manualRevenue';
 
     -- Zero confirmado e permitido.
     -- Receita ausente nunca equivale a zero.

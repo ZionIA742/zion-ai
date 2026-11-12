@@ -15,8 +15,8 @@ test("updates both existing verifiers", () => {
   assert.match(sql, /CREATE OR REPLACE FUNCTION public\.zion_admin_verify_final_close_registered_costs_by_system/);
 });
 
-test("reads declared revenue inside sources", () => {
-  assert.match(sql, /source_snapshot #> '\{sources,manualRevenue\}'/);
+test("reads declared revenue at the snapshot root", () => {
+  assert.match(sql, /source_snapshot -> 'manualRevenue'/);
 });
 
 test("reads fixed expenses inside sources", () => {
@@ -33,7 +33,7 @@ test("reads manual expenses inside sources", () => {
 });
 
 test("does not retain the incorrect root paths", () => {
-  assert.doesNotMatch(sql, /source_snapshot\s*->\s*'(fixed|manual|manualRevenue)'/);
+  assert.doesNotMatch(sql, /source_snapshot\s*->\s*'(fixed|manual)'/);
   assert.doesNotMatch(sql, /source_snapshot\s*#(?:>|>>)\s*'\{(fixed|manual),/);
 });
 
@@ -53,5 +53,16 @@ test("does not enable a final close or change expenses", () => {
   assert.doesNotMatch(
     sql,
     /^\s*(?:INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|TRUNCATE\s+)/im,
+  );
+});
+test("confirms the snapshot builder keeps manual revenue at root", () => {
+  const producer = readFileSync(
+    new URL("./zion-admin-monthly-preclosure-execution.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    producer,
+    /sourceSnapshot:\s*\{\s*\.\.\.input\.sourceSnapshot,\s*manualRevenue:\s*\{/s,
   );
 });
