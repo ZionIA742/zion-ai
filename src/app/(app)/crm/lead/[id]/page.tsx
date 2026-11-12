@@ -1679,6 +1679,7 @@ export default function LeadPage() {
   const [catalogPickerOpen, setCatalogPickerOpen] = useState(false);
   const [selectedCatalogProduct, setSelectedCatalogProduct] =
     useState<SelectedCatalogProduct | null>(null);
+  const [catalogPlaceholderOpen, setCatalogPlaceholderOpen] = useState(false);
   const [uploadingCustomerAttachment, setUploadingCustomerAttachment] = useState(false);
   const [uploadingManualAttachment, setUploadingManualAttachment] = useState(false);
   const [recordingAudio, setRecordingAudio] = useState(false);
@@ -5601,6 +5602,7 @@ export default function LeadPage() {
   function openCatalogPlaceholder() {
     setAttachmentMenuOpen(false);
     setCatalogPickerOpen(true);
+    setCatalogPlaceholderOpen(true);
     setErrorText(null);
     setStatusText(null);
   }
@@ -9398,6 +9400,31 @@ export default function LeadPage() {
                   >
                     Remover
                   </button>
+                </div>
+              ) : null}
+
+              {catalogPlaceholderOpen ? (
+                <div className="mb-3 rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-gray-700 ring-1 ring-black/10">
+                      <CatalogComposerIcon />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-gray-900">
+                        Produto do catálogo
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-gray-600">
+                        A seleção de produtos será disponibilizada em uma próxima etapa. Nenhum produto foi selecionado ou enviado.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCatalogPlaceholderOpen(false)}
+                      className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                    >
+                      Fechar
+                    </button>
+                  </div>
                 </div>
               ) : null}
 
