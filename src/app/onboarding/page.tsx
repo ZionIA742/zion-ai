@@ -19,10 +19,11 @@ import {
   type StoreStrategySettingsRow,
 } from "@/lib/store-strategy-settings";
 import {
+  createMetaEmbeddedSignupFlowCoordinator,
   ensureFacebookSdkLoaded,
-  extractMetaEmbeddedSignupSession,
   getMetaEmbeddedSignupConfig,
   isMetaEmbeddedSignupCancellation,
+  type MetaEmbeddedSignupFlowCoordinator,
   type MetaEmbeddedSignupSession,
 } from "@/lib/client/meta-embedded-signup";
 import { formatOfficialWhatsappDisplay } from "./whatsapp-display";
@@ -562,9 +563,14 @@ function OnboardingContent() {
   const embeddedSignupMountedRef = useRef(true);
   const embeddedSignupSubmittingRef = useRef(false);
   const embeddedSignupAttemptRef = useRef<Promise<void> | null>(null);
+  const embeddedSignupAttemptIdRef = useRef(0);
+  const embeddedSignupFlowRef = useRef<MetaEmbeddedSignupFlowCoordinator | null>(null);
+  const embeddedSignupTimeoutRef = useRef<number | null>(null);
   const embeddedSignupRequestedModeRef = useRef<"standard" | "business_app_coexistence" | null>(null);
   const [embeddedSignupError, setEmbeddedSignupError] = useState<string | null>(null);
   const [embeddedSignupMessage, setEmbeddedSignupMessage] = useState<string | null>(null);
+  const [siteOrFacebookPageSelection, setSiteOrFacebookPageSelection] = useState<"yes" | "no" | null>(null);
+  const [hasSiteOrFacebookPage, setHasSiteOrFacebookPage] = useState<"yes" | "no" | null>(null);
 
   const [step1Form, setStep1Form] = useState<Step1FormData>({
     store_display_name: "",
@@ -1157,28 +1163,51 @@ function OnboardingContent() {
     setEmbeddedSignupCode("");
   }, []);
 
+  const clearEmbeddedSignupTimeout = useCallback(() => {
+    if (embeddedSignupTimeoutRef.current === null) return;
+    window.clearTimeout(embeddedSignupTimeoutRef.current);
+    embeddedSignupTimeoutRef.current = null;
+  }, []);
+
+  const closeEmbeddedSignupAttempt = useCallback((attemptId: number) => {
+    if (embeddedSignupAttemptIdRef.current !== attemptId) return false;
+    embeddedSignupFlowRef.current?.close();
+    embeddedSignupFlowRef.current = null;
+    clearEmbeddedSignupTimeout();
+    embeddedSignupRequestedModeRef.current = null;
+    return true;
+  }, [clearEmbeddedSignupTimeout]);
+
   useEffect(() => {
     embeddedSignupMountedRef.current = true;
     return () => {
+      embeddedSignupAttemptIdRef.current += 1;
+      embeddedSignupFlowRef.current?.close();
+      embeddedSignupFlowRef.current = null;
+      clearEmbeddedSignupTimeout();
       embeddedSignupMountedRef.current = false;
     };
-  }, []);
+  }, [clearEmbeddedSignupTimeout]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     const handleEmbeddedSignupMessage = (event: MessageEvent) => {
-      const session = extractMetaEmbeddedSignupSession(event);
+      const flow = embeddedSignupFlowRef.current;
+      if (!flow) return;
+
+      const diagnostic = flow.acceptMessage(event);
+      const session = diagnostic === "finish_valid" ? flow.getSnapshot().session : null;
       if (session) {
         if (
           !embeddedSignupRequestedModeRef.current ||
           session.connectionMode !== embeddedSignupRequestedModeRef.current
         ) {
+          closeEmbeddedSignupAttempt(embeddedSignupAttemptIdRef.current);
           setEmbeddedSignupLoading(false);
           setEmbeddedSignupSubmitting(false);
           setEmbeddedSignupSession(null);
           clearEmbeddedSignupSensitiveState();
-          embeddedSignupRequestedModeRef.current = null;
           setEmbeddedSignupError("A Meta retornou uma modalidade diferente da solicitada.");
           return;
         }
@@ -1188,14 +1217,19 @@ function OnboardingContent() {
         return;
       }
 
-      if (isMetaEmbeddedSignupCancellation(event)) {
-        if (embeddedSignupAttemptRef.current) return;
+      if (diagnostic === "cancelled" || isMetaEmbeddedSignupCancellation(event)) {
+        closeEmbeddedSignupAttempt(embeddedSignupAttemptIdRef.current);
         setEmbeddedSignupLoading(false);
         setEmbeddedSignupSubmitting(false);
         setEmbeddedSignupSession(null);
         clearEmbeddedSignupSensitiveState();
         setEmbeddedSignupMessage(null);
         setEmbeddedSignupError("Embedded Signup cancelado antes da conclusao.");
+        return;
+      }
+
+      if (diagnostic === "target_rejected") {
+        setEmbeddedSignupError("A Meta retornou uma conexao diferente da tentativa atual.");
       }
     };
 
@@ -1203,7 +1237,7 @@ function OnboardingContent() {
     return () => {
       window.removeEventListener("message", handleEmbeddedSignupMessage);
     };
-  }, [clearEmbeddedSignupSensitiveState]);
+  }, [clearEmbeddedSignupSensitiveState, closeEmbeddedSignupAttempt]);
 
   const [onboardingActivationState, setOnboardingActivationState] = useState<string | null>(
     null,
@@ -1336,8 +1370,17 @@ function OnboardingContent() {
     intent: "connect" | "verify-existing" = "connect",
     connectionMode: "standard" | "business_app_coexistence",
   ) {
-    if (embeddedSignupAttemptRef.current || embeddedSignupSubmittingRef.current) return;
+    if (
+      embeddedSignupAttemptRef.current ||
+      embeddedSignupFlowRef.current ||
+      embeddedSignupSubmittingRef.current
+    ) return;
 
+    const attemptId = embeddedSignupAttemptIdRef.current + 1;
+    embeddedSignupAttemptIdRef.current = attemptId;
+    embeddedSignupFlowRef.current = createMetaEmbeddedSignupFlowCoordinator({
+      connectionMode,
+    });
     embeddedSignupRequestedModeRef.current = connectionMode;
 
     setFormError(null);
@@ -1348,7 +1391,22 @@ function OnboardingContent() {
     setEmbeddedSignupCode("");
     setEmbeddedSignupIntent(intent);
 
+    clearEmbeddedSignupTimeout();
+    embeddedSignupTimeoutRef.current = window.setTimeout(() => {
+      if (embeddedSignupAttemptIdRef.current !== attemptId) return;
+      closeEmbeddedSignupAttempt(attemptId);
+      setEmbeddedSignupLoading(false);
+      setEmbeddedSignupSubmitting(false);
+      setEmbeddedSignupSession(null);
+      clearEmbeddedSignupSensitiveState();
+      setEmbeddedSignupMessage(null);
+      setEmbeddedSignupError(
+        "A Meta não concluiu todos os dados necessários no tempo esperado. Nenhuma integração foi marcada como conectada; tente novamente ou procure o suporte.",
+      );
+    }, 10000);
+
     if (!metaEmbeddedSignupConfig.appId || !metaEmbeddedSignupConfig.configId) {
+      closeEmbeddedSignupAttempt(attemptId);
       setEmbeddedSignupError("Configuracao publica da Meta ausente no frontend.");
       return;
     }
@@ -1364,13 +1422,18 @@ function OnboardingContent() {
 
       window.FB.login(
         (response) => {
-          if (!embeddedSignupMountedRef.current) return;
+          if (
+            !embeddedSignupMountedRef.current ||
+            embeddedSignupAttemptIdRef.current !== attemptId ||
+            !embeddedSignupFlowRef.current
+          ) return;
           const code =
             typeof response.authResponse?.code === "string"
               ? response.authResponse.code.trim()
               : "";
 
           if (!code) {
+            closeEmbeddedSignupAttempt(attemptId);
             setEmbeddedSignupLoading(false);
             setEmbeddedSignupSubmitting(false);
             setEmbeddedSignupSession(null);
@@ -1379,6 +1442,7 @@ function OnboardingContent() {
             return;
           }
 
+          if (!embeddedSignupFlowRef.current.acceptOAuthCode(code)) return;
           setEmbeddedSignupCode(code);
           setEmbeddedSignupMessage("Autorizacao Meta recebida. Validando a sessao.");
         },
@@ -1394,7 +1458,7 @@ function OnboardingContent() {
         },
       );
     } catch {
-      embeddedSignupRequestedModeRef.current = null;
+      closeEmbeddedSignupAttempt(attemptId);
       if (!embeddedSignupMountedRef.current) return;
       setEmbeddedSignupLoading(false);
       setEmbeddedSignupSubmitting(false);
@@ -1405,28 +1469,12 @@ function OnboardingContent() {
   }
 
   useEffect(() => {
-    if (!embeddedSignupCode) return;
-    if (embeddedSignupSession) return;
-
-    const timeout = window.setTimeout(() => {
-      setEmbeddedSignupLoading(false);
-      setEmbeddedSignupSubmitting(false);
-      setEmbeddedSignupSession(null);
-      clearEmbeddedSignupSensitiveState();
-      setEmbeddedSignupMessage(null);
-      setEmbeddedSignupError("Sessao Meta incompleta. Reinicie o Embedded Signup.");
-      embeddedSignupRequestedModeRef.current = null;
-    }, 10000);
-
-    return () => {
-      window.clearTimeout(timeout);
-    };
-  }, [clearEmbeddedSignupSensitiveState, embeddedSignupCode, embeddedSignupSession]);
-
-  useEffect(() => {
     if (!embeddedSignupCode || !embeddedSignupSession) return;
     if (embeddedSignupSubmittingRef.current) return;
+    const flow = embeddedSignupFlowRef.current;
+    if (!flow || !flow.canSubmit() || !flow.markSubmitting()) return;
 
+    clearEmbeddedSignupTimeout();
     embeddedSignupSubmittingRef.current = true;
     setEmbeddedSignupSubmitting(true);
     setEmbeddedSignupError(null);
@@ -1563,6 +1611,7 @@ function OnboardingContent() {
       .finally(() => {
         if (embeddedSignupAttemptRef.current !== attempt) return;
         embeddedSignupAttemptRef.current = null;
+        closeEmbeddedSignupAttempt(embeddedSignupAttemptIdRef.current);
         embeddedSignupRequestedModeRef.current = null;
         embeddedSignupSubmittingRef.current = false;
         if (embeddedSignupMountedRef.current) {
@@ -1577,6 +1626,8 @@ function OnboardingContent() {
     embeddedSignupCode,
     embeddedSignupIntent,
     embeddedSignupSession,
+    clearEmbeddedSignupTimeout,
+    closeEmbeddedSignupAttempt,
     fetchWhatsappStatus,
     organizationId,
     refreshActivationReadinessAfterEmbeddedSignup,
@@ -1884,6 +1935,69 @@ function OnboardingContent() {
 
           {currentStep === 4 ? (
             <div className="space-y-6">
+              {hasSiteOrFacebookPage === null ? (
+                <div className="rounded-2xl border border-gray-200 bg-white p-5">
+                  <p className="text-base font-semibold text-gray-900">
+                    Você já tem um site ou Página do Facebook da sua loja?
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    {([
+                      ["yes", "Sim"],
+                      ["no", "Não"],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={siteOrFacebookPageSelection === value}
+                        onClick={() => setSiteOrFacebookPageSelection(value)}
+                        className={cx(
+                          "rounded-xl border px-5 py-2.5 text-sm font-semibold transition",
+                          siteOrFacebookPageSelection === value
+                            ? "border-black bg-black text-white"
+                            : "border-gray-300 text-gray-700 hover:bg-gray-50",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={siteOrFacebookPageSelection === null}
+                    onClick={() => {
+                      if (siteOrFacebookPageSelection) setHasSiteOrFacebookPage(siteOrFacebookPageSelection);
+                    }}
+                    className="mt-4 rounded-xl bg-black px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Confirmar
+                  </button>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
+                  Site ou Página do Facebook: <span className="font-semibold text-gray-900">{hasSiteOrFacebookPage === "yes" ? "Sim" : "Não"}</span>
+                  <button
+                    type="button"
+                    onClick={() => setHasSiteOrFacebookPage(null)}
+                    className="ml-3 font-semibold text-gray-900 underline underline-offset-2"
+                  >
+                    Alterar
+                  </button>
+                  {hasSiteOrFacebookPage === "no" ? (
+                    <div className="mt-3 flex flex-wrap items-center gap-3">
+                      <span>Você pode criar gratuitamente uma Página da sua loja no Facebook.</span>
+                      <a
+                        href="https://www.facebook.com/pages/create"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-xl border border-gray-300 px-4 py-2 font-semibold text-gray-900 hover:bg-gray-50"
+                      >
+                        Criar Página no Facebook
+                      </a>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
               <div
                 className={cx(
                   "rounded-2xl border p-5",

@@ -48,6 +48,39 @@ const tests = [
     },
   },
   {
+    name: "coordinates coexistence without requiring a phone id from the Meta event",
+    run() {
+      const flow = createMetaEmbeddedSignupFlowCoordinator({
+        connectionMode: "business_app_coexistence",
+      });
+      assert.equal(
+        flow.acceptMessage({
+          origin: trustedOrigin,
+          data: {
+            type: "WA_EMBEDDED_SIGNUP",
+            event: "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING",
+            data: { waba_id: target.wabaId },
+          },
+        }),
+        "finish_valid",
+      );
+      assert.equal(flow.acceptOAuthCode("oauth-code"), true);
+      assert.equal(flow.canSubmit(), true);
+      assert.equal(flow.markSubmitting(), true);
+      assert.equal(flow.markSubmitting(), false);
+    },
+  },
+  {
+    name: "rejects a standard event for a coexistence attempt",
+    run() {
+      const flow = createMetaEmbeddedSignupFlowCoordinator({
+        connectionMode: "business_app_coexistence",
+      });
+      assert.equal(flow.acceptMessage(finishEvent), "target_rejected");
+      assert.equal(flow.canSubmit(), false);
+    },
+  },
+  {
     name: "rejects cancellation, stale/invalid context and unauthorized origins without readiness",
     run() {
       const flow = createMetaEmbeddedSignupFlowCoordinator(target);

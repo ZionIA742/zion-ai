@@ -446,6 +446,33 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "Embedded Signup reserves the attempt and starts timeout before the Meta callback",
+    run: () => {
+      const source = readPageSource();
+      const startBlock = getStartMetaSignupBlock(source);
+      assert.equal(startBlock.includes("embeddedSignupAttemptIdRef.current = attemptId;"), true);
+      assert.equal(startBlock.includes("embeddedSignupFlowRef.current = createMetaEmbeddedSignupFlowCoordinator"), true);
+      assert.equal(startBlock.includes("embeddedSignupTimeoutRef.current = window.setTimeout"), true);
+      assert.equal(
+        startBlock.indexOf("embeddedSignupTimeoutRef.current = window.setTimeout") <
+          startBlock.indexOf("window.FB.login("),
+        true,
+      );
+      assert.equal(source.includes("A Meta não concluiu todos os dados necessários"), true);
+    },
+  },
+  {
+    name: "Etapa 4 asks only the optional site or Facebook Page question",
+    run: () => {
+      const source = readPageSource();
+      assert.equal(source.includes("Você já tem um site ou Página do Facebook da sua loja?"), true);
+      assert.equal(source.includes("Criar Página no Facebook"), true);
+      assert.equal(source.includes("https://www.facebook.com/pages/create"), true);
+      assert.equal(source.includes("siteOrFacebookPageSelection"), true);
+      assert.equal(source.includes("type=\"url\""), false);
+    },
+  },
+  {
     name: "onboarding frontend never handles Meta tokens or persists code and PIN",
     run: () => {
       const source = readPageSource();

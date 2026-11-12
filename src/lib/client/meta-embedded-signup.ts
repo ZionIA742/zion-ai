@@ -42,6 +42,12 @@ export type MetaEmbeddedSignupFlowCoordinator = {
   getSnapshot: () => { status: "authorizing" | "submitting" | "closed"; code: string; session: MetaEmbeddedSignupSession | null };
 };
 
+export type MetaEmbeddedSignupFlowCoordinatorOptions = {
+  wabaId?: string;
+  phoneNumberId?: string;
+  connectionMode?: MetaEmbeddedSignupSession["connectionMode"];
+};
+
 declare global {
   interface Window {
     FB?: FacebookSdk;
@@ -210,10 +216,9 @@ export function isMetaEmbeddedSignupCancellation(
   return eventName === "CANCEL" || eventName === "CANCELLED";
 }
 
-export function createMetaEmbeddedSignupFlowCoordinator(args: {
-  wabaId: string;
-  phoneNumberId: string;
-}): MetaEmbeddedSignupFlowCoordinator {
+export function createMetaEmbeddedSignupFlowCoordinator(
+  args: MetaEmbeddedSignupFlowCoordinatorOptions,
+): MetaEmbeddedSignupFlowCoordinator {
   let status: "authorizing" | "submitting" | "closed" = "authorizing";
   let code = "";
   let session: MetaEmbeddedSignupSession | null = null;
@@ -237,8 +242,9 @@ export function createMetaEmbeddedSignupFlowCoordinator(args: {
       const candidate = extractMetaEmbeddedSignupSession(event);
       if (
         !candidate ||
-        candidate.whatsappBusinessAccountId !== args.wabaId ||
-        candidate.phoneNumberId !== args.phoneNumberId
+        (args.connectionMode && candidate.connectionMode !== args.connectionMode) ||
+        (args.wabaId && candidate.whatsappBusinessAccountId !== args.wabaId) ||
+        (args.phoneNumberId && candidate.phoneNumberId !== args.phoneNumberId)
       ) {
         return "target_rejected";
       }
