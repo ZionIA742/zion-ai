@@ -647,6 +647,8 @@ function OnboardingContent() {
     setWhatsappStatusError(null);
     setOnboardingActivationState(null);
     setOnboardingActivationLoading(false);
+    setSiteOrFacebookPageSelection(null);
+    setHasSiteOrFacebookPage(null);
     setStep1Form({
       store_display_name: "",
       store_description: "",
