@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { createElement, useEffect } from "react";
 import { act, create } from "react-test-renderer";
 import {
+  META_EMBEDDED_SIGNUP_AUTHORIZATION_TIMEOUT_MS,
   useMetaEmbeddedSignupAttempt,
 } from "./use-meta-embedded-signup-attempt";
 
@@ -65,6 +66,26 @@ const tests = [
     },
   },
   {
+    name: "authorization remains active beyond the old ten second window and expires at its phase limit",
+    async run() {
+      latest = null;
+      const renderer = renderHarness(25);
+      const { attemptId } = begin();
+      assert.equal(META_EMBEDDED_SIGNUP_AUTHORIZATION_TIMEOUT_MS >= 5 * 60_000, true);
+      let timedOut = false;
+      latest.startTimeout(attemptId, () => {
+        timedOut = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 12));
+      assert.equal(timedOut, false);
+      assert.equal(latest.isAttemptCurrent(attemptId), true);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(timedOut, true);
+      assert.equal(latest.isAttemptCurrent(attemptId), false);
+      act(() => renderer.unmount());
+    },
+  },
+  {
     name: "late SDK completion cannot reactivate an expired attempt",
     async run() {
       latest = null;
@@ -73,6 +94,7 @@ const tests = [
       latest.startTimeout(attemptId, () => undefined);
       await new Promise((resolve) => setTimeout(resolve, 25));
       assert.equal(latest.isAttemptActive(attemptId), false);
+      assert.equal(latest.isAttemptCurrent(attemptId), false);
       act(() => renderer.unmount());
     },
   },
@@ -104,6 +126,7 @@ const tests = [
       const { attemptId } = begin();
       act(() => renderer.unmount());
       assert.equal(latest.isAttemptActive(attemptId), false);
+      assert.equal(latest.isAttemptCurrent(attemptId), false);
       assert.equal(latest.flowRef.current, null);
     },
   },
@@ -119,6 +142,8 @@ const tests = [
       assert.notEqual(second.attemptId, first.attemptId);
       assert.equal(oldFlow.acceptOAuthCode("old-code"), false);
       assert.equal(latest.isAttemptActive(second.attemptId), true);
+      assert.equal(latest.isAttemptCurrent(first.attemptId), false);
+      assert.equal(latest.isAttemptCurrent(second.attemptId), true);
       assert.equal(
         second.flow.acceptMessage({
           origin: trustedOrigin,

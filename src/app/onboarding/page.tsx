@@ -568,6 +568,7 @@ function OnboardingContent() {
   const [embeddedSignupSubmitting, setEmbeddedSignupSubmitting] = useState(false);
   const embeddedSignupSubmittingRef = useRef(false);
   const embeddedSignupAttemptRef = useRef<Promise<void> | null>(null);
+  const embeddedSignupScopeRef = useRef<string | null>(null);
   const embeddedSignupRequestedModeRef = useRef<"standard" | "business_app_coexistence" | null>(null);
   const [embeddedSignupError, setEmbeddedSignupError] = useState<string | null>(null);
   const [embeddedSignupMessage, setEmbeddedSignupMessage] = useState<string | null>(null);
@@ -582,7 +583,29 @@ function OnboardingContent() {
     clearTimeout: clearEmbeddedSignupTimeout,
     startTimeout: startEmbeddedSignupTimeout,
     isAttemptActive: isEmbeddedSignupAttemptActive,
+    isAttemptCurrent: isEmbeddedSignupAttemptCurrent,
   } = useMetaEmbeddedSignupAttempt();
+
+  useEffect(() => {
+    const nextScope = organizationId && activeStore?.id
+      ? `${organizationId}:${activeStore.id}`
+      : null;
+    const previousScope = embeddedSignupScopeRef.current;
+    embeddedSignupScopeRef.current = nextScope;
+
+    if (previousScope === null || previousScope === nextScope) return;
+
+    closeEmbeddedSignupAttempt(embeddedSignupAttemptIdRef.current);
+    embeddedSignupAttemptRef.current = null;
+    embeddedSignupRequestedModeRef.current = null;
+    embeddedSignupSubmittingRef.current = false;
+    setEmbeddedSignupLoading(false);
+    setEmbeddedSignupSubmitting(false);
+    setEmbeddedSignupSession(null);
+    setEmbeddedSignupCode("");
+    setEmbeddedSignupMessage(null);
+    setEmbeddedSignupError("A loja ativa mudou antes da conclusao da conexao Meta.");
+  }, [activeStore?.id, closeEmbeddedSignupAttempt, embeddedSignupAttemptIdRef, organizationId]);
 
   const [step1Form, setStep1Form] = useState<Step1FormData>({
     store_display_name: "",
@@ -1320,9 +1343,9 @@ function OnboardingContent() {
   const canActivate =
     !onboardingActivationLoading && onboardingActivationState === "ready";
 
-  const refreshActivationReadinessAfterEmbeddedSignup = useCallback(async () => {
+  const refreshActivationReadinessAfterEmbeddedSignup = useCallback(async (attemptId: number) => {
     if (!organizationId || !activeStore?.id) return false;
-    if (!embeddedSignupMountedRef.current) return false;
+    if (!isEmbeddedSignupAttemptCurrent(attemptId)) return false;
 
     setOnboardingActivationLoading(true);
     setOnboardingActivationState(null);
@@ -1344,7 +1367,7 @@ function OnboardingContent() {
           }
         | null;
 
-      if (!embeddedSignupMountedRef.current) return false;
+      if (!isEmbeddedSignupAttemptCurrent(attemptId)) return false;
 
       if (!response.ok || payload?.ok !== true) {
         throw new Error("P19A_ONBOARDING_ACTIVATION_READINESS_REQUEST_FAILED");
@@ -1355,23 +1378,27 @@ function OnboardingContent() {
       );
       if (!activationState) throw new Error("P19A_ONBOARDING_ACTIVATION_READINESS_MISSING");
 
-      if (embeddedSignupMountedRef.current) setOnboardingActivationState(activationState);
+      if (isEmbeddedSignupAttemptCurrent(attemptId)) setOnboardingActivationState(activationState);
       return activationState === "ready";
     } catch (error) {
       console.error("[OnboardingPage] activation readiness error:", error);
-      if (!embeddedSignupMountedRef.current) return false;
+      if (!isEmbeddedSignupAttemptCurrent(attemptId)) return false;
       setOnboardingActivationState(null);
       setFormError(
         "NÃ£o foi possÃ­vel verificar se o onboarding estÃ¡ pronto para ativaÃ§Ã£o.",
       );
     } finally {
-      if (embeddedSignupMountedRef.current) setOnboardingActivationLoading(false);
+      if (isEmbeddedSignupAttemptCurrent(attemptId)) setOnboardingActivationLoading(false);
     }
-  }, [activeStore?.id, embeddedSignupMountedRef, organizationId]);
+  }, [activeStore?.id, isEmbeddedSignupAttemptCurrent, organizationId]);
 
   const finalizeEmbeddedSignupConnection = useCallback(
-    async (session: MetaEmbeddedSignupSession, confirmedStatus?: StoreWhatsappStatusApiResponse | null) => {
-      if (!embeddedSignupMountedRef.current) return false;
+    async (
+      attemptId: number,
+      session: MetaEmbeddedSignupSession,
+      confirmedStatus?: StoreWhatsappStatusApiResponse | null,
+    ) => {
+      if (!isEmbeddedSignupAttemptCurrent(attemptId)) return false;
 
       clearEmbeddedSignupSensitiveState();
       setEmbeddedSignupSession(null);
@@ -1379,7 +1406,7 @@ function OnboardingContent() {
       setEmbeddedSignupError(null);
 
       const status = confirmedStatus ?? (await fetchWhatsappStatus({ timeoutMs: 5_000 }));
-      if (!embeddedSignupMountedRef.current) return false;
+      if (!isEmbeddedSignupAttemptCurrent(attemptId)) return false;
       if (
         !isWhatsappStatusConnected(status) ||
         !isEmbeddedSignupStatusForSession(status, session)
@@ -1387,11 +1414,11 @@ function OnboardingContent() {
         throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED");
       }
 
-      const readinessConfirmed = await refreshActivationReadinessAfterEmbeddedSignup();
+      const readinessConfirmed = await refreshActivationReadinessAfterEmbeddedSignup(attemptId);
       if (!readinessConfirmed) {
         throw new Error("ONBOARDING_READINESS_NOT_CONFIRMED");
       }
-      if (!embeddedSignupMountedRef.current) return false;
+      if (!isEmbeddedSignupAttemptCurrent(attemptId)) return false;
 
       setEmbeddedSignupMessage(
         session.connectionMode === "business_app_coexistence"
@@ -1402,20 +1429,20 @@ function OnboardingContent() {
     },
     [
       clearEmbeddedSignupSensitiveState,
-      embeddedSignupMountedRef,
       fetchWhatsappStatus,
+      isEmbeddedSignupAttemptCurrent,
       refreshActivationReadinessAfterEmbeddedSignup,
     ],
   );
 
   const recoverUncertainEmbeddedSignup = useCallback(
-    (session: MetaEmbeddedSignupSession) =>
+    (attemptId: number, session: MetaEmbeddedSignupSession) =>
       recoverEmbeddedSignupStatus({
         session,
         fetchStatus: () => fetchWhatsappStatus({ timeoutMs: 5_000 }),
-        isMounted: () => embeddedSignupMountedRef.current,
+        isMounted: () => isEmbeddedSignupAttemptCurrent(attemptId),
       }),
-    [embeddedSignupMountedRef, fetchWhatsappStatus],
+    [fetchWhatsappStatus, isEmbeddedSignupAttemptCurrent],
   );
 
   async function startMetaEmbeddedSignup(
@@ -1439,17 +1466,6 @@ function OnboardingContent() {
     setEmbeddedSignupCode("");
     setEmbeddedSignupIntent(intent);
 
-    startEmbeddedSignupTimeout(attemptId, () => {
-      setEmbeddedSignupLoading(false);
-      setEmbeddedSignupSubmitting(false);
-      setEmbeddedSignupSession(null);
-      clearEmbeddedSignupSensitiveState();
-      setEmbeddedSignupMessage(null);
-      setEmbeddedSignupError(
-        "A Meta não concluiu todos os dados necessários no tempo esperado. Nenhuma integração foi marcada como conectada; tente novamente ou procure o suporte.",
-      );
-    });
-
     if (!metaEmbeddedSignupConfig.appId || !metaEmbeddedSignupConfig.configId) {
       closeEmbeddedSignupAttempt(attemptId);
       setEmbeddedSignupError("Configuracao publica da Meta ausente no frontend.");
@@ -1466,6 +1482,17 @@ function OnboardingContent() {
       ) {
         return;
       }
+
+      startEmbeddedSignupTimeout(attemptId, () => {
+        setEmbeddedSignupLoading(false);
+        setEmbeddedSignupSubmitting(false);
+        setEmbeddedSignupSession(null);
+        clearEmbeddedSignupSensitiveState();
+        setEmbeddedSignupMessage(null);
+        setEmbeddedSignupError(
+          "A Meta não concluiu todos os dados necessários no tempo esperado. Nenhuma integração foi marcada como conectada; tente novamente ou procure o suporte.",
+        );
+      });
 
       if (!window.FB?.login) {
         throw new Error("FACEBOOK_SDK_LOGIN_UNAVAILABLE");
@@ -1528,6 +1555,7 @@ function OnboardingContent() {
     clearEmbeddedSignupTimeout();
     embeddedSignupSubmittingRef.current = true;
     setEmbeddedSignupSubmitting(true);
+    const attemptId = embeddedSignupAttemptIdRef.current;
     setEmbeddedSignupError(null);
     const isRecoveryVerification = embeddedSignupIntent === "verify-existing";
     setEmbeddedSignupMessage(
@@ -1603,7 +1631,7 @@ function OnboardingContent() {
           result?.error === "WHATSAPP_RECOVERY_REQUIRES_NEW_PIN_AUTHORIZATION" &&
           result.phoneRegistrationConfirmed === true
         ) {
-          if (!embeddedSignupMountedRef.current) return;
+          if (!isEmbeddedSignupAttemptCurrent(attemptId)) return;
           clearEmbeddedSignupSensitiveState();
           setEmbeddedSignupSession(null);
           setEmbeddedSignupMessage(
@@ -1634,7 +1662,7 @@ function OnboardingContent() {
           );
         }
 
-        if (!embeddedSignupMountedRef.current) return;
+        if (!isEmbeddedSignupAttemptCurrent(attemptId)) return;
         const confirmedSession = enrichEmbeddedSignupSessionWithBackendIdentity(
           embeddedSignupSession,
           result?.integration,
@@ -1642,9 +1670,9 @@ function OnboardingContent() {
         if (!confirmedSession) {
           throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED");
         }
-        await finalizeEmbeddedSignupConnection(confirmedSession);
+        await finalizeEmbeddedSignupConnection(attemptId, confirmedSession);
       } catch (error) {
-        if (!embeddedSignupMountedRef.current) return;
+        if (!isEmbeddedSignupAttemptCurrent(attemptId)) return;
 
         const uncertainSubmission = isEmbeddedSignupResponseUncertain({
           responseStatus,
@@ -1659,11 +1687,11 @@ function OnboardingContent() {
         });
 
         if (uncertainSubmission && !isRecoveryVerification) {
-          const recovery = await recoverUncertainEmbeddedSignup(embeddedSignupSession);
-          if (!embeddedSignupMountedRef.current) return;
+          const recovery = await recoverUncertainEmbeddedSignup(attemptId, embeddedSignupSession);
+          if (!isEmbeddedSignupAttemptCurrent(attemptId)) return;
           if (recovery.outcome === "active") {
             try {
-              await finalizeEmbeddedSignupConnection(embeddedSignupSession, recovery.status);
+              await finalizeEmbeddedSignupConnection(attemptId, embeddedSignupSession, recovery.status);
               return;
             } catch (recoveryError) {
               error = recoveryError;
@@ -1679,7 +1707,7 @@ function OnboardingContent() {
 
         clearEmbeddedSignupSensitiveState();
         setEmbeddedSignupSession(null);
-        if (!embeddedSignupMountedRef.current) return;
+        if (!isEmbeddedSignupAttemptCurrent(attemptId)) return;
         setEmbeddedSignupMessage(null);
         const errorCode = error instanceof Error ? error.message : "";
         setEmbeddedSignupError(
@@ -1701,7 +1729,7 @@ function OnboardingContent() {
     void attempt
       .finally(() => {
         if (submissionTimeoutId !== null) window.clearTimeout(submissionTimeoutId);
-        if (embeddedSignupAttemptRef.current !== attempt) return;
+        if (embeddedSignupAttemptRef.current !== attempt || !isEmbeddedSignupAttemptCurrent(attemptId)) return;
         embeddedSignupAttemptRef.current = null;
         closeEmbeddedSignupAttempt(embeddedSignupAttemptIdRef.current);
         embeddedSignupRequestedModeRef.current = null;
@@ -1732,6 +1760,7 @@ function OnboardingContent() {
     isEmbeddedSignupAttemptActive,
     startEmbeddedSignupTimeout,
     finalizeEmbeddedSignupConnection,
+    isEmbeddedSignupAttemptCurrent,
     recoverUncertainEmbeddedSignup,
     organizationId,
     refreshActivationReadinessAfterEmbeddedSignup,

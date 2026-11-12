@@ -7,8 +7,11 @@ import {
 
 export type MetaEmbeddedSignupAttemptMode = MetaEmbeddedSignupSession["connectionMode"];
 
-export function useMetaEmbeddedSignupAttempt(options?: { timeoutMs?: number }) {
-  const timeoutMs = options?.timeoutMs ?? 10_000;
+export const META_EMBEDDED_SIGNUP_AUTHORIZATION_TIMEOUT_MS = 5 * 60_000;
+
+export function useMetaEmbeddedSignupAttempt(options?: { authorizationTimeoutMs?: number; timeoutMs?: number }) {
+  const authorizationTimeoutMs =
+    options?.authorizationTimeoutMs ?? options?.timeoutMs ?? META_EMBEDDED_SIGNUP_AUTHORIZATION_TIMEOUT_MS;
   const mountedRef = useRef(true);
   const attemptIdRef = useRef(0);
   const flowRef = useRef<MetaEmbeddedSignupFlowCoordinator | null>(null);
@@ -42,8 +45,8 @@ export function useMetaEmbeddedSignupAttempt(options?: { timeoutMs?: number }) {
       if (!mountedRef.current || attemptIdRef.current !== attemptId) return;
       closeAttempt(attemptId);
       onTimeout();
-    }, timeoutMs);
-  }, [clearTimeoutRef, closeAttempt, timeoutMs]);
+    }, authorizationTimeoutMs);
+  }, [authorizationTimeoutMs, clearTimeoutRef, closeAttempt]);
 
   const isAttemptActive = useCallback((attemptId: number) => {
     return Boolean(
@@ -51,6 +54,15 @@ export function useMetaEmbeddedSignupAttempt(options?: { timeoutMs?: number }) {
         attemptIdRef.current === attemptId &&
         flowRef.current &&
         flowRef.current.getSnapshot().status === "authorizing",
+    );
+  }, []);
+
+  const isAttemptCurrent = useCallback((attemptId: number) => {
+    return Boolean(
+      mountedRef.current &&
+        attemptIdRef.current === attemptId &&
+        flowRef.current &&
+        flowRef.current.getSnapshot().status !== "closed",
     );
   }, []);
 
@@ -73,5 +85,6 @@ export function useMetaEmbeddedSignupAttempt(options?: { timeoutMs?: number }) {
     clearTimeout: clearTimeoutRef,
     startTimeout,
     isAttemptActive,
+    isAttemptCurrent,
   };
 }

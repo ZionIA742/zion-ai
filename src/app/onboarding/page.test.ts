@@ -423,7 +423,7 @@ const tests: TestCase[] = [
       assert.equal(block.includes("embeddedSignupAttemptRef.current = attempt;"), true);
       assert.equal(
         block.indexOf("embeddedSignupAttemptRef.current = null;") >
-          block.indexOf("await refreshActivationReadinessAfterEmbeddedSignup();"),
+          block.indexOf("await refreshActivationReadinessAfterEmbeddedSignup(attemptId);"),
         true,
       );
     },
@@ -510,7 +510,7 @@ const tests: TestCase[] = [
       const clearIndex = block.indexOf("clearEmbeddedSignupSensitiveState();");
       const statusIndex = source.indexOf("const status = confirmedStatus ?? (await fetchWhatsappStatus({ timeoutMs: 5_000 }));");
       const readinessIndex = source.indexOf(
-        "await refreshActivationReadinessAfterEmbeddedSignup();",
+        "await refreshActivationReadinessAfterEmbeddedSignup(attemptId);",
         statusIndex,
       );
 
@@ -530,7 +530,7 @@ const tests: TestCase[] = [
         true,
       );
       assert.equal(source.includes("isEmbeddedSignupStatusForSession(status, session)"), true);
-      assert.equal(source.includes("await refreshActivationReadinessAfterEmbeddedSignup();"), true);
+      assert.equal(source.includes("await refreshActivationReadinessAfterEmbeddedSignup(attemptId);"), true);
       assert.equal(source.includes('"WhatsApp conectado pela Meta."'), true);
       assert.equal(source.includes("function isWhatsappStatusConnected("), true);
       assert.equal(source.includes("function mapEmbeddedSignupError("), true);
@@ -634,10 +634,10 @@ const tests: TestCase[] = [
       assert.equal(confirmationMessageIndex > confirmedIndex, true);
       assert.equal(confirmationReturnIndex > confirmationMessageIndex, true);
       assert.equal(normalConnectionStatusIndex > confirmationReturnIndex, true);
-      assert.equal(source.includes("refreshActivationReadinessAfterEmbeddedSignup()"), true);
+      assert.equal(source.includes("refreshActivationReadinessAfterEmbeddedSignup(attemptId)"), true);
       assert.equal(source.includes("recoverUncertainEmbeddedSignup"), true);
       assert.equal(noMutationCopyIndex > -1, true);
-      assert.equal(source.includes("refreshActivationReadinessAfterEmbeddedSignup()"), true);
+      assert.equal(source.includes("refreshActivationReadinessAfterEmbeddedSignup(attemptId)"), true);
     },
   },
   {
