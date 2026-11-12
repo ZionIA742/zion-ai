@@ -24,7 +24,7 @@ const finishEvent = {
 
 let latest = null;
 
-function Harness({ timeoutMs = 25 }) {
+function Harness({ timeoutMs }) {
   const api = useMetaEmbeddedSignupAttempt({ timeoutMs });
   useEffect(() => {
     latest = api;
@@ -47,6 +47,41 @@ function begin(mode = "standard") {
   return { attemptId, flow: latest.flowRef.current };
 }
 
+function withFakeTimers(run) {
+  const originalSetTimeout = window.setTimeout;
+  const originalClearTimeout = window.clearTimeout;
+  let nextTimerId = 1;
+  let now = 0;
+  const timers = new Map();
+
+  window.setTimeout = ((callback, delay) => {
+    const id = nextTimerId++;
+    timers.set(id, { callback, deadline: now + Number(delay) });
+    return id;
+  });
+  window.clearTimeout = ((id) => {
+    timers.delete(id);
+  });
+
+  const advance = (milliseconds) => {
+    now += milliseconds;
+    const dueTimers = [...timers.entries()]
+      .filter(([, timer]) => timer.deadline <= now)
+      .sort(([, first], [, second]) => first.deadline - second.deadline);
+    for (const [id, timer] of dueTimers) {
+      timers.delete(id);
+      timer.callback();
+    }
+  };
+
+  try {
+    return run(advance);
+  } finally {
+    window.setTimeout = originalSetTimeout;
+    window.clearTimeout = originalClearTimeout;
+  }
+}
+
 const tests = [
   {
     name: "mounts the real hook and expires without opening a later attempt",
@@ -66,23 +101,36 @@ const tests = [
     },
   },
   {
-    name: "authorization remains active beyond the old ten second window and expires at its phase limit",
-    async run() {
+    name: "authorization remains valid at 10, 20 and 29 minutes and expires at 30 minutes",
+    run() {
       latest = null;
-      const renderer = renderHarness(25);
-      const { attemptId } = begin();
-      assert.equal(META_EMBEDDED_SIGNUP_AUTHORIZATION_TIMEOUT_MS >= 5 * 60_000, true);
-      let timedOut = false;
-      latest.startTimeout(attemptId, () => {
-        timedOut = true;
+      withFakeTimers((advance) => {
+        const renderer = renderHarness();
+        const { attemptId } = begin();
+        assert.equal(META_EMBEDDED_SIGNUP_AUTHORIZATION_TIMEOUT_MS, 1_800_000);
+        let timedOut = false;
+        latest.startTimeout(attemptId, () => {
+          timedOut = true;
+        });
+
+        advance(10 * 60_000);
+        assert.equal(timedOut, false);
+        assert.equal(latest.isAttemptCurrent(attemptId), true);
+
+        advance(10 * 60_000);
+        assert.equal(timedOut, false);
+        assert.equal(latest.isAttemptCurrent(attemptId), true);
+
+        advance(9 * 60_000);
+        assert.equal(timedOut, false);
+        assert.equal(latest.isAttemptCurrent(attemptId), true);
+
+        advance(60_000);
+        assert.equal(timedOut, true);
+        assert.equal(latest.isAttemptCurrent(attemptId), false);
+        assert.equal(latest.flowRef.current, null);
+        act(() => renderer.unmount());
       });
-      await new Promise((resolve) => setTimeout(resolve, 12));
-      assert.equal(timedOut, false);
-      assert.equal(latest.isAttemptCurrent(attemptId), true);
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      assert.equal(timedOut, true);
-      assert.equal(latest.isAttemptCurrent(attemptId), false);
-      act(() => renderer.unmount());
     },
   },
   {

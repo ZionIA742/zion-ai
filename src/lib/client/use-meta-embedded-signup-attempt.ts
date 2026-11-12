@@ -7,7 +7,7 @@ import {
 
 export type MetaEmbeddedSignupAttemptMode = MetaEmbeddedSignupSession["connectionMode"];
 
-export const META_EMBEDDED_SIGNUP_AUTHORIZATION_TIMEOUT_MS = 5 * 60_000;
+export const META_EMBEDDED_SIGNUP_AUTHORIZATION_TIMEOUT_MS = 1_800_000;
 
 export function useMetaEmbeddedSignupAttempt(options?: { authorizationTimeoutMs?: number; timeoutMs?: number }) {
   const authorizationTimeoutMs =
