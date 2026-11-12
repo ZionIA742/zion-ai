@@ -157,7 +157,10 @@ export type QuotePreparationAuthorizationAttempt =
 export type QuotePreparationQueueAttempt =
   | {
       attempted: false;
-      outcome: "not_applicable" | "gate_off" | "authorization_not_confirmed";
+      outcome:
+        | "not_applicable"
+        | "gate_off"
+        | "authorization_not_confirmed";
     }
   | {
       attempted: true;
@@ -1242,7 +1245,7 @@ export async function findExistingCommercialHandoffTask(args: {
 }) {
   const { data, error } = await args.supabase
     .from("store_assistant_operational_tasks")
-    .select("id, task_type, status, commercial_opportunity_id, task_payload")
+    .select("id, organization_id, store_id, task_type, status, related_lead_id, related_conversation_id, commercial_opportunity_id, task_payload")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("related_conversation_id", args.conversationId)
@@ -1512,7 +1515,7 @@ export async function findExistingHumanHandoffTask(args: {
 }) {
   const { data, error } = await args.supabase
     .from("store_assistant_operational_tasks")
-    .select("id, organization_id, store_id, task_type, status, related_lead_id, related_conversation_id, commercial_opportunity_id, task_payload")
+    .select("id, task_type, status, commercial_opportunity_id, task_payload")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("related_conversation_id", args.conversationId)
@@ -6539,7 +6542,8 @@ export async function generateAndSaveAiSalesReply(
       }
     }
 
-    const salesAiExternalMetadata = generationEffectiveReplyCommercialOpportunityId
+    const salesAiExternalMetadata =
+      generationEffectiveReplyCommercialOpportunityId
       ? {
           outbound_kind:
             operationalFollowUpDecisionKind === "stop_contact"
