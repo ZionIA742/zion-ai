@@ -13,6 +13,7 @@ import {
 } from "../zion-account-provisioning-shared";
 import { createClient } from "@supabase/supabase-js";
 import { randomBytes, randomUUID } from "node:crypto";
+import { getServerAuthPublicBaseUrl } from "../auth-public-url";
 
 export const FIRST_ACCESS_INVITE_COOLDOWN_MS = 60_000;
 export const AUTH_ADMIN_RETRY_ATTEMPTS = 3;
@@ -111,24 +112,8 @@ export function createFirstAccessAttemptId() {
   return `fia_${randomUuid.replace(/[^a-zA-Z0-9]/g, "")}`;
 }
 
-function getBaseSiteUrl() {
-  const rawBaseUrl =
-    process.env.NEXT_PUBLIC_SITE_URL?.trim() ||
-    process.env.NEXT_PUBLIC_APP_URL?.trim() ||
-    process.env.NEXT_PUBLIC_VERCEL_URL?.trim() ||
-    "";
-
-  if (!rawBaseUrl) {
-    return null;
-  }
-
-  return /^https?:\/\//i.test(rawBaseUrl)
-    ? rawBaseUrl
-    : `https://${rawBaseUrl}`;
-}
-
 export function getFirstAccessInviteRedirectTo(attemptId: string) {
-  const baseSiteUrl = getBaseSiteUrl();
+  const baseSiteUrl = getServerAuthPublicBaseUrl();
 
   if (!baseSiteUrl) {
     return undefined;
@@ -141,7 +126,7 @@ export function getFirstAccessInviteRedirectTo(attemptId: string) {
 }
 
 export function getRecoveryRedirectTo() {
-  const baseSiteUrl = getBaseSiteUrl();
+  const baseSiteUrl = getServerAuthPublicBaseUrl();
 
   if (!baseSiteUrl) {
     return undefined;

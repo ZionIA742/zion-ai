@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { getSafeInternalLoginRedirect } from "@/lib/auth-safe-redirect";
+import { resolveAuthPublicBaseUrl } from "@/lib/auth-public-url";
 
 type LoginMode = "password" | "code" | "verifyCode" | "forgot";
 
@@ -27,11 +28,6 @@ type ReadyEnsureSetupResult = EnsureSetupResult & {
   ok: true;
   destination: "/crm" | "/onboarding" | "/auth/reset-password";
 };
-
-function getBaseUrl() {
-  if (typeof window === "undefined") return "";
-  return window.location.origin;
-}
 
 function normalizeEmail(value: string) {
   return String(value || "").trim().toLowerCase();
@@ -325,12 +321,30 @@ export default function LoginPage() {
     setBusy(true);
 
     try {
-      const recoveryRedirectUrl = `${getBaseUrl()}${AUTH_CALLBACK_PATH}?next=${encodeURIComponent(
-        RESET_PASSWORD_PATH,
-      )}`;
+      const configuredBaseUrl = resolveAuthPublicBaseUrl({
+        siteUrl: process.env.NEXT_PUBLIC_SITE_URL,
+        appUrl: process.env.NEXT_PUBLIC_APP_URL,
+        vercelUrl: process.env.NEXT_PUBLIC_VERCEL_URL,
+        nodeEnv: process.env.NODE_ENV,
+        vercelEnv: process.env.NEXT_PUBLIC_VERCEL_ENV,
+      });
+      const localDevelopmentOrigin = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(
+        window.location.hostname,
+      )
+        ? window.location.origin
+        : null;
+      const baseUrl = configuredBaseUrl ||
+        (process.env.NODE_ENV !== "production" ? localDevelopmentOrigin : null);
+
+      if (!baseUrl) {
+        throw new Error("Domínio oficial de autenticação não configurado.");
+      }
+
+      const recoveryRedirectUrl = new URL(AUTH_CALLBACK_PATH, baseUrl);
+      recoveryRedirectUrl.searchParams.set("next", RESET_PASSWORD_PATH);
 
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(safeEmail, {
-        redirectTo: recoveryRedirectUrl,
+        redirectTo: recoveryRedirectUrl.toString(),
       });
 
       if (resetError) throw resetError;

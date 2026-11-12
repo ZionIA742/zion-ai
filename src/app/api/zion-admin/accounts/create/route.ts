@@ -924,6 +924,17 @@ async function createZionAdminAccountCore(params: {
     const firstAccessAttemptId = createFirstAccessAttemptId();
     const inviteSentAt = new Date().toISOString();
     const inviteRedirectTo = getFirstAccessInviteRedirectTo(firstAccessAttemptId);
+
+    if (!inviteRedirectTo) {
+      return {
+        body: {
+          error: "Domínio oficial de autenticação não configurado.",
+          code: "AUTH_REDIRECT_CONFIGURATION_INVALID",
+        },
+        status: 503,
+      } satisfies JsonResponseShape;
+    }
+
     const inviteMetadataPatch = createFirstAccessInviteMetadataPatch({
       attemptId: firstAccessAttemptId,
       sentAt: inviteSentAt,

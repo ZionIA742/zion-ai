@@ -53,6 +53,9 @@ const moduleInternal = Module as unknown as {
 };
 const originalResolveFilename = moduleInternal._resolveFilename;
 
+process.env.NODE_ENV = "test";
+process.env.NEXT_PUBLIC_SITE_URL = "https://test.example.com";
+
 moduleInternal._resolveFilename =
   function patchedResolveFilename(request, parent, isMain, options) {
     if (request.startsWith("@/")) {
@@ -406,6 +409,33 @@ async function runCoreWithState(
 }
 
 const tests: TestCase[] = [
+  {
+    name: "missing redirect configuration blocks invite before metadata or email",
+    run: async () => {
+      const previousSiteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+      delete process.env.NEXT_PUBLIC_SITE_URL;
+
+      try {
+        const state = createEmptyState();
+        const result = await runCoreWithState(state, {
+          email: "owner@example.com",
+          storeName: "Nova Loja",
+          responsibleName: "Owner",
+        });
+
+        assert.equal(result.status, 503);
+        assert.equal(state.calls.inviteUserByEmail, 0);
+        assert.equal(state.calls.updateUserById, 0);
+        assert.equal(state.calls.provisioningRpc, 0);
+      } finally {
+        if (previousSiteUrl === undefined) {
+          delete process.env.NEXT_PUBLIC_SITE_URL;
+        } else {
+          process.env.NEXT_PUBLIC_SITE_URL = previousSiteUrl;
+        }
+      }
+    },
+  },
   {
     name: "failure before tenant creation deletes only the invited auth user",
     run: async () => {

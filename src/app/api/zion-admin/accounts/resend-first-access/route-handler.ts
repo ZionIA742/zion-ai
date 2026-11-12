@@ -333,6 +333,17 @@ export async function handleResendFirstAccess(
     const nextAttemptId = deps.createAttemptId();
     const sentAt = new Date().toISOString();
     const redirectTo = deps.getInviteRedirectTo(nextAttemptId);
+
+    if (!redirectTo) {
+      return createZionAdminApiJsonResponse(
+        {
+          error: "Domínio oficial de autenticação não configurado.",
+          code: "AUTH_REDIRECT_CONFIGURATION_INVALID",
+        },
+        503,
+      );
+    }
+
     const nextMetadata = deps.mergeProvisioningAppMetadata(
       previousMetadata,
       deps.createInviteMetadataPatch({

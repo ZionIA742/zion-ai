@@ -49,6 +49,7 @@ type RuntimeState = {
   restoreFails?: boolean;
   cooldownActive?: boolean;
   cooldownRemainingMs?: number;
+  redirectTo?: string | null;
 };
 
 function createJsonResponse(payload: unknown, status: number) {
@@ -244,7 +245,10 @@ async function createHarness(state: RuntimeState) {
       return runtimeState.cooldownRemainingMs ?? 1234;
     },
     getInviteRedirectTo(attemptId: string) {
-      return `https://example.com/auth/callback?next=%2Fauth%2Fset-initial-password&attempt=${attemptId}`;
+      return runtimeState.redirectTo === null
+        ? undefined
+        : runtimeState.redirectTo ||
+            `https://example.com/auth/callback?next=%2Fauth%2Fset-initial-password&attempt=${attemptId}`;
     },
     getAccountAccessSummary() {
       return runtimeState.accountSummary;
@@ -301,6 +305,24 @@ async function getJson(response: Response) {
 }
 
 const tests: TestCase[] = [
+  {
+    name: "invalid redirect configuration blocks delivery and metadata changes",
+    run: async () => {
+      const harness = await createHarness(
+        createBaseState({ redirectTo: null }),
+      );
+      const previousMetadata = { ...(harness.state.authUser.app_metadata || {}) };
+      const response = await harness.run();
+      const payload = await getJson(response);
+
+      assert.equal(response.status, 503);
+      assert.equal(payload.code, "AUTH_REDIRECT_CONFIGURATION_INVALID");
+      assert.equal(harness.state.calls.resetPasswordForEmail.length, 0);
+      assert.equal(harness.state.calls.inviteUserByEmail.length, 0);
+      assert.equal(harness.state.calls.updateUserById.length, 0);
+      assert.deepEqual(harness.state.authUser.app_metadata, previousMetadata);
+    },
+  },
   {
     name: "gate runs before service role on denied access",
     run: async () => {
