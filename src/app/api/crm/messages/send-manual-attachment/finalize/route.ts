@@ -40,7 +40,6 @@ function storageInfoFailureStatus(error: unknown): 404 | 503 {
 
   return 503;
 }
-
 export async function handleManualAttachmentFinalizePost(
   request: Request,
   deps: { resolveAccess?: typeof resolveStoreApiAccess; createServiceClient?: typeof createServiceSupabaseClient } = {},

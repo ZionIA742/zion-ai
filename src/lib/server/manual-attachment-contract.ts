@@ -320,13 +320,14 @@ export async function materializeManualAttachmentMessage(args: {
   sessionUserId: string;
   isRealWhatsappConversation?: typeof isRealWhatsappConversation;
 }) {
-  const whatsapp = await (args.isRealWhatsappConversation ?? isRealWhatsappConversation)({
+  const whatsapp = args.authorization.messageType === "image" || args.authorization.messageType === "document"
+    ? await (args.isRealWhatsappConversation ?? isRealWhatsappConversation)({
     supabase: args.supabase,
     organizationId: args.authorization.organizationId,
     storeId: args.authorization.storeId,
     conversationId: args.authorization.conversationId,
   });
-  const sendExternal = whatsapp;
+  const sendExternal = whatsapp && (args.authorization.messageType === "image" || args.authorization.messageType === "document");
   const metadata = {
     source: "panel",
     channel: whatsapp ? "whatsapp" : "crm",
