@@ -24,6 +24,11 @@ import {
   type MetaEmbeddedSignupSession,
 } from "@/lib/client/meta-embedded-signup";
 import { useMetaEmbeddedSignupAttempt } from "@/lib/client/use-meta-embedded-signup-attempt";
+import {
+  EMBEDDED_SIGNUP_SUBMISSION_TIMEOUT_MS,
+  isEmbeddedSignupStatusForSession,
+  recoverEmbeddedSignupStatus,
+} from "@/lib/client/embedded-signup-recovery";
 import { formatOfficialWhatsappDisplay } from "./whatsapp-display";
 
 type AnswersMap = Record<string, unknown>;
@@ -74,6 +79,7 @@ type StoreWhatsappStatusApiResponse = {
   isActive?: boolean;
   displayPhoneNumber?: string | null;
   phoneNumberId?: string | null;
+  whatsappBusinessAccountId?: string | null;
   lastInboundAt?: string | null;
   lastOutboundAt?: string | null;
   lastSafeError?: string | null;
@@ -654,12 +660,17 @@ function OnboardingContent() {
     return status;
   }, [organizationId, activeStore?.id]);
 
-  const fetchWhatsappStatus = useCallback(async (): Promise<StoreWhatsappStatusApiResponse | null> => {
+  const fetchWhatsappStatus = useCallback(async (options?: { timeoutMs?: number }): Promise<StoreWhatsappStatusApiResponse | null> => {
     if (!activeStore?.id) return null;
 
     if (!embeddedSignupMountedRef.current) return null;
     setWhatsappStatusLoading(true);
     setWhatsappStatusError(null);
+    const statusController = new AbortController();
+    const statusTimeoutId = window.setTimeout(
+      () => statusController.abort(),
+      options?.timeoutMs ?? 10_000,
+    );
 
     try {
       const response = await fetch(
@@ -668,6 +679,7 @@ function OnboardingContent() {
           method: "GET",
           cache: "no-store",
           credentials: "include",
+          signal: statusController.signal,
         },
       );
 
@@ -703,6 +715,7 @@ function OnboardingContent() {
       setWhatsappStatusError(WHATSAPP_STATUS_UNAVAILABLE_MESSAGE);
       return null;
     } finally {
+      window.clearTimeout(statusTimeoutId);
       if (embeddedSignupMountedRef.current) setWhatsappStatusLoading(false);
     }
   }, [activeStore?.id, embeddedSignupMountedRef]);
@@ -1354,6 +1367,55 @@ function OnboardingContent() {
     }
   }, [activeStore?.id, embeddedSignupMountedRef, organizationId]);
 
+  const finalizeEmbeddedSignupConnection = useCallback(
+    async (session: MetaEmbeddedSignupSession, confirmedStatus?: StoreWhatsappStatusApiResponse | null) => {
+      if (!embeddedSignupMountedRef.current) return false;
+
+      clearEmbeddedSignupSensitiveState();
+      setEmbeddedSignupSession(null);
+      setEmbeddedSignupMessage("Validando conexao oficial...");
+      setEmbeddedSignupError(null);
+
+      const status = confirmedStatus ?? (await fetchWhatsappStatus({ timeoutMs: 5_000 }));
+      if (!embeddedSignupMountedRef.current) return false;
+      if (
+        !isWhatsappStatusConnected(status) ||
+        !isEmbeddedSignupStatusForSession(status, session)
+      ) {
+        throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED");
+      }
+
+      const readinessConfirmed = await refreshActivationReadinessAfterEmbeddedSignup();
+      if (!readinessConfirmed) {
+        throw new Error("ONBOARDING_READINESS_NOT_CONFIRMED");
+      }
+      if (!embeddedSignupMountedRef.current) return false;
+
+      setEmbeddedSignupMessage(
+        session.connectionMode === "business_app_coexistence"
+          ? "WhatsApp conectado ao ZION. Voce pode continuar usando o WhatsApp Business no celular normalmente."
+          : "WhatsApp conectado pela Meta.",
+      );
+      return true;
+    },
+    [
+      clearEmbeddedSignupSensitiveState,
+      embeddedSignupMountedRef,
+      fetchWhatsappStatus,
+      refreshActivationReadinessAfterEmbeddedSignup,
+    ],
+  );
+
+  const recoverUncertainEmbeddedSignup = useCallback(
+    (session: MetaEmbeddedSignupSession) =>
+      recoverEmbeddedSignupStatus({
+        session,
+        fetchStatus: () => fetchWhatsappStatus({ timeoutMs: 5_000 }),
+        isMounted: () => embeddedSignupMountedRef.current,
+      }),
+    [embeddedSignupMountedRef, fetchWhatsappStatus],
+  );
+
   async function startMetaEmbeddedSignup(
     intent: "connect" | "verify-existing" = "connect",
     connectionMode: "standard" | "business_app_coexistence",
@@ -1472,6 +1534,11 @@ function OnboardingContent() {
         : "Conectando WhatsApp oficial da loja.",
     );
 
+    const submissionController = new AbortController();
+    let submissionTimeoutId: number | null = null;
+    let submissionTimedOut = false;
+    let responseReceived = false;
+
     const attempt = (async () => {
       try {
         if (
@@ -1484,12 +1551,18 @@ function OnboardingContent() {
           throw new Error("WHATSAPP_RECOVERY_TARGET_MISMATCH");
         }
 
+        submissionTimeoutId = window.setTimeout(() => {
+          submissionTimedOut = true;
+          submissionController.abort();
+        }, EMBEDDED_SIGNUP_SUBMISSION_TIMEOUT_MS);
+
         const response = await fetch("/api/store/whatsapp/embedded-signup", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
           credentials: "include",
+          signal: submissionController.signal,
           body: JSON.stringify({
             code: embeddedSignupCode,
             whatsappBusinessAccountId: embeddedSignupSession.whatsappBusinessAccountId,
@@ -1500,6 +1573,7 @@ function OnboardingContent() {
             ...(isRecoveryVerification ? { recovery: true } : {}),
           }),
         });
+        responseReceived = true;
 
         const result = (await response.json().catch(() => null)) as
           | {
@@ -1550,33 +1624,36 @@ function OnboardingContent() {
         }
 
         if (!embeddedSignupMountedRef.current) return;
-
-        clearEmbeddedSignupSensitiveState();
-        setEmbeddedSignupSession(null);
-        setEmbeddedSignupMessage("Validando conexao oficial...");
-        setEmbeddedSignupError(null);
-        if (!embeddedSignupMountedRef.current) return;
-        const confirmedWhatsappStatus = await fetchWhatsappStatus();
-        if (!embeddedSignupMountedRef.current) return;
-        if (!isWhatsappStatusConnected(confirmedWhatsappStatus)) {
-          throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED");
-        }
-        const readinessConfirmed = await refreshActivationReadinessAfterEmbeddedSignup();
-        if (!readinessConfirmed) {
-          throw new Error("ONBOARDING_READINESS_NOT_CONFIRMED");
-        }
-        if (!embeddedSignupMountedRef.current) return;
-        setEmbeddedSignupMessage(
-          result?.connectionMode === "business_app_coexistence"
-            ? "WhatsApp conectado ao ZION. Voce pode continuar usando o WhatsApp Business no celular normalmente."
-            : "WhatsApp conectado pela Meta.",
-        );
+        await finalizeEmbeddedSignupConnection(embeddedSignupSession);
       } catch (error) {
         if (!embeddedSignupMountedRef.current) return;
 
+        const isAbortError = error instanceof Error && error.name === "AbortError";
+        const uncertainSubmission =
+          !responseReceived &&
+          (submissionTimedOut || isAbortError || error instanceof TypeError);
+
+        if (uncertainSubmission && !isRecoveryVerification) {
+          const recovery = await recoverUncertainEmbeddedSignup(embeddedSignupSession);
+          if (!embeddedSignupMountedRef.current) return;
+          if (recovery.outcome === "active") {
+            try {
+              await finalizeEmbeddedSignupConnection(embeddedSignupSession, recovery.status);
+              return;
+            } catch (recoveryError) {
+              error = recoveryError;
+            }
+          } else {
+            error = new Error(
+              recovery.outcome === "absent"
+                ? "WHATSAPP_STATUS_NOT_CONFIRMED"
+                : "WHATSAPP_STATUS_RECOVERY_INCONCLUSIVE",
+            );
+          }
+        }
+
         clearEmbeddedSignupSensitiveState();
         setEmbeddedSignupSession(null);
-        if (!isRecoveryVerification) await fetchWhatsappStatus();
         if (!embeddedSignupMountedRef.current) return;
         setEmbeddedSignupMessage(null);
         const errorCode = error instanceof Error ? error.message : "";
@@ -1588,7 +1665,9 @@ function OnboardingContent() {
                   errorCode === "WHATSAPP_RECOVERY_TARGET_MISMATCH"
                 ? "A conta ou o telefone selecionado não corresponde à conexão META esperada, ou o estado remoto não é compatível. Nenhuma alteração foi feita."
                 : "Não foi possível verificar o estado remoto da Meta. Nenhuma alteração foi feita; tente novamente ou procure o suporte."
-            : mapEmbeddedSignupError(error),
+            : errorCode === "WHATSAPP_STATUS_RECOVERY_INCONCLUSIVE"
+              ? "Nao foi possivel confirmar se a conexao terminou. Atualize o status manualmente; nenhuma nova autorizacao foi iniciada."
+              : mapEmbeddedSignupError(error),
         );
       }
     })();
@@ -1596,6 +1675,7 @@ function OnboardingContent() {
     embeddedSignupAttemptRef.current = attempt;
     void attempt
       .finally(() => {
+        if (submissionTimeoutId !== null) window.clearTimeout(submissionTimeoutId);
         if (embeddedSignupAttemptRef.current !== attempt) return;
         embeddedSignupAttemptRef.current = null;
         closeEmbeddedSignupAttempt(embeddedSignupAttemptIdRef.current);
@@ -1607,6 +1687,11 @@ function OnboardingContent() {
         }
       })
       .catch(() => undefined);
+
+    return () => {
+      if (submissionTimeoutId !== null) window.clearTimeout(submissionTimeoutId);
+      submissionController.abort();
+    };
   }, [
     activeStore?.id,
     clearEmbeddedSignupSensitiveState,
@@ -1621,7 +1706,8 @@ function OnboardingContent() {
     embeddedSignupMountedRef,
     isEmbeddedSignupAttemptActive,
     startEmbeddedSignupTimeout,
-    fetchWhatsappStatus,
+    finalizeEmbeddedSignupConnection,
+    recoverUncertainEmbeddedSignup,
     organizationId,
     refreshActivationReadinessAfterEmbeddedSignup,
   ]);
@@ -2010,7 +2096,7 @@ function OnboardingContent() {
                   </div>
                   <button
                     type="button"
-                    onClick={fetchWhatsappStatus}
+                    onClick={() => void fetchWhatsappStatus()}
                     disabled={whatsappStatusLoading}
                     className="shrink-0 rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-60"
                   >

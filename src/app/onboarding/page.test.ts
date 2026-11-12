@@ -45,7 +45,7 @@ function getActivateZionBlock(source: string) {
 function getFetchWhatsappStatusBlock(source: string) {
   return getFunctionBlock(
     source,
-    "  const fetchWhatsappStatus = useCallback(async (): Promise<StoreWhatsappStatusApiResponse | null> => {",
+    "  const fetchWhatsappStatus = useCallback(async (options?: { timeoutMs?: number }): Promise<StoreWhatsappStatusApiResponse | null> => {",
     "  const loadBaseData = useCallback(async () => {",
   );
 }
@@ -171,6 +171,8 @@ const tests: TestCase[] = [
       assert.equal(catchBlock.includes("console.error"), true);
       assert.equal(catchBlock.includes("setWhatsappStatus(null);"), true);
       assert.equal(catchBlock.includes("setWhatsappStatusError("), true);
+      assert.equal(block.includes("statusController.abort()"), true);
+      assert.equal(block.includes("window.clearTimeout(statusTimeoutId)"), true);
     },
   },
   {
@@ -413,7 +415,11 @@ const tests: TestCase[] = [
       assert.equal(block.includes("embeddedSignupSubmittingRef.current = false;"), true);
       assert.equal(dependencies.includes("embeddedSignupSubmitting,"), false);
       assert.equal(block.includes("cancelled"), false);
-      assert.equal(block.includes("return () =>"), false);
+      assert.equal(block.includes("submissionController.abort()"), true);
+      assert.equal(block.includes("signal: submissionController.signal"), true);
+      assert.equal(block.includes("EMBEDDED_SIGNUP_SUBMISSION_TIMEOUT_MS"), true);
+      assert.equal(block.includes("recoverUncertainEmbeddedSignup"), true);
+      assert.equal(block.includes("finalizeEmbeddedSignupConnection"), true);
       assert.equal(block.includes("embeddedSignupAttemptRef.current = attempt;"), true);
       assert.equal(
         block.indexOf("embeddedSignupAttemptRef.current = null;") >
@@ -502,8 +508,8 @@ const tests: TestCase[] = [
       const block = getEmbeddedSignupSubmitBlock(source);
 
       const clearIndex = block.indexOf("clearEmbeddedSignupSensitiveState();");
-      const statusIndex = block.indexOf("await fetchWhatsappStatus();", clearIndex);
-      const readinessIndex = block.indexOf(
+      const statusIndex = source.indexOf("const status = confirmedStatus ?? (await fetchWhatsappStatus({ timeoutMs: 5_000 }));");
+      const readinessIndex = source.indexOf(
         "await refreshActivationReadinessAfterEmbeddedSignup();",
         statusIndex,
       );
@@ -518,40 +524,14 @@ const tests: TestCase[] = [
     run: () => {
       const source = readPageSource();
       const block = getEmbeddedSignupSubmitBlock(source);
-      const postSuccessIndex = block.indexOf("if (!response.ok || result?.ok !== true)");
-      const neutralMessageIndex = block.indexOf(
-        'setEmbeddedSignupMessage("Validando conexao oficial...");',
-        postSuccessIndex,
-      );
-      const statusIndex = block.indexOf("const confirmedWhatsappStatus = await fetchWhatsappStatus();", neutralMessageIndex);
-      const statusGuardIndex = block.indexOf(
-        "if (!isWhatsappStatusConnected(confirmedWhatsappStatus))",
-        statusIndex,
-      );
-      const readinessIndex = block.indexOf(
-        "const readinessConfirmed = await refreshActivationReadinessAfterEmbeddedSignup();",
-        statusGuardIndex,
-      );
-      const readinessGuardIndex = block.indexOf(
-        "if (!readinessConfirmed)",
-        readinessIndex,
-      );
-      const finalMessageIndex = block.indexOf(
-        "setEmbeddedSignupMessage(\n          result?.connectionMode",
-        readinessGuardIndex,
-      );
-
-      assert.equal(neutralMessageIndex > postSuccessIndex, true);
-      assert.equal(statusIndex > neutralMessageIndex, true);
-      assert.equal(statusGuardIndex > statusIndex, true);
-      assert.equal(readinessIndex > statusGuardIndex, true);
-      assert.equal(readinessGuardIndex > readinessIndex, true);
-      assert.equal(finalMessageIndex > readinessGuardIndex, true);
+      assert.equal(block.includes("if (!response.ok || result?.ok !== true)"), true);
       assert.equal(
-        block.indexOf('"WhatsApp conectado pela Meta."', postSuccessIndex) >
-          readinessGuardIndex,
+        source.includes("const status = confirmedStatus ?? (await fetchWhatsappStatus({ timeoutMs: 5_000 }));"),
         true,
       );
+      assert.equal(source.includes("isEmbeddedSignupStatusForSession(status, session)"), true);
+      assert.equal(source.includes("await refreshActivationReadinessAfterEmbeddedSignup();"), true);
+      assert.equal(source.includes('"WhatsApp conectado pela Meta."'), true);
       assert.equal(source.includes("function isWhatsappStatusConnected("), true);
       assert.equal(source.includes("function mapEmbeddedSignupError("), true);
     },
@@ -561,25 +541,10 @@ const tests: TestCase[] = [
     run: () => {
       const source = readPageSource();
       const block = getEmbeddedSignupSubmitBlock(source);
-      const statusGuardIndex = block.indexOf(
-        "if (!isWhatsappStatusConnected(confirmedWhatsappStatus))",
-      );
-      const statusThrowIndex = block.indexOf(
-        'throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED")',
-        statusGuardIndex,
-      );
-      const readinessGuardIndex = block.indexOf("if (!readinessConfirmed)", statusThrowIndex);
-      const readinessThrowIndex = block.indexOf(
-        'throw new Error("ONBOARDING_READINESS_NOT_CONFIRMED")',
-        readinessGuardIndex,
-      );
-      const finalMessageIndex = block.indexOf(
-        '"WhatsApp conectado pela Meta."',
-      );
-
-      assert.equal(statusThrowIndex > statusGuardIndex, true);
-      assert.equal(readinessThrowIndex > readinessGuardIndex, true);
-      assert.equal(finalMessageIndex > readinessThrowIndex, true);
+      assert.equal(block.includes('throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED")'), false);
+      assert.equal(source.includes('throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED")'), true);
+      assert.equal(source.includes('throw new Error("ONBOARDING_READINESS_NOT_CONFIRMED")'), true);
+      assert.equal(source.includes('"WhatsApp conectado pela Meta."'), true);
       assert.equal(source.includes("WHATSAPP_STATUS_UNAVAILABLE_MESSAGE"), true);
       assert.equal(source.includes("EMBEDDED_SIGNUP_STATUS_NOT_CONFIRMED_MESSAGE"), true);
       assert.equal(source.includes("EMBEDDED_SIGNUP_READINESS_NOT_CONFIRMED_MESSAGE"), true);
@@ -625,7 +590,7 @@ const tests: TestCase[] = [
       const catchBlock = getCatchBlock(block);
 
       assert.equal(catchBlock.includes("clearEmbeddedSignupSensitiveState();"), true);
-      assert.equal(catchBlock.includes("await fetchWhatsappStatus();"), true);
+      assert.equal(catchBlock.includes("recoverUncertainEmbeddedSignup"), true);
       assert.equal(catchBlock.includes("connected: false"), false);
       assert.equal(catchBlock.includes("isActive: false"), false);
       assert.equal(catchBlock.includes("setEmbeddedSignupError("), true);
@@ -658,8 +623,7 @@ const tests: TestCase[] = [
       const confirmedIndex = block.indexOf('result?.error === "WHATSAPP_RECOVERY_REQUIRES_NEW_PIN_AUTHORIZATION"');
       const confirmationMessageIndex = block.indexOf("A Meta confirmou que o telefone", confirmedIndex);
       const confirmationReturnIndex = block.indexOf("return;", confirmationMessageIndex);
-      const normalConnectionStatusIndex = block.indexOf("const confirmedWhatsappStatus", confirmationReturnIndex);
-      const readinessIndex = block.indexOf("refreshActivationReadinessAfterEmbeddedSignup()", normalConnectionStatusIndex);
+      const normalConnectionStatusIndex = source.indexOf("finalizeEmbeddedSignupConnection(embeddedSignupSession)", confirmationReturnIndex);
       const noMutationCopyIndex = source.indexOf("não salva uma integração e não consulta nem reutiliza PIN.");
 
       assert.equal(confirmedIndex > -1, true);
@@ -667,10 +631,10 @@ const tests: TestCase[] = [
       assert.equal(confirmationMessageIndex > confirmedIndex, true);
       assert.equal(confirmationReturnIndex > confirmationMessageIndex, true);
       assert.equal(normalConnectionStatusIndex > confirmationReturnIndex, true);
-      assert.equal(readinessIndex > normalConnectionStatusIndex, true);
-      assert.equal(block.includes("if (!isRecoveryVerification) await fetchWhatsappStatus();"), true);
+      assert.equal(source.includes("refreshActivationReadinessAfterEmbeddedSignup()"), true);
+      assert.equal(source.includes("recoverUncertainEmbeddedSignup"), true);
       assert.equal(noMutationCopyIndex > -1, true);
-      assert.equal(block.includes("refreshActivationReadinessAfterEmbeddedSignup()"), true);
+      assert.equal(source.includes("refreshActivationReadinessAfterEmbeddedSignup()"), true);
     },
   },
   {
