@@ -75,6 +75,7 @@ function createQuoteVersionRow(overrides?: Record<string, unknown>) {
 function createSupabaseMock(args: {
   quoteVersionRow: Record<string, unknown> | null;
   calls: SupabaseCall[];
+  recoverySourceVersion?: Record<string, unknown>;
   writer?: {
     versionNumber?: number;
     replayed?: boolean;
@@ -97,6 +98,10 @@ function createSupabaseMock(args: {
     storage: {
       from(bucket: string) {
         return {
+          download: async (path: string) => {
+            args.calls.push({ table: `storage:${bucket}`, operation: "download", payload: { path } });
+            return { data: new Blob([new Uint8Array([37, 80, 68, 70])], { type: "application/pdf" }), error: null };
+          },
           remove: async (paths: string[]) => {
             args.calls.push({ table: `storage:${bucket}`, operation: "remove", payload: { paths } });
             return { data: null, error: null };
@@ -172,7 +177,9 @@ function createSupabaseMock(args: {
               maybeSingle: async () => {
                 args.calls.push({ table, operation: "maybeSingle", filters: [...filters] });
                 return {
-                  data: {
+                  data: args.recoverySourceVersion && filters.some((filter) => filter.column === "id" && filter.value === args.recoverySourceVersion?.id)
+                    ? args.recoverySourceVersion
+                    : {
                     id: "contract-version-1",
                     contract_id: "contract-1",
                     organization_id: "org-1",
@@ -192,7 +199,7 @@ function createSupabaseMock(args: {
                     contract_snapshot:
                       args.calls.find((call) => call.table === "create_sales_contract_version_by_system")
                         ?.payload?.p_contract_snapshot || null,
-                  },
+                    },
                   error: writer.durableReadError || null,
                 };
               },
@@ -280,6 +287,7 @@ function createSupabaseMock(args: {
 function createScope(overrides?: {
   contract?: Record<string, unknown>;
   quoteVersionRow?: Record<string, unknown> | null;
+  recoverySourceVersion?: Record<string, unknown>;
   writer?: {
     versionNumber?: number;
     replayed?: boolean;
@@ -298,6 +306,7 @@ function createScope(overrides?: {
   const supabase = createSupabaseMock({
     quoteVersionRow,
     calls,
+    recoverySourceVersion: overrides?.recoverySourceVersion,
     writer: overrides?.writer,
   });
 
@@ -580,6 +589,79 @@ function assertNoGenerationSideEffects() {
 }
 
 const tests: TestCase[] = [
+  {
+    name: "recovers an approved historical correction from its immutable PDF, never the old draft",
+    run: async () => {
+      const correctedTextSha = "c".repeat(64);
+      const correctedPdfSha = createHash("sha256")
+        .update(new Uint8Array([37, 80, 68, 70]))
+        .digest("hex");
+      resetState({
+        contract: {
+          status: "approved",
+          quote_id: null,
+          quote_version_id: null,
+          current_version_id: "wrong-current-version",
+          metadata: {
+            source: "responsible_text_draft",
+            created_via: "create_sales_contract_manual_by_system",
+            commercial_opportunity_id: "opportunity-1",
+            commercial_amounts_authoritative: false,
+            draft_id: "draft-1",
+            template_version_id: "template-version-1",
+            creation_draft_revision: 2,
+            creation_draft_sha256: "a".repeat(64),
+          },
+        },
+        recoverySourceVersion: {
+          id: "11111111-1111-4111-8111-111111111111",
+          contract_id: "contract-1",
+          organization_id: "org-1",
+          store_id: "store-1",
+          version_number: 2,
+          status: "superseded",
+          approved_at: "2026-11-11T10:00:00.000Z",
+          approved_by: "user-1",
+          store_file_id: "old-corrected-file",
+          storage_bucket: "contracts",
+          storage_path: "contracts/old-corrected.pdf",
+          size_bytes: 4,
+          pdf_sha256: correctedPdfSha,
+          contract_snapshot: {
+            content_fingerprint: "b".repeat(64),
+            text_provenance: {
+              text_sha256: correctedTextSha,
+              pdf_sha256: correctedPdfSha,
+              text_representation: "manual_contract_corrected_text_utf8_exact",
+            },
+            text_correction: {
+              kind: "full_text",
+              previous_text_sha256: "a".repeat(64),
+              corrected_text_sha256: correctedTextSha,
+            },
+          },
+        },
+      });
+      const { response, body } = await callRoute({
+        body: {
+          mode: "approved_text_correction_recovery",
+          sourceVersionId: "11111111-1111-4111-8111-111111111111",
+        },
+      });
+      assert.equal(response.status, 200, JSON.stringify(body));
+      assert.equal(body.ok, true);
+      assert.equal(body.recoveredFromVersionId, "11111111-1111-4111-8111-111111111111");
+      assert.equal(body.correctedTextSha256, correctedTextSha);
+      assert.equal(state.pdfInputs.length, 0, "recovery must not rebuild from the old draft");
+      const rpc = state.calls.find((call) => call.table === "create_sales_contract_version_by_system");
+      assert.ok(rpc);
+      assert.equal(rpc.payload?.p_pdf_sha256, correctedPdfSha);
+      assert.equal(
+        (rpc.payload?.p_contract_snapshot as Record<string, unknown>)?.text_correction_recovery !== undefined,
+        true,
+      );
+    },
+  },
   {
     name: "denied canonical access stops before contract and generation work",
     run: async () => {

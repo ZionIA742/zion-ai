@@ -75,6 +75,7 @@ type PushAssistantDocumentReviewMessageInput = {
   receivedEvidenceSourceMessageId?: string | null;
   receivedEvidenceIdentificationStatus?: "identified" | "pending_identification" | null;
   receivedCustomerSignatureDeclared?: boolean;
+  receivedDocumentSha256?: string | null;
 };
 
 export type ReceivedContractDocumentAssistantNotificationInput = {
@@ -94,6 +95,7 @@ export type ReceivedContractDocumentAssistantNotificationInput = {
     storagePath: string | null;
     mimeType: string | null;
     originalFileName: string | null;
+    sha256?: string | null;
   };
   identificationStatus: "identified" | "pending_identification";
   identificationReason?: string | null;
@@ -252,6 +254,7 @@ function buildDocumentReviewMetadata(input: PushAssistantDocumentReviewMessageIn
           channel: "whatsapp",
           received_evidence_source_message_id: cleanText(input.receivedEvidenceSourceMessageId),
           received_identification_status: cleanText(input.receivedEvidenceIdentificationStatus),
+          received_document_sha256: cleanText(input.receivedDocumentSha256),
           customer_signature_declared: input.receivedCustomerSignatureDeclared === true,
         }
       : {}),
@@ -455,7 +458,9 @@ async function findExistingDocumentReviewNotification(args: {
 }) {
   const { data, error } = await args.supabase
     .from("store_assistant_notification_queue")
-    .select("id, context")
+    .select(
+      "id, organization_id, store_id, notification_type, priority, status, title, body, context, related_lead_id, related_conversation_id, related_appointment_id, created_at"
+    )
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("notification_type", args.notificationType)
@@ -470,7 +475,7 @@ async function findExistingDocumentReviewNotification(args: {
     );
   }
 
-  return ((data || []) as Array<{ id?: string | null; context?: Record<string, unknown> | null }>).find(
+  return ((data || []) as InternalAssistantNotificationRow[]).find(
     (row) => cleanText(row.context?.event_key) === args.eventKey
   );
 }
@@ -548,6 +553,12 @@ async function enqueueDocumentReviewNotification(args: {
     });
 
     if (existing?.id) {
+      if (args.materializeExternalNotification !== false) {
+        await enqueueResponsibleExternalNotificationFromAssistantNotification({
+          supabase: args.supabase,
+          internalNotification: existing,
+        });
+      }
       return {
         created: false,
         reason: "notification_already_exists",
@@ -600,10 +611,9 @@ async function enqueueDocumentReviewNotification(args: {
         "[assistant_document_review] assistant_enqueue_internal_notification error:",
         error
       );
-      return {
-        created: false,
-        reason: "notification_rpc_failed",
-      };
+      throw new Error(
+        `Falha ao criar notificacao document_review: ${error.message || "erro RPC"}`,
+      );
     }
 
     if (args.materializeExternalNotification !== false) {
@@ -641,6 +651,7 @@ async function enqueueDocumentReviewNotification(args: {
             error: materializeError,
           }
         );
+        throw materializeError;
       }
     }
 
@@ -653,10 +664,7 @@ async function enqueueDocumentReviewNotification(args: {
       "[assistant_document_review] assistant_enqueue_internal_notification exception:",
       error
     );
-    return {
-      created: false,
-      reason: "notification_exception",
-    };
+    throw error;
   }
 }
 
@@ -669,6 +677,9 @@ export async function pushAssistantDocumentReviewMessage(
     organizationId: input.organizationId,
     storeId: input.storeId,
   });
+
+  const content = buildDocumentReviewContent(input);
+  const metadata = buildDocumentReviewMetadata(input);
 
   const existingMessageId = await findExistingDocumentReviewMessage({
     supabase: input.supabase,
@@ -683,6 +694,15 @@ export async function pushAssistantDocumentReviewMessage(
   });
 
   if (existingMessageId) {
+    await enqueueDocumentReviewNotification({
+      supabase: input.supabase,
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      metadata,
+      relatedLeadId: cleanText(input.relatedLeadId),
+      relatedConversationId: cleanText(input.relatedConversationId),
+      materializeExternalNotification: input.materializeExternalNotification,
+    });
     return {
       ok: true as const,
       deduped: true,
@@ -690,9 +710,6 @@ export async function pushAssistantDocumentReviewMessage(
       messageId: existingMessageId,
     };
   }
-
-  const content = buildDocumentReviewContent(input);
-  const metadata = buildDocumentReviewMetadata(input);
 
   const { error } = await input.supabase.rpc("assistant_push_system_message", {
     p_organization_id: input.organizationId,
@@ -813,6 +830,7 @@ export async function pushAssistantReceivedContractDocumentMessage(
     storageBucket: input.receivedDocument.storageBucket,
     storagePath: input.receivedDocument.storagePath,
     contentOverride: content,
+    receivedDocumentSha256: input.receivedDocument.sha256,
     assistantPromptOverride: "Conferir o documento recebido. Nao presumir assinatura valida nem concluir o contrato automaticamente.",
     availableActionsOverride: identified
       ? [

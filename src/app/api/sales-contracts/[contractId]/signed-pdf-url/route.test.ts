@@ -315,6 +315,51 @@ async function testExpectedCurrentVersionAndTextIdentity() {
   assert.equal(supabase.calls.length, 1);
 }
 
+async function testCorrectedTextIdentityIsReturned() {
+  const pdfSha256 = "d".repeat(64);
+  const supabase = storage({ signedData: { signedUrl: "https://signed.example/corrected" } });
+  const correctedVersion = version({
+    pdf_sha256: pdfSha256,
+    contract_snapshot: {
+      identity: { contract_id: "contract-1" },
+      text_provenance: {
+        mode: "saved_text_draft",
+        draft_id: "draft-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        template_version_id: "template-version-1",
+        revision: 2,
+        text_sha256: "e".repeat(64),
+        pdf_sha256: pdfSha256,
+        text_representation: "manual_contract_corrected_text_utf8_exact",
+      },
+      text_correction: {
+        previous_version_id: "version-old",
+        previous_text_sha256: "f".repeat(64),
+        corrected_text_sha256: "e".repeat(64),
+        kind: "full_text",
+      },
+    },
+  });
+  const handler = createSignedContractPdfUrlGetHandler({
+    resolveAccess: async () => access(supabase),
+    resolveContract: (async () => ({
+      ...makeScope({ currentVersion: correctedVersion }),
+      supabase,
+    })) as never,
+  });
+  const { body, response } = await readResponse(
+    await handler(requestWithVersion("VERSION-1"), context("contract-1")),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.textCorrection, {
+    kind: "full_text",
+    previousVersionId: "version-old",
+    previousTextSha256: "f".repeat(64),
+    correctedTextSha256: "e".repeat(64),
+  });
+}
+
 async function testHistoricalVersionIsRejectedBeforeSigning() {
   const supabase = storage();
   const handler = createSignedContractPdfUrlGetHandler({
@@ -323,6 +368,26 @@ async function testHistoricalVersionIsRejectedBeforeSigning() {
   });
   const { body, response } = await readResponse(
     await handler(requestWithVersion("version-old"), context("contract-1")),
+  );
+  assert.equal(response.status, 409);
+  assert.equal(body.error, "CONTRACT_VERSION_STALE");
+  assert.equal(supabase.calls.length, 0);
+}
+
+async function testApprovedCorrectionThatIsNotCurrentCannotBeSelected() {
+  const supabase = storage();
+  const handler = createSignedContractPdfUrlGetHandler({
+    resolveAccess: async () => access(supabase),
+    resolveContract: (async () => ({
+      ...makeScope({
+        contract: { current_version_id: "version-current" },
+        currentVersion: version({ id: "version-current" }),
+      }),
+      supabase,
+    })) as never,
+  });
+  const { body, response } = await readResponse(
+    await handler(requestWithVersion("version-corrected-approved"), context("contract-1")),
   );
   assert.equal(response.status, 409);
   assert.equal(body.error, "CONTRACT_VERSION_STALE");
@@ -402,6 +467,8 @@ async function testSourceContract() {
   assert.match(source, /requirement: "active"/);
   assert.match(source, /createStoreApiDeniedResponse/);
   assert.match(source, /resolveExistingContractForAuthorizedStoreScope/);
+  assert.match(source, /manual_contract_corrected_text_utf8_exact/);
+  assert.match(source, /previousTextSha256/);
   assert.doesNotMatch(source, /resolveAuthorizedExistingContract/);
 }
 
@@ -415,7 +482,9 @@ async function main() {
     testStorageMetadataAndSigning,
     testSuccessAndMimeFallback,
     testExpectedCurrentVersionAndTextIdentity,
+    testCorrectedTextIdentityIsReturned,
     testHistoricalVersionIsRejectedBeforeSigning,
+    testApprovedCorrectionThatIsNotCurrentCannotBeSelected,
     testTextProvenanceMismatchIsRejected,
     testErrorContracts,
     testSourceContract,

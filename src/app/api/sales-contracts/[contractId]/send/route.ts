@@ -262,6 +262,7 @@ export function createSalesContractSendPostHandler(
           storagePath,
           originalFilename,
           sizeBytes,
+          pdfSha256: currentVersion.pdf_sha256,
         }),
         mime_type: mimeType,
         sales_contract_id: scope.contract.id,

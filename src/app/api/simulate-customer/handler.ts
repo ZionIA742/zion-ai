@@ -7,6 +7,10 @@ import {
 } from "../../../lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "../../../lib/server/store-api-response";
 import { routeIncomingCustomerReplyToOperationalTask } from "../../../lib/server/process-assistant-operational-tasks";
+import {
+  formatSalesAiProcessingError,
+  type SalesAiErrorDiagnostic,
+} from "../../../lib/server/sales-ai-error-diagnostics";
 
 type RequestBody = {
   organizationId?: string;
@@ -64,6 +68,7 @@ type HandlerDeps = {
         ok: false;
         error: string;
         message: string;
+        diagnostic?: SalesAiErrorDiagnostic;
       }
   >;
   routeOperationalCustomerReply: (args: {
@@ -438,6 +443,7 @@ export function createSimulateCustomerPostHandler(
           ok: false;
           error: string;
           message: string;
+          diagnostic?: SalesAiErrorDiagnostic;
         };
 
     try {
@@ -470,11 +476,15 @@ export function createSimulateCustomerPostHandler(
 
     if (!aiResult.ok) {
       const aiErrorCode = sanitizeDiagnosticCode(aiResult.error, "AI_FLOW_FAILED");
+      const diagnosticCode = aiResult.diagnostic
+        ? formatSalesAiProcessingError(aiErrorCode, aiResult.diagnostic)
+        : undefined;
       console.warn("[simulate-customer] sales ai flow unavailable", {
         organizationId: access.organizationId,
         storeId: access.storeId,
         conversationId: conversation.id,
         aiErrorCode,
+        diagnosticCode,
       });
       return createPublicError(
         409,
@@ -484,6 +494,7 @@ export function createSimulateCustomerPostHandler(
           customerMessageSaved: true,
           aiReplySaved: false,
           aiErrorCode,
+          ...(diagnosticCode ? { diagnosticCode } : {}),
         },
       );
     }

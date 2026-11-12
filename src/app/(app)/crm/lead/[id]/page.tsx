@@ -391,10 +391,21 @@ type ReopenForPostSaleResponse = {
   message?: string;
 };
 
+type NewCommercialCycleResponse = {
+  ok: boolean;
+  conversationId?: string;
+  opportunityId?: string;
+  replayed?: boolean;
+  error?: string;
+  message?: string;
+};
+
 type SimulateCustomerResponse = {
   ok: boolean;
   error?: string;
   message?: string;
+  aiErrorCode?: string;
+  diagnosticCode?: string;
   customerMessageSaved?: boolean;
   aiReplySaved?: boolean;
   conversationId?: string;
@@ -590,6 +601,15 @@ type GeneratedContractSummary = {
   store_signed_at: string | null;
   completed_at: string | null;
   created_at: string | null;
+  current_version?: {
+    id: string;
+    version_number: number | null;
+    status: string | null;
+    original_filename: string | null;
+    created_at: string | null;
+    approved_at: string | null;
+    sent_at: string | null;
+  } | null;
   manual_provenance?: {
     source: "responsible_text_draft";
     created_via: "create_sales_contract_manual_by_system";
@@ -658,9 +678,26 @@ type SignedContractPdfUrlResponse = {
     textSha256?: string;
     templateVersionId?: string;
   } | null;
+  textCorrection?: {
+    kind: "full_text";
+    previousVersionId: string;
+    previousTextSha256: string;
+    correctedTextSha256: string;
+  } | null;
   originalFilename?: string | null;
   mimeType?: string | null;
   expiresIn?: number;
+  error?: string;
+  message?: string;
+};
+
+type ContractDetailResponse = {
+  ok: boolean;
+  recoverable_text_correction?: {
+    sourceVersionId: string;
+    versionNumber: number;
+    correctedTextSha256: string;
+  } | null;
   error?: string;
   message?: string;
 };
@@ -1922,6 +1959,12 @@ export default function LeadPage() {
   const canEnableReopenSelectedOpportunity = canEnableReopenForPostSaleAction(
     selectedOpportunity?.stage,
   );
+  const canStartNewCommercialCycle = Boolean(
+    conversation &&
+      selectedOpportunity &&
+      selectedOpportunity.conversationId === conversation.id &&
+      ["closed", "resolved"].includes(String(conversation.status || "").trim().toLowerCase()),
+  );
   const selectedOpportunityStageLabel = selectedOpportunity
     ? formatOpportunityStage(selectedOpportunity.stage)
     : "Nenhuma oportunidade selecionada";
@@ -2780,6 +2823,63 @@ export default function LeadPage() {
     }
   }
 
+  async function startNewCommercialCycle() {
+    if (!lead || !conversation || !selectedOpportunity || !canStartNewCommercialCycle) {
+      setErrorText("O novo ciclo exige uma conversa encerrada e uma oportunidade desta conversa.");
+      setStatusText(null);
+      return;
+    }
+
+    const confirmationText = [
+      "Iniciar um novo ciclo comercial para este cliente?",
+      "A conversa, oportunidade, contratos, versoes, mensagens e barreiras anteriores serao preservados.",
+      "O novo ciclo sera criado em uma conversa e oportunidade separadas.",
+    ].join("\n");
+
+    if (!window.confirm(confirmationText)) return;
+
+    setWorking(true);
+    setErrorText(null);
+    setStatusText(null);
+
+    try {
+      const response = await fetch("/api/crm/opportunities/new-cycle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          leadId: lead.id,
+          previousConversationId: conversation.id,
+          previousOpportunityId: selectedOpportunity.id,
+          operationId: globalThis.crypto.randomUUID(),
+          reason: "Novo ciclo comercial autorizado pelo responsavel no CRM.",
+        }),
+      });
+      const result =
+        (await response.json().catch(() => null)) as NewCommercialCycleResponse | null;
+
+      if (!response.ok || !result?.ok || !result.conversationId || !result.opportunityId) {
+        throw new Error(
+          result?.message || result?.error || "Nao foi possivel iniciar o novo ciclo comercial.",
+        );
+      }
+
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.set("conversationId", result.conversationId);
+      nextUrl.searchParams.set("opportunityId", result.opportunityId);
+      router.replace(`${nextUrl.pathname}?${nextUrl.searchParams.toString()}`, { scroll: false });
+      setStatusText("Novo ciclo comercial iniciado com sucesso.");
+    } catch (error: unknown) {
+      setErrorText(
+        error instanceof Error
+          ? error.message
+          : "Nao foi possivel iniciar o novo ciclo comercial.",
+      );
+      setStatusText(null);
+    } finally {
+      setWorking(false);
+    }
+  }
+
   async function generateManualQuotePdf() {
     if (isGeneratingManualQuote) {
       return;
@@ -3201,7 +3301,7 @@ export default function LeadPage() {
       setHasLoadedGeneratedQuotes(true);
     } catch (error: any) {
       if (documentScopeRef.current !== scopedDocumentKey) {
-        return;
+        return [];
       }
 
       setCurrentCommercialProposal(null);
@@ -3546,7 +3646,6 @@ export default function LeadPage() {
       );
     } finally {
       setOpeningGeneratedQuoteId(null);
-    setQuotePdfPreparationUncertainId(null);
     }
   }
 
@@ -4046,17 +4145,15 @@ export default function LeadPage() {
       : contractDraftState?.revision
         ? contractDraftState
         : await fetchContractDraftState({ silent: true });
-    if (!draftState && normalizedStatus === "approved") {
-      return { handled: false, prepared: null };
-    }
     if (
+      draftState &&
       !draftState?.ready ||
-      !draftState.draftId ||
-      !draftState.draftSha256 ||
-      !/^[0-9a-f]{64}$/u.test(draftState.draftSha256) ||
-      !draftState.revision ||
-      draftState.changed ||
-      draftState.conflict
+      !draftState?.draftId ||
+      !draftState?.draftSha256 ||
+      !/^[0-9a-f]{64}$/u.test(draftState?.draftSha256 || "") ||
+      !draftState?.revision ||
+      draftState?.changed ||
+      draftState?.conflict
     ) {
       setContractActionError(
         draftState?.changed
@@ -4068,6 +4165,7 @@ export default function LeadPage() {
     }
 
     if (
+      draftState &&
       ["pending_review", "generated", "approved"].includes(normalizedStatus) &&
       contract.current_version_id
     ) {
@@ -4080,6 +4178,14 @@ export default function LeadPage() {
         url.searchParams.set("expectedContractVersionId", currentVersionId);
         const currentSignedResponse = await fetch(url.toString(), { method: "GET", cache: "no-store" });
         const currentSigned = (await currentSignedResponse.json().catch(() => null)) as SignedContractPdfUrlResponse | null;
+        if (
+          !currentSignedResponse.ok &&
+          currentSigned?.error === "CONTRACT_TEXT_PROVENANCE_INVALID"
+        ) {
+          throw new Error(
+            "A versao textual atual possui proveniencia inconsistente. O envio foi bloqueado; nenhuma versao anterior sera reutilizada.",
+          );
+        }
         const currentProvenance = currentSigned?.textProvenance;
         const currentPdfSha256 = String(currentSigned?.pdfSha256 || "").trim().toLowerCase();
         const currentVersionMatchesDraft =
@@ -4096,7 +4202,23 @@ export default function LeadPage() {
           currentProvenance.textSha256 === draftState.draftSha256 &&
           currentProvenance.templateVersionId === draftState.templateVersionId;
 
-        if (currentVersionMatchesDraft && currentProvenance && currentSigned?.signedUrl) {
+        const currentVersionMatchesApprovedCorrection =
+          currentSignedResponse.ok &&
+          currentSigned?.ok === true &&
+          Boolean(currentSigned.signedUrl) &&
+          currentSigned.contractVersionId === currentVersionId &&
+          /^[0-9a-f]{64}$/u.test(currentPdfSha256) &&
+          currentSigned.isTextDraftVersion === true &&
+          currentProvenance !== null &&
+          currentProvenance !== undefined &&
+          currentSigned.textCorrection?.kind === "full_text" &&
+          currentSigned.textCorrection.correctedTextSha256 === currentProvenance.textSha256;
+
+        if (
+          (currentVersionMatchesDraft || currentVersionMatchesApprovedCorrection) &&
+          currentProvenance &&
+          currentSigned?.signedUrl
+        ) {
           const identity: ContractVersionIdentity = {
             contractVersionId: currentVersionId,
             pdfSha256: currentPdfSha256,
@@ -4119,15 +4241,109 @@ export default function LeadPage() {
           });
           setPreparedContractSend(prepared);
           setContractActionSuccess(
-            normalizedStatus === "approved"
+            currentVersionMatchesApprovedCorrection
+              ? "A versao corrigida e aprovada corresponde ao PDF atual. Confira e confirme o envio desta mesma versao."
+              : normalizedStatus === "approved"
               ? "A versao aprovada corresponde exatamente a revisao salva. Confira o PDF e confirme o envio desta mesma versao."
               : "A versao gerada corresponde exatamente a revisao salva. Confira o PDF e aprove antes de confirmar o envio desta mesma versao.",
           );
           return { handled: true, prepared };
         }
-      } catch {
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes("A versao textual atual possui proveniencia inconsistente")
+        ) {
+          throw error;
+        }
         // Falha ao consultar a versao atual nao autoriza seu reaproveitamento.
       }
+    }
+
+    const detailResponse = await fetch(
+      `/api/sales-contracts/${encodeURIComponent(safeContractId)}`,
+      { method: "GET", cache: "no-store" },
+    );
+    const detail = (await detailResponse.json().catch(() => null)) as ContractDetailResponse | null;
+    const recovery = detailResponse.ok && detail?.ok ? detail.recoverable_text_correction : null;
+    if (recovery?.sourceVersionId && /^[0-9a-f]{64}$/u.test(recovery.correctedTextSha256)) {
+      if (!window.confirm(
+        "Foi encontrada uma edicao textual aprovada que nao e mais a versao atual. Recuperar essa edicao em uma nova versao para conferencia?",
+      )) {
+        return { handled: true, prepared: null };
+      }
+      setContractActionLoadingId(safeContractId);
+      setContractActionLoadingType("prepare_send");
+      setContractActionError(null);
+      setContractActionSuccess(null);
+      setPreparedContractSend(null);
+      try {
+        const response = await fetch(
+          `/api/sales-contracts/${encodeURIComponent(safeContractId)}/generate-pdf`,
+          {
+            method: "POST",
+            cache: "no-store",
+            headers: {
+              "Content-Type": "application/json",
+              "x-zion-contract-operation-id": crypto.randomUUID(),
+            },
+            body: JSON.stringify({
+              mode: "approved_text_correction_recovery",
+              sourceVersionId: recovery.sourceVersionId,
+            }),
+          },
+        );
+        const result = (await response.json().catch(() => null)) as
+          (SalesContractActionResponse & { version?: Record<string, unknown>; correctedTextSha256?: string }) | null;
+        const version = result?.version;
+        const versionId = String(version?.id || "").trim();
+        const pdfSha256 = String(version?.pdf_sha256 || "").trim().toLowerCase();
+        if (!response.ok || !result?.ok || !versionId || !/^[0-9a-f]{64}$/u.test(pdfSha256) ||
+            result.correctedTextSha256 !== recovery.correctedTextSha256 ||
+            String(result.contract?.current_version_id || "").toLowerCase() !== versionId.toLowerCase()) {
+          throw new Error(result?.message || "Nao foi possivel recuperar a edicao textual aprovada.");
+        }
+        const signedResponse = await fetch(
+          `/api/sales-contracts/${encodeURIComponent(safeContractId)}/signed-pdf-url?expectedContractVersionId=${encodeURIComponent(versionId)}`,
+          { method: "GET", cache: "no-store" },
+        );
+        const signed = (await signedResponse.json().catch(() => null)) as SignedContractPdfUrlResponse | null;
+        if (!signedResponse.ok || !signed?.ok || !signed.signedUrl || signed.contractVersionId !== versionId ||
+            signed.pdfSha256 !== pdfSha256 || signed.textProvenance?.textSha256 !== recovery.correctedTextSha256) {
+          throw new Error(signed?.message || "A versao recuperada nao corresponde ao PDF persistido.");
+        }
+        const provenance = signed.textProvenance;
+        if (!provenance) throw new Error("A versao recuperada nao possui proveniencia textual verificavel.");
+        setContractPreview({
+          kind: "contract",
+          contractId: safeContractId,
+          signedUrl: signed.signedUrl,
+          identity: { contractVersionId: versionId, pdfSha256, isTextDraftVersion: true, textProvenance: provenance },
+        });
+        setPreparedContractSend({
+          contractId: safeContractId,
+          contractVersionId: versionId,
+          pdfSha256,
+          signedUrl: signed.signedUrl,
+          requiresApproval: true,
+          textProvenance: provenance,
+        });
+        setContractActionSuccess("A edicao aprovada foi recuperada em nova versao. Confira o PDF e aprove antes de enviar.");
+        return { handled: true, prepared: { contractId: safeContractId, contractVersionId: versionId, pdfSha256, signedUrl: signed.signedUrl, requiresApproval: true, textProvenance: provenance } };
+      } catch (error: unknown) {
+        setContractActionError(error instanceof Error ? error.message : "Nao foi possivel recuperar a edicao textual aprovada.");
+        setContractActionSuccess(null);
+        return { handled: true, prepared: null };
+      } finally {
+        setContractActionLoadingId(null);
+        setContractActionLoadingType(null);
+      }
+    }
+
+    if (!draftState) {
+      setContractActionError("Nao existe uma revisao textual salva e valida para este contrato.");
+      setContractActionSuccess(null);
+      return { handled: true, prepared: null };
     }
 
     if (normalizedStatus === "approved" && !window.confirm(
@@ -5126,6 +5342,27 @@ export default function LeadPage() {
       const result = (await response.json()) as SimulateCustomerResponse;
 
       if (!response.ok || !result?.ok) {
+        if (result?.customerMessageSaved === true) {
+          const diagnosticCode =
+            result.aiErrorCode ||
+            result.diagnosticCode ||
+            result.error ||
+            "SIMULATE_CUSTOMER_AI_REPLY_UNAVAILABLE";
+
+          console.warn("[LeadPage] mensagem simulada salva sem resposta da IA:", {
+            httpStatus: response.status,
+            diagnosticCode,
+          });
+          setStatusText(null);
+          setErrorText(
+            `Mensagem do cliente registrada, mas a resposta da IA falhou nesta tentativa. Diagnostico: ${diagnosticCode}. A mensagem foi atualizada no historico; nao reenvie automaticamente.`,
+          );
+          simulatedCustomerMutationInFlightRef.current = false;
+          setSimulatingCustomer(false);
+          await fetchLeadConversationAndMessages({ silent: true });
+          return false;
+        }
+
         const errorMessage =
           result?.message ||
           result?.error ||
@@ -5917,6 +6154,7 @@ export default function LeadPage() {
     setGeneratedQuotesError(null);
     setGeneratedQuotesLoading(false);
     setOpeningGeneratedQuoteId(null);
+    setQuotePdfPreparationUncertainId(null);
     setQuoteActionLoadingId(null);
     setQuoteActionLoadingType(null);
     setQuoteActionError(null);
@@ -5926,6 +6164,7 @@ export default function LeadPage() {
     setGeneratedContractsError(null);
     setGeneratedContractsLoading(false);
     setOpeningGeneratedContractId(null);
+    setBlockedContractPdf(null);
     setContractPreview(null);
     setContractTextCorrection(null);
     setContractTextCorrectionLoading(false);
@@ -6520,6 +6759,20 @@ export default function LeadPage() {
                           className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
                         >
                           Reabrir para Pós-venda
+                        </button>
+                      ) : null}
+
+                      {canStartNewCommercialCycle ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCommercialActionsOpen(false);
+                            void startNewCommercialCycle();
+                          }}
+                          disabled={working || refreshing || simulatingCustomer}
+                          className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
+                        >
+                          Iniciar novo ciclo comercial
                         </button>
                       ) : null}
                     </div>
@@ -7707,7 +7960,6 @@ export default function LeadPage() {
                             </div>
                           ) : null}
 
-
                           {generatedContractsLoading ? (
                             <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
                               Carregando contratos...
@@ -7817,8 +8069,18 @@ export default function LeadPage() {
                                           />
                                           <InfoCard
                                             label="PDF atual"
-                                            value={hasCurrentVersion ? "Versao disponivel" : "PDF ainda nao gerado"}
+                                            value={hasCurrentVersion
+                                              ? `V${contract.current_version?.version_number ?? "?"} · ${formatContractStatusLabel(contract.current_version?.status || contract.status)}`
+                                              : "PDF ainda nao gerado"}
                                           />
+                                          {hasCurrentVersion && contract.current_version ? (
+                                            <>
+                                              <InfoCard label="Versao criada em" value={formatDateTime(contract.current_version.created_at)} />
+                                              <InfoCard label="Versao aprovada em" value={formatDateTime(contract.current_version.approved_at)} />
+                                              <InfoCard label="Versao enviada em" value={formatDateTime(contract.current_version.sent_at || contract.sent_at)} />
+                                              <InfoCard label="Identificador da versao" value={contract.current_version.id} />
+                                            </>
+                                          ) : null}
                                         </div>
                                       </div>
 

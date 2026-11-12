@@ -14,6 +14,7 @@ import {
   resolveWhatsappInboundThreadBySystem,
   isLikelyResponsibleAssistantQuestion,
   shouldSkipAiSalesReplyForReceivedContractDocument,
+  normalizeWhatsappSha256,
 } from "./whatsapp-inbox-processor.js";
 
 function readProcessorSource() {
@@ -38,6 +39,15 @@ test("documento contratual identificado ou pendente encerra o dispatch comercial
     false,
   );
   assert.equal(shouldSkipAiSalesReplyForReceivedContractDocument(null), false);
+});
+
+test("normaliza SHA-256 Base64 do documento WhatsApp para hexadecimal", () => {
+  const base64 = "R3jJGXq0oCgbBSD5MYrfDmMYSf4O4/DfQqTicuYj9Gk=";
+  const expectedHex = Buffer.from(base64, "base64").toString("hex");
+
+  assert.equal(normalizeWhatsappSha256(base64), expectedHex);
+  assert.equal(normalizeWhatsappSha256(expectedHex.toUpperCase()), expectedHex);
+  assert.equal(normalizeWhatsappSha256("not-a-sha"), null);
 });
 
 test("responsible decision hook returns its canonical result to stop assistant handling", () => {
@@ -455,7 +465,7 @@ test("responsible primary inbound is recorded before the customer thread path", 
   }
 });
 
-test("responsible interactive inbound reaches the bridge before the customer interactive filter", async () => {
+test("responsible interactive inbound with real SIM id reaches the contract decision before the customer filter", async () => {
   process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
 
@@ -485,7 +495,7 @@ test("responsible interactive inbound reaches the bridge before the customer int
             context: { id: "outbound-contract-notification" },
             interactive: {
               type: "button_reply",
-              button_reply: { id: "CONTRACT_CONFIRM", title: "SIM" },
+              button_reply: { id: "SIM", title: "SIM" },
             },
           },
         },
@@ -505,7 +515,7 @@ test("responsible interactive inbound reaches the bridge before the customer int
     }
 
     if (url.includes("/rest/v1/store_assistant_responsible_whatsapp_events") && method === "POST") {
-      return jsonFetchResponse([{
+      return jsonFetchResponse({
         id: "responsible-event-1",
         status: "received",
         claim_token: null,
@@ -513,7 +523,7 @@ test("responsible interactive inbound reaches the bridge before the customer int
         assistant_message_id: null,
         attempts: 1,
         outbound_status: "failed",
-      }]);
+      });
     }
 
     if (url.includes("/rest/v1/rpc/claim_store_assistant_responsible_whatsapp_event")) {
@@ -532,16 +542,16 @@ test("responsible interactive inbound reaches the bridge before the customer int
 
     if (url.includes("/rest/v1/store_assistant_messages") && method === "POST") {
       const inserted = JSON.parse(body) as Record<string, unknown>;
-      return jsonFetchResponse([{
+      return jsonFetchResponse({
         id: "responsible-message-1",
         thread_id: inserted.thread_id,
         content: inserted.content,
         metadata: inserted.metadata,
-      }]);
+      });
     }
 
     if (url.includes("/rest/v1/store_assistant_responsible_whatsapp_events") && method === "PATCH") {
-      return jsonFetchResponse([{ id: "responsible-event-1" }]);
+      return jsonFetchResponse({ id: "responsible-event-1" });
     }
 
     if (url.includes("/rest/v1/store_assistant_notification_queue") && method === "GET") {
@@ -556,12 +566,49 @@ test("responsible interactive inbound reaches the bridge before the customer int
           document_version_id: "version-1",
           received_evidence_source_message_id: "evidence-1",
           customer_name: "Cliente",
+          related_conversation_id: "conversation-1",
         },
       }]);
     }
 
     if (url.includes("/rest/v1/store_responsible_external_notifications") && method === "GET") {
       return jsonFetchResponse([{ internal_notification_id: "notification-1" }]);
+    }
+
+    if (url.includes("/rest/v1/sales_contracts") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "contract-1",
+        status: "completed",
+        completed_at: "2026-11-04T19:50:00.000Z",
+        current_version_id: "version-1",
+        conversation_id: "conversation-1",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/sales_contract_versions") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "version-1",
+        contract_id: "contract-1",
+        status: "completed",
+        organization_id: "org-1",
+        store_id: "store-1",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/store_business_events") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "decision-event-1",
+        conversation_id: "conversation-1",
+        event_key: "contrato_conferencia_documental",
+        event_payload: {
+          schema: "received_contract_document_decision_v1",
+          decision: "confirmed",
+          notification_id: "notification-1",
+          contract_id: "contract-1",
+          contract_version_id: "version-1",
+          evidence_source_message_id: "evidence-1",
+        },
+      }]);
     }
 
     if (url.includes("/rest/v1/rpc/confirm_received_contract_document_by_system")) {
@@ -572,6 +619,14 @@ test("responsible interactive inbound reaches the bridge before the customer int
         contract_id: "contract-1",
         contract_version_id: "version-1",
         evidence_source_message_id: "evidence-1",
+      }]);
+    }
+
+    if (url.includes("/rest/v1/rpc/enqueue_received_contract_document_confirmation_by_system")) {
+      return jsonFetchResponse([{
+        message_id: "confirmation-1",
+        outbound_idempotency_key: "confirmation-key",
+        outcome: "queued",
       }]);
     }
 
@@ -629,7 +684,7 @@ test("responsible interactive inbound reaches the bridge before the customer int
     assert.equal(messagePayload.content, "SIM");
     const messageMetadata = messagePayload.metadata as Record<string, unknown>;
     assert.equal(messageMetadata.context_message_id, "outbound-contract-notification");
-    assert.equal(messageMetadata.interactive_button_id, "CONTRACT_CONFIRM");
+    assert.equal(messageMetadata.interactive_button_id, "SIM");
     assert.equal(messageMetadata.interactive_button_title, "SIM");
 
     const decisionCall = calls.find((call) =>
@@ -1628,6 +1683,7 @@ async function processCustomerMediaScenario(args: {
   transcriptionFailure?: boolean;
   visualFailure?: boolean;
   metadataUpdateReturnsNoRows?: boolean;
+  documentContractFixture?: boolean;
 }) {
   process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
@@ -1650,8 +1706,12 @@ async function processCustomerMediaScenario(args: {
     metadata: {
       media_origin: "customer",
       storage_bucket: "zion-store-files",
-      storage_path: "org-1/store-1/whatsapp-inbound/conversation-1/media.bin",
-      original_file_name: args.filename || `media.${args.type === "audio" ? "webm" : "bin"}`,
+      storage_path: args.documentContractFixture
+        ? "inbound/contracts/received.pdf"
+        : "org-1/store-1/whatsapp-inbound/conversation-1/media.bin",
+      original_file_name: args.documentContractFixture
+        ? "contrato-assinado.pdf"
+        : args.filename || `media.${args.type === "audio" ? "webm" : "bin"}`,
       mime_type:
         args.type === "audio"
           ? "audio/webm"
@@ -1707,10 +1767,108 @@ async function processCustomerMediaScenario(args: {
 
     if (url.includes("/rest/v1/messages") && method === "GET") {
       messageReads += 1;
+      if (args.documentContractFixture && url.includes("id=eq.message-media-1")) {
+        return jsonFetchResponse([persistedMessage]);
+      }
+      if (args.documentContractFixture && url.includes("conversation_id=eq.conversation-1")) {
+        return jsonFetchResponse([{
+          id: "sent-contract-1",
+          direction: "outgoing",
+          message_type: "document",
+          media_url: "outbound/contracts/contract.pdf",
+          external_message_id: "wamid.sent-contract-1",
+          outbound_delivery_state: "sent",
+          metadata: {
+            source: "sales_contract_send_route",
+            outbound_origin: "sales_contract_send",
+            whatsapp_status: "delivered",
+            sales_contract_id: "contract-1",
+            sales_contract_version_id: "version-1",
+            storage_path: "outbound/contracts/contract.pdf",
+            original_file_name: "contrato.pdf",
+          },
+          created_at: "2026-11-10T12:00:00.000Z",
+        }]);
+      }
       if (args.existingMessage) return jsonFetchResponse([args.existingMessage]);
       return messageReads === 1 ? jsonFetchResponse([]) : jsonFetchResponse([{
         ...persistedMessage,
         metadata: insertedMetadata || persistedMessage.metadata,
+      }]);
+    }
+
+    if (url.includes("/rest/v1/sales_contracts") && method === "GET") {
+      if (args.documentContractFixture) {
+        return jsonFetchResponse([{
+            id: "contract-1",
+            organization_id: "org-1",
+            store_id: "store-1",
+            conversation_id: "conversation-1",
+            current_version_id: "version-1",
+            status: "sent_to_customer",
+            metadata: { commercial_opportunity_id: "opportunity-1" },
+          }]);
+      }
+    }
+
+    if (url.includes("/rest/v1/sales_contract_versions") && method === "GET") {
+      if (args.documentContractFixture) {
+        return jsonFetchResponse([{
+            id: "version-1",
+            contract_id: "contract-1",
+            organization_id: "org-1",
+            store_id: "store-1",
+            version_number: 1,
+            status: "sent",
+            storage_bucket: "zion-store-files",
+            storage_path: "outbound/contracts/contract.pdf",
+            original_filename: "contrato.pdf",
+            mime_type: "application/pdf",
+            pdf_sha256: null,
+          }]);
+      }
+    }
+
+    if (url.includes("/rest/v1/store_business_events") && method === "GET") {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_threads") && method === "GET") {
+      return jsonFetchResponse([{ id: "assistant-thread-1" }]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_threads") && method === "POST") {
+      return jsonFetchResponse([{ id: "assistant-thread-1" }]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_threads") && method === "PATCH") {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_messages") && method === "GET") {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/store_assistant_notification_queue") && method === "GET") {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/rpc/store_business_event_register") && method === "POST") {
+      return jsonFetchResponse([]);
+    }
+
+    if (
+      url.includes("/rest/v1/rpc/assistant_push_system_message") ||
+      url.includes("/rest/v1/rpc/assistant_enqueue_internal_notification")
+    ) {
+      return jsonFetchResponse([]);
+    }
+
+    if (url.includes("/rest/v1/rpc/enqueue_received_contract_document_ack_by_system")) {
+      return jsonFetchResponse([{
+        message_id: "ack-message-1",
+        outbound_idempotency_key: "received-contract-ack:message-media-1",
+        outcome: "queued",
       }]);
     }
 
@@ -2045,4 +2203,22 @@ test("video remains video and document remains document with file attachment kin
   assert.equal(documentPayload.p_message_type, "document");
   assert.equal(documentPayload.p_media_url, documentMetadata.storage_path);
   assert.equal(documentMetadata.attachment_kind, "file");
+});
+
+test("documento do cliente sem context_message_id segue a evidencia contratual e nao o fluxo de decisao", async () => {
+  const { result, calls, aiCalls } = await processCustomerMediaScenario({
+    type: "document",
+    filename: "contrato-assinado.pdf",
+    documentContractFixture: true,
+  });
+  assert.equal(result.failed, 0, JSON.stringify(result));
+  assert.deepEqual(aiCalls, []);
+  assert.equal(
+    calls.some((call) => call.url.includes("/rpc/store_business_event_register")),
+    true,
+  );
+  assert.equal(
+    calls.some((call) => call.url.includes("confirm_received_contract_document_by_system")),
+    false,
+  );
 });

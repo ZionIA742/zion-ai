@@ -33,6 +33,7 @@ const contract = (overrides: Record<string, unknown> = {}) => ({
   store_id: "store-1",
   conversation_id: "conversation-1",
   current_version_id: "version-1",
+  status: "sent_to_customer",
   metadata: {
     source: "accepted_quote_version_snapshot",
     commercial_opportunity_id: "opportunity-1",
@@ -59,8 +60,24 @@ const sent = (overrides: Record<string, unknown> = {}) => ({
   direction: "outgoing",
   message_type: "document",
   media_url: "inbound/contracts/received.pdf",
-  metadata: { storage_path: "inbound/contracts/received.pdf" },
+  external_message_id: "wamid.sent-1",
+  outbound_delivery_state: "sent",
+  metadata: {
+    source: "sales_contract_send_route",
+    outbound_origin: "sales_contract_send",
+    whatsapp_status: "sent",
+    storage_path: "inbound/contracts/received.pdf",
+  },
   ...overrides,
+  ...(overrides.metadata === null
+    ? { metadata: null }
+    : { metadata: {
+        source: "sales_contract_send_route",
+        outbound_origin: "sales_contract_send",
+        whatsapp_status: "sent",
+        storage_path: "inbound/contracts/received.pdf",
+        ...(overrides.metadata as Record<string, unknown> | undefined),
+      } }),
 });
 
 function resolve(overrides: Partial<Parameters<typeof resolveReceivedContractDocumentIdentity>[0]> = {}) {
@@ -110,6 +127,7 @@ test("mantem pendente metadata de oportunidade vazio ou invalido", () => {
 
 test("desempata duas versoes pelo nome do arquivo recebido contra a mensagem enviada", () => {
   const result = resolve({
+    contracts: [contract({ current_version_id: "version-3" })],
     message: message({
       metadata: {
         ...message().metadata,
@@ -150,7 +168,7 @@ test("desempata duas versoes pelo nome do arquivo recebido contra a mensagem env
   assert.equal(result.originalDocument.sourceMessageId, "sent-v3");
 });
 
-test("desempata duas versoes pelo nome do arquivo recebido para a versao 1", () => {
+test("prioriza a versao corrente mesmo quando existem mensagens historicas", () => {
   const result = resolve({
     message: message({
       metadata: {
@@ -192,7 +210,7 @@ test("desempata duas versoes pelo nome do arquivo recebido para a versao 1", () 
   assert.equal(result.originalDocument.sourceMessageId, "sent-v1");
 });
 
-test("mantem pendente quando o nome recebido nao diferencia as versoes", () => {
+test("nao reabre versoes historicas para criar candidatos concorrentes", () => {
   const result = resolve({
     message: message({
       metadata: {
@@ -211,10 +229,9 @@ test("mantem pendente quando o nome recebido nao diferencia as versoes", () => {
       [version({ id: "version-1", storage_path: "contracts/shared.pdf" }), version({ id: "version-3", storage_path: "contracts/shared.pdf" })],
     ]]),
   });
-  assert.equal(result.outcome, "pending");
-  if (result.outcome !== "pending") return;
-  assert.equal(result.reason, "multiple_version_candidates");
-  assert.deepEqual(result.candidateVersionIds, ["version-1", "version-3"]);
+  assert.equal(result.outcome, "identified");
+  if (result.outcome !== "identified") return;
+  assert.equal(result.contractVersionId, "version-1");
 });
 
 test("mantem pendente quando o metadata de nome esta ausente ou invalido", () => {
@@ -238,7 +255,8 @@ test("mantem pendente quando o metadata de nome esta ausente ou invalido", () =>
   });
   assert.equal(result.outcome, "pending");
   if (result.outcome !== "pending") return;
-  assert.equal(result.reason, "multiple_version_candidates");
+  assert.equal(result.reason, "version_evidence_missing");
+  assert.deepEqual(result.candidateVersionIds, ["version-1"]);
 });
 
 test("separa arquivo recebido alterado da identidade do documento enviado", () => {
@@ -285,6 +303,31 @@ test("separa arquivo recebido alterado da identidade do documento enviado", () =
   });
 });
 
+test("identifica o PDF devolvido pelo SHA quando a mensagem enviada preserva a impressão digital", () => {
+  const pdfSha256 = "f".repeat(64);
+  const result = resolve({
+    message: message({
+      media_url: "inbound/contracts/devolvido.pdf",
+      metadata: {
+        ...message().metadata,
+        storage_path: "inbound/contracts/devolvido.pdf",
+        sha256: pdfSha256,
+      },
+    }),
+    sentDocuments: [sent({
+      media_url: "outbound/contracts/v2.pdf",
+      metadata: { storage_path: "outbound/contracts/v2.pdf", pdf_sha256: pdfSha256 },
+    })],
+    versionsByContract: new Map([["contract-1", [version({
+      storage_path: "outbound/contracts/v2.pdf",
+      pdf_sha256: pdfSha256,
+    })]]]),
+  });
+  assert.equal(result.outcome, "identified");
+  if (result.outcome !== "identified") return;
+  assert.equal(result.contractVersionId, "version-1");
+});
+
 test("nao escolhe automaticamente entre contratos possiveis", () => {
   const result = resolve({ contracts: [contract(), contract({ id: "contract-2" })] });
   assert.deepEqual(result, {
@@ -323,10 +366,149 @@ test("permanece pendente quando a evidencia aponta para versao antiga diferente"
 
 test("preserva ausencia de hash sem transformar isso em assinatura", () => {
   const result = resolve({ message: message({ metadata: { storage_bucket: "zion-store-files", storage_path: "inbound/contracts/received.pdf", mime_type: "application/pdf" } }) });
+  assert.equal(result.outcome, "pending");
+  if (result.outcome !== "pending") return;
+  assert.equal(result.reason, "version_evidence_missing");
+});
+
+test("mantem pendente um PDF com nome completamente alterado", () => {
+  const result = resolve({
+    message: message({
+      metadata: {
+        ...message().metadata,
+        original_file_name: "documento-qualquer.pdf",
+      },
+    }),
+  });
+  assert.equal(result.outcome, "pending");
+  if (result.outcome !== "pending") return;
+  assert.equal(result.reason, "version_evidence_missing");
+  assert.deepEqual(result.candidateVersionIds, ["version-1"]);
+});
+
+test("nao identifica envio canonico que nao foi aceito pela Meta", () => {
+  const result = resolve({
+    sentDocuments: [sent({
+      metadata: {
+        sales_contract_id: "contract-1",
+        sales_contract_version_id: "version-1",
+        outbound_origin: "sales_contract_send",
+      },
+      external_message_id: null,
+      outbound_delivery_state: "failed",
+    })],
+  });
+  assert.equal(result.outcome, "pending");
+  if (result.outcome !== "pending") return;
+  assert.equal(result.reason, "version_evidence_missing");
+});
+
+test("nao aceita caminho, SHA ou IDs sem prova canonica de envio", () => {
+  const result = resolve({
+    sentDocuments: [sent({
+      external_message_id: null,
+      outbound_delivery_state: null,
+      metadata: {
+        storage_path: "inbound/contracts/received.pdf",
+        sales_contract_id: "contract-1",
+        sales_contract_version_id: "version-1",
+        pdf_sha256: "hash-1",
+      },
+    })],
+  });
+  assert.equal(result.outcome, "pending");
+  if (result.outcome !== "pending") return;
+  assert.equal(result.reason, "version_evidence_missing");
+});
+
+test("aceita a evidencia historica entregue com prova da rota canonica", () => {
+  const result = resolve({
+    sentDocuments: [sent({
+      outbound_delivery_state: null,
+      metadata: {
+        storage_path: "inbound/contracts/received.pdf",
+        sales_contract_id: "contract-1",
+        sales_contract_version_id: "version-1",
+        whatsapp_status: "delivered",
+      },
+    })],
+  });
+  assert.equal(result.outcome, "identified");
+});
+
+test("mantem pendente versao em rascunho mesmo com caminho e IDs coincidentes", () => {
+  const result = resolve({
+    versionsByContract: new Map([["contract-1", [version({ status: "draft" })]]]),
+  });
+  assert.equal(result.outcome, "pending");
+  if (result.outcome !== "pending") return;
+  assert.equal(result.reason, "version_evidence_missing");
+});
+
+test("preserva a espera da versao enviada quando a nova edicao ainda nao foi enviada", () => {
+  const result = resolve({
+    contracts: [contract({ current_version_id: "version-2" })],
+    versionsByContract: new Map([["contract-1", [
+      version({ id: "version-1", storage_path: "old/contract.pdf", original_filename: "contrato-antigo.pdf" }),
+      version({ id: "version-2", status: "draft", storage_path: "new/contract.pdf", original_filename: "contrato-novo.pdf" }),
+    ]]]),
+    sentDocuments: [sent({
+      media_url: "old/contract.pdf",
+      metadata: {
+        storage_path: "old/contract.pdf",
+        original_file_name: "contrato-antigo.pdf",
+        sales_contract_id: "contract-1",
+        sales_contract_version_id: "version-1",
+      },
+    })],
+    message: message({
+      media_url: "old/contract.pdf",
+      metadata: { ...message().metadata, storage_path: "old/contract.pdf", original_file_name: "contrato-antigo.pdf" },
+    }),
+  });
   assert.equal(result.outcome, "identified");
   if (result.outcome !== "identified") return;
-  assert.equal(result.sha256, null);
-  assert.equal(result.signatureStatus, "not_evaluated");
+  assert.equal(result.contractVersionId, "version-1");
+});
+
+test("quatro versoes historicas mantem somente a versao enviada com prova elegivel", () => {
+  const result = resolve({
+    contracts: [contract({ current_version_id: "version-4" })],
+    versionsByContract: new Map([["contract-1", [
+      version({ id: "version-1", status: "draft" }),
+      version({ id: "version-2", status: "approved" }),
+      version({ id: "version-3", status: "pending_review" }),
+      version({ id: "version-4", status: "sent" }),
+    ]]]),
+    sentDocuments: [sent({
+      metadata: {
+        storage_path: "inbound/contracts/received.pdf",
+        sales_contract_id: "contract-1",
+        sales_contract_version_id: "version-4",
+      },
+    })],
+  });
+  assert.equal(result.outcome, "identified");
+  if (result.outcome !== "identified") return;
+  assert.equal(result.contractVersionId, "version-4");
+});
+
+test("aceita envio canonico aceito mesmo com hash do PDF recebido diferente", () => {
+  const result = resolve({
+    message: message({ metadata: { ...message().metadata, sha256: "different-received-pdf" } }),
+    sentDocuments: [sent({
+      metadata: {
+        sales_contract_id: "contract-1",
+        sales_contract_version_id: "version-1",
+        outbound_origin: "sales_contract_send",
+      },
+      external_message_id: "wamid.sent-1",
+      outbound_delivery_state: "sent",
+    })],
+  });
+  assert.equal(result.outcome, "identified");
+  if (result.outcome !== "identified") return;
+  assert.equal(result.contractVersionId, "version-1");
 });
 
 test("rejeita mistura de organizacao ou loja sem alterar contrato", () => {

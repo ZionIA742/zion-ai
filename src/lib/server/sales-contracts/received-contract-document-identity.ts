@@ -80,6 +80,9 @@ type ReceivedMessageRow = {
   content?: unknown;
   media_url?: unknown;
   external_message_id?: unknown;
+  outbound_delivery_state?: unknown;
+  outbound_provider_accepted_at?: unknown;
+  delivered_at?: unknown;
   metadata?: unknown;
   created_at?: unknown;
 };
@@ -90,6 +93,7 @@ type ContractRow = {
   store_id?: unknown;
   conversation_id?: unknown;
   current_version_id?: unknown;
+  status?: unknown;
   metadata?: unknown;
 };
 
@@ -105,6 +109,7 @@ type VersionRow = {
   original_filename?: unknown;
   mime_type?: unknown;
   size_bytes?: unknown;
+  pdf_sha256?: unknown;
 };
 
 type QueryResult = { data: unknown; error: { message: string } | null };
@@ -122,6 +127,32 @@ function record(value: unknown): Record<string, unknown> {
 
 function rows<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : value ? [value as T] : [];
+}
+
+function hasContractFilenameIndicator(value: string | null) {
+  const basename = String(value || "").split(/[\\/]/).pop() || "";
+  const normalized = basename
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+  return /^contrato(?:$|[\s._-]|\d)/.test(normalized);
+}
+
+function isTerminalStatus(value: unknown) {
+  return new Set(["completed", "cancelled", "expired", "failed"]).has(
+    text(value)?.toLowerCase() || "",
+  );
+}
+
+function isWaitingContractStatus(value: unknown) {
+  return new Set(["sent", "sent_to_customer", "customer_signed", "partially_signed"]).has(
+    text(value)?.toLowerCase() || "",
+  );
+}
+
+function isWaitingVersionStatus(value: unknown) {
+  return text(value)?.toLowerCase() === "sent";
 }
 
 function basePending(args: {
@@ -241,6 +272,23 @@ export function resolveReceivedContractDocumentIdentity(args: {
 
   const contract = contracts[0];
   const contractId = text(contract.id) || "";
+  if (isTerminalStatus(contract.status) || !isWaitingContractStatus(contract.status)) {
+    return basePending({
+      organizationId,
+      storeId,
+      sourceMessageId,
+      receivedAt,
+      conversationId,
+      reason: "version_evidence_missing",
+      storageBucket,
+      storagePath,
+      mimeType,
+      sha256,
+      originalFileName,
+      candidateContractIds,
+    });
+  }
+  const currentVersionId = text(contract.current_version_id);
   const versions = args.versionsByContract.get(contractId) || [];
   const isSentVersionEvidence = (version: VersionRow, sent: ReceivedMessageRow) => {
     if (
@@ -250,13 +298,40 @@ export function resolveReceivedContractDocumentIdentity(args: {
     const sentMetadata = record(sent.metadata);
     const sentContractId = text(sentMetadata.sales_contract_id) || text(sentMetadata.contract_id);
     const sentVersionId = text(sentMetadata.sales_contract_version_id) || text(sentMetadata.contract_version_id);
+    const source = text(sentMetadata.source);
+    const outboundOrigin = text(sentMetadata.outbound_origin);
+    const deliveryState = text(sent.outbound_delivery_state)?.toLowerCase();
+    const providerStatus = text(sentMetadata.whatsapp_status)?.toLowerCase();
+    const providerAccepted = Boolean(
+      text(sent.outbound_provider_accepted_at) ||
+      text(sent.delivered_at) ||
+      ["sent", "delivered", "read"].includes(deliveryState || "") ||
+      ["sent", "delivered", "read"].includes(providerStatus || ""),
+    );
+    if (
+      source !== "sales_contract_send_route" ||
+      outboundOrigin !== "sales_contract_send" ||
+      !text(sent.external_message_id) ||
+      !providerAccepted
+    ) return false;
+    if (!isWaitingVersionStatus(version.status)) return false;
+    const versionPdfSha256 = text(version.pdf_sha256)?.toLowerCase() || null;
+    const receivedPdfSha256 = sha256?.toLowerCase() || null;
+    const sentPdfSha256 = text(sentMetadata.pdf_sha256)?.toLowerCase() || null;
     const explicitIdentity = sentContractId === contractId && sentVersionId === text(version.id);
     const legacyPathIdentity =
       text(version.storage_bucket) === storageBucket &&
       text(version.storage_path) === storagePath &&
       text(sent.media_url) === storagePath &&
       text(sentMetadata.storage_path) === storagePath;
-    if (!explicitIdentity && !legacyPathIdentity) return false;
+    const hashIdentity = Boolean(
+      versionPdfSha256 && /^[0-9a-f]{64}$/.test(versionPdfSha256) &&
+        receivedPdfSha256 && /^[0-9a-f]{64}$/.test(receivedPdfSha256) &&
+        sentPdfSha256 && /^[0-9a-f]{64}$/.test(sentPdfSha256) &&
+        versionPdfSha256 === receivedPdfSha256 &&
+        sentPdfSha256 === versionPdfSha256,
+    );
+    if (!explicitIdentity && !legacyPathIdentity && !hashIdentity) return false;
     return (
       text(version.organization_id) === organizationId &&
       text(version.store_id) === storeId &&
@@ -268,25 +343,40 @@ export function resolveReceivedContractDocumentIdentity(args: {
   const matchingVersionEvidence = versions
     .map((version) => ({ version, sent: sentVersionEvidence(version) }))
     .filter((entry): entry is { version: VersionRow; sent: ReceivedMessageRow } => Boolean(entry.sent));
-  let matchingVersions = matchingVersionEvidence.map((entry) => entry.version);
-  if (matchingVersions.length > 1 && originalFileName) {
-    const filenameMatchedEvidence = matchingVersions.filter((version) =>
-      args.sentDocuments.some((sent) =>
-        isSentVersionEvidence(version, sent) &&
-        text(record(sent.metadata).original_file_name) === originalFileName &&
-        text(version.original_filename) === originalFileName,
-      ),
-    );
-    if (filenameMatchedEvidence.length === 1) {
-      matchingVersions = filenameMatchedEvidence;
-    }
-  }
+  const currentMatching = matchingVersionEvidence.filter(
+    (entry) => text(entry.version.id) === currentVersionId,
+  );
+  const matchingVersions = currentMatching.length === 1
+    ? currentMatching.map((entry) => entry.version)
+    : matchingVersionEvidence.length === 1
+      ? matchingVersionEvidence.map((entry) => entry.version)
+      : matchingVersionEvidence.map((entry) => entry.version);
   const candidateVersionIds = matchingVersions.map((version) => text(version.id)).filter((id): id is string => Boolean(id));
   if (matchingVersions.length !== 1) {
     return basePending({ organizationId, storeId, sourceMessageId, receivedAt, conversationId, reason: matchingVersions.length > 1 ? "multiple_version_candidates" : "version_evidence_missing", storageBucket, storagePath, mimeType, sha256, originalFileName, candidateContractIds, candidateVersionIds });
   }
 
   const version = matchingVersions[0];
+  if (
+    String(mimeType || "").toLowerCase() !== "application/pdf" ||
+    !hasContractFilenameIndicator(originalFileName)
+  ) {
+    return basePending({
+      organizationId,
+      storeId,
+      sourceMessageId,
+      receivedAt,
+      conversationId,
+      reason: "version_evidence_missing",
+      storageBucket,
+      storagePath,
+      mimeType,
+      sha256,
+      originalFileName,
+      candidateContractIds,
+      candidateVersionIds,
+    });
+  }
   const versionId = text(version.id) || "";
   const sentEvidence = args.sentDocuments.find((sent) =>
     isSentVersionEvidence(version, sent) &&
@@ -340,7 +430,7 @@ export async function identifyReceivedContractDocument(args: {
   const sourceMessageId = text(args.sourceMessageId) || "";
   const messageQuery = await args.supabase
     .from("messages")
-    .select("id, organization_id, store_id, conversation_id, direction, sender, message_type, media_url, metadata, created_at")
+    .select("id, organization_id, store_id, conversation_id, direction, sender, message_type, media_url, metadata, external_message_id, outbound_delivery_state, outbound_provider_accepted_at, delivered_at, created_at")
     .eq("id", sourceMessageId)
     .eq("organization_id", organizationId)
     .eq("store_id", storeId)
@@ -352,7 +442,7 @@ export async function identifyReceivedContractDocument(args: {
 
   const contractsQuery = await args.supabase
     .from("sales_contracts")
-    .select("id, organization_id, store_id, conversation_id, current_version_id, metadata")
+    .select("id, organization_id, store_id, conversation_id, current_version_id, status, metadata")
     .eq("organization_id", organizationId)
     .eq("store_id", storeId)
     .eq("conversation_id", conversationId) as QueryResult;
@@ -363,7 +453,7 @@ export async function identifyReceivedContractDocument(args: {
   for (const contractId of contractIds) {
     const versionsQuery = await args.supabase
       .from("sales_contract_versions")
-      .select("id, contract_id, organization_id, store_id, version_number, status, storage_bucket, storage_path, original_filename, mime_type")
+      .select("id, contract_id, organization_id, store_id, version_number, status, storage_bucket, storage_path, original_filename, mime_type, pdf_sha256")
       .eq("contract_id", contractId)
       .eq("organization_id", organizationId)
       .eq("store_id", storeId) as QueryResult;
@@ -373,7 +463,7 @@ export async function identifyReceivedContractDocument(args: {
 
   const sentDocumentsQuery = await args.supabase
     .from("messages")
-      .select("id, direction, message_type, media_url, metadata, created_at")
+    .select("id, direction, message_type, media_url, metadata, external_message_id, outbound_delivery_state, outbound_provider_accepted_at, delivered_at, created_at")
     .eq("organization_id", organizationId)
     .eq("store_id", storeId)
     .eq("conversation_id", conversationId)

@@ -432,6 +432,15 @@ function isSavedTextDraftRequest(value: unknown): value is {
     (value.humanAction == null || value.humanAction === "reopen_approved_contract");
 }
 
+function isApprovedTextCorrectionRecoveryRequest(value: unknown): value is {
+  mode: "approved_text_correction_recovery";
+  sourceVersionId: string;
+} {
+  return isRecord(value) && value.mode === "approved_text_correction_recovery" &&
+    typeof value.sourceVersionId === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.sourceVersionId);
+}
+
 async function readGenerationRequest(request: Request) {
   const raw = await request.text();
   if (!raw.trim()) return null;
@@ -439,7 +448,14 @@ async function readGenerationRequest(request: Request) {
   try { parsed = JSON.parse(raw); } catch {
     return null;
   }
-  if (!isRecord(parsed) || parsed.mode !== "saved_text_draft") return null;
+  if (!isRecord(parsed)) return null;
+  if (parsed.mode === "approved_text_correction_recovery") {
+    if (!isApprovedTextCorrectionRecoveryRequest(parsed)) {
+      throw new ContractAccessError(400, "CONTRACT_TEXT_CORRECTION_RECOVERY_REQUEST_INVALID", "A recuperacao exige a versao corrigida autorizada.");
+    }
+    return parsed;
+  }
+  if (parsed.mode !== "saved_text_draft") return null;
   if (!isSavedTextDraftRequest(parsed)) {
     throw new ContractAccessError(400, "CONTRACT_TEXT_DRAFT_REQUEST_INVALID", "A geracao textual exige mode saved_text_draft e expectedDraftRevision valido.");
   }
@@ -736,8 +752,10 @@ export function createGenerateContractPdfPostHandler(
     const normalizedStatus = String(scope.contract.status || "").trim().toLowerCase();
     const generationRequest = await readGenerationRequest(request);
     isTextDraftGeneration = generationRequest?.mode === "saved_text_draft";
+    const isApprovedTextCorrectionRecovery =
+      generationRequest?.mode === "approved_text_correction_recovery";
     const isManualContract = isResponsibleTextDraftContract(scope.contract);
-    if (isManualContract && !isTextDraftGeneration) {
+    if (isManualContract && !isTextDraftGeneration && !isApprovedTextCorrectionRecovery) {
       throw new ContractAccessError(
         409,
         "CONTRACT_MANUAL_REQUIRES_SAVED_TEXT_DRAFT",
@@ -747,7 +765,8 @@ export function createGenerateContractPdfPostHandler(
     const allowReopenApproved =
       isTextDraftGeneration &&
       normalizedStatus === "approved" &&
-      generationRequest?.humanAction === "reopen_approved_contract";
+      generationRequest?.mode === "saved_text_draft" &&
+      generationRequest.humanAction === "reopen_approved_contract";
     const sentAt = normalizeOptionalText(scope.contract.sent_at);
     const customerSignedAt = normalizeOptionalText(scope.contract.customer_signed_at);
     const storeSignedAt = normalizeOptionalText(scope.contract.store_signed_at);
@@ -786,6 +805,189 @@ export function createGenerateContractPdfPostHandler(
         "CONTRACT_OPERATION_KEY_INVALID",
         "A chave da operacao de geracao do contrato e invalida.",
       );
+    }
+
+    if (isApprovedTextCorrectionRecovery) {
+      if (!isManualContract) {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_TEXT_CORRECTION_RECOVERY_ORIGIN_INVALID",
+          "Somente contratos manuais podem recuperar uma correcao textual aprovada.",
+        );
+      }
+      if (!manualOpportunityId || normalizedStatus === "sent_to_customer" || sentAt ||
+          customerSignedAt || storeSignedAt || completedAt) {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_TEXT_CORRECTION_RECOVERY_STATUS_BLOCKED",
+          "O estado atual nao permite recuperar a correcao textual sem reabrir o documento.",
+        );
+      }
+
+      const sourceVersionId = generationRequest.sourceVersionId;
+      const { data: sourceVersion, error: sourceVersionError } = await scope.supabase
+        .from("sales_contract_versions")
+        .select("*")
+        .eq("id", sourceVersionId)
+        .eq("contract_id", scope.contract.id)
+        .eq("organization_id", access.organizationId)
+        .eq("store_id", access.storeId)
+        .maybeSingle();
+      if (sourceVersionError || !sourceVersion) {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_TEXT_CORRECTION_RECOVERY_SOURCE_NOT_FOUND",
+          "A versao corrigida aprovada nao foi encontrada no escopo autorizado.",
+        );
+      }
+      if (sourceVersion.id === scope.contract.current_version_id) {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_TEXT_CORRECTION_RECOVERY_ALREADY_CURRENT",
+          "A versao corrigida ja e a versao atual do contrato.",
+        );
+      }
+      const sourceSnapshot = isRecord(sourceVersion.contract_snapshot)
+        ? sourceVersion.contract_snapshot
+        : null;
+      const sourceProvenance = sourceSnapshot && isRecord(sourceSnapshot.text_provenance)
+        ? sourceSnapshot.text_provenance
+        : null;
+      const sourceCorrection = sourceSnapshot && isRecord(sourceSnapshot.text_correction)
+        ? sourceSnapshot.text_correction
+        : null;
+      const sourceTextSha = String(sourceProvenance?.text_sha256 || "").trim().toLowerCase();
+      const correctedTextSha = String(sourceCorrection?.corrected_text_sha256 || "").trim().toLowerCase();
+      const sourcePdfSha = String(sourceVersion.pdf_sha256 || "").trim().toLowerCase();
+      const provenancePdfSha = String(sourceProvenance?.pdf_sha256 || "").trim().toLowerCase();
+      if (
+        !sourceSnapshot ||
+        !sourceProvenance ||
+        !sourceCorrection ||
+        sourceCorrection.kind !== "full_text" ||
+        sourceProvenance.text_representation !== "manual_contract_corrected_text_utf8_exact" ||
+        !/^[0-9a-f]{64}$/.test(sourceTextSha) ||
+        correctedTextSha !== sourceTextSha ||
+        !/^[0-9a-f]{64}$/.test(sourcePdfSha) ||
+        provenancePdfSha !== sourcePdfSha ||
+        !sourceVersion.storage_bucket ||
+        !sourceVersion.storage_path ||
+        !sourceVersion.store_file_id
+      ) {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_TEXT_CORRECTION_RECOVERY_PROVENANCE_INVALID",
+          "A versao corrigida nao possui proveniencia textual e PDF verificavel.",
+        );
+      }
+
+      const { data: sourceBlob, error: sourceDownloadError } = await scope.supabase.storage
+        .from(String(sourceVersion.storage_bucket))
+        .download(String(sourceVersion.storage_path));
+      if (sourceDownloadError || !sourceBlob) {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_TEXT_CORRECTION_RECOVERY_PDF_UNAVAILABLE",
+          "O PDF corrigido aprovado nao esta disponivel para recuperacao.",
+        );
+      }
+      const correctedPdfBytes = new Uint8Array(await sourceBlob.arrayBuffer());
+      const correctedPdfSha = createHash("sha256").update(correctedPdfBytes).digest("hex");
+      if (correctedPdfSha !== sourcePdfSha || correctedPdfBytes.byteLength !== Number(sourceVersion.size_bytes)) {
+        throw new ContractAccessError(
+          409,
+          "CONTRACT_TEXT_CORRECTION_RECOVERY_PDF_HASH_MISMATCH",
+          "O PDF corrigido nao corresponde a proveniencia persistida; o envio foi bloqueado.",
+        );
+      }
+
+      const recoveryFingerprint = createHash("sha256")
+        .update(JSON.stringify([
+          "zion.contract-text-correction-recovery.v1",
+          access.organizationId,
+          access.storeId,
+          scope.contract.id,
+          sourceVersion.id,
+          sourceTextSha,
+          sourcePdfSha,
+        ]))
+        .digest("hex");
+      const recoverySnapshot = {
+        ...sourceSnapshot,
+        content_fingerprint: recoveryFingerprint,
+        materialized_at: new Date().toISOString(),
+        text_correction_recovery: {
+          source_version_id: sourceVersion.id,
+          corrected_text_sha256: sourceTextSha,
+          source_pdf_sha256: sourcePdfSha,
+        },
+      };
+      const storedFile = await storeContractPdfFile({
+        supabase: scope.supabase,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        contractId: scope.contract.id,
+        contractNumber: scope.contract.contract_number,
+        contentFingerprint: recoveryFingerprint,
+        pdfBytes: correctedPdfBytes,
+      });
+      storeFileToRollback = {
+        storeFileId: storedFile.storeFileId,
+        storageBucket: storedFile.storageBucket,
+        storagePath: storedFile.storagePath,
+      };
+      const recoveryResult = await createCanonicalVersion({
+        supabase: scope.supabase,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        contractId: scope.contract.id,
+        operationKey: `p9:contract-text-correction-recovery:${scope.contract.id}:${sourceVersion.id}`,
+        requestFingerprint: recoveryFingerprint,
+        contentFingerprint: recoveryFingerprint,
+        storeFileId: storedFile.storeFileId,
+        storageBucket: storedFile.storageBucket,
+        storagePath: storedFile.storagePath,
+        originalFilename: storedFile.originalFilename,
+        mimeType: "application/pdf",
+        sizeBytes: storedFile.sizeBytes,
+        pdfSha256: correctedPdfSha,
+        contractSnapshot: recoverySnapshot,
+        onAuthorityResolved: ({ replayed }) => {
+          authorityState = replayed ? "committed_replay" : "committed_new";
+        },
+      });
+      const recoveredVersion = recoveryResult.version;
+      const durableStoreFile = buildDurableStoreFile(recoveredVersion);
+      storeFileToRollback = null;
+      if (!recoveryResult.replayed) {
+        await reconcilePreviousVersion({
+          supabase: scope.supabase,
+          organizationId: access.organizationId,
+          storeId: access.storeId,
+          contractId: scope.contract.id,
+          versionNumber: recoveredVersion.version_number,
+        });
+        await markContractPendingReview({
+          supabase: scope.supabase,
+          organizationId: access.organizationId,
+          storeId: access.storeId,
+          contractId: scope.contract.id,
+          expectedCurrentVersionId: recoveredVersion.id,
+        });
+      }
+      return NextResponse.json({
+        ok: true,
+        replayed: recoveryResult.replayed,
+        recoveredFromVersionId: sourceVersion.id,
+        correctedTextSha256: sourceTextSha,
+        contract: {
+          ...scope.contract,
+          current_version_id: recoveredVersion.id,
+          status: recoveryResult.replayed ? scope.contract.status : "pending_review",
+        },
+        version: recoveredVersion,
+        storeFile: durableStoreFile,
+      });
     }
 
     const templateTerms = await resolveTemplateTerms({

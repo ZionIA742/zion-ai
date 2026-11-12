@@ -260,7 +260,10 @@ test("a canonical decision terminates generation before its deterministic respon
     "utf8",
   );
 
-  assert.match(source, /QuoteApprovalDecisionResult \| ReceivedContractDocumentDecisionHandled\) \| null/);
+  assert.match(
+    source,
+    /QuoteApprovalDecisionResult[\s\S]*ReceivedContractDocumentDecisionBlocked[\s\S]*ReceivedContractDocumentDecisionHandled[\s\S]*\| null/,
+  );
   assert.match(source, /decisionHandled: true/);
   assert.match(source, /sendResponsibleAssistantText/);
 

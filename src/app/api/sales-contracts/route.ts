@@ -340,13 +340,33 @@ export function createSalesContractsListGetHandler(
         })
       : [];
     const seenContractIds = new Set<string>();
-    const contracts = filteredData
+    const scopedContracts = filteredData
       .filter((contract) => {
         const id = String(contract.id || "").trim();
         if (!id || seenContractIds.has(id)) return false;
         seenContractIds.add(id);
         return true;
       })
+    const currentVersionIds = scopedContracts
+      .map((contract) => String(contract.current_version_id || "").trim())
+      .filter(Boolean);
+    const currentVersionsById = new Map<string, Record<string, unknown>>();
+    if (currentVersionIds.length > 0) {
+      const { data: currentVersions, error: currentVersionsError } = await contractSupabase
+        .from("sales_contract_versions")
+        .select("id, contract_id, version_number, status, original_filename, mime_type, size_bytes, storage_bucket, storage_path, created_at, approved_at, sent_at")
+        .in("id", currentVersionIds)
+        .eq("organization_id", access.organizationId)
+        .eq("store_id", access.storeId);
+      if (currentVersionsError) {
+        throw new ContractAccessError(500, "LOAD_CONTRACT_CURRENT_VERSIONS_FAILED", currentVersionsError.message);
+      }
+      for (const version of Array.isArray(currentVersions) ? currentVersions : []) {
+        const versionId = String(version.id || "").trim();
+        if (versionId) currentVersionsById.set(versionId, version as Record<string, unknown>);
+      }
+    }
+    const contracts = scopedContracts
       .map((contract) => ({
         id: contract.id,
         contract_number: contract.contract_number || null,
@@ -355,6 +375,7 @@ export function createSalesContractsListGetHandler(
         total_cents:
           typeof contract.total_cents === "number" ? contract.total_cents : null,
         current_version_id: contract.current_version_id || null,
+        current_version: currentVersionsById.get(String(contract.current_version_id || "").trim()) || null,
         quote_id: contract.quote_id || null,
         quote_version_id: contract.quote_version_id || null,
         sent_at: contract.sent_at || null,

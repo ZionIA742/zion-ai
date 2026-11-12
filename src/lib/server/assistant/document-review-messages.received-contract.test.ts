@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { pushAssistantReceivedContractDocumentMessage } from "./document-review-messages";
 
-function harness(options: { existingMessage?: { id: string } | null } = {}) {
+function harness(options: {
+  existingMessage?: { id: string } | null;
+  notificationFailures?: number;
+} = {}) {
   const rpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
   const containsCalls: Array<{ table: string; values: unknown }> = [];
   const updateCalls: Array<{ table: string; values: unknown }> = [];
@@ -37,6 +40,10 @@ function harness(options: { existingMessage?: { id: string } | null } = {}) {
     },
     rpc: async (fn: string, payload: Record<string, unknown>) => {
       rpcCalls.push({ fn, payload });
+      if (fn === "assistant_enqueue_internal_notification" && (options.notificationFailures || 0) > 0) {
+        options.notificationFailures = (options.notificationFailures || 0) - 1;
+        return { data: null, error: { message: "notification unavailable" } };
+      }
       return { data: null, error: null };
     },
   };
@@ -120,7 +127,50 @@ test("replay da mesma evidencia nao cria segunda mensagem", async () => {
 
   assert.equal(result.deduped, true);
   assert.equal(result.messageId, "message-assistant-1");
-  assert.equal(h.rpcCalls.length, 0);
+  assert.equal(
+    h.rpcCalls.some((call) => call.fn === "assistant_push_system_message"),
+    false,
+  );
+});
+
+test("replay da mensagem persistida repara notificacao interna ausente", async () => {
+  const h = harness({ existingMessage: { id: "message-assistant-1" } });
+  const result = await pushAssistantReceivedContractDocumentMessage({
+    supabase: h.supabase,
+    ...baseInput,
+  });
+
+  assert.equal(result.deduped, true);
+  assert.equal(
+    h.rpcCalls.some((call) => call.fn === "assistant_enqueue_internal_notification"),
+    true,
+  );
+});
+
+test("falha da notificacao mantem o replay retryavel e a segunda tentativa repara", async () => {
+  const h = harness({
+    existingMessage: { id: "message-assistant-1" },
+    notificationFailures: 1,
+  });
+
+  await assert.rejects(
+    pushAssistantReceivedContractDocumentMessage({
+      supabase: h.supabase,
+      ...baseInput,
+    }),
+    /Falha ao criar notificacao document_review: notification unavailable/,
+  );
+
+  const retry = await pushAssistantReceivedContractDocumentMessage({
+    supabase: h.supabase,
+    ...baseInput,
+  });
+
+  assert.equal(retry.deduped, true);
+  assert.equal(
+    h.rpcCalls.filter((call) => call.fn === "assistant_enqueue_internal_notification").length,
+    2,
+  );
 });
 
 test("novo recebimento do mesmo arquivo usa uma identidade de ocorrencia distinta", async () => {

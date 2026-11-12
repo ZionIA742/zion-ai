@@ -75,12 +75,14 @@ test("registra evidencia identificada sem alterar contrato ou assinatura", async
   assert.equal(h.rpcCalls[0].payload.p_event_key, "contract_uploaded");
   assert.equal(h.rpcCalls[0].payload.p_conversation_id, null);
   assert.equal(h.rpcCalls[0].fn, "store_business_event_register");
-  const payload = h.rpcCalls[0].payload.p_event_payload as Record<string, any>;
+  const payload = h.rpcCalls[0].payload.p_event_payload as Record<string, unknown>;
+  const receivedDocument = payload.received_document as Record<string, unknown>;
+  const originalDocument = payload.original_document as Record<string, unknown>;
   assert.equal(payload.identification_status, "identified");
   assert.equal(payload.contract_version_id, "version-1");
   assert.equal(payload.source_message_id, "incoming-1");
-  assert.equal(payload.received_document.storagePath, "inbound/signed-v2.pdf");
-  assert.equal(payload.original_document.storagePath, "outbound/original-v1.pdf");
+  assert.equal(receivedDocument.storagePath, "inbound/signed-v2.pdf");
+  assert.equal(originalDocument.storagePath, "outbound/original-v1.pdf");
   assert.equal(payload.signature_status, "not_evaluated");
   assert.deepEqual(h.calls.map((call) => call.table), ["store_business_events"]);
 });
@@ -90,12 +92,12 @@ test("executa o fluxo integrado da identificacao ate o registro canonico", async
   let messageReads = 0;
   const results: Record<string, unknown> = {
     messages: null,
-    sales_contracts: [{ id: "contract-1", organization_id: "org-1", store_id: "store-1", metadata: { commercial_opportunity_id: "opportunity-1" }, conversation_id: "conversation-1" }],
-    sales_contract_versions: [{ id: "version-1", contract_id: "contract-1", organization_id: "org-1", store_id: "store-1", storage_bucket: "zion-store-files", storage_path: "outbound/original-v1.pdf", original_filename: "contract.pdf", mime_type: "application/pdf" }],
+    sales_contracts: [{ id: "contract-1", organization_id: "org-1", store_id: "store-1", current_version_id: "version-1", status: "sent_to_customer", metadata: { commercial_opportunity_id: "opportunity-1" }, conversation_id: "conversation-1" }],
+    sales_contract_versions: [{ id: "version-1", contract_id: "contract-1", organization_id: "org-1", store_id: "store-1", status: "sent", storage_bucket: "zion-store-files", storage_path: "outbound/original-v1.pdf", original_filename: "contract.pdf", mime_type: "application/pdf" }],
   };
   const supabase = {
     from(table: string) {
-      const query: any = {
+      const query = {
         select() { return query; },
         eq() { return query; },
         in() { return query; },
@@ -106,13 +108,13 @@ test("executa o fluxo integrado da identificacao ate o registro canonico", async
             if (messageReads === 1) return { data: {
               id: "incoming-1", organization_id: "org-1", store_id: "store-1", conversation_id: "conversation-1",
               direction: "incoming", sender: "user", message_type: "document", created_at: "2026-11-03T15:00:00Z",
-              media_url: "inbound/signed-v2.pdf", metadata: { storage_bucket: "zion-store-files", storage_path: "inbound/signed-v2.pdf", mime_type: "application/pdf", sha256: "hash" },
+              media_url: "inbound/signed-v2.pdf", metadata: { storage_bucket: "zion-store-files", storage_path: "inbound/signed-v2.pdf", mime_type: "application/pdf", sha256: "hash", original_file_name: "contrato-assinado.pdf" },
             }, error: null };
           }
           return { data: null, error: null };
         },
         then(resolve: (value: unknown) => unknown) {
-          const data = table === "messages" ? [{ id: "sent-1", direction: "outgoing", message_type: "document", media_url: "outbound/original-v1.pdf", created_at: "2026-11-02T15:00:00Z", metadata: { storage_bucket: "zion-store-files", storage_path: "outbound/original-v1.pdf", sales_contract_id: "contract-1", sales_contract_version_id: "version-1" } }] : results[table] || null;
+          const data = table === "messages" ? [{ id: "sent-1", direction: "outgoing", message_type: "document", media_url: "outbound/original-v1.pdf", external_message_id: "wamid.sent-1", outbound_delivery_state: "sent", created_at: "2026-11-02T15:00:00Z", metadata: { source: "sales_contract_send_route", outbound_origin: "sales_contract_send", whatsapp_status: "delivered", storage_bucket: "zion-store-files", storage_path: "outbound/original-v1.pdf", sales_contract_id: "contract-1", sales_contract_version_id: "version-1" } }] : results[table] || null;
           return Promise.resolve(resolve({ data, error: null }));
         },
       };
@@ -131,10 +133,12 @@ test("executa o fluxo integrado da identificacao ate o registro canonico", async
   });
   assert.equal(result.outcome, "persisted");
   assert.equal(rpcCalls.length, 1);
-  const payload = rpcCalls[0].payload.p_event_payload as Record<string, any>;
+  const payload = rpcCalls[0].payload.p_event_payload as Record<string, unknown>;
+  const originalDocument = payload.original_document as Record<string, unknown>;
+  const receivedDocument = payload.received_document as Record<string, unknown>;
   assert.equal(payload.contract_version_id, "version-1");
-  assert.equal(payload.original_document.storagePath, "outbound/original-v1.pdf");
-  assert.equal(payload.received_document.storagePath, "inbound/signed-v2.pdf");
+  assert.equal(originalDocument.storagePath, "outbound/original-v1.pdf");
+  assert.equal(receivedDocument.storagePath, "inbound/signed-v2.pdf");
 });
 
 test("usa chave deterministica e nao duplica replay ja persistido", async () => {
@@ -215,7 +219,7 @@ test("preserva documento pendente sem inventar contrato ou versao", async () => 
     },
   });
   assert.equal(result.outcome, "persisted");
-  const payload = h.rpcCalls[0].payload.p_event_payload as Record<string, any>;
+  const payload = h.rpcCalls[0].payload.p_event_payload as Record<string, unknown>;
   assert.equal(payload.identification_status, "pending_identification");
   assert.equal(payload.contract_id, null);
   assert.deepEqual(payload.candidate_version_ids, ["version-1", "version-2"]);

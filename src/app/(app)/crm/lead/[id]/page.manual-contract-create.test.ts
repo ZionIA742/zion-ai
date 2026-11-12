@@ -123,6 +123,10 @@ assert.match(source, /provenance\??\.templateVersionId !== draftState\.templateV
 assert.match(source, /A versao conferida foi invalidada porque o rascunho mudou/);
 assert.match(source, /contractSendInFlightRef\.current/);
 assert.match(source, /currentVersionMatchesDraft/);
+assert.match(source, /currentVersionMatchesApprovedCorrection/);
+assert.match(source, /textCorrection\?\.kind === "full_text"/);
+assert.match(source, /correctedTextSha256 === currentProvenance\.textSha256/);
+assert.match(source, /A versao corrigida e aprovada corresponde ao PDF atual/);
 assert.match(source, /\["pending_review", "generated", "approved"\]\.includes\(normalizedStatus\)/);
 assert.match(source, /canTextContractAction[\s\S]*?\["draft", "pending_review", "generated", "approved"\]\.includes\(normalizedStatus\)/);
 assert.match(source, /requiresApproval: normalizedStatus !== "approved"/);

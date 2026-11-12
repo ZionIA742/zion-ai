@@ -85,6 +85,7 @@ export type SalesContractVersion = {
   created_at: string | null;
   approved_at?: string | null;
   sent_at?: string | null;
+  pdf_sha256?: string | null;
 };
 
 export type SalesContractSignature = {

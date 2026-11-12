@@ -9,7 +9,13 @@ import { sendResponsibleAssistantText } from "@/lib/server/assistant/responsible
 import { downloadAndStoreWhatsappInboundMedia, removeWhatsappInboundStoredMedia } from "@/lib/server/whatsapp-inbound-media";
 import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
 import type { QuoteApprovalDecisionResult } from "@/lib/server/sales-quotes/quote-approval-decision";
-import type { ReceivedContractDocumentDecisionHandled } from "@/lib/server/assistant/received-contract-document-decision";
+import {
+  protectUnpersistedContractCompletion,
+} from "@/lib/server/assistant/received-contract-document-decision";
+import type {
+  ReceivedContractDocumentDecisionBlocked,
+  ReceivedContractDocumentDecisionHandled,
+} from "@/lib/server/assistant/received-contract-document-decision";
 
 type ResponsibleWhatsappEvent = {
   id: string;
@@ -579,7 +585,12 @@ export async function routeResponsibleWhatsappToAssistant(args: {
     externalMessageId: string;
     content: string;
     contextMessageId: string | null;
-  }) => Promise<(QuoteApprovalDecisionResult | ReceivedContractDocumentDecisionHandled) | null>;
+  }) => Promise<
+    (QuoteApprovalDecisionResult |
+      ReceivedContractDocumentDecisionHandled |
+      ReceivedContractDocumentDecisionBlocked) |
+    null
+  >;
 }) {
   const organizationId = clean(args.organizationId);
   const storeId = clean(args.storeId);
@@ -733,7 +744,11 @@ export async function routeResponsibleWhatsappToAssistant(args: {
       transcribeAudio: args.deps?.transcribeAudio,
     });
 
-    let inboundHookResult: (QuoteApprovalDecisionResult | ReceivedContractDocumentDecisionHandled) | null = null;
+    let inboundHookResult: (
+      | QuoteApprovalDecisionResult
+      | ReceivedContractDocumentDecisionHandled
+      | ReceivedContractDocumentDecisionBlocked
+    ) | null = null;
     if (
       args.onInboundPersisted &&
       (args.messageType === "text" || args.messageType === "button" || args.messageType === "interactive")
@@ -892,6 +907,10 @@ export async function routeResponsibleWhatsappToAssistant(args: {
         });
     if (!reply.ok) throw new Error(reply.message || reply.error || "ASSISTANT_EXECUTION_FAILED");
     if (!reply.aiText) throw new Error("ASSISTANT_EXECUTION_FAILED");
+    const safeAssistantText = protectUnpersistedContractCompletion({
+      input: content,
+      assistantText: reply.aiText,
+    });
 
     const { data: assistantMessage, error: assistantMessageError } = await supabase
       .from("store_assistant_messages")
@@ -920,7 +939,7 @@ export async function routeResponsibleWhatsappToAssistant(args: {
       storeId,
       responsibleId,
       destination: responsible.responsible.whatsappNumber,
-      text: reply.aiText,
+      text: safeAssistantText,
     });
     if (!outbound.ok) throw new Error(outbound.reason);
 

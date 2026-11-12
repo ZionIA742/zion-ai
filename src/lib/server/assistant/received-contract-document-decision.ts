@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { enqueueReceivedContractDocumentConfirmation } from "./received-contract-document-confirmation";
 
 export const RECEIVED_CONTRACT_DOCUMENT_DECISION_RPC =
   "confirm_received_contract_document_by_system" as const;
@@ -11,6 +12,7 @@ export type ReceivedContractDocumentDecisionChannel =
 export type ReceivedContractDocumentDecisionContext = {
   organizationId: string;
   storeId: string;
+  conversationId: string;
   notificationId: string;
   contractId: string;
   contractVersionId: string;
@@ -32,6 +34,16 @@ export type ReceivedContractDocumentDecisionHandled = {
   kind: "received_contract_document_decision";
   responseText: string;
   result: ReceivedContractDocumentDecisionResult;
+};
+
+export type ReceivedContractDocumentDecisionBlocked = {
+  kind: "received_contract_document_decision_blocked";
+  responseText: string;
+  result: {
+    outcome: "blocked";
+    decision: ReceivedContractDocumentDecision;
+    reason: "correlation_missing_or_ambiguous";
+  };
 };
 
 const RECEIVED_CONTRACT_DOCUMENT_NOTIFICATION_SOURCE =
@@ -63,6 +75,26 @@ export function resolveReceivedContractDocumentDecision(
   return null;
 }
 
+export function protectUnpersistedContractCompletion(args: {
+  input: unknown;
+  assistantText: string;
+}): string {
+  if (!resolveReceivedContractDocumentDecision(args.input)) return args.assistantText;
+
+  const normalized = normalize(args.assistantText);
+  const mentionsContract = normalized.includes("contrato");
+  const claimsCompletion =
+    /(concluid|finalizad|complet|assinad|aprovad|tudo certo)/u.test(normalized);
+  const explicitlyPending =
+    /(nao consegui|nao foi possivel|nao posso confirmar|pendente|aguardando|continua pendente)/u.test(normalized);
+
+  if (!mentionsContract || !claimsCompletion || explicitlyPending) {
+    return args.assistantText;
+  }
+
+  return "Recebi sua resposta, mas não consegui confirmar com segurança a conclusão do contrato. O contrato permanece pendente de conferência.";
+}
+
 function oneRow(value: unknown): Record<string, unknown> | null {
   if (Array.isArray(value)) {
     return value.length === 1 && value[0] && typeof value[0] === "object"
@@ -76,6 +108,7 @@ function requiredContext(context: ReceivedContractDocumentDecisionContext) {
   const values = [
     context.organizationId,
     context.storeId,
+    context.conversationId,
     context.notificationId,
     context.contractId,
     context.contractVersionId,
@@ -173,7 +206,7 @@ function contextText(context: Record<string, unknown> | null, key: string) {
 }
 
 async function loadDecisionMessageScope(args: {
-  supabase: any;
+  supabase: SupabaseClient;
   organizationId: string;
   storeId: string;
   decisionMessageId: string;
@@ -193,7 +226,7 @@ async function loadDecisionMessageScope(args: {
 }
 
 async function loadReceivedContractNotifications(args: {
-  supabase: any;
+  supabase: SupabaseClient;
   organizationId: string;
   storeId: string;
 }) {
@@ -212,7 +245,7 @@ async function loadReceivedContractNotifications(args: {
 }
 
 async function resolveWhatsappNotificationId(args: {
-  supabase: any;
+  supabase: SupabaseClient;
   organizationId: string;
   storeId: string;
   contextMessageId: string;
@@ -225,19 +258,86 @@ async function resolveWhatsappNotificationId(args: {
     .eq("external_message_id", args.contextMessageId)
     .limit(2);
   if (error) throw new Error(`RECEIVED_CONTRACT_DOCUMENT_EXTERNAL_CONTEXT_LOOKUP_FAILED:${error.message}`);
-  const ids = [...new Set((data || []).map((row: any) => clean(row.internal_notification_id)).filter(Boolean))];
+  const ids = [...new Set((data || []).map((row: { internal_notification_id?: unknown }) => clean(row.internal_notification_id)).filter(Boolean))];
   return ids.length === 1 ? ids[0] : null;
 }
 
+async function assertConfirmedDecisionPersisted(args: {
+  supabase: Pick<SupabaseClient, "from">;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  notificationId: string;
+  contractId: string;
+  contractVersionId: string;
+  evidenceSourceMessageId: string;
+}) {
+  const contractResult = await args.supabase
+    .from("sales_contracts")
+    .select("id, status, completed_at, current_version_id, conversation_id")
+    .eq("id", args.contractId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .maybeSingle();
+  if (contractResult.error) {
+    throw new Error(`RECEIVED_CONTRACT_DOCUMENT_PERSISTENCE_LOOKUP_FAILED:${contractResult.error.message}`);
+  }
+
+  const versionResult = await args.supabase
+    .from("sales_contract_versions")
+    .select("id, contract_id, status, organization_id, store_id")
+    .eq("id", args.contractVersionId)
+    .eq("contract_id", args.contractId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+  if (versionResult.error) {
+    throw new Error(`RECEIVED_CONTRACT_DOCUMENT_PERSISTENCE_LOOKUP_FAILED:${versionResult.error.message}`);
+  }
+
+  const eventResult = await args.supabase
+    .from("store_business_events")
+    .select("id, conversation_id, event_payload")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .eq("event_key", "contrato_conferencia_documental")
+    .contains("event_payload", {
+      schema: "received_contract_document_decision_v1",
+      decision: "confirmed",
+      notification_id: args.notificationId,
+      contract_id: args.contractId,
+      contract_version_id: args.contractVersionId,
+      evidence_source_message_id: args.evidenceSourceMessageId,
+    })
+    .limit(1);
+  if (eventResult.error) {
+    throw new Error(`RECEIVED_CONTRACT_DOCUMENT_PERSISTENCE_LOOKUP_FAILED:${eventResult.error.message}`);
+  }
+
+  const eventPersisted = (eventResult.data || []).length > 0;
+
+  if (
+    contractResult.data?.status !== "completed" ||
+    !contractResult.data?.completed_at ||
+    contractResult.data?.current_version_id !== args.contractVersionId ||
+    versionResult.data?.status !== "completed" ||
+    !eventPersisted
+  ) {
+    throw new Error("RECEIVED_CONTRACT_DOCUMENT_DECISION_NOT_PERSISTED");
+  }
+}
+
 export async function tryHandleReceivedContractDocumentDecision(args: {
-  supabase: any;
+  supabase: SupabaseClient;
   organizationId: string;
   storeId: string;
   decisionMessageId: string;
   content: string;
   channel: ReceivedContractDocumentDecisionChannel;
   contextMessageId?: string | null;
-}): Promise<ReceivedContractDocumentDecisionHandled | null> {
+}): Promise<ReceivedContractDocumentDecisionHandled | ReceivedContractDocumentDecisionBlocked | null> {
   const decision = resolveReceivedContractDocumentDecision(args.content);
   if (!decision) return null;
 
@@ -245,13 +345,15 @@ export async function tryHandleReceivedContractDocumentDecision(args: {
   if (!message) return null;
 
   const notifications = await loadReceivedContractNotifications(args);
-  let candidates = notifications.filter((notification) => {
+  const isIdentifiedContractNotification = (notification: PendingReceivedContractNotification) => {
     const context = notification.context;
     return contextText(context, "received_identification_status") === "identified" &&
       contextText(context, "related_contract_id") !== "" &&
       contextText(context, "document_version_id") !== "" &&
       contextText(context, "received_evidence_source_message_id") !== "";
-  });
+  };
+  let candidates = notifications.filter(isIdentifiedContractNotification);
+  let contractScopedNotifications: PendingReceivedContractNotification[] = [];
 
   const contextMessageId = clean(args.contextMessageId);
   if (args.channel === "whatsapp") {
@@ -262,28 +364,49 @@ export async function tryHandleReceivedContractDocumentDecision(args: {
       storeId: args.storeId,
       contextMessageId,
     });
-    candidates = notificationId
-      ? candidates.filter((notification) => clean(notification.id) === notificationId)
+    contractScopedNotifications = notificationId
+      ? notifications.filter((notification) => clean(notification.id) === notificationId)
       : [];
+    candidates = contractScopedNotifications.filter(isIdentifiedContractNotification);
   } else {
-    candidates = candidates.filter((notification) =>
+    contractScopedNotifications = notifications.filter((notification) =>
       clean(notification.thread_id) !== "" &&
       clean(notification.thread_id) === clean(message.thread_id),
     );
+    candidates = contractScopedNotifications.filter(isIdentifiedContractNotification);
   }
 
-  if (candidates.length !== 1) return null;
+  if (candidates.length !== 1) {
+    if (contractScopedNotifications.length > 0) {
+      return {
+        kind: "received_contract_document_decision_blocked",
+        responseText:
+          "Recebi sua resposta, mas não consegui confirmar com segurança qual conferência documental está pendente. O contrato permanece pendente de conferência.",
+        result: {
+          outcome: "blocked",
+          decision,
+          reason: "correlation_missing_or_ambiguous",
+        },
+      };
+    }
+    return null;
+  }
   const notification = candidates[0];
   const context = notification.context || {};
   const contractId = contextText(context, "related_contract_id");
   const contractVersionId = contextText(context, "document_version_id");
   const evidenceSourceMessageId = contextText(context, "received_evidence_source_message_id");
+  const relatedConversationId = contextText(context, "related_conversation_id");
+  if (!relatedConversationId) {
+    throw new Error("RECEIVED_CONTRACT_DOCUMENT_CONFIRMATION_CONTEXT_INVALID");
+  }
   const result = await decideReceivedContractDocument({
     supabase: args.supabase,
     decision,
     context: {
       organizationId: args.organizationId,
       storeId: args.storeId,
+      conversationId: relatedConversationId,
       notificationId: clean(notification.id),
       contractId,
       contractVersionId,
@@ -292,12 +415,38 @@ export async function tryHandleReceivedContractDocumentDecision(args: {
       channel: args.channel,
     },
   });
+  if (decision === "confirmed") {
+    await assertConfirmedDecisionPersisted({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: relatedConversationId,
+      notificationId: clean(notification.id),
+      contractId,
+      contractVersionId,
+      evidenceSourceMessageId,
+    });
+    // Keep the inbox event retryable until the customer-facing outbox row is
+    // durably queued. The decision RPC is idempotent, so a retry safely
+    // replays the confirmation materialization after a lost/failed response.
+    await enqueueReceivedContractDocumentConfirmation({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: relatedConversationId,
+      notificationId: clean(notification.id),
+      contractId,
+      contractVersionId,
+      evidenceSourceMessageId,
+      customerName: contextText(context, "customer_name"),
+    });
+  }
   const customerName = contextText(context, "customer_name") || "o cliente";
   return {
     kind: "received_contract_document_decision",
     responseText: decision === "confirmed"
-      ? `Contrato de ${customerName} marcado como concluido.`
-      : `O contrato de ${customerName} continua pendente de conferencia.`,
+      ? `Contrato de ${customerName} marcado como concluido; confirmacao ao cliente enfileirada para envio`
+      : `O contrato de ${customerName} continua pendente de conferencia`,
     result,
   };
 }

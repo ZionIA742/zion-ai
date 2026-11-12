@@ -888,6 +888,12 @@ const tests: TestCase[] = [
           ok: false,
           error: "AI_INTERNAL_ERROR",
           message: "AI_RETURN_SENTINEL",
+          diagnostic: {
+            authority: "materialize_sales_ai_reply_set_by_system",
+            sqlstate: "42501",
+            constraint: "sales_ai_reply_set_scope_check",
+            reason: "P19A_I8_SCOPE_BLOCKED",
+          },
         }),
       });
 
@@ -902,6 +908,10 @@ const tests: TestCase[] = [
       assert.equal(body.aiReplySaved, false);
       assert.equal(String(JSON.stringify(body)).includes("AI_RETURN_SENTINEL"), false);
       assert.equal(body.aiErrorCode, "AI_INTERNAL_ERROR");
+      assert.equal(
+        body.diagnosticCode,
+        "AI_INTERNAL_ERROR;authority=materialize_sales_ai_reply_set_by_system;sqlstate=42501;constraint=sales_ai_reply_set_scope_check;reason=P19A_I8_SCOPE_BLOCKED",
+      );
       assert.equal(response.headers.get("Cache-Control"), "no-store");
     },
   },

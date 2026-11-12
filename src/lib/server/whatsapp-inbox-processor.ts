@@ -86,15 +86,19 @@ async function registerReceivedContractDocumentEvidenceSafely(args: {
 
     let customerName: string | null = null;
     if (args.leadId) {
-      const { data: lead, error } = await args.supabase
-        .from("leads")
-        .select("id, name")
-        .eq("id", args.leadId)
-        .eq("organization_id", args.organizationId)
-        .eq("store_id", args.storeId)
-        .maybeSingle();
-      if (error) throw new Error(`Falha ao carregar cliente da evidencia documental: ${error.message}`);
-      customerName = typeof lead?.name === "string" ? lead.name.trim() || null : null;
+      try {
+        const { data: lead, error } = await args.supabase
+          .from("leads")
+          .select("id, name")
+          .eq("id", args.leadId)
+          .eq("organization_id", args.organizationId)
+          .eq("store_id", args.storeId)
+          .maybeSingle();
+        if (error) throw new Error(`Falha ao carregar cliente da evidencia documental: ${error.message}`);
+        customerName = typeof lead?.name === "string" ? lead.name.trim() || null : null;
+      } catch (error) {
+        console.warn("[whatsapp_inbound] nome do cliente da evidencia indisponivel:", error);
+      }
     }
 
     await pushAssistantReceivedContractDocumentMessage({
@@ -113,6 +117,7 @@ async function registerReceivedContractDocumentEvidenceSafely(args: {
         storagePath: persisted.record.receivedDocument.storagePath,
         mimeType: persisted.record.receivedDocument.mimeType,
         originalFileName: persisted.record.receivedDocument.originalFileName,
+        sha256: persisted.record.receivedDocument.sha256,
       },
       identificationStatus: persisted.record.identificationStatus,
       identificationReason: persisted.record.identificationReason,
@@ -131,6 +136,7 @@ async function registerReceivedContractDocumentEvidenceSafely(args: {
     return persisted;
   } catch (error) {
     console.warn("[whatsapp_inbound] received contract document evidence skipped:", error);
+    if (persisted) throw error;
     return persisted;
   }
 }
@@ -412,6 +418,22 @@ function asTrimmedString(value: unknown): string | null {
   return trimmed || null;
 }
 
+export function normalizeWhatsappSha256(value: unknown): string | null {
+  const normalized = asTrimmedString(value);
+  if (!normalized) return null;
+  if (/^[0-9a-f]{64}$/iu.test(normalized)) return normalized.toLowerCase();
+
+  const compactBase64 = normalized.replace(/\s+/g, "");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(compactBase64)) return null;
+  try {
+    const bytes = Buffer.from(compactBase64, "base64");
+    if (bytes.length !== 32 || bytes.toString("base64") !== compactBase64) return null;
+    return bytes.toString("hex");
+  } catch {
+    return null;
+  }
+}
+
 function asBoolean(value: unknown): boolean | null {
   if (typeof value === "boolean") return value;
   return null;
@@ -560,7 +582,7 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
     videoCaption: asTrimmedString(videoNode?.caption),
     documentMediaId: asTrimmedString(documentNode?.id),
     documentMimeType: asTrimmedString(documentNode?.mime_type),
-    documentSha256: asTrimmedString(documentNode?.sha256),
+    documentSha256: normalizeWhatsappSha256(documentNode?.sha256),
     documentFilename: asTrimmedString(documentNode?.filename),
     documentCaption: asTrimmedString(documentNode?.caption),
     locationLatitude: locationNode?.latitude,
@@ -689,6 +711,7 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
   payload: StoredInboxPayload;
 }) {
   const responsible = await loadCanonicalActivePrimaryStoreResponsible({
+    supabase: args.supabase,
     organizationId: args.inbox.organization_id,
     storeId: args.inbox.store_id,
   });
@@ -2679,7 +2702,7 @@ async function processSingleInboxRow(
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
       status: "succeeded",
-      detail: `responsible_inbound_${responsibleInbound.result.correlationStatus}`,
+      detail: `responsible_inbound_${responsibleInbound.result.correlationStatus ?? ("status" in responsibleInbound.result ? responsibleInbound.result.status : undefined) ?? "failed"}`,
     };
   }
 
@@ -3043,7 +3066,7 @@ async function processSingleInboxRow(
         displayPhoneNumber: extracted.displayPhoneNumber,
         mediaId: extracted.documentMediaId,
         mimeType: storedMedia.mimeType || extracted.documentMimeType,
-        sha256: extracted.documentSha256 || storedMedia.sha256,
+        sha256: normalizeWhatsappSha256(extracted.documentSha256 || storedMedia.sha256),
         caption: extracted.documentCaption,
         fileName: extracted.documentFilename || storedMedia.originalFileName,
         storageBucket: storedMedia.storageBucket,

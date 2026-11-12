@@ -36,14 +36,15 @@ function buildContractStoragePath(args: {
   ].join("/");
 }
 
-function buildPdfFileName(
+export function buildPdfFileName(
   contractNumber: string | null | undefined,
   contractId: string,
   contentFingerprint: string,
 ) {
-  const base =
+  const rawBase =
     sanitizeFilePart(contractNumber || "") ||
     `contrato-${sanitizeFilePart(String(contractId || "").slice(0, 8) || "sem-numero")}`;
+  const base = rawBase.startsWith("contrato") ? rawBase : `contrato-${rawBase}`;
 
   const fingerprint = sanitizeFilePart(contentFingerprint).slice(0, 12) || "content";
   return `${base}-${fingerprint}.pdf`;

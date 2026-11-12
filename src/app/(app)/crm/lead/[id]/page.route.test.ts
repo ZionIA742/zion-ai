@@ -75,6 +75,42 @@ assert.equal(
   "catalog placeholder must not silently send or invent a product"
 );
 assert.equal(
+  source.includes("result?.customerMessageSaved === true") &&
+    source.includes("result.aiErrorCode") &&
+    source.includes("nao reenvie automaticamente"),
+  true,
+  "partial simulation failure must preserve the saved-message diagnostic without retrying",
+);
+assert.equal(
+  /customerMessageSaved === true[\s\S]*?fetchLeadConversationAndMessages\(\{ silent: true \}\)/.test(
+    source,
+  ),
+  true,
+  "partial simulation failure must refresh the conversation history",
+);
+assert.equal(
+  source.includes("async function fetchAcceptedQuoteSummary()") &&
+    source.includes("void fetchAcceptedQuoteSummary();") &&
+    /void fetchAcceptedQuoteSummary\(\);[\s\S]*?\}, \[documentScopeKey\]\);/.test(source),
+  true,
+  "accepted quote verification must be started when the document scope is ready",
+);
+assert.equal(
+  source.includes('status: "none"') &&
+    source.includes("Nenhum orçamento aceito registrado para este lead.") &&
+    source.includes('status: "error"') &&
+    source.includes('acceptance?.acceptance_state !== "accepted"'),
+  true,
+  "accepted quote summary must distinguish no canonical acceptance from verification errors",
+);
+assert.equal(
+  source.includes("current_quote_version_id") &&
+    source.includes("current_version_id !== acceptedQuoteVersionId") &&
+    source.includes("detailResult.current_version?.id !== acceptedQuoteVersionId"),
+  true,
+  "accepted quote summary must use the exact canonical accepted quote version",
+);
+assert.equal(
   source.includes("kind === \"media\" && (mimeType.startsWith(\"image/\") || mimeType.startsWith(\"video/\"))"),
   true,
   "manual media preview must create a local preview for image and video"
