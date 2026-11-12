@@ -73,6 +73,7 @@ function clearStoredStoreSelection(userId?: string | null) {
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const mountedRef = useRef(true);
   const currentUserIdRef = useRef<string | null>(null);
+  const loadGenerationRef = useRef(0);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,10 +85,20 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      loadGenerationRef.current += 1;
     };
   }, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (expectedUserId?: string) => {
+    const loadGeneration = loadGenerationRef.current + 1;
+    loadGenerationRef.current = loadGeneration;
+    let loadedUserId: string | null = null;
+
+    const isCurrentLoad = () =>
+      mountedRef.current &&
+      loadGenerationRef.current === loadGeneration &&
+      (loadedUserId === null || currentUserIdRef.current === loadedUserId);
+
     setLoading(true);
     setError(null);
 
@@ -103,10 +114,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const user = sessionRes.session?.user;
 
       if (!user) {
+        if (expectedUserId) return;
+        if (!isCurrentLoad()) return;
         currentUserIdRef.current = null;
         clearStoredStoreSelection();
         throw new Error("Usuario nao autenticado.");
       }
+
+      if (expectedUserId && user.id !== expectedUserId) return;
+
+      loadedUserId = user.id;
+
+      if (!mountedRef.current || loadGenerationRef.current !== loadGeneration) return;
 
       if (currentUserIdRef.current && currentUserIdRef.current !== user.id) {
         clearStoredStoreSelection(currentUserIdRef.current);
@@ -119,6 +138,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         .select("organization_id, created_at")
         .eq("user_id", user.id)
         .order("created_at", { ascending: false });
+
+      if (!isCurrentLoad()) return;
 
       if (membershipErr) {
         console.error("[StoreProvider] memberships error:", membershipErr);
@@ -143,6 +164,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           .select("id, organization_id, name, created_at")
           .in("organization_id", organizationIds)
           .order("created_at", { ascending: true });
+
+        if (!isCurrentLoad()) return;
 
         if (storesErr) {
           console.error("[StoreProvider] stores error:", storesErr);
@@ -183,7 +206,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         throw new Error("Usuario sem organizacao vinculada.");
       }
 
-      if (!mountedRef.current) return;
+      if (!isCurrentLoad()) return;
 
       setOrganizationId(orgId);
       setStores(normalizedStores);
@@ -215,7 +238,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         }
       }
     } catch (err: unknown) {
-      if (!mountedRef.current) return;
+      if (!isCurrentLoad()) return;
 
       const message =
         err &&
@@ -232,7 +255,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setStores([]);
       setActiveStoreIdState(null);
     } finally {
-      if (!mountedRef.current) return;
+      if (!isCurrentLoad()) return;
       setLoading(false);
     }
   }, []);
@@ -248,6 +271,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const nextUserId = session?.user?.id ?? null;
 
       if (!nextUserId) {
+        loadGenerationRef.current += 1;
         currentUserIdRef.current = null;
         clearStoredStoreSelection();
 
@@ -265,7 +289,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         clearStoredStoreSelection(currentUserIdRef.current);
       }
 
-      void load();
+      void load(nextUserId);
     });
 
     return () => {
