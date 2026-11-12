@@ -56,3 +56,14 @@ test("migration is transactional and does not modify financial records", () => {
   assert.doesNotMatch(sql, /\bDELETE\s+FROM\b/i);
   assert.doesNotMatch(sql, /\bzion_admin_monthly_final_close_gateway_by_system\s*\(/);
 });
+
+test("uses valid PostgreSQL date_part syntax", () => {
+  assert.match(
+    sql,
+    /pg_catalog\.date_part\('day',\s*v_last_day\)::integer/,
+  );
+  assert.doesNotMatch(
+    sql,
+    /pg_catalog\.extract\s*\(/i,
+  );
+});

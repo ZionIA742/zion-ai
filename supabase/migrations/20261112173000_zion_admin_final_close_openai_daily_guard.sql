@@ -133,7 +133,7 @@ BEGIN
         (p_month + INTERVAL '1 month')::date - 1;
 
     v_expected_days :=
-        pg_catalog.extract(day FROM v_last_day)::integer;
+        pg_catalog.date_part('day', v_last_day)::integer;
 
     IF v_openai ->> 'status'
         IS DISTINCT FROM 'official_period_complete'
