@@ -309,6 +309,110 @@ const tests = [
     },
   },
   {
+    name: "refresh antigo de A nao executa apos B e refresh de B funciona",
+    async run() {
+      installLocalStorage();
+      await withMockedSupabase(async ({ sessionQueue, queryQueue, emitAuth }) => {
+        const renderer = await mountLoadedUser({
+          sessionQueue,
+          queryQueue,
+          userId: "user-a",
+          organizationId: "org-a",
+          stores: [store("store-a", "org-a", "Loja A")],
+        });
+        const oldRefresh = renderer.snapshot?.refreshStores;
+        const sessionB = deferred();
+        sessionQueue.push(sessionB.promise, Promise.resolve(sessionFor("user-a")));
+        const storeB = store("store-b", "org-b", "Loja B");
+        queryQueue.push(
+          queryResult([{ organization_id: "org-b", created_at: "2026-01-01" }]),
+          queryResult([storeB]),
+        );
+
+        act(() => emitAuth({ user: { id: "user-b" } }));
+        assertContextEmpty(renderer.snapshot);
+        await oldRefresh?.();
+        assertContextEmpty(renderer.snapshot);
+        sessionQueue.splice(0, 1);
+
+        sessionB.resolve(sessionFor("user-b"));
+        await act(async () => flushAsyncWork());
+        assert.equal(renderer.snapshot?.organizationId, "org-b");
+        assert.deepEqual(renderer.snapshot?.stores, [storeB]);
+
+        const refreshedStoreB = store("store-b", "org-b", "Loja B atualizada");
+        sessionQueue.push(Promise.resolve(sessionFor("user-b")));
+        queryQueue.push(
+          queryResult([{ organization_id: "org-b", created_at: "2026-01-01" }]),
+          queryResult([refreshedStoreB]),
+        );
+        await act(async () => {
+          await renderer.snapshot?.refreshStores();
+          await flushAsyncWork();
+        });
+        assert.deepEqual(renderer.snapshot?.stores, [refreshedStoreB]);
+        act(() => renderer.renderer.unmount());
+      });
+    },
+  },
+  {
+    name: "refresh antigo nao executa apos logout e nova autenticacao",
+    async run() {
+      installLocalStorage();
+      await withMockedSupabase(async ({ sessionQueue, queryQueue, emitAuth }) => {
+        const renderer = await mountLoadedUser({
+          sessionQueue,
+          queryQueue,
+          userId: "user-a",
+          organizationId: "org-a",
+          stores: [store("store-a", "org-a", "Loja A")],
+        });
+        const oldRefresh = renderer.snapshot?.refreshStores;
+        sessionQueue.push(Promise.resolve(sessionFor("user-a")));
+        act(() => emitAuth(null));
+        assertContextEmpty(renderer.snapshot);
+        await oldRefresh?.();
+        await flushAsyncWork();
+        assertContextEmpty(renderer.snapshot);
+        sessionQueue.shift();
+
+        const sessionB = deferred();
+        const storeB = store("store-b", "org-b", "Loja B");
+        sessionQueue.push(sessionB.promise);
+        queryQueue.push(
+          queryResult([{ organization_id: "org-b", created_at: "2026-01-01" }]),
+          queryResult([storeB]),
+        );
+        act(() => emitAuth({ user: { id: "user-b" } }));
+        sessionB.resolve(sessionFor("user-b"));
+        await act(async () => flushAsyncWork());
+        assert.equal(renderer.snapshot?.organizationId, "org-b");
+        assert.deepEqual(renderer.snapshot?.stores, [storeB]);
+        act(() => renderer.renderer.unmount());
+      });
+    },
+  },
+  {
+    name: "refresh antigo nao executa apos desmontagem",
+    async run() {
+      installLocalStorage();
+      await withMockedSupabase(async ({ sessionQueue, queryQueue }) => {
+        const renderer = await mountLoadedUser({
+          sessionQueue,
+          queryQueue,
+          userId: "user-a",
+          organizationId: "org-a",
+          stores: [store("store-a", "org-a", "Loja A")],
+        });
+        const oldRefresh = renderer.snapshot?.refreshStores;
+        act(() => renderer.renderer.unmount());
+        sessionQueue.push(Promise.resolve(sessionFor("user-a")));
+        await oldRefresh?.();
+        await flushAsyncWork();
+      });
+    },
+  },
+  {
     name: "selecao de loja A e bloqueada apos B",
     async run() {
       const storage = installLocalStorage();

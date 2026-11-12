@@ -89,18 +89,28 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const load = useCallback(async (expectedUserId?: string) => {
-    const loadGeneration = loadGenerationRef.current + 1;
-    loadGenerationRef.current = loadGeneration;
-    let loadedUserId: string | null = null;
+  const load = useCallback(
+    async (expectedUserId?: string, expectedGeneration?: number) => {
+      if (
+        expectedGeneration !== undefined &&
+        (!expectedUserId ||
+          currentUserIdRef.current !== expectedUserId ||
+          loadGenerationRef.current !== expectedGeneration)
+      ) {
+        return;
+      }
 
-    const isCurrentLoad = () =>
-      mountedRef.current &&
-      loadGenerationRef.current === loadGeneration &&
-      (loadedUserId === null || currentUserIdRef.current === loadedUserId);
+      const loadGeneration = loadGenerationRef.current + 1;
+      loadGenerationRef.current = loadGeneration;
+      let loadedUserId: string | null = null;
 
-    setLoading(true);
-    setError(null);
+      const isCurrentLoad = () =>
+        mountedRef.current &&
+        loadGenerationRef.current === loadGeneration &&
+        (loadedUserId === null || currentUserIdRef.current === loadedUserId);
+
+      setLoading(true);
+      setError(null);
 
     try {
       const { data: sessionRes, error: sessionErr } =
@@ -258,7 +268,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (!isCurrentLoad()) return;
       setLoading(false);
     }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
     void load();
@@ -339,16 +351,33 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [stores, activeStoreId]);
 
   const value = useMemo<StoreContextValue>(
-    () => ({
-      loading,
-      error,
-      organizationId,
-      stores,
-      activeStoreId,
-      activeStore,
-      setActiveStoreId,
-      refreshStores: load,
-    }),
+    () => {
+      const boundUserId = currentUserIdRef.current;
+      const boundGeneration = loadGenerationRef.current;
+      const refreshStores = () => {
+        if (
+          !mountedRef.current ||
+          !boundUserId ||
+          currentUserIdRef.current !== boundUserId ||
+          loadGenerationRef.current !== boundGeneration
+        ) {
+          return Promise.resolve();
+        }
+
+        return load(boundUserId, boundGeneration);
+      };
+
+      return {
+        loading,
+        error,
+        organizationId,
+        stores,
+        activeStoreId,
+        activeStore,
+        setActiveStoreId,
+        refreshStores,
+      };
+    },
     [loading, error, organizationId, stores, activeStoreId, activeStore, setActiveStoreId, load]
   );
 
