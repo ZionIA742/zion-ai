@@ -19,13 +19,11 @@ import {
   type StoreStrategySettingsRow,
 } from "@/lib/store-strategy-settings";
 import {
-  createMetaEmbeddedSignupFlowCoordinator,
   ensureFacebookSdkLoaded,
   getMetaEmbeddedSignupConfig,
-  isMetaEmbeddedSignupFlowActive,
-  type MetaEmbeddedSignupFlowCoordinator,
   type MetaEmbeddedSignupSession,
 } from "@/lib/client/meta-embedded-signup";
+import { useMetaEmbeddedSignupAttempt } from "@/lib/client/use-meta-embedded-signup-attempt";
 import { formatOfficialWhatsappDisplay } from "./whatsapp-display";
 
 type AnswersMap = Record<string, unknown>;
@@ -560,17 +558,23 @@ function OnboardingContent() {
     useState<MetaEmbeddedSignupSession | null>(null);
   const [embeddedSignupLoading, setEmbeddedSignupLoading] = useState(false);
   const [embeddedSignupSubmitting, setEmbeddedSignupSubmitting] = useState(false);
-  const embeddedSignupMountedRef = useRef(true);
   const embeddedSignupSubmittingRef = useRef(false);
   const embeddedSignupAttemptRef = useRef<Promise<void> | null>(null);
-  const embeddedSignupAttemptIdRef = useRef(0);
-  const embeddedSignupFlowRef = useRef<MetaEmbeddedSignupFlowCoordinator | null>(null);
-  const embeddedSignupTimeoutRef = useRef<number | null>(null);
   const embeddedSignupRequestedModeRef = useRef<"standard" | "business_app_coexistence" | null>(null);
   const [embeddedSignupError, setEmbeddedSignupError] = useState<string | null>(null);
   const [embeddedSignupMessage, setEmbeddedSignupMessage] = useState<string | null>(null);
   const [siteOrFacebookPageSelection, setSiteOrFacebookPageSelection] = useState<"yes" | "no" | null>(null);
   const [hasSiteOrFacebookPage, setHasSiteOrFacebookPage] = useState<"yes" | "no" | null>(null);
+  const {
+    mountedRef: embeddedSignupMountedRef,
+    attemptIdRef: embeddedSignupAttemptIdRef,
+    flowRef: embeddedSignupFlowRef,
+    beginAttempt: beginEmbeddedSignupAttempt,
+    closeAttempt: closeEmbeddedSignupAttempt,
+    clearTimeout: clearEmbeddedSignupTimeout,
+    startTimeout: startEmbeddedSignupTimeout,
+    isAttemptActive: isEmbeddedSignupAttemptActive,
+  } = useMetaEmbeddedSignupAttempt();
 
   const [step1Form, setStep1Form] = useState<Step1FormData>({
     store_display_name: "",
@@ -701,7 +705,7 @@ function OnboardingContent() {
     } finally {
       if (embeddedSignupMountedRef.current) setWhatsappStatusLoading(false);
     }
-  }, [activeStore?.id]);
+  }, [activeStore?.id, embeddedSignupMountedRef]);
 
   const loadBaseData = useCallback(async () => {
     if (!organizationId || !activeStore?.id) return;
@@ -1163,32 +1167,6 @@ function OnboardingContent() {
     setEmbeddedSignupCode("");
   }, []);
 
-  const clearEmbeddedSignupTimeout = useCallback(() => {
-    if (embeddedSignupTimeoutRef.current === null) return;
-    window.clearTimeout(embeddedSignupTimeoutRef.current);
-    embeddedSignupTimeoutRef.current = null;
-  }, []);
-
-  const closeEmbeddedSignupAttempt = useCallback((attemptId: number) => {
-    if (embeddedSignupAttemptIdRef.current !== attemptId) return false;
-    embeddedSignupFlowRef.current?.close();
-    embeddedSignupFlowRef.current = null;
-    clearEmbeddedSignupTimeout();
-    embeddedSignupRequestedModeRef.current = null;
-    return true;
-  }, [clearEmbeddedSignupTimeout]);
-
-  useEffect(() => {
-    embeddedSignupMountedRef.current = true;
-    return () => {
-      embeddedSignupAttemptIdRef.current += 1;
-      embeddedSignupFlowRef.current?.close();
-      embeddedSignupFlowRef.current = null;
-      clearEmbeddedSignupTimeout();
-      embeddedSignupMountedRef.current = false;
-    };
-  }, [clearEmbeddedSignupTimeout]);
-
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -1242,7 +1220,12 @@ function OnboardingContent() {
     return () => {
       window.removeEventListener("message", handleEmbeddedSignupMessage);
     };
-  }, [clearEmbeddedSignupSensitiveState, closeEmbeddedSignupAttempt]);
+  }, [
+    clearEmbeddedSignupSensitiveState,
+    closeEmbeddedSignupAttempt,
+    embeddedSignupAttemptIdRef,
+    embeddedSignupFlowRef,
+  ]);
 
   const [onboardingActivationState, setOnboardingActivationState] = useState<string | null>(
     null,
@@ -1369,7 +1352,7 @@ function OnboardingContent() {
     } finally {
       if (embeddedSignupMountedRef.current) setOnboardingActivationLoading(false);
     }
-  }, [activeStore?.id, organizationId]);
+  }, [activeStore?.id, embeddedSignupMountedRef, organizationId]);
 
   async function startMetaEmbeddedSignup(
     intent: "connect" | "verify-existing" = "connect",
@@ -1381,11 +1364,7 @@ function OnboardingContent() {
       embeddedSignupSubmittingRef.current
     ) return;
 
-    const attemptId = embeddedSignupAttemptIdRef.current + 1;
-    embeddedSignupAttemptIdRef.current = attemptId;
-    embeddedSignupFlowRef.current = createMetaEmbeddedSignupFlowCoordinator({
-      connectionMode,
-    });
+    const attemptId = beginEmbeddedSignupAttempt(connectionMode);
     embeddedSignupRequestedModeRef.current = connectionMode;
 
     setFormError(null);
@@ -1396,10 +1375,7 @@ function OnboardingContent() {
     setEmbeddedSignupCode("");
     setEmbeddedSignupIntent(intent);
 
-    clearEmbeddedSignupTimeout();
-    embeddedSignupTimeoutRef.current = window.setTimeout(() => {
-      if (embeddedSignupAttemptIdRef.current !== attemptId) return;
-      closeEmbeddedSignupAttempt(attemptId);
+    startEmbeddedSignupTimeout(attemptId, () => {
       setEmbeddedSignupLoading(false);
       setEmbeddedSignupSubmitting(false);
       setEmbeddedSignupSession(null);
@@ -1408,7 +1384,7 @@ function OnboardingContent() {
       setEmbeddedSignupError(
         "A Meta não concluiu todos os dados necessários no tempo esperado. Nenhuma integração foi marcada como conectada; tente novamente ou procure o suporte.",
       );
-    }, 10000);
+    });
 
     if (!metaEmbeddedSignupConfig.appId || !metaEmbeddedSignupConfig.configId) {
       closeEmbeddedSignupAttempt(attemptId);
@@ -1422,13 +1398,7 @@ function OnboardingContent() {
       await ensureFacebookSdkLoaded(metaEmbeddedSignupConfig.appId);
 
       if (
-        !embeddedSignupMountedRef.current ||
-        !embeddedSignupFlowRef.current ||
-        !isMetaEmbeddedSignupFlowActive({
-          expectedFlowId: attemptId,
-          currentFlowId: embeddedSignupAttemptIdRef.current,
-          status: embeddedSignupFlowRef.current.getSnapshot().status,
-        })
+        !isEmbeddedSignupAttemptActive(attemptId)
       ) {
         return;
       }
@@ -1645,6 +1615,12 @@ function OnboardingContent() {
     embeddedSignupSession,
     clearEmbeddedSignupTimeout,
     closeEmbeddedSignupAttempt,
+    beginEmbeddedSignupAttempt,
+    embeddedSignupAttemptIdRef,
+    embeddedSignupFlowRef,
+    embeddedSignupMountedRef,
+    isEmbeddedSignupAttemptActive,
+    startEmbeddedSignupTimeout,
     fetchWhatsappStatus,
     organizationId,
     refreshActivationReadinessAfterEmbeddedSignup,

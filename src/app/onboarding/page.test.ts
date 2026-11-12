@@ -450,12 +450,11 @@ const tests: TestCase[] = [
     run: () => {
       const source = readPageSource();
       const startBlock = getStartMetaSignupBlock(source);
-      assert.equal(startBlock.includes("embeddedSignupAttemptIdRef.current = attemptId;"), true);
-      assert.equal(startBlock.includes("embeddedSignupFlowRef.current = createMetaEmbeddedSignupFlowCoordinator"), true);
-      assert.equal(startBlock.includes("embeddedSignupTimeoutRef.current = window.setTimeout"), true);
-      assert.equal(startBlock.includes("isMetaEmbeddedSignupFlowActive({"), true);
+      assert.equal(startBlock.includes("const attemptId = beginEmbeddedSignupAttempt(connectionMode);"), true);
+      assert.equal(startBlock.includes("startEmbeddedSignupTimeout(attemptId, () =>"), true);
+      assert.equal(startBlock.includes("isEmbeddedSignupAttemptActive(attemptId)"), true);
       assert.equal(
-        startBlock.indexOf("embeddedSignupTimeoutRef.current = window.setTimeout") <
+        startBlock.indexOf("startEmbeddedSignupTimeout(attemptId, () =>") <
           startBlock.indexOf("window.FB.login("),
         true,
       );
