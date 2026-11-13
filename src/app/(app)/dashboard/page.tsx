@@ -541,7 +541,8 @@ function InfoList({
 function CatalogItemsList({
   items,
   emptyText,
-  searchable = false,
+  lowStockItemIds,
+  zeroStockItemIds,
 }: {
   items: Array<{
     id: string;
@@ -556,59 +557,16 @@ function CatalogItemsList({
     trackStock?: boolean;
   }>;
   emptyText: string;
-  searchable?: boolean;
+  lowStockItemIds?: ReadonlySet<string>;
+  zeroStockItemIds?: ReadonlySet<string>;
 }) {
-  const [searchQuery, setSearchQuery] = useState("");
-
-  const normalizedSearch = searchQuery
-    .trim()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase("pt-BR");
-
-  const visibleItems = searchable && normalizedSearch
-    ? items.filter((item) =>
-        item.name
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .toLocaleLowerCase("pt-BR")
-          .includes(normalizedSearch)
-      )
-    : items;
   if (!items.length) {
     return <EmptyState text={emptyText} />;
   }
 
   return (
     <div className="space-y-3">
-      {searchable ? (
-        <div className="relative">
-          <svg
-            aria-hidden="true"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500"
-          >
-            <circle cx="11" cy="11" r="7" />
-            <path d="m20 20-4-4" />
-          </svg>
-          <input
-            type="search"
-            aria-label="Pesquisar produtos pelo nome"
-            placeholder="Pesquisar produto pelo nome"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            className="w-full rounded-xl border border-zinc-300 bg-white py-2.5 pl-10 pr-3 text-sm text-zinc-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-          />
-        </div>
-      ) : null}
-      {searchable && normalizedSearch && visibleItems.length === 0 ? (
-        <EmptyState text="Nenhum produto encontrado para esta pesquisa." />
-      ) : null}
-      {visibleItems.map((item) => (
+      {items.map((item) => (
         <div
           key={item.id}
           className="rounded-2xl border border-zinc-200 bg-white p-4"
@@ -621,6 +579,15 @@ function CatalogItemsList({
               <p className="mt-1 break-words text-sm text-zinc-600">
                 SKU: {item.sku || "Sem SKU"}
               </p>
+              {lowStockItemIds?.has(item.id) ? (
+                <p className="mt-2 text-xs font-semibold text-amber-700">
+                  Estoque baixo
+                </p>
+              ) : zeroStockItemIds?.has(item.id) ? (
+                <p className="mt-2 text-xs font-semibold text-red-700">
+                  Estoque zerado
+                </p>
+              ) : null}
             </div>
 
             <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
@@ -2208,6 +2175,7 @@ export default function DashboardPage() {
   const [isMonthFollowupsDrawerOpen, setIsMonthFollowupsDrawerOpen] =
     useState(false);
   const [isCatalogStockDrawerOpen, setIsCatalogStockDrawerOpen] = useState(false);
+  const [catalogSearchQuery, setCatalogSearchQuery] = useState("");
   const [isTrackedStockDrawerOpen, setIsTrackedStockDrawerOpen] = useState(false);
   const [isLowStockDrawerOpen, setIsLowStockDrawerOpen] = useState(false);
   const [isZeroStockDrawerOpen, setIsZeroStockDrawerOpen] = useState(false);
@@ -2467,6 +2435,21 @@ export default function DashboardPage() {
     { label: "Financiamento", percent: 0, color: "#0f766e" },
   ];
   const allCatalogItems = lists.allCatalogItems || [];
+  const normalizedCatalogSearch = catalogSearchQuery
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR");
+
+  const catalogSearchResults = normalizedCatalogSearch
+    ? allCatalogItems.filter((item) =>
+        item.name
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLocaleLowerCase("pt-BR")
+          .includes(normalizedCatalogSearch)
+      )
+    : [];
   const inStockItems = lists.inStockItems || [];
   const inventoryValueByCategoryCents =
     summary.catalog.inventoryValueByCategoryCents || {
@@ -3574,6 +3557,46 @@ export default function DashboardPage() {
         {activeTab === "estoque" ? (
           <>
             <div className="space-y-4">
+              <div className="relative">
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-zinc-500"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m20 20-4-4" />
+                </svg>
+                <input
+                  type="search"
+                  aria-label="Pesquisar produtos no catálogo"
+                  placeholder="Pesquisar produtos no catálogo..."
+                  value={catalogSearchQuery}
+                  onChange={(event) => setCatalogSearchQuery(event.target.value)}
+                  className="w-full rounded-xl border border-zinc-300 bg-white py-3 pl-12 pr-4 text-sm text-zinc-900 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+
+              {normalizedCatalogSearch ? (
+                <section
+                  aria-label="Resultados da pesquisa no catálogo"
+                  className="rounded-[6px] border border-zinc-200 bg-white p-4 shadow-sm"
+                >
+                  <p className="mb-3 text-sm font-semibold text-zinc-950">
+                    Resultados da pesquisa ({formatNumber(catalogSearchResults.length)})
+                  </p>
+                  <CatalogItemsList
+                    items={catalogSearchResults}
+                    lowStockItemIds={new Set(lists.lowStockItems.map((item) => item.id))}
+                    zeroStockItemIds={new Set(lists.zeroStockItems.map((item) => item.id))}
+                    emptyText="Nenhum produto encontrado para esta pesquisa."
+                  />
+                </section>
+              ) : null}
+
               <div className="grid min-w-0 gap-3 md:grid-cols-5">
                 <button
                   type="button"
@@ -3675,7 +3698,6 @@ export default function DashboardPage() {
                   <div className="mt-3">
                     <CatalogItemsList
                       items={allCatalogItems}
-                      searchable
                       emptyText="A rota ainda não enviou a lista completa do catálogo."
                     />
                   </div>
