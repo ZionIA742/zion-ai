@@ -37,10 +37,10 @@ export type CanonicalCrmStageDefinition = {
 
 export const CANONICAL_CRM_STAGES: CanonicalCrmStageDefinition[] = [
   { id: "novo_lead", title: "Novo Lead", order: 1, area: "pipeline", nivel: "ok" },
-  { id: "qualificacao", title: "Qualificacao", order: 2, area: "pipeline", nivel: "ok" },
-  { id: "orcamento", title: "Orcamento", order: 3, area: "pipeline", nivel: "ok" },
-  { id: "visita_tecnica", title: "Visita Tecnica", order: 4, area: "pipeline", nivel: "pendente" },
-  { id: "negociacao", title: "Negociacao", order: 5, area: "pipeline", nivel: "ok" },
+  { id: "qualificacao", title: "Qualificação", order: 2, area: "pipeline", nivel: "ok" },
+  { id: "orcamento", title: "Orçamento", order: 3, area: "pipeline", nivel: "ok" },
+  { id: "visita_tecnica", title: "Visita Técnica", order: 4, area: "pipeline", nivel: "pendente" },
+  { id: "negociacao", title: "Negociação", order: 5, area: "pipeline", nivel: "ok" },
   {
     id: "fechamento_pagamento",
     title: "Fechamento / Pagamento",
@@ -50,16 +50,16 @@ export const CANONICAL_CRM_STAGES: CanonicalCrmStageDefinition[] = [
   },
   {
     id: "instalacao_entrega",
-    title: "Instalacao / Entrega",
+    title: "Instalação / Entrega",
     order: 7,
     area: "pipeline",
     nivel: "pendente",
   },
-  { id: "pos_venda", title: "Pos-venda", order: 8, area: "pipeline", nivel: "ok" },
+  { id: "pos_venda", title: "Pós-venda", order: 8, area: "pipeline", nivel: "ok" },
   { id: "perdido", title: "Perdido", order: 9, area: "lost", nivel: "critico" },
   {
     id: "concluido_sem_mais_acoes",
-    title: "Concluido sem mais acoes",
+    title: "Concluído sem mais ações",
     order: 10,
     area: "completed",
     nivel: "ok",

@@ -1343,14 +1343,14 @@ function formatLeadStage(value: string | null | undefined) {
 
   const labels: Record<string, string> = {
     novo_lead: "Novo lead",
-    qualificacao: "Qualificacao",
+    qualificacao: "Qualificação",
     orcamento: "Orçamento",
-    negociacao: "Negociacao",
+    negociacao: "Negociação",
     fechamento_pagamento: "Fechamento / pagamento",
     pagamento_pendente_confirmacao: "Pagamento pendente",
     agendar_visita: "Agendar visita",
-    agendar_instalacao: "Agendar instalacao",
-    pos_venda_nps: "Pos-venda / follow-up",
+    agendar_instalacao: "Agendar instalação",
+    pos_venda_nps: "Pós-venda / follow-up",
     perdido: "Perdido",
     humano_assumiu: "Humano assumiu",
   };
@@ -1389,7 +1389,7 @@ function formatTaskTypeLabel(value: string | null | undefined) {
   }
 
   if (normalized === "commercial_quote_request") {
-    return "Pedido de orcamento";
+    return "Pedido de orçamento";
   }
 
   return formatFriendlyLabel(value);
@@ -1431,10 +1431,10 @@ function formatAppointmentTypeLabel(value: string | null | undefined) {
   const normalized = String(value || "").trim().toLowerCase();
 
   const labels: Record<string, string> = {
-    technical_visit: "Visita tecnica",
+    technical_visit: "Visita técnica",
     site_visit: "Visita",
-    installation: "Instalacao",
-    maintenance: "Manutencao",
+    installation: "Instalação",
+    maintenance: "Manutenção",
     delivery: "Entrega",
   };
 

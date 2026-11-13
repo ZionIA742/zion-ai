@@ -87,7 +87,7 @@ const BOARD_VIEW_OPTIONS: Array<{ id: BoardView; label: string }> = [
 ];
 
 const MOVEMENT_LOCK_MESSAGE =
-  "Movimentacao temporariamente indisponivel enquanto o board migra para oportunidades.";
+  "Movimentação temporariamente indisponível enquanto o board migra para oportunidades.";
 
 function cx(...cls: Array<string | false | null | undefined>) {
   return cls.filter(Boolean).join(" ");
@@ -466,7 +466,7 @@ export default function CrmPage() {
 
       if (!organizationId) {
         setManualLeadCreateError(
-          "Nao foi possivel identificar a organizacao autorizada para criar o lead.",
+          "Não foi possível identificar a organização autorizada para criar o lead.",
         );
         return;
       }
@@ -505,7 +505,7 @@ export default function CrmPage() {
         setManualLeadCreateError(
           error instanceof Error
             ? error.message
-            : "Nao foi possivel preparar a operacao local do novo lead.",
+            : "Não foi possível preparar a operação local do novo lead.",
         );
         return;
       }
@@ -535,7 +535,7 @@ export default function CrmPage() {
           const message =
             typeof body?.message === "string" && body.message.trim()
               ? body.message.trim()
-              : "Nao foi possivel criar o novo lead comercial.";
+              : "Não foi possível criar o novo lead comercial.";
           throw new Error(message);
         }
 
@@ -547,7 +547,7 @@ export default function CrmPage() {
 
         if (!href) {
           throw new Error(
-            "Nao foi possivel montar a navegacao da oportunidade criada.",
+            "Não foi possível montar a navegação da oportunidade criada.",
           );
         }
 
@@ -567,7 +567,7 @@ export default function CrmPage() {
         setManualLeadCreateError(
           error instanceof Error
             ? error.message
-            : "Nao foi possivel criar o novo lead comercial.",
+            : "Não foi possível criar o novo lead comercial.",
         );
       } finally {
         setIsCreatingManualLead(false);
@@ -1063,7 +1063,7 @@ export default function CrmPage() {
               <div className="min-w-0">
                 <h2 className="text-lg font-bold text-gray-900">Novo lead</h2>
                 <p className="mt-1 text-sm text-gray-600">
-                  Cadastre um novo lead comercial manual sem criar conversa ou mensagem ficticia.
+                  Cadastre um novo lead comercial manual sem criar conversa ou mensagem fictícia.
                 </p>
               </div>
 
@@ -1115,7 +1115,7 @@ export default function CrmPage() {
                 </label>
 
                 <div className="rounded-xl bg-gray-50 px-3 py-3 text-xs text-gray-600 ring-1 ring-black/5">
-                  Preencha pelo menos nome ou telefone. O telefone informado aqui nao
+                  Preencha pelo menos nome ou telefone. O telefone informado aqui não
                   define identidade WhatsApp.
                 </div>
 
