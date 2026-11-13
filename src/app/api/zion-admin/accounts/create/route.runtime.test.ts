@@ -408,7 +408,86 @@ async function runCoreWithState(
   });
 }
 
+async function runRecoverFailedWithSiteUrl(siteUrl: string | undefined) {
+  const previous = {
+    NODE_ENV: process.env.NODE_ENV,
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
+  };
+  const state = createEmptyState();
+
+  state.users.push({
+    id: "user_existing",
+    email: "owner@example.com",
+    email_confirmed_at: null,
+    invited_at: null,
+    app_metadata: {
+      provisioned_via: "zion-admin",
+      zion_provisioning_status: "failed",
+      legacy_marker: "preserve",
+    },
+  });
+
+  process.env.NODE_ENV = "production";
+  process.env.VERCEL_ENV = "production";
+  if (siteUrl === undefined) {
+    delete process.env.NEXT_PUBLIC_SITE_URL;
+  } else {
+    process.env.NEXT_PUBLIC_SITE_URL = siteUrl;
+  }
+
+  try {
+    const result = await runCoreWithState(state, {
+      email: "owner@example.com",
+      storeName: "Nova Loja",
+      responsibleName: "Owner",
+    });
+
+    return { result, state };
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 const tests: TestCase[] = [
+  {
+    name: "recover_failed rejects missing, http, and external domains before effects",
+    run: async () => {
+      for (const siteUrl of [undefined, "http://zionapi.com.br", "https://evil.example"]) {
+        const { result, state } = await runRecoverFailedWithSiteUrl(siteUrl);
+
+        assert.equal(result.status, 503);
+        assert.equal(result.body.code, "AUTH_REDIRECT_CONFIGURATION_INVALID");
+        assert.equal(state.calls.updateUserById, 0);
+        assert.equal(state.calls.provisioningRpc, 0);
+        assert.equal(state.calls.inviteUserByEmail, 0);
+        assert.deepEqual(state.users[0]?.app_metadata, {
+          provisioned_via: "zion-admin",
+          zion_provisioning_status: "failed",
+          legacy_marker: "preserve",
+        });
+      }
+    },
+  },
+  {
+    name: "recover_failed remains functional with the official domain",
+    run: async () => {
+      const { result, state } = await runRecoverFailedWithSiteUrl(
+        "https://zionapi.com.br",
+      );
+
+      assert.equal(result.status, 200);
+      assert.equal(state.calls.updateUserById, 2);
+      assert.equal(state.calls.provisioningRpc, 1);
+      assert.equal(state.users[0]?.app_metadata?.zion_provisioning_status, "provisioned");
+    },
+  },
   {
     name: "missing redirect configuration blocks invite before metadata or email",
     run: async () => {

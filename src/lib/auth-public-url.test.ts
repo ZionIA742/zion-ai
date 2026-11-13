@@ -35,10 +35,28 @@ assert.equal(
 
 assert.equal(
   resolveAuthPublicBaseUrl({
+    siteUrl: "https://preview.example.vercel.app",
+    nodeEnv: "production",
+    vercelEnv: "preview",
+  }),
+  "https://preview.example.vercel.app",
+);
+
+assert.equal(
+  resolveAuthPublicBaseUrl({
+    siteUrl: "https://preview.example.vercel.app",
+    nodeEnv: "production",
+    vercelEnv: "production",
+  }),
+  null,
+);
+
+assert.equal(
+  resolveAuthPublicBaseUrl({
     siteUrl: "http://localhost:3000",
     nodeEnv: "development",
   }),
   "http://localhost:3000",
 );
 
-console.log("auth-public-url: 7 tests passed");
+console.log("auth-public-url: 9 tests passed");

@@ -6,6 +6,7 @@ import {
   readFirstAccessInviteId,
   resolveTrustedPasswordFlow,
 } from "@/lib/server/zion-account-provisioning";
+import { getServerAuthPublicBaseUrl } from "@/lib/auth-public-url";
 import { handleAuthCallback } from "./callback-handler";
 
 export async function GET(request: Request) {
@@ -16,5 +17,6 @@ export async function GET(request: Request) {
     getInvalidFirstAccessAttemptMessage,
     readFirstAccessInviteId,
     resolveTrustedPasswordFlow,
+    getAuthPublicBaseUrl: getServerAuthPublicBaseUrl,
   });
 }

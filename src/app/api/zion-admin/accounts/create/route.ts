@@ -13,6 +13,7 @@ import {
   PROVISIONING_SOURCE,
   type ProvisioningStatus,
 } from "@/lib/server/zion-account-provisioning";
+import { getServerAuthPublicBaseUrl } from "@/lib/auth-public-url";
 
 type ExistingProfileRow = {
   user_id: string;
@@ -738,6 +739,16 @@ async function createZionAdminAccountCore(params: {
       return {
         body: { error: "Nome do responsavel e obrigatorio." },
         status: 400,
+      } satisfies JsonResponseShape;
+    }
+
+    if (!getServerAuthPublicBaseUrl()) {
+      return {
+        body: {
+          error: "Domínio oficial de autenticação não configurado.",
+          code: "AUTH_REDIRECT_CONFIGURATION_INVALID",
+        },
+        status: 503,
       } satisfies JsonResponseShape;
     }
 

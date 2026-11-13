@@ -82,7 +82,7 @@ export function getServerAuthPublicBaseUrl() {
   return resolveAuthPublicBaseUrl({
     siteUrl: process.env.NEXT_PUBLIC_SITE_URL,
     appUrl: process.env.NEXT_PUBLIC_APP_URL,
-    vercelUrl: process.env.NEXT_PUBLIC_VERCEL_URL,
+    vercelUrl: process.env.VERCEL_URL || process.env.NEXT_PUBLIC_VERCEL_URL,
     nodeEnv: process.env.NODE_ENV,
     vercelEnv: process.env.VERCEL_ENV,
   });

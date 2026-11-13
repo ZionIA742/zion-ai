@@ -27,6 +27,7 @@ export type CallbackHandlerDeps = {
   getInvalidFirstAccessAttemptMessage: typeof getInvalidFirstAccessAttemptMessage;
   readFirstAccessInviteId: typeof readFirstAccessInviteId;
   resolveTrustedPasswordFlow: typeof resolveTrustedPasswordFlow;
+  getAuthPublicBaseUrl: () => string | null;
 };
 
 function createRedirectResponse(url: URL) {
@@ -34,6 +35,15 @@ function createRedirectResponse(url: URL) {
     status: 307,
     headers: {
       location: url.toString(),
+    },
+  });
+}
+
+function createInvalidOriginResponse() {
+  return new Response("Domínio de autenticação não autorizado.", {
+    status: 400,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
     },
   });
 }
@@ -135,6 +145,12 @@ export async function handleAuthCallback(
   deps: CallbackHandlerDeps,
 ): Promise<Response> {
   const requestUrl = new URL(request.url);
+  const trustedBaseUrl = deps.getAuthPublicBaseUrl();
+
+  if (!trustedBaseUrl || requestUrl.origin !== trustedBaseUrl) {
+    return createInvalidOriginResponse();
+  }
+
   const code = requestUrl.searchParams.get("code");
   const tokenHash = requestUrl.searchParams.get("token_hash");
   const otpType = getSupportedTokenHashType(requestUrl.searchParams.get("type"));

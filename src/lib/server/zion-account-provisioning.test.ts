@@ -10,13 +10,14 @@ type TestCase = {
 };
 
 function withEnv(
-  nextEnv: Partial<Record<"NEXT_PUBLIC_SITE_URL" | "NEXT_PUBLIC_APP_URL" | "NEXT_PUBLIC_VERCEL_URL" | "NODE_ENV" | "VERCEL_ENV", string | undefined>>,
+  nextEnv: Partial<Record<"NEXT_PUBLIC_SITE_URL" | "NEXT_PUBLIC_APP_URL" | "NEXT_PUBLIC_VERCEL_URL" | "VERCEL_URL" | "NODE_ENV" | "VERCEL_ENV", string | undefined>>,
   run: () => void,
 ) {
   const previous = {
     NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
     NEXT_PUBLIC_VERCEL_URL: process.env.NEXT_PUBLIC_VERCEL_URL,
+    VERCEL_URL: process.env.VERCEL_URL,
     NODE_ENV: process.env.NODE_ENV,
     VERCEL_ENV: process.env.VERCEL_ENV,
   };
@@ -214,6 +215,25 @@ const tests: TestCase[] = [
           VERCEL_ENV: "preview",
         },
         () => assert.equal(getRecoveryRedirectTo(), "https://preview.example.vercel.app/auth/callback?next=%2Fauth%2Freset-password"),
+      );
+    },
+  },
+  {
+    name: "preview uses the native server vercel url",
+    run: () => {
+      withEnv(
+        {
+          NEXT_PUBLIC_SITE_URL: undefined,
+          NEXT_PUBLIC_APP_URL: undefined,
+          NEXT_PUBLIC_VERCEL_URL: undefined,
+          VERCEL_URL: "native-preview.example.vercel.app",
+          NODE_ENV: "production",
+          VERCEL_ENV: "preview",
+        },
+        () => assert.equal(
+          getRecoveryRedirectTo(),
+          "https://native-preview.example.vercel.app/auth/callback?next=%2Fauth%2Freset-password",
+        ),
       );
     },
   },

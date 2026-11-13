@@ -70,6 +70,7 @@ async function createCallbackHarness(harnessOptions?: {
   callbackUser?: { id: string } | null;
   initialSessionUser?: { id: string } | null;
   verifiedRecoveryUser?: { id: string } | null;
+  trustedBaseUrl?: string | null;
   getUserError?: unknown;
   exchangeSupabase?: FakeSupabaseClient;
   authUser?: { app_metadata?: Record<string, unknown> | null };
@@ -166,6 +167,11 @@ async function createCallbackHarness(harnessOptions?: {
         }
       );
     },
+    getAuthPublicBaseUrl() {
+      return harnessOptions?.trustedBaseUrl === undefined
+        ? "https://example.com"
+        : harnessOptions.trustedBaseUrl;
+    },
   };
 
   return {
@@ -177,6 +183,44 @@ async function createCallbackHarness(harnessOptions?: {
 }
 
 const tests: TestCase[] = [
+  {
+    name: "official callback origin is accepted",
+    run: async () => {
+      const harness = await createCallbackHarness({
+        trustedBaseUrl: "https://zionapi.com.br",
+      });
+      const response = await harness.run(
+        "https://zionapi.com.br/auth/callback?code=official-code&next=%2Fauth%2Freset-password",
+      );
+
+      assert.equal(response.status, 307);
+      assert.equal(
+        response.headers.get("location"),
+        "https://zionapi.com.br/auth/reset-password",
+      );
+      assert.deepEqual(harness.calls.exchangeCodes, ["official-code"]);
+    },
+  },
+  {
+    name: "unauthorized callback origins reject before consuming codes or token hashes",
+    run: async () => {
+      for (const url of [
+        "https://preview.example.vercel.app/auth/callback?code=preview-code&next=%2Fauth%2Freset-password",
+        "https://evil.example/auth/callback?token_hash=external-hash&type=recovery&next=%2Fauth%2Freset-password",
+      ]) {
+        const harness = await createCallbackHarness({
+          trustedBaseUrl: "https://zionapi.com.br",
+        });
+        const response = await harness.run(url);
+
+        assert.equal(response.status, 400);
+        assert.equal(response.headers.get("location"), null);
+        assert.deepEqual(harness.calls.exchangeCodes, []);
+        assert.deepEqual(harness.calls.verifyOtpCalls, []);
+        assert.equal(harness.calls.signOut, 0);
+      }
+    },
+  },
   {
     name: "absence of code redirects to login with sanitized auth error",
     run: async () => {
