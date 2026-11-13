@@ -1453,6 +1453,11 @@ test("business app echo resolves the customer target, records human outgoing and
     assert.equal(result.results[0]?.ai_status, "skipped_human_active");
     assert.equal(calls.some((call) => call.url.includes("api.openai.com")), false);
     assert.equal(calls.filter((call) => call.url.includes("insert_message")).length, 1);
+    assert.equal(
+      calls.findIndex((call) => call.url.includes("/rpc/insert_message")) <
+        calls.findIndex((call) => call.url.includes("/rpc/human_takeover_conversation")),
+      true,
+    );
   } finally {
     globalThis.fetch = previousFetch;
   }

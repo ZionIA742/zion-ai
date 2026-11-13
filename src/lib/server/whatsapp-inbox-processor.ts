@@ -1679,16 +1679,16 @@ async function processHumanAppEcho(args: {
     throw new Error("business_app_echo_conversation_scope_mismatch");
   }
 
-  const { error: takeoverError } = await args.supabase.rpc(
-    "human_takeover_conversation",
-    {
-      p_conversation_id: thread.conversationId,
-      p_reason: "whatsapp_business_app_intervention",
-    },
-  );
-  if (takeoverError) throw takeoverError;
-
   if (existing?.id) {
+    const { error: takeoverError } = await args.supabase.rpc(
+      "human_takeover_conversation",
+      {
+        p_conversation_id: thread.conversationId,
+        p_reason: "whatsapp_business_app_intervention",
+      },
+    );
+    if (takeoverError) throw takeoverError;
+
     return {
       messageId: existing.id,
       leadId: existing.lead_id || thread.leadId,
@@ -1710,6 +1710,15 @@ async function processHumanAppEcho(args: {
     whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
     displayPhoneNumber: extracted.displayPhoneNumber,
   });
+
+  const { error: takeoverError } = await args.supabase.rpc(
+    "human_takeover_conversation",
+    {
+      p_conversation_id: thread.conversationId,
+      p_reason: "whatsapp_business_app_intervention",
+    },
+  );
+  if (takeoverError) throw takeoverError;
 
   return {
     messageId: inserted.id,

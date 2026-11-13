@@ -10,6 +10,13 @@ const migration = readFileSync(
   ),
   "utf8",
 );
+const echoMigration = readFileSync(
+  join(
+    process.cwd(),
+    "supabase/migrations/20261114020000_p9_human_whatsapp_echo_takeover.sql",
+  ),
+  "utf8",
+);
 
 test("panel human outbound messages use the canonical takeover atomically", () => {
   assert.match(migration, /perform public\.private_acquire_sales_contract_conversation_xact_lock\(p_conversation_id\)/);
@@ -32,4 +39,12 @@ test("non-panel writers cannot enter takeover through this condition", () => {
   assert.match(migration, /v_sender = 'human'/);
   assert.match(migration, /v_direction = 'outgoing'/);
   assert.doesNotMatch(migration, /source.*meta_whatsapp_webhook/);
+});
+
+test("Business App echoes use the same transactional writer takeover", () => {
+  assert.match(echoMigration, /meta_whatsapp_webhook/);
+  assert.match(echoMigration, /whatsapp_business_app/);
+  assert.match(echoMigration, /message_echo/);
+  assert.match(echoMigration, /P9_10_2_PRECONDITION_PANEL_TAKEOVER_MARKER_MISSING/);
+  assert.match(echoMigration, /P9_10_2_POSTCONDITION_ECHO_TAKEOVER_MISSING/);
 });
