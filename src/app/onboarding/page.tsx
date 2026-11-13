@@ -622,6 +622,7 @@ function OnboardingContent() {
     if (previousScope === null || previousScope === nextScope) return;
 
     closeEmbeddedSignupAttempt(embeddedSignupAttemptIdRef.current);
+    embeddedSignupAttemptIdRef.current += 1;
     embeddedSignupAttemptRef.current = null;
     embeddedSignupRequestedModeRef.current = null;
     embeddedSignupSubmittingRef.current = false;
@@ -1572,7 +1573,8 @@ function OnboardingContent() {
     if (
       embeddedSignupAttemptRef.current ||
       embeddedSignupFlowRef.current ||
-      embeddedSignupSubmittingRef.current
+      embeddedSignupSubmittingRef.current ||
+      embeddedSignupPendingOperation
     ) return;
 
     const attemptId = beginEmbeddedSignupAttempt(connectionMode);
@@ -1708,6 +1710,7 @@ function OnboardingContent() {
     );
 
     const submissionController = new AbortController();
+    const submissionScope = captureOnboardingScope();
     let submissionTimeoutId: number | null = null;
     let submissionTimedOut = false;
     let responseStatus: number | null = null;
@@ -1787,7 +1790,11 @@ function OnboardingContent() {
           result?.error === "WHATSAPP_RECOVERY_REQUIRES_NEW_PIN_AUTHORIZATION" &&
           result.phoneRegistrationConfirmed === true
         ) {
-          if (!isEmbeddedSignupAttemptCurrent(attemptId)) return;
+          if (
+            !submissionScope ||
+            !isEmbeddedSignupAttemptCurrent(attemptId) ||
+            !isCurrentOnboardingScope(submissionScope)
+          ) return;
           clearEmbeddedSignupSensitiveState();
           setEmbeddedSignupSession(null);
           setEmbeddedSignupMessage(
@@ -1840,7 +1847,11 @@ function OnboardingContent() {
           ) {
             throw new Error("EMBEDDED_SIGNUP_PENDING_OPERATION_INVALID");
           }
-          if (!isEmbeddedSignupAttemptCurrent(attemptId)) return;
+          if (
+            !submissionScope ||
+            !isEmbeddedSignupAttemptCurrent(attemptId) ||
+            !isCurrentOnboardingScope(submissionScope)
+          ) return;
           clearEmbeddedSignupSensitiveState();
           setEmbeddedSignupCode("");
           setEmbeddedSignupSession(null);
@@ -1870,7 +1881,11 @@ function OnboardingContent() {
           );
         }
 
-        if (!isEmbeddedSignupAttemptCurrent(attemptId)) return;
+        if (
+          !submissionScope ||
+          !isEmbeddedSignupAttemptCurrent(attemptId) ||
+          !isCurrentOnboardingScope(submissionScope)
+        ) return;
         const confirmedSession = enrichEmbeddedSignupSessionWithBackendIdentity(
           embeddedSignupSession,
           result?.integration,
@@ -1965,7 +1980,9 @@ function OnboardingContent() {
     embeddedSignupAttemptIdRef,
     embeddedSignupFlowRef,
     embeddedSignupMountedRef,
+    captureOnboardingScope,
     isEmbeddedSignupAttemptActive,
+    isCurrentOnboardingScope,
     startEmbeddedSignupTimeout,
     finalizeEmbeddedSignupConnection,
     isEmbeddedSignupAttemptCurrent,
@@ -2461,7 +2478,11 @@ function OnboardingContent() {
                     <button
                       type="button"
                       onClick={() => startMetaEmbeddedSignup("verify-existing", "standard")}
-                      disabled={embeddedSignupLoading || embeddedSignupSubmitting}
+                      disabled={
+                        embeddedSignupLoading ||
+                        embeddedSignupSubmitting ||
+                        Boolean(embeddedSignupPendingOperation)
+                      }
                       className="rounded-xl border border-blue-300 px-5 py-2.5 text-sm font-semibold text-blue-900 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {embeddedSignupLoading || embeddedSignupSubmitting

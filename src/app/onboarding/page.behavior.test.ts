@@ -7,6 +7,7 @@ import {
   createElement,
   type ReactNode,
   useContext,
+  useRef,
 } from "react";
 import * as React from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
@@ -34,8 +35,31 @@ const storeContext = createContext<StoreContextValue>({
 });
 
 const statusDeferreds = new Map<string, { resolve: (value: Response) => void }>();
+const statusRequestCounts = new Map<string, number>();
 const saveStrategyResolvers: Array<() => void> = [];
 const activationResolvers: Array<() => void> = [];
+let embeddedSignupResponseBody: unknown = { ok: true };
+let deferEmbeddedSignupResponse = false;
+const embeddedSignupResponseResolvers: Array<(value: Response) => void> = [];
+const embeddedSignupPosts: Array<Record<string, unknown>> = [];
+const facebookLoginCallbacks: Array<(value: { authResponse?: { code?: string } }) => void> = [];
+const messageListeners = new Set<(event: { origin: string; data: unknown }) => void>();
+let whatsappStatusRequestCount = 0;
+type TestSession = {
+  phoneNumberId: string;
+  whatsappBusinessAccountId: string;
+  connectionMode: "standard" | "business_app_coexistence";
+};
+type TestFlow = {
+  acceptOAuthCode: (value: unknown) => boolean;
+  acceptMessage: (event: { origin: string; data: unknown }) => string;
+  canSubmit: () => boolean;
+  markSubmitting: () => boolean;
+  close: () => void;
+  getSnapshot: () => { status: string; code: string; session: TestSession | null };
+};
+let lastTestFlow: TestFlow | null = null;
+let markSubmittingCount = 0;
 let searchStep: string | null = "4";
 
 function response(body: unknown, ok = true, status = 200) {
@@ -48,8 +72,30 @@ function response(body: unknown, ok = true, status = 200) {
 
 function mockedFetch(input: RequestInfo | URL) {
   const url = String(input);
+  if (url.includes("/api/store/whatsapp/embedded-signup")) {
+    embeddedSignupPosts.push({});
+    if (deferEmbeddedSignupResponse) {
+      return new Promise<Response>((resolve) => {
+        embeddedSignupResponseResolvers.push(resolve);
+      });
+    }
+    return Promise.resolve(response(embeddedSignupResponseBody));
+  }
   if (url.includes("/api/store/whatsapp/status")) {
+    whatsappStatusRequestCount += 1;
     const storeId = new URL(url, "http://localhost").searchParams.get("storeId") || "";
+    if (storeId === "store-normal" && (statusRequestCounts.get(storeId) || 0) >= 1) {
+      return Promise.resolve(response({
+        ok: true,
+        connected: true,
+        isActive: true,
+        status: "active",
+        phoneNumberId: "phone-normal",
+        whatsappBusinessAccountId: "waba-normal",
+        displayPhoneNumber: "+55 11 98888-1111",
+      }));
+    }
+    statusRequestCounts.set(storeId, (statusRequestCounts.get(storeId) || 0) + 1);
     return new Promise<Response>((resolve) => {
       statusDeferreds.set(storeId, { resolve });
     });
@@ -72,16 +118,37 @@ Object.defineProperty(globalThis, "window", {
   value: {
     setTimeout,
     clearTimeout,
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type: string, listener: (event: { origin: string; data: unknown }) => void) {
+      if (type === "message") messageListeners.add(listener);
+    },
+    removeEventListener(type: string, listener: (event: { origin: string; data: unknown }) => void) {
+      if (type === "message") messageListeners.delete(listener);
+    },
     scrollTo() {},
     localStorage: {
       getItem: () => null,
       setItem() {},
       removeItem() {},
     },
+    FB: {
+      login(callback: (value: { authResponse?: { code?: string } }) => void) {
+        facebookLoginCallbacks.push(callback);
+      },
+    },
   },
 });
+
+function dispatchMetaMessage(data: unknown) {
+  for (const listener of messageListeners) {
+    listener({ origin: "https://www.facebook.com", data });
+  }
+}
+
+function resolveStatus(storeId: string, body: unknown) {
+  const deferred = statusDeferreds.get(storeId);
+  assert.ok(deferred, `status pendente ausente para ${storeId}`);
+  deferred.resolve(response(body));
+}
 
 const mockedSupabase = {
   auth: {
@@ -152,10 +219,94 @@ function mockedModule(request: string) {
       normalizeStoreStrategySettingsInput: (value: unknown) => ({ value }),
     };
   }
-  if (normalizedRequest.includes("meta-embedded-signup")) {
+  if (normalizedRequest.includes("use-meta-embedded-signup-attempt")) {
+    return {
+      useMetaEmbeddedSignupAttempt: () => {
+        const mountedRef = useRef(true);
+        const attemptIdRef = useRef(0);
+        const flowRef = useRef<TestFlow | null>(null);
+        const beginAttempt = (mode: "standard" | "business_app_coexistence") => {
+          attemptIdRef.current += 1;
+          let status = "authorizing";
+          let code = "";
+          let session: TestSession | null = null;
+          flowRef.current = {
+            acceptOAuthCode(value: unknown) { code = typeof value === "string" ? value : ""; return Boolean(code); },
+            acceptMessage(event: { origin: string; data: unknown }) {
+              const payload = event.data && typeof event.data === "object" && !Array.isArray(event.data)
+                ? event.data as { type?: unknown; data?: Record<string, unknown> }
+                : {};
+              const data = payload.data || {};
+              const phoneNumberId = String(data.phone_number_id || "");
+              const whatsappBusinessAccountId = String(data.waba_id || data.whatsapp_business_account_id || "");
+              if (event.origin !== "https://www.facebook.com") return "origin_rejected";
+              if (payload.type !== "WA_EMBEDDED_SIGNUP") return "ignored_message";
+              if (!phoneNumberId || !whatsappBusinessAccountId) return "finish_missing_ids";
+              session = { phoneNumberId, whatsappBusinessAccountId, connectionMode: mode };
+              return "finish_valid";
+            },
+            canSubmit() { return Boolean(code && session); },
+            markSubmitting() { markSubmittingCount += 1; status = "submitting"; return true; },
+            close() { status = "closed"; },
+            getSnapshot() { return { status, code, session }; },
+          };
+          lastTestFlow = flowRef.current;
+          return attemptIdRef.current;
+        };
+        const closeAttempt = (attemptId: number) => {
+          if (attemptIdRef.current === attemptId) flowRef.current?.close();
+        };
+        return {
+          mountedRef,
+          attemptIdRef,
+          flowRef,
+          beginAttempt,
+          closeAttempt,
+          clearTimeout() {},
+          startTimeout() {},
+          isAttemptActive: (attemptId: number) => Boolean(mountedRef.current && attemptIdRef.current === attemptId && flowRef.current?.getSnapshot().status === "authorizing"),
+          isAttemptCurrent: (attemptId: number) => Boolean(mountedRef.current && attemptIdRef.current === attemptId && flowRef.current?.getSnapshot().status !== "closed"),
+        };
+      },
+    };
+  }
+  if (normalizedRequest.includes("/meta-embedded-signup") && !normalizedRequest.includes("use-meta-embedded-signup-attempt")) {
     return {
       ensureFacebookSdkLoaded: async () => undefined,
-      getMetaEmbeddedSignupConfig: () => ({ appId: "", configId: "" }),
+      getMetaEmbeddedSignupConfig: () => ({ appId: "app-test", configId: "config-test" }),
+      createMetaEmbeddedSignupFlowCoordinator: ({ connectionMode }: { connectionMode: "standard" | "business_app_coexistence" }) => {
+        let status: "authorizing" | "submitting" | "closed" = "authorizing";
+        let code = "";
+        let session: { whatsappBusinessAccountId: string; phoneNumberId?: string; connectionMode: "standard" | "business_app_coexistence" } | null = null;
+        return {
+          acceptOAuthCode(value: unknown) {
+            code = typeof value === "string" ? value : "";
+            return Boolean(code);
+          },
+          acceptMessage(event: { origin: string; data: unknown }) {
+            if (event.origin !== "https://www.facebook.com") return "origin_rejected";
+            const payload = event.data as { type?: string; event?: string; data?: Record<string, unknown> };
+            if (payload?.type !== "WA_EMBEDDED_SIGNUP") return "ignored_message";
+            if (payload.event === "CANCEL") return "cancelled";
+            const data = payload.data || {};
+            const waba = String(data.waba_id || data.whatsapp_business_account_id || "");
+            const phone = String(data.phone_number_id || "");
+            if (!waba || (payload.event === "FINISH" && !phone)) return "finish_missing_ids";
+            session = {
+              whatsappBusinessAccountId: waba,
+              ...(phone ? { phoneNumberId: phone } : {}),
+              connectionMode: payload.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"
+                ? "business_app_coexistence"
+                : "standard",
+            };
+            return session.connectionMode === connectionMode ? "finish_valid" : "target_rejected";
+          },
+          canSubmit() { return Boolean(code && session); },
+          markSubmitting() { markSubmittingCount += 1; status = "submitting"; return true; },
+          close() { status = "closed"; },
+          getSnapshot() { return { status, code, session }; },
+        };
+      },
     };
   }
   if (normalizedRequest.includes("use-meta-embedded-signup-attempt")) {
@@ -192,6 +343,7 @@ for (const request of [
   "@/lib/supabaseBrowser",
   "@/lib/store-strategy-settings",
   "@/lib/client/meta-embedded-signup",
+  "@/lib/client/use-meta-embedded-signup-attempt",
   "@/lib/client/embedded-signup-recovery",
   "./whatsapp-display",
 ]) {
@@ -374,5 +526,153 @@ activationResolvers.shift()?.();
 await act(async () => { await Promise.resolve(); });
 assert.equal(treeText(activationPage.renderer).includes("Onboarding conclu"), false);
 act(() => activationPage.renderer.unmount());
+
+function pendingEmbeddedSignupResponse() {
+  return {
+    ok: true,
+    requiresUserAction: true,
+    canRetry: false,
+    connectionScenario: "zion_number_change_required",
+    changeRequest: { id: "request-test", status: "candidate_received", activeIntegrationId: "active-existing" },
+    candidate: {
+      phoneNumberId: "987654321",
+      whatsappBusinessAccountId: "123456789",
+      displayPhoneNumber: "+55 11 99999-0000",
+      isActive: false,
+    },
+  };
+}
+
+async function finishMetaSignup() {
+  await act(async () => { await Promise.resolve(); });
+  const login = facebookLoginCallbacks.at(-1);
+  assert.ok(login, "FB.login nao foi acionado");
+  assert.ok(messageListeners.size, "listener Meta nao foi registrado");
+  act(() => login({ authResponse: { code: "oauth-code" } }));
+  act(() => dispatchMetaMessage({
+    type: "WA_EMBEDDED_SIGNUP",
+    event: "FINISH",
+    data: { waba_id: "123456789", phone_number_id: "987654321" },
+  }));
+  assert.ok(lastTestFlow?.getSnapshot().session, "sessao nao aceita pelo fluxo de teste");
+}
+
+searchStep = "4";
+embeddedSignupResponseBody = pendingEmbeddedSignupResponse();
+deferEmbeddedSignupResponse = false;
+embeddedSignupResponseResolvers.length = 0;
+embeddedSignupPosts.length = 0;
+const pendingPage = renderPage(contextFor("fbd4afaa-4958-4663-9234-98589ab322c7", "54fb81f4-92e5-463a-af6c-fc1544ea4b04"));
+const pendingStep = pendingPage.renderer.root.findAllByType("button")
+  .find((button) => nodeText(button).includes("Etapa") && nodeText(button).includes("4"));
+assert.ok(pendingStep);
+act(() => pendingStep.props.onClick());
+await act(async () => { await Promise.resolve(); });
+resolveStatus("54fb81f4-92e5-463a-af6c-fc1544ea4b04", { ok: true, connected: false, isActive: false, status: "not_connected" });
+await act(async () => { await Promise.resolve(); });
+const connectButton = buttonByText(pendingPage.renderer, "Conectar Cloud API convencional");
+assert.ok(connectButton);
+await act(async () => { await connectButton.props.onClick(); });
+await finishMetaSignup();
+assert.equal(lastTestFlow?.getSnapshot().code, "oauth-code");
+assert.ok(lastTestFlow?.getSnapshot().session);
+assert.ok(markSubmittingCount > 0, `markSubmitting=${markSubmittingCount}`);
+await act(async () => {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+});
+const pendingText = treeText(pendingPage.renderer);
+assert.equal(embeddedSignupPosts.length, 1, `posts=${embeddedSignupPosts.length} text=${pendingText}`);
+assert.ok(pendingText.includes("request-test") && pendingText.includes("pendente"), pendingText);
+assert.equal(pendingText.includes("Nenhuma conexao foi marcada como ativa"), true);
+assert.equal(pendingText.includes("WHATSAPP_STATUS_NOT_CONFIRMED"), false);
+assert.equal(pendingText.includes("Status Conectado"), false);
+assert.equal(embeddedSignupPosts.length, 1);
+const pendingConnectButton = buttonByText(pendingPage.renderer, "Conectar Cloud API convencional");
+assert.ok(pendingConnectButton);
+assert.equal(pendingConnectButton.props.disabled, true, JSON.stringify(pendingConnectButton.props));
+const verifyButton = pendingPage.renderer.root.findAllByType("button")
+  .find((button) => nodeText(button).includes("Verificar") && nodeText(button).includes("existente"));
+assert.ok(verifyButton);
+assert.equal(verifyButton.props.disabled, true, JSON.stringify(verifyButton.props));
+const statusButton = buttonByText(pendingPage.renderer, "Atualizar status");
+assert.ok(statusButton);
+const statusRequestsBeforeManualCheck = whatsappStatusRequestCount;
+act(() => statusButton.props.onClick());
+await act(async () => { await Promise.resolve(); });
+assert.equal(whatsappStatusRequestCount > statusRequestsBeforeManualCheck, true);
+assert.equal(treeText(pendingPage.renderer).includes("request-test"), true);
+assert.equal(embeddedSignupPosts.length, 1);
+pendingPage.switchContext(contextFor("org-next", "store-next"));
+assert.equal(treeText(pendingPage.renderer).includes("request-test"), false);
+assert.equal(treeText(pendingPage.renderer).includes("Nenhuma conexao foi marcada como ativa"), false);
+act(() => pendingPage.renderer.unmount());
+
+deferEmbeddedSignupResponse = true;
+embeddedSignupResponseBody = pendingEmbeddedSignupResponse();
+embeddedSignupPosts.length = 0;
+const stalePendingPage = renderPage(contextFor("org-stale", "store-stale"));
+const staleStep = stalePendingPage.renderer.root.findAllByType("button")
+  .find((button) => nodeText(button).includes("Etapa") && nodeText(button).includes("4"));
+assert.ok(staleStep);
+act(() => staleStep.props.onClick());
+await act(async () => { await Promise.resolve(); });
+resolveStatus("store-stale", { ok: true, connected: false, isActive: false, status: "not_connected" });
+await act(async () => { await Promise.resolve(); });
+const staleConnectButton = buttonByText(stalePendingPage.renderer, "Conectar Cloud API convencional");
+assert.ok(staleConnectButton);
+await act(async () => { await staleConnectButton.props.onClick(); });
+await finishMetaSignup();
+await act(async () => { await Promise.resolve(); });
+stalePendingPage.switchContext(contextFor("org-next-2", "store-next-2"));
+await act(async () => { await Promise.resolve(); });
+const staleResponse = embeddedSignupResponseResolvers[0];
+assert.ok(staleResponse, "resposta pendente do Embedded Signup ausente");
+staleResponse(response(embeddedSignupResponseBody));
+await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+assert.equal(treeText(stalePendingPage.renderer).includes("request-test"), false, treeText(stalePendingPage.renderer));
+act(() => stalePendingPage.renderer.unmount());
+deferEmbeddedSignupResponse = false;
+embeddedSignupResponseResolvers.length = 0;
+
+embeddedSignupResponseBody = {
+  ok: true,
+  integration: { phoneNumberId: "phone-normal", whatsappBusinessAccountId: "waba-normal" },
+};
+embeddedSignupPosts.length = 0;
+const normalPage = renderPage(contextFor("org-normal", "store-normal"));
+const normalStep = normalPage.renderer.root.findAllByType("button")
+  .find((button) => nodeText(button).includes("Etapa") && nodeText(button).includes("4"));
+assert.ok(normalStep);
+act(() => normalStep.props.onClick());
+await act(async () => { await Promise.resolve(); });
+resolveStatus("store-normal", { ok: true, connected: false, isActive: false, status: "not_connected" });
+await act(async () => { await Promise.resolve(); });
+const normalConnectButton = buttonByText(normalPage.renderer, "Conectar Cloud API convencional");
+assert.ok(normalConnectButton);
+await act(async () => { await normalConnectButton.props.onClick(); });
+await act(async () => { await Promise.resolve(); });
+const normalLogin = facebookLoginCallbacks.at(-1);
+assert.ok(normalLogin);
+act(() => normalLogin({ authResponse: { code: "oauth-normal" } }));
+act(() => dispatchMetaMessage({
+  type: "WA_EMBEDDED_SIGNUP",
+  event: "FINISH",
+  data: { waba_id: "waba-normal", phone_number_id: "phone-normal" },
+}));
+await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+resolveStatus("store-normal", {
+  ok: true,
+  connected: true,
+  isActive: true,
+  status: "active",
+  phoneNumberId: "phone-normal",
+  whatsappBusinessAccountId: "waba-normal",
+  displayPhoneNumber: "+55 11 98888-1111",
+});
+await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+assert.ok(treeText(normalPage.renderer).includes("Status Conectado"), treeText(normalPage.renderer));
+assert.equal(treeText(normalPage.renderer).includes("Pedido de troca"), false);
+assert.equal(embeddedSignupPosts.length, 1);
+act(() => normalPage.renderer.unmount());
 
 console.log("Onboarding page: mounted integration isolation test passed");
