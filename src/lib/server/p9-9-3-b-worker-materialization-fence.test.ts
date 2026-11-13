@@ -114,6 +114,26 @@ test("fenced RPC rejection is surfaced without falling back to the original RPC"
   );
 });
 
+test("human takeover rejection never falls back to materialization or external send", async () => {
+  const fixture = clientFor(null, {
+    message: "P9_10_4_D_AI_BLOCKED_BY_HUMAN_TAKEOVER",
+  });
+
+  await assert.rejects(
+    materializeSalesAiReplySet({
+      ...baseArgs,
+      supabase: fixture.client,
+      workerClaim: { kind: "ai_run_queue", id: UUID, token: CLAIM_TOKEN },
+    }),
+    /SALES_AI_REPLY_SET_MATERIALIZATION_FAILED/,
+  );
+
+  assert.deepEqual(
+    fixture.calls.map((call) => call.name),
+    ["materialize_sales_ai_reply_set_by_worker_by_system"],
+  );
+});
+
 test("Job 13 paths propagate their claim context and reject missing claims", () => {
   const inbox = readFileSync(
     join(process.cwd(), "src/lib/server/whatsapp-inbox-processor.ts"),
