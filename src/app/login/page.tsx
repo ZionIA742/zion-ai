@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import Image from "next/image";
+
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -365,33 +365,41 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="relative flex min-h-dvh flex-col overflow-hidden bg-zinc-950 text-zinc-50">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_22%,rgba(255,255,255,0.08),transparent_34%),radial-gradient(circle_at_50%_78%,rgba(161,161,170,0.05),transparent_38%)]" />
-      <div className="relative z-10 flex flex-1 items-center justify-center px-4 pt-3">
-        <section className="w-full max-w-[420px] rounded-[20px] border border-white/10 bg-[#121214]/90 p-[22px] shadow-[0_24px_70px_rgba(0,0,0,0.38)] backdrop-blur-md sm:p-6">
-        <div className="mb-5 flex items-end justify-center gap-1">
-          <span className="relative h-[46px] w-[46px] shrink-0 overflow-hidden" aria-hidden="true">
-            <Image
-              src="/branding/zion-logo.png"
-              alt=""
-              width={500}
-              height={500}
-              priority
-              className="absolute left-1/2 top-1/2 h-[90px] w-[90px] max-w-none -translate-x-1/2 -translate-y-1/2 object-contain"
-            />
-          </span>
-
+    <main className="relative flex min-h-dvh w-full max-w-full flex-col overflow-x-hidden bg-[#020e15] text-slate-50">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-cover bg-center bg-no-repeat sm:hidden"
+        style={{
+          backgroundImage: 'url("/branding/zion-login-mountains-mobile.webp")',
+        }}
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 hidden bg-cover bg-center bg-no-repeat sm:block"
+        style={{
+          backgroundImage: 'url("/branding/zion-login-mountains-desktop.webp")',
+        }}
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            "linear-gradient(180deg, rgba(1,10,16,0.07), rgba(1,10,16,0.02) 45%, rgba(1,10,16,0.30))",
+        }}
+      />
+      <div className="relative z-10 flex w-full min-w-0 flex-1 items-center justify-center px-3 py-5 sm:px-4 sm:py-8">
+        <section className="w-full min-w-0 max-w-[420px] rounded-[22px] border border-cyan-400/65 bg-[#04131b]/90 p-5 shadow-[0_26px_85px_rgba(0,0,0,0.60)] backdrop-blur-lg sm:p-6">
+        <div className="mb-5 flex items-center justify-center">
           <h1
-            className="flex items-center gap-[0.04em] text-[25px] font-semibold uppercase leading-none text-zinc-100 [font-family:var(--font-geist-sans)]"
+            className="font-serif text-[52px] font-normal leading-none tracking-[-0.045em] text-white drop-shadow-sm sm:text-[56px]"
             aria-label="ZION"
           >
-            <span className="inline-block -skew-x-[14deg] tracking-[0.01em]">I</span>
-            <span className="inline-block -skew-x-[14deg] tracking-[0.01em]">O</span>
-            <span className="inline-block -skew-x-[14deg] tracking-[0.01em]">N</span>
+            Zion
           </h1>
         </div>
 
-        <h2 className="mb-4 text-[18px] font-semibold tracking-[-0.015em] text-zinc-100">{title}</h2>
+        <h2 className="mb-5 text-center text-[25px] font-semibold tracking-[-0.02em] text-white">{title}</h2>
 
         {message ? (
           <div className="mb-4 rounded-2xl border border-emerald-400/25 bg-emerald-500/[0.08] px-4 py-3 text-sm leading-6 text-emerald-100">
@@ -408,11 +416,11 @@ export default function LoginPage() {
         {mode === "password" ? (
           <form onSubmit={handlePasswordLogin} className="space-y-3">
             <div>
-              <label className="text-xs font-medium text-zinc-400">E-mail</label>
+              <label className="text-xs font-medium text-slate-200">E-mail</label>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1.5 w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
+                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
@@ -420,12 +428,12 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="text-xs font-medium text-zinc-400">Senha</label>
+              <label className="text-xs font-medium text-slate-200">Senha</label>
               <div className="relative mt-1.5">
                 <input
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  className="w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 pr-12 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
+                  className="w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 pr-12 text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
                   placeholder="••••••••"
                   type={showPassword ? "text" : "password"}
                   autoComplete="current-password"
@@ -472,11 +480,11 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="grid grid-cols-2 gap-2">
               <button
                 type="submit"
                 disabled={busy}
-                className="rounded-[14px] bg-zinc-100 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-[14px] bg-cyan-400 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busy ? "Entrando..." : "Entrar"}
               </button>
@@ -485,7 +493,7 @@ export default function LoginPage() {
                 type="button"
                 onClick={() => changeMode("code")}
                 disabled={busy}
-                className="rounded-[14px] border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-[14px] border border-cyan-400/65 bg-[#0b2530]/75 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Código
               </button>
@@ -496,11 +504,11 @@ export default function LoginPage() {
         {mode === "code" ? (
           <form onSubmit={handleSendCode} className="space-y-3">
             <div>
-              <label className="text-xs font-medium text-zinc-400">E-mail</label>
+              <label className="text-xs font-medium text-slate-200">E-mail</label>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1.5 w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
+                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
@@ -510,7 +518,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={busy}
-              className="w-full rounded-[14px] bg-zinc-100 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full rounded-[14px] bg-cyan-400 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? "Enviando..." : "Enviar código"}
             </button>
@@ -520,11 +528,11 @@ export default function LoginPage() {
         {mode === "verifyCode" ? (
           <form onSubmit={handleVerifyCode} className="space-y-3">
             <div>
-              <label className="text-xs font-medium text-zinc-400">E-mail</label>
+              <label className="text-xs font-medium text-slate-200">E-mail</label>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1.5 w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
+                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
@@ -532,11 +540,11 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="text-xs font-medium text-zinc-400">Código</label>
+              <label className="text-xs font-medium text-slate-200">Código</label>
               <input
                 value={code}
                 onChange={(event) => setCode(event.target.value)}
-                className="mt-1.5 w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 text-center text-lg font-bold tracking-[0.35em] text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
+                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-center text-lg font-bold tracking-[0.35em] text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
                 placeholder="000000"
                 inputMode="numeric"
                 autoComplete="one-time-code"
@@ -546,7 +554,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={busy}
-              className="w-full rounded-[14px] bg-zinc-100 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full rounded-[14px] bg-cyan-400 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? "Validando..." : "Entrar com código"}
             </button>
@@ -565,11 +573,11 @@ export default function LoginPage() {
         {mode === "forgot" ? (
           <form onSubmit={handleForgotPassword} className="space-y-3">
             <div>
-              <label className="text-xs font-medium text-zinc-400">E-mail</label>
+              <label className="text-xs font-medium text-slate-200">E-mail</label>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1.5 w-full rounded-[14px] border border-white/10 bg-black/30 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-white/35 focus:ring-2 focus:ring-white/10"
+                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
@@ -579,7 +587,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={busy}
-              className="w-full rounded-[14px] bg-zinc-100 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full rounded-[14px] bg-cyan-400 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? "Enviando..." : "Recuperar senha"}
             </button>
@@ -611,7 +619,7 @@ export default function LoginPage() {
       </div>
 
       <footer className="relative z-10 px-4 pb-5 pt-5">
-        <div className="mx-auto flex max-w-md flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-center text-[13px] text-zinc-400">
+        <div className="mx-auto flex max-w-md flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-center text-[13px] text-slate-300">
           <Link
             href="/privacy-policy"
             className="transition hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
