@@ -38,6 +38,9 @@ import { formatSalesAiProcessingError } from "@/lib/server/sales-ai-error-diagno
 import {
   classifyCustomerMediaForPayment,
   detectCustomerCancellationRequest,
+  isCustomerCancellationReasonRefusal,
+  renderCancellationReasonQuestion,
+  renderPaymentProofClarificationQuestion,
 } from "@/lib/server/assistant/customer-commercial-intents";
 import {
   CANCELLATION_REQUEST_SOURCE,
@@ -372,6 +375,7 @@ type ProcessorAiStatus =
   | "skipped_human_active"
   | "skipped_ai_paused"
   | "skipped_not_text"
+  | "skipped_customer_clarification"
   | "skipped_contract_document_review"
   | "skipped_duplicate"
   | "failed";
@@ -1567,6 +1571,35 @@ async function insertIncomingMessage(args: {
   return row as InsertMessageResult;
 }
 
+async function insertCustomerAssistantText(args: {
+  supabase: SupabaseClient;
+  conversationId: string;
+  content: string;
+  metadata: Record<string, unknown>;
+}) {
+  const { data, error } = await args.supabase.rpc("insert_message", {
+    p_conversation_id: args.conversationId,
+    p_sender: "ai",
+    p_direction: "outgoing",
+    p_message_type: "text",
+    p_content: args.content,
+    p_external_message_id: null,
+    p_media_url: null,
+    p_metadata: {
+      source: "customer_commercial_clarification",
+      channel: "whatsapp",
+      external_channel: "whatsapp",
+      send_external: true,
+      outbound_origin: "customer_commercial_clarification",
+      ...args.metadata,
+    },
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row?.id) throw new Error("insert_message nao retornou message.id.");
+  return String(row.id);
+}
+
 async function insertHumanAppEchoMessage(args: {
   supabase: SupabaseClient;
   conversationId: string;
@@ -1961,6 +1994,155 @@ async function loadRecentConversationText(args: {
     .map((row: { content?: unknown }) => row.content as string);
 }
 
+type PendingCustomerCommercialClarification = {
+  id: string;
+  content: string | null;
+  metadata: Record<string, unknown>;
+  kind: "payment_proof" | "cancellation_reason";
+};
+
+async function loadPendingCustomerCommercialClarification(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}): Promise<PendingCustomerCommercialClarification | null> {
+  const { data, error } = await args.supabase
+    .from("messages")
+    .select("id, content, metadata")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .eq("sender", "user")
+    .eq("direction", "incoming")
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(24);
+  if (error) throw new Error(`Falha ao consultar esclarecimentos comerciais pendentes: ${error.message}`);
+
+  for (const row of data || []) {
+    const rawMetadata = (row as { metadata?: unknown }).metadata;
+    const metadata = getMessageMetadata(isRecord(rawMetadata) ? rawMetadata : null);
+    const kind = metadata.customer_clarification_kind;
+    const status = metadata.customer_clarification_status;
+    if (
+      status === "pending" &&
+      (kind === "payment_proof" || kind === "cancellation_reason")
+    ) {
+      return {
+        id: String((row as { id: unknown }).id),
+        content: typeof (row as { content?: unknown }).content === "string" ? (row as { content: string }).content : null,
+        metadata,
+        kind,
+      };
+    }
+  }
+  return null;
+}
+
+async function updateCustomerClarificationMetadata(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  messageId: string;
+  metadata: Record<string, unknown>;
+}) {
+  const { data, error } = await args.supabase
+    .from("messages")
+    .update({ metadata: args.metadata })
+    .eq("id", args.messageId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .eq("sender", "user")
+    .is("deleted_at", null)
+    .select("id")
+    .maybeSingle();
+  if (error) throw new Error(`Falha ao atualizar esclarecimento comercial: ${error.message}`);
+  if (!data?.id) throw new Error("Esclarecimento comercial nao encontrado para atualizacao.");
+}
+
+async function resolvePendingCustomerCommercialClarification(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  sourceMessageId: string;
+  content: string | null;
+  customerName?: string | null;
+  commercialOpportunityId?: string | null;
+  recentConversationText?: string[];
+}) {
+  const pending = await loadPendingCustomerCommercialClarification(args);
+  if (!pending) return null;
+
+  const normalized = String(args.content || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+  const isYes = /^(sim|s|confirmo|confirmado|e esse mesmo)$/.test(normalized);
+  const isNo = /^(nao|n|negativo|nao e|nao foi)$/.test(normalized);
+  const refusal = pending.kind === "cancellation_reason" && isCustomerCancellationReasonRefusal(args.content);
+
+  if (!isYes && !isNo && !refusal) return null;
+
+  if (pending.kind === "payment_proof") {
+    await updateCustomerClarificationMetadata({
+      ...args,
+      messageId: pending.id,
+      metadata: {
+        ...pending.metadata,
+        customer_clarification_status: isYes ? "confirmed" : "rejected",
+        customer_clarification_response_message_id: args.sourceMessageId,
+      },
+    });
+    if (!isYes) return { kind: "payment_proof_clarification_rejected" as const };
+    const alert = await enqueueCustomerCommercialAlert({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      leadId: undefined,
+      conversationId: args.conversationId,
+      sourceMessageId: pending.id,
+      source: PAYMENT_PROOF_SOURCE,
+      customerName: args.customerName,
+      storageBucket: String(pending.metadata.storage_bucket || ""),
+      storagePath: String(pending.metadata.storage_path || ""),
+      commercialOpportunityId: args.commercialOpportunityId,
+      reference: "customer_confirmed_ambiguous_media",
+      eventSuffix: "confirmed",
+    });
+    return alert;
+  }
+
+  await updateCustomerClarificationMetadata({
+    ...args,
+    messageId: pending.id,
+    metadata: {
+      ...pending.metadata,
+      customer_clarification_status: "reason_received",
+      cancellation_reason: refusal ? null : String(args.content || "").trim(),
+      cancellation_reason_informed: !refusal,
+      customer_clarification_response_message_id: args.sourceMessageId,
+    },
+  });
+  return enqueueCustomerCommercialAlert({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    leadId: undefined,
+    conversationId: args.conversationId,
+    sourceMessageId: pending.id,
+    source: CANCELLATION_REQUEST_SOURCE,
+    customerName: args.customerName,
+    reason: refusal ? null : String(args.content || "").trim(),
+    commercialOpportunityId: args.commercialOpportunityId,
+    eventSuffix: "reason_update",
+  });
+}
+
 async function enqueueCustomerCommercialIntent(args: {
   supabase: SupabaseClient;
   organizationId: string;
@@ -1974,9 +2156,47 @@ async function enqueueCustomerCommercialIntent(args: {
   metadata?: Record<string, unknown> | null;
   commercialOpportunityId?: string | null;
 }) {
+  const pendingResolution = await resolvePendingCustomerCommercialClarification({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    sourceMessageId: args.sourceMessageId,
+    content: args.currentContent ?? null,
+    customerName: args.customerName,
+    commercialOpportunityId: args.commercialOpportunityId,
+    recentConversationText: args.recentConversationText,
+  });
+  if (pendingResolution) return pendingResolution;
+
   const cancellation = detectCustomerCancellationRequest(args.currentContent);
   if (cancellation) {
-    return enqueueCustomerCommercialAlert({
+    if (cancellation.needsReason) {
+      const pendingMetadata = {
+        ...(args.metadata || {}),
+        customer_clarification_kind: "cancellation_reason",
+        customer_clarification_status: "pending",
+        cancellation_reason_informed: false,
+      };
+      await updateCustomerMediaMetadata({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        messageId: args.sourceMessageId,
+        metadata: pendingMetadata,
+      });
+      await insertCustomerAssistantText({
+        supabase: args.supabase,
+        conversationId: args.conversationId,
+        content: renderCancellationReasonQuestion(),
+        metadata: {
+          customer_clarification_kind: "cancellation_reason",
+          customer_clarification_for_message_id: args.sourceMessageId,
+        },
+      });
+    }
+    const alert = await enqueueCustomerCommercialAlert({
       supabase: args.supabase,
       organizationId: args.organizationId,
       storeId: args.storeId,
@@ -1988,6 +2208,9 @@ async function enqueueCustomerCommercialIntent(args: {
       reason: cancellation.reason,
       commercialOpportunityId: args.commercialOpportunityId,
     });
+    return cancellation.needsReason
+      ? { ...alert, pendingCustomerClarification: true as const }
+      : alert;
   }
 
   const media = classifyCustomerMediaForPayment({
@@ -1998,6 +2221,32 @@ async function enqueueCustomerCommercialIntent(args: {
     recentConversationText: args.recentConversationText,
   });
   if (media.intent !== "payment_proof") return null;
+  if (media.requiresCustomerConfirmation) {
+    await updateCustomerMediaMetadata({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      messageId: args.sourceMessageId,
+      metadata: {
+        ...(args.metadata || {}),
+        customer_clarification_kind: "payment_proof",
+        customer_clarification_status: "pending",
+        storage_bucket: String(args.metadata?.storage_bucket || ""),
+        storage_path: String(args.metadata?.storage_path || ""),
+      },
+    });
+    await insertCustomerAssistantText({
+      supabase: args.supabase,
+      conversationId: args.conversationId,
+      content: renderPaymentProofClarificationQuestion(),
+      metadata: {
+        customer_clarification_kind: "payment_proof",
+        customer_clarification_for_message_id: args.sourceMessageId,
+      },
+    });
+    return { pendingCustomerClarification: true as const };
+  }
   return enqueueCustomerCommercialAlert({
     supabase: args.supabase,
     organizationId: args.organizationId,
@@ -3290,7 +3539,7 @@ async function processSingleInboxRow(
         recentConversationText,
       });
 
-      await enqueueCustomerCommercialIntent({
+      const commercialIntent = await enqueueCustomerCommercialIntent({
         supabase,
         organizationId: inbox.organization_id,
         storeId: inbox.store_id,
@@ -3331,10 +3580,26 @@ async function processSingleInboxRow(
           ai_error: null,
         };
       }
+
+      if (commercialIntent && "pendingCustomerClarification" in commercialIntent) {
+        await markInboxProcessed(supabase, inbox);
+        return {
+          inbox_id: inbox.id,
+          external_event_id: inbox.external_event_id,
+          status: "succeeded",
+          detail: "customer_clarification_pending",
+          message_id: inserted.id || null,
+          lead_id: lead.id,
+          conversation_id: conversation.id,
+          ai_status: "skipped_customer_clarification",
+          ai_message_id: null,
+          ai_error: null,
+        };
+      }
     }
 
     if (extracted.rawMessageType === "text") {
-      await enqueueCustomerCommercialIntent({
+      const commercialIntent = await enqueueCustomerCommercialIntent({
         supabase,
         organizationId: inbox.organization_id,
         storeId: inbox.store_id,
@@ -3347,6 +3612,21 @@ async function processSingleInboxRow(
         metadata: null,
         commercialOpportunityId: bootstrap.commercialOpportunityId,
       });
+      if (commercialIntent && "pendingCustomerClarification" in commercialIntent) {
+        await markInboxProcessed(supabase, inbox);
+        return {
+          inbox_id: inbox.id,
+          external_event_id: inbox.external_event_id,
+          status: "succeeded",
+          detail: "customer_clarification_pending",
+          message_id: inserted.id || null,
+          lead_id: lead.id,
+          conversation_id: conversation.id,
+          ai_status: "skipped_customer_clarification",
+          ai_message_id: null,
+          ai_error: null,
+        };
+      }
     }
 
     let aiDispatchResult: Pick<

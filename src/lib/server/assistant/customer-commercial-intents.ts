@@ -25,21 +25,29 @@ export function classifyCustomerMediaForPayment(args: {
   fileName?: string | null;
   caption?: string | null;
   recentConversationText?: string[];
-}): { intent: CustomerMediaIntent; confidence: "high" | "medium" | "low"; reason: string } {
+}): {
+  intent: CustomerMediaIntent;
+  confidence: "high" | "medium" | "low";
+  reason: string;
+  requiresCustomerConfirmation: boolean;
+} {
   const type = normalize(args.messageType);
   const mime = normalize(args.mimeType);
   const name = normalize(args.fileName);
   const caption = normalize(args.caption);
   const compatible = type === "image" || type === "document" || mime.startsWith("image/") || mime === "application/pdf";
-  if (!compatible) return { intent: "unknown", confidence: "low", reason: "media_type_not_supported" };
+  if (!compatible) return { intent: "unknown", confidence: "low", reason: "media_type_not_supported", requiresCustomerConfirmation: false };
   const directSignal = /\b(comprovante|recibo|receipt|pix|pagamento|transferencia|boleto)\b/u.test(`${name} ${caption}`);
   if (directSignal && hasRecentPaymentContext(args.recentConversationText || [])) {
-    return { intent: "payment_proof", confidence: "high", reason: "payment_context_and_media_signal" };
+    return { intent: "payment_proof", confidence: "high", reason: "payment_context_and_media_signal", requiresCustomerConfirmation: false };
+  }
+  if (mime === "application/pdf" && hasRecentPaymentContext(args.recentConversationText || [])) {
+    return { intent: "payment_proof", confidence: "high", reason: "payment_context_and_pdf", requiresCustomerConfirmation: false };
   }
   if (hasRecentPaymentContext(args.recentConversationText || [])) {
-    return { intent: "payment_proof", confidence: "medium", reason: "payment_context_compatible_media" };
+    return { intent: "payment_proof", confidence: "medium", reason: "payment_context_compatible_media", requiresCustomerConfirmation: true };
   }
-  return { intent: "unknown", confidence: "low", reason: "payment_context_absent" };
+  return { intent: "unknown", confidence: "low", reason: "payment_context_absent", requiresCustomerConfirmation: false };
 }
 
 export function detectCustomerCancellationRequest(text: unknown) {
@@ -47,6 +55,19 @@ export function detectCustomerCancellationRequest(text: unknown) {
   if (!CANCELLATION_INTENT.test(value)) return null;
   const reason = value.match(CANCELLATION_REASON)?.[1]?.trim() || null;
   return { reason, needsReason: !reason };
+}
+
+export function isCustomerCancellationReasonRefusal(text: unknown) {
+  const value = normalize(text);
+  return /\b(nao quero|não quero|prefiro nao|prefiro não|nao vou|não vou|sem informar|nao quero dizer|não quero dizer|prefiro nao dizer|prefiro não dizer)\b/.test(value);
+}
+
+export function renderPaymentProofClarificationQuestion() {
+  return "Esse e o comprovante do pagamento?";
+}
+
+export function renderCancellationReasonQuestion() {
+  return "Entendi. Posso saber o que te levou a querer cancelar?";
 }
 
 export function renderPaymentProofAlert(args: { customerName?: string | null; reference?: string | null }) {
