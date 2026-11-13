@@ -545,6 +545,7 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
   );
   const normalizedFromPhone = fromPhoneRaw ? normalizePhone(fromPhoneRaw) : null;
   const messageRecord = message as Record<string, unknown> | null;
+  const messageTimestampIso = resolveWhatsappStatusTimestamp(messageRecord?.timestamp);
   const isGroupMessage = Boolean(
     messageRecord &&
       (typeof messageRecord.group_id === "string" ||
@@ -567,6 +568,7 @@ export function extractIncomingMessage(payload: StoredInboxPayload) {
 
   return {
     messageId,
+    messageTimestampIso,
     contextMessageId: asTrimmedString(contextNode?.id),
     fromPhoneRaw,
     toPhoneRaw: asTrimmedString(message?.to),
@@ -1613,6 +1615,7 @@ async function insertHumanAppEchoMessage(args: {
   rawMessageType: string;
   whatsappBusinessAccountId: string | null;
   displayPhoneNumber: string | null;
+  humanActivityAt: string;
 }) {
   const { data, error } = await args.supabase.rpc("insert_message", {
     p_conversation_id: args.conversationId,
@@ -1637,6 +1640,8 @@ async function insertHumanAppEchoMessage(args: {
       whatsapp_business_account_id: args.whatsappBusinessAccountId,
       display_phone_number: args.displayPhoneNumber,
       contact_name: args.contactName,
+      human_activity_key: args.messageId,
+      human_activity_at: args.humanActivityAt,
     },
   });
   if (error) throw error;
@@ -1680,15 +1685,6 @@ async function processHumanAppEcho(args: {
   }
 
   if (existing?.id) {
-    const { error: takeoverError } = await args.supabase.rpc(
-      "human_takeover_conversation",
-      {
-        p_conversation_id: thread.conversationId,
-        p_reason: "whatsapp_business_app_intervention",
-      },
-    );
-    if (takeoverError) throw takeoverError;
-
     return {
       messageId: existing.id,
       leadId: existing.lead_id || thread.leadId,
@@ -1709,6 +1705,7 @@ async function processHumanAppEcho(args: {
     rawMessageType: extracted.rawMessageType || "text",
     whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
     displayPhoneNumber: extracted.displayPhoneNumber,
+    humanActivityAt: extracted.messageTimestampIso,
   });
 
   const { error: takeoverError } = await args.supabase.rpc(
