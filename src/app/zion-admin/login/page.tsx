@@ -55,20 +55,38 @@ export default function ZionAdminLoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-50 flex items-center justify-center px-4">
-      <div className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[0.04] p-6 shadow-sm">
-        <div className="text-sm font-medium uppercase tracking-[0.22em] text-zinc-500">
-          ZION Interno
-        </div>
+    <main
+      className="relative isolate flex min-h-dvh w-full flex-col overflow-x-hidden bg-[#020e15] text-slate-50"
+      style={{ colorScheme: "dark" }}
+    >
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-cover bg-center bg-no-repeat sm:hidden"
+        style={{
+          backgroundImage: 'url("/branding/zion-login-mountains-mobile.webp")',
+        }}
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 hidden bg-cover bg-center bg-no-repeat sm:block"
+        style={{
+          backgroundImage: 'url("/branding/zion-login-mountains-desktop.webp")',
+        }}
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(1,10,16,0.08),rgba(1,10,16,0.03)_45%,rgba(1,10,16,0.28))]"
+      />
+      <div className="relative z-10 flex min-h-dvh w-full min-w-0 items-center justify-center px-4 py-8 sm:py-10">
+        <section className="w-full min-w-0 max-w-[500px] rounded-[24px] border border-cyan-400/70 bg-[#04131b]/90 p-6 shadow-[0_28px_85px_rgba(0,0,0,0.62)] backdrop-blur-lg sm:p-8">
+          <div className="mb-6 text-center font-serif text-[40px] leading-none tracking-[-0.04em] sm:text-[46px]">
+            <span className="text-white">ZION</span>{" "}
+            <span className="text-cyan-400">ADM</span>
+          </div>
 
-        <div className="mt-3 text-2xl font-semibold">
-          Entrar no painel interno
-        </div>
 
-        <div className="mt-2 text-sm leading-6 text-zinc-400">
-          Área exclusiva para o dono e sócios do ZION. Assinantes das lojas não
-          têm acesso a esta área.
-        </div>
+
+
 
         {err && (
           <div className="mt-4 rounded-2xl border border-red-600/40 bg-red-600/10 px-4 py-3 text-sm text-red-100">
@@ -76,13 +94,13 @@ export default function ZionAdminLoginPage() {
           </div>
         )}
 
-        <form onSubmit={onSubmit} className="mt-5 space-y-3">
+        <form onSubmit={onSubmit} className="mt-6 space-y-4">
           <div>
-            <label className="text-xs text-zinc-400">Email</label>
+            <label className="text-xs font-medium text-slate-200">Email</label>
             <input
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/40 px-3 py-2 text-sm outline-none focus:border-white/20"
+              className="mt-1.5 w-full min-w-0 rounded-[14px] border border-slate-300/35 bg-[#0b2530]/90 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-400 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
               placeholder="admin@zion.com"
               autoComplete="email"
               type="email"
@@ -90,12 +108,12 @@ export default function ZionAdminLoginPage() {
           </div>
 
           <div>
-            <label className="text-xs text-zinc-400">Senha</label>
+            <label className="text-xs font-medium text-slate-200">Senha</label>
             <input
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               type="password"
-              className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/40 px-3 py-2 text-sm outline-none focus:border-white/20"
+              className="mt-1.5 w-full min-w-0 rounded-[14px] border border-slate-300/35 bg-[#0b2530]/90 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-400 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
               placeholder="••••••••"
               autoComplete="current-password"
             />
@@ -103,12 +121,13 @@ export default function ZionAdminLoginPage() {
 
           <button
             disabled={busy}
-            className="w-full rounded-2xl border border-white/10 bg-white/10 px-3 py-2 text-sm font-semibold hover:bg-white/15 disabled:opacity-60"
+            className="w-full rounded-[14px] bg-cyan-400 px-4 py-3 text-sm font-semibold text-[#00151e] transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {busy ? "Entrando..." : "Entrar no painel interno"}
           </button>
         </form>
+        </section>
       </div>
-    </div>
+    </main>
   );
 }
