@@ -81,13 +81,82 @@ export function renderPaymentProofAlert(args: { customerName?: string | null; re
   ].filter(Boolean).join("\n");
 }
 
-export function renderCancellationAlert(args: { customerName?: string | null; reference?: string | null; reason?: string | null }) {
+export type CancellationCommercialFacts = {
+  opportunityStatus: "identified" | "not_identified" | "ambiguous" | "unknown";
+  opportunityStage?: string | null;
+  quoteNumber?: string | null;
+  contractStatus: "identified" | "not_identified" | "ambiguous" | "unknown";
+  contractNumber?: string | null;
+  contractStatusValue?: string | null;
+  signatureStatus: "confirmed" | "not_confirmed" | "unknown";
+  financialStatus: "recorded" | "not_recorded" | "unknown";
+  financialEventCount?: number | null;
+};
+
+function contractStatusLabel(value: string | null | undefined) {
+  const normalized = normalize(value);
+  if (normalized === "customer_signed") return "assinado pelo cliente";
+  if (normalized === "completed") return "concluido";
+  if (normalized === "sent" || normalized === "sent_to_customer") return "enviado ao cliente";
+  if (normalized === "pending_review") return "em revisao";
+  if (normalized) return normalized;
+  return "status nao identificado";
+}
+
+export function renderCancellationAlert(args: {
+  customerName?: string | null;
+  reference?: string | null;
+  reason?: string | null;
+  facts?: CancellationCommercialFacts | null;
+}) {
   const customer = clean(args.customerName) || "O cliente";
   const reference = clean(args.reference);
   const reason = clean(args.reason) || "nao informado";
-  return [
-    `${customer} solicitou o cancelamento da compra${reference ? ` (${reference})` : ""}.`,
-    `Motivo informado: ${reason}.`,
-    "Nenhum cancelamento, reembolso ou estorno foi executado automaticamente.",
-  ].join("\n");
+  const facts = args.facts || null;
+  const lines = [`${customer} solicitou o cancelamento da compra${reference ? ` (${reference})` : ""}.`];
+
+  if (facts?.opportunityStatus === "identified") {
+    lines.push(`Oportunidade comercial identificada${facts.opportunityStage ? ` (estagio: ${facts.opportunityStage})` : ""}.`);
+  } else if (facts?.opportunityStatus === "ambiguous") {
+    lines.push("Ha mais de uma oportunidade comercial possivel; a associacao permanece ambigua.");
+  } else if (facts?.opportunityStatus === "not_identified") {
+    lines.push("Oportunidade comercial: nao identificada.");
+  } else {
+    lines.push("Oportunidade comercial: dados indisponiveis para confirmacao.");
+  }
+
+  if (facts?.quoteNumber) lines.push(`Orcamento relacionado: ${facts.quoteNumber}.`);
+
+  if (facts?.contractStatus === "identified") {
+    const number = clean(facts.contractNumber);
+    const status = contractStatusLabel(facts.contractStatusValue);
+    lines.push(`Contrato${number ? ` ${number}` : " relacionado"}: ${status}.`);
+  } else if (facts?.contractStatus === "ambiguous") {
+    lines.push("Contrato relacionado: ha mais de um contrato possivel; nao foi escolhido arbitrariamente.");
+  } else if (facts?.contractStatus === "not_identified") {
+    lines.push("Contrato relacionado: nao identificado.");
+  } else {
+    lines.push("Contrato relacionado: dados indisponiveis para confirmacao.");
+  }
+
+  if (facts?.signatureStatus === "confirmed") {
+    lines.push("Assinatura do cliente: confirmada no sistema.");
+  } else if (facts?.signatureStatus === "not_confirmed") {
+    lines.push("Assinatura do cliente: nao comprovada no sistema.");
+  } else {
+    lines.push("Assinatura do cliente: nao identificada.");
+  }
+
+  if (facts?.financialStatus === "recorded") {
+    const count = Number.isInteger(facts.financialEventCount) ? ` (${facts.financialEventCount} registro${facts.financialEventCount === 1 ? "" : "s"})` : "";
+    lines.push(`Situacao financeira: ha registro financeiro no sistema${count}; isso nao confirma quitacao.`);
+  } else if (facts?.financialStatus === "not_recorded") {
+    lines.push("Situacao financeira: nenhum lancamento financeiro identificado.");
+  } else {
+    lines.push("Situacao financeira: nao identificada com seguranca.");
+  }
+
+  lines.push(`Motivo informado: ${reason}.`);
+  lines.push("Nenhum cancelamento, reembolso ou estorno foi executado automaticamente.");
+  return lines.join("\n");
 }
