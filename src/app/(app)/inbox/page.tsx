@@ -284,10 +284,10 @@ function PriorityFlame({
       <button
         ref={buttonRef}
         type="button"
-        aria-label={`Temperatura do lead: ${visual.label}`}
+        aria-label={`Prioridade ${visual.label.toLowerCase()}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={`Temperatura do lead: ${visual.label}`}
+        title={`Prioridade ${visual.label.toLowerCase()}`}
         onClick={() => setOpen((current) => !current)}
         className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full ring-1 transition ${visual.buttonClass}`}
       >
@@ -1608,11 +1608,7 @@ export default function InboxPage() {
                               <div className="text-[15px] font-bold text-gray-950">{row.lead_name || `Lead ${shortId(row.lead_id)}`}</div>
                               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${getFollowupActionClasses(actionValue)}`}>{formatSuggestedAction(actionValue)}</span>
                               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${getFollowupBucketClasses(row)}`}>{getFollowupBucketLabel(row)}</span>
-                              {priority?.priority_band ? (
-                                <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-gray-700 ring-1 ring-black/10">
-                                  Prioridade {priority.priority_band}
-                                </span>
-                              ) : null}
+
                               <PriorityFlame
                                 priorityBand={priority?.priority_band}
                               />

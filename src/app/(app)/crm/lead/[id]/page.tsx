@@ -6549,10 +6549,10 @@ export default function LeadPage() {
                     <div ref={priorityPopoverRef} className="relative">
                       <button
                         type="button"
-                        aria-label={`Prioridade comercial: ${selectedPriorityVisual.label}`}
+                        aria-label={`Prioridade ${selectedPriorityVisual.label.toLowerCase()}`}
                         aria-haspopup="dialog"
                         aria-expanded={priorityPopoverOpen}
-                        title={`Prioridade comercial: ${selectedPriorityVisual.label}`}
+                        title={`Prioridade ${selectedPriorityVisual.label.toLowerCase()}`}
                         onClick={() => {
                           void loadSelectedOpportunityPriority();
                           setPriorityPopoverOpen((current) => !current);

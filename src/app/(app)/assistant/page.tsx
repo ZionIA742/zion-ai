@@ -2277,14 +2277,48 @@ export default function AssistantPage() {
                               <span className="font-semibold text-gray-700">{senderLabel(message)}</span>
                               <span>&middot;</span>
                               <span>{formatMessageType(message.message_type)}</span>
-                              {opportunityPresentation.priority?.priority_band ? (
-                                <>
-                                  <span>&middot;</span>
-                                  <span className="rounded-full bg-white px-2 py-0.5 font-semibold text-gray-700 ring-1 ring-black/10">
-                                    Prioridade {opportunityPresentation.priority.priority_band}
-                                  </span>
-                                </>
-                              ) : null}
+                              {(() => {
+                                const band = String(
+                                  opportunityPresentation.priority?.priority_band || ""
+                                ).trim().toLowerCase();
+
+                                const visuals: Record<string, { label: string; color: string }> = {
+                                  urgent: { label: "muito alta", color: "text-red-600" },
+                                  high: { label: "alta", color: "text-orange-500" },
+                                  normal: { label: "média", color: "text-amber-500" },
+                                  low: { label: "baixa", color: "text-slate-400" },
+                                };
+
+                                const visual = visuals[band];
+                                if (!visual) return null;
+
+                                return (
+                                  <>
+                                    <span>&middot;</span>
+                                    <span
+                                      role="img"
+                                      aria-label={`Prioridade ${visual.label}`}
+                                      title={`Prioridade ${visual.label}`}
+                                      className={`inline-flex h-5 w-5 items-center justify-center ${visual.color}`}
+                                    >
+                                      <svg
+                                        viewBox="0 0 24 26"
+                                        aria-hidden="true"
+                                        className="h-4 w-4"
+                                      >
+                                        <path
+                                          fill="currentColor"
+                                          d="M12 1.35c2.25 3.55 2.15 6.4.25 9.3 3.05-1.35 5.25-4.15 5.7-7.25 3.25 4.35 5.05 8.15 5.05 11.95C23 21.15 18.35 25 12.3 25 6.25 25 1.55 21.15 1.55 15.35c0-4.55 2.5-8.3 7.25-11.55-.5 3.85.35 6.75 2.65 8.65-.45-4.15-.1-8.05.55-11.1Z"
+                                        />
+                                        <path
+                                          fill="white"
+                                          d="M12.35 14.55c2.25 2.15 3.4 4 3.4 5.55 0 2.25-1.5 3.95-3.55 3.95-2.1 0-3.65-1.7-3.65-3.95 0-1.55 1.2-3.45 3.8-5.55Z"
+                                        />
+                                      </svg>
+                                    </span>
+                                  </>
+                                );
+                              })()}
                               {opportunityPresentation.crmHref ? (
                                 <>
                                   <span>&middot;</span>
