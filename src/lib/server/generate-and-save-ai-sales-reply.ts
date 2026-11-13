@@ -128,6 +128,14 @@ type GenerateAndSaveAiSalesReplyDeps = {
   recordPhysicalSignaturePreference: typeof recordDetectedPhysicalSignaturePreference;
 };
 
+type SalesAiPostMaterializationRecovery = {
+  responseSetId: string;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  anchorMessageId: string;
+};
+
 const QUOTE_PREPARATION_AUTHORIZATION_ENABLED_ENV =
   "P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED";
 
@@ -3885,6 +3893,7 @@ export async function materializeSalesAiReplySet(args: {
   operationalFollowUpDecision?: OperationalFollowUpDecision | null;
   lastCustomerMessageAt?: string | null;
   lastAiMessageAt?: string | null;
+  postCommitRecoveryPayload?: Record<string, unknown> | null;
   workerClaim?: SalesAiWorkerClaimContext;
 }) : Promise<SalesAiReplySetRow> {
   const workerClaim = args.workerClaim;
@@ -3940,6 +3949,7 @@ export async function materializeSalesAiReplySet(args: {
           args.operationalFollowUpDecision || { kind: "none", reason: "none" },
         last_customer_message_at: args.lastCustomerMessageAt || null,
         last_ai_message_at: args.lastAiMessageAt || null,
+        post_commit_recovery: args.postCommitRecoveryPayload || null,
       },
     },
   );
@@ -4038,7 +4048,7 @@ function normalizePersistedOperationalFollowUpDecision(
   };
 }
 
-async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
+export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
   supabase: any;
   canonicalScope: Awaited<
     ReturnType<typeof resolveConversationAiWindowStateScope>
@@ -4074,6 +4084,7 @@ async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
     recovered: false,
     failed: false,
   };
+  let complete = true;
 
   if (persistedDecision && persistedDecision.kind !== "none") {
     operationalFollowUpDecisionRecovery.attempted = true;
@@ -4089,6 +4100,7 @@ async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
       });
       operationalFollowUpDecisionRecovery.recovered = true;
     } catch (error: unknown) {
+      complete = false;
       operationalFollowUpDecisionRecovery.failed = true;
       console.warn("[zion-ai-sales-reply] Replay operational follow-up failed", {
         responseSetId: args.row.response_set_id,
@@ -4111,8 +4123,123 @@ async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
       sourceMessageId: args.anchorMessageId,
       suggestions,
     });
-    return { crossSellSuggestionLedger, operationalFollowUpDecisionRecovery };
+    if (crossSellSuggestionLedger.failed > 0) complete = false;
+
+    const postCommitRecovery = isRecord(callerPayload.post_commit_recovery)
+      ? callerPayload.post_commit_recovery
+      : {};
+    const hasDurablePostCommitRecovery = isRecord(
+      callerPayload.post_commit_recovery,
+    );
+    const persistedHandoff = isRecord(postCommitRecovery.commercial_handoff)
+      ? (postCommitRecovery.commercial_handoff as CommercialHandoffContext)
+      : null;
+
+    if (hasDurablePostCommitRecovery && persistedHandoff?.shouldCreateTask === true) {
+      try {
+        const handoffResult = await createCommercialAssistantHandoff({
+          supabase: args.supabase,
+          systemSupabase: args.systemSupabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          conversationId: args.conversationId,
+          leadId: args.leadId,
+          handoff: persistedHandoff,
+          generationAnchorMessageId: args.anchorMessageId,
+          quotePreparationAnchorStillCurrent: true,
+        });
+        if (
+          handoffResult.notificationError ||
+          handoffResult.crmAutoProgressError ||
+          handoffResult.quotePreparationQueue?.outcome === "uncertain"
+        ) {
+          complete = false;
+        }
+      } catch (error: unknown) {
+        complete = false;
+        console.warn("[zion-ai-sales-reply] Replay commercial handoff failed", {
+          responseSetId: args.row.response_set_id,
+          error: error instanceof Error ? error.message : String(error || ""),
+        });
+      }
+    }
+
+    const persistedPreContract = isRecord(postCommitRecovery.pre_contract)
+      ? postCommitRecovery.pre_contract
+      : {};
+    try {
+      if (!hasDurablePostCommitRecovery) return {
+        crossSellSuggestionLedger,
+        operationalFollowUpDecisionRecovery,
+        complete,
+      };
+      const preContractResult = await maybeCreateAssistantPreContractCardFromCustomerSignal({
+        supabase: args.supabase,
+        systemSupabase: args.systemSupabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        leadId: args.leadId,
+        commercialOpportunityId:
+          typeof persistedPreContract.commercial_opportunity_id === "string"
+            ? persistedPreContract.commercial_opportunity_id
+            : null,
+        sourceMessageId:
+          typeof persistedPreContract.source_message_id === "string"
+            ? persistedPreContract.source_message_id
+            : args.anchorMessageId,
+        customerName:
+          typeof persistedPreContract.customer_name === "string"
+            ? persistedPreContract.customer_name
+            : null,
+        lastCustomerMessage:
+          typeof persistedPreContract.last_customer_message === "string"
+            ? persistedPreContract.last_customer_message
+            : null,
+      });
+      if (preContractResult.error) complete = false;
+    } catch (error: unknown) {
+      complete = false;
+      console.warn("[zion-ai-sales-reply] Replay pre-contract card failed", {
+        responseSetId: args.row.response_set_id,
+        error: error instanceof Error ? error.message : String(error || ""),
+      });
+    }
+
+    const persistedQualification = isRecord(postCommitRecovery.qualification)
+      ? postCommitRecovery.qualification
+      : {};
+    try {
+      const qualificationResult =
+        await maybeAutoProgressCrmToQualificationFromSalesSignalCanonical({
+        supabase: args.supabase,
+        systemSupabase: args.systemSupabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        leadId: args.leadId,
+        commercialOpportunityId:
+          typeof persistedQualification.commercial_opportunity_id === "string"
+            ? persistedQualification.commercial_opportunity_id
+            : null,
+        generationAnchorMessageId: args.anchorMessageId,
+        lastCustomerMessage:
+          typeof persistedQualification.last_customer_message === "string"
+            ? persistedQualification.last_customer_message
+            : null,
+        });
+      if (qualificationResult.error) complete = false;
+    } catch (error: unknown) {
+      complete = false;
+      console.warn("[zion-ai-sales-reply] Replay CRM qualification failed", {
+        responseSetId: args.row.response_set_id,
+        error: error instanceof Error ? error.message : String(error || ""),
+      });
+    }
+
+    return { crossSellSuggestionLedger, operationalFollowUpDecisionRecovery, complete };
   } catch (error: unknown) {
+    complete = false;
     console.warn("[zion-ai-sales-reply] Replay post-commit effect failed", {
       responseSetId: args.row.response_set_id,
       error: error instanceof Error ? error.message : String(error || ""),
@@ -4124,7 +4251,145 @@ async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
         failed: suggestions.length,
       },
       operationalFollowUpDecisionRecovery,
+      complete,
     };
+  }
+}
+
+export async function recoverConfirmedSalesAiReplySetPostCommitEffects(args: {
+  supabase: any;
+  systemSupabase?: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  anchorMessageId: string;
+}) {
+  const systemSupabase = args.systemSupabase || args.supabase;
+  const row = await readSalesAiReplySetByAnchor({
+    supabase: systemSupabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    anchorMessageId: args.anchorMessageId,
+  });
+  if (!row) return { status: "missing" as const, complete: true };
+
+  const scope = await resolveConversationAiWindowStateScope({
+    supabase: args.supabase,
+    conversationId: args.conversationId,
+    expectedOrganizationId: args.organizationId,
+    expectedStoreId: args.storeId,
+  });
+  if (scope.isHumanActive === true) return { status: "deferred" as const, complete: false };
+
+  const { data: lease, error: leaseError } = await args.supabase
+    .from("conversation_human_takeover_leases")
+    .select("hard_hold, released_at")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .maybeSingle();
+  if (leaseError) throw new Error(`HUMAN_CONTROL_STATE_READ_FAILED: ${leaseError.message}`);
+  if (lease?.hard_hold === true || !lease?.released_at && lease) {
+    return { status: "deferred" as const, complete: false };
+  }
+
+  const result = await reconcileConfirmedSalesAiReplySetPostCommitEffects({
+    supabase: args.supabase,
+    canonicalScope: scope,
+    leadId: scope.leadId,
+    systemSupabase,
+    row,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    anchorMessageId: args.anchorMessageId,
+  });
+  return { status: "reconciled" as const, ...result };
+}
+
+async function isSalesAiHumanControlActive(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("conversation_human_takeover_leases")
+    .select("hard_hold, released_at")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .maybeSingle();
+  if (error) throw new Error(`HUMAN_CONTROL_STATE_READ_FAILED: ${error.message}`);
+  return Boolean(data && (data.hard_hold === true || !data.released_at));
+}
+
+async function enqueueSalesAiPostMaterializationRecovery(
+  supabase: any,
+  args: SalesAiPostMaterializationRecovery,
+) {
+  const queueKey = `sales-ai-post-materialization:${args.responseSetId}`;
+  const { error: upsertError } = await supabase
+    .from("ai_run_queue")
+    .upsert(
+      {
+        organization_id: args.organizationId,
+        store_id: args.storeId,
+        conversation_id: args.conversationId,
+        queue_key: queueKey,
+        input: {
+          type: "sales_ai_post_materialization_recovery",
+          responseSetId: args.responseSetId,
+          anchorMessageId: args.anchorMessageId,
+        },
+        enqueued_at: new Date().toISOString(),
+        processed_at: null,
+        processing_error: null,
+      },
+      { onConflict: "queue_key", ignoreDuplicates: true },
+    );
+
+  if (upsertError) {
+    throw new Error(upsertError.message);
+  }
+
+  const { data, error } = await supabase
+    .from("ai_run_queue")
+    .select("id")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("queue_key", queueKey)
+    .maybeSingle();
+
+  if (error || !data?.id) {
+    throw new Error(
+      error?.message || "SALES_AI_POST_MATERIALIZATION_RECOVERY_NOT_ENQUEUED",
+    );
+  }
+
+  return String(data.id);
+}
+
+async function completeSalesAiPostMaterializationRecovery(
+  supabase: any,
+  args: { id: string; organizationId: string; storeId: string },
+) {
+  const { error } = await supabase
+    .from("ai_run_queue")
+    .update({
+      processed_at: new Date().toISOString(),
+      processing_error: null,
+    })
+    .eq("id", args.id)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .is("processed_at", null);
+
+  if (error) {
+    throw new Error(
+      `SALES_AI_POST_MATERIALIZATION_RECOVERY_FINALIZE_FAILED: ${error.message}`,
+    );
   }
 }
 
@@ -6037,6 +6302,14 @@ export async function generateAndSaveAiSalesReply(
           anchorMessageId: boundaryBeforeGeneration.lastIncomingCustomerMessageId,
         });
         if (confirmedSet) {
+          const replay = buildSalesAiReplySetReplayResult(confirmedSet);
+          const humanControlActive = await isSalesAiHumanControlActive({
+            supabase,
+            organizationId: canonicalOrganizationId,
+            storeId: canonicalStoreId,
+            conversationId: canonicalConversationId,
+          });
+          if (humanControlActive) return replay;
           const postCommitEffects =
             await reconcileConfirmedSalesAiReplySetPostCommitEffects({
               supabase,
@@ -6050,7 +6323,6 @@ export async function generateAndSaveAiSalesReply(
               anchorMessageId:
                 boundaryBeforeGeneration.lastIncomingCustomerMessageId,
             });
-          const replay = buildSalesAiReplySetReplayResult(confirmedSet);
           return {
             ...replay,
             context: {
@@ -6294,6 +6566,14 @@ export async function generateAndSaveAiSalesReply(
           anchorMessageId: generationAnchorMessageId,
         });
         if (confirmedSet) {
+          const replay = buildSalesAiReplySetReplayResult(confirmedSet);
+          const humanControlActive = await isSalesAiHumanControlActive({
+            supabase,
+            organizationId: canonicalOrganizationId,
+            storeId: canonicalStoreId,
+            conversationId: canonicalConversationId,
+          });
+          if (humanControlActive) return replay;
           const postCommitEffects =
             await reconcileConfirmedSalesAiReplySetPostCommitEffects({
               supabase,
@@ -6306,7 +6586,6 @@ export async function generateAndSaveAiSalesReply(
               conversationId: canonicalConversationId,
               anchorMessageId: generationAnchorMessageId,
             });
-          const replay = buildSalesAiReplySetReplayResult(confirmedSet);
           return {
             ...replay,
             context: {
@@ -6628,6 +6907,8 @@ export async function generateAndSaveAiSalesReply(
     let messageId: string | null = null;
     let crossSellSuggestionLedger: CrossSellSuggestionLedgerResult | null = null;
     let materializedReplySet: SalesAiReplySetRow | null = null;
+    let postMaterializationRecoveryQueueId: string | null = null;
+    let postCommitEffectsComplete = true;
     const materializationAiMessageTimestamp = new Date().toISOString();
 
     if (deps?.sendAiPanelMessage && !deps?.materializeSalesAiReplySet) {
@@ -6790,6 +7071,27 @@ export async function generateAndSaveAiSalesReply(
           lastCustomerMessageAt:
             boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
           lastAiMessageAt: materializationAiMessageTimestamp,
+          postCommitRecoveryPayload: {
+            commercial_handoff: validatedCommercialHandoff || null,
+            pre_contract: {
+              commercial_opportunity_id:
+                generationResolvedCommercialOpportunityId,
+              source_message_id: generationAnchorMessageId,
+              customer_name: generationResult.context?.leadName || null,
+              last_customer_message:
+                generationResult.context?.lastCustomerMessage ||
+                generationResult.context?.commercialHandoff?.lastCustomerMessage ||
+                null,
+            },
+            qualification: {
+              commercial_opportunity_id:
+                generationResolvedCommercialOpportunityId,
+              last_customer_message:
+                generationResult.context?.lastCustomerMessage ||
+                generationResult.context?.commercialHandoff?.lastCustomerMessage ||
+                null,
+            },
+          },
           workerClaim: params.workerClaim,
         });
         messageId = materializedReplySet.text_message_id;
@@ -6804,6 +7106,28 @@ export async function generateAndSaveAiSalesReply(
               : undefined,
           aiText,
         };
+      }
+
+      try {
+        postMaterializationRecoveryQueueId =
+          await enqueueSalesAiPostMaterializationRecovery(systemSupabase, {
+            responseSetId: materializedReplySet.response_set_id,
+            organizationId: canonicalOrganizationId,
+            storeId: canonicalStoreId,
+            conversationId: canonicalConversationId,
+            anchorMessageId: generationAnchorMessageId,
+          });
+      } catch (recoveryQueueError: unknown) {
+        console.warn("[zion-ai-sales-reply] Post-materialization recovery queue unavailable", {
+          responseSetId: materializedReplySet.response_set_id,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
+          error:
+            recoveryQueueError instanceof Error
+              ? recoveryQueueError.message
+              : String(recoveryQueueError || ""),
+        });
       }
 
       if (materializedReplySet.replayed === true) {
@@ -6838,7 +7162,11 @@ export async function generateAndSaveAiSalesReply(
             sourceMessageId: generationAnchorMessageId,
             suggestions: crossSellSuggestionsActuallyIncluded,
           });
+        if ((crossSellSuggestionLedger?.failed || 0) > 0) {
+          postCommitEffectsComplete = false;
+        }
       } catch (postCommitError: unknown) {
+        postCommitEffectsComplete = false;
         console.warn("[zion-ai-sales-reply] Post-commit effect failed", {
           responseSetId: materializedReplySet.response_set_id,
           organizationId: canonicalOrganizationId,
@@ -6870,6 +7198,7 @@ export async function generateAndSaveAiSalesReply(
         lastAiMessageAt: aiMessageTimestamp,
       });
     } catch (postCommitError: unknown) {
+      postCommitEffectsComplete = false;
       if (!materializedReplySet) {
         throw postCommitError;
       }
@@ -6902,6 +7231,7 @@ export async function generateAndSaveAiSalesReply(
           boundaryBeforeSave.lastIncomingCustomerMessageId,
       });
     } catch (handoffError: any) {
+      postCommitEffectsComplete = false;
       commercialHandoffResult = {
         created: false,
         skipped: false,
@@ -6935,6 +7265,7 @@ export async function generateAndSaveAiSalesReply(
           null,
       });
     } catch (preContractCardError: any) {
+      postCommitEffectsComplete = false;
       preContractCardResult = {
         attempted: true,
         created: false,
@@ -6990,6 +7321,7 @@ export async function generateAndSaveAiSalesReply(
               null,
           });
       } catch (qualificationProgressError: any) {
+        postCommitEffectsComplete = false;
         qualificationAutoProgressResult = {
           attempted: true,
           progressed: false,
@@ -7008,6 +7340,24 @@ export async function generateAndSaveAiSalesReply(
               qualificationProgressError?.message || qualificationProgressError,
           }
         );
+      }
+    }
+
+    if (postMaterializationRecoveryQueueId && postCommitEffectsComplete) {
+      try {
+        await completeSalesAiPostMaterializationRecovery(systemSupabase, {
+          id: postMaterializationRecoveryQueueId,
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+        });
+      } catch (recoveryFinalizeError: unknown) {
+        console.warn("[zion-ai-sales-reply] Post-materialization recovery remains queued", {
+          responseSetId: materializedReplySet?.response_set_id || null,
+          error:
+            recoveryFinalizeError instanceof Error
+              ? recoveryFinalizeError.message
+              : String(recoveryFinalizeError || ""),
+        });
       }
     }
 

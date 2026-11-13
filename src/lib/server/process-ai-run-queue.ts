@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import {
   generateAndSaveAiSalesReply,
+  recoverConfirmedSalesAiReplySetPostCommitEffects,
   type SalesAiWorkerClaimContext,
 } from "./generate-and-save-ai-sales-reply";
 import { isSalesAiConversationStatusEligible } from "./conversation-ai-sales-eligibility";
@@ -112,6 +113,11 @@ function isSalesResumeQueueCandidate(row: AiRunQueueRow): boolean {
     input.system_event === "ai_window_resume" ||
     input.resume_mode != null
   );
+}
+
+function isPostMaterializationRecoveryCandidate(row: AiRunQueueRow): boolean {
+  const input = row.input && typeof row.input === "object" ? row.input : {};
+  return input.type === "sales_ai_post_materialization_recovery";
 }
 
 function hasPersistedAiSalesReply(
@@ -271,6 +277,104 @@ export async function processDueAiRunQueue(
     if (input.requireClaim === true && !row.claim_token) {
       throw new Error("AI_RUN_QUEUE_WORKER_CLAIM_MISSING");
     }
+    if (isPostMaterializationRecoveryCandidate(row)) {
+      const queueId = String(row.id || "").trim();
+      const queueInput = row.input && typeof row.input === "object" ? row.input : {};
+      const conversationId = String(row.conversation_id || "").trim();
+      const anchorMessageId = String(queueInput.anchorMessageId || "").trim();
+
+      if (!queueId || !conversationId || !anchorMessageId) {
+        await markQueueProcessed({
+          supabase,
+          id: queueId,
+          organizationId,
+          storeId,
+          detail: "post_materialization_recovery_identity_missing",
+          claimToken: row.claim_token,
+        });
+        skipped += 1;
+        results.push({
+          queueId,
+          queueKey: row.queue_key || null,
+          status: "skipped",
+          detail: "post_materialization_recovery_identity_missing",
+        });
+        continue;
+      }
+
+      try {
+        const recovery = await recoverConfirmedSalesAiReplySetPostCommitEffects({
+          supabase,
+          organizationId,
+          storeId,
+          conversationId,
+          anchorMessageId,
+        });
+        if (recovery.status === "deferred" || recovery.complete === false) {
+          if (row.claim_token) {
+            await finalizeWorkerTaskBySystem(supabase, {
+              kind: "ai_run_queue",
+              organizationId,
+              storeId,
+              id: queueId,
+              claimToken: row.claim_token,
+              outcome: "retryable",
+              errorText: recovery.status === "deferred"
+                ? "human_control_active"
+                : "post_materialization_recovery_incomplete",
+            });
+          }
+          failed += 1;
+          results.push({
+            queueId,
+            queueKey: row.queue_key || null,
+            status: "failed",
+            detail: recovery.status === "deferred"
+              ? "human_control_active"
+              : "post_materialization_recovery_incomplete",
+          });
+          continue;
+        }
+
+        await markQueueProcessed({
+          supabase,
+          id: queueId,
+          organizationId,
+          storeId,
+          detail: null,
+          claimToken: row.claim_token,
+        });
+        succeeded += 1;
+        results.push({
+          queueId,
+          queueKey: row.queue_key || null,
+          status: "succeeded",
+          detail: null,
+        });
+      } catch (error) {
+        const detail = safeError(error);
+        if (row.claim_token) {
+          await finalizeWorkerTaskBySystem(supabase, {
+            kind: "ai_run_queue",
+            organizationId,
+            storeId,
+            id: queueId,
+            claimToken: row.claim_token,
+            outcome: "retryable",
+            errorText: detail,
+          });
+        }
+        failed += 1;
+        results.push({
+          queueId,
+          queueKey: row.queue_key || null,
+          status: "failed",
+          detail,
+        });
+      }
+      continue;
+    }
+
     if (!isSalesResumeQueueCandidate(row)) continue;
 
     if (!hasValidSalesResumeContract(row)) {

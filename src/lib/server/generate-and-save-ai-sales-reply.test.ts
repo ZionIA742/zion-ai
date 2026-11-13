@@ -597,8 +597,26 @@ function createAiWindowScopeSupabase(args?: {
           };
         }
 
+        if (table === "conversation_human_takeover_leases") {
+          return {
+            select(_selection: string) {
+              return this;
+            },
+            eq(_column: string, _value: unknown) {
+              return this;
+            },
+            async maybeSingle() {
+              return {
+                data: { hard_hold: false, released_at: "2026-07-30T10:00:00.000Z" },
+                error: null,
+              };
+            },
+          };
+        }
+
         if (table === "ai_run_queue") {
           const state = {
+            filters: [] as Array<{ column: string; value: unknown }>,
             payload: {} as Record<string, unknown>,
             eq: [] as Array<{ column: string; value: unknown }>,
             is: [] as Array<{ column: string; value: unknown }>,
@@ -606,11 +624,15 @@ function createAiWindowScopeSupabase(args?: {
           };
 
           return {
+            select(_selection: string) {
+              return this;
+            },
             update(payload: Record<string, unknown>) {
               state.payload = payload;
               return this;
             },
             eq(column: string, value: unknown) {
+              state.filters.push({ column, value });
               state.eq.push({ column, value });
               return this;
             },
@@ -629,6 +651,14 @@ function createAiWindowScopeSupabase(args?: {
             ) {
               queueUpserts.push({ row, options });
               return { error: null };
+            },
+            async maybeSingle() {
+              const row = queueUpserts.find((entry) =>
+                state.filters.every(
+                  (filter) => entry.row[filter.column] === filter.value,
+                ),
+              );
+              return { data: row ? { id: "recovery-queue-1" } : null, error: null };
             },
           };
         }
@@ -7875,6 +7905,12 @@ assert.equal(
         assert.equal(materializeCalls, 1);
         assert.equal(handoffCalls, 0);
         assert.deepEqual(systemRpcCalls, []);
+        assert.equal(scope.queueUpserts.length, 1);
+        assert.equal(
+          scope.queueUpserts[0]?.row.input &&
+            (scope.queueUpserts[0].row.input as Record<string, unknown>).type,
+          "sales_ai_post_materialization_recovery",
+        );
         assert.equal(scope.windowUpserts.length, 0);
         assert.equal(scope.stateUpdates.length, 0);
         assert.equal(scope.queueUpdates.length, 0);
