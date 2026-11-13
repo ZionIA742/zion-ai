@@ -7780,6 +7780,116 @@ assert.equal(
     },
   },
   {
+    name: "10.4-D confirmed materialization replay skips all post-materialization writers",
+    run: async () => {
+      const scope = createAiWindowScopeSupabase();
+      const systemRpcCalls: string[] = [];
+      let clientIndex = 0;
+      let generationCalls = 0;
+      let materializeCalls = 0;
+      let handoffCalls = 0;
+
+      const systemClient = {
+        ...scope.client,
+        async rpc(fn: string) {
+          systemRpcCalls.push(fn);
+          return { data: null, error: null };
+        },
+      };
+
+      await withMockedSupabaseEnv(async () => {
+        const result = await generateAndSaveAiSalesReply(
+          {
+            organizationId: "org-canonical",
+            storeId: "store-canonical",
+            conversationId: "conv-canonical",
+            executionContext: {
+              kind: "scheduled_resume",
+              queueId: "queue-replay-1",
+              queueKey:
+                "resume:conv-canonical:normal_reply_delay:202607301000",
+              reason: "normal_reply_delay",
+              resumeAt: "2020-01-01T00:00:00.000Z",
+              anchorMessageId: "msg-1",
+              styleHint: "Retomar de forma natural e sem pressao.",
+            },
+          },
+          {
+            createSupabaseClient: () => {
+              clientIndex += 1;
+              return (clientIndex === 1 ? scope.client : systemClient) as never;
+            },
+            ...createScopeAwareReplyDeps({
+              sendAiPanelMessage: undefined,
+              createCommercialAssistantHandoff: async () => {
+                handoffCalls += 1;
+                return {
+                  created: true,
+                  skipped: false,
+                  reason: "should_not_run_on_replay",
+                } as never;
+              },
+              generateAiSalesReply: async () => {
+                generationCalls += 1;
+                return {
+                  ok: true,
+                  aiText: "Resposta já confirmada",
+                  anchorMessageId: "msg-1",
+                  usage: null,
+                  context: {
+                    lastCustomerMessage: "mensagem comum",
+                    operationalFollowUpDecision: {
+                      kind: "schedule_resume",
+                      reason: "customer_thinking",
+                      timingLabel: "amanhã",
+                    },
+                    resolvedCommercialOpportunityId: "opp-canonical",
+                    crossSellSuggestionsActuallyIncluded: [
+                      {
+                        candidateKey: "pool:pool-1",
+                        candidateKind: "pool",
+                        poolId: "pool-1",
+                        catalogItemId: null,
+                      },
+                    ],
+                  },
+                } as never;
+              },
+              materializeSalesAiReplySet: async () => {
+                materializeCalls += 1;
+                return {
+                  response_set_id: "set-confirmed-replay",
+                  text_message_id: "text-confirmed-replay",
+                  document_message_ids: [],
+                  photo_message_id: null,
+                  request_fingerprint: "r".repeat(64),
+                  replayed: true,
+                } as never;
+              },
+            }),
+          },
+        );
+
+        assert.equal(result.ok, true, JSON.stringify(result));
+        assert.equal(generationCalls, 1);
+        assert.equal(materializeCalls, 1);
+        assert.equal(handoffCalls, 0);
+        assert.deepEqual(systemRpcCalls, []);
+        assert.equal(scope.windowUpserts.length, 0);
+        assert.equal(scope.stateUpdates.length, 0);
+        assert.equal(scope.queueUpdates.length, 0);
+        if (result.ok) {
+          assert.equal(result.messageId, "text-confirmed-replay");
+          assert.equal(result.context?.salesAiReplySet?.replayed, true);
+          assert.equal(
+            result.context?.salesAiReplySet?.responseSetId,
+            "set-confirmed-replay",
+          );
+        }
+      });
+    },
+  },
+  {
     name: "I8 materializes one canonical reply-set call with media identities only",
     run: async () => {
       const calls: Array<{ fn: string; payload: Record<string, unknown> }> = [];

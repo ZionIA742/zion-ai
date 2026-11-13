@@ -6806,6 +6806,26 @@ export async function generateAndSaveAiSalesReply(
         };
       }
 
+      if (materializedReplySet.replayed === true) {
+        return {
+          ok: true,
+          aiText,
+          context: {
+            ...generationResult.context,
+            salesAiReplySet: {
+              responseSetId: materializedReplySet.response_set_id,
+              requestFingerprint: materializedReplySet.request_fingerprint,
+              replayed: true,
+              documentMessageIds: materializedReplySet.document_message_ids,
+              photoMessageId: materializedReplySet.photo_message_id,
+            },
+          },
+          usage: generationResult.usage,
+          persisted: true,
+          messageId,
+        };
+      }
+
       try {
         crossSellSuggestionLedger =
           await recordIncludedCrossSellSuggestionsBySystem({
