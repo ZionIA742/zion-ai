@@ -23,6 +23,7 @@ import { classifyIncomingMediaMessage } from "@/lib/server/media-classification"
 import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
 import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
 import { decideQuoteApprovalFromPersistedInbound } from "@/lib/server/sales-quotes/quote-approval-decision";
+import { tryHandlePaymentProofDecision } from "@/lib/server/assistant/payment-proof-decision";
 import {
   resolveReceivedContractDocumentDecision,
   tryHandleReceivedContractDocumentDecision,
@@ -34,6 +35,15 @@ import {
 import { pushAssistantReceivedContractDocumentMessage } from "@/lib/server/assistant/document-review-messages";
 import { enqueueReceivedContractDocumentAcknowledgement } from "@/lib/server/assistant/received-contract-document-acknowledgement";
 import { formatSalesAiProcessingError } from "@/lib/server/sales-ai-error-diagnostics";
+import {
+  classifyCustomerMediaForPayment,
+  detectCustomerCancellationRequest,
+} from "@/lib/server/assistant/customer-commercial-intents";
+import {
+  CANCELLATION_REQUEST_SOURCE,
+  PAYMENT_PROOF_SOURCE,
+  enqueueCustomerCommercialAlert,
+} from "@/lib/server/assistant/customer-commercial-notifications";
 import {
   enqueuePersistedSalesAiFailureAlerts,
   enqueueSalesAiFailureOperationalAlert,
@@ -769,6 +779,26 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
     content: string;
     contextMessageId: string | null;
   }) => {
+    const paymentDecision = await tryHandlePaymentProofDecision({
+      supabase: args.supabase,
+      organizationId: args.inbox.organization_id,
+      storeId: args.inbox.store_id,
+      responsibleId: responsible.responsible.id,
+      decisionMessageId: inbound.inboundMessageId,
+      externalMessageId: inbound.externalMessageId,
+      content: inbound.content,
+      contextMessageId: inbound.contextMessageId,
+    });
+    if (paymentDecision) {
+      return {
+        kind: "payment_proof_decision" as const,
+        responseText: paymentDecision.decision === "yes"
+          ? "Recebi a confirmacao humana do comprovante; o pagamento permanece sujeito aos dados financeiros identificados."
+          : "Registrei a rejeicao do comprovante; o pagamento nao foi confirmado.",
+        result: paymentDecision,
+      };
+    }
+    // Preserve the canonical quote path: return decideQuoteApprovalFromPersistedInbound(...)
     const contractDecision = await tryHandleReceivedContractDocumentDecision({
       supabase: args.supabase,
       organizationId: args.inbox.organization_id,
@@ -1879,6 +1909,7 @@ function buildMediaClassificationMetadata(args: {
   fileName: string | null;
   content: string | null;
   contextMessageId?: string | null;
+  recentConversationText?: string[];
 }) {
   const classification = classifyIncomingMediaMessage({
     messageType: args.messageType,
@@ -1888,6 +1919,7 @@ function buildMediaClassificationMetadata(args: {
     sender: "user",
     direction: "incoming",
     sourceChannel: "whatsapp",
+    recentConversationText: args.recentConversationText,
   });
 
   return {
@@ -1906,6 +1938,80 @@ function isCustomerMediaMessageType(
   value: string | null | undefined,
 ): value is "image" | "audio" | "video" | "document" {
   return value === "image" || value === "audio" || value === "video" || value === "document";
+}
+
+async function loadRecentConversationText(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("messages")
+    .select("content, sender, direction")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(12);
+  if (error) throw new Error(`Falha ao carregar contexto comercial recente: ${error.message}`);
+  return (data || [])
+    .filter((row: { content?: unknown }) => typeof row.content === "string")
+    .map((row: { content?: unknown }) => row.content as string);
+}
+
+async function enqueueCustomerCommercialIntent(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  leadId: string;
+  conversationId: string;
+  sourceMessageId: string;
+  customerName?: string | null;
+  currentContent?: string | null;
+  recentConversationText?: string[];
+  metadata?: Record<string, unknown> | null;
+  commercialOpportunityId?: string | null;
+}) {
+  const cancellation = detectCustomerCancellationRequest(args.currentContent);
+  if (cancellation) {
+    return enqueueCustomerCommercialAlert({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      leadId: args.leadId,
+      conversationId: args.conversationId,
+      sourceMessageId: args.sourceMessageId,
+      source: CANCELLATION_REQUEST_SOURCE,
+      customerName: args.customerName,
+      reason: cancellation.reason,
+      commercialOpportunityId: args.commercialOpportunityId,
+    });
+  }
+
+  const media = classifyCustomerMediaForPayment({
+    messageType: String(args.metadata?.message_type || ""),
+    mimeType: String(args.metadata?.mime_type || ""),
+    fileName: String(args.metadata?.original_file_name || ""),
+    caption: args.currentContent,
+    recentConversationText: args.recentConversationText,
+  });
+  if (media.intent !== "payment_proof") return null;
+  return enqueueCustomerCommercialAlert({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    leadId: args.leadId,
+    conversationId: args.conversationId,
+    sourceMessageId: args.sourceMessageId,
+    source: PAYMENT_PROOF_SOURCE,
+    customerName: args.customerName,
+    storageBucket: String(args.metadata?.storage_bucket || ""),
+    storagePath: String(args.metadata?.storage_path || ""),
+    commercialOpportunityId: args.commercialOpportunityId,
+    reference: media.reason,
+  });
 }
 
 async function updateCustomerMediaMetadata(args: {
@@ -1947,6 +2053,7 @@ async function processCustomerMediaIntelligence(args: {
   mimeType: string | null;
   fileName: string | null;
   content: string | null;
+  recentConversationText?: string[];
 }) {
   const currentMetadata = getMessageMetadata(args.message.metadata);
   const classificationMetadata = buildMediaClassificationMetadata({
@@ -1954,6 +2061,7 @@ async function processCustomerMediaIntelligence(args: {
     mimeType: args.mimeType,
     fileName: args.fileName,
     content: args.content,
+    recentConversationText: args.recentConversationText,
   });
   let metadata: Record<string, unknown> = { ...currentMetadata, ...classificationMetadata };
   if (args.messageType === "audio" && !asTrimmedString(metadata.audio_transcript)) {
@@ -2877,7 +2985,7 @@ async function processSingleInboxRow(
   const lead = { id: thread.leadId } as LeadRow;
   const conversation = { id: thread.conversationId } as ConversationRow;
 
-  await bootstrapCommercialContextBeforeInsert({
+  const bootstrap = await bootstrapCommercialContextBeforeInsert({
     supabase,
     organizationId: inbox.organization_id,
     storeId: inbox.store_id,
@@ -2885,6 +2993,12 @@ async function processSingleInboxRow(
     conversationId: thread.conversationId,
     whatsappIdentity: resolvedFromPhone,
     contactName: extracted.contactName,
+  });
+  const recentConversationText = await loadRecentConversationText({
+    supabase,
+    organizationId: inbox.organization_id,
+    storeId: inbox.store_id,
+    conversationId: conversation.id,
   });
 
   let uploadedMediaStoragePath: string | null = null;
@@ -2916,6 +3030,7 @@ async function processSingleInboxRow(
         fileName: storedMedia.originalFileName,
         content: extracted.imageCaption,
         contextMessageId: extracted.contextMessageId,
+        recentConversationText,
       });
 
       inserted = await insertIncomingImageMessage({
@@ -2961,6 +3076,7 @@ async function processSingleInboxRow(
         fileName: storedMedia.originalFileName,
         content: null,
         contextMessageId: extracted.contextMessageId,
+        recentConversationText,
       });
 
       inserted = await insertIncomingAudioMessage({
@@ -3006,6 +3122,7 @@ async function processSingleInboxRow(
         fileName: storedMedia.originalFileName,
         content: extracted.videoCaption,
         contextMessageId: extracted.contextMessageId,
+        recentConversationText,
       });
 
       inserted = await insertIncomingVideoMessage({
@@ -3052,6 +3169,7 @@ async function processSingleInboxRow(
         fileName: extracted.documentFilename || storedMedia.originalFileName,
         content: extracted.documentCaption,
         contextMessageId: extracted.contextMessageId,
+        recentConversationText,
       });
 
       inserted = await insertIncomingDocumentMessage({
@@ -3169,6 +3287,24 @@ async function processSingleInboxRow(
           extracted.documentCaption ||
           persistedMessage.content ||
           null,
+        recentConversationText,
+      });
+
+      await enqueueCustomerCommercialIntent({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        leadId: persistedMessage.lead_id || lead.id,
+        conversationId: conversation.id,
+        sourceMessageId: persistedMessage.id,
+        customerName: extracted.contactName,
+        currentContent: persistedMessage.content,
+        recentConversationText,
+        metadata: {
+          ...(processedMediaMetadata || {}),
+          message_type: extracted.rawMessageType,
+        },
+        commercialOpportunityId: bootstrap.commercialOpportunityId,
       });
 
       const contractEvidence = await registerReceivedContractDocumentEvidenceSafely({
@@ -3195,6 +3331,22 @@ async function processSingleInboxRow(
           ai_error: null,
         };
       }
+    }
+
+    if (extracted.rawMessageType === "text") {
+      await enqueueCustomerCommercialIntent({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        leadId: persistedMessage.lead_id || lead.id,
+        conversationId: conversation.id,
+        sourceMessageId: persistedMessage.id,
+        customerName: extracted.contactName,
+        currentContent: persistedMessage.content,
+        recentConversationText,
+        metadata: null,
+        commercialOpportunityId: bootstrap.commercialOpportunityId,
+      });
     }
 
     let aiDispatchResult: Pick<

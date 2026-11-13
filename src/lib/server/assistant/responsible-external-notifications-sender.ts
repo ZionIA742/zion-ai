@@ -111,6 +111,8 @@ const AUTOMATIC_REPORT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const RECEIVED_CONTRACT_DOCUMENT_SOURCE = "received_contract_document_evidence_v1";
 const RECEIVED_CONTRACT_DOCUMENT_EVENT = "contract_uploaded";
 const RECEIVED_DOCUMENT_SIGNED_URL_SECONDS = 120;
+const PAYMENT_PROOF_SOURCE = "customer_payment_proof_v1";
+const PAYMENT_PROOF_SIGNED_URL_SECONDS = 120;
 export const RECEIVED_CONTRACT_WHATSAPP_DELIVERY_FLAG =
   "ZION_RECEIVED_CONTRACT_WHATSAPP_DELIVERY_ENABLED";
 
@@ -121,6 +123,10 @@ export function isReceivedContractDocumentNotification(notification: {
     cleanText(notification.context?.source) === RECEIVED_CONTRACT_DOCUMENT_SOURCE &&
     cleanText(notification.context?.reason) === "received_contract_document"
   );
+}
+
+export function isPaymentProofNotification(notification: { context?: Record<string, unknown> | null }) {
+  return cleanText(notification.context?.source) === PAYMENT_PROOF_SOURCE;
 }
 
 export function isReceivedContractWhatsappDeliveryEnabled() {
@@ -469,6 +475,40 @@ async function resolveReceivedContractDocumentForSend(args: {
   };
 }
 
+async function resolvePaymentProofForSend(args: {
+  supabase: ReturnType<typeof getSupabaseAdmin>;
+  organizationId: string;
+  storeId: string;
+  notification: ResponsibleExternalNotificationRow;
+}) {
+  const context = args.notification.context || {};
+  if (cleanText(context.source) !== PAYMENT_PROOF_SOURCE) return null;
+  const sourceMessageId = cleanText(context.source_message_id);
+  const bucket = cleanText(context.payment_proof_storage_bucket);
+  const path = cleanText(context.payment_proof_storage_path);
+  if (!sourceMessageId || !bucket || !path || /^https?:\/\//i.test(path)) {
+    throw new Error("PAYMENT_PROOF_FORWARDING_CONTEXT_INVALID");
+  }
+  const { data: message, error } = await args.supabase
+    .from("messages")
+    .select("id, organization_id, store_id, metadata")
+    .eq("id", sourceMessageId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+  if (error || !message) throw new Error("PAYMENT_PROOF_SOURCE_MESSAGE_NOT_FOUND");
+  const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata as Record<string, unknown> : {};
+  if (cleanText(metadata.storage_bucket) !== bucket || cleanText(metadata.storage_path) !== path) {
+    throw new Error("PAYMENT_PROOF_SOURCE_PATH_MISMATCH");
+  }
+  const { data: signed, error: signedError } = await args.supabase.storage.from(bucket).createSignedUrl(path, PAYMENT_PROOF_SIGNED_URL_SECONDS);
+  if (signedError || !signed?.signedUrl) throw new Error(signedError?.message || "PAYMENT_PROOF_SIGNED_URL_FAILED");
+  return {
+    signedUrl: signed.signedUrl,
+    filename: cleanText(metadata.original_file_name) || "comprovante-recebido",
+  };
+}
+
 export type ResponsibleWhatsappPayload =
   | { type: "text"; body: string }
   | { type: "template"; template: Record<string, unknown> }
@@ -689,6 +729,10 @@ function validateNotificationBeforeSend(
       reason: "RECEIVED_CONTRACT_WHATSAPP_DELIVERY_DISABLED",
       notificationId: notification.id,
     };
+  }
+
+  if (isPaymentProofNotification(notification) && !cleanText(notification.context?.payment_proof_storage_path)) {
+    return { ok: false, sent: false, reason: "PAYMENT_PROOF_CONTEXT_INVALID", notificationId: notification.id };
   }
 
   if (cleanText(notification.external_message_id) || cleanText(notification.sent_at)) {
@@ -958,7 +1002,13 @@ export async function sendResponsibleExternalNotification(
       storeId,
       notification: claimedNotification,
     });
-    if (receivedDocument && policy.mode !== "free_form") {
+    const paymentProof = await resolvePaymentProofForSend({
+      supabase,
+      organizationId,
+      storeId,
+      notification: claimedNotification,
+    });
+    if ((receivedDocument || paymentProof) && policy.mode !== "free_form") {
       throw new Error("RECEIVED_DOCUMENT_WHATSAPP_WINDOW_CLOSED");
     }
     const externalMessageId = receivedDocument
@@ -979,6 +1029,15 @@ export async function sendResponsibleExternalNotification(
           to: policy.responsible.whatsappNumber,
           link: receivedDocument.signedUrl,
           filename: receivedDocument.filename,
+          caption: cleanText(claimedNotification.rendered_message),
+        })
+      : paymentProof
+        ? await sendWhatsappDocumentMessage({
+          accessToken: integration.accessToken,
+          phoneNumberId: integration.phoneNumberId,
+          to: policy.responsible.whatsappNumber,
+          link: paymentProof.signedUrl,
+          filename: paymentProof.filename,
           caption: cleanText(claimedNotification.rendered_message),
         })
       : policy.mode === "free_form"
