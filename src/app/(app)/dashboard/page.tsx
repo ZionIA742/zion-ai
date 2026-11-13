@@ -1,7 +1,7 @@
 // src/app/(app)/dashboard/page.tsx
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
 import { getCatalogPriceSemantics, getCatalogStockSemantics } from "@/lib/catalog/presentation";
 
@@ -1316,6 +1316,33 @@ function shiftSalesPeriod(anchorDate: Date, view: SalesPeriodView, direction: -1
   return anchorDate;
 }
 
+function getSalesISOWeeks(year: number) {
+  const firstWeek = startOfSalesWeek(createSalesDate(year, 0, 4));
+  const nextYearFirstWeek = startOfSalesWeek(createSalesDate(year + 1, 0, 4));
+  const weeks: Date[] = [];
+
+  for (
+    let week = firstWeek;
+    week.getTime() < nextYearFirstWeek.getTime();
+    week = addSalesDays(week, 7)
+  ) {
+    weeks.push(week);
+  }
+
+  return weeks;
+}
+
+function formatSalesISOWeekPeriod(start: Date) {
+  const formatter = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "UTC",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+
+  return `${formatter.format(start)} — ${formatter.format(addSalesDays(start, 6))}`;
+}
+
 function SalesCalendarPlaceholder({
   label = "Sem dados",
   helper = "Aguardando base real de vendas",
@@ -1350,6 +1377,42 @@ function SalesPeriodExplorer({
   statusText: string;
   systemStartYear: number;
 }) {
+  const [yearBreakdown, setYearBreakdown] = useState<"months" | "weeks">("months");
+  const [isSalesExpanded, setIsSalesExpanded] = useState(false);
+  const [salesFullscreenError, setSalesFullscreenError] = useState<string | null>(null);
+  const salesFullscreenRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function handleSalesFullscreenChange() {
+      setIsSalesExpanded(document.fullscreenElement === salesFullscreenRef.current);
+    }
+
+    document.addEventListener("fullscreenchange", handleSalesFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleSalesFullscreenChange);
+    };
+  }, []);
+
+  async function toggleSalesFullscreen() {
+    const element = salesFullscreenRef.current;
+    if (!element || typeof document === "undefined") return;
+
+    try {
+      setSalesFullscreenError(null);
+
+      if (document.fullscreenElement === element) {
+        await document.exitFullscreen();
+      } else {
+        await element.requestFullscreen();
+      }
+    } catch (error: unknown) {
+      setSalesFullscreenError(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível alterar o modo expandido."
+      );
+    }
+  }
   const currentYear = getSalesYear(todayDate);
   const safeStartYear = Math.min(Math.max(2000, systemStartYear), currentYear);
   const weekStart = startOfSalesWeek(anchorDate);
@@ -1357,6 +1420,7 @@ function SalesPeriodExplorer({
   const yearMonths = Array.from({ length: 12 }, (_, index) =>
     createSalesDate(getSalesYear(anchorDate), index, 1)
   );
+  const isoYearWeeks = getSalesISOWeeks(getSalesYear(anchorDate));
   const yearOptions = Array.from(
     { length: currentYear - safeStartYear + 1 },
     (_, index) => createSalesDate(safeStartYear + index, 0, 1)
@@ -1372,7 +1436,15 @@ function SalesPeriodExplorer({
   }
 
   return (
-    <DashboardPanel className="rounded-[4px] border-zinc-400 p-0 shadow-sm">
+    <div
+      ref={salesFullscreenRef}
+      className={
+        isSalesExpanded
+          ? "h-screen w-screen overflow-y-auto bg-zinc-100 text-zinc-950"
+          : "min-w-0"
+      }
+    >
+      <DashboardPanel className="rounded-[4px] border-zinc-400 p-0 shadow-sm">
       <div className="border-b border-zinc-300 bg-zinc-950 px-4 py-3 text-white">
         <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
@@ -1380,11 +1452,26 @@ function SalesPeriodExplorer({
               Histórico de vendas
             </p>
             <h3 className="mt-1 break-words text-lg font-semibold">
-              {formatSalesPeriodTitle(view, anchorDate)}
+              {view === "month" && yearBreakdown === "weeks" ? `Semanas de ${getSalesYear(anchorDate)}` : formatSalesPeriodTitle(view, anchorDate)}
             </h3>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {(view === "month" && yearBreakdown === "weeks") || isSalesExpanded ? (
+              <button
+                type="button"
+                onClick={() => void toggleSalesFullscreen()}
+                aria-pressed={isSalesExpanded}
+                title={isSalesExpanded ? "Sair do modo expandido" : "Expandir histórico de vendas"}
+                className={`rounded-[4px] px-3 py-2 text-xs font-semibold transition ${
+                  isSalesExpanded
+                    ? "bg-white text-zinc-950 hover:bg-zinc-200"
+                    : "border border-zinc-600 bg-zinc-900 text-white hover:bg-zinc-800"
+                }`}
+              >
+                {isSalesExpanded ? "Sair do modo expandido" : "Expandir"}
+              </button>
+            ) : null}
             <div className="flex overflow-hidden rounded-[4px] border border-zinc-700 bg-zinc-900">
               {view !== "year" ? (
                 <button
@@ -1439,6 +1526,11 @@ function SalesPeriodExplorer({
       </div>
 
       <div className="bg-zinc-100 p-3">
+        {salesFullscreenError ? (
+          <p role="alert" className="mb-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            {salesFullscreenError}
+          </p>
+        ) : null}
         {view === "year" ? (
           <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {yearOptions.map((yearDate) => {
@@ -1452,6 +1544,7 @@ function SalesPeriodExplorer({
                     onAnchorDateChange(
                       createSalesDate(getSalesYear(yearDate), getSalesMonth(anchorDate), 1)
                     );
+                    setYearBreakdown("months");
                     onViewChange("month");
                   }}
                   className={`min-h-[116px] min-w-0 rounded-[4px] border bg-white p-3 text-left shadow-sm transition hover:border-blue-500 hover:shadow ${
@@ -1474,7 +1567,81 @@ function SalesPeriodExplorer({
         ) : null}
 
         {view === "month" ? (
-          <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[4px] border border-zinc-300 bg-white p-3">
+              <div className="flex flex-wrap gap-1 rounded-[4px] border border-zinc-200 bg-zinc-100 p-1">
+                <button
+                  type="button"
+                  onClick={() => setYearBreakdown("months")}
+                  aria-pressed={yearBreakdown === "months"}
+                  className={`rounded-[3px] px-3 py-2 text-xs font-semibold ${
+                    yearBreakdown === "months"
+                      ? "bg-zinc-950 text-white"
+                      : "text-zinc-700 hover:bg-zinc-200"
+                  }`}
+                >
+                  Meses
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setYearBreakdown("weeks")}
+                  aria-pressed={yearBreakdown === "weeks"}
+                  className={`rounded-[3px] px-3 py-2 text-xs font-semibold ${
+                    yearBreakdown === "weeks"
+                      ? "bg-zinc-950 text-white"
+                      : "text-zinc-700 hover:bg-zinc-200"
+                  }`}
+                >
+                  Semanas do ano
+                </button>
+              </div>
+              {yearBreakdown === "weeks" ? (
+                <p className="text-xs font-medium text-zinc-600">
+                  {isoYearWeeks.length} semanas em {getSalesYear(anchorDate)}
+                </p>
+              ) : null}
+            </div>
+
+            {yearBreakdown === "weeks" ? (
+              <div
+                aria-label={`Semanas do ano ${getSalesYear(anchorDate)}`}
+                className={`space-y-1 overflow-y-auto rounded-[4px] border border-zinc-300 bg-white p-2 ${
+                  isSalesExpanded
+                    ? "max-h-[calc(100vh-210px)]"
+                    : "max-h-[460px]"
+                }`}
+              >
+                {isoYearWeeks.map((weekDate, index) => (
+                  <button
+                    key={`${getSalesYear(anchorDate)}-${index + 1}`}
+                    type="button"
+                    onClick={() => {
+                      onAnchorDateChange(weekDate);
+                      onViewChange("week");
+                    }}
+                    className="flex w-full flex-wrap items-center justify-between gap-3 rounded-[4px] border border-zinc-200 bg-white px-4 py-3 text-left transition hover:border-cyan-500 hover:bg-cyan-50"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-zinc-950">
+                        Semana {String(index + 1).padStart(2, "0")}
+                      </p>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        {formatSalesISOWeekPeriod(weekDate)}
+                      </p>
+                    </div>
+                    <span className="text-sm font-semibold text-zinc-500">
+                      Sem dados
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
+            <div className={
+              yearBreakdown === "months"
+                ? "grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+                : "hidden"
+            }>
             {yearMonths.map((month) => {
               const isCurrentMonth =
                 getSalesYear(month) === getSalesYear(todayDate) &&
@@ -1518,6 +1685,7 @@ function SalesPeriodExplorer({
                 </button>
               );
             })}
+            </div>
           </div>
         ) : null}
 
@@ -1680,7 +1848,8 @@ function SalesPeriodExplorer({
           </p>
         </div>
       </div>
-    </DashboardPanel>
+      </DashboardPanel>
+    </div>
   );
 }
 

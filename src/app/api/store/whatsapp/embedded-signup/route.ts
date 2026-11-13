@@ -776,7 +776,11 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
           await registerEmbeddedSignup(validated, pin);
         } catch (error) {
           logMetaFailure(error, attemptId, startedAt);
-          if (pendingSecret) {
+          const mapped = error instanceof MetaWhatsappEmbeddedSignupError
+            ? mapMetaError(error)
+            : null;
+          const preservePendingSecret = !mapped || mapped.body.canRetry === true;
+          if (pendingSecret && !preservePendingSecret) {
             try {
               await invalidateWhatsappTwoStepPinSecret({
                 supabase: privilegedClient,
@@ -789,9 +793,18 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
             }
           }
           pin = "";
-          if (error instanceof MetaWhatsappEmbeddedSignupError) {
-            const mapped = mapMetaError(error);
-            return createJsonResponse(mapped.body, mapped.status);
+          if (mapped) {
+            return createJsonResponse(
+              preservePendingSecret
+                ? {
+                    ...mapped.body,
+                    connectionScenario: "standard_pin_activation_pending",
+                    canRetry: true,
+                    requiresUserAction: true,
+                  }
+                : mapped.body,
+              mapped.status,
+            );
           }
           throw error;
         }

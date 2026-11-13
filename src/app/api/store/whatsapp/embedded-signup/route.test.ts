@@ -1004,6 +1004,36 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "uncertain Meta register failure preserves the pending secret for recovery",
+    run: async () => {
+      const { handler, secretRpcCalls } = createRouteHandler({
+        register: async () => {
+          throw new MetaWhatsappEmbeddedSignupError(
+            "META_PHONE_REGISTER_FAILED",
+            "temporary timeout while registering phone",
+            503,
+          );
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 503);
+      assert.equal(body.canRetry, true);
+      assert.equal(body.connectionScenario, "standard_pin_activation_pending");
+      assert.deepEqual(secretRpcCalls.map((call) => call.name), [
+        "create_whatsapp_phone_security_secret_pending_by_system",
+      ]);
+    },
+  },
+  {
     name: "post-register materialization failure does not activate the pending secret",
     run: async () => {
       const { handler, rpcCalls, secretRpcCalls } = createRouteHandler({
