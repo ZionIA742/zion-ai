@@ -29,6 +29,7 @@ type InboxRow = {
 type LeadRow = {
   id: string;
   name: string | null;
+  phone: string | null;
 };
 
 type FollowupCandidateRow = {
@@ -533,6 +534,14 @@ function normalizePhoneSearch(value: string | null | undefined) {
   return String(value || "").replace(/\D/g, "");
 }
 
+function normalizeInboxNameSearch(value: string | null | undefined) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
 type MessageFilter = "all" | "waiting" | "zion_last" | "commercial";
 
 export default function InboxPage() {
@@ -545,6 +554,7 @@ export default function InboxPage() {
 
   const [rows, setRows] = useState<InboxRow[]>([]);
   const [leadNames, setLeadNames] = useState<Record<string, string>>({});
+  const [leadPhones, setLeadPhones] = useState<Record<string, string>>({});
   const [followupRows, setFollowupRows] = useState<FollowupCandidateRow[]>([]);
   const [followupTotals, setFollowupTotals] = useState<FollowupTotals>(EMPTY_FOLLOWUP_TOTALS);
   const [followupHasLoadedSuccessfully, setFollowupHasLoadedSuccessfully] = useState(false);
@@ -561,6 +571,7 @@ export default function InboxPage() {
   const [followupTypeChooserOpportunityId, setFollowupTypeChooserOpportunityId] = useState<string | null>(null);
   const [openSection, setOpenSection] = useState<"followup" | "messages" | null>(null);
   const [messageFilter, setMessageFilter] = useState<MessageFilter>("all");
+  const [messageSearchText, setMessageSearchText] = useState("");
   const [followupFilter, setFollowupFilter] = useState<FollowupFilter>("all");
   const [followupSearchText, setFollowupSearchText] = useState("");
   const [commercialHandoffByConversation, setCommercialHandoffByConversation] = useState<
@@ -973,7 +984,7 @@ export default function InboxPage() {
       if (leadIds.length > 0) {
         const { data: leads, error: leadsError } = await supabase
           .from("leads")
-          .select("id, name")
+          .select("id, name, phone")
           .in("id", leadIds);
 
         if (leadsError) {
@@ -981,15 +992,22 @@ export default function InboxPage() {
         }
 
         const map: Record<string, string> = {};
+        const phones: Record<string, string> = {};
+
         (leads || []).forEach((lead: LeadRow) => {
           map[lead.id] = lead.name || "Lead sem nome";
+          phones[lead.id] = lead.phone || "";
         });
+
         if (requestSeq !== loadInboxRequestSeqRef.current) {
           return;
         }
+
         setLeadNames(map);
+        setLeadPhones(phones);
       } else {
         setLeadNames({});
+        setLeadPhones({});
       }
 
       await Promise.all([
@@ -1093,15 +1111,31 @@ export default function InboxPage() {
   );
 
   const visibleMessageRows = useMemo(() => {
-    if (messageFilter === "waiting") return rows.filter(isPendingReply);
-    if (messageFilter === "zion_last") {
-      return rows.filter((row) => String(row.last_message_direction || "").toLowerCase() === "outgoing");
-    }
-    if (messageFilter === "commercial") {
-      return rows.filter((row) => Boolean(commercialHandoffByConversation[row.conversation_id]));
-    }
-    return rows;
-  }, [commercialHandoffByConversation, messageFilter, rows]);
+    const filteredRows =
+      messageFilter === "waiting"
+        ? rows.filter(isPendingReply)
+        : messageFilter === "zion_last"
+          ? rows.filter((row) => String(row.last_message_direction || "").toLowerCase() === "outgoing")
+          : messageFilter === "commercial"
+            ? rows.filter((row) => Boolean(commercialHandoffByConversation[row.conversation_id]))
+            : rows;
+
+    const query = messageSearchText.trim();
+    if (!query) return filteredRows;
+
+    const normalizedQuery = normalizeInboxNameSearch(query);
+    const queryDigits = normalizePhoneSearch(query);
+
+    return filteredRows.filter((row) => {
+      const name = leadNames[row.lead_id] || `Lead ${shortId(row.lead_id)}`;
+      const phone = leadPhones[row.lead_id];
+
+      return (
+        normalizeInboxNameSearch(name).includes(normalizedQuery) ||
+        (queryDigits.length > 0 && normalizePhoneSearch(phone).includes(queryDigits))
+      );
+    });
+  }, [commercialHandoffByConversation, leadNames, leadPhones, messageFilter, messageSearchText, rows]);
 
   const sortedFollowupRows = useMemo(() => {
     return sortFollowupRowsByCanonicalPriority(followupRows, priorityByOpportunity);
@@ -1368,10 +1402,50 @@ export default function InboxPage() {
 
             </div>
 
+            <div className="border-b border-black/5 px-5 py-4">
+              <div className="max-w-md">
+                <label className="sr-only" htmlFor="inbox-message-search">
+                  Buscar cliente por nome ou telefone
+                </label>
+
+                <div className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 ring-1 ring-black/10">
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4 w-4 shrink-0 text-gray-400"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m16 16 4 4" />
+                  </svg>
+
+                  <input
+                    id="inbox-message-search"
+                    type="search"
+                    value={messageSearchText}
+                    onChange={(event) => setMessageSearchText(event.target.value)}
+                    placeholder="Buscar cliente por nome ou telefone"
+                    className="min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+                  />
+                </div>
+
+                {messageSearchText.trim() ? (
+                  <div className="mt-2 text-xs font-medium text-gray-500">
+                    {visibleMessageRows.length} resultado(s) encontrados
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
             <div className="space-y-3 p-4">
               {!loading && !storeLoading && visibleMessageRows.length === 0 ? (
                 <div className="rounded-xl bg-gray-50 px-4 py-8 text-center text-sm text-gray-500 ring-1 ring-black/5">
-                  Nenhuma conversa encontrada neste filtro.
+                  {messageSearchText.trim()
+                    ? "Nenhuma conversa encontrada para esta pesquisa."
+                    : "Nenhuma conversa encontrada neste filtro."}
                 </div>
               ) : (
                 visibleMessageRows.map((row) => {
