@@ -169,6 +169,24 @@ export async function GET(req: Request) {
   const startedAt = new Date().toISOString();
 
   try {
+    const timeoutSupabase = getSupabaseAdmin();
+    const { data: timeoutData, error: timeoutError } = await timeoutSupabase.rpc(
+      "process_stale_human_conversations",
+    );
+
+    if (timeoutError) {
+      throw new Error(`Falha ao processar expiracoes de takeover humano: ${timeoutError.message}`);
+    }
+
+    if (timeoutData === null || timeoutData === undefined) {
+      throw new Error("RPC temporal de takeover humano nao retornou resultado.");
+    }
+
+    const humanTakeoverTimeoutProcessed = Number(timeoutData);
+    if (!Number.isSafeInteger(humanTakeoverTimeoutProcessed) || humanTakeoverTimeoutProcessed < 0) {
+      throw new Error("RPC temporal de takeover humano retornou resultado invalido.");
+    }
+
     const inboxLimit = parseEnvLimit(process.env.WHATSAPP_CRON_INBOX_LIMIT, 10);
     const pendingLimit = parseEnvLimit(process.env.WHATSAPP_CRON_PENDING_LIMIT, 10);
     const postAppointmentFollowupLimit = parseEnvLimit(
@@ -207,6 +225,7 @@ export async function GET(req: Request) {
         aiQueueSucceeded: 0,
         aiQueueFailed: 0,
         aiQueueSkipped: 0,
+        humanTakeoverTimeoutProcessed,
         results: [] as StoreExecutionSummary[],
       });
     }
@@ -379,6 +398,7 @@ export async function GET(req: Request) {
       aiQueueSucceeded,
       aiQueueFailed,
       aiQueueSkipped,
+      humanTakeoverTimeoutProcessed,
       limits: {
         inbox: inboxLimit,
         pending: pendingLimit,

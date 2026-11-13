@@ -7,8 +7,16 @@ const migration = readFileSync(
   join(root, "supabase", "migrations", "20261114040000_p9_hybrid_human_takeover_lease.sql"),
   "utf8",
 );
+const correctiveMigration = readFileSync(
+  join(root, "supabase", "migrations", "20261114050000_p9_hybrid_human_takeover_lock_and_acl_fix.sql"),
+  "utf8",
+);
 const processor = readFileSync(
   join(root, "src", "lib", "server", "whatsapp-inbox-processor.ts"),
+  "utf8",
+);
+const whatsappCronRoute = readFileSync(
+  join(root, "src", "app", "api", "cron", "whatsapp-process-all", "route.ts"),
   "utf8",
 );
 
@@ -89,6 +97,37 @@ const scenarios: Array<[string, () => void]> = [
   ["T20 timeout uses the target state resolver", () => assert.match(migration, /resolve_human_release_target_state\(v_row\.conversation_id\)/)],
   ["T21 hard hold is durable", () => assert.match(migration, /hard_hold boolean not null default false/)],
   ["T22 persistence failure cannot report release", () => assert.match(migration, /for update of conversation_row, lease_row skip locked/)],
+  ["T23 corrective migration removes the pre-lock bulk update", () => {
+    assert.match(correctiveMigration, /create or replace function public\.process_stale_human_conversations/);
+    const functionBody = correctiveMigration.slice(
+      correctiveMigration.indexOf("create or replace function public.process_stale_human_conversations"),
+      correctiveMigration.indexOf("alter function public.process_stale_human_conversations"),
+    );
+    assert.doesNotMatch(functionBody, /update public\.conversation_human_takeover_leases lease_row/);
+  }],
+  ["T24 timeout locks conversation before lease and revalidates", () => {
+    const conversationLock = correctiveMigration.indexOf("from public.conversations conversation_row");
+    const leaseLock = correctiveMigration.indexOf("from public.conversation_human_takeover_leases lease_row", conversationLock + 1);
+    const revalidation = correctiveMigration.indexOf("Revalidate every mutable eligibility field");
+    assert.ok(conversationLock >= 0 && leaseLock > conversationLock && revalidation > leaseLock);
+    assert.match(correctiveMigration, /for update skip locked/gi);
+    assert.match(correctiveMigration, /v_lease\.last_human_activity_at > pg_catalog\.clock_timestamp\(\) - interval '40 minutes'/);
+  }],
+  ["T25 takeover state tables are protected by RLS and ACLs", () => {
+    assert.match(correctiveMigration, /alter table public\.conversation_human_takeover_leases enable row level security/);
+    assert.match(correctiveMigration, /alter table public\.conversation_human_takeover_activity_events enable row level security/);
+    assert.match(correctiveMigration, /revoke all on table public\.conversation_human_takeover_leases from public, anon, authenticated, service_role/);
+    assert.match(correctiveMigration, /grant all on table public\.conversation_human_takeover_leases to service_role/);
+  }],
+  ["T26 existing WhatsApp cron invokes the timeout authority once globally", () => {
+    const normalizedRoute = whatsappCronRoute.replace(/\r\n/g, "\n");
+    assert.match(normalizedRoute, /rpc\(\s*["']process_stale_human_conversations["']\s*,?\s*\)/);
+    assert.match(whatsappCronRoute, /humanTakeoverTimeoutProcessed/);
+    assert.ok(
+      normalizedRoute.indexOf('rpc(\n      "process_stale_human_conversations"') <
+        normalizedRoute.indexOf("const stores = await listActiveWhatsappStores()"),
+    );
+  }],
 ];
 
 for (const [name, run] of scenarios) {
@@ -100,3 +139,4 @@ assert.match(migration, /interval '30 minutes'/);
 assert.match(migration, /interval '40 minutes'/);
 assert.match(migration, /notice_30_at/);
 assert.match(migration, /no customer notification/i);
+assert.match(correctiveMigration, /security definer/);
