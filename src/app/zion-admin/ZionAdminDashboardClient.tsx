@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import ZionAdminCostsSection from "./ZionAdminCostsSection";
 import ZionAdminPinRotationControls from "./ZionAdminPinRotationControls";
 import ZionAdminWhatsappNumberChange from "./ZionAdminWhatsappNumberChange";
+import ZionAdminDiagnosticIncidents from "./ZionAdminDiagnosticIncidents";
 import {
   ensureFacebookSdkLoaded,
   classifyMetaEmbeddedSignupMessage,
@@ -1188,6 +1189,7 @@ function GlobalAlertsSection({
         </div> : null}
         {category === "ai" ? <div className="space-y-2">
           <h3 className="text-sm font-semibold text-white">Erros registrados nas execuções de IA</h3>
+          <ZionAdminDiagnosticIncidents stores={stores} />
           {normalizeOverviewDataAvailability(availability) !== "available" ? <p className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-2 text-xs text-amber-200">A consulta pode estar parcial ou indisponível; não é possível concluir que os registros estejam completos.</p> : null}
           {aiErrors.length === 0 ? <p className="text-xs text-[#96adbb]">Nenhuma ocorrência retornada nas fontes consultadas.</p> : aiErrors.slice(0,limit).map((event)=>{
             const classification=classifyAiRunEvent(event);
