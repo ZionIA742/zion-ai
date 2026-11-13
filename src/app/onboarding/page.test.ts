@@ -185,8 +185,8 @@ const tests: TestCase[] = [
         block.includes('"onboarding_complete_store_onboarding_scoped"'),
         true,
       );
-      assert.equal(block.includes("p_organization_id: organizationId"), true);
-      assert.equal(block.includes("p_store_id: activeStore.id"), true);
+      assert.equal(block.includes("p_organization_id: scope.organizationId"), true);
+      assert.equal(block.includes("p_store_id: scope.storeId"), true);
     },
   },
   {
@@ -551,6 +551,25 @@ const tests: TestCase[] = [
       assert.equal(source.includes("responseBodyRead"), true);
       assert.equal(source.includes("isEmbeddedSignupResponseUncertain"), true);
       assert.equal(source.includes("result?.integration"), true);
+    },
+  },
+  {
+    name: "pending number change is not treated as a connected success",
+    run: () => {
+      const source = readPageSource();
+      const block = getEmbeddedSignupSubmitBlock(source);
+      const pendingIndex = block.indexOf('result.connectionScenario === "zion_number_change_required"');
+      const finalizeIndex = block.indexOf("finalizeEmbeddedSignupConnection", pendingIndex);
+      const pendingReturnIndex = block.indexOf("return;", pendingIndex);
+      assert.equal(pendingIndex > -1, true);
+      assert.equal(block.includes("result.requiresUserAction === true"), true);
+      assert.equal(block.includes("result.candidate?.isActive !== false"), true);
+      assert.equal(block.includes("setEmbeddedSignupPendingOperation"), true);
+      assert.equal(block.includes("Nenhuma conexao foi marcada como ativa."), true);
+      assert.equal(pendingReturnIndex > pendingIndex, true);
+      assert.equal(finalizeIndex === -1 || pendingReturnIndex < finalizeIndex, true);
+      assert.equal(source.includes("Este onboarding"), true);
+      assert.equal(source.includes("cutover automaticamente"), true);
     },
   },
   {

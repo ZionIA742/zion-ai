@@ -145,6 +145,10 @@ function mapEmbeddedSignupError(error: unknown) {
       return EMBEDDED_SIGNUP_REJECTED_MESSAGE;
     case "WHATSAPP_STATUS_NOT_CONFIRMED":
       return EMBEDDED_SIGNUP_STATUS_NOT_CONFIRMED_MESSAGE;
+    case "EMBEDDED_SIGNUP_ACTION_REQUIRED":
+      return "A Meta exige uma etapa adicional para esta conexao. Nenhuma integracao foi marcada como ativa; siga a orientacao da loja ou procure o suporte.";
+    case "EMBEDDED_SIGNUP_PENDING_OPERATION_INVALID":
+      return "A Meta retornou uma operacao pendente inconsistente. Nenhuma integracao foi alterada; procure o suporte.";
     case "ONBOARDING_READINESS_NOT_CONFIRMED":
       return EMBEDDED_SIGNUP_READINESS_NOT_CONFIRMED_MESSAGE;
     default:
@@ -160,6 +164,19 @@ function readEmbeddedSignupScenarioMessage(result: {
   const message = cleanText(result?.message);
   return scenario && message ? `EMBEDDED_SIGNUP_SCENARIO:${scenario}:${message}` : null;
 }
+
+type PendingEmbeddedSignupOperation = {
+  scenario: "zion_number_change_required";
+  requestId: string;
+  status: string;
+  activeIntegrationId: string | null;
+  candidate: {
+    phoneNumberId: string;
+    whatsappBusinessAccountId: string;
+    displayPhoneNumber: string;
+    isActive: false;
+  };
+};
 
 const STORE_SERVICE_OPTIONS: Option[] = [
   { value: "venda_piscinas", label: "Venda de piscinas" },
@@ -579,6 +596,8 @@ function OnboardingContent() {
   const embeddedSignupRequestedModeRef = useRef<"standard" | "business_app_coexistence" | null>(null);
   const [embeddedSignupError, setEmbeddedSignupError] = useState<string | null>(null);
   const [embeddedSignupMessage, setEmbeddedSignupMessage] = useState<string | null>(null);
+  const [embeddedSignupPendingOperation, setEmbeddedSignupPendingOperation] =
+    useState<PendingEmbeddedSignupOperation | null>(null);
   const [siteOrFacebookPageSelection, setSiteOrFacebookPageSelection] = useState<"yes" | "no" | null>(null);
   const [hasSiteOrFacebookPage, setHasSiteOrFacebookPage] = useState<"yes" | "no" | null>(null);
   const {
@@ -610,6 +629,7 @@ function OnboardingContent() {
     setEmbeddedSignupSubmitting(false);
     setEmbeddedSignupSession(null);
     setEmbeddedSignupCode("");
+    setEmbeddedSignupPendingOperation(null);
     setEmbeddedSignupMessage(null);
     setEmbeddedSignupError("A loja ativa mudou antes da conclusao da conexao Meta.");
   }, [activeStore?.id, closeEmbeddedSignupAttempt, embeddedSignupAttemptIdRef, organizationId]);
@@ -1564,6 +1584,7 @@ function OnboardingContent() {
     setSuccessMessage(null);
     setEmbeddedSignupError(null);
     setEmbeddedSignupMessage(null);
+    setEmbeddedSignupPendingOperation(null);
     setEmbeddedSignupSession(null);
     setEmbeddedSignupCode("");
     setEmbeddedSignupIntent(intent);
@@ -1734,7 +1755,20 @@ function OnboardingContent() {
           error?: string;
           phoneRegistrationConfirmed?: boolean;
           connectionScenario?: string;
+          requiresUserAction?: boolean;
+          canRetry?: boolean;
           connectionMode?: "standard" | "business_app_coexistence";
+          changeRequest?: {
+            id?: string | null;
+            status?: string | null;
+            activeIntegrationId?: string | null;
+          } | null;
+          candidate?: {
+            phoneNumberId?: string | null;
+            whatsappBusinessAccountId?: string | null;
+            displayPhoneNumber?: string | null;
+            isActive?: boolean;
+          } | null;
           integration?: {
             phoneNumberId?: string | null;
             whatsappBusinessAccountId?: string | null;
@@ -1781,6 +1815,58 @@ function OnboardingContent() {
           const scenarioMessage = readEmbeddedSignupScenarioMessage(result);
           throw new Error(
             scenarioMessage || "EMBEDDED_SIGNUP_BACKEND_REJECTED",
+          );
+        }
+
+        if (
+          result?.ok === true &&
+          result.requiresUserAction === true &&
+          result.connectionScenario === "zion_number_change_required"
+        ) {
+          const requestId = cleanText(result.changeRequest?.id);
+          const status = cleanText(result.changeRequest?.status);
+          const activeIntegrationId = cleanText(result.changeRequest?.activeIntegrationId) || null;
+          const phoneNumberId = cleanText(result.candidate?.phoneNumberId);
+          const whatsappBusinessAccountId = cleanText(result.candidate?.whatsappBusinessAccountId);
+          const displayPhoneNumber = cleanText(result.candidate?.displayPhoneNumber);
+          if (
+            !requestId ||
+            !status ||
+            !phoneNumberId ||
+            !whatsappBusinessAccountId ||
+            !displayPhoneNumber ||
+            result.candidate?.isActive !== false ||
+            result.integration
+          ) {
+            throw new Error("EMBEDDED_SIGNUP_PENDING_OPERATION_INVALID");
+          }
+          if (!isEmbeddedSignupAttemptCurrent(attemptId)) return;
+          clearEmbeddedSignupSensitiveState();
+          setEmbeddedSignupCode("");
+          setEmbeddedSignupSession(null);
+          setEmbeddedSignupPendingOperation({
+            scenario: "zion_number_change_required",
+            requestId,
+            status,
+            activeIntegrationId,
+            candidate: {
+              phoneNumberId,
+              whatsappBusinessAccountId,
+              displayPhoneNumber,
+              isActive: false,
+            },
+          });
+          setEmbeddedSignupMessage(
+            "A troca de numero foi registrada, mas ainda nao foi concluida. Continue pelo fluxo seguro de troca de WhatsApp autorizado para esta loja. Nenhuma conexao foi marcada como ativa.",
+          );
+          setEmbeddedSignupError(null);
+          return;
+        }
+
+        if (result?.ok === true && result.requiresUserAction === true) {
+          const scenarioMessage = readEmbeddedSignupScenarioMessage(result);
+          throw new Error(
+            scenarioMessage || "EMBEDDED_SIGNUP_ACTION_REQUIRED",
           );
         }
 
@@ -2329,7 +2415,7 @@ function OnboardingContent() {
                       <button
                         type="button"
                         onClick={() => startMetaEmbeddedSignup("connect", "business_app_coexistence")}
-                        disabled={embeddedSignupLoading || embeddedSignupSubmitting}
+                        disabled={embeddedSignupLoading || embeddedSignupSubmitting || Boolean(embeddedSignupPendingOperation)}
                         className="rounded-xl border border-amber-400 bg-amber-50 px-5 py-2.5 text-sm font-semibold text-amber-950 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         Manter WhatsApp Business + Cloud API
@@ -2337,7 +2423,7 @@ function OnboardingContent() {
                       <button
                         type="button"
                         onClick={() => startMetaEmbeddedSignup("connect", "standard")}
-                        disabled={embeddedSignupLoading || embeddedSignupSubmitting}
+                        disabled={embeddedSignupLoading || embeddedSignupSubmitting || Boolean(embeddedSignupPendingOperation)}
                         className="rounded-xl bg-black px-5 py-2.5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         Conectar Cloud API convencional
@@ -2346,6 +2432,16 @@ function OnboardingContent() {
 
                     {embeddedSignupMessage ? (
                       <p className="text-sm leading-6 text-emerald-800">{embeddedSignupMessage}</p>
+                    ) : null}
+                    {embeddedSignupPendingOperation ? (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-950">
+                        <p>
+                          Pedido de troca {embeddedSignupPendingOperation.requestId} está pendente, com o número candidato {embeddedSignupPendingOperation.candidate.displayPhoneNumber}. O número atualmente conectado não foi alterado.
+                        </p>
+                        <p className="mt-1">
+                          Para continuar, use um link autorizado do fluxo seguro de troca desta loja. Este onboarding não cria link nem executa o cutover automaticamente.
+                        </p>
+                      </div>
                     ) : null}
                     {embeddedSignupError ? (
                       <p className="text-sm leading-6 text-red-800">{embeddedSignupError}</p>

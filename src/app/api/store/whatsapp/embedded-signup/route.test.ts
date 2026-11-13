@@ -1476,6 +1476,11 @@ const tests: TestCase[] = [
       const body = await parseBody(response);
 
       assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.connectionScenario, "zion_number_change_required");
+      assert.equal(body.requiresUserAction, true);
+      assert.equal(body.canRetry, false);
+      assert.equal(body.integration, undefined);
       assert.equal(candidateRpcCalls.length, 1);
       assert.equal(rpcCalls.length, 0);
       assert.equal(candidateRpcCalls[0]?.args.p_idempotency_key, "change-0018");
