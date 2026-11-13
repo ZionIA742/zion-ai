@@ -47,11 +47,15 @@ declare
   v_candidate timestamptz;
   v_inserted boolean := true;
 begin
-  select * into v_conversation
-    from public.conversations
-   where id = p_conversation_id
-     and organization_id = p_organization_id
-   for update;
+  select conversation_row.* into v_conversation
+    from public.conversations conversation_row
+    join public.leads lead_row
+      on lead_row.id = conversation_row.lead_id
+     and lead_row.organization_id = p_organization_id
+     and lead_row.store_id = p_store_id
+   where conversation_row.id = p_conversation_id
+     and conversation_row.organization_id = p_organization_id
+   for update of conversation_row;
 
   if not found then
     raise exception using errcode = '42501', message = 'human takeover conversation scope mismatch';

@@ -79,6 +79,7 @@ const scenarios: Array<[string, () => void]> = [
   }],
   ["T15 conversations are independent", () => assert.notEqual("conversation-a", "conversation-b")],
   ["T16 tenant scope is part of the SQL writer", () => assert.match(migration, /organization_id = p_organization_id/)],
+  ["T16 tenant store scope is part of the SQL writer", () => assert.match(migration, /lead_row\.store_id = p_store_id/)],
   ["T17 panel uses canonical writer", () => assert.match(migration, /automatic_panel_human_message/)],
   ["T18 WhatsApp uses the same writer", () => assert.match(processor, /whatsapp_business_app_intervention/)],
   ["T19 duplicate echo does not call takeover again", () => {
