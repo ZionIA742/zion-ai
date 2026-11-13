@@ -771,33 +771,37 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
           })
         : null;
 
-      try {
-        await registerEmbeddedSignup(validated, pin);
-      } catch (error) {
-        logMetaFailure(error, attemptId, startedAt);
-        if (pendingSecret) {
-          try {
-            await invalidateWhatsappTwoStepPinSecret({
-              supabase: privilegedClient,
-              organizationId: access.organizationId,
-              storeId: access.storeId,
-              secretId: pendingSecret.secretId,
-            });
-          } catch {
-            // Keep the original Meta failure as the public outcome.
+      if (pendingSecret?.outcome !== "idempotent_replay") {
+        try {
+          await registerEmbeddedSignup(validated, pin);
+        } catch (error) {
+          logMetaFailure(error, attemptId, startedAt);
+          if (pendingSecret) {
+            try {
+              await invalidateWhatsappTwoStepPinSecret({
+                supabase: privilegedClient,
+                organizationId: access.organizationId,
+                storeId: access.storeId,
+                secretId: pendingSecret.secretId,
+              });
+            } catch {
+              // Keep the original Meta failure as the public outcome.
+            }
           }
+          pin = "";
+          if (error instanceof MetaWhatsappEmbeddedSignupError) {
+            const mapped = mapMetaError(error);
+            return createJsonResponse(mapped.body, mapped.status);
+          }
+          throw error;
         }
-        pin = "";
-        if (error instanceof MetaWhatsappEmbeddedSignupError) {
-          const mapped = mapMetaError(error);
-          return createJsonResponse(mapped.body, mapped.status);
-        }
-        throw error;
       }
       pin = "";
 
       const { data, error } = await privilegedClient.rpc(
-        "materialize_store_whatsapp_embedded_signup_by_system",
+        pendingSecret
+          ? "materialize_store_whatsapp_embedded_signup_pending_pin_by_system"
+          : "materialize_store_whatsapp_embedded_signup_by_system",
         {
           p_organization_id: access.organizationId,
           p_store_id: access.storeId,
@@ -818,6 +822,13 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
             ok: false,
             error: mapped.error,
             message: mapped.message,
+            ...(pendingSecret
+              ? {
+                  connectionScenario: "standard_pin_activation_pending",
+                  canRetry: true,
+                  requiresUserAction: true,
+                }
+              : {}),
           },
           mapped.status,
         );
@@ -831,14 +842,33 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
       const integration = row as MaterializedWhatsappIntegration;
 
       if (pendingSecret) {
-        await activateWhatsappTwoStepPinSecret({
-          supabase: privilegedClient,
-          organizationId: access.organizationId,
-          storeId: access.storeId,
-          phoneNumberId: integration.phone_number_id,
-          externalIntegrationId: integration.integration_id,
-        });
+        try {
+          await activateWhatsappTwoStepPinSecret({
+            supabase: privilegedClient,
+            organizationId: access.organizationId,
+            storeId: access.storeId,
+            phoneNumberId: integration.phone_number_id,
+            externalIntegrationId: integration.integration_id,
+          });
+        } catch {
+          return createJsonResponse(
+            {
+              ok: false,
+              error: "WHATSAPP_PIN_ACTIVATION_PENDING",
+              message:
+                "A conexao foi preservada em estado pendente e sera retomada com seguranca.",
+              connectionScenario: "standard_pin_activation_pending",
+              canRetry: true,
+              requiresUserAction: true,
+            },
+            503,
+          );
+        }
       }
+
+      const operationalIntegration = pendingSecret
+        ? { ...integration, is_active: true }
+        : integration;
 
       return createJsonResponse({
         ok: true,
@@ -852,12 +882,12 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
         requiresUserAction: false,
         integration: {
           id: integration.integration_id,
-          provider: integration.provider,
-          status: integration.status,
-          isActive: integration.is_active === true,
-          phoneNumberId: integration.phone_number_id,
-          whatsappBusinessAccountId: integration.whatsapp_business_account_id,
-          displayPhoneNumber: integration.display_phone_number,
+          provider: operationalIntegration.provider,
+          status: operationalIntegration.status,
+          isActive: operationalIntegration.is_active === true,
+          phoneNumberId: operationalIntegration.phone_number_id,
+          whatsappBusinessAccountId: operationalIntegration.whatsapp_business_account_id,
+          displayPhoneNumber: operationalIntegration.display_phone_number,
         },
       });
     } catch (error) {

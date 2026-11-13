@@ -87,7 +87,11 @@ export async function createPendingWhatsappTwoStepPinSecret(args: {
   if (!row?.secret_id || typeof row.status !== "string") {
     throw new WhatsappTwoStepPinSecretError("WHATSAPP_PIN_PENDING_WRITE_INVALID");
   }
-  return { secretId: row.secret_id as string, status: row.status as string };
+  return {
+    secretId: row.secret_id as string,
+    status: row.status as string,
+    outcome: typeof row.outcome === "string" ? row.outcome : "created",
+  };
 }
 
 export async function activateWhatsappTwoStepPinSecret(args: {

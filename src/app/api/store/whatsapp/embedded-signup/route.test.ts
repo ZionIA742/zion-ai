@@ -154,6 +154,8 @@ function createPrivilegedClientMock(args?: {
   rpcError?: { message: string };
   rpcData?: unknown;
   pendingRpcError?: { message: string };
+  pendingRpcOutcome?: "created" | "idempotent_replay";
+  activationRpcError?: { message: string };
   candidateRpcError?: { message: string } | null;
   candidateRpcData?: unknown;
 }) {
@@ -183,7 +185,7 @@ function createPrivilegedClientMock(args?: {
         if (name === "create_whatsapp_phone_security_secret_pending_by_system") {
           secretRpcCalls.push({ name, args: { ...rpcArgs } });
           return {
-            data: [{ secret_id: "secret-1", status: "pending", outcome: "created" }],
+            data: [{ secret_id: "secret-1", status: "pending", outcome: args?.pendingRpcOutcome ?? "created" }],
             error: args?.pendingRpcError ?? null,
           };
         }
@@ -200,7 +202,25 @@ function createPrivilegedClientMock(args?: {
           secretRpcCalls.push({ name, args: { ...rpcArgs } });
           return {
             data: [{ secret_id: "secret-1", status: "active", outcome: "activated" }],
-            error: null,
+            error: args?.activationRpcError ?? null,
+          };
+        }
+
+        if (name === "materialize_store_whatsapp_embedded_signup_pending_pin_by_system") {
+          rpcCalls.push({ name, args: { ...rpcArgs } });
+          return {
+            data:
+              args?.rpcData ?? [{
+                integration_id: "integration-1",
+                outcome: "inserted",
+                provider: "whatsapp",
+                status: "active",
+                is_active: false,
+                phone_number_id: String(rpcArgs.p_phone_number_id || ""),
+                whatsapp_business_account_id: String(rpcArgs.p_whatsapp_business_account_id || ""),
+                display_phone_number: String(rpcArgs.p_display_phone_number || ""),
+              }],
+            error: args?.rpcError ?? null,
           };
         }
 
@@ -266,6 +286,8 @@ function createRouteHandler(args?: {
   rpcError?: { message: string };
   rpcData?: unknown;
   pendingRpcError?: { message: string };
+  pendingRpcOutcome?: "created" | "idempotent_replay";
+  activationRpcError?: { message: string };
   candidateRpcError?: { message: string } | null;
   candidateRpcData?: unknown;
   events?: string[];
@@ -279,6 +301,8 @@ function createRouteHandler(args?: {
     rpcError: args?.rpcError,
     rpcData: args?.rpcData,
     pendingRpcError: args?.pendingRpcError,
+    pendingRpcOutcome: args?.pendingRpcOutcome,
+    activationRpcError: args?.activationRpcError,
     candidateRpcError: args?.candidateRpcError,
     candidateRpcData: args?.candidateRpcData,
   });
@@ -996,9 +1020,65 @@ const tests: TestCase[] = [
 
       assert.equal(response.status, 500);
       assert.equal(rpcCalls.length, 1);
+      assert.equal(
+        rpcCalls[0]?.name,
+        "materialize_store_whatsapp_embedded_signup_pending_pin_by_system",
+      );
       assert.deepEqual(secretRpcCalls.map((call) => call.name), [
         "create_whatsapp_phone_security_secret_pending_by_system",
       ]);
+    },
+  },
+  {
+    name: "a pending replay resumes materialization without repeating Meta register",
+    run: async () => {
+      let registerCalls = 0;
+      const { handler, rpcCalls } = createRouteHandler({
+        pendingRpcOutcome: "idempotent_replay",
+        register: async () => {
+          registerCalls += 1;
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+        }),
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(registerCalls, 0);
+      assert.equal(
+        rpcCalls.some(
+          (call) => call.name === "materialize_store_whatsapp_embedded_signup_pending_pin_by_system",
+        ),
+        true,
+      );
+    },
+  },
+  {
+    name: "PIN activation failure remains pending and never reports an active integration",
+    run: async () => {
+      const { handler } = createRouteHandler({
+        activationRpcError: { message: "PIN_ACTIVATION_FAILED" },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 503);
+      assert.equal(body.ok, false);
+      assert.equal(body.error, "WHATSAPP_PIN_ACTIVATION_PENDING");
+      assert.equal(body.connectionScenario, "standard_pin_activation_pending");
+      assert.equal(body.integration, undefined);
     },
   },
   {
@@ -1500,7 +1580,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "first connection falls back to the existing active writer",
+    name: "first connection uses the pending PIN materializer",
     run: async () => {
       const { handler, candidateRpcCalls, rpcCalls } = createRouteHandler();
 
@@ -1515,7 +1595,10 @@ const tests: TestCase[] = [
       assert.equal(response.status, 200);
       assert.equal(candidateRpcCalls.length, 1);
       assert.equal(rpcCalls.length, 1);
-      assert.equal(rpcCalls[0]?.name, "materialize_store_whatsapp_embedded_signup_by_system");
+      assert.equal(
+        rpcCalls[0]?.name,
+        "materialize_store_whatsapp_embedded_signup_pending_pin_by_system",
+      );
     },
   },
   {
