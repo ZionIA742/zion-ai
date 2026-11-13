@@ -136,6 +136,36 @@ const WEEKDAY_LABELS = ["dom.", "seg.", "ter.", "qua.", "qui.", "sex.", "sáb."]
 const TIMELINE_HOUR_HEIGHT = 72;
 const TIMELINE_HOURS = Array.from({ length: 24 }, (_, index) => index);
 
+type TimelineMarker = {
+  key: string;
+  top: number;
+  bottom: number;
+};
+
+function getOpeningMinutes(operatingHours: unknown, date: Date): number | null {
+  if (!operatingHours || typeof operatingHours !== "object" || Array.isArray(operatingHours)) {
+    return null;
+  }
+
+  const weekdayKeys = [
+    "domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado",
+  ];
+  const weekday = weekdayKeys[date.getUTCDay()];
+  const dayHours = (operatingHours as Record<string, unknown>)[weekday];
+
+  if (!dayHours || typeof dayHours !== "object" || Array.isArray(dayHours)) {
+    return null;
+  }
+
+  const start = (dayHours as Record<string, unknown>).start;
+  if (typeof start !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(start)) {
+    return null;
+  }
+
+  const [hour, minute] = start.split(":").map(Number);
+  return hour * 60 + minute;
+}
+
 const SCHEDULE_TYPE_LEGEND = [
   { value: "technical_visit", label: "Visita técnica", dotClass: "bg-blue-600" },
   { value: "installation", label: "Instalação", dotClass: "bg-green-600" },
@@ -796,6 +826,15 @@ export default function SchedulePage() {
   const [refreshing, setRefreshing] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [scheduleTimezoneName, setScheduleTimezoneName] = useState<string | null>(null);
+  const [storeOperatingHours, setStoreOperatingHours] = useState<unknown>(null);
+  const timelineScrollRef = useRef<HTMLDivElement | null>(null);
+  const lastTimelinePositionKeyRef = useRef<string | null>(null);
+  const timelineHeaderRef = useRef<HTMLDivElement | null>(null);
+  const timelineGridRef = useRef<HTMLDivElement | null>(null);
+  const [timelineCounts, setTimelineCounts] = useState({
+    above: 0,
+    below: 0,
+  });
 
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState<AppointmentEditForm | null>(null);
@@ -876,12 +915,13 @@ export default function SchedulePage() {
     let cancelled = false;
     if (!organizationId || !activeStoreId || storeLoading) {
       setScheduleTimezoneName(null);
+      setStoreOperatingHours(null);
       return () => { cancelled = true; };
     }
 
     void supabase
       .from("store_schedule_settings")
-      .select("timezone_name")
+      .select("timezone_name, operating_hours")
       .eq("organization_id", organizationId)
       .eq("store_id", activeStoreId)
       .maybeSingle()
@@ -891,6 +931,7 @@ export default function SchedulePage() {
           ? data.timezone_name
           : null;
         setScheduleTimezoneName(timezoneName);
+        setStoreOperatingHours(error ? null : data?.operating_hours ?? null);
         if (timezoneName) {
           const todayKey = storeTodayDateKey(timezoneName);
           if (todayKey) {
@@ -1336,6 +1377,193 @@ export default function SchedulePage() {
     appointmentCreateForm.commercialOpportunityId,
     compatibleCommercialOpportunities,
   ]);
+
+  useEffect(() => {
+    if (
+      calendarView === "month" ||
+      loading ||
+      storeLoading ||
+      !scheduleTimezoneName
+    ) {
+      lastTimelinePositionKeyRef.current = null;
+      return;
+    }
+
+    const scroller = timelineScrollRef.current;
+    if (!scroller) return;
+
+    const days = calendarView === "day" ? [viewDate] : visibleDays;
+    const openings = days
+      .map((day) => getOpeningMinutes(storeOperatingHours, day))
+      .filter((value): value is number => value !== null);
+
+    // Sem horario valido, preservar o inicio das 24 horas.
+    const openingMinutes = openings.length > 0 ? Math.min(...openings) : 0;
+    const scrollKey = [
+      activeStoreId,
+      calendarView,
+      toDateKey(viewDate),
+      JSON.stringify(storeOperatingHours),
+    ].join("|");
+
+    if (lastTimelinePositionKeyRef.current === scrollKey) return;
+
+    const desiredTop = openingMinutes / 60 * TIMELINE_HOUR_HEIGHT;
+    const maximumTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+
+    scroller.scrollTop = Math.max(0, Math.min(maximumTop, desiredTop - 12));
+    lastTimelinePositionKeyRef.current = scrollKey;
+  }, [
+    activeStoreId,
+    calendarView,
+    loading,
+    scheduleTimezoneName,
+    storeLoading,
+    storeOperatingHours,
+    viewDate,
+    visibleDays,
+  ]);
+
+  const timelineMarkers = useMemo(() => {
+    if (calendarView === "month") return [];
+
+    const markers: TimelineMarker[] = [];
+
+    for (const day of visibleDays) {
+      const dayKey = toDateKey(day);
+
+      for (const item of itemsByDate[dayKey] || []) {
+        const position = getTimelinePosition(item, day, scheduleTimezoneName);
+        if (!position) continue;
+
+        markers.push({
+          key: `${dayKey}-${item.itemId}`,
+          top: position.top,
+          bottom: position.top + position.height,
+        });
+      }
+    }
+
+    return markers.sort(
+      (a, b) => a.top - b.top || a.key.localeCompare(b.key)
+    );
+  }, [calendarView, visibleDays, itemsByDate, scheduleTimezoneName]);
+
+  const getTimelineGeometry = useCallback(() => {
+    const scroller = timelineScrollRef.current;
+    const grid = timelineGridRef.current;
+
+    if (!scroller || !grid || calendarView === "month") return null;
+
+    const gridTop =
+      grid.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop;
+
+    const headerHeight =
+      timelineHeaderRef.current?.getBoundingClientRect().height ?? 0;
+
+    return {
+      scroller,
+      gridTop,
+      headerHeight,
+      visibleStart: scroller.scrollTop + headerHeight,
+      visibleEnd: scroller.scrollTop + scroller.clientHeight,
+    };
+  }, [calendarView]);
+
+  const updateTimelineCounts = useCallback(() => {
+    const geometry = getTimelineGeometry();
+
+    if (!geometry) {
+      setTimelineCounts((previous) =>
+        previous.above === 0 && previous.below === 0
+          ? previous
+          : { above: 0, below: 0 }
+      );
+      return;
+    }
+
+    let above = 0;
+    let below = 0;
+
+    for (const marker of timelineMarkers) {
+      const itemTop = geometry.gridTop + marker.top;
+      const itemBottom = geometry.gridTop + marker.bottom;
+
+      if (itemBottom <= geometry.visibleStart + 1) {
+        above += 1;
+      } else if (itemTop >= geometry.visibleEnd - 1) {
+        below += 1;
+      }
+    }
+
+    setTimelineCounts((previous) =>
+      previous.above === above && previous.below === below
+        ? previous
+        : { above, below }
+    );
+  }, [getTimelineGeometry, timelineMarkers]);
+
+  useEffect(() => {
+    let frame: number | null = null;
+
+    const scheduleUpdate = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(updateTimelineCounts);
+    };
+
+    scheduleUpdate();
+    window.addEventListener("resize", scheduleUpdate);
+
+    return () => {
+      window.removeEventListener("resize", scheduleUpdate);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [
+    updateTimelineCounts,
+    loading,
+    storeLoading,
+    storeOperatingHours,
+    viewDate,
+  ]);
+
+  function jumpToTimelineItem(direction: "up" | "down") {
+    const geometry = getTimelineGeometry();
+    if (!geometry) return;
+
+    const candidates = timelineMarkers.filter((marker) => {
+      const itemTop = geometry.gridTop + marker.top;
+      const itemBottom = geometry.gridTop + marker.bottom;
+
+      return direction === "up"
+        ? itemBottom <= geometry.visibleStart + 1
+        : itemTop >= geometry.visibleEnd - 1;
+    });
+
+    if (candidates.length === 0) return;
+
+    const target =
+      direction === "up"
+        ? candidates[candidates.length - 1]
+        : candidates[0];
+
+    const desiredTop =
+      geometry.gridTop +
+      target.top -
+      geometry.headerHeight -
+      12;
+
+    const maximumTop = Math.max(
+      0,
+      geometry.scroller.scrollHeight - geometry.scroller.clientHeight
+    );
+
+    geometry.scroller.scrollTo({
+      top: Math.max(0, Math.min(maximumTop, desiredTop)),
+      behavior: "smooth",
+    });
+  }
 
   function changeCalendarView(nextView: CalendarView) {
     const todayKey = storeTodayDateKey(scheduleTimezoneName);
@@ -2759,10 +2987,15 @@ export default function SchedulePage() {
                 </div>
               </div>
             ) : (
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+              <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div
+                  ref={timelineScrollRef}
+                  onScroll={updateTimelineCounts}
+                  className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+                >
                   <div className="w-full min-w-0">
                     <div
+                      ref={timelineHeaderRef}
                       className="sticky top-0 z-30 grid border-b border-black/10 bg-white shadow-[0_1px_0_rgba(0,0,0,0.03)]"
                       style={{
                         gridTemplateColumns: `72px repeat(${visibleDays.length}, minmax(0, 1fr))`,
@@ -2828,6 +3061,7 @@ export default function SchedulePage() {
                     </div>
 
                     <div
+                      ref={timelineGridRef}
                       className="grid"
                       style={{
                         gridTemplateColumns: `72px repeat(${visibleDays.length}, minmax(0, 1fr))`,
@@ -2971,6 +3205,58 @@ export default function SchedulePage() {
                       })}
                     </div>
                   </div>
+                </div>
+
+                <div className="pointer-events-none absolute right-2 top-1/2 z-40 flex -translate-y-1/2 flex-col items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => jumpToTimelineItem("up")}
+                    disabled={timelineCounts.above === 0}
+                    aria-label={`Ir ao compromisso anterior. ${timelineCounts.above} acima`}
+                    title={`${timelineCounts.above} compromissos acima`}
+                    className="pointer-events-auto flex h-8 w-7 flex-col items-center justify-center rounded-md bg-white text-slate-900 shadow-md ring-1 ring-slate-300 transition hover:bg-slate-50 hover:ring-slate-400 disabled:cursor-default disabled:opacity-70"
+                  >
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="m6 15 6-6 6 6" />
+                    </svg>
+                    <span className="text-[9px] font-bold leading-none text-slate-900">
+                      {timelineCounts.above}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => jumpToTimelineItem("down")}
+                    disabled={timelineCounts.below === 0}
+                    aria-label={`Ir ao proximo compromisso. ${timelineCounts.below} abaixo`}
+                    title={`${timelineCounts.below} compromissos abaixo`}
+                    className="pointer-events-auto flex h-8 w-7 flex-col items-center justify-center rounded-md bg-white text-slate-900 shadow-md ring-1 ring-slate-300 transition hover:bg-slate-50 hover:ring-slate-400 disabled:cursor-default disabled:opacity-70"
+                  >
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                    <span className="text-[9px] font-bold leading-none text-slate-900">
+                      {timelineCounts.below}
+                    </span>
+                  </button>
                 </div>
               </div>
             )}
