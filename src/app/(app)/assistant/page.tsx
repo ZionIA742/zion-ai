@@ -2167,11 +2167,14 @@ export default function AssistantPage() {
               </button>
 
               <button
+                type="button"
                 onClick={() => void loadAssistant()}
                 disabled={loading || storeLoading || !organizationId || !activeStoreId}
-                className="rounded-full bg-gray-50 px-3.5 py-2 text-[11px] font-semibold text-gray-900 ring-1 ring-gray-200 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="Recarregar assistente"
+                title="Recarregar assistente"
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white text-base font-semibold text-gray-700 ring-1 ring-black/10 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Recarregar
+                ↻
               </button>
             </div>
           </div>
