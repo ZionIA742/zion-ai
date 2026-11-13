@@ -80,17 +80,17 @@ begin
       p_validated_at
     );
 
-  update public.external_integrations
+  update public.external_integrations as integration_row
      set is_active = false,
-         metadata = coalesce(metadata, '{}'::jsonb)
+         metadata = coalesce(integration_row.metadata, '{}'::jsonb)
            || jsonb_build_object('pin_activation_pending', true),
          updated_at = pg_catalog.clock_timestamp()
-   where id = v_result.integration_id
-     and organization_id = p_organization_id
-     and store_id = p_store_id
-     and provider = 'whatsapp'
-     and phone_number_id = btrim(p_phone_number_id)
-  returning * into v_integration;
+   where integration_row.id = v_result.integration_id
+     and integration_row.organization_id = p_organization_id
+     and integration_row.store_id = p_store_id
+     and integration_row.provider = 'whatsapp'
+     and integration_row.phone_number_id = btrim(p_phone_number_id)
+  returning integration_row.* into v_integration;
 
   if not found then
     raise exception using
