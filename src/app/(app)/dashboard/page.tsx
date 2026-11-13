@@ -541,6 +541,7 @@ function InfoList({
 function CatalogItemsList({
   items,
   emptyText,
+  searchable = false,
 }: {
   items: Array<{
     id: string;
@@ -555,14 +556,59 @@ function CatalogItemsList({
     trackStock?: boolean;
   }>;
   emptyText: string;
+  searchable?: boolean;
 }) {
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const normalizedSearch = searchQuery
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR");
+
+  const visibleItems = searchable && normalizedSearch
+    ? items.filter((item) =>
+        item.name
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLocaleLowerCase("pt-BR")
+          .includes(normalizedSearch)
+      )
+    : items;
   if (!items.length) {
     return <EmptyState text={emptyText} />;
   }
 
   return (
     <div className="space-y-3">
-      {items.map((item) => (
+      {searchable ? (
+        <div className="relative">
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-4-4" />
+          </svg>
+          <input
+            type="search"
+            aria-label="Pesquisar produtos pelo nome"
+            placeholder="Pesquisar produto pelo nome"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            className="w-full rounded-xl border border-zinc-300 bg-white py-2.5 pl-10 pr-3 text-sm text-zinc-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          />
+        </div>
+      ) : null}
+      {searchable && normalizedSearch && visibleItems.length === 0 ? (
+        <EmptyState text="Nenhum produto encontrado para esta pesquisa." />
+      ) : null}
+      {visibleItems.map((item) => (
         <div
           key={item.id}
           className="rounded-2xl border border-zinc-200 bg-white p-4"
@@ -3629,6 +3675,7 @@ export default function DashboardPage() {
                   <div className="mt-3">
                     <CatalogItemsList
                       items={allCatalogItems}
+                      searchable
                       emptyText="A rota ainda não enviou a lista completa do catálogo."
                     />
                   </div>
