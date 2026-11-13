@@ -13,7 +13,12 @@ export function resolvePaymentProofDecision(value: unknown): PaymentProofDecisio
 export type PaymentProofDecisionHandled = {
   kind: "payment_proof_decision";
   responseText: string;
-  result: { decision: PaymentProofDecision; notificationId: string; sourceMessageId: string };
+  result: {
+    decision: PaymentProofDecision;
+    notificationId: string;
+    sourceMessageId: string;
+    financialStatus: "not_applicable" | "pending_human_regularization";
+  };
 };
 
 export async function tryHandlePaymentProofDecision(args: {
@@ -65,5 +70,12 @@ export async function tryHandlePaymentProofDecision(args: {
     p_event_payload: eventPayload,
   });
   if (error && !String(error.code || "").includes("23505")) throw new Error(`PAYMENT_PROOF_DECISION_PERSIST_FAILED:${error.message}`);
-  return { decision, notificationId: clean(rows[0].internal_notification_id), sourceMessageId: clean(context.source_message_id) };
+  return {
+    decision,
+    notificationId: clean(rows[0].internal_notification_id),
+    sourceMessageId: clean(context.source_message_id),
+    financialStatus: decision === "yes"
+      ? "pending_human_regularization" as const
+      : "not_applicable" as const,
+  };
 }

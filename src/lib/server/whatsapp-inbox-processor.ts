@@ -797,7 +797,7 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
       return {
         kind: "payment_proof_decision" as const,
         responseText: paymentDecision.decision === "yes"
-          ? "Recebi a confirmacao humana do comprovante; o pagamento permanece sujeito aos dados financeiros identificados."
+          ? "Recebi a confirmacao humana do comprovante; o lancamento financeiro ficou pendente de regularizacao no CRM."
           : "Registrei a rejeicao do comprovante; o pagamento nao foi confirmado.",
         result: paymentDecision,
       };
