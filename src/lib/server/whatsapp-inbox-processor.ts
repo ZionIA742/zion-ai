@@ -23,6 +23,7 @@ import { classifyIncomingMediaMessage } from "@/lib/server/media-classification"
 import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
 import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
 import { decideQuoteApprovalFromPersistedInbound } from "@/lib/server/sales-quotes/quote-approval-decision";
+import { tryHandlePaymentProofDecision } from "@/lib/server/assistant/payment-proof-decision";
 import {
   resolveReceivedContractDocumentDecision,
   tryHandleReceivedContractDocumentDecision,
@@ -34,6 +35,18 @@ import {
 import { pushAssistantReceivedContractDocumentMessage } from "@/lib/server/assistant/document-review-messages";
 import { enqueueReceivedContractDocumentAcknowledgement } from "@/lib/server/assistant/received-contract-document-acknowledgement";
 import { formatSalesAiProcessingError } from "@/lib/server/sales-ai-error-diagnostics";
+import {
+  classifyCustomerMediaForPayment,
+  detectCustomerCancellationRequest,
+  isCustomerCancellationReasonRefusal,
+  renderCancellationReasonQuestion,
+  renderPaymentProofClarificationQuestion,
+} from "@/lib/server/assistant/customer-commercial-intents";
+import {
+  CANCELLATION_REQUEST_SOURCE,
+  PAYMENT_PROOF_SOURCE,
+  enqueueCustomerCommercialAlert,
+} from "@/lib/server/assistant/customer-commercial-notifications";
 import {
   enqueuePersistedSalesAiFailureAlerts,
   enqueueSalesAiFailureOperationalAlert,
@@ -362,6 +375,7 @@ type ProcessorAiStatus =
   | "skipped_human_active"
   | "skipped_ai_paused"
   | "skipped_not_text"
+  | "skipped_customer_clarification"
   | "skipped_contract_document_review"
   | "skipped_duplicate"
   | "failed";
@@ -769,6 +783,26 @@ async function handleResponsibleInboundBeforeCustomerThread(args: {
     content: string;
     contextMessageId: string | null;
   }) => {
+    const paymentDecision = await tryHandlePaymentProofDecision({
+      supabase: args.supabase,
+      organizationId: args.inbox.organization_id,
+      storeId: args.inbox.store_id,
+      responsibleId: responsible.responsible.id,
+      decisionMessageId: inbound.inboundMessageId,
+      externalMessageId: inbound.externalMessageId,
+      content: inbound.content,
+      contextMessageId: inbound.contextMessageId,
+    });
+    if (paymentDecision) {
+      return {
+        kind: "payment_proof_decision" as const,
+        responseText: paymentDecision.decision === "yes"
+          ? "Recebi a confirmacao humana do comprovante; o lancamento financeiro ficou pendente de regularizacao no CRM."
+          : "Registrei a rejeicao do comprovante; o pagamento nao foi confirmado.",
+        result: paymentDecision,
+      };
+    }
+    // Preserve the canonical quote path: return decideQuoteApprovalFromPersistedInbound(...)
     const contractDecision = await tryHandleReceivedContractDocumentDecision({
       supabase: args.supabase,
       organizationId: args.inbox.organization_id,
@@ -1537,6 +1571,35 @@ async function insertIncomingMessage(args: {
   return row as InsertMessageResult;
 }
 
+async function insertCustomerAssistantText(args: {
+  supabase: SupabaseClient;
+  conversationId: string;
+  content: string;
+  metadata: Record<string, unknown>;
+}) {
+  const { data, error } = await args.supabase.rpc("insert_message", {
+    p_conversation_id: args.conversationId,
+    p_sender: "ai",
+    p_direction: "outgoing",
+    p_message_type: "text",
+    p_content: args.content,
+    p_external_message_id: null,
+    p_media_url: null,
+    p_metadata: {
+      source: "customer_commercial_clarification",
+      channel: "whatsapp",
+      external_channel: "whatsapp",
+      send_external: true,
+      outbound_origin: "customer_commercial_clarification",
+      ...args.metadata,
+    },
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row?.id) throw new Error("insert_message nao retornou message.id.");
+  return String(row.id);
+}
+
 async function insertHumanAppEchoMessage(args: {
   supabase: SupabaseClient;
   conversationId: string;
@@ -1879,6 +1942,7 @@ function buildMediaClassificationMetadata(args: {
   fileName: string | null;
   content: string | null;
   contextMessageId?: string | null;
+  recentConversationText?: string[];
 }) {
   const classification = classifyIncomingMediaMessage({
     messageType: args.messageType,
@@ -1888,6 +1952,7 @@ function buildMediaClassificationMetadata(args: {
     sender: "user",
     direction: "incoming",
     sourceChannel: "whatsapp",
+    recentConversationText: args.recentConversationText,
   });
 
   return {
@@ -1906,6 +1971,296 @@ function isCustomerMediaMessageType(
   value: string | null | undefined,
 ): value is "image" | "audio" | "video" | "document" {
   return value === "image" || value === "audio" || value === "video" || value === "document";
+}
+
+async function loadRecentConversationText(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("messages")
+    .select("content, sender, direction")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(12);
+  if (error) throw new Error(`Falha ao carregar contexto comercial recente: ${error.message}`);
+  return (data || [])
+    .filter((row: { content?: unknown }) => typeof row.content === "string")
+    .map((row: { content?: unknown }) => row.content as string);
+}
+
+type PendingCustomerCommercialClarification = {
+  id: string;
+  content: string | null;
+  metadata: Record<string, unknown>;
+  kind: "payment_proof" | "cancellation_reason";
+};
+
+async function loadPendingCustomerCommercialClarification(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}): Promise<PendingCustomerCommercialClarification | null> {
+  const { data, error } = await args.supabase
+    .from("messages")
+    .select("id, content, metadata")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .eq("sender", "user")
+    .eq("direction", "incoming")
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(24);
+  if (error) throw new Error(`Falha ao consultar esclarecimentos comerciais pendentes: ${error.message}`);
+
+  for (const row of data || []) {
+    const rawMetadata = (row as { metadata?: unknown }).metadata;
+    const metadata = getMessageMetadata(isRecord(rawMetadata) ? rawMetadata : null);
+    const kind = metadata.customer_clarification_kind;
+    const status = metadata.customer_clarification_status;
+    if (
+      status === "pending" &&
+      (kind === "payment_proof" || kind === "cancellation_reason")
+    ) {
+      return {
+        id: String((row as { id: unknown }).id),
+        content: typeof (row as { content?: unknown }).content === "string" ? (row as { content: string }).content : null,
+        metadata,
+        kind,
+      };
+    }
+  }
+  return null;
+}
+
+async function updateCustomerClarificationMetadata(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  messageId: string;
+  metadata: Record<string, unknown>;
+}) {
+  const { data, error } = await args.supabase
+    .from("messages")
+    .update({ metadata: args.metadata })
+    .eq("id", args.messageId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .eq("sender", "user")
+    .is("deleted_at", null)
+    .select("id")
+    .maybeSingle();
+  if (error) throw new Error(`Falha ao atualizar esclarecimento comercial: ${error.message}`);
+  if (!data?.id) throw new Error("Esclarecimento comercial nao encontrado para atualizacao.");
+}
+
+async function resolvePendingCustomerCommercialClarification(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  sourceMessageId: string;
+  content: string | null;
+  customerName?: string | null;
+  commercialOpportunityId?: string | null;
+  recentConversationText?: string[];
+}) {
+  const pending = await loadPendingCustomerCommercialClarification(args);
+  if (!pending) return null;
+
+  const normalized = String(args.content || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+  const isYes = /^(sim|s|confirmo|confirmado|e esse mesmo)$/.test(normalized);
+  const isNo = /^(nao|n|negativo|nao e|nao foi)$/.test(normalized);
+  const refusal = pending.kind === "cancellation_reason" && isCustomerCancellationReasonRefusal(args.content);
+
+  if (!isYes && !isNo && !refusal) return null;
+
+  if (pending.kind === "payment_proof") {
+    await updateCustomerClarificationMetadata({
+      ...args,
+      messageId: pending.id,
+      metadata: {
+        ...pending.metadata,
+        customer_clarification_status: isYes ? "confirmed" : "rejected",
+        customer_clarification_response_message_id: args.sourceMessageId,
+      },
+    });
+    if (!isYes) return { kind: "payment_proof_clarification_rejected" as const };
+    const alert = await enqueueCustomerCommercialAlert({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      leadId: undefined,
+      conversationId: args.conversationId,
+      sourceMessageId: pending.id,
+      source: PAYMENT_PROOF_SOURCE,
+      customerName: args.customerName,
+      storageBucket: String(pending.metadata.storage_bucket || ""),
+      storagePath: String(pending.metadata.storage_path || ""),
+      commercialOpportunityId: args.commercialOpportunityId,
+      reference: "customer_confirmed_ambiguous_media",
+      eventSuffix: "confirmed",
+    });
+    return alert;
+  }
+
+  await updateCustomerClarificationMetadata({
+    ...args,
+    messageId: pending.id,
+    metadata: {
+      ...pending.metadata,
+      customer_clarification_status: "reason_received",
+      cancellation_reason: refusal ? null : String(args.content || "").trim(),
+      cancellation_reason_informed: !refusal,
+      customer_clarification_response_message_id: args.sourceMessageId,
+    },
+  });
+  return enqueueCustomerCommercialAlert({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    leadId: undefined,
+    conversationId: args.conversationId,
+    sourceMessageId: pending.id,
+    source: CANCELLATION_REQUEST_SOURCE,
+    customerName: args.customerName,
+    reason: refusal ? null : String(args.content || "").trim(),
+    commercialOpportunityId: args.commercialOpportunityId,
+    eventSuffix: "reason_update",
+  });
+}
+
+async function enqueueCustomerCommercialIntent(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  leadId: string;
+  conversationId: string;
+  sourceMessageId: string;
+  customerName?: string | null;
+  currentContent?: string | null;
+  recentConversationText?: string[];
+  metadata?: Record<string, unknown> | null;
+  commercialOpportunityId?: string | null;
+}) {
+  const pendingResolution = await resolvePendingCustomerCommercialClarification({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    sourceMessageId: args.sourceMessageId,
+    content: args.currentContent ?? null,
+    customerName: args.customerName,
+    commercialOpportunityId: args.commercialOpportunityId,
+    recentConversationText: args.recentConversationText,
+  });
+  if (pendingResolution) return pendingResolution;
+
+  const cancellation = detectCustomerCancellationRequest(args.currentContent);
+  if (cancellation) {
+    if (cancellation.needsReason) {
+      const pendingMetadata = {
+        ...(args.metadata || {}),
+        customer_clarification_kind: "cancellation_reason",
+        customer_clarification_status: "pending",
+        cancellation_reason_informed: false,
+      };
+      await updateCustomerMediaMetadata({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        messageId: args.sourceMessageId,
+        metadata: pendingMetadata,
+      });
+      await insertCustomerAssistantText({
+        supabase: args.supabase,
+        conversationId: args.conversationId,
+        content: renderCancellationReasonQuestion(),
+        metadata: {
+          customer_clarification_kind: "cancellation_reason",
+          customer_clarification_for_message_id: args.sourceMessageId,
+        },
+      });
+    }
+    const alert = await enqueueCustomerCommercialAlert({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      leadId: args.leadId,
+      conversationId: args.conversationId,
+      sourceMessageId: args.sourceMessageId,
+      source: CANCELLATION_REQUEST_SOURCE,
+      customerName: args.customerName,
+      reason: cancellation.reason,
+      commercialOpportunityId: args.commercialOpportunityId,
+    });
+    return cancellation.needsReason
+      ? { ...alert, pendingCustomerClarification: true as const }
+      : alert;
+  }
+
+  const media = classifyCustomerMediaForPayment({
+    messageType: String(args.metadata?.message_type || ""),
+    mimeType: String(args.metadata?.mime_type || ""),
+    fileName: String(args.metadata?.original_file_name || ""),
+    caption: args.currentContent,
+    recentConversationText: args.recentConversationText,
+  });
+  if (media.intent !== "payment_proof") return null;
+  if (media.requiresCustomerConfirmation) {
+    await updateCustomerMediaMetadata({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      messageId: args.sourceMessageId,
+      metadata: {
+        ...(args.metadata || {}),
+        customer_clarification_kind: "payment_proof",
+        customer_clarification_status: "pending",
+        storage_bucket: String(args.metadata?.storage_bucket || ""),
+        storage_path: String(args.metadata?.storage_path || ""),
+      },
+    });
+    await insertCustomerAssistantText({
+      supabase: args.supabase,
+      conversationId: args.conversationId,
+      content: renderPaymentProofClarificationQuestion(),
+      metadata: {
+        customer_clarification_kind: "payment_proof",
+        customer_clarification_for_message_id: args.sourceMessageId,
+      },
+    });
+    return { pendingCustomerClarification: true as const };
+  }
+  return enqueueCustomerCommercialAlert({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    leadId: args.leadId,
+    conversationId: args.conversationId,
+    sourceMessageId: args.sourceMessageId,
+    source: PAYMENT_PROOF_SOURCE,
+    customerName: args.customerName,
+    storageBucket: String(args.metadata?.storage_bucket || ""),
+    storagePath: String(args.metadata?.storage_path || ""),
+    commercialOpportunityId: args.commercialOpportunityId,
+    reference: media.reason,
+  });
 }
 
 async function updateCustomerMediaMetadata(args: {
@@ -1947,6 +2302,7 @@ async function processCustomerMediaIntelligence(args: {
   mimeType: string | null;
   fileName: string | null;
   content: string | null;
+  recentConversationText?: string[];
 }) {
   const currentMetadata = getMessageMetadata(args.message.metadata);
   const classificationMetadata = buildMediaClassificationMetadata({
@@ -1954,6 +2310,7 @@ async function processCustomerMediaIntelligence(args: {
     mimeType: args.mimeType,
     fileName: args.fileName,
     content: args.content,
+    recentConversationText: args.recentConversationText,
   });
   let metadata: Record<string, unknown> = { ...currentMetadata, ...classificationMetadata };
   if (args.messageType === "audio" && !asTrimmedString(metadata.audio_transcript)) {
@@ -2877,7 +3234,7 @@ async function processSingleInboxRow(
   const lead = { id: thread.leadId } as LeadRow;
   const conversation = { id: thread.conversationId } as ConversationRow;
 
-  await bootstrapCommercialContextBeforeInsert({
+  const bootstrap = await bootstrapCommercialContextBeforeInsert({
     supabase,
     organizationId: inbox.organization_id,
     storeId: inbox.store_id,
@@ -2885,6 +3242,12 @@ async function processSingleInboxRow(
     conversationId: thread.conversationId,
     whatsappIdentity: resolvedFromPhone,
     contactName: extracted.contactName,
+  });
+  const recentConversationText = await loadRecentConversationText({
+    supabase,
+    organizationId: inbox.organization_id,
+    storeId: inbox.store_id,
+    conversationId: conversation.id,
   });
 
   let uploadedMediaStoragePath: string | null = null;
@@ -2916,6 +3279,7 @@ async function processSingleInboxRow(
         fileName: storedMedia.originalFileName,
         content: extracted.imageCaption,
         contextMessageId: extracted.contextMessageId,
+        recentConversationText,
       });
 
       inserted = await insertIncomingImageMessage({
@@ -2961,6 +3325,7 @@ async function processSingleInboxRow(
         fileName: storedMedia.originalFileName,
         content: null,
         contextMessageId: extracted.contextMessageId,
+        recentConversationText,
       });
 
       inserted = await insertIncomingAudioMessage({
@@ -3006,6 +3371,7 @@ async function processSingleInboxRow(
         fileName: storedMedia.originalFileName,
         content: extracted.videoCaption,
         contextMessageId: extracted.contextMessageId,
+        recentConversationText,
       });
 
       inserted = await insertIncomingVideoMessage({
@@ -3052,6 +3418,7 @@ async function processSingleInboxRow(
         fileName: extracted.documentFilename || storedMedia.originalFileName,
         content: extracted.documentCaption,
         contextMessageId: extracted.contextMessageId,
+        recentConversationText,
       });
 
       inserted = await insertIncomingDocumentMessage({
@@ -3169,6 +3536,24 @@ async function processSingleInboxRow(
           extracted.documentCaption ||
           persistedMessage.content ||
           null,
+        recentConversationText,
+      });
+
+      const commercialIntent = await enqueueCustomerCommercialIntent({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        leadId: persistedMessage.lead_id || lead.id,
+        conversationId: conversation.id,
+        sourceMessageId: persistedMessage.id,
+        customerName: extracted.contactName,
+        currentContent: persistedMessage.content,
+        recentConversationText,
+        metadata: {
+          ...(processedMediaMetadata || {}),
+          message_type: extracted.rawMessageType,
+        },
+        commercialOpportunityId: bootstrap.commercialOpportunityId,
       });
 
       const contractEvidence = await registerReceivedContractDocumentEvidenceSafely({
@@ -3191,6 +3576,53 @@ async function processSingleInboxRow(
           lead_id: lead.id,
           conversation_id: conversation.id,
           ai_status: "skipped_contract_document_review",
+          ai_message_id: null,
+          ai_error: null,
+        };
+      }
+
+      if (commercialIntent && "pendingCustomerClarification" in commercialIntent) {
+        await markInboxProcessed(supabase, inbox);
+        return {
+          inbox_id: inbox.id,
+          external_event_id: inbox.external_event_id,
+          status: "succeeded",
+          detail: "customer_clarification_pending",
+          message_id: inserted.id || null,
+          lead_id: lead.id,
+          conversation_id: conversation.id,
+          ai_status: "skipped_customer_clarification",
+          ai_message_id: null,
+          ai_error: null,
+        };
+      }
+    }
+
+    if (extracted.rawMessageType === "text") {
+      const commercialIntent = await enqueueCustomerCommercialIntent({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        leadId: persistedMessage.lead_id || lead.id,
+        conversationId: conversation.id,
+        sourceMessageId: persistedMessage.id,
+        customerName: extracted.contactName,
+        currentContent: persistedMessage.content,
+        recentConversationText,
+        metadata: null,
+        commercialOpportunityId: bootstrap.commercialOpportunityId,
+      });
+      if (commercialIntent && "pendingCustomerClarification" in commercialIntent) {
+        await markInboxProcessed(supabase, inbox);
+        return {
+          inbox_id: inbox.id,
+          external_event_id: inbox.external_event_id,
+          status: "succeeded",
+          detail: "customer_clarification_pending",
+          message_id: inserted.id || null,
+          lead_id: lead.id,
+          conversation_id: conversation.id,
+          ai_status: "skipped_customer_clarification",
           ai_message_id: null,
           ai_error: null,
         };

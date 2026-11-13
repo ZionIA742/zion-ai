@@ -12,6 +12,7 @@ import type { QuoteApprovalDecisionResult } from "@/lib/server/sales-quotes/quot
 import {
   protectUnpersistedContractCompletion,
 } from "@/lib/server/assistant/received-contract-document-decision";
+import type { PaymentProofDecisionHandled } from "@/lib/server/assistant/payment-proof-decision";
 import type {
   ReceivedContractDocumentDecisionBlocked,
   ReceivedContractDocumentDecisionHandled,
@@ -588,7 +589,8 @@ export async function routeResponsibleWhatsappToAssistant(args: {
   }) => Promise<
     (QuoteApprovalDecisionResult |
       ReceivedContractDocumentDecisionHandled |
-      ReceivedContractDocumentDecisionBlocked) |
+      ReceivedContractDocumentDecisionBlocked |
+      PaymentProofDecisionHandled) |
     null
   >;
 }) {
@@ -748,6 +750,7 @@ export async function routeResponsibleWhatsappToAssistant(args: {
       | QuoteApprovalDecisionResult
       | ReceivedContractDocumentDecisionHandled
       | ReceivedContractDocumentDecisionBlocked
+      | PaymentProofDecisionHandled
     ) | null = null;
     if (
       args.onInboundPersisted &&

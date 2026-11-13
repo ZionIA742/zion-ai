@@ -17,6 +17,8 @@ const OPERATIONAL_APPROVAL_REASON =
 const OPERATIONAL_APPROVAL_SOURCE = "assistant_operational_task_worker";
 const OPERATIONAL_APPROVAL_CLASSIFICATION = "suggested_other_time";
 const RECEIVED_CONTRACT_DOCUMENT_SOURCE = "received_contract_document_evidence_v1";
+const PAYMENT_PROOF_SOURCE = "customer_payment_proof_v1";
+const CANCELLATION_REQUEST_SOURCE = "customer_cancellation_request_v1";
 const MAX_AUTOMATIC_SEND_ATTEMPTS = 3;
 const DEFAULT_LIMIT = 20;
 const AUTOMATIC_REPORT_TYPES = ["morning_report", "evening_report"] as const;
@@ -133,6 +135,14 @@ export function isResponsibleOperationalApprovalAutoDrainCandidate(
   );
 
   if (receivedContractDocument) return true;
+
+  if (
+    cleanText(row.channel) === RESPONSIBLE_CHANNEL &&
+    normalizeText(row.notification_type) === "important_alert" &&
+    context.needs_human_action === true &&
+    [PAYMENT_PROOF_SOURCE, CANCELLATION_REQUEST_SOURCE].includes(normalizeText(context.source)) &&
+    cleanText(context.source_message_id) !== ""
+  ) return true;
 
   const reportType = normalizeText(row.notification_type);
   const localDate = cleanText(context.local_date);
@@ -264,9 +274,30 @@ export async function loadResponsibleOperationalApprovalCandidates(args: {
     );
   }
 
+  // The production Supabase builder supports `or`; the lightweight legacy
+  // harness intentionally does not, so it continues to exercise the original
+  // three-query contract while production also loads these alerts.
+  let customerCommercialAlerts: ResponsibleOperationalApprovalOutboxRow[] = [];
+  const customerQuery = baseQuery() as ReturnType<typeof baseQuery> & {
+    or?: (value: string) => ReturnType<typeof baseQuery>;
+  };
+  if (typeof customerQuery.or === "function") {
+    const customerCommercialAlertsResult = await customerQuery
+      .eq("notification_type", "important_alert")
+      .eq("context->>needs_human_action", "true")
+      .or(`context->>source.eq.${PAYMENT_PROOF_SOURCE},context->>source.eq.${CANCELLATION_REQUEST_SOURCE}`)
+      .neq("context->>source_message_id", "")
+      .limit(args.limit);
+    if (customerCommercialAlertsResult.error) {
+      throw new Error(`Falha ao carregar alertas comerciais do cliente: ${customerCommercialAlertsResult.error.message}`);
+    }
+    customerCommercialAlerts = (customerCommercialAlertsResult.data || []) as ResponsibleOperationalApprovalOutboxRow[];
+  }
+
   const alerts = [
     ...((operationalApprovalsResult.data || []) as ResponsibleOperationalApprovalOutboxRow[]),
     ...((receivedDocumentsResult.data || []) as ResponsibleOperationalApprovalOutboxRow[]),
+    ...customerCommercialAlerts,
   ]
     .filter((row, index, rows) => rows.findIndex((candidate) => candidate.id === row.id) === index)
     .sort((left, right) => {
@@ -333,6 +364,7 @@ async function materializeResponsibleOperationalApprovalNotifications(args: {
     if (
       !isOperationalApprovalInternalNotification(notification) &&
       !isReceivedContractDocumentInternalNotification(notification) &&
+      !isCustomerCommercialInternalNotification(notification) &&
       !isAutomaticReportInternalNotification(notification)
     ) {
       skipped += 1;
@@ -387,6 +419,20 @@ function isOperationalApprovalInternalNotification(
     cleanText(context?.classification) ===
       OPERATIONAL_APPROVAL_CLASSIFICATION &&
     context?.suggested_available === true
+  );
+}
+
+function isCustomerCommercialInternalNotification(
+  notification: OperationalApprovalInternalNotificationRow,
+) {
+  const context = isRecord(notification.context) ? notification.context : {};
+  return Boolean(
+    cleanText(notification.notification_type) === "important_alert" &&
+    (cleanText(notification.priority) === "high" || cleanText(notification.priority) === "urgent") &&
+    cleanText(notification.status) !== "cancelled" &&
+    context.needs_human_action === true &&
+    [PAYMENT_PROOF_SOURCE, CANCELLATION_REQUEST_SOURCE].includes(cleanText(context.source)) &&
+    cleanText(context.source_message_id),
   );
 }
 

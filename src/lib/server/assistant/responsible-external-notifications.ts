@@ -284,6 +284,26 @@ export function shouldEnqueueResponsibleExternalNotification(
   }
 
   const reason = normalizeText(context.reason);
+  const source = normalizeText(context.source);
+
+  if (source === "customer_payment_proof_v1") {
+    if (
+      context.needs_human_action !== true ||
+      !cleanText(context.source_message_id) ||
+      !cleanText(context.payment_proof_storage_bucket) ||
+      !cleanText(context.payment_proof_storage_path)
+    ) {
+      return { eligible: false as const, reason: "payment_proof_context_incomplete" };
+    }
+    return { eligible: true as const, requiresResponsibleNotification: true as const };
+  }
+
+  if (source === "customer_cancellation_request_v1") {
+    if (context.needs_human_action !== true || !cleanText(context.source_message_id)) {
+      return { eligible: false as const, reason: "cancellation_context_incomplete" };
+    }
+    return { eligible: true as const, requiresResponsibleNotification: true as const };
+  }
 
   if (reason === "customer_suggested_available_time_requires_approval") {
     if (
@@ -347,6 +367,19 @@ export function renderResponsibleExternalNotificationMessage(args: {
 }) {
   const documentType = normalizeText(args.context.document_type);
   const reason = normalizeText(args.context.reason);
+  const source = normalizeText(args.context.source);
+
+  if (source === "customer_payment_proof_v1") {
+    return [
+      cleanText(args.body) || "Possivel comprovante de pagamento recebido.",
+      "O pagamento ainda nao foi confirmado.",
+      "Confira o arquivo recebido e responda SIM para confirmar ou NAO para rejeitar.",
+    ].join("\n\n");
+  }
+
+  if (source === "customer_cancellation_request_v1") {
+    return [cleanText(args.body), "Nenhum cancelamento, reembolso ou estorno foi executado automaticamente."].filter(Boolean).join("\n\n");
+  }
 
   if (reason === "customer_suggested_available_time_requires_approval") {
     const suggestedLabel = cleanText(args.context.suggested_label);
