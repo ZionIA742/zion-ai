@@ -2678,11 +2678,18 @@ export default function SchedulePage() {
                         key={dayKey}
                         role="button"
                         tabIndex={0}
-                        onClick={() => setSelectedDateKey(dayKey)}
+                        onClick={() => {
+                          setSelectedDateKey(dayKey);
+                          setViewDate(date);
+                          setCalendarView("day");
+                        }}
                         onKeyDown={(event) => {
+                          if (event.target !== event.currentTarget) return;
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault();
                             setSelectedDateKey(dayKey);
+                            setViewDate(date);
+                            setCalendarView("day");
                           }
                         }}
                         className={[
@@ -2772,7 +2779,15 @@ export default function SchedulePage() {
                           <button
                             key={`header-${dayKey}`}
                             type="button"
-                            onClick={() => setSelectedDateKey(dayKey)}
+                            onClick={() => {
+                              if (calendarView === "week") {
+                                setSelectedDateKey(dayKey);
+                                setViewDate(date);
+                                setCalendarView("day");
+                              } else {
+                                setSelectedDateKey(dayKey);
+                              }
+                            }}
                             className={[
                               "border-r border-black/10 px-3 py-3 text-left transition last:border-r-0 hover:bg-gray-50",
                               isSelected ? "bg-sky-50/70" : "bg-white",
@@ -2853,11 +2868,26 @@ export default function SchedulePage() {
                             key={`timeline-${dayKey}`}
                             role="button"
                             tabIndex={0}
-                            onClick={() => setSelectedDateKey(dayKey)}
+                            onClick={() => {
+                              if (calendarView === "week") {
+                                setSelectedDateKey(dayKey);
+                                setViewDate(date);
+                                setCalendarView("day");
+                              } else {
+                                setSelectedDateKey(dayKey);
+                              }
+                            }}
                             onKeyDown={(event) => {
+                              if (event.target !== event.currentTarget) return;
                               if (event.key === "Enter" || event.key === " ") {
                                 event.preventDefault();
-                                setSelectedDateKey(dayKey);
+                                if (calendarView === "week") {
+                                  setSelectedDateKey(dayKey);
+                                  setViewDate(date);
+                                  setCalendarView("day");
+                                } else {
+                                  setSelectedDateKey(dayKey);
+                                }
                               }
                             }}
                             className={[
