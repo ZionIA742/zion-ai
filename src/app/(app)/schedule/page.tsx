@@ -3399,7 +3399,7 @@ export default function SchedulePage() {
                               prev ? { ...prev, title: e.target.value } : prev
                             )
                           }
-                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                          className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                         />
                       </div>
 
@@ -3420,7 +3420,7 @@ export default function SchedulePage() {
                                     : prev
                                 )
                           }
-                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                          className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                         >
                           <option value="technical_visit">Visita técnica</option>
                           <option value="installation">Instalação</option>
@@ -3444,7 +3444,7 @@ export default function SchedulePage() {
                               prev ? { ...prev, status: e.target.value } : prev
                             )
                           }
-                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                          className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                         >
                           <option value="scheduled">Agendado</option>
                           <option value="rescheduled">Remarcado</option>
@@ -3466,7 +3466,7 @@ export default function SchedulePage() {
                                 : prev
                             )
                           }
-                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                          className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                         />
                       </div>
 
@@ -3554,7 +3554,7 @@ export default function SchedulePage() {
                           }
                           placeholder="(11) 99999-9999"
                           inputMode="numeric"
-                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                          className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                         />
                       </div>
 
@@ -3571,7 +3571,7 @@ export default function SchedulePage() {
                                 : prev
                             )
                           }
-                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                          className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                         />
                       </div>
                     </div>
@@ -3588,7 +3588,7 @@ export default function SchedulePage() {
                           )
                         }
                         rows={5}
-                        className="w-full rounded-xl border border-black/10 px-2.5 py-2 text-xs outline-none focus:border-black"
+                        className="min-h-11 w-full rounded-xl border border-black/10 px-2.5 py-2 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                       />
                     </div>
 
@@ -3667,7 +3667,7 @@ export default function SchedulePage() {
                             prev ? { ...prev, title: e.target.value } : prev
                           )
                         }
-                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                        className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                       />
                     </div>
 
@@ -3682,7 +3682,7 @@ export default function SchedulePage() {
                             prev ? { ...prev, blockType: e.target.value } : prev
                           )
                         }
-                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                        className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                       >
                         <option value="manual_block">Bloqueio manual</option>
                         <option value="personal_unavailable">Indisponível</option>
@@ -3772,7 +3772,7 @@ export default function SchedulePage() {
                           )
                         }
                         rows={5}
-                        className="w-full rounded-xl border border-black/10 px-2.5 py-2 text-xs outline-none focus:border-black"
+                        className="min-h-11 w-full rounded-xl border border-black/10 px-2.5 py-2 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                       />
                     </div>
 
@@ -3949,7 +3949,7 @@ export default function SchedulePage() {
                         }))
                       }
                       placeholder="Ex.: Consulta médica, viagem, equipe ocupada..."
-                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                      className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                     />
                   </div>
 
@@ -3965,7 +3965,7 @@ export default function SchedulePage() {
                           blockType: e.target.value,
                         }))
                       }
-                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                      className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                     >
                       <option value="manual_block">Bloqueio manual</option>
                       <option value="personal_unavailable">Indisponível</option>
@@ -3991,7 +3991,7 @@ export default function SchedulePage() {
                         appointmentCreateForm.appointmentType !== "technical_visit" ||
                         !appointmentCreateForm.leadId
                       }
-                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-50"
+                      className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs disabled:cursor-not-allowed disabled:bg-gray-50"
                     >
                       <option value="">Sem vínculo comercial</option>
                       {commercialOpportunitySelectOptions.map((opportunity) => (
@@ -4077,7 +4077,7 @@ export default function SchedulePage() {
                         }))
                       }
                       rows={5}
-                      className="w-full rounded-xl border border-black/10 px-2.5 py-2 text-xs outline-none focus:border-black"
+                      className="min-h-11 w-full rounded-xl border border-black/10 px-2.5 py-2 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                     />
                   </div>
 
@@ -4153,7 +4153,7 @@ export default function SchedulePage() {
                         }))
                       }
                       placeholder="Ex.: Visita técnica na casa do cliente"
-                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                      className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                     />
                   </div>
 
@@ -4194,7 +4194,7 @@ export default function SchedulePage() {
                               });
                             }
                           }}
-                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                        className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                       >
                         <option value="technical_visit">Visita técnica</option>
                         <option value="installation">Instalação</option>
@@ -4219,7 +4219,7 @@ export default function SchedulePage() {
                             status: e.target.value,
                           }))
                         }
-                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                        className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                       >
                         <option value="scheduled">Agendado</option>
                         <option value="rescheduled">Remarcado</option>
@@ -4289,7 +4289,7 @@ export default function SchedulePage() {
                       <select
                         value={appointmentCreateForm.leadId}
                         onChange={(e) => handleAppointmentLeadChange(e.target.value)}
-                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                        className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                       >
                         <option value="">Sem vínculo manual</option>
                         {leadOptions.map((lead) => (
@@ -4317,7 +4317,7 @@ export default function SchedulePage() {
                         value={effectiveCreateConversationId}
                         readOnly
                         placeholder="Será preenchida automaticamente pelo lead"
-                        className="w-full rounded-lg border border-black/10 bg-gray-50 px-2.5 py-1.5 text-xs text-gray-600 outline-none"
+                        className="min-h-11 w-full rounded-lg border border-black/10 bg-gray-50 px-2.5 py-1.5 text-base text-gray-600 outline-none sm:min-h-0 sm:text-xs"
                       />
                       <div className="mt-0.5 text-[11px] text-gray-500">
                         {createLeadConversationState.status === "loading"
@@ -4364,7 +4364,7 @@ export default function SchedulePage() {
                             }
                           }}
                         disabled={!appointmentCreateForm.leadId}
-                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-50"
+                        className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs disabled:cursor-not-allowed disabled:bg-gray-50"
                       >
                         <option value="">
                           Selecione a oportunidade comercial
@@ -4405,7 +4405,7 @@ export default function SchedulePage() {
                         }))
                       }
                       placeholder="Nome do cliente"
-                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                      className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                     />
                   </div>
 
@@ -4423,7 +4423,7 @@ export default function SchedulePage() {
                       }
                       placeholder="(11) 99999-9999"
                       inputMode="numeric"
-                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                      className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                     />
                   </div>
 
@@ -4444,7 +4444,7 @@ export default function SchedulePage() {
                           }));
                         }}
                       placeholder="Endereço do atendimento"
-                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
+                      className="min-h-11 w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                     />
                       {appointmentCustomerLocationHint ? (
                         <div className="mt-1 text-[11px] text-gray-500">
@@ -4466,7 +4466,7 @@ export default function SchedulePage() {
                         }))
                       }
                       rows={5}
-                      className="w-full rounded-xl border border-black/10 px-2.5 py-2 text-xs outline-none focus:border-black"
+                      className="min-h-11 w-full rounded-xl border border-black/10 px-2.5 py-2 text-base outline-none focus:border-black sm:min-h-0 sm:text-xs"
                     />
                   </div>
 
