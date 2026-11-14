@@ -3491,7 +3491,7 @@ export default function DashboardPage() {
                           {lists.nextAppointments.map((appointment) => (
                             <div
                               key={appointment.id}
-                              className="grid min-w-0 gap-2 rounded-[6px] border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(92px,0.6fr)_minmax(78px,0.5fr)_minmax(88px,0.55fr)_auto] sm:items-center"
+                              className="grid min-w-0 gap-2 rounded-[6px] border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm xl:grid-cols-[minmax(0,1fr)_minmax(92px,0.6fr)_minmax(78px,0.5fr)_minmax(88px,0.55fr)_auto] xl:items-center"
                             >
                               <span className="min-w-0 break-words font-medium text-zinc-950">
                                 {appointment.customerName || "Cliente sem nome"}
@@ -3505,7 +3505,7 @@ export default function DashboardPage() {
                               <span className="min-w-0 break-words text-zinc-700">
                                 {formatDateTime(appointment.scheduledStart, dashboardTimeZone)}
                               </span>
-                              <div className="flex min-w-0 justify-start sm:justify-end">
+                              <div className="flex min-w-0 justify-start xl:justify-end">
                                 <MapsRouteButton
                                   addressText={getAppointmentRouteAddress(appointment)}
                                   compact
