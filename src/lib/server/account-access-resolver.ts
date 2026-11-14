@@ -515,6 +515,9 @@ function buildDefaultDeps(): AccountAccessResolverDeps {
         } = await supabase.auth.getUser();
 
         if (error) {
+          if (isAuthSessionMissingError(error)) {
+            return { kind: "anonymous" };
+          }
           return {
             kind: "unavailable",
             failure: createLookupUnavailableFailure(
@@ -533,7 +536,10 @@ function buildDefaultDeps(): AccountAccessResolverDeps {
           user,
           jwtIssuedAtSeconds,
         };
-      } catch {
+      } catch (error) {
+        if (isAuthSessionMissingError(error)) {
+          return { kind: "anonymous" };
+        }
         return {
           kind: "unavailable",
           failure: createLookupUnavailableFailure(
@@ -750,6 +756,13 @@ function buildDefaultDeps(): AccountAccessResolverDeps {
       return data;
     },
   };
+}
+
+function isAuthSessionMissingError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === "AuthSessionMissingError"
+  );
 }
 
 export async function resolveAccessForRequest({

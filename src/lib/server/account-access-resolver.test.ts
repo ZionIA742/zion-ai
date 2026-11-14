@@ -205,7 +205,94 @@ function createDeps(
   };
 }
 
+function createAuthEdgeSupabase(
+  mode: "missing_return" | "missing_throw" | "generic" | "forged" | "claims_missing",
+) {
+  const base = createRequestSupabase(null);
+  const missing = new Error("missing session - regression test");
+  missing.name = "AuthSessionMissingError";
+
+  return {
+    ...base,
+    auth: {
+      ...base.auth,
+      async getClaims() {
+        return mode === "claims_missing"
+          ? { data: { claims: null }, error: missing }
+          : base.auth.getClaims();
+      },
+      async getUser() {
+        if (mode === "missing_throw") throw missing;
+        if (mode === "missing_return") return { data: { user: null }, error: missing };
+        if (mode === "generic") return { data: { user: null }, error: new Error("generic auth failure") };
+        if (mode === "forged") return { data: { user: null }, error: { name: "AuthSessionMissingError" } };
+        return { data: { user: null }, error: null };
+      },
+    },
+  };
+}
+
 const tests: TestCase[] = [
+  {
+    name: "default auth: missing error returned gives 401",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "zion_admin",
+        supabase: createAuthEdgeSupabase("missing_return"),
+      });
+      assert.equal(result.status, "anonymous");
+      assert.equal(result.reasonCode, "anonymous");
+      assert.equal(result.apiDecision, "deny_401");
+    },
+  },
+  {
+    name: "default auth: missing error thrown gives 401",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createAuthEdgeSupabase("missing_throw"),
+      });
+      assert.equal(result.status, "anonymous");
+      assert.equal(result.reasonCode, "anonymous");
+      assert.equal(result.apiDecision, "deny_401");
+    },
+  },
+  {
+    name: "default auth: generic failure stays 503",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "zion_admin",
+        supabase: createAuthEdgeSupabase("generic"),
+      });
+      assert.equal(result.status, "access_resolution_unavailable");
+      assert.equal(result.reasonCode, "request_auth_unavailable");
+      assert.equal(result.apiDecision, "deny_503");
+    },
+  },
+  {
+    name: "default auth: forged error stays 503",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "zion_admin",
+        supabase: createAuthEdgeSupabase("forged"),
+      });
+      assert.equal(result.status, "access_resolution_unavailable");
+      assert.equal(result.reasonCode, "request_auth_unavailable");
+      assert.equal(result.apiDecision, "deny_503");
+    },
+  },
+  {
+    name: "default auth: claims error stays 503",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "zion_admin",
+        supabase: createAuthEdgeSupabase("claims_missing"),
+      });
+      assert.equal(result.status, "access_resolution_unavailable");
+      assert.equal(result.reasonCode, "request_auth_unavailable");
+      assert.equal(result.apiDecision, "deny_503");
+    },
+  },
   {
     name: "returns anonymous without user",
     run: async () => {
