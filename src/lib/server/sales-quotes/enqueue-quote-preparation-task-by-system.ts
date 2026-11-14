@@ -15,6 +15,7 @@ export type QuotePreparationQueueInput = {
   leadId: string;
   commercialOpportunityId: string;
   authorizationId: string;
+  recoveryResponseSetId?: string | null;
   supabase?: QuotePreparationQueueSupabase;
 };
 
@@ -151,6 +152,9 @@ export async function enqueueQuotePreparationTaskBySystem(
       authorization_id: identity.authorizationId,
       lead_id: identity.leadId,
       commercial_opportunity_id: identity.commercialOpportunityId,
+      ...(identity.recoveryResponseSetId
+        ? { p9_recovery_response_set_id: identity.recoveryResponseSetId }
+        : {}),
     },
     created_at: now,
     updated_at: now,

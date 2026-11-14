@@ -362,6 +362,7 @@ async function recordIncludedCrossSellSuggestionsBySystem(args: {
   suggestionMessageId: string | null;
   sourceMessageId: string;
   suggestions: CrossSellSuggestionIncluded[];
+  recoveryResponseSetId?: string | null;
 }): Promise<CrossSellSuggestionLedgerResult> {
   if (
     !args.commercialOpportunityId ||
@@ -413,6 +414,9 @@ async function recordIncludedCrossSellSuggestionsBySystem(args: {
             source: "sales_ai_outbound_structured_cross_sell_v1",
             candidate_key: suggestion.candidateKey,
             source_message_id: args.sourceMessageId,
+            ...(args.recoveryResponseSetId
+              ? { p9_recovery_response_set_id: args.recoveryResponseSetId }
+              : {}),
           },
         },
       );
@@ -1340,6 +1344,7 @@ async function reconcileExistingQuotePreparationTask(args: {
   organizationId: string;
   storeId: string;
   deps: CommercialAssistantHandoffDeps;
+  recoveryResponseSetId?: string | null;
 }): Promise<{
   authorization: QuotePreparationAuthorizationAttempt;
   queue: QuotePreparationQueueAttempt;
@@ -1489,6 +1494,9 @@ async function reconcileExistingQuotePreparationTask(args: {
       leadId: canonicalLeadId,
       commercialOpportunityId: canonicalCommercialOpportunityId,
       authorizationId: authorization.authorizationId,
+      ...(args.recoveryResponseSetId
+        ? { recoveryResponseSetId: args.recoveryResponseSetId }
+        : {}),
       supabase: args.supabase,
     });
     return {
@@ -1608,6 +1616,7 @@ async function enqueueCommercialHandoffNotification(args: {
   leadId: string | null;
   taskId: string;
   handoff: CommercialHandoffContext;
+  recoveryResponseSetId?: string | null;
 }) {
   const notificationType = "important_alert";
   const title =
@@ -1632,6 +1641,9 @@ async function enqueueCommercialHandoffNotification(args: {
     recommended_model: args.handoff.recommendedModel || null,
     customer_preferences: args.handoff.customerPreferences || null,
     relevant_objection: args.handoff.relevantObjection || null,
+    ...(args.recoveryResponseSetId
+      ? { p9_recovery_response_set_id: args.recoveryResponseSetId }
+      : {}),
   };
 
   try {
@@ -4102,6 +4114,7 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
         anchorMessageId: args.anchorMessageId,
         lastCustomerMessageAt: persistedLastCustomerMessageAt,
         lastAiMessageAt: persistedLastAiMessageAt,
+        recoveryResponseSetId: args.row.response_set_id,
       });
       operationalFollowUpDecisionRecovery.recovered = true;
     } catch (error: unknown) {
@@ -4135,6 +4148,7 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
       suggestionMessageId: args.row.text_message_id,
       sourceMessageId: args.anchorMessageId,
       suggestions,
+      recoveryResponseSetId: args.row.response_set_id,
     });
     if (crossSellSuggestionLedger.failed > 0) complete = false;
 
@@ -4174,6 +4188,7 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
             conversationId: args.conversationId,
             anchorMessageId: args.anchorMessageId,
           }),
+          recoveryResponseSetId: args.row.response_set_id,
         });
         if (
           handoffResult.notificationError ||
@@ -4223,6 +4238,7 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
           typeof persistedPreContract.source_message_id === "string"
             ? persistedPreContract.source_message_id
             : args.anchorMessageId,
+        recoveryResponseSetId: args.row.response_set_id,
         customerName:
           typeof persistedPreContract.customer_name === "string"
             ? persistedPreContract.customer_name
@@ -4814,6 +4830,7 @@ async function persistOperationalFollowUpDecision(args: {
   anchorMessageId: string;
   lastCustomerMessageAt: string | null;
   lastAiMessageAt: string | null;
+  recoveryResponseSetId?: string | null;
 }) {
   const {
     supabase,
@@ -4853,6 +4870,9 @@ async function persistOperationalFollowUpDecision(args: {
         pending_supervisor: false,
         waiting_next_day: false,
         updated_at: new Date().toISOString(),
+        ...(args.recoveryResponseSetId
+          ? { p9_recovery_response_set_id: args.recoveryResponseSetId }
+          : {}),
       })
       .eq("conversation_id", canonicalScope.conversationId)
       .eq("organization_id", canonicalScope.organizationId)
@@ -4879,6 +4899,9 @@ async function persistOperationalFollowUpDecision(args: {
     waiting_next_day: decision.reason === "customer_requested_tomorrow",
     pending_supervisor: false,
     last_ai_message_at: lastAiMessageAt,
+    ...(args.recoveryResponseSetId
+      ? { p9_recovery_response_set_id: args.recoveryResponseSetId }
+      : {}),
     last_customer_message_at: lastCustomerMessageAt,
     next_resume_at: nextResumeAt,
     resume_reason: decision.reason,
@@ -5567,6 +5590,7 @@ export async function createCommercialAssistantHandoff(
   handoff: CommercialHandoffContext | null | undefined;
   generationAnchorMessageId?: string | null;
   quotePreparationAnchorStillCurrent?: boolean;
+  recoveryResponseSetId?: string | null;
 },
   deps: CommercialAssistantHandoffDeps = {
     findExistingTask: findExistingCommercialHandoffTask,
@@ -5600,6 +5624,9 @@ export async function createCommercialAssistantHandoff(
         organizationId: args.organizationId,
         storeId: args.storeId,
         deps,
+        ...(args.recoveryResponseSetId
+          ? { recoveryResponseSetId: args.recoveryResponseSetId }
+          : {}),
       });
       return {
         created: false,
@@ -5643,6 +5670,9 @@ export async function createCommercialAssistantHandoff(
     conversation_summary: handoff.conversationSummary,
     next_step: handoff.nextStep,
     created_by: "generate-and-save-ai-sales-reply",
+    ...(args.recoveryResponseSetId
+      ? { p9_recovery_response_set_id: args.recoveryResponseSetId }
+      : {}),
   };
 
   if (handoff.taskType === "commercial_quote_request") {
@@ -5792,6 +5822,9 @@ export async function createCommercialAssistantHandoff(
         leadId: String(args.leadId || "").trim(),
         commercialOpportunityId,
         authorizationId: quotePreparationAuthorization.authorizationId,
+        ...(args.recoveryResponseSetId
+          ? { recoveryResponseSetId: args.recoveryResponseSetId }
+          : {}),
         supabase: args.systemSupabase || args.supabase,
       });
       quotePreparationQueue = {
@@ -5838,6 +5871,9 @@ export async function createCommercialAssistantHandoff(
     leadId: args.leadId || null,
     taskId: String(data.id),
     handoff,
+    ...(args.recoveryResponseSetId
+      ? { recoveryResponseSetId: args.recoveryResponseSetId }
+      : {}),
   });
 
   let crmAutoProgressResult: CrmAutoProgressResult | undefined;
@@ -5975,6 +6011,7 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
   leadId: string | null;
   commercialOpportunityId?: string | null;
   sourceMessageId?: string | null;
+  recoveryResponseSetId?: string | null;
   customerName: string | null;
   lastCustomerMessage: string | null | undefined;
 }) : Promise<ContractWorkflowCardCreationResult> {
@@ -6177,6 +6214,9 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
     decision,
     summary,
     sourceOverride: "sales_ai_customer_signal_v1",
+    ...(args.recoveryResponseSetId
+      ? { recoveryResponseSetId: args.recoveryResponseSetId }
+      : {}),
   });
 
   return {

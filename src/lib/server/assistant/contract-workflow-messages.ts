@@ -52,6 +52,7 @@ export type PushAssistantContractWorkflowDecisionMessageInput = {
   summary?: string | null;
   sourceOverride?: string | null;
   availableActionsOverride?: AssistantContractWorkflowAction[] | null;
+  recoveryResponseSetId?: string | null;
 };
 
 function cleanText(value: unknown) {
@@ -173,6 +174,9 @@ async function buildContractWorkflowMetadata(
     commercial_opportunity_id: cleanText(input.commercialOpportunityId),
     lifecycle_cycle: input.lifecycleCycle ?? null,
     source_message_id: cleanText(input.sourceMessageId),
+    ...(input.recoveryResponseSetId
+      ? { p9_recovery_response_set_id: input.recoveryResponseSetId }
+      : {}),
     quote_number: cleanText(input.quoteNumber),
     customer_name: cleanText(input.customerName),
     trigger: input.trigger,
@@ -213,6 +217,7 @@ async function getOrCreateAssistantPrimaryThread(args: {
   supabase: any;
   organizationId: string;
   storeId: string;
+  recoveryResponseSetId?: string | null;
 }) {
   const { data: existingThread, error: findError } = await args.supabase
     .from("store_assistant_threads")
@@ -241,6 +246,9 @@ async function getOrCreateAssistantPrimaryThread(args: {
       status: "active",
       title: "Assistente operacional",
       created_by: "system",
+      ...(args.recoveryResponseSetId
+        ? { p9_recovery_response_set_id: args.recoveryResponseSetId }
+        : {}),
     })
     .select("id")
     .maybeSingle();
@@ -504,6 +512,9 @@ async function enqueueContractWorkflowNotification(args: {
       customer_name: cleanText(args.metadata.customer_name),
       trigger: cleanText(args.metadata.trigger),
       decision: args.metadata.decision || null,
+      ...(cleanText(args.metadata.p9_recovery_response_set_id)
+        ? { p9_recovery_response_set_id: cleanText(args.metadata.p9_recovery_response_set_id) }
+        : {}),
     };
 
     const { error } = await args.supabase.rpc("assistant_enqueue_internal_notification", {
@@ -560,6 +571,7 @@ export async function pushAssistantContractWorkflowDecisionMessage(
     supabase: input.supabase,
     organizationId: input.organizationId,
     storeId: input.storeId,
+    recoveryResponseSetId: input.recoveryResponseSetId,
   });
 
   const existingMessageId = await findExistingContractWorkflowMessage({

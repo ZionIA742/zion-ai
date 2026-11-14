@@ -2037,6 +2037,7 @@ const tests: TestCase[] = [
               source: "sales_ai_outbound_structured_cross_sell_v1",
               candidate_key: "pool:pool-1",
               source_message_id: "anchor-1",
+              p9_recovery_response_set_id: "set-confirmed-1",
             },
           },
         );

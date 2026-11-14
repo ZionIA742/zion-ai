@@ -28,6 +28,20 @@ const transactionalFenceMigration = readFileSync(
   ),
   "utf8",
 );
+const scopedAuthorityMigration = readFileSync(
+  join(
+    process.cwd(),
+    "supabase/migrations/20261114120000_p9_10_4_d_scoped_recovery_authority.sql",
+  ),
+  "utf8",
+);
+const legacyAuthorityMigration = readFileSync(
+  join(
+    process.cwd(),
+    "supabase/migrations/20261114121000_p9_10_4_d_patch_legacy_recovery_authorities.sql",
+  ),
+  "utf8",
+);
 
 test("post-materialization recovery is enqueued in the same materialization transaction", () => {
   const confirmed = migration.indexOf("materialization_state = 'confirmed'");
@@ -97,4 +111,21 @@ test("all recovery writer tables use an in-transaction conversation-to-lease tri
   assert.match(transactionalFenceMigration, /v_lease\.released_at/);
   assert.match(transactionalFenceMigration, /P9_10_4_D_RECOVERY_CONTEXT_STALE/);
   assert.match(transactionalFenceMigration, /commercial_opportunities/);
+});
+
+test("scoped fences do not treat a client supplied source marker as authority", () => {
+  assert.match(scopedAuthorityMigration, /p19a_sales_ai_reply_sets/);
+  assert.match(scopedAuthorityMigration, /materialization_state = 'confirmed'/);
+  assert.match(scopedAuthorityMigration, /P9_10_4_D_RECOVERY_SET_SCOPE_MISMATCH/);
+  assert.match(scopedAuthorityMigration, /P9_10_4_D_RECOVERY_CONTEXT_STALE/);
+  assert.match(scopedAuthorityMigration, /if v_set_id is null then\s+return new;/s);
+  assert.match(scopedAuthorityMigration, /store_assistant_threads/);
+});
+
+test("legacy CRM and quote authorization writers share the recovery authority", () => {
+  assert.match(legacyAuthorityMigration, /transition_conversation_state_internal/);
+  assert.match(legacyAuthorityMigration, /p9_10_4_d_assert_recovery_write_authority_for_conversation/);
+  assert.match(legacyAuthorityMigration, /issue_quote_preparation_task_authorization_by_system/);
+  assert.match(legacyAuthorityMigration, /p9_10_4_d_assert_recovery_set_authority/);
+  assert.match(legacyAuthorityMigration, /for update/);
 });
