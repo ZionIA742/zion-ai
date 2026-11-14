@@ -18,6 +18,44 @@ export default function AppShellClient({
   const [isSidebarCollapsed, setIsSidebarCollapsed] =
     useState(false);
 
+  const [mobileMenu, setMobileMenu] = useState({
+    pathname,
+    open: false,
+  });
+
+  const isMobileMenuOpen =
+    mobileMenu.pathname === pathname && mobileMenu.open;
+
+  useEffect(() => {
+    if (!isMobileMenuOpen) return;
+    if (!window.matchMedia("(max-width: 767px)").matches) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setMobileMenu({ pathname, open: false });
+      }
+    }
+
+    const media = window.matchMedia("(max-width: 767px)");
+    function handleViewportChange(event: MediaQueryListEvent) {
+      if (!event.matches) {
+        setMobileMenu({ pathname, open: false });
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    media.addEventListener("change", handleViewportChange);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+      media.removeEventListener("change", handleViewportChange);
+    };
+  }, [isMobileMenuOpen, pathname]);
+
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -58,14 +96,19 @@ export default function AppShellClient({
 
   return (
     <StoreProvider>
-      <div className="flex h-screen bg-gray-50">
+      <div className="flex h-dvh min-w-0 bg-gray-50">
         <Sidebar
           collapsed={isSidebarCollapsed}
           onToggle={handleSidebarToggle}
+          mobileOpen={isMobileMenuOpen}
+          onMobileClose={() => setMobileMenu({ pathname, open: false })}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <AppHeader />
+          <AppHeader
+            mobileMenuOpen={isMobileMenuOpen}
+            onOpenMobileMenu={() => setMobileMenu({ pathname, open: true })}
+          />
 
           <main
             className={
@@ -73,7 +116,7 @@ export default function AppShellClient({
                 ? "flex-1 min-h-0 overflow-hidden"
                 : isEdgeToEdgeScrollablePage
                   ? "flex-1 min-h-0 overflow-auto"
-                  : "flex-1 p-6 overflow-auto"
+                  : "min-w-0 flex-1 overflow-auto p-3 sm:p-4 md:p-6"
             }
           >
             {children}

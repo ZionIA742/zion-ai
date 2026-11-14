@@ -37,7 +37,13 @@ function StoreIcon() {
   );
 }
 
-export default function AppHeader() {
+export default function AppHeader({
+  mobileMenuOpen,
+  onOpenMobileMenu,
+}: {
+  mobileMenuOpen: boolean;
+  onOpenMobileMenu: () => void;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const titulo = getTitulo(pathname);
@@ -105,18 +111,40 @@ export default function AppHeader() {
   }
 
   return (
-    <header className="relative z-20 flex h-[76px] shrink-0 items-center justify-between gap-5 border-b border-gray-200/80 bg-white px-6 shadow-[0_1px_8px_rgba(15,23,42,0.025)]">
-      <div className="min-w-0">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-gray-400">
+    <header className="relative z-20 flex h-16 shrink-0 items-center justify-between gap-2 border-b border-gray-200/80 bg-white px-3 shadow-[0_1px_8px_rgba(15,23,42,0.025)] sm:px-4 md:h-[76px] md:gap-5 md:px-6">
+      <div className="flex min-w-0 items-center gap-2 md:gap-3">
+        <button
+          type="button"
+          onClick={onOpenMobileMenu}
+          aria-label="Abrir menu de navegação"
+          aria-controls="zion-navigation"
+          aria-expanded={mobileMenuOpen}
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-700 md:hidden"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            aria-hidden="true"
+            className="h-5 w-5"
+          >
+            <path d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+        <div className="min-w-0">
+        <div className="hidden text-[10px] font-semibold uppercase tracking-[0.18em] text-gray-400 md:block">
           Painel operacional
         </div>
 
-        <h2 className="mt-0.5 truncate text-xl font-bold tracking-[-0.02em] text-gray-950">
+        <h2 className="truncate text-[17px] font-bold tracking-[-0.02em] text-gray-950 md:mt-0.5 md:text-xl">
           {titulo}
         </h2>
+        </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-3">
+      <div className="flex min-w-0 shrink items-center gap-2 md:shrink-0 md:gap-3">
         {storesLoading ? (
           <span className="text-sm text-gray-500">
             Carregando loja...
@@ -136,11 +164,11 @@ export default function AppHeader() {
               onClick={() =>
                 setIsStoreMenuOpen((current) => !current)
               }
-              className="group inline-flex min-w-[178px] items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-left shadow-sm transition hover:border-gray-300 hover:bg-white"
+              className="group inline-flex min-w-0 max-w-[150px] items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-2 py-2 text-left shadow-sm transition hover:border-gray-300 hover:bg-white sm:max-w-[210px] md:min-w-[178px] md:max-w-none md:gap-3 md:px-3"
               aria-haspopup="menu"
               aria-expanded={isStoreMenuOpen}
             >
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-gray-500 shadow-sm ring-1 ring-black/5 transition group-hover:text-gray-900">
+              <span className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-gray-500 shadow-sm ring-1 ring-black/5 transition group-hover:text-gray-900 sm:flex">
                 <StoreIcon />
               </span>
 
@@ -174,7 +202,7 @@ export default function AppHeader() {
             {isStoreMenuOpen ? (
               <div
                 role="menu"
-                className="absolute right-0 z-50 mt-2 w-72 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl shadow-black/10"
+                className="absolute right-0 z-50 mt-2 w-72 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl shadow-black/10"
               >
                 <div className="border-b border-gray-100 px-4 py-4">
                   <div className="flex items-center gap-3">

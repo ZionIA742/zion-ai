@@ -148,6 +148,8 @@ function NavIcon({ name }: { name: NavIconName }) {
 type SidebarProps = {
   collapsed: boolean;
   onToggle: () => void;
+  mobileOpen: boolean;
+  onMobileClose: () => void;
 };
 
 const OPEN_COMMERCIAL_HANDOFF_STATUSES = [
@@ -162,7 +164,12 @@ function isPendingReply(row: InboxRow) {
   return String(row.last_message_direction || "").toLowerCase() === "incoming";
 }
 
-export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export default function Sidebar({
+  collapsed,
+  onToggle,
+  mobileOpen,
+  onMobileClose,
+}: SidebarProps) {
   const pathname = usePathname();
   const { loading: storeLoading, organizationId, activeStoreId } = useStoreContext();
 
@@ -333,17 +340,47 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   return (
     <div
       className={[
-        "relative h-screen shrink-0 transition-[width] duration-300 ease-out",
-        collapsed ? "w-0" : "w-64",
+        "fixed inset-0 z-50 md:relative md:inset-auto md:z-auto md:h-screen md:shrink-0 md:transition-[width] md:duration-300 md:ease-out",
+        mobileOpen ? "pointer-events-auto" : "pointer-events-none",
+        "md:pointer-events-auto",
+        collapsed ? "md:w-0" : "md:w-64",
       ].join(" ")}
     >
+      {mobileOpen ? (
+        <button
+          type="button"
+          onClick={onMobileClose}
+          aria-label="Fechar menu de navegação"
+          className="absolute inset-0 z-0 bg-slate-950/45 md:hidden"
+        />
+      ) : null}
       <aside
+        id="zion-navigation"
+        aria-label="Navegação principal"
         className={[
-          "absolute inset-y-0 left-0 z-30 flex h-screen w-64 flex-col border-r border-gray-200/80 bg-white shadow-[4px_0_18px_rgba(15,23,42,0.035)] transition-transform duration-300 ease-out",
-          collapsed ? "-translate-x-full" : "translate-x-0",
+          "absolute inset-y-0 left-0 z-30 flex h-full w-[min(85vw,20rem)] flex-col border-r border-gray-200/80 bg-white shadow-[4px_0_18px_rgba(15,23,42,0.035)] transition-transform duration-300 ease-out md:h-screen md:w-64",
+          mobileOpen ? "visible translate-x-0" : "invisible -translate-x-full md:visible",
+          collapsed ? "md:-translate-x-full" : "md:translate-x-0",
         ].join(" ")}
       >
-        <div className="border-b border-gray-100 px-5 pb-5 pt-6">
+        <div className="relative border-b border-gray-100 px-5 pb-5 pt-6 pr-14 md:pr-5">
+          <button
+            type="button"
+            onClick={onMobileClose}
+            aria-label="Fechar menu"
+            className="absolute right-3 top-6 flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-700 md:hidden"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              aria-hidden="true"
+              className="h-5 w-5"
+            >
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 shrink-0 overflow-hidden rounded-xl bg-black shadow-sm ring-1 ring-black/10">
               <img
@@ -400,6 +437,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
                   <Link
                     href={item.href}
+                    onClick={onMobileClose}
                     className={[
                       "group relative flex items-center gap-3 rounded-xl px-3.5 py-3 text-sm font-semibold transition-all duration-150",
                       isActive
@@ -454,7 +492,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
         aria-label={collapsed ? "Abrir menu lateral" : "Recolher menu lateral"}
         title={collapsed ? "Abrir menu lateral" : "Recolher menu lateral"}
         className={[
-          "absolute left-full top-1/2 z-40 flex h-14 w-6 -translate-y-1/2 items-center justify-center border border-l-0 border-gray-200 bg-white text-gray-400 shadow-[3px_0_10px_rgba(15,23,42,0.10)] transition-all duration-300 hover:bg-gray-50 hover:text-gray-950",
+          "absolute left-full top-1/2 z-40 hidden h-14 w-6 -translate-y-1/2 items-center justify-center border border-l-0 border-gray-200 bg-white text-gray-400 shadow-[3px_0_10px_rgba(15,23,42,0.10)] transition-all duration-300 hover:bg-gray-50 hover:text-gray-950 md:flex",
           collapsed
             ? "rounded-r-xl"
             : "rounded-r-xl",
