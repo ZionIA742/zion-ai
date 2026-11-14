@@ -3286,7 +3286,7 @@ export default function SchedulePage() {
                 <button
                   type="button"
                   onClick={closeItemDetails}
-                  className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                  className="rounded-lg bg-white min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
                   Fechar
                 </button>
@@ -3331,7 +3331,7 @@ export default function SchedulePage() {
                   <div className="mb-4 flex flex-wrap gap-2">
                     <button
                       onClick={startEditingSelectedItem}
-                      className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+                      className="rounded-lg bg-black min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-white hover:opacity-90"
                     >
                       Editar
                     </button>
@@ -3339,7 +3339,7 @@ export default function SchedulePage() {
                     <button
                       onClick={() => void cancelAppointment()}
                       disabled={savingEdit || selectedItem.status === "cancelled"}
-                      className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-white min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Cancelar compromisso
                     </button>
@@ -3358,7 +3358,7 @@ export default function SchedulePage() {
                         type="button"
                         disabled
                         title="Adicione um endereço ao compromisso para abrir a rota no Maps."
-                        className="cursor-not-allowed rounded-lg bg-gray-50 px-3 py-1.5 text-xs font-semibold text-gray-400 ring-1 ring-black/5"
+                        className="cursor-not-allowed rounded-lg bg-gray-50 min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-gray-400 ring-1 ring-black/5"
                       >
                         Abrir rota no Maps
                       </button>
@@ -3370,7 +3370,7 @@ export default function SchedulePage() {
                   <div className="mb-4 flex flex-wrap gap-2">
                     <button
                       onClick={startEditingSelectedItem}
-                      className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+                      className="rounded-lg bg-black min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-white hover:opacity-90"
                     >
                       Editar bloqueio
                     </button>
@@ -3378,7 +3378,7 @@ export default function SchedulePage() {
                     <button
                       onClick={() => void deleteBlock()}
                       disabled={savingEdit}
-                      className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-white min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Excluir bloqueio
                     </button>
@@ -3596,7 +3596,7 @@ export default function SchedulePage() {
                       <button
                         onClick={() => void saveAppointmentEdit()}
                         disabled={savingEdit}
-                        className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-lg bg-black min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {savingEdit ? "Salvando..." : "Salvar alterações"}
                       </button>
@@ -3604,7 +3604,7 @@ export default function SchedulePage() {
                       <button
                         onClick={cancelEditingSelectedItem}
                         disabled={savingEdit}
-                        className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-lg bg-white min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Cancelar edição
                       </button>
@@ -3626,7 +3626,7 @@ export default function SchedulePage() {
                             type="button"
                             onClick={() => void saveAppointmentEdit("fully_completed")}
                             disabled={savingEdit}
-                            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="rounded-lg bg-emerald-600 min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             Sim, terminou tudo
                           </button>
@@ -3635,7 +3635,7 @@ export default function SchedulePage() {
                             type="button"
                             onClick={() => void saveAppointmentEdit("needs_followup")}
                             disabled={savingEdit}
-                            className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="rounded-lg bg-amber-600 min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             Não, ainda falta retorno
                           </button>
@@ -3644,7 +3644,7 @@ export default function SchedulePage() {
                             type="button"
                             onClick={() => setCompletionDecisionOpen(false)}
                             disabled={savingEdit}
-                            className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="rounded-lg bg-white min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             Voltar
                           </button>
@@ -3780,7 +3780,7 @@ export default function SchedulePage() {
                       <button
                         onClick={() => void saveBlockEdit()}
                         disabled={savingEdit}
-                        className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-lg bg-black min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {savingEdit ? "Salvando..." : "Salvar bloqueio"}
                       </button>
@@ -3788,7 +3788,7 @@ export default function SchedulePage() {
                       <button
                         onClick={cancelEditingSelectedItem}
                         disabled={savingEdit}
-                        className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-lg bg-white min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Cancelar edição
                       </button>
@@ -3922,7 +3922,7 @@ export default function SchedulePage() {
                 <button
                   type="button"
                   onClick={closeCreateBlockPanel}
-                  className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                  className="rounded-lg bg-white min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
                   Fechar
                 </button>
@@ -4085,7 +4085,7 @@ export default function SchedulePage() {
                     <button
                       onClick={() => void saveNewBlock()}
                       disabled={savingBlock}
-                      className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-black min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {savingBlock ? "Salvando..." : "Salvar bloqueio"}
                     </button>
@@ -4093,7 +4093,7 @@ export default function SchedulePage() {
                     <button
                       onClick={closeCreateBlockPanel}
                       disabled={savingBlock}
-                      className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-white min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Cancelar
                     </button>
@@ -4126,7 +4126,7 @@ export default function SchedulePage() {
                 <button
                   type="button"
                   onClick={closeCreateAppointmentPanel}
-                  className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                  className="rounded-lg bg-white min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
                   Fechar
                 </button>
@@ -4474,7 +4474,7 @@ export default function SchedulePage() {
                     <button
                       onClick={() => void saveNewAppointment()}
                       disabled={savingAppointmentCreate}
-                      className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-black min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {savingAppointmentCreate ? "Salvando..." : "Salvar compromisso"}
                     </button>
@@ -4482,7 +4482,7 @@ export default function SchedulePage() {
                     <button
                       onClick={closeCreateAppointmentPanel}
                       disabled={savingAppointmentCreate}
-                      className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-white min-h-11 px-3 py-2 text-sm sm:min-h-0 sm:py-1.5 sm:text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Cancelar
                     </button>
