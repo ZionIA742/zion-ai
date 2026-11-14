@@ -212,28 +212,28 @@ export default function QuoteCatalogPrefillPicker({
       <button
         type="button"
         onClick={() => void togglePicker()}
-        className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+        className="min-h-11 rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
       >
         Selecionar do catálogo
       </button>
 
       {isOpen ? (
-        <div className="mt-3 rounded-2xl bg-gray-50 p-3 ring-1 ring-black/10">
-          <div className="flex items-center gap-2">
+        <div className="mt-3 min-w-0 rounded-2xl bg-gray-50 p-2 ring-1 ring-black/10 sm:p-3">
+          <div className="flex min-w-0 items-center gap-2">
             <input
               value={search}
               onChange={(event) =>
                 setSearch(event.target.value)
               }
               placeholder={searchPlaceholder}
-              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm text-gray-900 outline-none transition focus:border-black"
+              className="w-0 min-w-0 flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-base text-gray-900 outline-none transition focus:border-black sm:text-sm"
             />
 
             <button
               type="button"
               onClick={() => void loadCatalog()}
               disabled={loading}
-              className="rounded-xl bg-white px-3 py-2.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+              className="min-h-11 shrink-0 rounded-xl bg-white px-3 py-2.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? "Carregando..." : "Atualizar"}
             </button>
@@ -254,7 +254,7 @@ export default function QuoteCatalogPrefillPicker({
           ) : null}
 
           {visibleItems.length > 0 ? (
-            <div className="mt-3 max-h-64 space-y-2 overflow-y-auto">
+            <div className="mt-3 max-h-[40dvh] min-w-0 space-y-2 overflow-y-auto overscroll-contain sm:max-h-64">
               {visibleItems.map((catalogItem) => {
                 const categoryText =
                   catalogItem.source_kind === "catalog_item"
@@ -270,27 +270,27 @@ export default function QuoteCatalogPrefillPicker({
                     onClick={() =>
                       selectItem(catalogItem)
                     }
-                    className="flex w-full items-center justify-between gap-3 rounded-xl bg-white px-3 py-3 text-left ring-1 ring-black/10 hover:bg-gray-100"
+                    className="flex w-full min-w-0 flex-col items-start gap-2 rounded-xl bg-white px-3 py-3 text-left ring-1 ring-black/10 hover:bg-gray-100 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
                   >
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-gray-900">
+                      <div className="break-words text-sm font-semibold text-gray-900 sm:truncate">
                         {catalogItem.name}
                       </div>
 
                       {catalogItem.sku ? (
-                        <div className="mt-0.5 truncate text-xs text-gray-500">
+                        <div className="mt-0.5 break-words text-xs text-gray-500 sm:truncate">
                           SKU: {catalogItem.sku}
                         </div>
                       ) : null}
 
                       {categoryText ? (
-                        <div className="mt-0.5 truncate text-xs text-gray-500">
+                        <div className="mt-0.5 break-words text-xs text-gray-500 sm:truncate">
                           {categoryText}
                         </div>
                       ) : null}
                     </div>
 
-                    <div className="shrink-0 text-sm font-semibold text-gray-900">
+                    <div className="max-w-full break-words text-sm font-semibold text-gray-900 sm:shrink-0">
                       {catalogItem.source_kind ===
                       "service"
                         ? "Preço manual"
