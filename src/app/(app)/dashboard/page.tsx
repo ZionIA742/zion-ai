@@ -1463,7 +1463,7 @@ function SalesPeriodExplorer({
                 onClick={() => void toggleSalesFullscreen()}
                 aria-pressed={isSalesExpanded}
                 title={isSalesExpanded ? "Sair do modo expandido" : "Expandir histórico de vendas"}
-                className={`rounded-[4px] px-3 py-2 text-xs font-semibold transition ${
+                className={`min-h-11 rounded-[4px] px-3 py-2 text-xs font-semibold transition ${
                   isSalesExpanded
                     ? "bg-white text-zinc-950 hover:bg-zinc-200"
                     : "border border-zinc-600 bg-zinc-900 text-white hover:bg-zinc-800"
@@ -1477,7 +1477,7 @@ function SalesPeriodExplorer({
                 <button
                   type="button"
                   onClick={() => onAnchorDateChange(shiftSalesPeriod(anchorDate, view, -1))}
-                  className="border-r border-zinc-700 px-3 py-2 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-800"
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center border-r border-zinc-700 px-3 py-2 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-800"
                   aria-label="Período anterior"
                 >
                   ‹
@@ -1486,7 +1486,7 @@ function SalesPeriodExplorer({
               <button
                 type="button"
                 onClick={goToday}
-                className="px-3 py-2 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-800"
+                className="inline-flex min-h-11 items-center justify-center px-3 py-2 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-800"
               >
                 Hoje
               </button>
@@ -1494,7 +1494,7 @@ function SalesPeriodExplorer({
                 <button
                   type="button"
                   onClick={() => onAnchorDateChange(shiftSalesPeriod(anchorDate, view, 1))}
-                  className="border-l border-zinc-700 px-3 py-2 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-800"
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center border-l border-zinc-700 px-3 py-2 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-800"
                   aria-label="Próximo período"
                 >
                   ›
@@ -1510,7 +1510,7 @@ function SalesPeriodExplorer({
                     key={item.id}
                     type="button"
                     onClick={() => onViewChange(item.id)}
-                    className={`rounded-[3px] px-3 py-1.5 text-xs font-semibold transition ${
+                    className={`min-h-11 rounded-[3px] px-3 py-1.5 text-xs font-semibold transition ${
                       isActive
                         ? "bg-white text-zinc-950"
                         : "text-zinc-300 hover:bg-zinc-800 hover:text-white"
