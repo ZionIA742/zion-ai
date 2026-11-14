@@ -49,6 +49,13 @@ const bypassFixMigration = readFileSync(
   ),
   "utf8",
 );
+const lockOrderMigration = readFileSync(
+  join(
+    process.cwd(),
+    "supabase/migrations/20261114123000_p9_10_4_e_lock_order_normalization.sql",
+  ),
+  "utf8",
+);
 
 test("post-materialization recovery is enqueued in the same materialization transaction", () => {
   const confirmed = migration.indexOf("materialization_state = 'confirmed'");
@@ -149,4 +156,19 @@ test("existing quote tasks use the transactional recovery overload while normal 
   assert.match(bypassFixMigration, /p9_10_4_d_assert_recovery_set_authority/);
   assert.match(bypassFixMigration, /issue_quote_preparation_task_authorization_by_system\(\s*p_organization_id/s);
   assert.match(runtime, /recoveryResponseSetId: args\.recoveryResponseSetId/);
+});
+
+test("10.4-E normalizes opportunity/task lock order before incompatible locks", () => {
+  assert.ok(
+    lockOrderMigration.indexOf("v_preflight constant") <
+      lockOrderMigration.indexOf("v_select constant"),
+  );
+  assert.match(lockOrderMigration, /v_definition, v_anchor, v_preflight \|\| v_anchor/);
+  assert.match(lockOrderMigration, /v_recovery_conversation_id/);
+  assert.match(lockOrderMigration, /p9_10_4_d_assert_recovery_write_authority/);
+  assert.match(lockOrderMigration, /P9_10_4_D_RECOVERY_SCOPE_CHANGED/);
+  assert.match(lockOrderMigration, /v_recovery_task/);
+  assert.match(lockOrderMigration, /v_recovery_set_id/);
+  assert.match(lockOrderMigration, /P9_10_4_E_QUOTE_LOCK_ORDER_DRIFT/);
+  assert.match(lockOrderMigration, /P9_10_4_E_STAGE_LOCK_ORDER_DRIFT/);
 });
