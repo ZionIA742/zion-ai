@@ -1,3 +1,4 @@
+import { projectSafeDiagnosticReaderV2Evidence } from "@/lib/server/zion-admin-diagnostic-reader-v2-projection";
 import { createClient } from "@supabase/supabase-js";
 import {
   resolveZionAdminApiAccess,
@@ -138,6 +139,7 @@ function createServiceClient() {
 function projectSafeRows(
   value: unknown,
   maxRows: number,
+  includeV2: boolean,
 ): Record<string, unknown>[] | null {
   if (
     !Array.isArray(value) ||
@@ -177,6 +179,13 @@ function projectSafeRows(
       return null;
     }
 
+    if (includeV2) {
+      Object.assign(
+        safe,
+        projectSafeDiagnosticReaderV2Evidence(record),
+      );
+    }
+
     items.push(safe);
   }
 
@@ -205,10 +214,17 @@ export async function GET(request: Request) {
       );
     }
 
+    // A RPC V1 permanece ativa por padrao.
+    // Habilitar V2 somente depois da homologacao no Supabase.
+    const useReaderV2 =
+      process.env.ZION_ADMIN_DIAGNOSTIC_READER_V2_ENABLED === "true";
+
     const serviceSupabase = createServiceClient();
 
     const { data, error } = await serviceSupabase.rpc(
-      "list_zion_admin_ai_run_diagnostics_by_system",
+      useReaderV2
+        ? "list_zion_admin_ai_run_diagnostics_v2_by_system"
+        : "list_zion_admin_ai_run_diagnostics_by_system",
       {
         p_limit: query.limit,
         p_offset: query.offset,
@@ -229,6 +245,7 @@ export async function GET(request: Request) {
     const items = projectSafeRows(
       data,
       query.limit,
+      useReaderV2,
     );
 
     if (items === null) {
