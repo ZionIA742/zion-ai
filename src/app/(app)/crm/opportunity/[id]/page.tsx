@@ -47,11 +47,11 @@ function mapProblemMessage(code: OpportunityDetailProblemCode) {
 
 function renderValue(label: string, value: string) {
   return (
-    <div className="rounded-xl bg-gray-50 px-4 py-3 ring-1 ring-black/5">
+    <div className="min-w-0 rounded-xl bg-gray-50 px-3 py-3 ring-1 ring-black/5 sm:px-4">
       <dt className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
         {label}
       </dt>
-      <dd className="mt-1 text-sm font-medium text-gray-900">{value}</dd>
+      <dd className="mt-1 break-words text-sm font-medium text-gray-900">{value}</dd>
     </div>
   );
 }
@@ -150,19 +150,19 @@ function renderFailureState(
   extra?: string,
 ) {
   return (
-    <div className="min-h-[calc(100vh-151px)] bg-gray-100 px-4 py-6">
-      <div className="mx-auto max-w-5xl">
-        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+    <div className="min-h-[calc(100dvh-4rem)] min-w-0 bg-gray-100 px-3 py-4 sm:min-h-[calc(100vh-151px)] sm:px-4 sm:py-6">
+      <div className="mx-auto w-full min-w-0 max-w-5xl">
+        <div className="min-w-0 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5 sm:p-6">
           <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
             Detalhe da oportunidade
           </div>
-          <h1 className="mt-2 text-2xl font-bold text-gray-900">{title}</h1>
-          <p className="mt-2 max-w-2xl text-sm text-gray-600">{description}</p>
+          <h1 className="mt-2 break-words text-xl font-bold text-gray-900 sm:text-2xl">{title}</h1>
+          <p className="mt-2 max-w-2xl break-words text-sm text-gray-600">{description}</p>
           {extra ? <p className="mt-2 text-sm text-gray-600">{extra}</p> : null}
           <div className="mt-6">
             <Link
               href="/crm"
-              className="inline-flex rounded-lg bg-black px-4 py-2 text-sm font-semibold text-white shadow-sm hover:opacity-90"
+              className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-black px-4 py-2 text-center text-sm font-semibold text-white shadow-sm hover:opacity-90 sm:w-auto"
             >
               Voltar para o CRM
             </Link>
@@ -224,21 +224,21 @@ export default async function OpportunityDetailPage({
     .filter((value) => value !== null);
 
   return (
-    <div className="min-h-[calc(100vh-151px)] bg-gray-100 px-4 py-6">
-      <div className="mx-auto max-w-5xl space-y-4">
-        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="min-h-[calc(100dvh-4rem)] min-w-0 bg-gray-100 px-3 py-4 sm:min-h-[calc(100vh-151px)] sm:px-4 sm:py-6">
+      <div className="mx-auto w-full min-w-0 max-w-5xl space-y-4">
+        <div className="min-w-0 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5 sm:p-6">
+          <div className="flex min-w-0 flex-col items-start gap-3 sm:flex-row sm:flex-wrap sm:justify-between sm:gap-4">
             <div className="min-w-0">
               <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
                 Detalhe da oportunidade
               </div>
-              <h1 className="mt-2 text-2xl font-bold text-gray-900">{pageTitle}</h1>
+              <h1 className="mt-2 break-words text-xl font-bold text-gray-900 sm:text-2xl">{pageTitle}</h1>
               <p className="mt-2 text-sm text-gray-600">{stageLabel}</p>
             </div>
 
             <Link
               href="/crm"
-              className="inline-flex rounded-lg bg-white px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+              className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-white px-4 py-2 text-center text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 sm:w-auto"
             >
               Voltar para o CRM
             </Link>
@@ -246,7 +246,7 @@ export default async function OpportunityDetailPage({
         </div>
 
         {data.requiresAttention ? (
-          <section className="rounded-2xl bg-red-50 p-5 shadow-sm ring-1 ring-red-200">
+          <section className="min-w-0 rounded-2xl bg-red-50 p-3 shadow-sm ring-1 ring-red-200 sm:p-5">
             <h2 className="text-sm font-semibold uppercase tracking-[0.08em] text-red-700">
               Ação necessária
             </h2>
@@ -261,7 +261,7 @@ export default async function OpportunityDetailPage({
         ) : null}
 
         {warningMessages.length > 0 ? (
-          <section className="rounded-2xl bg-gray-50 p-5 shadow-sm ring-1 ring-gray-200">
+          <section className="min-w-0 rounded-2xl bg-gray-50 p-3 shadow-sm ring-1 ring-gray-200 sm:p-5">
             <h2 className="text-sm font-semibold uppercase tracking-[0.08em] text-gray-700">
               Informações pendentes
             </h2>
@@ -275,7 +275,7 @@ export default async function OpportunityDetailPage({
           </section>
         ) : null}
 
-        <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+        <section className="min-w-0 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5 sm:p-6">
           <div className="mb-4">
             <h2 className="text-base font-bold text-gray-900">Resumo comercial</h2>
             <p className="mt-1 text-sm text-gray-500">
@@ -283,7 +283,7 @@ export default async function OpportunityDetailPage({
             </p>
           </div>
 
-          <dl className="grid gap-3 md:grid-cols-2">
+          <dl className="grid min-w-0 gap-3 md:grid-cols-2">
             {renderValue(
               "Cliente",
               customerInconsistency
@@ -298,8 +298,8 @@ export default async function OpportunityDetailPage({
           </dl>
         </section>
 
-        <section className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+        <section className="grid min-w-0 gap-4 lg:grid-cols-2">
+          <div className="min-w-0 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5 sm:p-6">
             <h2 className="text-base font-bold text-gray-900">Cliente</h2>
             {customerInconsistency ? (
               <p className="mt-4 text-sm text-gray-700">
@@ -311,32 +311,32 @@ export default async function OpportunityDetailPage({
                   <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
                     Nome
                   </div>
-                  <div className="mt-1 text-sm text-gray-900">{customer.name}</div>
+                  <div className="mt-1 break-words text-sm text-gray-900">{customer.name}</div>
                 </div>
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
                     Telefone
                   </div>
-                  <div className="mt-1 text-sm text-gray-900">{customer.phone}</div>
+                  <div className="mt-1 break-words text-sm text-gray-900">{customer.phone}</div>
                 </div>
               </div>
             )}
           </div>
 
-          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+          <div className="min-w-0 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5 sm:p-6">
             <h2 className="text-base font-bold text-gray-900">Origem da oportunidade</h2>
             <p className="mt-4 text-sm text-gray-700">{getOriginSummary(data)}</p>
           </div>
         </section>
 
-        <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+        <section className="min-w-0 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5 sm:p-6">
           <h2 className="text-base font-bold text-gray-900">Conversa principal</h2>
           <p className="mt-4 text-sm text-gray-700">{getConversationSummary(data)}</p>
           <div className="mt-4 rounded-xl bg-gray-50 px-4 py-3 ring-1 ring-black/5">
             <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
               Situação do atendimento
             </div>
-            <div className="mt-1 text-sm text-gray-900">{getAttendanceSummary(data)}</div>
+            <div className="mt-1 break-words text-sm text-gray-900">{getAttendanceSummary(data)}</div>
           </div>
         </section>
       </div>
