@@ -3270,7 +3270,7 @@ export default function SchedulePage() {
             onClick={closeItemDetails}
           >
             <div
-              className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"
+              className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-xl"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
@@ -3292,7 +3292,7 @@ export default function SchedulePage() {
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto px-5 py-4">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
                 {saveErrorText ? (
                   <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-200">
                     {saveErrorText}
@@ -3906,7 +3906,7 @@ export default function SchedulePage() {
             onClick={closeCreateBlockPanel}
           >
             <div
-              className="flex h-full w-full max-w-[min(92vw,640px)] flex-col bg-white shadow-2xl"
+              className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-[min(92vw,640px)]"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
@@ -3928,7 +3928,7 @@ export default function SchedulePage() {
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto px-5 py-4">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
                 {blockErrorText ? (
                   <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-200">
                     {blockErrorText}
@@ -4110,7 +4110,7 @@ export default function SchedulePage() {
             onClick={closeCreateAppointmentPanel}
           >
             <div
-              className="flex h-full w-full max-w-[min(92vw,640px)] flex-col bg-white shadow-2xl"
+              className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-[min(92vw,640px)]"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
@@ -4132,7 +4132,7 @@ export default function SchedulePage() {
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto px-5 py-4">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
                 {appointmentCreateErrorText ? (
                   <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-200">
                     {appointmentCreateErrorText}
