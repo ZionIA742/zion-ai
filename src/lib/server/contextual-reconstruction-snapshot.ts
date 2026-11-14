@@ -11,6 +11,7 @@ export type ReconstructionEvidenceKind =
   | "confirmed"
   | "human_correction"
   | "inference"
+  | "uncertain"
   | "obsolete";
 
 export type ReconstructionCompleteness = "complete" | "partial" | "blocked";
@@ -26,12 +27,13 @@ export type ReconstructionReleaseOrigin =
   | "lease_expiration"
   | "system_recovery";
 
-export type ReconstructionMessageActor = "customer" | "human" | "ai" | "system";
+export type ReconstructionMessageActor = "customer" | "human" | "ai" | "system" | "uncertain";
 
 export type ReconstructionProvenance = {
   source: "message" | "state_transition" | "crm" | "proposal" | "catalog" | "appointment" | "system";
   sourceId: string;
   actor: ReconstructionMessageActor | "system";
+  actorId?: string | null;
   observedAt: string;
 };
 
@@ -53,6 +55,8 @@ export type ReconstructionTakeoverInterval = {
   endedAt: string;
   takeoverEventId: string;
   releaseEventId: string;
+  takeoverEventKey: string;
+  releaseEventKey: string;
 };
 
 export type ReconstructionEvent = {
@@ -65,7 +69,7 @@ export type ReconstructionEvent = {
 export type ReconstructionRelevantMessage = {
   id: string;
   actor: ReconstructionMessageActor;
-  content: string;
+  content: string | null;
   createdAt: string;
   evidence: ReconstructionEvidenceKind;
   provenance: ReconstructionProvenance;
@@ -73,7 +77,7 @@ export type ReconstructionRelevantMessage = {
 
 export type ReconstructionHumanDecision = {
   id: string;
-  decision: string;
+  decision: string | null;
   evidence: "human_correction" | "confirmed";
   provenance: ReconstructionProvenance & {
     source: "message" | "state_transition" | "crm";
@@ -83,6 +87,8 @@ export type ReconstructionHumanDecision = {
 
 export type ReconstructionOpportunity = {
   id: string;
+  organizationId: string;
+  storeId: string;
   stage: string | null;
   lifecycleCycle: number | null;
   evidence: ReconstructionEvidenceKind;
@@ -98,6 +104,9 @@ export type ReconstructionOpportunityResolution = {
 export type ReconstructionProposal = {
   id: string;
   versionId: string;
+  organizationId: string;
+  storeId: string;
+  opportunityId: string;
   totalValue: number | null;
   currency: string | null;
   evidence: ReconstructionEvidenceKind;
@@ -106,6 +115,9 @@ export type ReconstructionProposal = {
 
 export type ReconstructionProduct = {
   id: string;
+  organizationId: string;
+  storeId: string;
+  quoteId: string;
   name: string | null;
   quantity: number | null;
   unitValue: number | null;
@@ -116,8 +128,12 @@ export type ReconstructionProduct = {
 
 export type ReconstructionCommitment = {
   id: string;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  opportunityId: string;
   kind: "visit" | "appointment" | "follow_up" | "agreement";
-  description: string;
+  description: string | null;
   scheduledAt: string | null;
   evidence: ReconstructionEvidenceKind;
   provenance: ReconstructionProvenance;
@@ -166,6 +182,7 @@ export type SnapshotValidationIssue = {
   code:
     | "required"
     | "invalid_uuid"
+    | "invalid_enum"
     | "invalid_timestamp"
     | "interval_order"
     | "scope_mismatch"
@@ -181,8 +198,8 @@ export type SnapshotValidationResult =
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function isUuid(value: string) {
-  return UUID_PATTERN.test(value.trim());
+function isUuid(value: unknown) {
+  return typeof value === "string" && UUID_PATTERN.test(value.trim());
 }
 
 function isTimestamp(value: string) {
@@ -198,7 +215,9 @@ function validateProvenance(
   provenance: ReconstructionProvenance | null | undefined,
   path: string,
 ) {
-  if (!provenance || !provenance.sourceId || !provenance.actor || !isTimestamp(provenance.observedAt)) {
+  const validSources = new Set(["message", "state_transition", "crm", "proposal", "catalog", "appointment", "system"]);
+  const validActors = new Set(["customer", "human", "ai", "system", "uncertain"]);
+  if (!provenance || !provenance.sourceId.trim() || !validSources.has(provenance.source) || !validActors.has(provenance.actor) || !isTimestamp(provenance.observedAt)) {
     issues.push({ path, code: "missing_provenance" });
   }
 }
@@ -220,6 +239,9 @@ export function validateContextualReconstructionSnapshot(
   if (!isUuid(snapshot.takeover.releaseEventId)) issues.push({ path: "takeover.releaseEventId", code: "invalid_uuid" });
   if (!isTimestamp(snapshot.takeover.startedAt)) issues.push({ path: "takeover.startedAt", code: "invalid_timestamp" });
   if (!isTimestamp(snapshot.takeover.endedAt)) issues.push({ path: "takeover.endedAt", code: "invalid_timestamp" });
+  if (!snapshot.takeover.takeoverEventKey || !snapshot.takeover.releaseEventKey) {
+    issues.push({ path: "takeover.eventKeys", code: "required" });
+  }
 
   if (isTimestamp(snapshot.takeover.startedAt) && isTimestamp(snapshot.takeover.endedAt)
     && Date.parse(snapshot.takeover.endedAt) < Date.parse(snapshot.takeover.startedAt)) {
@@ -230,16 +252,23 @@ export function validateContextualReconstructionSnapshot(
     issues.push({ path: "automaticMessaging", code: "automatic_messaging_forbidden" });
   }
 
+  const validReleaseOrigins = new Set(["human_release", "lease_expiration", "system_recovery"]);
+  const validEventTypes = new Set(["human_takeover_released", "human_takeover_expired"]);
+  if (!validReleaseOrigins.has(snapshot.releaseOrigin)) issues.push({ path: "releaseOrigin", code: "invalid_enum" });
+  if (!validEventTypes.has(snapshot.event.type)) issues.push({ path: "event.type", code: "invalid_enum" });
+
   validateProvenance(issues, snapshot.crmStage.provenance, "crmStage.provenance");
   for (const [index, message] of snapshot.relevantMessages.entries()) {
     if (!isUuid(message.id)) issues.push({ path: `relevantMessages.${index}.id`, code: "invalid_uuid" });
     validateProvenance(issues, message.provenance, `relevantMessages.${index}.provenance`);
     if (!isTimestamp(message.createdAt)) issues.push({ path: `relevantMessages.${index}.createdAt`, code: "invalid_timestamp" });
+    if (message.actor === "human" && !message.provenance.actorId) issues.push({ path: `relevantMessages.${index}.provenance.actorId`, code: "missing_provenance" });
   }
 
   for (const [index, decision] of snapshot.humanDecisions.entries()) {
     validateProvenance(issues, decision.provenance, `humanDecisions.${index}.provenance`);
-    if (decision.provenance.actor !== "human") issues.push({ path: `humanDecisions.${index}.provenance.actor`, code: "missing_provenance" });
+    if (decision.provenance.actor !== "human" || !decision.provenance.actorId) issues.push({ path: `humanDecisions.${index}.provenance.actor`, code: "missing_provenance" });
+    if (!decision.decision || !decision.decision.trim()) issues.push({ path: `humanDecisions.${index}.decision`, code: "required" });
   }
 
   for (const [index, fact] of snapshot.commercialFacts.entries()) {
@@ -256,8 +285,21 @@ export function validateContextualReconstructionSnapshot(
   if (opportunity.status === "ambiguous" && opportunity.candidates.length < 2) {
     issues.push({ path: "opportunity.candidates", code: "invalid_opportunity_resolution" });
   }
+  if (opportunity.status === "missing" && (opportunity.selected || opportunity.candidates.length > 0)) {
+    issues.push({ path: "opportunity", code: "invalid_opportunity_resolution" });
+  }
+  for (const [index, candidate] of opportunity.candidates.entries()) {
+    if (!isUuid(candidate.id) || !isUuid(candidate.organizationId) || !isUuid(candidate.storeId)) {
+      issues.push({ path: `opportunity.candidates.${index}`, code: "invalid_uuid" });
+    }
+    addScopeIssue(issues, `opportunity.candidates.${index}.organizationId`, candidate.organizationId, scope.organizationId);
+    addScopeIssue(issues, `opportunity.candidates.${index}.storeId`, candidate.storeId, scope.storeId);
+    validateProvenance(issues, candidate.provenance, `opportunity.candidates.${index}.provenance`);
+  }
   if (opportunity.selected) {
-    validateProvenance(issues, opportunity.selected.provenance, "opportunity.selected.provenance");
+    if (!opportunity.candidates.some((candidate) => candidate.id === opportunity.selected?.id)) {
+      issues.push({ path: "opportunity.selected", code: "invalid_opportunity_resolution" });
+    }
   }
 
   if (snapshot.currentProposal) {
@@ -265,20 +307,52 @@ export function validateContextualReconstructionSnapshot(
     if (!isUuid(snapshot.currentProposal.id) || !isUuid(snapshot.currentProposal.versionId)) {
       issues.push({ path: "currentProposal", code: "invalid_uuid" });
     }
+    if (!snapshot.currentProposal.currency || snapshot.currentProposal.totalValue == null || !Number.isFinite(snapshot.currentProposal.totalValue) || snapshot.currentProposal.totalValue < 0) {
+      issues.push({ path: "currentProposal", code: "required" });
+    }
+    if (!isUuid(snapshot.currentProposal.organizationId) || !isUuid(snapshot.currentProposal.storeId) || !isUuid(snapshot.currentProposal.opportunityId)
+      || snapshot.currentProposal.organizationId !== scope.organizationId || snapshot.currentProposal.storeId !== scope.storeId
+      || snapshot.opportunity.status !== "resolved"
+      || !snapshot.opportunity.selected
+      || snapshot.opportunity.selected.id !== snapshot.currentProposal.opportunityId
+      || !snapshot.opportunity.candidates.some((candidate) => candidate.id === snapshot.currentProposal?.opportunityId)) {
+      issues.push({ path: "currentProposal", code: "scope_mismatch" });
+    }
   }
 
   for (const [index, product] of snapshot.products.entries()) {
     validateProvenance(issues, product.provenance, `products.${index}.provenance`);
+    if (!isUuid(product.id) || !isUuid(product.organizationId) || !isUuid(product.storeId) || !isUuid(product.quoteId)
+      || product.organizationId !== scope.organizationId || product.storeId !== scope.storeId
+      || !snapshot.currentProposal || product.quoteId !== snapshot.currentProposal.id
+      || (product.name == null) || product.quantity == null || product.unitValue == null || product.totalValue == null
+      || !Number.isFinite(product.quantity) || !Number.isFinite(product.unitValue) || !Number.isFinite(product.totalValue)
+      || product.quantity < 0 || product.unitValue < 0 || product.totalValue < 0) {
+      issues.push({ path: `products.${index}`, code: "required" });
+    }
   }
   for (const [index, commitment] of snapshot.commitments.entries()) {
     validateProvenance(issues, commitment.provenance, `commitments.${index}.provenance`);
+    if (!isUuid(commitment.id) || !isUuid(commitment.organizationId) || !isUuid(commitment.storeId) || !isUuid(commitment.conversationId) || !isUuid(commitment.opportunityId)
+      || commitment.organizationId !== scope.organizationId || commitment.storeId !== scope.storeId || commitment.conversationId !== scope.conversationId
+      || !snapshot.opportunity.selected || commitment.opportunityId !== snapshot.opportunity.selected.id
+      || !commitment.description || !commitment.scheduledAt || !isTimestamp(commitment.scheduledAt)) {
+      issues.push({ path: `commitments.${index}`, code: "required" });
+    }
   }
   for (const [index, conflict] of snapshot.conflicts.entries()) {
     if (!conflict.sources.length) issues.push({ path: `conflicts.${index}.sources`, code: "missing_provenance" });
+    conflict.sources.forEach((source, sourceIndex) => validateProvenance(issues, source, `conflicts.${index}.sources.${sourceIndex}`));
   }
 
   if (snapshot.ambiguity !== (opportunity.status === "ambiguous" || snapshot.conflicts.length > 0)) {
     issues.push({ path: "ambiguity", code: "invalid_ambiguity" });
+  }
+  if (snapshot.event.origin !== snapshot.releaseOrigin
+    || (snapshot.event.type === "human_takeover_expired" && snapshot.releaseOrigin !== "lease_expiration")
+    || (snapshot.event.type === "human_takeover_released" && snapshot.releaseOrigin === "lease_expiration")
+    || snapshot.event.occurredAt !== snapshot.takeover.endedAt) {
+    issues.push({ path: "event", code: "invalid_opportunity_resolution" });
   }
   if (snapshot.completeness === "complete" && (snapshot.ambiguity || snapshot.conflicts.some((item) => item.blocksAutomaticContinuation))) {
     issues.push({ path: "completeness", code: "invalid_ambiguity" });
