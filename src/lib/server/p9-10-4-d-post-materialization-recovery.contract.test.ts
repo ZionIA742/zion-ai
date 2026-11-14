@@ -21,6 +21,13 @@ const authorityMigration = readFileSync(
   ),
   "utf8",
 );
+const transactionalFenceMigration = readFileSync(
+  join(
+    process.cwd(),
+    "supabase/migrations/20261114110000_p9_10_4_d_transactional_recovery_write_fences.sql",
+  ),
+  "utf8",
+);
 
 test("post-materialization recovery is enqueued in the same materialization transaction", () => {
   const confirmed = migration.indexOf("materialization_state = 'confirmed'");
@@ -67,4 +74,27 @@ test("recovery authority is tenant-scoped and transaction-locked", () => {
   assert.match(authorityMigration, /store_id = p_store_id/);
   assert.match(authorityMigration, /humano_assumiu/);
   assert.match(authorityMigration, /hard_hold/);
+});
+
+test("all recovery writer tables use an in-transaction conversation-to-lease trigger", () => {
+  for (const table of [
+    "commercial_opportunity_cross_sell_suggestions",
+    "conversation_ai_window_state",
+    "store_assistant_messages",
+    "store_assistant_notification_queue",
+    "store_assistant_operational_tasks",
+    "store_assistant_operational_task_queue",
+    "ai_run_queue",
+  ]) {
+    assert.match(transactionalFenceMigration, new RegExp(table));
+  }
+  assert.match(transactionalFenceMigration, /before insert or update/);
+  assert.match(transactionalFenceMigration, /for update of c/);
+  assert.match(transactionalFenceMigration, /for update;/);
+  assert.match(transactionalFenceMigration, /v_conversation\.is_human_active/);
+  assert.match(transactionalFenceMigration, /v_conversation\.status/);
+  assert.match(transactionalFenceMigration, /v_lease\.hard_hold/);
+  assert.match(transactionalFenceMigration, /v_lease\.released_at/);
+  assert.match(transactionalFenceMigration, /P9_10_4_D_RECOVERY_CONTEXT_STALE/);
+  assert.match(transactionalFenceMigration, /commercial_opportunities/);
 });
