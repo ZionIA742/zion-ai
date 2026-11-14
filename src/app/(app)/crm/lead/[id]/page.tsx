@@ -6845,11 +6845,11 @@ export default function LeadPage() {
           </div>
 
           {activeDetailsTab ? (
-            <div className={`fixed inset-0 z-50 flex items-center justify-center bg-black/30 ${activeDetailsTab === "pdfs" ? "px-4 py-4 lg:px-10 lg:py-8" : "px-3 py-3 lg:px-6 lg:py-5"}`}>
-              <div className={`flex max-h-[96vh] w-full flex-col overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10 ${
-                activeDetailsTab === "pdfs" ? "!max-h-[90dvh] h-[90dvh] max-w-[1480px] !rounded-2xl" : "max-w-6xl"
+            <div className={`fixed inset-0 z-50 flex items-center justify-center bg-black/30 ${activeDetailsTab === "pdfs" ? "p-0 sm:px-4 sm:py-4 lg:px-10 lg:py-8" : "p-0 sm:px-3 sm:py-3 lg:px-6 lg:py-5"}`}>
+              <div className={`flex h-dvh max-h-dvh w-full min-w-0 flex-col overflow-hidden rounded-none bg-white shadow-2xl ring-1 ring-black/10 sm:h-auto sm:max-h-[96vh] sm:rounded-3xl ${
+                activeDetailsTab === "pdfs" ? "!max-h-dvh h-dvh max-w-[1480px] !rounded-none sm:!max-h-[90dvh] sm:h-[90dvh] sm:!rounded-2xl" : "max-w-6xl"
               }`}>
-                <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
+                <div className="flex min-w-0 items-start justify-between gap-2 border-b border-gray-100 bg-gray-950 px-3 py-3 text-white sm:gap-4 sm:px-5 sm:py-4">
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-white/50">
                       Detalhes do cliente
@@ -6871,10 +6871,10 @@ export default function LeadPage() {
                   </button>
                 </div>
 
-                <div className={`min-h-0 flex-1 overflow-y-auto ${activeDetailsTab === "pdfs" ? "p-3 lg:p-4" : "p-5 lg:p-7"}`}>
+                <div className={`min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain ${activeDetailsTab === "pdfs" ? "p-2 sm:p-3 lg:p-4" : "p-3 sm:p-5 lg:p-7"}`}>
                   {activeDetailsTab === "summary" ? (
                     <div className="space-y-5">
-                      <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-gray-50 p-2 ring-1 ring-black/5">
+                      <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto overscroll-x-contain rounded-2xl bg-gray-50 p-2 ring-1 ring-black/5 sm:flex-wrap">
                         <button
                           type="button"
                           onClick={() => setActiveInformationSection("summary")}
@@ -7810,8 +7810,8 @@ export default function LeadPage() {
                       ) : null}
 
                       {activeGeneratedPdfTab === "contracts" ? (
-                        <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,360px)]">
-                          <section className="rounded-xl border border-gray-200 bg-white p-3 ring-1 ring-black/5 lg:sticky lg:top-0 lg:col-start-2 lg:row-start-1 lg:max-h-[calc(100dvh-8rem)] lg:self-start lg:overflow-y-auto">
+                        <div className="grid min-w-0 items-start gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,360px)]">
+                          <section className="min-w-0 rounded-xl border border-gray-200 bg-white p-3 ring-1 ring-black/5 lg:sticky lg:top-0 lg:col-start-2 lg:row-start-1 lg:max-h-[calc(100dvh-8rem)] lg:self-start lg:overflow-y-auto">
                             <div className="text-sm font-semibold text-gray-900">
                               Dados do cliente
                             </div>
@@ -7882,7 +7882,7 @@ export default function LeadPage() {
                                  <iframe
                                    title={`Visualizacao do contrato ${contractPreview.contractId}`}
                                    src={contractPreview.signedUrl}
-                                   className="h-[52vh] min-h-[24rem] w-full bg-gray-100"
+                                   className="h-[45dvh] min-h-[16rem] w-full min-w-0 bg-gray-100 sm:h-[52vh] sm:min-h-[24rem]"
                                  />
                                )}
                                {preparedContractSend && preparedContractSend.contractId === contractPreview.contractId ? (
@@ -8303,9 +8303,9 @@ export default function LeadPage() {
           ) : null}
 
           {isPaymentModalOpen ? (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-3 py-3 lg:px-6 lg:py-5">
-              <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
-                <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-0 sm:px-3 sm:py-3 lg:px-6 lg:py-5">
+              <div className="flex h-dvh max-h-dvh w-full min-w-0 max-w-5xl flex-col overflow-hidden rounded-none bg-white shadow-2xl ring-1 ring-black/10 sm:h-auto sm:max-h-[92vh] sm:rounded-3xl">
+                <div className="flex min-w-0 items-start justify-between gap-2 border-b border-gray-100 bg-gray-950 px-3 py-3 text-white sm:gap-4 sm:px-5 sm:py-4">
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-white/50">
                       Oportunidade comercial
@@ -8326,7 +8326,7 @@ export default function LeadPage() {
                   </button>
                 </div>
 
-                <div className="max-h-[80vh] overflow-y-auto p-5 lg:p-7">
+                <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain p-3 sm:max-h-[80vh] sm:p-5 lg:p-7">
                   <div className="grid gap-5">
                     <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
                       {paymentLoading ? (
@@ -8511,9 +8511,9 @@ export default function LeadPage() {
           ) : null}
 
           {isQuoteModalOpen ? (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-3 py-3 lg:px-6 lg:py-5">
-              <div className="max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
-                <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-0 sm:px-3 sm:py-3 lg:px-6 lg:py-5">
+              <div className="flex h-dvh max-h-dvh w-full min-w-0 max-w-6xl flex-col overflow-hidden rounded-none bg-white shadow-2xl ring-1 ring-black/10 sm:h-auto sm:max-h-[92vh] sm:rounded-3xl">
+                <div className="flex min-w-0 items-start justify-between gap-2 border-b border-gray-100 bg-gray-950 px-3 py-3 text-white sm:gap-4 sm:px-5 sm:py-4">
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-white/50">
                       {isEditingQuote ? "Edicao de orcamento" : "Orçamento manual"}
@@ -8533,7 +8533,7 @@ export default function LeadPage() {
                   </button>
                 </div>
 
-                <div className="max-h-[80vh] overflow-y-auto p-5 lg:p-7">
+                <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain p-3 sm:max-h-[80vh] sm:p-5 lg:p-7">
                   <div className="grid gap-4">
                     <div>
                       <p className="text-sm leading-6 text-gray-700">
@@ -8558,7 +8558,7 @@ export default function LeadPage() {
                         <input
                           value={quoteTitle}
                           onChange={(event) => setQuoteTitle(event.target.value)}
-                          className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="mt-1 w-full min-w-0 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-base text-gray-900 outline-none transition focus:border-black sm:text-sm"
                           placeholder="Ex.: Orçamento piscina premium"
                         />
                       </div>
@@ -8570,7 +8570,7 @@ export default function LeadPage() {
                         <input
                           value={quoteWarrantyTerms}
                           onChange={(event) => setQuoteWarrantyTerms(event.target.value)}
-                          className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="mt-1 w-full min-w-0 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-base text-gray-900 outline-none transition focus:border-black sm:text-sm"
                           placeholder="Ex.: 12 meses"
                         />
                       </div>
@@ -8582,7 +8582,7 @@ export default function LeadPage() {
                         <input
                           value={quoteValidityDays}
                           onChange={(event) => setQuoteValidityDays(event.target.value)}
-                          className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="mt-1 w-full min-w-0 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-base text-gray-900 outline-none transition focus:border-black sm:text-sm"
                           placeholder="Ex.: 7"
                           inputMode="numeric"
                         />
@@ -8595,7 +8595,7 @@ export default function LeadPage() {
                         <textarea
                           value={quoteCustomerNotes}
                           onChange={(event) => setQuoteCustomerNotes(event.target.value)}
-                          className="mt-1 min-h-[96px] w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="mt-1 min-h-[96px] w-full min-w-0 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-base text-gray-900 outline-none transition focus:border-black sm:text-sm"
                           placeholder="Ex.: Condições comerciais, escopo, observações gerais..."
                         />
                       </div>
@@ -8658,7 +8658,7 @@ export default function LeadPage() {
 
                                       updateQuoteItem(item.id, "itemType", nextItemType);
                                     }}
-                                    className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    className="mt-1 w-full min-w-0 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-base text-gray-900 outline-none transition focus:border-black sm:text-sm"
                                   >
                                     <option value="pool_installation">
                                       {getQuoteItemTypeLabel("pool_installation")}
@@ -8699,7 +8699,7 @@ export default function LeadPage() {
                                     onChange={(event) =>
                                       updateQuoteItem(item.id, "quantity", event.target.value)
                                     }
-                                    className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    className="mt-1 w-full min-w-0 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-base text-gray-900 outline-none transition focus:border-black sm:text-sm"
                                     placeholder="1"
                                     inputMode="decimal"
                                   />
@@ -8714,7 +8714,7 @@ export default function LeadPage() {
                                     onChange={(event) =>
                                       updateQuoteItem(item.id, "name", event.target.value)
                                     }
-                                    className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    className="mt-1 w-full min-w-0 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-base text-gray-900 outline-none transition focus:border-black sm:text-sm"
                                     placeholder="Ex.: Piscina Premium"
                                   />
                                 </div>
@@ -8728,7 +8728,7 @@ export default function LeadPage() {
                                     onChange={(event) =>
                                       updateQuoteItem(item.id, "description", event.target.value)
                                     }
-                                    className="mt-1 min-h-[88px] w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    className="mt-1 min-h-[88px] w-full min-w-0 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-base text-gray-900 outline-none transition focus:border-black sm:text-sm"
                                     placeholder="Detalhes do item ou serviço"
                                   />
                                 </div>
@@ -8742,7 +8742,7 @@ export default function LeadPage() {
                                     onChange={(event) =>
                                       updateQuoteItem(item.id, "unitPriceReais", event.target.value)
                                     }
-                                    className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    className="mt-1 w-full min-w-0 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-base text-gray-900 outline-none transition focus:border-black sm:text-sm"
                                     placeholder="0,00"
                                     inputMode="decimal"
                                   />
@@ -8757,7 +8757,7 @@ export default function LeadPage() {
                                     onChange={(event) =>
                                       updateQuoteItem(item.id, "discountReais", event.target.value)
                                     }
-                                    className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    className="mt-1 w-full min-w-0 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-base text-gray-900 outline-none transition focus:border-black sm:text-sm"
                                     placeholder="0,00"
                                     inputMode="decimal"
                                   />
@@ -8861,7 +8861,7 @@ export default function LeadPage() {
                           type="button"
                           onClick={closeQuoteModalAndReset}
                           disabled={isGeneratingManualQuote}
-                          className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/15 hover:bg-white/15"
+                          className="min-h-11 rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/15 hover:bg-white/15"
                         >
                           Fechar
                         </button>
@@ -8877,7 +8877,7 @@ export default function LeadPage() {
                             isGeneratingManualQuote ||
                             (isEditingQuote ? !canGenerateQuotePdf : !canGenerateQuotePdf)
                           }
-                          className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-white/15 disabled:cursor-not-allowed disabled:text-gray-400"
+                          className="min-h-11 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-white/15 disabled:cursor-not-allowed disabled:text-gray-400"
                         >
                           {isEditingQuote
                             ? isGeneratingManualQuote
