@@ -2991,9 +2991,9 @@ export default function SchedulePage() {
                 <div
                   ref={timelineScrollRef}
                   onScroll={updateTimelineCounts}
-                  className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+                  className="min-h-0 flex-1 overflow-auto overscroll-contain"
                 >
-                  <div className="w-full min-w-0">
+                  <div className={calendarView === "week" ? "w-full min-w-[840px]" : "w-full min-w-0"}>
                     <div
                       ref={timelineHeaderRef}
                       className="sticky top-0 z-30 grid border-b border-black/10 bg-white shadow-[0_1px_0_rgba(0,0,0,0.03)]"
