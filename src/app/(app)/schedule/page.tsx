@@ -2722,12 +2722,12 @@ export default function SchedulePage() {
     >
       <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
         <div className="shrink-0 border-b border-gray-200 bg-white">
-          <div className="overflow-hidden border-b border-black/5 px-4 py-3">
-            <div className="flex w-full min-w-0 items-center gap-1.5 whitespace-nowrap">
+          <div className="min-w-0 overflow-hidden border-b border-black/5 px-3 py-3 sm:px-4">
+            <div className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:flex-nowrap lg:gap-1.5 lg:whitespace-nowrap">
               <button
                 onClick={openCreateAppointmentPanel}
                 disabled={storeLoading || !organizationId || !activeStoreId}
-                className="rounded-lg bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="min-h-11 shrink-0 rounded-lg bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 + Novo compromisso
               </button>
@@ -2735,7 +2735,7 @@ export default function SchedulePage() {
               <button
                 onClick={openCreateBlockPanel}
                 disabled={storeLoading || !organizationId || !activeStoreId}
-                className="rounded-lg bg-slate-800 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+                className="min-h-11 shrink-0 rounded-lg bg-slate-800 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Novo bloqueio
               </button>
@@ -2745,7 +2745,7 @@ export default function SchedulePage() {
               <button
                 type="button"
                 onClick={goToToday}
-                className="rounded-lg bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                className="min-h-11 shrink-0 rounded-lg bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
               >
                 Hoje
               </button>
@@ -2755,7 +2755,7 @@ export default function SchedulePage() {
                 onClick={goToPreviousPeriod}
                 aria-label="Período anterior"
                 title="Período anterior"
-                className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-lg font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-50"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-white text-lg font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-50 lg:h-8 lg:w-8"
               >
                 ‹
               </button>
@@ -2765,16 +2765,16 @@ export default function SchedulePage() {
                 onClick={goToNextPeriod}
                 aria-label="Próximo período"
                 title="Próximo período"
-                className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-lg font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-50"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-white text-lg font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-50 lg:h-8 lg:w-8"
               >
                 ›
               </button>
 
-              <div className="ml-1 mr-2 min-w-[180px] text-base font-bold text-gray-900">
+              <div className="order-first w-full min-w-0 break-words text-sm font-bold text-gray-900 sm:text-base lg:order-none lg:ml-1 lg:mr-2 lg:w-auto lg:min-w-[180px]">
                 {formatPeriodLabel(viewDate, calendarView)}
               </div>
 
-              <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              <div className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:ml-auto lg:w-auto lg:shrink-0 lg:flex-nowrap lg:gap-1.5">
                 <div className="flex shrink-0 rounded-lg bg-gray-100 p-0.5 ring-1 ring-black/5">
                   {(["day", "week", "month"] as CalendarView[]).map((view) => {
                     const label =
@@ -2786,7 +2786,7 @@ export default function SchedulePage() {
                         type="button"
                         onClick={() => changeCalendarView(view)}
                         className={[
-                          "rounded-md px-3.5 py-2 text-xs font-semibold transition",
+                          "inline-flex min-h-11 items-center justify-center rounded-md px-3.5 py-2 text-xs font-semibold transition",
                           calendarView === view
                             ? "bg-white text-gray-950 shadow-sm ring-1 ring-black/10"
                             : "text-gray-600 hover:text-gray-950",
@@ -2807,7 +2807,7 @@ export default function SchedulePage() {
                 <button
                   onClick={() => void loadSchedule()}
                   disabled={loading || storeLoading || !organizationId || !activeStoreId}
-                  className="rounded-lg bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="min-h-11 shrink-0 rounded-lg bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Recarregar
                 </button>
@@ -2816,7 +2816,7 @@ export default function SchedulePage() {
                   type="button"
                   onClick={() => void toggleScheduleFullscreen()}
                   className={[
-                    "rounded-lg px-3.5 py-2 text-xs font-semibold transition",
+                    "inline-flex min-h-11 items-center justify-center rounded-lg px-3.5 py-2 text-xs font-semibold transition",
                     isExpanded
                       ? "bg-slate-900 text-white hover:bg-slate-800"
                       : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50",
