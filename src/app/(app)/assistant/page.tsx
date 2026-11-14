@@ -2069,8 +2069,8 @@ export default function AssistantPage() {
   }
 
   return (
-    <div className="h-full overflow-hidden bg-gray-100 text-sm text-gray-900">
-      <div className="flex h-full min-h-0 flex-col">
+    <div className="h-full min-w-0 overflow-hidden bg-gray-100 text-sm text-gray-900">
+      <div className="flex h-full min-h-0 min-w-0 flex-col">
         {errorText ? (
           <div className="mb-2 shrink-0 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-800 ring-1 ring-red-200">
             {errorText}
@@ -2093,9 +2093,9 @@ export default function AssistantPage() {
           </button>
         ) : null}
 
-        <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white">
-          <div className="flex shrink-0 items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-3">
-            <div className="flex min-w-0 items-center gap-3">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white">
+          <div className="flex shrink-0 flex-col items-stretch gap-2 border-b border-gray-200 bg-white px-3 py-2.5 md:flex-row md:items-center md:justify-between md:gap-4 md:px-4 md:py-3">
+            <div className="flex min-w-0 items-center gap-2 md:gap-3">
               <div
                 className="relative h-10 w-10 shrink-0 overflow-hidden rounded-full bg-gray-900 ring-1 ring-black/15"
                 aria-hidden="true"
@@ -2126,7 +2126,7 @@ export default function AssistantPage() {
               </div>
             </div>
 
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex w-full min-w-0 items-center justify-end gap-2 md:w-auto md:shrink-0">
               <button
                 type="button"
                 onClick={() => {
@@ -2146,7 +2146,7 @@ export default function AssistantPage() {
               <button
                 type="button"
                 onClick={() => setExternalQueueOpen((current) => !current)}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-gray-50 px-3.5 py-2 text-[11px] font-semibold text-gray-800 ring-1 ring-gray-200 transition hover:bg-gray-100 hover:text-black"
+                className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-gray-50 px-3 py-2 text-[11px] font-semibold text-gray-800 ring-1 ring-gray-200 transition hover:bg-gray-100 hover:text-black md:shrink-0 md:flex-none md:px-3.5"
                 aria-expanded={externalQueueOpen}
               >
                 {externalQueueOpen
@@ -2187,7 +2187,7 @@ export default function AssistantPage() {
             }
           >
 
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-2xl pr-1 [scrollbar-gutter:stable]">
+            <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain rounded-2xl pr-1 [scrollbar-gutter:stable]">
               <ResponsibleExternalNotificationsPanel
                 organizationId={organizationId}
                 storeId={activeStoreId}
@@ -2201,13 +2201,13 @@ export default function AssistantPage() {
             className={
               externalQueueOpen
                 ? "hidden"
-                : "relative flex min-h-0 flex-1 overflow-hidden"
+                : "relative flex min-h-0 min-w-0 flex-1 overflow-hidden"
             }
           >
             <div
               ref={chatScrollRef}
               onScroll={handleChatScroll}
-              className={`min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-5 ${searchOpen ? "md:pr-[400px]" : ""}`}
+              className={`min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-4 md:px-5 ${searchOpen ? "md:pr-[400px]" : ""}`}
               style={{ background: "#f6f6f6" }}
             >
               {groupedMessages.length > 0 ? (
@@ -2272,7 +2272,7 @@ export default function AssistantPage() {
                           }}
                           className={`flex transition-shadow duration-200 ${bubbleWrapperClass(message)}`}
                         >
-                          <div className={`max-w-[92%] px-3.5 py-2.5 shadow-sm md:max-w-[78%] ${bubbleClass(message)}`}>
+                          <div className={`min-w-0 max-w-[92%] px-3.5 py-2.5 shadow-sm md:max-w-[78%] ${bubbleClass(message)}`}>
                             <div className="mb-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-gray-500">
                               <span className="font-semibold text-gray-700">{senderLabel(message)}</span>
                               <span>&middot;</span>
@@ -2363,7 +2363,7 @@ export default function AssistantPage() {
                                       src={mediaUrl}
                                       aria-label={attachment.fileName || "Áudio enviado pelo responsavel"}
                                       onError={() => handleAssistantMediaError(message.id)}
-                                      className="max-w-full"
+                                      className="block w-full max-w-full md:w-auto"
                                     />
                                   ) : (
                                     <a
@@ -3093,7 +3093,7 @@ export default function AssistantPage() {
             </div>
 
             {searchOpen ? (
-              <aside className="absolute inset-y-0 right-0 z-10 flex w-full max-w-[380px] flex-col border-l border-black/10 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)]">
+              <aside className="absolute inset-y-0 right-0 z-10 flex w-full max-w-none flex-col bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)] md:max-w-[380px] md:border-l md:border-black/10">
                 <div className="flex items-center gap-3 border-b border-black/10 px-4 py-3">
                   <button
                     type="button"
@@ -3124,7 +3124,7 @@ export default function AssistantPage() {
                       value={searchText}
                       onChange={(event) => setSearchText(event.target.value)}
                       placeholder="Digite para buscar nas mensagens carregadas"
-                      className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+                      className="min-w-0 flex-1 bg-transparent text-base text-gray-900 outline-none placeholder:text-gray-400 md:text-sm"
                     />
                     {searchText.trim() ? (
                       <button
@@ -3187,7 +3187,7 @@ export default function AssistantPage() {
             ) : null}
           </div>
 
-          <div className="shrink-0 border-t border-black/10 bg-white px-3 py-2.5 md:px-4">
+          <div className="min-w-0 shrink-0 border-t border-black/10 bg-white px-2 py-2.5 pb-[calc(0.625rem+env(safe-area-inset-bottom))] sm:px-3 md:px-4 md:pb-2.5">
             <input
               ref={fileInputRef}
               type="file"
@@ -3261,7 +3261,7 @@ export default function AssistantPage() {
               </div>
             ) : null}
 
-            <div className="flex items-end gap-2">
+            <div className="flex min-w-0 items-end gap-1.5 sm:gap-2">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -3285,7 +3285,7 @@ export default function AssistantPage() {
                 }}
                 placeholder="Mensagem"
                 rows={1}
-                className="max-h-28 min-h-[44px] flex-1 resize-none rounded-3xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm leading-5 text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-300 focus:bg-white"
+                className="max-h-28 min-h-[44px] w-0 min-w-0 flex-1 resize-none rounded-3xl border border-gray-200 bg-gray-50 px-3 py-3 text-base leading-5 text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-300 focus:bg-white sm:px-4 md:text-sm"
               />
 
               <button
