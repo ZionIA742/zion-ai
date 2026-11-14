@@ -2872,7 +2872,7 @@ export default function SchedulePage() {
               </div>
             ) : calendarView === "month" ? (
               <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-                <div className="sticky top-0 z-20 grid grid-cols-7 border-b border-black/10 bg-white">
+                <div className="sticky top-0 z-20 grid min-w-[770px] grid-cols-7 border-b border-black/10 bg-white">
                   {[
                     "Domingo",
                     "Segunda-feira",
@@ -2891,7 +2891,7 @@ export default function SchedulePage() {
                   ))}
                 </div>
 
-                <div className="grid min-h-[780px] flex-1 grid-cols-7 grid-rows-6 border-l border-black/10">
+                <div className="grid min-h-[780px] min-w-[770px] flex-1 grid-cols-7 grid-rows-6 border-l border-black/10">
                   {calendarDays.map((date) => {
                     const dayKey = toDateKey(date);
                     const dayItems = itemsByDate[dayKey] || [];
