@@ -706,14 +706,14 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
           <button
             type="button"
             onClick={toggleCalendar}
-            className="flex w-full items-center justify-between rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-left text-xs text-gray-900 outline-none transition hover:bg-gray-50 focus:border-black"
+            className="flex min-h-11 w-full items-center justify-between gap-2 rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-left text-base text-gray-900 outline-none transition hover:bg-gray-50 focus:border-black sm:min-h-0 sm:text-xs"
           >
             <span className={dateValue ? "text-gray-900" : "text-gray-400"}>{selectedDateLabel}</span>
             <span className="text-xs font-semibold text-gray-500">Calendário</span>
           </button>
 
           {calendarOpen ? (
-            <div className="absolute left-0 top-[calc(100%+6px)] z-20 w-full min-w-[260px] rounded-xl border border-black/10 bg-white p-2.5 shadow-xl">
+            <div className="relative z-20 mt-2 w-full min-w-0 rounded-xl border border-black/10 bg-white p-2.5 shadow-xl sm:absolute sm:left-0 sm:top-[calc(100%+6px)] sm:mt-0 sm:min-w-[260px]">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <button
                   type="button"
@@ -722,7 +722,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
                       (prev) => new Date(Date.UTC(prev.getUTCFullYear(), prev.getUTCMonth() - 1, 1))
                     )
                   }
-                  className="rounded-lg bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700 hover:bg-gray-200"
+                  className="min-h-11 rounded-lg bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700 hover:bg-gray-200 sm:min-h-0"
                 >
                   Mês anterior
                 </button>
@@ -738,7 +738,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
                       (prev) => new Date(Date.UTC(prev.getUTCFullYear(), prev.getUTCMonth() + 1, 1))
                     )
                   }
-                  className="rounded-lg bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700 hover:bg-gray-200"
+                  className="min-h-11 rounded-lg bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700 hover:bg-gray-200 sm:min-h-0"
                 >
                   Próximo mês
                 </button>
@@ -771,7 +771,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
                         setCalendarOpen(false);
                       }}
                       className={[
-                        "h-7 rounded-lg text-center text-[11px] font-semibold transition",
+                        "min-h-11 rounded-lg text-center text-sm font-semibold transition sm:h-7 sm:min-h-0 sm:text-[11px]",
                         sameMonth ? "text-gray-900" : "text-gray-300",
                         isSelected
                           ? "bg-black text-white"
@@ -793,7 +793,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
           <select
             value={timeValue}
             onChange={(event) => onTimeChange(event.target.value)}
-            className="w-full min-w-[88px] rounded-lg border border-black/10 bg-white px-3 py-1.5 font-mono text-xs tabular-nums text-gray-900 outline-none focus:border-black"
+            className="min-h-11 w-full min-w-0 rounded-lg border border-black/10 bg-white px-3 py-1.5 font-mono text-base tabular-nums text-gray-900 outline-none focus:border-black sm:min-h-0 sm:min-w-[88px] sm:text-xs"
           >
             {TIME_OPTIONS.map((option) => (
               <option key={`${label}-${option}`} value={option}>
