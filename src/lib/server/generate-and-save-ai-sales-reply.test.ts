@@ -491,6 +491,30 @@ function createAiWindowScopeSupabase(args?: {
           };
         }
 
+        if (table === "messages") {
+          return {
+            select(_selection: string) {
+              return this;
+            },
+            eq(_column: string, _value: unknown) {
+              return this;
+            },
+            async maybeSingle() {
+              return {
+                data: {
+                  id: "msg-1",
+                  organization_id: canonicalOrganizationId,
+                  store_id: canonicalStoreId,
+                  conversation_id: conversationId,
+                  sender: "human",
+                  direction: "inbound",
+                },
+                error: null,
+              };
+            },
+          };
+        }
+
         if (table === "store_schedule_settings") {
           return {
             select(_selection: string) {
@@ -607,7 +631,13 @@ function createAiWindowScopeSupabase(args?: {
             },
             async maybeSingle() {
               return {
-                data: { hard_hold: false, released_at: "2026-07-30T10:00:00.000Z" },
+                data: {
+                  organization_id: canonicalOrganizationId,
+                  store_id: canonicalStoreId,
+                  conversation_id: conversationId,
+                  hard_hold: false,
+                  released_at: "2026-07-30T10:00:00.000Z",
+                },
                 error: null,
               };
             },
@@ -4419,7 +4449,7 @@ const tests: TestCase[] = [
           onConflict: "conversation_id",
         });
         assert.deepEqual(supabase.conversationSelects, [
-          "id, organization_id, lead_id, is_human_active, leads!inner(organization_id, store_id)",
+          "id, organization_id, lead_id, status, is_human_active, leads!inner(organization_id, store_id)",
         ]);
         assert.deepEqual(supabase.conversationFilters, [
           { column: "id", value: "conv-canonical" },
@@ -7905,12 +7935,9 @@ assert.equal(
         assert.equal(materializeCalls, 1);
         assert.equal(handoffCalls, 0);
         assert.deepEqual(systemRpcCalls, []);
-        assert.equal(scope.queueUpserts.length, 1);
-        assert.equal(
-          scope.queueUpserts[0]?.row.input &&
-            (scope.queueUpserts[0].row.input as Record<string, unknown>).type,
-          "sales_ai_post_materialization_recovery",
-        );
+        // The recovery task is created atomically by the materializer RPC;
+        // replay must not perform a second enqueue.
+        assert.equal(scope.queueUpserts.length, 0);
         assert.equal(scope.windowUpserts.length, 0);
         assert.equal(scope.stateUpdates.length, 0);
         assert.equal(scope.queueUpdates.length, 0);
