@@ -81,6 +81,21 @@ test("preserves idempotent replay without issuing another call", async () => {
   assert.equal(supabase.calls.length, 1);
 });
 
+test("passes recovery authority only for a recovery authorization", async () => {
+  const supabase = client();
+  await issueQuotePreparationTaskAuthorizationBySystem({
+    ...identity,
+    recoveryResponseSetId: "66666666-6666-4666-8666-666666666666",
+    supabase,
+  });
+
+  assert.equal(
+    supabase.calls[0].payload.p_recovery_response_set_id,
+    "66666666-6666-4666-8666-666666666666",
+  );
+  assert.equal(Object.keys(supabase.calls[0].payload).length, 5);
+});
+
 test("returns an explicit expired or revoked block", async () => {
   for (const reason of ["authorization_expired", "authorization_revoked"] as const) {
     const supabase = client({

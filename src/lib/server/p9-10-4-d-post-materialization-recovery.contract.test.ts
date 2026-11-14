@@ -42,6 +42,13 @@ const legacyAuthorityMigration = readFileSync(
   ),
   "utf8",
 );
+const bypassFixMigration = readFileSync(
+  join(
+    process.cwd(),
+    "supabase/migrations/20261114122000_p9_10_4_d_recovery_bypass_fixes.sql",
+  ),
+  "utf8",
+);
 
 test("post-materialization recovery is enqueued in the same materialization transaction", () => {
   const confirmed = migration.indexOf("materialization_state = 'confirmed'");
@@ -128,4 +135,18 @@ test("legacy CRM and quote authorization writers share the recovery authority", 
   assert.match(legacyAuthorityMigration, /issue_quote_preparation_task_authorization_by_system/);
   assert.match(legacyAuthorityMigration, /p9_10_4_d_assert_recovery_set_authority/);
   assert.match(legacyAuthorityMigration, /for update/);
+});
+
+test("recovery fences cannot lose authority on UPDATE", () => {
+  assert.match(bypassFixMigration, /to_jsonb\(old\)/i);
+  assert.match(bypassFixMigration, /TG_OP\s*=\s*'UPDATE'/i);
+  assert.match(bypassFixMigration, /P9_10_4_D_RECOVERY_AUTHORITY_MUTATION/);
+  assert.match(bypassFixMigration, /p9_recovery_response_set_id/);
+});
+
+test("existing quote tasks use the transactional recovery overload while normal P19-A stays four-argument", () => {
+  assert.match(bypassFixMigration, /p_recovery_response_set_id uuid/);
+  assert.match(bypassFixMigration, /p9_10_4_d_assert_recovery_set_authority/);
+  assert.match(bypassFixMigration, /issue_quote_preparation_task_authorization_by_system\(\s*p_organization_id/s);
+  assert.match(runtime, /recoveryResponseSetId: args\.recoveryResponseSetId/);
 });

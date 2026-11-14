@@ -1457,6 +1457,9 @@ async function reconcileExistingQuotePreparationTask(args: {
       storeId: canonicalStoreId,
       taskId,
       requestMessageId,
+      ...(args.recoveryResponseSetId
+        ? { recoveryResponseSetId: args.recoveryResponseSetId }
+        : {}),
       supabase: args.supabase,
     });
   } catch (error: unknown) {
@@ -5769,6 +5772,9 @@ export async function createCommercialAssistantHandoff(
             storeId: args.storeId,
             taskId: String(data.id),
             requestMessageId,
+            ...(args.recoveryResponseSetId
+              ? { recoveryResponseSetId: args.recoveryResponseSetId }
+              : {}),
             supabase: args.systemSupabase || args.supabase,
           });
         quotePreparationAuthorization = {

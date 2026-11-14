@@ -214,6 +214,7 @@ export async function issueQuotePreparationTaskAuthorizationBySystem(args: {
   storeId: string;
   taskId: string;
   requestMessageId: string;
+  recoveryResponseSetId?: string | null;
   supabase?: QuotePreparationTaskAuthorizationSupabase;
 }): Promise<QuotePreparationTaskAuthorizationResult> {
   const identity = {
@@ -227,18 +228,30 @@ export async function issueQuotePreparationTaskAuthorizationBySystem(args: {
       args?.requestMessageId,
       "P19A_QUOTE_PREP_AUTH_REQUEST_MESSAGE_ID_INVALID",
     ),
+    ...(args?.recoveryResponseSetId == null
+      ? {}
+      : {
+          recoveryResponseSetId: requireUuid(
+            args.recoveryResponseSetId,
+            "P9_10_4_D_RECOVERY_RESPONSE_SET_ID_INVALID",
+          ),
+        }),
   };
 
   const supabase = args?.supabase ?? createServiceRoleClient();
   let response: { data: unknown; error: RpcError | null };
 
   try {
-    response = await supabase.rpc(ISSUE_QUOTE_PREPARATION_AUTHORIZATION_RPC, {
+    const payload: Record<string, unknown> = {
       p_organization_id: identity.organizationId,
       p_store_id: identity.storeId,
       p_task_id: identity.taskId,
       p_request_message_id: identity.requestMessageId,
-    });
+    };
+    if (identity.recoveryResponseSetId) {
+      payload.p_recovery_response_set_id = identity.recoveryResponseSetId;
+    }
+    response = await supabase.rpc(ISSUE_QUOTE_PREPARATION_AUTHORIZATION_RPC, payload);
   } catch (error) {
     throw new QuotePreparationTaskAuthorizationError(
       "A autoridade de autorizacao nao confirmou o resultado; o estado permanece incerto.",
