@@ -586,14 +586,14 @@ export default function CrmPage() {
         key={card.commercialOpportunityId}
         type="button"
         onClick={() => setSelectedCardId(card.commercialOpportunityId)}
-        className="group relative w-full overflow-hidden rounded-2xl bg-white text-left shadow-sm ring-1 ring-black/5 transition hover:-translate-y-0.5 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20"
+        className="group relative w-full min-w-0 overflow-hidden rounded-2xl bg-white text-left shadow-sm ring-1 ring-black/5 transition hover:-translate-y-0.5 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20"
       >
         <div className={cx("absolute inset-x-0 top-0 h-1", ui.bar)} />
 
         <div className="p-4">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:justify-between sm:gap-3">
             <div className="min-w-0">
-              <div className="truncate text-[15px] font-semibold leading-5 text-gray-950">
+              <div className="break-words text-[15px] font-semibold leading-5 text-gray-950 sm:truncate">
                 {cardTitle(card)}
               </div>
               <div className="mt-1 truncate text-[13px] text-gray-500">
@@ -639,7 +639,7 @@ export default function CrmPage() {
             ) : null}
           </div>
 
-          <div className="mt-4 flex items-center justify-between border-t border-black/5 pt-3 text-xs">
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-black/5 pt-3 text-xs">
             <span className="text-gray-400">
               {card.isFollowUpActive ? "Acompanhamento ativo" : "Oportunidade"}
             </span>
@@ -653,17 +653,17 @@ export default function CrmPage() {
   }
 
   return (
-    <div className="min-h-[calc(100vh-151px)] overflow-x-hidden bg-gray-100">
-      <div className="min-h-[calc(100vh-151px)]">
+    <div className="min-h-[calc(100dvh-4rem)] min-w-0 overflow-x-hidden bg-gray-100 md:min-h-[calc(100vh-151px)]">
+      <div className="min-h-[calc(100dvh-4rem)] md:min-h-[calc(100vh-151px)]">
         <div className="border-b border-black/5 bg-white">
-          <div className="w-full px-5 py-5">
+          <div className="w-full min-w-0 px-3 py-4 sm:px-5 sm:py-5">
             <div className="flex flex-col gap-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
                   <h1 className="text-xl font-bold text-gray-950">Oportunidades de venda</h1>
                 </div>
 
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto sm:shrink-0">
                   <button
                     type="button"
                     onClick={() => void fetchPageData()}
@@ -686,14 +686,14 @@ export default function CrmPage() {
               </div>
 
               <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl bg-gray-50 px-4 py-3 ring-1 ring-black/5 xl:max-w-[720px]">
+                <div className="flex w-full min-w-0 flex-1 items-center gap-2 rounded-xl bg-gray-50 px-3 py-3 ring-1 ring-black/5 sm:px-4 xl:max-w-[720px]">
                   <span className="shrink-0 text-sm text-gray-400">⌕</span>
                   <input
                     id="crm-search"
                     value={searchText}
                     onChange={(event) => setSearchText(event.target.value)}
                     placeholder="Buscar oportunidade por nome, telefone ou identificadores"
-                    className="min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+                    className="min-w-0 flex-1 bg-transparent text-base text-gray-900 outline-none placeholder:text-gray-400 sm:text-sm"
                   />
                   {searchText.trim() ? (
                     <button
@@ -727,7 +727,7 @@ export default function CrmPage() {
                           type="button"
                           onClick={() => setBoardView(option.id)}
                           className={cx(
-                            "flex shrink-0 items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold ring-1 transition",
+                            "flex min-h-10 shrink-0 items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold ring-1 transition",
                             selected
                               ? "bg-black text-white ring-black"
                               : "bg-white text-gray-600 ring-black/10 hover:bg-gray-50",
@@ -752,7 +752,7 @@ export default function CrmPage() {
           </div>
         </div>
 
-        <div className="w-full px-5 py-5">
+        <div className="w-full min-w-0 px-3 py-4 sm:px-5 sm:py-5">
           {errorMsg ? (
             <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-600/20">
               <div className="font-semibold">Erro</div>
@@ -773,7 +773,7 @@ export default function CrmPage() {
                 </div>
               </div>
 
-              <div className="bg-gray-50/70 p-5">
+              <div className="min-w-0 bg-gray-50/70 p-3 sm:p-5">
                 {searchResults.length === 0 ? (
                   <div className="rounded-xl bg-white p-5 text-sm text-gray-600 ring-1 ring-black/5">
                     Nenhuma oportunidade encontrada com essa busca.
@@ -797,7 +797,7 @@ export default function CrmPage() {
                   </div>
                 </div>
 
-                <div className="grid gap-2.5 p-4 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="grid min-w-0 gap-2 p-3 sm:grid-cols-2 sm:gap-2.5 sm:p-4 xl:grid-cols-4">
                   {PIPELINE_STAGES.map((stage) => {
                     const items = stageCardsById.get(stage.id) || [];
                     const ui = getStageUi(stage);
@@ -871,7 +871,7 @@ export default function CrmPage() {
                   ) : null}
                 </div>
 
-                <div className="bg-gray-50/60 p-4">
+                <div className="min-w-0 bg-gray-50/60 p-3 sm:p-4">
                   {selectedPipelineStageCards.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-gray-200 bg-white px-5 py-10 text-center text-sm text-gray-400">
                       Nenhuma oportunidade nesta etapa.
@@ -891,7 +891,7 @@ export default function CrmPage() {
                 <div className="mt-1 text-sm text-gray-500">{selectedViewMeta.description}</div>
               </div>
 
-              <div className="bg-gray-50/70 p-5">
+              <div className="min-w-0 bg-gray-50/70 p-3 sm:p-5">
                 {selectedViewCards.length === 0 ? (
                   <div className="rounded-xl bg-white p-5 text-sm text-gray-600 ring-1 ring-black/5">
                     Nenhuma oportunidade nesta visão.
@@ -913,16 +913,16 @@ export default function CrmPage() {
           onClick={() => setSelectedCardId(null)}
         >
           <aside
-            className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl"
+            className="flex h-dvh w-full min-w-0 max-w-none flex-col bg-white shadow-2xl sm:max-w-md"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="shrink-0 border-b border-black/10 px-5 py-4">
+            <div className="shrink-0 border-b border-black/10 px-3 py-3 sm:px-5 sm:py-4">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">
                     Oportunidade comercial
                   </div>
-                  <h2 className="mt-1 truncate text-xl font-bold text-gray-950">
+                  <h2 className="mt-1 break-words text-lg font-bold text-gray-950 sm:truncate sm:text-xl">
                     {cardTitle(selectedCard)}
                   </h2>
                   <div className="mt-1 text-sm text-gray-500">
@@ -941,7 +941,7 @@ export default function CrmPage() {
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto bg-gray-50 p-5">
+            <div className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-gray-50 p-3 sm:p-5">
               <div className="space-y-3">
                 <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
                   <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">
@@ -1022,7 +1022,7 @@ export default function CrmPage() {
               </div>
             </div>
 
-            <div className="shrink-0 border-t border-black/10 bg-white p-4">
+            <div className="shrink-0 border-t border-black/10 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:p-4">
               {buildCrmLeadConversationHref({
                 leadId: selectedCard.leadId,
                 conversationId: selectedCard.conversationId,
@@ -1052,11 +1052,11 @@ export default function CrmPage() {
 
       {isCreateModalOpen ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6"
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/35 px-3 py-3 sm:px-4 sm:py-6"
           onClick={closeManualLeadModal}
         >
           <div
-            className="w-full max-w-md rounded-2xl bg-white shadow-2xl ring-1 ring-black/10"
+            className="max-h-[calc(100dvh-1.5rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white shadow-2xl ring-1 ring-black/10"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-3 border-b border-black/5 px-5 py-4">
@@ -1091,7 +1091,7 @@ export default function CrmPage() {
                     }
                     disabled={isCreatingManualLead}
                     placeholder="Ex.: Cliente interessado em piscina"
-                    className="w-full rounded-xl bg-white px-3 py-2 text-sm text-gray-900 ring-1 ring-black/10 outline-none transition focus:ring-2 focus:ring-black/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="w-full min-w-0 rounded-xl bg-white px-3 py-2 text-base text-gray-900 ring-1 ring-black/10 outline-none transition focus:ring-2 focus:ring-black/20 disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm"
                   />
                 </label>
 
@@ -1110,7 +1110,7 @@ export default function CrmPage() {
                     disabled={isCreatingManualLead}
                     inputMode="numeric"
                     placeholder="Ex.: (11) 99999-9999"
-                    className="w-full rounded-xl bg-white px-3 py-2 text-sm text-gray-900 ring-1 ring-black/10 outline-none transition focus:ring-2 focus:ring-black/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="w-full min-w-0 rounded-xl bg-white px-3 py-2 text-base text-gray-900 ring-1 ring-black/10 outline-none transition focus:ring-2 focus:ring-black/20 disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm"
                   />
                 </label>
 
