@@ -6503,8 +6503,8 @@ export default function LeadPage() {
             : paymentState?.progressState || "Indisponivel";
 
   return (
-    <div className="min-h-screen bg-white -mx-4 -mt-4 lg:-mx-6 lg:-mt-6">
-      <div className="w-full max-w-none p-0">
+    <div className="min-h-screen min-w-0 overflow-x-clip bg-white -mx-4 -mt-4 lg:-mx-6 lg:-mt-6">
+      <div className="w-full min-w-0 max-w-none p-0">
         {refreshing ? (
           <div className="mb-4 flex justify-end">
             <div className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 shadow-sm ring-1 ring-black/10">
@@ -6528,7 +6528,7 @@ export default function LeadPage() {
         ) : null}
 
         <div className="bg-white">
-          <div className="border-b border-gray-100 px-4 py-3 lg:px-5">
+          <div className="min-w-0 border-b border-gray-100 px-3 py-3 sm:px-4 lg:px-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
@@ -6614,7 +6614,7 @@ export default function LeadPage() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
                 <button
                   type="button"
                   onClick={() =>
@@ -6623,23 +6623,23 @@ export default function LeadPage() {
                       : void takeOverConversation()
                   }
                   disabled={isHumanActive ? !canReleaseToAI : !canTakeOver}
-                  className="rounded-xl bg-black px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="min-h-11 flex-1 rounded-xl bg-black px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none"
                 >
                   {isHumanActive ? "Devolver para IA" : "Assumir conversa"}
                 </button>
 
-                <div ref={commercialActionsRef} className="relative">
+                <div ref={commercialActionsRef} className="relative shrink-0">
                   <button
                     type="button"
                     onClick={() => setCommercialActionsOpen((current) => !current)}
-                    className="rounded-xl bg-white px-4 py-2.5 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                    className="min-h-11 rounded-xl bg-white px-4 py-2.5 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
                     aria-expanded={commercialActionsOpen}
                   >
                     Ações
                   </button>
 
                   {commercialActionsOpen ? (
-                    <div className="absolute right-0 top-full z-40 mt-2 w-56 overflow-hidden rounded-2xl bg-white p-2 shadow-xl ring-1 ring-black/10">
+                    <div className="absolute right-0 top-full z-40 mt-2 w-56 max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl bg-white p-2 shadow-xl ring-1 ring-black/10">
                       <button
                         type="button"
                         onClick={() => {
@@ -6821,8 +6821,8 @@ export default function LeadPage() {
             ) : null}
           </div>
 
-          <div className="border-b border-gray-100 bg-white px-4 py-2.5 lg:px-5">
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="min-w-0 overflow-x-auto overscroll-x-contain border-b border-gray-100 bg-white px-3 py-2.5 sm:px-4 lg:px-5">
+            <div className="flex w-max min-w-full flex-nowrap items-center gap-2 sm:w-auto sm:flex-wrap">
               {detailTabs.map((tab) => {
                 const isActive = activeDetailsTab === tab.id;
 
@@ -6831,7 +6831,7 @@ export default function LeadPage() {
                     key={tab.id}
                     type="button"
                     onClick={() => setActiveDetailsTab(tab.id)}
-                    className={`rounded-xl px-4 py-2 text-xs font-semibold transition ${
+                    className={`min-h-10 shrink-0 rounded-xl px-4 py-2 text-xs font-semibold transition ${
                       isActive
                         ? "bg-black text-white"
                         : "bg-gray-100 text-gray-800 hover:bg-gray-200"
@@ -8895,10 +8895,10 @@ export default function LeadPage() {
             </div>
           ) : null}
 
-          <div className="flex h-[620px] flex-col">
+          <div className="flex h-[calc(100dvh-15rem)] min-h-[280px] min-w-0 flex-col sm:h-[620px]">
             <div
               ref={messagesContainerRef}
-              className="flex-1 overflow-y-auto bg-[#f2f0ea] px-4 py-4 lg:px-5"
+              className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-[#f2f0ea] px-3 py-3 sm:px-4 sm:py-4 lg:px-5"
             >
               {!conversation ? (
                 <div className="rounded-2xl bg-white p-4 text-sm text-gray-600 ring-1 ring-black/10">
@@ -8913,7 +8913,7 @@ export default function LeadPage() {
                   {messages.map((message) => (
                     <div key={message.id} className="flex w-full">
                       <div
-                        className={`max-w-[82%] rounded-2xl px-3.5 py-2.5 text-sm shadow-sm ${bubbleClass(
+                        className={`min-w-0 max-w-[92%] break-words rounded-2xl px-3.5 py-2.5 text-sm shadow-sm sm:max-w-[82%] ${bubbleClass(
                           message
                         )}`}
                       >
@@ -9280,7 +9280,7 @@ export default function LeadPage() {
               <div ref={messagesEndRef} aria-hidden="true" />
             </div>
 
-            <div className="relative border-t border-gray-100 bg-white px-4 py-3 lg:px-5">
+            <div className="relative min-w-0 border-t border-gray-100 bg-white px-2 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:px-4 sm:py-3 lg:px-5">
               <input
                 ref={documentInputRef}
                 type="file"
@@ -9428,7 +9428,7 @@ export default function LeadPage() {
                 </div>
               ) : null}
 
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
                 <button
                   type="button"
                   onClick={() => setAttachmentMenuOpen((current) => !current)}
@@ -9441,7 +9441,7 @@ export default function LeadPage() {
                 </button>
 
                 {attachmentMenuOpen ? (
-                  <div className="absolute bottom-full left-0 z-20 mb-2 flex w-56 flex-col gap-1 rounded-2xl border border-gray-200 bg-white p-2 shadow-lg ring-1 ring-black/5">
+                  <div className="absolute bottom-full left-0 z-20 mb-2 flex w-56 max-w-[calc(100vw-2rem)] flex-col gap-1 rounded-2xl border border-gray-200 bg-white p-2 shadow-lg ring-1 ring-black/5">
                     <button
                       type="button"
                       onClick={() => {
@@ -9488,7 +9488,7 @@ export default function LeadPage() {
                   onChange={(e) => handleComposerTextChange(e.target.value)}
                   onKeyDown={handleInputKeyDown}
                   disabled={working || simulatingCustomer || uploadingManualAttachment || !conversation}
-                  className="h-11 flex-1 rounded-full border border-gray-200 bg-gray-50 px-4 text-sm outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
+                  className="h-11 w-0 min-w-0 flex-1 rounded-full border border-gray-200 bg-gray-50 px-3 text-base outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100 sm:px-4 sm:text-sm"
                   placeholder={
                     conversation
                       ? "Mensagem"
