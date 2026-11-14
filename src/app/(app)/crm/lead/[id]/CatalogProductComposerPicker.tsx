@@ -47,21 +47,21 @@ export default function CatalogProductComposerPicker(props: {
 
   if (!props.open) return null;
   return (
-    <div className="mb-3 rounded-2xl border border-gray-200 bg-gray-50 p-4">
-      <div className="flex items-center justify-between gap-3">
+    <div className="mb-3 min-w-0 rounded-2xl border border-gray-200 bg-gray-50 p-3 sm:p-4">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 sm:gap-3">
         <div className="text-sm font-semibold text-gray-900">Produto do catálogo</div>
-        <button type="button" onClick={props.onClose} className="rounded-lg bg-white px-3 py-2 text-xs font-semibold ring-1 ring-black/10">Fechar</button>
+        <button type="button" onClick={props.onClose} className="min-h-10 shrink-0 rounded-lg bg-white px-3 py-2 text-xs font-semibold ring-1 ring-black/10">Fechar</button>
       </div>
       {loading ? <p className="mt-3 text-xs text-gray-500">Carregando produtos...</p> : null}
       {error ? <p className="mt-3 text-xs text-red-600">{error}</p> : null}
       {!loading && !error && products.length === 0 ? <p className="mt-3 text-xs text-gray-500">Nenhum produto com foto disponível.</p> : null}
       {!loading && !error ? (
-        <div className="mt-3 grid max-h-64 grid-cols-2 gap-2 overflow-y-auto">
+        <div className="mt-3 grid max-h-[50dvh] min-w-0 grid-cols-1 gap-2 overflow-y-auto overscroll-contain sm:max-h-64 sm:grid-cols-2">
           {products.map((product) => (
-            <button type="button" key={`${product.sourceKind}:${product.sourceId}`} onClick={() => props.onSelect(product)} className="rounded-xl bg-white p-2 text-left ring-1 ring-black/10 hover:ring-black/30">
+            <button type="button" key={`${product.sourceKind}:${product.sourceId}`} onClick={() => props.onSelect(product)} className="min-h-11 min-w-0 rounded-xl bg-white p-3 text-left ring-1 ring-black/10 hover:ring-black/30">
               <img src={product.previewUrl} alt={product.name} className="h-24 w-full rounded-lg object-cover" />
-              <div className="mt-2 text-xs font-semibold text-gray-900">{product.name}</div>
-              {product.sku ? <div className="text-[11px] text-gray-500">SKU: {product.sku}</div> : null}
+              <div className="mt-2 break-words text-sm font-semibold text-gray-900 sm:text-xs">{product.name}</div>
+              {product.sku ? <div className="break-all text-[11px] text-gray-500">SKU: {product.sku}</div> : null}
               <div className="text-[10px] uppercase text-gray-400">{product.sourceKind === "pool" ? "Piscina" : "Produto"}</div>
             </button>
           ))}
