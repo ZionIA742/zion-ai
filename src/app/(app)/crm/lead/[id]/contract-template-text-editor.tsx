@@ -363,7 +363,7 @@ export function ContractTemplateTextEditor({
   }
 
   return (
-    <div className="space-y-2.5 p-2.5 sm:p-3">
+    <div className="min-w-0 space-y-2.5 p-2.5 sm:p-3">
       {recoveryPreviewOnly ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
           <strong>Texto recuperado do PDF.</strong> Confira antes de salvar.
@@ -383,7 +383,7 @@ export function ContractTemplateTextEditor({
         <div className="min-w-0 flex-1">
           <p className="font-semibold text-slate-900">Contrato da oportunidade</p>
           {originalFilename ? (
-            <p className="truncate text-xs text-slate-500" title={originalFilename}>
+            <p className="break-words text-xs text-slate-500 sm:truncate" title={originalFilename}>
               Modelo da loja: {originalFilename}
             </p>
           ) : null}
@@ -392,13 +392,13 @@ export function ContractTemplateTextEditor({
             {changed ? " · Alteracoes nao salvas" : " · Sem alteracoes pendentes"}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           {correction ? (
             <button
               type="button"
               disabled={saving}
               onClick={correction.onCancel}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="min-h-10 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancelar
             </button>
@@ -411,7 +411,7 @@ export function ContractTemplateTextEditor({
               setSaveNotice(null);
               setSaveError(null);
             }}
-            className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="min-h-10 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Restaurar original
           </button>
@@ -428,7 +428,7 @@ export function ContractTemplateTextEditor({
                     ? "Reabra o editor para resolver o conflito."
                     : "Abrir PDF do rascunho salvo em outra aba."
             }
-            className="rounded-lg border border-sky-300 px-3 py-2 text-xs font-semibold text-sky-800 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="min-h-10 rounded-lg border border-sky-300 px-3 py-2 text-xs font-semibold text-sky-800 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Pr&eacute;-visualizar PDF
           </button>
@@ -436,15 +436,15 @@ export function ContractTemplateTextEditor({
             type="button"
             disabled={!canSave}
             onClick={() => { void saveDraft(); }}
-            className="rounded-lg bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
+            className="min-h-11 rounded-lg bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {saving ? "Salvando..." : "Salvar edição"}
           </button>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
-        <div className="min-w-[180px] flex-1">
+      <div className="flex min-w-0 flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+        <div className="w-full min-w-0 flex-1 sm:w-auto sm:min-w-[180px]">
           <label htmlFor="zion-contract-text-search" className="mb-1 block text-xs font-semibold text-slate-700">
             Localizar no contrato
           </label>
@@ -463,20 +463,20 @@ export function ContractTemplateTextEditor({
               }
             }}
             placeholder="Pesquisar nome, palavra, valor ou clausula..."
-            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+            className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 outline-none placeholder:text-slate-400 focus:border-sky-500 focus:ring-2 focus:ring-sky-100 sm:text-sm"
           />
         </div>
-        <span className="min-w-24 pb-2 text-center text-xs text-slate-600" role="status" aria-live="polite">
+        <span className="min-w-0 pb-2 text-center text-xs text-slate-600 sm:min-w-24" role="status" aria-live="polite">
           {!searchQuery.trim() ? "Busque no texto" : search.matches.length === 0
             ? "Nao encontrado"
             : `${activeMatchIndex < 0 ? 0 : Math.min(activeMatchIndex + 1, search.matches.length)}/${search.matches.length}${search.truncated ? "+" : ""}`}
         </span>
-        <div className="flex gap-2">
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto">
           <button
             type="button"
             disabled={search.matches.length === 0}
             onClick={() => jumpToMatch(-1)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+            className="min-h-10 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Anterior
           </button>
@@ -484,7 +484,7 @@ export function ContractTemplateTextEditor({
             type="button"
             disabled={search.matches.length === 0}
             onClick={() => jumpToMatch(1)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+            className="min-h-10 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Proximo
           </button>
@@ -511,7 +511,7 @@ export function ContractTemplateTextEditor({
         }}
         disabled={saving || conflict}
         spellCheck={false}
-        className="h-[calc(100dvh-22rem)] min-h-[27rem] w-full resize-y rounded-xl border border-slate-300 bg-white p-4 font-sans text-[15px] leading-8 tracking-[0.005em] text-slate-900 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100 disabled:bg-slate-50"
+        className="h-[48dvh] min-h-[15rem] w-full min-w-0 resize-y rounded-xl border border-slate-300 bg-white p-3 font-sans text-base leading-7 tracking-[0.005em] text-slate-900 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100 disabled:bg-slate-50 sm:h-[calc(100dvh-22rem)] sm:min-h-[27rem] sm:p-4 sm:text-[15px] sm:leading-8"
         aria-label="Texto completo do modelo de contrato, editavel"
       />
       {invalidText ? (
