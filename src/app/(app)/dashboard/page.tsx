@@ -2749,7 +2749,7 @@ export default function DashboardPage() {
       <div className="border-b border-zinc-200 bg-white">
         <div className="px-4 py-4 md:px-6">
           <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex max-w-full flex-wrap gap-2">
+            <div className="flex w-full min-w-0 gap-2 overflow-x-auto overscroll-x-contain pb-1 lg:w-auto lg:flex-wrap lg:overflow-visible lg:pb-0">
               {tabs.map((tab) => {
                 const isActive = activeTab === tab.id;
 
@@ -2758,7 +2758,7 @@ export default function DashboardPage() {
                     key={tab.id}
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
-                    className={`flex min-w-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition ${
+                    className={`flex min-h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border px-3 py-2 text-sm font-medium transition sm:px-4 ${
                       isActive
                         ? "border-zinc-950 bg-zinc-950 text-white"
                         : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-950"
@@ -2774,7 +2774,7 @@ export default function DashboardPage() {
             <button
               type="button"
               onClick={loadDashboardMetrics}
-              className="w-fit rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-800 shadow-sm transition hover:border-zinc-950"
+              className="min-h-11 w-full rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-800 shadow-sm transition hover:border-zinc-950 sm:w-fit"
             >
               Atualizar dados
             </button>
@@ -3745,7 +3745,7 @@ export default function DashboardPage() {
                   placeholder="Pesquisar produtos no catálogo..."
                   value={catalogSearchQuery}
                   onChange={(event) => setCatalogSearchQuery(event.target.value)}
-                  className="w-full rounded-xl border border-zinc-300 bg-white py-3 pl-12 pr-4 text-sm text-zinc-900 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  className="w-full min-w-0 rounded-xl border border-zinc-300 bg-white py-3 pl-12 pr-4 text-base text-zinc-900 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:text-sm"
                 />
               </div>
 
