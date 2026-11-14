@@ -8,6 +8,38 @@ type StoreOption = {
   organizationName?: string | null;
 };
 
+const DIAGNOSTIC_V2_MODELS = new Set<string>([
+  "gpt-4o-mini",
+  "gpt-4o",
+  "gpt-4.1",
+  "gpt-4.1-mini",
+  "gpt-4.1-nano",
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-5.1",
+  "gpt-5.2",
+  "gpt-5.3",
+  "gpt-5.4",
+  "gpt-5.5",
+  "gpt-5.6",
+  "gpt-6",
+]);
+
+type DiagnosticEvidenceV2 = {
+  registeredComponent:
+    | "sales_ai"
+    | "assistant_ai"
+    | "ai_origin_unknown"
+    | "unknown";
+  provenOrigin: "assistant_ai" | "unknown";
+  executionType: "assistant_chat" | null;
+  provider: "openai" | null;
+  model: string | null;
+  runStatus: string | null;
+  latencyMs: number | null;
+};
+
 type Diagnostic = {
   incidentId: string;
   occurrenceId: string | null;
@@ -28,6 +60,7 @@ type Diagnostic = {
   sourceRecordId: string | null;
   occurrenceCount: number | null;
   historical: boolean;
+  v2Evidence: DiagnosticEvidenceV2 | null;
 };
 
 type LoadResult = {
@@ -54,6 +87,78 @@ function isRecord(
 function optionalText(value: unknown): string | null {
   if (typeof value !== "string") return null;
   return value.trim() || null;
+}
+
+function parseEvidenceV2(
+  value: Record<string, unknown>,
+): DiagnosticEvidenceV2 | null {
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      value,
+      "registered_component",
+    )
+  ) {
+    return null;
+  }
+
+  const rawComponent = value.registered_component;
+
+  const registeredComponent =
+    rawComponent === "sales_ai" ||
+    rawComponent === "assistant_ai" ||
+    rawComponent === "ai_origin_unknown"
+      ? rawComponent
+      : "unknown";
+
+  const provenAssistant =
+    registeredComponent === "assistant_ai" &&
+    value.evidence_origin === "assistant_ai" &&
+    value.evidence_execution_type === "assistant_chat";
+
+  const provider =
+    value.evidence_provider === "openai" ? "openai" : null;
+
+  const candidateModel = value.evidence_model;
+
+  const model =
+    provider === "openai" &&
+    typeof candidateModel === "string" &&
+    DIAGNOSTIC_V2_MODELS.has(candidateModel)
+      ? candidateModel
+      : null;
+
+  const rawStatus = value.evidence_run_status;
+
+  const runStatus =
+    rawStatus === "queued" ||
+    rawStatus === "running" ||
+    rawStatus === "completed" ||
+    rawStatus === "failed" ||
+    rawStatus === "error" ||
+    rawStatus === "success" ||
+    rawStatus === "cancelled"
+      ? rawStatus
+      : null;
+
+  const rawLatency = value.evidence_latency_ms;
+
+  const latencyMs =
+    typeof rawLatency === "number" &&
+    Number.isSafeInteger(rawLatency) &&
+    rawLatency >= 0 &&
+    rawLatency <= 86400000
+      ? rawLatency
+      : null;
+
+  return {
+    registeredComponent,
+    provenOrigin: provenAssistant ? "assistant_ai" : "unknown",
+    executionType: provenAssistant ? "assistant_chat" : null,
+    provider,
+    model,
+    runStatus,
+    latencyMs,
+  };
 }
 
 function parseDiagnostic(value: unknown): Diagnostic | null {
@@ -102,6 +207,7 @@ function parseDiagnostic(value: unknown): Diagnostic | null {
         ? count
         : null,
     historical: value.last_failure_older_than_30_days,
+    v2Evidence: parseEvidenceV2(value),
   };
 }
 
@@ -116,6 +222,46 @@ function formatDiagnosticDate(value: string | null): string {
     timeStyle: "medium",
     timeZone: "America/Sao_Paulo",
   }).format(date);
+}
+
+function buildEvidenceV2Lines(
+  evidence: DiagnosticEvidenceV2 | null,
+): string[] {
+  if (!evidence) {
+    return [
+      "Evidências estruturadas V2: indisponíveis nesta consulta.",
+    ];
+  }
+
+  const component =
+    evidence.registeredComponent === "sales_ai"
+      ? "sales_ai (classificação histórica; não comprova IA Vendedora)"
+      : evidence.registeredComponent === "assistant_ai"
+        ? "assistant_ai (verificar origem comprovada abaixo)"
+        : evidence.registeredComponent === "ai_origin_unknown"
+          ? "Origem não identificada"
+          : "Classificação indisponível";
+
+  return [
+    "Evidências estruturadas V2: disponíveis",
+    "Componente registrado: " + component,
+    "Origem comprovada: " +
+      (evidence.provenOrigin === "assistant_ai"
+        ? "IA Assistente"
+        : "Não identificada por evidência"),
+    "Tipo de execução: " +
+      (evidence.executionType ?? "Indisponível"),
+    "Provedor registrado: " +
+      (evidence.provider ?? "Indisponível"),
+    "Modelo registrado: " +
+      (evidence.model ?? "Indisponível"),
+    "Estado registrado da execução: " +
+      (evidence.runStatus ?? "Indisponível"),
+    "Latência registrada: " +
+      (evidence.latencyMs === null
+        ? "Indisponível"
+        : String(evidence.latencyMs) + " ms"),
+  ];
 }
 
 function buildTechnicalText(
@@ -147,6 +293,8 @@ function buildTechnicalText(
     `Próxima verificação: ${item.nextAction ?? "Não informada"}`,
     "Mensagem original de erro: não armazenada nesta versão.",
     "Stack trace: não armazenado nesta versão.",
+    ...buildEvidenceV2Lines(item.v2Evidence),
+    "Situação operacional atual: não verificada por este diagnóstico.",
     "O estado aberto não comprova falha ativa.",
   ].join("\n");
 }
