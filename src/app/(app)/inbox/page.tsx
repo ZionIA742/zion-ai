@@ -1251,13 +1251,13 @@ export default function InboxPage() {
   }
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-gray-100">
-      <div className="mx-auto max-w-7xl overflow-x-hidden px-6 py-6">
+    <div className="min-h-full min-w-0 overflow-x-hidden bg-gray-100 md:min-h-screen">
+      <div className="mx-auto w-full min-w-0 max-w-7xl overflow-x-hidden px-3 py-4 sm:px-4 sm:py-5 md:px-6 md:py-6">
         <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
               <div className="h-2.5 w-2.5 rounded-full bg-gray-950" />
-              <h1 className="text-2xl font-bold text-gray-950">Central de atenção</h1>
+              <h1 className="break-words text-xl font-bold text-gray-950 sm:text-2xl">Central de atenção</h1>
             </div>
             {storeError ? (
               <div className="mt-2 text-xs font-medium text-red-700">
@@ -1299,18 +1299,18 @@ export default function InboxPage() {
           </div>
         ) : null}
 
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid min-w-0 gap-3 md:grid-cols-2 md:gap-4">
           <button
             type="button"
             onClick={() => toggleSection("messages")}
-            className={`relative overflow-hidden rounded-2xl p-5 text-left shadow-sm ring-1 transition ${
+            className={`relative min-w-0 overflow-hidden rounded-2xl p-3 text-left shadow-sm ring-1 transition sm:p-5 ${
               openSection === "messages"
                 ? "bg-gray-950 text-white ring-gray-950"
                 : "bg-white text-gray-950 ring-black/5 hover:bg-gray-50"
             }`}
           >
             <div className="absolute inset-x-0 top-0 h-1 bg-gray-950" />
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex min-w-0 flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-4">
               <div>
                 <div className={`text-xs font-semibold uppercase tracking-[0.18em] ${openSection === "messages" ? "text-gray-300" : "text-gray-500"}`}>
                   Conversas
@@ -1320,7 +1320,7 @@ export default function InboxPage() {
                   Veja quem falou por último e quem está esperando resposta.
                 </div>
               </div>
-              <div className="flex shrink-0 flex-col items-end gap-2">
+              <div className="flex max-w-full flex-wrap items-center gap-2 sm:shrink-0 sm:flex-col sm:items-end">
                 <span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${openSection === "messages" ? "bg-white text-gray-950 ring-white" : "bg-gray-100 text-gray-800 ring-gray-200"}`}>
                   {pendingReplyCount} aguardando
                 </span>
@@ -1336,14 +1336,14 @@ export default function InboxPage() {
           <button
             type="button"
             onClick={() => toggleSection("followup")}
-            className={`relative overflow-hidden rounded-2xl p-5 text-left shadow-sm ring-1 transition ${
+            className={`relative min-w-0 overflow-hidden rounded-2xl p-3 text-left shadow-sm ring-1 transition sm:p-5 ${
               openSection === "followup"
                 ? "bg-gray-950 text-white ring-gray-950"
                 : "bg-white text-gray-950 ring-black/5 hover:bg-gray-50"
             }`}
           >
             <div className="absolute inset-x-0 top-0 h-1 bg-gray-950" />
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex min-w-0 flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-4">
               <div>
                 <div className={`text-xs font-semibold uppercase tracking-[0.18em] ${openSection === "followup" ? "text-gray-300" : "text-gray-500"}`}>
                   Retomadas comerciais
@@ -1368,8 +1368,8 @@ export default function InboxPage() {
         ) : null}
 
         {openSection === "messages" ? (
-          <section className="mt-4 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-            <div className="border-b border-black/5 px-5 py-4">
+          <section className="mt-4 min-w-0 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+            <div className="min-w-0 border-b border-black/5 px-3 py-4 sm:px-5">
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-bold text-gray-950">Mensagens recentes</h2>
@@ -1378,7 +1378,7 @@ export default function InboxPage() {
                 <div className="text-sm font-semibold text-gray-500">{rows.length} conversas</div>
               </div>
 
-              <div className="mt-4 flex flex-wrap gap-2">
+              <div className="mt-4 flex min-w-0 flex-wrap gap-2">
                 {([
                   ["all", "Todas", rows.length, "bg-black text-white ring-black"],
                   ["waiting", "Aguardando resposta", pendingReplyCount, "bg-amber-500 text-white ring-amber-500"],
@@ -1389,7 +1389,7 @@ export default function InboxPage() {
                     key={value}
                     type="button"
                     onClick={() => setMessageFilter(value)}
-                    className={`rounded-full px-3 py-2 text-xs font-semibold ring-1 transition ${
+                    className={`min-h-10 max-w-full rounded-full px-3 py-2 text-left text-xs font-semibold whitespace-normal ring-1 transition ${
                       messageFilter === value
                         ? activeClass
                         : "bg-white text-gray-700 ring-black/10 hover:bg-gray-50"
@@ -1402,8 +1402,8 @@ export default function InboxPage() {
 
             </div>
 
-            <div className="border-b border-black/5 px-5 py-4">
-              <div className="max-w-md">
+            <div className="min-w-0 border-b border-black/5 px-3 py-4 sm:px-5">
+              <div className="w-full min-w-0 max-w-md">
                 <label className="sr-only" htmlFor="inbox-message-search">
                   Buscar cliente por nome ou telefone
                 </label>
@@ -1428,7 +1428,7 @@ export default function InboxPage() {
                     value={messageSearchText}
                     onChange={(event) => setMessageSearchText(event.target.value)}
                     placeholder="Buscar cliente por nome ou telefone"
-                    className="min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+                    className="w-full min-w-0 flex-1 bg-transparent text-base text-gray-900 outline-none placeholder:text-gray-400 sm:text-sm"
                   />
                 </div>
 
@@ -1440,7 +1440,7 @@ export default function InboxPage() {
               </div>
             </div>
 
-            <div className="space-y-3 p-4">
+            <div className="min-w-0 space-y-3 p-3 sm:p-4">
               {!loading && !storeLoading && visibleMessageRows.length === 0 ? (
                 <div className="rounded-xl bg-gray-50 px-4 py-8 text-center text-sm text-gray-500 ring-1 ring-black/5">
                   {messageSearchText.trim()
@@ -1474,10 +1474,10 @@ export default function InboxPage() {
                     >
                       <div className={`h-1 w-full ${pending ? "bg-amber-500" : "bg-emerald-500"}`} />
                       <div className="p-4">
-                        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="flex min-w-0 flex-col gap-3 sm:gap-4 lg:flex-row lg:items-center lg:justify-between">
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
-                              <div className="text-[15px] font-bold text-gray-950">{leadNames[row.lead_id] || `Lead ${shortId(row.lead_id)}`}</div>
+                              <div className="min-w-0 break-words text-[15px] font-bold text-gray-950">{leadNames[row.lead_id] || `Lead ${shortId(row.lead_id)}`}</div>
                               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${row.is_human_active ? chipClasses("human") : chipClasses("ia")}`}>
                                 {row.is_human_active ? "Atendimento humano" : "IA ativa"}
                               </span>
@@ -1498,7 +1498,7 @@ export default function InboxPage() {
                             <div className="mt-2 line-clamp-2 break-words text-sm leading-6 text-gray-800">{row.last_message_preview || "Sem prévia da mensagem."}</div>
                           </div>
 
-                          <div className="flex shrink-0 items-center gap-2">
+                          <div className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:w-auto lg:shrink-0">
                             {handoffIndicator?.hasVisitRequest ? (
                               <button
                                 type="button"
@@ -1510,7 +1510,7 @@ export default function InboxPage() {
                                 Rota
                               </button>
                             ) : null}
-                            <Link href={conversationHref} className="rounded-xl bg-gray-950 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800">
+                            <Link href={conversationHref} className="inline-flex min-h-10 flex-1 items-center justify-center rounded-xl bg-gray-950 px-4 py-2 text-center text-sm font-semibold text-white hover:bg-gray-800 sm:flex-none">
                               Abrir conversa
                             </Link>
                           </div>
@@ -1525,8 +1525,8 @@ export default function InboxPage() {
         ) : null}
 
         {openSection === "followup" ? (
-          <section className="mt-4 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-            <div className="border-b border-black/5 px-5 py-4">
+          <section className="mt-4 min-w-0 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+            <div className="min-w-0 border-b border-black/5 px-3 py-4 sm:px-5">
               <div className="flex flex-wrap items-end justify-between gap-4">
                 <div>
                   <h2 className="text-lg font-bold text-gray-950">Follow-ups</h2>
@@ -1535,7 +1535,7 @@ export default function InboxPage() {
                 <div className="text-sm font-semibold text-gray-500">{followupCountLabel} oportunidades</div>
               </div>
 
-              <div className="mt-4 flex flex-wrap gap-2">
+              <div className="mt-4 flex min-w-0 flex-wrap gap-2">
                 {([
                   ["all", "Todos", followupFilterCounts.all, "bg-gray-950 text-white ring-gray-950"],
                   ["ready", "Prontos agora", followupFilterCounts.ready, "bg-emerald-600 text-white ring-emerald-600"],
@@ -1546,14 +1546,14 @@ export default function InboxPage() {
                     key={value}
                     type="button"
                     onClick={() => setFollowupFilter(value)}
-                    className={`rounded-full px-3 py-2 text-xs font-semibold ring-1 transition ${followupFilter === value ? activeClass : "bg-white text-gray-700 ring-black/10 hover:bg-gray-50"}`}
+                    className={`min-h-10 max-w-full rounded-full px-3 py-2 text-left text-xs font-semibold whitespace-normal ring-1 transition ${followupFilter === value ? activeClass : "bg-white text-gray-700 ring-black/10 hover:bg-gray-50"}`}
                   >
                     {label} <span className="ml-1 opacity-80">{count}</span>
                   </button>
                 ))}
               </div>
 
-              <div className="mt-4 max-w-md">
+              <div className="mt-4 w-full min-w-0 max-w-md">
                 <label className="sr-only" htmlFor="followup-search">
                   Buscar por nome ou telefone
                 </label>
@@ -1564,7 +1564,7 @@ export default function InboxPage() {
                     value={followupSearchText}
                     onChange={(event) => setFollowupSearchText(event.target.value)}
                     placeholder="Buscar por nome ou telefone"
-                    className="min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+                    className="w-full min-w-0 flex-1 bg-transparent text-base text-gray-900 outline-none placeholder:text-gray-400 sm:text-sm"
                   />
                 </div>
                 {followupSearchActive ? (
@@ -1573,7 +1573,7 @@ export default function InboxPage() {
               </div>
             </div>
 
-            <div className="space-y-3 p-4">
+            <div className="min-w-0 space-y-3 p-3 sm:p-4">
               {!loading && visibleFollowupRows.length === 0 && followupSearchActive ? (
                 <div className="rounded-xl bg-gray-50 px-4 py-8 text-center text-sm text-gray-500 ring-1 ring-black/5">
                   Nenhum resultado encontrado para esta busca.
@@ -1602,10 +1602,10 @@ export default function InboxPage() {
                     >
                       <div className={`h-1 w-full ${bucket === "ready" ? "bg-emerald-500" : bucket === "waiting" ? "bg-amber-500" : "bg-gray-500"}`} />
                       <div className="p-4">
-                        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="flex min-w-0 flex-col gap-3 sm:gap-4 lg:flex-row lg:items-center lg:justify-between">
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
-                              <div className="text-[15px] font-bold text-gray-950">{row.lead_name || `Lead ${shortId(row.lead_id)}`}</div>
+                              <div className="min-w-0 break-words text-[15px] font-bold text-gray-950">{row.lead_name || `Lead ${shortId(row.lead_id)}`}</div>
                               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${getFollowupActionClasses(actionValue)}`}>{formatSuggestedAction(actionValue)}</span>
                               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${getFollowupBucketClasses(row)}`}>{getFollowupBucketLabel(row)}</span>
 
@@ -1634,14 +1634,14 @@ export default function InboxPage() {
                             </div>
                           </div>
 
-                          <div className="flex shrink-0 flex-wrap items-center gap-2">
-                            <Link href={followupConversationHref} className="rounded-xl bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50">
+                          <div className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:w-auto lg:shrink-0">
+                            <Link href={followupConversationHref} className="inline-flex min-h-10 flex-1 items-center justify-center rounded-xl bg-white px-3 py-2 text-center text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 sm:flex-none">
                               Abrir conversa
                             </Link>
                             <button
                               onClick={() => void triggerManualFollowup(row)}
                               disabled={blocked || isTriggering}
-                              className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
+                              className="min-h-10 flex-1 rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 sm:flex-none"
                             >
                               {isTriggering ? "Enfileirando..." : "Iniciar follow-up"}
                             </button>
