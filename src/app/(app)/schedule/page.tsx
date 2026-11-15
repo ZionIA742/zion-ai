@@ -668,6 +668,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
     return startOfMonth(Number.isNaN(initial.getTime()) ? new Date(Date.UTC(2000, 0, 1)) : initial);
   });
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const calendarTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!calendarOpen) return;
@@ -702,10 +703,22 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
       <label className="block text-xs font-semibold text-gray-700">{label}</label>
 
       <div className="grid gap-2 sm:grid-cols-[1.3fr_0.7fr]">
-        <div ref={containerRef} className="relative">
+        <div
+          ref={containerRef}
+          className="relative"
+          onKeyDown={(event) => {
+            if (event.key !== "Escape" || !calendarOpen) return;
+            event.preventDefault();
+            event.stopPropagation();
+            setCalendarOpen(false);
+            calendarTriggerRef.current?.focus();
+          }}
+        >
           <button
             type="button"
             onClick={toggleCalendar}
+            ref={calendarTriggerRef}
+            aria-expanded={calendarOpen}
             className="flex min-h-11 w-full items-center justify-between gap-2 rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-left text-base text-gray-900 outline-none transition hover:bg-gray-50 focus:border-black sm:min-h-0 sm:text-xs"
           >
             <span className={dateValue ? "text-gray-900" : "text-gray-400"}>{selectedDateLabel}</span>
@@ -769,6 +782,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
                       onClick={() => {
                         onDateChange(dayKey);
                         setCalendarOpen(false);
+                        calendarTriggerRef.current?.focus();
                       }}
                       className={[
                         "min-h-11 rounded-lg text-center text-sm font-semibold transition sm:h-7 sm:min-h-0 sm:text-[11px]",
