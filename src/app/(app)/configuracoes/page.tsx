@@ -4073,7 +4073,7 @@ function SectionBlock({
   return (
     <section className={`self-start overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm ${className}`}>
       <div className={`h-0.5 w-full ${configurationCardBarClass(tone)}`} />
-      <div className="p-5">
+      <div className="p-3 sm:p-5">
         <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-gray-950">{title}</h2>
@@ -13955,7 +13955,7 @@ export default function ConfiguracoesPage() {
   ]);
 
   return (
-    <div className="w-full space-y-4 overflow-x-hidden px-5 pb-10 pt-5">
+    <div className="w-full space-y-4 overflow-x-hidden px-3 pb-10 pt-5 sm:px-5">
 
       {!hasValidStoreContext ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
