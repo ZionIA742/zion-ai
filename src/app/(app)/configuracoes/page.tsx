@@ -16434,7 +16434,7 @@ export default function ConfiguracoesPage() {
         >
           <div
             ref={contractContentModalRef}
-            className="flex h-[94vh] w-[96vw] max-w-[1500px] flex-col overflow-hidden rounded-3xl border border-gray-200 bg-gray-100 shadow-2xl"
+            className="flex h-[94vh] w-full max-w-[1500px] flex-col overflow-hidden rounded-3xl border border-gray-200 bg-gray-100 shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             {(() => {
