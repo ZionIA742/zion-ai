@@ -3286,6 +3286,12 @@ export default function SchedulePage() {
             <div
               className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-xl" role="dialog" aria-modal="true" aria-labelledby="agenda-details-title"
               onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                event.preventDefault();
+                event.stopPropagation();
+                closeItemDetails();
+              }}
             >
               <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
                 <div>
@@ -3922,6 +3928,12 @@ export default function SchedulePage() {
             <div
               className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-[min(92vw,640px)]" role="dialog" aria-modal="true" aria-labelledby="agenda-block-title"
               onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                event.preventDefault();
+                event.stopPropagation();
+                closeCreateBlockPanel();
+              }}
             >
               <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
                 <div>
@@ -4126,6 +4138,12 @@ export default function SchedulePage() {
             <div
               className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-[min(92vw,640px)]" role="dialog" aria-modal="true" aria-labelledby="agenda-appointment-title"
               onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                event.preventDefault();
+                event.stopPropagation();
+                closeCreateAppointmentPanel();
+              }}
             >
               <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
                 <div>
