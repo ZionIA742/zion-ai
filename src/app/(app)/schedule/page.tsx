@@ -928,6 +928,41 @@ export default function SchedulePage() {
     };
   }, [activeScheduleDialog]);
 
+  function handleScheduleDialogTab(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Tab") return;
+    const dialog = event.currentTarget;
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        "a[href], area[href], button, input, select, textarea, summary, [tabindex], [contenteditable=\"true\"]"
+      )
+    ).filter(
+      (element) =>
+        element.tabIndex >= 0 &&
+        !element.matches(":disabled") &&
+        !element.closest("[hidden], [inert], [aria-hidden=\"true\"]") &&
+        element.getClientRects().length > 0 &&
+        window.getComputedStyle(element).visibility !== "hidden"
+    );
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      dialog.focus();
+      return;
+    }
+    const active = document.activeElement;
+    if (event.shiftKey) {
+      if (active === first || active === dialog || !dialog.contains(active)) {
+        event.preventDefault();
+        last.focus();
+      }
+    } else if (active === last || active === dialog || !dialog.contains(active)) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+
 
   useEffect(() => {
     function handleFullscreenChange() {
@@ -3326,6 +3361,10 @@ export default function SchedulePage() {
               tabIndex={-1}
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => {
+                if (event.key === "Tab") {
+                  handleScheduleDialogTab(event);
+                  return;
+                }
                 if (event.key !== "Escape") return;
                 event.preventDefault();
                 event.stopPropagation();
@@ -3970,6 +4009,10 @@ export default function SchedulePage() {
               tabIndex={-1}
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => {
+                if (event.key === "Tab") {
+                  handleScheduleDialogTab(event);
+                  return;
+                }
                 if (event.key !== "Escape") return;
                 event.preventDefault();
                 event.stopPropagation();
@@ -4182,6 +4225,10 @@ export default function SchedulePage() {
               tabIndex={-1}
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => {
+                if (event.key === "Tab") {
+                  handleScheduleDialogTab(event);
+                  return;
+                }
                 if (event.key !== "Escape") return;
                 event.preventDefault();
                 event.stopPropagation();
