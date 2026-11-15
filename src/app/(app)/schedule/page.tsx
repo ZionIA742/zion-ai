@@ -3270,7 +3270,7 @@ export default function SchedulePage() {
             onClick={closeItemDetails}
           >
             <div
-              className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-xl"
+              className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-xl" role="dialog" aria-modal="true" aria-labelledby="agenda-details-title"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
@@ -3278,7 +3278,7 @@ export default function SchedulePage() {
                   <div className="text-xs font-semibold text-gray-500">
                     {formatItemKind(selectedItem.itemKind)}
                   </div>
-                  <h3 className="mt-0.5 text-xl font-bold text-gray-900">
+                  <h3 id="agenda-details-title" className="mt-0.5 text-xl font-bold text-gray-900">
                     {selectedItem.title}
                   </h3>
                 </div>
@@ -3906,7 +3906,7 @@ export default function SchedulePage() {
             onClick={closeCreateBlockPanel}
           >
             <div
-              className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-[min(92vw,640px)]"
+              className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-[min(92vw,640px)]" role="dialog" aria-modal="true" aria-labelledby="agenda-block-title"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
@@ -3914,7 +3914,7 @@ export default function SchedulePage() {
                   <div className="text-xs font-semibold text-gray-500">
                     Novo bloqueio
                   </div>
-                  <h3 className="mt-0.5 text-xl font-bold text-gray-900">
+                  <h3 id="agenda-block-title" className="mt-0.5 text-xl font-bold text-gray-900">
                     Criar bloqueio manual
                   </h3>
                 </div>
@@ -4110,7 +4110,7 @@ export default function SchedulePage() {
             onClick={closeCreateAppointmentPanel}
           >
             <div
-              className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-[min(92vw,640px)]"
+              className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-[min(92vw,640px)]" role="dialog" aria-modal="true" aria-labelledby="agenda-appointment-title"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
@@ -4118,7 +4118,7 @@ export default function SchedulePage() {
                   <div className="text-xs font-semibold text-gray-500">
                     Novo compromisso
                   </div>
-                  <h3 className="mt-0.5 text-xl font-bold text-gray-900">
+                  <h3 id="agenda-appointment-title" className="mt-0.5 text-xl font-bold text-gray-900">
                     Criar compromisso manual
                   </h3>
                 </div>
