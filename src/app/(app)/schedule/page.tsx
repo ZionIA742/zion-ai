@@ -901,6 +901,34 @@ export default function SchedulePage() {
   const scheduleFullscreenRef = useRef<HTMLDivElement | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
 
+  const detailsDialogRef = useRef<HTMLDivElement | null>(null);
+  const createBlockDialogRef = useRef<HTMLDivElement | null>(null);
+  const createAppointmentDialogRef = useRef<HTMLDivElement | null>(null);
+  const scheduleDialogOpenerRef = useRef<HTMLElement | null>(null);
+  const scheduleDialogFallbackRef = useRef<HTMLButtonElement | null>(null);
+
+  const activeScheduleDialog =
+    (selectedItem ? "details" : null) ||
+    (createBlockOpen ? "block" : null) ||
+    (createAppointmentOpen ? "appointment" : null);
+
+  useEffect(() => {
+    if (!activeScheduleDialog) return;
+    const opener = scheduleDialogOpenerRef.current;
+    const fallback = scheduleDialogFallbackRef.current;
+    if (activeScheduleDialog === "details") detailsDialogRef.current?.focus();
+    if (activeScheduleDialog === "block") createBlockDialogRef.current?.focus();
+    if (activeScheduleDialog === "appointment") createAppointmentDialogRef.current?.focus();
+    return () => {
+      if (opener?.isConnected && !opener.hasAttribute("disabled")) {
+        opener.focus();
+      } else {
+        fallback?.focus();
+      }
+    };
+  }, [activeScheduleDialog]);
+
+
   useEffect(() => {
     function handleFullscreenChange() {
       setIsExpanded(document.fullscreenElement === scheduleFullscreenRef.current);
@@ -2739,7 +2767,11 @@ export default function SchedulePage() {
           <div className="min-w-0 overflow-hidden border-b border-black/5 px-3 py-3 sm:px-4">
             <div className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:flex-nowrap lg:gap-1.5 lg:whitespace-nowrap">
               <button
-                onClick={openCreateAppointmentPanel}
+                onClick={(event) => {
+                  scheduleDialogOpenerRef.current = event.currentTarget;
+                  openCreateAppointmentPanel();
+                }}
+                ref={scheduleDialogFallbackRef}
                 disabled={storeLoading || !organizationId || !activeStoreId}
                 className="min-h-11 shrink-0 rounded-lg bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -2747,7 +2779,10 @@ export default function SchedulePage() {
               </button>
 
               <button
-                onClick={openCreateBlockPanel}
+                onClick={(event) => {
+                  scheduleDialogOpenerRef.current = event.currentTarget;
+                  openCreateBlockPanel();
+                }}
                 disabled={storeLoading || !organizationId || !activeStoreId}
                 className="min-h-11 shrink-0 rounded-lg bg-slate-800 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -2968,6 +3003,7 @@ export default function SchedulePage() {
                               onClick={(event) => {
                                 event.stopPropagation();
                                 setSelectedDateKey(dayKey);
+                                scheduleDialogOpenerRef.current = event.currentTarget;
                                 openItemDetails(item);
                               }}
                               className={`block w-full truncate rounded-md px-2 py-1.5 text-left text-[10px] font-semibold leading-tight shadow-sm ${getItemChipClass(
@@ -3185,6 +3221,7 @@ export default function SchedulePage() {
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     setSelectedDateKey(dayKey);
+                                    scheduleDialogOpenerRef.current = event.currentTarget;
                                     openItemDetails(item);
                                   }}
                                   className={`absolute overflow-hidden rounded-md border px-2 py-1.5 text-left text-[11px] font-semibold leading-tight shadow-sm transition hover:brightness-95 ${getItemChipClass(
@@ -3285,6 +3322,8 @@ export default function SchedulePage() {
           >
             <div
               className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-xl" role="dialog" aria-modal="true" aria-labelledby="agenda-details-title"
+              ref={detailsDialogRef}
+              tabIndex={-1}
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => {
                 if (event.key !== "Escape") return;
@@ -3927,6 +3966,8 @@ export default function SchedulePage() {
           >
             <div
               className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-[min(92vw,640px)]" role="dialog" aria-modal="true" aria-labelledby="agenda-block-title"
+              ref={createBlockDialogRef}
+              tabIndex={-1}
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => {
                 if (event.key !== "Escape") return;
@@ -4137,6 +4178,8 @@ export default function SchedulePage() {
           >
             <div
               className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-full sm:max-w-[min(92vw,640px)]" role="dialog" aria-modal="true" aria-labelledby="agenda-appointment-title"
+              ref={createAppointmentDialogRef}
+              tabIndex={-1}
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => {
                 if (event.key !== "Escape") return;
