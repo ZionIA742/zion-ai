@@ -5,6 +5,7 @@ import {
   aggregateContextualReconstructionSnapshot,
   type ReconstructionReaders,
 } from "./contextual-reconstruction-aggregator";
+import { resolveContextualReconstructionConflicts } from "./contextual-reconstruction-conflict-resolver";
 
 const aggregatorSource = fs.readFileSync("src/lib/server/contextual-reconstruction-aggregator.ts", "utf8");
 
@@ -56,7 +57,26 @@ function makeReaders(overrides: Partial<ReconstructionReaders> = {}): Reconstruc
       return [{ id: ids.opportunity, organization_id: ids.org, store_id: ids.store, origin_lead_id: ids.lead, primary_conversation_id: ids.conversation, stage: "orcamento", lifecycle_cycle: 2, stage_changed_at: "2026-11-14T11:00:00.000Z", updated_at: releasedAt }];
     },
     async loadQualification() {
-      return { known_facts: [{ key: "area_m2", value: 32 }], conflicts: [], provenance_summary: { source: "canonical" } };
+      return {
+        organization_id: ids.org,
+        store_id: ids.store,
+        commercial_opportunity_id: ids.opportunity,
+        known_facts: [{
+          factKey: "requested_area_m2",
+          state: "confirmed",
+          valueKind: "number",
+          value: 32,
+          normalizedValueText: null,
+          sourceType: "crm_manual",
+          sourceMessageId: null,
+          sourceConversationId: null,
+          lastEventId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          lastOperationKey: "qfact:area:1",
+          updatedAt: "2026-11-14T11:20:00.000Z",
+        }],
+        conflicts: [],
+        provenance_summary: { source: "canonical" },
+      };
     },
     async loadProposal() {
       return { organization_id: ids.org, store_id: ids.store, commercial_opportunity_id: ids.opportunity, lifecycle_cycle: 2, proposal_state: "current", current_quote_id: ids.proposal, current_quote_version_id: ids.version, quote_number: "ORC-1", version_status: "sent", version_number: 3, version_sent_at: "2026-11-14T11:30:00.000Z", total_cents: 125000, currency: "BRL" };
@@ -82,6 +102,12 @@ test("agrega histórico longo, decisão humana, proposta versionada e compromiss
   assert.equal(result.snapshot.products[0]?.totalValue, 1000);
   assert.equal(result.snapshot.commitments[0]?.description, "Visita confirmada");
   assert.equal(result.snapshot.automaticMessaging, "forbidden");
+  assert.equal(result.snapshot.humanDecisions[0]?.authorityProof?.kind, "canonical_state_transition");
+  assert.equal(result.snapshot.humanDecisions[0]?.authorityProof?.conversationId, ids.conversation);
+  assert.equal(result.snapshot.humanDecisions[0]?.domain, undefined);
+  const resolution = resolveContextualReconstructionConflicts(result.snapshot);
+  assert.equal(resolution.decisions.some((decision) => decision.outcome === "honor_human_evidence"), false);
+  assert.ok(resolution.regularizations.some((item) => item.reason === "human_decision_requires_canonical_domain_field_and_authority"));
 });
 
 test("bloqueia compromisso sem descrição ou data", async () => {
@@ -109,6 +135,59 @@ test("bloqueia compromisso sem descrição ou data", async () => {
   if (!result.ok) {
     assert.match(result.reason, /context_incomplete_or_ambiguous|snapshot_validation_failed/);
   }
+});
+
+test("bloqueia fato de qualificação malformado sem confirmar o envelope", async () => {
+  const result = await aggregateContextualReconstructionSnapshot({
+    readers: makeReaders({
+      async loadQualification() {
+        return {
+          organization_id: ids.org,
+          store_id: ids.store,
+          commercial_opportunity_id: ids.opportunity,
+          known_facts: [{ factKey: "requested_area_m2", state: "confirmed", valueKind: "text", value: "32" }],
+          conflicts: [],
+        };
+      },
+    }),
+    requestId: ids.request,
+    organizationId: ids.org,
+    storeId: ids.store,
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.reason, /context_incomplete_or_ambiguous|snapshot_validation_failed/);
+});
+
+test("bloqueia fato cross-tenant ou conversa divergente", async () => {
+  const result = await aggregateContextualReconstructionSnapshot({
+    readers: makeReaders({
+      async loadQualification() {
+        return {
+          organization_id: ids.org,
+          store_id: ids.store,
+          commercial_opportunity_id: ids.opportunity,
+          known_facts: [{
+            factKey: "need_summary",
+            state: "confirmed",
+            valueKind: "text",
+            value: "família",
+            normalizedValueText: "família",
+            sourceType: "incoming_customer_message",
+            sourceMessageId: ids.transition,
+            sourceConversationId: ids.lead,
+            lastEventId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            lastOperationKey: "qfact:cross-tenant",
+            updatedAt: "2026-11-14T11:20:00.000Z",
+          }],
+          conflicts: [],
+        };
+      },
+    }),
+    requestId: ids.request,
+    organizationId: ids.org,
+    storeId: ids.store,
+  });
+  assert.equal(result.ok, false);
 });
 
 test("não classifica outgoing desconhecido como humano", async () => {

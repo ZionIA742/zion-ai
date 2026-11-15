@@ -11,6 +11,8 @@ import {
   type ReconstructionRelevantMessage,
   type ReconstructionReleaseOrigin,
   type ReconstructionConflict,
+  type ReconstructionCommercialFact,
+  type ReconstructionCommercialFactKey,
   validateContextualReconstructionSnapshot,
 } from "./contextual-reconstruction-snapshot";
 
@@ -166,6 +168,118 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+const QUALIFICATION_FACT_KEYS = new Set<ReconstructionCommercialFactKey>([
+  "need_summary", "interested_product_reference", "space_text", "requested_area_m2", "location_text",
+  "customer_address_text", "customer_city", "customer_state_code", "preferred_period_text", "budget_text",
+  "decision_context", "installation_interest", "payment_interest", "technical_visit_interest",
+  "measurements_confirmation_required", "customer_preferences_text", "relevant_objection_text",
+]);
+const QUALIFICATION_SOURCE_TYPES = new Set([
+  "incoming_customer_message", "crm_manual", "system_inference", "system_correction", "migration_backfill",
+]);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value.trim());
+}
+
+function expectedQualificationValueKind(factKey: ReconstructionCommercialFactKey): ReconstructionCommercialFact["valueKind"] {
+  if (factKey === "requested_area_m2") return "number";
+  if (["installation_interest", "payment_interest", "technical_visit_interest", "measurements_confirmation_required"].includes(factKey)) return "boolean";
+  return "text";
+}
+
+function mapQualificationFacts(
+  value: Record<string, unknown>,
+  scope: { organizationId: string; storeId: string; opportunityId: string; conversationId: string },
+): { facts: ReconstructionCommercialFact[]; malformed: boolean; conflicts: ReconstructionConflict[] } {
+  const rawFacts = value.known_facts;
+  const rawConflicts = value.conflicts;
+  if (value.organization_id !== scope.organizationId || value.store_id !== scope.storeId || value.commercial_opportunity_id !== scope.opportunityId
+    || !Array.isArray(rawFacts) || !Array.isArray(rawConflicts)) return { facts: [], malformed: true, conflicts: [] };
+  const facts: ReconstructionCommercialFact[] = [];
+  let malformed = false;
+  for (const raw of rawFacts) {
+    const row = asRecord(raw);
+    const factKey = row?.factKey;
+    const state = row?.state;
+    const valueKind = row?.valueKind;
+    const sourceType = row?.sourceType;
+    const expectedKind = QUALIFICATION_FACT_KEYS.has(factKey as ReconstructionCommercialFactKey)
+      ? expectedQualificationValueKind(factKey as ReconstructionCommercialFactKey)
+      : null;
+    const validValue = expectedKind === "text"
+      ? typeof row?.value === "string" && row.value.trim() !== "" && typeof row?.normalizedValueText === "string" && row.normalizedValueText.trim() !== ""
+      : expectedKind === "number"
+        ? typeof row?.value === "number" && Number.isFinite(row.value)
+        : expectedKind === "boolean" && typeof row?.value === "boolean";
+    const eventId = row?.lastEventId;
+    const operationKey = row?.lastOperationKey;
+    const updatedAt = row?.updatedAt;
+    const sourceMessageId = row?.sourceMessageId ?? null;
+    const sourceConversationId = row?.sourceConversationId ?? null;
+    const sourceValid = (sourceMessageId === null || isUuid(sourceMessageId))
+      && (sourceConversationId === null || sourceConversationId === scope.conversationId)
+      && (sourceType !== "incoming_customer_message" || (isUuid(sourceMessageId) && sourceConversationId === scope.conversationId));
+    if (!row || !QUALIFICATION_FACT_KEYS.has(factKey as ReconstructionCommercialFactKey)
+      || (state !== "confirmed" && state !== "inferred") || valueKind !== expectedKind
+      || !QUALIFICATION_SOURCE_TYPES.has(String(sourceType)) || !validValue
+      || !isUuid(eventId) || typeof operationKey !== "string" || operationKey.trim() === ""
+      || typeof updatedAt !== "string" || !Number.isFinite(Date.parse(updatedAt)) || !sourceValid) {
+      malformed = true;
+      continue;
+    }
+    facts.push({
+      organizationId: scope.organizationId,
+      storeId: scope.storeId,
+      opportunityId: scope.opportunityId,
+      factKey: factKey as ReconstructionCommercialFactKey,
+      state: state as "confirmed" | "inferred",
+      valueKind: valueKind as "text" | "number" | "boolean",
+      value: row.value as string | number | boolean,
+      normalizedValueText: typeof row.normalizedValueText === "string" ? row.normalizedValueText : null,
+      sourceType: sourceType as ReconstructionCommercialFact["sourceType"],
+      sourceMessageId: sourceMessageId as string | null,
+      sourceConversationId: sourceConversationId as string | null,
+      lastEventId: eventId,
+      lastOperationKey: operationKey,
+      updatedAt,
+      provenance: provenance("crm", eventId, "system", updatedAt),
+    });
+  }
+  const conflicts: ReconstructionConflict[] = [];
+  for (const raw of rawConflicts) {
+    const row = asRecord(raw);
+    const factKey = row?.factKey;
+    const eventId = row?.lastEventId;
+    const updatedAt = row?.updatedAt;
+    if (!row || !QUALIFICATION_FACT_KEYS.has(factKey as ReconstructionCommercialFactKey) || !isUuid(eventId)
+      || typeof updatedAt !== "string" || !Number.isFinite(Date.parse(updatedAt)) || !Array.isArray(row.candidates)) {
+      malformed = true;
+      continue;
+    }
+    conflicts.push({
+      id: eventId,
+      field: `commercialFacts.${factKey}`,
+      description: "Conflito individual retornado pela fonte canônica de qualificação.",
+      sources: [provenance("crm", eventId, "system", updatedAt)],
+      blocksAutomaticContinuation: true,
+      details: {
+        factKey,
+        valueKind: row.valueKind ?? null,
+        candidates: row.candidates,
+        sourceType: row.sourceType ?? null,
+        sourceMessageId: row.sourceMessageId ?? null,
+        sourceConversationId: row.sourceConversationId ?? null,
+        lastEventId: eventId,
+        lastOperationKey: row.lastOperationKey ?? null,
+        updatedAt,
+      },
+    });
+  }
+  return { facts, malformed, conflicts };
+}
+
 function isReaderFailure<T>(value: ReaderResult<T>): value is ReaderFailure {
   return !!value && typeof value === "object" && "ok" in value && value.ok === false;
 }
@@ -212,7 +326,11 @@ function mapMessage(row: ReconstructionMessageRow): ReconstructionRelevantMessag
   };
 }
 
-function mapHumanDecisions(transitions: ReconstructionTransitionRow[]): ReconstructionHumanDecision[] {
+function mapHumanDecisions(
+  transitions: ReconstructionTransitionRow[],
+  scope: { organizationId: string; storeId: string; conversationId: string },
+  opportunityId: string | null,
+): ReconstructionHumanDecision[] {
   const decisions: ReconstructionHumanDecision[] = transitions
     .filter((row) => row.actor_type === "human" && row.to_state && asRecord(row.metadata)?.commercial_decision === true && !!row.actor_user_id)
     .map((row) => ({
@@ -220,6 +338,15 @@ function mapHumanDecisions(transitions: ReconstructionTransitionRow[]): Reconstr
       decision: row.reason || null,
       evidence: "human_correction" as const,
       provenance: { ...provenance("state_transition", row.event_key || row.id, "human", row.created_at), actorId: row.actor_user_id } as ReconstructionHumanDecision["provenance"],
+      authorityProof: {
+        kind: "canonical_state_transition" as const,
+        sourceId: row.event_key || row.id,
+        actorId: row.actor_user_id as string,
+        organizationId: row.organization_id,
+        storeId: row.store_id,
+        conversationId: row.conversation_id,
+        opportunityId,
+      },
     }));
   return decisions;
 }
@@ -427,6 +554,11 @@ export async function aggregateContextualReconstructionSnapshot(args: {
   if (isReaderFailure(qualificationResult)) return { ok: false, reason: "qualification_read_failed", details: qualificationResult.error };
   const qualification = qualificationResult;
   if (selectedOpportunity && !qualification) conflicts.push(conflict("qualification-missing", "commercialFacts", "Fatos canônicos de qualificação indisponíveis.", selectedOpportunity.id, request.released_at));
+  const qualificationFactsResult = selectedOpportunity && qualification
+    ? mapQualificationFacts(qualification, { organizationId: args.organizationId, storeId: args.storeId, opportunityId: selectedOpportunity.id, conversationId: request.conversation_id })
+    : { facts: [], malformed: false, conflicts: [] };
+  if (qualificationFactsResult.malformed) conflicts.push(conflict("qualification-fact-malformed", "commercialFacts", "Um ou mais fatos canônicos de qualificação possuem chave, tipo, valor, versão ou proveniência inválidos.", selectedOpportunity?.id || request.id, request.released_at));
+  conflicts.push(...qualificationFactsResult.conflicts);
   const proposalResult = selectedOpportunity ? await args.readers.loadProposal({ organizationId: args.organizationId, storeId: args.storeId, opportunityId: selectedOpportunity.id }) : null;
   if (isReaderFailure(proposalResult)) return { ok: false, reason: "proposal_read_failed", details: proposalResult.error };
   const proposalRow = proposalResult;
@@ -499,8 +631,8 @@ export async function aggregateContextualReconstructionSnapshot(args: {
     releaseOrigin,
     crmStage: { value: selectedOpportunity?.stage || null, kind: selectedOpportunity ? "confirmed" : "obsolete", provenance: provenance("crm", selectedOpportunity?.id || request.id, "system", request.released_at), observedAt: request.released_at },
     relevantMessages,
-    humanDecisions: mapHumanDecisions(transitions),
-    commercialFacts: qualification ? [{ value: qualification, kind: "confirmed", provenance: provenance("crm", selectedOpportunity?.id || request.id, "system", request.released_at), observedAt: request.released_at }] : [],
+    humanDecisions: mapHumanDecisions(transitions, { organizationId: args.organizationId, storeId: args.storeId, conversationId: request.conversation_id }, selectedOpportunity?.id || null),
+    commercialFacts: qualificationFactsResult.facts,
     opportunity: { status: opportunityStatus, candidates: opportunityCandidates, selected: selectedOpportunity },
     currentProposal: proposal,
     products: items.map((item) => ({ id: item.id, organizationId: item.organization_id || "", storeId: item.store_id || "", quoteId: proposalRow?.current_quote_id || "", name: item.name || null, quantity: item.quantity ?? null, unitValue: item.unit_price_cents == null ? null : item.unit_price_cents / 100, totalValue: item.total_cents == null ? null : item.total_cents / 100, evidence: "confirmed" as const, provenance: provenance("proposal", item.id, "system", item.created_at || "") })),

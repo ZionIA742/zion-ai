@@ -27,6 +27,23 @@ export type ReconstructionReleaseOrigin =
   | "lease_expiration"
   | "system_recovery";
 
+export type ReconstructionDecisionDomain =
+  | "opportunity"
+  | "crm_stage"
+  | "commercial_facts"
+  | "proposal"
+  | "products"
+  | "commitments";
+
+export const RECONSTRUCTION_DOMAIN_FIELDS: Record<ReconstructionDecisionDomain, readonly string[]> = {
+  opportunity: ["selected_opportunity"],
+  crm_stage: ["stage"],
+  commercial_facts: ["qualification_fact"],
+  proposal: ["proposal", "total_value", "currency", "version"],
+  products: ["product", "quantity", "unit_value", "total_value"],
+  commitments: ["commitment", "scheduled_at", "description"],
+};
+
 export type ReconstructionMessageActor = "customer" | "human" | "ai" | "system" | "uncertain";
 
 export type ReconstructionProvenance = {
@@ -35,6 +52,53 @@ export type ReconstructionProvenance = {
   actor: ReconstructionMessageActor | "system";
   actorId?: string | null;
   observedAt: string;
+};
+
+export type ReconstructionCommercialFactKey =
+  | "need_summary"
+  | "interested_product_reference"
+  | "space_text"
+  | "requested_area_m2"
+  | "location_text"
+  | "customer_address_text"
+  | "customer_city"
+  | "customer_state_code"
+  | "preferred_period_text"
+  | "budget_text"
+  | "decision_context"
+  | "installation_interest"
+  | "payment_interest"
+  | "technical_visit_interest"
+  | "measurements_confirmation_required"
+  | "customer_preferences_text"
+  | "relevant_objection_text";
+
+export type ReconstructionCommercialFact = {
+  organizationId: string;
+  storeId: string;
+  opportunityId: string;
+  factKey: ReconstructionCommercialFactKey;
+  state: "confirmed" | "inferred";
+  valueKind: "text" | "number" | "boolean";
+  value: string | number | boolean;
+  normalizedValueText: string | null;
+  sourceType: "incoming_customer_message" | "crm_manual" | "system_inference" | "system_correction" | "migration_backfill";
+  sourceMessageId: string | null;
+  sourceConversationId: string | null;
+  lastEventId: string;
+  lastOperationKey: string;
+  updatedAt: string;
+  provenance: ReconstructionProvenance;
+};
+
+export type ReconstructionHumanAuthorityProof = {
+  kind: "canonical_state_transition";
+  sourceId: string;
+  actorId: string;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  opportunityId: string | null;
 };
 
 export type ReconstructionEvidence<T> = {
@@ -79,6 +143,10 @@ export type ReconstructionHumanDecision = {
   id: string;
   decision: string | null;
   evidence: "human_correction" | "confirmed";
+  /** Decisões sem domínio/campo não podem ser aplicadas pelo resolvedor. */
+  domain?: ReconstructionDecisionDomain;
+  field?: string | null;
+  authorityProof?: ReconstructionHumanAuthorityProof | null;
   provenance: ReconstructionProvenance & {
     source: "message" | "state_transition" | "crm";
     actor: "human";
@@ -154,6 +222,7 @@ export type ReconstructionConflict = {
   description: string;
   sources: ReconstructionProvenance[];
   blocksAutomaticContinuation: boolean;
+  details?: Record<string, unknown>;
 };
 
 export type ContextualReconstructionSnapshot = {
@@ -164,7 +233,7 @@ export type ContextualReconstructionSnapshot = {
   crmStage: ReconstructionEvidence<string | null>;
   relevantMessages: ReconstructionRelevantMessage[];
   humanDecisions: ReconstructionHumanDecision[];
-  commercialFacts: ReconstructionEvidence<Record<string, unknown>>[];
+  commercialFacts: ReconstructionCommercialFact[];
   opportunity: ReconstructionOpportunityResolution;
   currentProposal: ReconstructionProposal | null;
   products: ReconstructionProduct[];
@@ -206,6 +275,21 @@ function isTimestamp(value: string) {
   return value.trim() !== "" && Number.isFinite(Date.parse(value));
 }
 
+function expectedFactValueKind(factKey: ReconstructionCommercialFactKey): ReconstructionCommercialFact["valueKind"] {
+  if (factKey === "requested_area_m2") return "number";
+  if (["installation_interest", "payment_interest", "technical_visit_interest", "measurements_confirmation_required"].includes(factKey)) return "boolean";
+  return "text";
+}
+
+function isFactKey(value: unknown): value is ReconstructionCommercialFactKey {
+  return typeof value === "string" && [
+    "need_summary", "interested_product_reference", "space_text", "requested_area_m2", "location_text",
+    "customer_address_text", "customer_city", "customer_state_code", "preferred_period_text", "budget_text",
+    "decision_context", "installation_interest", "payment_interest", "technical_visit_interest",
+    "measurements_confirmation_required", "customer_preferences_text", "relevant_objection_text",
+  ].includes(value);
+}
+
 function addScopeIssue(issues: SnapshotValidationIssue[], path: string, value: string, expected: string) {
   if (value !== expected) issues.push({ path, code: "scope_mismatch" });
 }
@@ -217,7 +301,8 @@ function validateProvenance(
 ) {
   const validSources = new Set(["message", "state_transition", "crm", "proposal", "catalog", "appointment", "system"]);
   const validActors = new Set(["customer", "human", "ai", "system", "uncertain"]);
-  if (!provenance || !provenance.sourceId.trim() || !validSources.has(provenance.source) || !validActors.has(provenance.actor) || !isTimestamp(provenance.observedAt)) {
+  if (!provenance || !provenance.sourceId.trim() || !validSources.has(provenance.source) || !validActors.has(provenance.actor)
+    || !isTimestamp(provenance.observedAt)) {
     issues.push({ path, code: "missing_provenance" });
   }
 }
@@ -266,13 +351,47 @@ export function validateContextualReconstructionSnapshot(
   }
 
   for (const [index, decision] of snapshot.humanDecisions.entries()) {
+    if (!isUuid(decision.id)) issues.push({ path: `humanDecisions.${index}.id`, code: "invalid_uuid" });
     validateProvenance(issues, decision.provenance, `humanDecisions.${index}.provenance`);
     if (decision.provenance.actor !== "human" || !decision.provenance.actorId) issues.push({ path: `humanDecisions.${index}.provenance.actor`, code: "missing_provenance" });
     if (!decision.decision || !decision.decision.trim()) issues.push({ path: `humanDecisions.${index}.decision`, code: "required" });
+    if (decision.domain !== undefined && !Object.prototype.hasOwnProperty.call(RECONSTRUCTION_DOMAIN_FIELDS, decision.domain)) {
+      issues.push({ path: `humanDecisions.${index}.domain`, code: "invalid_enum" });
+    }
+    if (decision.domain !== undefined && !decision.field?.trim()) issues.push({ path: `humanDecisions.${index}.field`, code: "required" });
+    if (decision.domain !== undefined && decision.field && !RECONSTRUCTION_DOMAIN_FIELDS[decision.domain]?.includes(decision.field)) {
+      issues.push({ path: `humanDecisions.${index}.field`, code: "invalid_enum" });
+    }
+    if (decision.authorityProof) {
+      const proof = decision.authorityProof;
+      if (proof.kind !== "canonical_state_transition"
+        || !isUuid(proof.actorId) || !isUuid(proof.organizationId) || !isUuid(proof.storeId)
+        || !isUuid(proof.conversationId) || (proof.opportunityId !== null && !isUuid(proof.opportunityId))) {
+        issues.push({ path: `humanDecisions.${index}.authorityProof`, code: "missing_provenance" });
+      }
+      if (proof.sourceId !== decision.provenance.sourceId || proof.actorId !== decision.provenance.actorId
+        || proof.organizationId !== scope.organizationId || proof.storeId !== scope.storeId
+        || proof.conversationId !== scope.conversationId) {
+        issues.push({ path: `humanDecisions.${index}.authorityProof`, code: "scope_mismatch" });
+      }
+    }
   }
 
   for (const [index, fact] of snapshot.commercialFacts.entries()) {
     validateProvenance(issues, fact.provenance, `commercialFacts.${index}.provenance`);
+    const expectedKind = isFactKey(fact.factKey) ? expectedFactValueKind(fact.factKey) : null;
+    if (!isUuid(fact.organizationId) || !isUuid(fact.storeId) || !isUuid(fact.opportunityId)
+      || fact.organizationId !== scope.organizationId || fact.storeId !== scope.storeId
+      || snapshot.opportunity.status !== "resolved" || snapshot.opportunity.selected?.id !== fact.opportunityId
+      || !expectedKind || fact.valueKind !== expectedKind
+      || (expectedKind === "text" && (typeof fact.value !== "string" || !fact.value.trim() || !fact.normalizedValueText?.trim()))
+      || (expectedKind === "number" && (typeof fact.value !== "number" || !Number.isFinite(fact.value)))
+      || (expectedKind === "boolean" && typeof fact.value !== "boolean")
+      || !fact.lastOperationKey.trim() || !isUuid(fact.lastEventId) || !isTimestamp(fact.updatedAt)
+      || (fact.sourceType === "incoming_customer_message"
+        && (!isUuid(fact.sourceMessageId) || fact.sourceConversationId !== scope.conversationId))) {
+      issues.push({ path: `commercialFacts.${index}`, code: "required" });
+    }
   }
 
   const opportunity = snapshot.opportunity;
@@ -299,6 +418,12 @@ export function validateContextualReconstructionSnapshot(
   if (opportunity.selected) {
     if (!opportunity.candidates.some((candidate) => candidate.id === opportunity.selected?.id)) {
       issues.push({ path: "opportunity.selected", code: "invalid_opportunity_resolution" });
+    }
+  }
+  for (const [index, decision] of snapshot.humanDecisions.entries()) {
+    if (decision.authorityProof?.opportunityId !== null && decision.authorityProof?.opportunityId !== undefined
+      && (!opportunity.selected || decision.authorityProof.opportunityId !== opportunity.selected.id)) {
+      issues.push({ path: `humanDecisions.${index}.authorityProof.opportunityId`, code: "scope_mismatch" });
     }
   }
 
