@@ -15,6 +15,34 @@ import {
   type LeadCommercialOpportunityOption,
 } from "./appointment-create-contract";
 import {
+  isSameAppointmentCreateRequest,
+  advanceAppointmentCreateSessionFence,
+  captureAppointmentCreateSessionFence,
+  createAppointmentCreateSessionFence,
+  invalidateAppointmentCreateSessionFence,
+  isCurrentAppointmentCreateSessionFence,
+  isCurrentAppointmentCreateAuthRead,
+  isCurrentAppointmentCreateRequestAtSession,
+  isCurrentAppointmentCreateRecoveryScope,
+  shouldPreserveActiveAppointmentCreateRecovery,
+  isUnknownAppointmentCreateFailure,
+  APPOINTMENT_CREATE_RECOVERY_TTL_MS,
+  type AppointmentCreateDraft,
+  type AppointmentCreateRecoveryState,
+  type AppointmentCreateStorage,
+  type PersistedAppointmentCreateOperation,
+  readAppointmentCreateRecoveries,
+  inspectAppointmentCreateStorage,
+  persistAppointmentCreateRecovery,
+  removeAppointmentCreateRecovery,
+  retainAppointmentCreateOperation,
+  UNKNOWN_APPOINTMENT_CREATE_MESSAGE,
+  APPOINTMENT_CREATE_STORAGE_UNAVAILABLE_MESSAGE,
+  APPOINTMENT_CREATE_AUTH_UNAVAILABLE_MESSAGE,
+  type AppointmentCreateRequest,
+  type AppointmentCreateSessionFence,
+} from "./appointment-create-operation";
+import {
   isValidScheduleTimeZone,
   addStoreCalendarDays,
   getStoreLocalDateKey,
@@ -195,6 +223,15 @@ function getErrorMessage(error: unknown, fallback: string) {
 function createAppointmentOperationKey() {
   const randomUuid = globalThis.crypto?.randomUUID?.();
   return `panel:schedule:${randomUuid || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
+function getAppointmentCreateSessionStorage(): AppointmentCreateStorage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
 }
 
 function formatMonthYear(date: Date) {
@@ -877,6 +914,11 @@ export default function SchedulePage() {
   const [savingAppointmentCreate, setSavingAppointmentCreate] = useState(false);
   const [appointmentCreateErrorText, setAppointmentCreateErrorText] =
     useState<string | null>(null);
+  const [appointmentCreateRecoveryState, setAppointmentCreateRecoveryState] =
+    useState<AppointmentCreateRecoveryState | null>(null);
+  const [appointmentCreateStorageWarning, setAppointmentCreateStorageWarning] =
+    useState<string | null>(null);
+  const [appointmentCreateAuthEpoch, setAppointmentCreateAuthEpoch] = useState(0);
   const [leadOptions, setLeadOptions] = useState<LeadConversationOption[]>([]);
   const [loadingLeadOptions, setLoadingLeadOptions] = useState(false);
   const [leadCommercialOpportunityOptions, setLeadCommercialOpportunityOptions] =
@@ -900,9 +942,58 @@ export default function SchedulePage() {
     fingerprint: string;
     key: string;
   } | null>(null);
+  const appointmentCreateDialogGenerationRef = useRef(0);
+  const appointmentCreateAttemptIdRef = useRef(0);
+  const appointmentCreateActiveRequestRef = useRef<AppointmentCreateRequest | null>(null);
+  const appointmentCreateSessionFenceRef = useRef(createAppointmentCreateSessionFence());
+  const appointmentCreateInFlightRef = useRef(false);
+  const appointmentCreateUserIdRef = useRef<string | null>(null);
+  const appointmentCreateRecoveryScopeRef = useRef<string | null>(null);
+  const appointmentCreateRecoveryDraftRef = useRef<AppointmentCreateDraft | null>(null);
+  const appointmentCreateRecoveryRecordRef = useRef<PersistedAppointmentCreateOperation | null>(null);
+  const appointmentCreateRecoveryOptionsLoadedRef = useRef<string | null>(null);
   const appointmentAddressSourceRef = useRef<
     "empty" | "manual" | "canonical"
   >("empty");
+
+  const invalidateAppointmentCreateAttemptState = useCallback(() => {
+    appointmentCreateAttemptIdRef.current += 1;
+    appointmentCreateDialogGenerationRef.current += 1;
+    appointmentCreateActiveRequestRef.current = null;
+    appointmentCreateInFlightRef.current = false;
+  }, []);
+
+  const invalidateAppointmentCreateUserState = useCallback((nextUserId: string | null): boolean => {
+    const previousUserId = appointmentCreateUserIdRef.current;
+    if (previousUserId === nextUserId) return false;
+    appointmentCreateUserIdRef.current = nextUserId;
+    invalidateAppointmentCreateAttemptState();
+    if (!previousUserId) return true;
+
+    appointmentCreateOperationRef.current = null;
+    appointmentCreateRecoveryDraftRef.current = null;
+    appointmentCreateRecoveryRecordRef.current = null;
+    appointmentCreateRecoveryOptionsLoadedRef.current = null;
+    setAppointmentCreateRecoveryState(null);
+    setAppointmentCreateStorageWarning(null);
+    setAppointmentCreateErrorText(
+      nextUserId
+        ? "A sessao mudou. Os dados da sessao anterior foram descartados deste formulario; revise e tente novamente."
+        : APPOINTMENT_CREATE_AUTH_UNAVAILABLE_MESSAGE,
+    );
+    setSavingAppointmentCreate(false);
+    setCreateAppointmentOpen(false);
+    setCreateLeadConversationState({
+      leadId: null,
+      status: "idle",
+      conversationId: null,
+      conversationStatus: null,
+      isHumanActive: null,
+      lastMessageAt: null,
+    });
+    setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey, scheduleTimezoneName));
+    return true;
+  }, [invalidateAppointmentCreateAttemptState, scheduleTimezoneName, selectedDateKey]);
   const lastKnownTodayKeyRef = useRef<string>("");
   const selectedItemRef = useRef<ScheduleItem | null>(null);
   const editModeRef = useRef(false);
@@ -936,6 +1027,231 @@ export default function SchedulePage() {
       }
     };
   }, [activeScheduleDialog]);
+
+  useEffect(() => {
+    if (storeLoading || !organizationId || !activeStoreId) return;
+
+    const scopeKey = `${organizationId}:${activeStoreId}`;
+    if (appointmentCreateRecoveryScopeRef.current !== scopeKey) {
+      appointmentCreateRecoveryScopeRef.current = scopeKey;
+      appointmentCreateSessionFenceRef.current.mounted = true;
+      invalidateAppointmentCreateAttemptState();
+      advanceAppointmentCreateSessionFence(
+        appointmentCreateSessionFenceRef.current,
+        { userId: null, organizationId, storeId: activeStoreId },
+      );
+      appointmentCreateUserIdRef.current = null;
+      appointmentCreateOperationRef.current = null;
+      appointmentCreateRecoveryDraftRef.current = null;
+      appointmentCreateRecoveryRecordRef.current = null;
+      appointmentCreateRecoveryOptionsLoadedRef.current = null;
+      setAppointmentCreateRecoveryState(null);
+      setAppointmentCreateStorageWarning(null);
+    }
+
+    let cancelled = false;
+    const authReadFence = captureAppointmentCreateSessionFence(
+      appointmentCreateSessionFenceRef.current,
+    );
+    void Promise.all([supabase.auth.getUser(), supabase.auth.getSession()]).then(([userResult, sessionResult]) => {
+      if (cancelled) return;
+      const userId = userResult.data.user?.id || null;
+      const sessionUserId = sessionResult.data.session?.user?.id || null;
+      if (!isCurrentAppointmentCreateSessionFence(
+        appointmentCreateSessionFenceRef.current,
+        authReadFence,
+      )) return;
+      if (
+        userResult.error ||
+        sessionResult.error ||
+        !userId ||
+        !sessionUserId ||
+        userId !== sessionUserId
+      ) {
+        advanceAppointmentCreateSessionFence(
+          appointmentCreateSessionFenceRef.current,
+          { userId: null, organizationId, storeId: activeStoreId },
+        );
+        invalidateAppointmentCreateUserState(null);
+        return;
+      }
+      if (!isCurrentAppointmentCreateAuthRead(
+        appointmentCreateSessionFenceRef.current,
+        authReadFence,
+        userId,
+        sessionUserId,
+        { organizationId, storeId: activeStoreId },
+      )) return;
+      advanceAppointmentCreateSessionFence(
+        appointmentCreateSessionFenceRef.current,
+        { userId, organizationId, storeId: activeStoreId },
+      );
+      invalidateAppointmentCreateUserState(userId);
+      appointmentCreateUserIdRef.current = userId;
+      if (!userId) {
+        appointmentCreateOperationRef.current = null;
+        appointmentCreateRecoveryDraftRef.current = null;
+        appointmentCreateRecoveryRecordRef.current = null;
+        setAppointmentCreateRecoveryState(null);
+        setCreateAppointmentOpen(false);
+        return;
+      }
+
+      if (
+        appointmentCreateRecoveryRecordRef.current &&
+        appointmentCreateRecoveryRecordRef.current.userId !== userId
+      ) {
+        appointmentCreateOperationRef.current = null;
+        appointmentCreateRecoveryDraftRef.current = null;
+        appointmentCreateRecoveryRecordRef.current = null;
+        appointmentCreateRecoveryOptionsLoadedRef.current = null;
+        setAppointmentCreateRecoveryState(null);
+        setCreateAppointmentOpen(false);
+      }
+
+      const recoveries = readAppointmentCreateRecoveries(
+        getAppointmentCreateSessionStorage(),
+        { userId, organizationId, storeId: activeStoreId },
+      );
+      const recovery = recoveries[0];
+      if (!recovery || appointmentCreateRecoveryRecordRef.current) return;
+
+      appointmentCreateOperationRef.current = {
+        fingerprint: recovery.fingerprint,
+        key: recovery.operationKey,
+      };
+      appointmentCreateRecoveryDraftRef.current = recovery.draft;
+      appointmentCreateRecoveryRecordRef.current = recovery;
+      appointmentCreateRecoveryOptionsLoadedRef.current = null;
+      appointmentCreateDialogGenerationRef.current += 1;
+      setAppointmentCreateForm(recovery.draft);
+      setCreateLeadConversationState({
+        leadId: recovery.draft.leadId || null,
+        status: recovery.draft.conversationId ? "resolved" : "not_found",
+        conversationId: recovery.draft.conversationId || null,
+        conversationStatus: null,
+        isHumanActive: null,
+        lastMessageAt: null,
+      });
+      setCreateAppointmentOpen(true);
+      setAppointmentCreateRecoveryState(recovery.state);
+      setAppointmentCreateErrorText(
+        "Existe uma tentativa de agendamento pendente. Revise os dados e clique em Salvar para consultar o mesmo resultado com segurança.",
+      );
+    }).catch(() => {
+      if (cancelled) return;
+      if (!isCurrentAppointmentCreateSessionFence(
+        appointmentCreateSessionFenceRef.current,
+        authReadFence,
+      )) return;
+      advanceAppointmentCreateSessionFence(
+        appointmentCreateSessionFenceRef.current,
+        { userId: null, organizationId, storeId: activeStoreId },
+      );
+      invalidateAppointmentCreateUserState(null);
+      // A falha de leitura da sessão não cria nem altera uma operação.
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeStoreId, appointmentCreateAuthEpoch, invalidateAppointmentCreateAttemptState, invalidateAppointmentCreateUserState, organizationId, storeLoading]);
+
+  useEffect(() => {
+    if (storeLoading || !organizationId || !activeStoreId) return;
+
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      const nextUserId = session?.user?.id || null;
+      appointmentCreateSessionFenceRef.current.mounted = true;
+      advanceAppointmentCreateSessionFence(
+        appointmentCreateSessionFenceRef.current,
+        { userId: nextUserId, organizationId, storeId: activeStoreId },
+      );
+      if (nextUserId === appointmentCreateUserIdRef.current) return;
+      invalidateAppointmentCreateUserState(nextUserId);
+      setAppointmentCreateAuthEpoch((current) => current + 1);
+    });
+
+    return () => data.subscription.unsubscribe();
+  }, [activeStoreId, invalidateAppointmentCreateUserState, organizationId, storeLoading]);
+
+  useEffect(() => () => {
+    invalidateAppointmentCreateSessionFence(appointmentCreateSessionFenceRef.current);
+  }, []);
+
+  const readCurrentAppointmentCreateSession = useCallback(async () => {
+    const readFence = captureAppointmentCreateSessionFence(
+      appointmentCreateSessionFenceRef.current,
+    );
+    try {
+      const [userResult, sessionResult] = await Promise.all([
+        supabase.auth.getUser(),
+        supabase.auth.getSession(),
+      ]);
+      const userId = userResult.data.user?.id || null;
+      const sessionUserId = sessionResult.data.session?.user?.id || null;
+      const currentFence = appointmentCreateSessionFenceRef.current;
+      const readIsStillCurrent = isCurrentAppointmentCreateSessionFence(
+        currentFence,
+        readFence,
+      );
+      if (!readIsStillCurrent) {
+        return null;
+      }
+      if (
+        userResult.error ||
+        sessionResult.error ||
+        !userId ||
+        !sessionUserId ||
+        userId !== sessionUserId
+      ) {
+        // A current null/divergent/invalid read fails closed. A stale read
+        // returned above without touching the identity that entered later.
+        advanceAppointmentCreateSessionFence(currentFence, {
+          userId: null,
+          organizationId,
+          storeId: activeStoreId,
+        });
+        invalidateAppointmentCreateUserState(null);
+        return null;
+      }
+      if (
+        !isCurrentAppointmentCreateAuthRead(
+          currentFence,
+          readFence,
+          userId,
+          sessionUserId,
+          { organizationId, storeId: activeStoreId },
+        )
+      ) {
+        return null;
+      }
+
+      advanceAppointmentCreateSessionFence(currentFence, {
+        userId,
+        organizationId,
+        storeId: activeStoreId,
+      });
+      invalidateAppointmentCreateUserState(userId);
+      appointmentCreateUserIdRef.current = userId;
+      return {
+        userId,
+        fence: captureAppointmentCreateSessionFence(currentFence),
+      };
+    } catch {
+      if (isCurrentAppointmentCreateSessionFence(
+        appointmentCreateSessionFenceRef.current,
+        readFence,
+      )) {
+        advanceAppointmentCreateSessionFence(
+          appointmentCreateSessionFenceRef.current,
+          { userId: null, organizationId, storeId: activeStoreId },
+        );
+        invalidateAppointmentCreateUserState(null);
+      }
+      return null;
+    }
+  }, [activeStoreId, invalidateAppointmentCreateUserState, organizationId]);
 
   function handleScheduleDialogTab(event: React.KeyboardEvent<HTMLDivElement>) {
     if (event.key !== "Tab") return;
@@ -1086,6 +1402,15 @@ export default function SchedulePage() {
       }
 
       const currentRequestId = ++loadRequestIdRef.current;
+      const scheduleLoadFence = captureAppointmentCreateSessionFence(
+        appointmentCreateSessionFenceRef.current,
+      );
+      const isCurrentScheduleLoad = () =>
+        currentRequestId === loadRequestIdRef.current &&
+        isCurrentAppointmentCreateSessionFence(
+          appointmentCreateSessionFenceRef.current,
+          scheduleLoadFence,
+        );
 
       if (silent) {
         setRefreshing(true);
@@ -1115,7 +1440,7 @@ export default function SchedulePage() {
 
         const json = (await response.json()) as ScheduleApiResponse;
 
-        if (currentRequestId !== loadRequestIdRef.current) {
+        if (!isCurrentScheduleLoad()) {
           return;
         }
 
@@ -1166,7 +1491,7 @@ export default function SchedulePage() {
           setLoading(false);
         }
       } catch (error: unknown) {
-        if (currentRequestId !== loadRequestIdRef.current) {
+        if (!isCurrentScheduleLoad()) {
           return;
         }
 
@@ -2085,6 +2410,19 @@ export default function SchedulePage() {
     syncCreateConversationPreview,
   ]);
 
+  useEffect(() => {
+    const recovery = appointmentCreateRecoveryRecordRef.current;
+    const leadId = recovery?.draft.leadId || "";
+    if (!createAppointmentOpen || !recovery || !leadId) return;
+    if (appointmentCreateRecoveryOptionsLoadedRef.current === recovery.operationKey) return;
+
+    appointmentCreateRecoveryOptionsLoadedRef.current = recovery.operationKey;
+    void loadLeadCommercialOpportunityOptions(leadId);
+  }, [
+    createAppointmentOpen,
+    loadLeadCommercialOpportunityOptions,
+  ]);
+
   function openCreateBlockPanel() {
     setCreateBlockOpen(true);
     setBlockErrorText(null);
@@ -2098,22 +2436,77 @@ export default function SchedulePage() {
     setBlockForm(createDefaultBlockForm(selectedDateKey, scheduleTimezoneName));
   }
 
-  function openCreateAppointmentPanel() {
+  async function openCreateAppointmentPanel() {
+    setAppointmentCreateStorageWarning(null);
+    const session = await readCurrentAppointmentCreateSession();
+    if (!session) {
+      setAppointmentCreateErrorText(APPOINTMENT_CREATE_AUTH_UNAVAILABLE_MESSAGE);
+      return;
+    }
+    if (
+      !appointmentCreateRecoveryRecordRef.current &&
+      session.userId &&
+      organizationId &&
+      activeStoreId
+    ) {
+      const recovery = readAppointmentCreateRecoveries(
+        getAppointmentCreateSessionStorage(),
+        {
+          userId: session.userId,
+          organizationId,
+          storeId: activeStoreId,
+        },
+      )[0];
+      if (recovery && isCurrentAppointmentCreateRecoveryScope(
+        recovery,
+        { userId: session.userId, organizationId, storeId: activeStoreId },
+        appointmentCreateSessionFenceRef.current,
+        session.fence,
+      )) {
+        appointmentCreateOperationRef.current = {
+          fingerprint: recovery.fingerprint,
+          key: recovery.operationKey,
+        };
+        appointmentCreateRecoveryDraftRef.current = recovery.draft;
+        appointmentCreateRecoveryRecordRef.current = recovery;
+        appointmentCreateRecoveryOptionsLoadedRef.current = null;
+        setCreateLeadConversationState({
+          leadId: recovery.draft.leadId || null,
+          status: recovery.draft.conversationId ? "resolved" : "not_found",
+          conversationId: recovery.draft.conversationId || null,
+          conversationStatus: null,
+          isHumanActive: null,
+          lastMessageAt: null,
+        });
+      }
+    }
     customerLocationRequestIdRef.current += 1;
     appointmentAddressSourceRef.current = "empty";
     setAppointmentCustomerLocationHint(null);
     setCreateAppointmentOpen(true);
-    appointmentCreateOperationRef.current = null;
-    setAppointmentCreateErrorText(null);
-    setCreateLeadConversationState({
-      leadId: null,
-      status: "idle",
-      conversationId: null,
-      conversationStatus: null,
-      isHumanActive: null,
-      lastMessageAt: null,
-    });
-    setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey, scheduleTimezoneName));
+    appointmentCreateDialogGenerationRef.current += 1;
+    const recoveredDraft = appointmentCreateRecoveryDraftRef.current;
+    setAppointmentCreateErrorText(
+      recoveredDraft
+        ? "Existe uma tentativa de agendamento pendente. Revise os dados e clique em Salvar para consultar o mesmo resultado com segurança."
+        : null,
+    );
+    setAppointmentCreateRecoveryState(
+      appointmentCreateRecoveryRecordRef.current?.state || null,
+    );
+    if (!recoveredDraft) {
+      setCreateLeadConversationState({
+        leadId: null,
+        status: "idle",
+        conversationId: null,
+        conversationStatus: null,
+        isHumanActive: null,
+        lastMessageAt: null,
+      });
+    }
+    setAppointmentCreateForm(
+      recoveredDraft || createDefaultAppointmentCreateForm(selectedDateKey, scheduleTimezoneName),
+    );
   }
 
   function closeCreateAppointmentPanel() {
@@ -2121,9 +2514,10 @@ export default function SchedulePage() {
     appointmentAddressSourceRef.current = "empty";
     setAppointmentCustomerLocationHint(null);
     setCreateAppointmentOpen(false);
-    appointmentCreateOperationRef.current = null;
+    appointmentCreateDialogGenerationRef.current += 1;
     setAppointmentCreateErrorText(null);
     setSavingAppointmentCreate(false);
+    appointmentCreateInFlightRef.current = false;
     setCreateLeadConversationState({
       leadId: null,
       status: "idle",
@@ -2132,6 +2526,45 @@ export default function SchedulePage() {
       isHumanActive: null,
       lastMessageAt: null,
     });
+    setAppointmentCreateForm(
+      appointmentCreateRecoveryDraftRef.current ||
+        createDefaultAppointmentCreateForm(selectedDateKey, scheduleTimezoneName),
+    );
+  }
+
+  async function discardAppointmentCreateRecovery() {
+    if (!organizationId || !activeStoreId) {
+      setAppointmentCreateErrorText("Contexto da loja não encontrado.");
+      return;
+    }
+    const session = await readCurrentAppointmentCreateSession();
+    if (!session) {
+      setAppointmentCreateErrorText(APPOINTMENT_CREATE_AUTH_UNAVAILABLE_MESSAGE);
+      return;
+    }
+    const record = appointmentCreateRecoveryRecordRef.current;
+    const userId = session.userId;
+    if (
+      record &&
+      isCurrentAppointmentCreateRecoveryScope(
+        record,
+        { userId, organizationId, storeId: activeStoreId },
+        appointmentCreateSessionFenceRef.current,
+        session.fence,
+      )
+    ) {
+      removeAppointmentCreateRecovery(
+        getAppointmentCreateSessionStorage(),
+        { userId, organizationId, storeId: activeStoreId },
+        record.operationKey,
+      );
+    }
+    appointmentCreateOperationRef.current = null;
+    appointmentCreateRecoveryDraftRef.current = null;
+    appointmentCreateRecoveryRecordRef.current = null;
+    appointmentCreateRecoveryOptionsLoadedRef.current = null;
+    setAppointmentCreateRecoveryState(null);
+    setAppointmentCreateErrorText(null);
     setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey, scheduleTimezoneName));
   }
 
@@ -2612,15 +3045,51 @@ export default function SchedulePage() {
   }
 
   async function saveNewAppointment() {
+    if (appointmentCreateInFlightRef.current) return;
+
     if (!organizationId || !activeStoreId) {
       setAppointmentCreateErrorText("Contexto da loja não encontrado.");
       return;
     }
 
+    appointmentCreateInFlightRef.current = true;
     setSavingAppointmentCreate(true);
     setAppointmentCreateErrorText(null);
+    setAppointmentCreateStorageWarning(null);
+
+    let activeRequest: AppointmentCreateRequest | null = null;
+    let activeSessionFence: AppointmentCreateSessionFence | null =
+      captureAppointmentCreateSessionFence(appointmentCreateSessionFenceRef.current);
+    let activeRecoveryRecord: PersistedAppointmentCreateOperation | null = null;
+    const isActiveRequestCurrent = () => Boolean(
+      activeRequest &&
+      activeSessionFence &&
+      isCurrentAppointmentCreateRequestAtSession(
+        activeRequest,
+        appointmentCreateAttemptIdRef.current,
+        appointmentCreateDialogGenerationRef.current,
+        appointmentCreateSessionFenceRef.current,
+        activeSessionFence,
+      )
+    );
+    const isActiveFlowCurrent = () =>
+      activeRequest
+        ? isActiveRequestCurrent()
+        : !activeSessionFence || isCurrentAppointmentCreateSessionFence(
+            appointmentCreateSessionFenceRef.current,
+            activeSessionFence,
+          );
 
     try {
+      const initialSession = await readCurrentAppointmentCreateSession();
+      if (!initialSession) {
+        setAppointmentCreateErrorText(APPOINTMENT_CREATE_AUTH_UNAVAILABLE_MESSAGE);
+        setSavingAppointmentCreate(false);
+        return;
+      }
+      activeSessionFence = initialSession.fence;
+      const userId = initialSession.userId;
+
       const startIso = storeLocalDateTimeToUtcIso(appointmentCreateForm.scheduledStart, scheduleTimezoneName);
       const endIso = storeLocalDateTimeToUtcIso(appointmentCreateForm.scheduledEnd, scheduleTimezoneName);
 
@@ -2670,6 +3139,14 @@ export default function SchedulePage() {
         resolvedConversationId = fallbackConversation?.id || null;
       }
 
+      const afterConversationSession = await readCurrentAppointmentCreateSession();
+      if (!afterConversationSession || afterConversationSession.userId !== userId) {
+        setAppointmentCreateErrorText(APPOINTMENT_CREATE_AUTH_UNAVAILABLE_MESSAGE);
+        setSavingAppointmentCreate(false);
+        return;
+      }
+      activeSessionFence = afterConversationSession.fence;
+
       const commercialOpportunityResolution =
         resolveCommercialOpportunityIdForAppointmentCreate({
           appointmentType: appointmentCreateForm.appointmentType,
@@ -2700,27 +3177,164 @@ export default function SchedulePage() {
         scheduledStart: startIso,
         scheduledEnd: endIso,
         customerName: appointmentCreateForm.customerName.trim() || null,
-        customerPhone: normalizePhoneForSave(appointmentCreateForm.customerPhone),
+        customerPhone: normalizePhoneForSave(appointmentCreateForm.customerPhone) || null,
         addressText: appointmentCreateForm.addressText.trim() || null,
         notes: appointmentCreateForm.notes.trim() || null,
         commercialOpportunityId,
       });
-      if (
-        appointmentCreateOperationRef.current?.fingerprint !==
-        operationFingerprint
-      ) {
-        appointmentCreateOperationRef.current = {
-          fingerprint: operationFingerprint,
-          key: createAppointmentOperationKey(),
-        };
-      }
+      appointmentCreateOperationRef.current = retainAppointmentCreateOperation(
+        appointmentCreateOperationRef.current,
+        operationFingerprint,
+        createAppointmentOperationKey,
+      );
       const operationKey = appointmentCreateOperationRef.current?.key;
       if (!operationKey) {
         throw new Error("APPOINTMENT_OPERATION_KEY_UNAVAILABLE");
       }
 
+      if (
+        appointmentCreateUserIdRef.current &&
+        appointmentCreateUserIdRef.current !== userId
+      ) {
+        invalidateAppointmentCreateUserState(userId);
+        return;
+      }
+      appointmentCreateUserIdRef.current = userId;
+
+      const appointmentCreateStorage = getAppointmentCreateSessionStorage();
+      const storageStatus = inspectAppointmentCreateStorage(
+        appointmentCreateStorage,
+        { userId, organizationId, storeId: activeStoreId },
+      );
+      if (storageStatus !== "available") {
+        setAppointmentCreateStorageWarning(APPOINTMENT_CREATE_STORAGE_UNAVAILABLE_MESSAGE);
+        setAppointmentCreateErrorText(APPOINTMENT_CREATE_STORAGE_UNAVAILABLE_MESSAGE);
+        setSavingAppointmentCreate(false);
+        return;
+      }
+
+      const recoveryDraft: AppointmentCreateDraft = {
+        title: appointmentCreateForm.title.trim(),
+        appointmentType: appointmentCreateForm.appointmentType,
+        status: appointmentCreateForm.status,
+        scheduledStart: appointmentCreateForm.scheduledStart,
+        scheduledEnd: appointmentCreateForm.scheduledEnd,
+        customerName: appointmentCreateForm.customerName.trim(),
+        customerPhone: normalizePhoneForSave(appointmentCreateForm.customerPhone) || "",
+        addressText: appointmentCreateForm.addressText.trim(),
+        notes: appointmentCreateForm.notes.trim(),
+        leadId: appointmentCreateForm.leadId,
+        conversationId: resolvedConversationId || "",
+        commercialOpportunityId: commercialOpportunityId || "",
+      };
+      const existingRecovery = appointmentCreateRecoveryRecordRef.current;
+      const recoveryRecord: PersistedAppointmentCreateOperation = {
+        version: 1,
+        operationKey,
+        fingerprint: operationFingerprint,
+        organizationId,
+        storeId: activeStoreId,
+        userId,
+        createdAt:
+          existingRecovery?.operationKey === operationKey
+            ? existingRecovery.createdAt
+            : Date.now(),
+        expiresAt: Date.now() + APPOINTMENT_CREATE_RECOVERY_TTL_MS,
+        state: "pending",
+        draft: recoveryDraft,
+      };
+      activeRecoveryRecord = recoveryRecord;
+      if (!persistAppointmentCreateRecovery(appointmentCreateStorage, recoveryRecord)) {
+        setAppointmentCreateStorageWarning(APPOINTMENT_CREATE_STORAGE_UNAVAILABLE_MESSAGE);
+        setAppointmentCreateErrorText(APPOINTMENT_CREATE_STORAGE_UNAVAILABLE_MESSAGE);
+        setSavingAppointmentCreate(false);
+        return;
+      }
+      appointmentCreateRecoveryDraftRef.current = recoveryDraft;
+      appointmentCreateRecoveryRecordRef.current = recoveryRecord;
+      setAppointmentCreateRecoveryState("pending");
+
+      const sendSession = await readCurrentAppointmentCreateSession();
+      if (!sendSession || sendSession.userId !== userId) {
+        setAppointmentCreateErrorText(APPOINTMENT_CREATE_AUTH_UNAVAILABLE_MESSAGE);
+        setSavingAppointmentCreate(false);
+        return;
+      }
+      const sendSessionFence = sendSession.fence;
+      activeSessionFence = sendSessionFence;
+
+      const request: AppointmentCreateRequest = {
+        attemptId: ++appointmentCreateAttemptIdRef.current,
+        dialogGeneration: appointmentCreateDialogGenerationRef.current,
+        fingerprint: operationFingerprint,
+        operationKey,
+        userId,
+        sessionGeneration: appointmentCreateSessionFenceRef.current.generation,
+      };
+      activeRequest = request;
+      appointmentCreateActiveRequestRef.current = request;
+
+      const isCurrentRequest = () =>
+        isCurrentAppointmentCreateRequestAtSession(
+          request,
+          appointmentCreateAttemptIdRef.current,
+          appointmentCreateDialogGenerationRef.current,
+          appointmentCreateSessionFenceRef.current,
+          sendSessionFence,
+        );
+      const markRecovery = (state: AppointmentCreateRecoveryState) => {
+        const nextRecord: PersistedAppointmentCreateOperation = {
+          ...recoveryRecord,
+          state,
+          expiresAt: Date.now() + APPOINTMENT_CREATE_RECOVERY_TTL_MS,
+        };
+        const persisted = persistAppointmentCreateRecovery(getAppointmentCreateSessionStorage(), nextRecord);
+        if (!isCurrentRequest()) return persisted;
+        appointmentCreateRecoveryRecordRef.current = nextRecord;
+        appointmentCreateOperationRef.current = {
+          fingerprint: request.fingerprint,
+          key: request.operationKey,
+        };
+        appointmentCreateRecoveryDraftRef.current = recoveryDraft;
+        setAppointmentCreateRecoveryState(state);
+        if (!persisted) setAppointmentCreateStorageWarning(APPOINTMENT_CREATE_STORAGE_UNAVAILABLE_MESSAGE);
+        return persisted;
+      };
+      const clearRecovery = () => {
+        if (request.userId !== appointmentCreateUserIdRef.current) return;
+        if (
+          request.sessionGeneration !== appointmentCreateSessionFenceRef.current.generation ||
+          appointmentCreateSessionFenceRef.current.organizationId !== organizationId ||
+          appointmentCreateSessionFenceRef.current.storeId !== activeStoreId
+        ) return;
+        if (shouldPreserveActiveAppointmentCreateRecovery(request, appointmentCreateActiveRequestRef.current)) {
+          return;
+        }
+        removeAppointmentCreateRecovery(
+          getAppointmentCreateSessionStorage(),
+          { userId, organizationId, storeId: activeStoreId },
+          operationKey,
+        );
+        if (
+          appointmentCreateRecoveryRecordRef.current?.operationKey === operationKey &&
+          appointmentCreateRecoveryRecordRef.current.fingerprint === request.fingerprint
+        ) {
+          appointmentCreateOperationRef.current = null;
+          appointmentCreateRecoveryDraftRef.current = null;
+          appointmentCreateRecoveryRecordRef.current = null;
+          appointmentCreateRecoveryOptionsLoadedRef.current = null;
+          setAppointmentCreateRecoveryState(null);
+        }
+      };
+
+      if (!isCurrentRequest()) {
+        setAppointmentCreateErrorText(APPOINTMENT_CREATE_AUTH_UNAVAILABLE_MESSAGE);
+        setSavingAppointmentCreate(false);
+        return;
+      }
+
       let data: { id?: string } | null = null;
-      let error: { message: string } | null = null;
+      let error: { message: string; code?: string; status?: number } | null = null;
 
       if (appointmentCreateForm.appointmentType === "technical_visit") {
         const response = await fetch("/api/schedule/technical-visit", {
@@ -2754,6 +3368,7 @@ export default function SchedulePage() {
               body?.error ||
               "Não foi possível criar a visita técnica.",
           };
+          error.status = response.status;
         } else {
           data = (body.data as { id?: string } | undefined) || null;
         }
@@ -2780,8 +3395,20 @@ export default function SchedulePage() {
       }
 
       if (error) {
-        setAppointmentCreateErrorText(error.message);
+        const unknown = isUnknownAppointmentCreateFailure(error);
+        if (!isCurrentRequest()) return;
+        if (unknown) {
+          markRecovery("uncertain");
+          setAppointmentCreateErrorText(UNKNOWN_APPOINTMENT_CREATE_MESSAGE);
+        } else {
+          clearRecovery();
+          setAppointmentCreateErrorText(error.message);
+        }
         setSavingAppointmentCreate(false);
+        return;
+      }
+
+      if (!isCurrentRequest()) {
         return;
       }
 
@@ -2796,15 +3423,80 @@ export default function SchedulePage() {
             })
           : null;
 
-      closeCreateAppointmentPanel();
+      if (!isCurrentRequest()) {
+        return;
+      }
+
       await loadSchedule({ silent: true });
+      if (
+        !isCurrentAppointmentCreateSessionFence(
+          appointmentCreateSessionFenceRef.current,
+          sendSessionFence,
+        ) ||
+        !isSameAppointmentCreateRequest(activeRequest, appointmentCreateActiveRequestRef.current)
+      ) return;
+      clearRecovery();
+      closeCreateAppointmentPanel();
       setErrorText(projectionWarning);
       setSavingAppointmentCreate(false);
     } catch (error: unknown) {
+      if (!isActiveFlowCurrent()) {
+        // A stale flow keeps the already-persisted evidence untouched. It
+        // cannot classify, rewrite or resurrect recovery for a newer session.
+        return;
+      }
+      if (activeRecoveryRecord && isUnknownAppointmentCreateFailure(error)) {
+        const nextRecord = {
+          ...activeRecoveryRecord,
+          state: "uncertain",
+          expiresAt: Date.now() + APPOINTMENT_CREATE_RECOVERY_TTL_MS,
+        } satisfies PersistedAppointmentCreateOperation;
+        persistAppointmentCreateRecovery(getAppointmentCreateSessionStorage(), nextRecord);
+        if (isActiveRequestCurrent()) {
+          appointmentCreateOperationRef.current = {
+            fingerprint: activeRequest!.fingerprint,
+            key: activeRequest!.operationKey,
+          };
+          appointmentCreateRecoveryDraftRef.current = activeRecoveryRecord.draft;
+          appointmentCreateRecoveryRecordRef.current = nextRecord;
+        }
+        setAppointmentCreateRecoveryState("uncertain");
+      } else if (activeRecoveryRecord) {
+        removeAppointmentCreateRecovery(
+          getAppointmentCreateSessionStorage(),
+          {
+            userId: activeRecoveryRecord.userId,
+            organizationId: activeRecoveryRecord.organizationId,
+            storeId: activeRecoveryRecord.storeId,
+          },
+          activeRecoveryRecord.operationKey,
+        );
+        appointmentCreateOperationRef.current = null;
+        appointmentCreateRecoveryDraftRef.current = null;
+        appointmentCreateRecoveryRecordRef.current = null;
+        appointmentCreateRecoveryOptionsLoadedRef.current = null;
+        setAppointmentCreateRecoveryState(null);
+      }
       setAppointmentCreateErrorText(
-        getErrorMessage(error, "Erro inesperado ao criar compromisso.")
+        isUnknownAppointmentCreateFailure(error)
+          ? UNKNOWN_APPOINTMENT_CREATE_MESSAGE
+          : getErrorMessage(error, "Erro inesperado ao criar compromisso.")
       );
       setSavingAppointmentCreate(false);
+    }
+    finally {
+      if (
+        !activeRequest ||
+        isActiveFlowCurrent()
+      ) {
+        appointmentCreateInFlightRef.current = false;
+      }
+      if (
+        isActiveFlowCurrent() &&
+        isSameAppointmentCreateRequest(activeRequest, appointmentCreateActiveRequestRef.current)
+      ) {
+        appointmentCreateActiveRequestRef.current = null;
+      }
     }
   }
 
@@ -2845,7 +3537,7 @@ export default function SchedulePage() {
               <button
                 onClick={(event) => {
                   scheduleDialogOpenerRef.current = event.currentTarget;
-                  openCreateAppointmentPanel();
+                  void openCreateAppointmentPanel();
                 }}
                 ref={scheduleDialogFallbackRef}
                 disabled={storeLoading || !organizationId || !activeStoreId}
@@ -4298,7 +4990,19 @@ export default function SchedulePage() {
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
                 {appointmentCreateErrorText ? (
                   <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-200">
-                    {appointmentCreateErrorText}
+                    <div>{appointmentCreateErrorText}</div>
+                    {appointmentCreateStorageWarning ? (
+                      <div className="mt-2 font-semibold">{appointmentCreateStorageWarning}</div>
+                    ) : null}
+                    {appointmentCreateRecoveryState ? (
+                      <button
+                        type="button"
+                        onClick={discardAppointmentCreateRecovery}
+                        className="mt-2 font-semibold underline underline-offset-2"
+                      >
+                        Descartar tentativa e iniciar novo agendamento
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
 

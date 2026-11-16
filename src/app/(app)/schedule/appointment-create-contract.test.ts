@@ -236,6 +236,27 @@ const tests: TestCase[] = [
       );
     },
   },
+  {
+    name: "schedule revalidates the current auth user before sending",
+    run: () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/app/(app)/schedule/page.tsx"),
+        "utf8",
+      ).replace(/\r\n/g, "\n");
+
+      assert.equal(source.includes("supabase.auth.getUser()"), true);
+      assert.equal(source.includes("supabase.auth.getSession()"), true);
+      assert.equal(source.includes("isCurrentAppointmentCreateAuthRead"), true);
+      assert.equal(source.includes("appointmentCreateUserIdRef.current !== userId"), true);
+      assert.equal(source.includes("request.userId !== appointmentCreateUserIdRef.current"), true);
+      assert.equal(source.includes("isCurrentAppointmentCreateRequestAtSession"), true);
+      assert.equal(source.includes("const isActiveRequestCurrent = () =>"), true);
+      assert.equal(source.includes("const isActiveFlowCurrent = () =>"), true);
+      assert.equal(source.includes("async function openCreateAppointmentPanel()"), true);
+      assert.equal(source.includes("async function discardAppointmentCreateRecovery()"), true);
+      assert.equal(source.includes("isCurrentAppointmentCreateRecoveryScope"), true);
+    },
+  },
 ];
 
 void (async () => {
