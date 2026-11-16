@@ -148,14 +148,13 @@ const tests: TestCase[] = [
         "utf8",
       ).replace(/\r\n/g, "\n");
       assert.equal(source.includes('fetch("/api/schedule/technical-visit"'), true);
-      assert.equal(
-        source.includes('"create_store_appointment_with_commercial_context"'),
-        true,
-      );
+      assert.equal(source.includes('"create_common_appointment_by_user"'), true);
+      assert.equal(source.includes('"create_technical_visit_by_user"'), false);
       assert.equal(
         source.includes("commercialOpportunityId"),
         true,
       );
+      assert.equal(source.includes("operationKey"), true);
     },
   },
   {

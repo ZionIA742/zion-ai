@@ -1,4 +1,3 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import {
   resolveStoreApiAccess,
@@ -23,6 +22,7 @@ type TechnicalVisitRequest = {
   addressText?: string | null;
   notes?: string | null;
   commercialOpportunityId?: string | null;
+  operationKey?: string;
 };
 
 type RouteDeps = {
@@ -30,24 +30,7 @@ type RouteDeps = {
     requirement: "active";
     deps?: Partial<ResolveStoreApiAccessDeps>;
   }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
-  createServiceSupabaseClient: () => ServiceSupabaseLike;
 };
-
-type ServiceSupabaseLike = {
-  rpc: (
-    name: string,
-    payload: Record<string, unknown>,
-  ) => Promise<{ data: unknown; error: { message: string } | null }>;
-};
-
-function createServiceSupabaseClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) throw new Error("SUPABASE_ENV_MISSING");
-  return createClient(url, key, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-}
 
 function json(body: unknown, status = 200) {
   return NextResponse.json(body, {
@@ -58,8 +41,6 @@ function json(body: unknown, status = 200) {
 
 export function createTechnicalVisitPostHandler(deps: Partial<RouteDeps> = {}) {
   const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
-  const makeServiceClient =
-    deps.createServiceSupabaseClient ?? createServiceSupabaseClient;
 
   return async function POST(request: Request) {
     try {
@@ -71,14 +52,14 @@ export function createTechnicalVisitPostHandler(deps: Partial<RouteDeps> = {}) {
       const title = String(body?.title || "").trim();
       const start = String(body?.scheduledStart || "").trim();
       const end = String(body?.scheduledEnd || "").trim();
+      const operationKey = String(body?.operationKey || "").trim();
 
-      if (!opportunityId || !title || !start || !end) {
+      if (!opportunityId || !title || !start || !end || !operationKey) {
         return json({ ok: false, error: "TECHNICAL_VISIT_ARGUMENTS_REQUIRED" }, 400);
       }
 
-      const supabase = makeServiceClient();
-      const { data, error } = await supabase.rpc(
-        "create_technical_visit_with_fresh_commercial_readiness_by_system",
+      const { data, error } = await access.supabase.rpc(
+        "create_technical_visit_by_user",
         {
           p_organization_id: access.organizationId,
           p_store_id: access.storeId,
@@ -92,9 +73,8 @@ export function createTechnicalVisitPostHandler(deps: Partial<RouteDeps> = {}) {
           p_customer_phone: body?.customerPhone || null,
           p_address_text: body?.addressText || null,
           p_notes: body?.notes || null,
-          p_source: "panel",
-          p_created_by_user_id: null,
           p_commercial_opportunity_id: opportunityId,
+          p_operation_key: operationKey,
         },
       );
 

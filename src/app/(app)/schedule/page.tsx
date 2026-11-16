@@ -192,6 +192,11 @@ function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function createAppointmentOperationKey() {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  return `panel:schedule:${randomUuid || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
 function formatMonthYear(date: Date) {
   return date.toLocaleDateString("pt-BR", {
     timeZone: "UTC",
@@ -891,6 +896,10 @@ export default function SchedulePage() {
   const [appointmentCustomerLocationHint, setAppointmentCustomerLocationHint] =
     useState<string | null>(null);
   const customerLocationRequestIdRef = useRef(0);
+  const appointmentCreateOperationRef = useRef<{
+    fingerprint: string;
+    key: string;
+  } | null>(null);
   const appointmentAddressSourceRef = useRef<
     "empty" | "manual" | "canonical"
   >("empty");
@@ -2094,6 +2103,7 @@ export default function SchedulePage() {
     appointmentAddressSourceRef.current = "empty";
     setAppointmentCustomerLocationHint(null);
     setCreateAppointmentOpen(true);
+    appointmentCreateOperationRef.current = null;
     setAppointmentCreateErrorText(null);
     setCreateLeadConversationState({
       leadId: null,
@@ -2111,6 +2121,7 @@ export default function SchedulePage() {
     appointmentAddressSourceRef.current = "empty";
     setAppointmentCustomerLocationHint(null);
     setCreateAppointmentOpen(false);
+    appointmentCreateOperationRef.current = null;
     setAppointmentCreateErrorText(null);
     setSavingAppointmentCreate(false);
     setCreateLeadConversationState({
@@ -2678,6 +2689,36 @@ export default function SchedulePage() {
       const commercialOpportunityId =
         commercialOpportunityResolution.commercialOpportunityId;
 
+      const operationFingerprint = JSON.stringify({
+        organizationId,
+        storeId: activeStoreId,
+        leadId: appointmentCreateForm.leadId || null,
+        conversationId: resolvedConversationId,
+        title: appointmentCreateForm.title.trim(),
+        appointmentType: appointmentCreateForm.appointmentType,
+        status: appointmentCreateForm.status,
+        scheduledStart: startIso,
+        scheduledEnd: endIso,
+        customerName: appointmentCreateForm.customerName.trim() || null,
+        customerPhone: normalizePhoneForSave(appointmentCreateForm.customerPhone),
+        addressText: appointmentCreateForm.addressText.trim() || null,
+        notes: appointmentCreateForm.notes.trim() || null,
+        commercialOpportunityId,
+      });
+      if (
+        appointmentCreateOperationRef.current?.fingerprint !==
+        operationFingerprint
+      ) {
+        appointmentCreateOperationRef.current = {
+          fingerprint: operationFingerprint,
+          key: createAppointmentOperationKey(),
+        };
+      }
+      const operationKey = appointmentCreateOperationRef.current?.key;
+      if (!operationKey) {
+        throw new Error("APPOINTMENT_OPERATION_KEY_UNAVAILABLE");
+      }
+
       let data: { id?: string } | null = null;
       let error: { message: string } | null = null;
 
@@ -2697,6 +2738,7 @@ export default function SchedulePage() {
             addressText: appointmentCreateForm.addressText.trim() || null,
             notes: appointmentCreateForm.notes.trim() || null,
             commercialOpportunityId,
+            operationKey,
           }),
         });
         const body = (await response.json().catch(() => null)) as {
@@ -2716,7 +2758,7 @@ export default function SchedulePage() {
           data = (body.data as { id?: string } | undefined) || null;
         }
       } else {
-        const result = await supabase.rpc("create_store_appointment_with_commercial_context", {
+        const result = await supabase.rpc("create_common_appointment_by_user", {
           p_organization_id: organizationId,
           p_store_id: activeStoreId,
           p_lead_id: appointmentCreateForm.leadId || null,
@@ -2730,9 +2772,8 @@ export default function SchedulePage() {
           p_customer_phone: normalizePhoneForSave(appointmentCreateForm.customerPhone),
           p_address_text: appointmentCreateForm.addressText.trim() || null,
           p_notes: appointmentCreateForm.notes.trim() || null,
-          p_source: "panel",
-          p_created_by_user_id: null,
           p_commercial_opportunity_id: commercialOpportunityId,
+          p_operation_key: operationKey,
         });
         data = result.data;
         error = result.error;

@@ -9,14 +9,13 @@ const handler = createTechnicalVisitPostHandler({
     ok: true,
     organizationId: "org-authorized",
     storeId: "store-authorized",
-    supabase: {},
-  } as StoreApiAccessGranted),
-  createServiceSupabaseClient: () => ({
-    rpc: async (name: string, payload: Record<string, unknown>) => {
-      calls.push({ name, payload });
-      return { data: { id: "appointment-1" }, error: null };
+    supabase: {
+      rpc: async (name: string, payload: Record<string, unknown>) => {
+        calls.push({ name, payload });
+        return { data: { id: "appointment-1" }, error: null };
+      },
     },
-  }),
+  } as StoreApiAccessGranted),
 });
 
 void (async () => {
@@ -30,6 +29,7 @@ void (async () => {
         title: "Visita técnica",
         scheduledStart: "2026-09-28T12:00:00.000Z",
         scheduledEnd: "2026-09-28T13:00:00.000Z",
+        operationKey: "panel:schedule:attempt-1",
       }),
       headers: { "Content-Type": "application/json" },
     }),
@@ -39,11 +39,12 @@ void (async () => {
   assert.equal(calls.length, 1);
   assert.equal(
     calls[0]?.name,
-    "create_technical_visit_with_fresh_commercial_readiness_by_system",
+    "create_technical_visit_by_user",
   );
   assert.equal(calls[0]?.payload.p_organization_id, "org-authorized");
   assert.equal(calls[0]?.payload.p_store_id, "store-authorized");
   assert.equal(calls[0]?.payload.p_commercial_opportunity_id, "opp-explicit");
+  assert.equal(calls[0]?.payload.p_operation_key, "panel:schedule:attempt-1");
 
   process.stdout.write("technical-visit route test passed\n");
 })().catch((error) => {
