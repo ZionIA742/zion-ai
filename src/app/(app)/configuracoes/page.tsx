@@ -4391,7 +4391,7 @@ function RepeatableBrandSelect({
             <select
               value={rowValue}
               onChange={(event) => updateRow(index, event.target.value)}
-              className="w-full appearance-none rounded-xl border border-gray-200 bg-white py-2.5 pl-3 pr-11 text-sm outline-none focus:border-black"
+              className="w-full appearance-none rounded-xl border border-gray-200 bg-white py-2.5 pl-3 pr-11 text-base sm:text-sm outline-none focus:border-black"
             >
               <option value="">{selectPlaceholder}</option>
               {options.map((option) => {
@@ -4497,7 +4497,7 @@ function RequiredOperationDetailField({
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
         rows={rows}
-        className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100"
+        className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2.5 text-base sm:text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100"
       />
     </label>
   );
@@ -14018,11 +14018,11 @@ export default function ConfiguracoesPage() {
               <div className="grid gap-3">
                 <label className="space-y-1.5">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual nome da loja deve aparecer para clientes e no ZION?</span>
-                  <input value={overviewDraft.store_display_name ?? ""} onChange={(e) => handleOverviewDraftChange("store_display_name", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100" />
+                  <input value={overviewDraft.store_display_name ?? ""} onChange={(e) => handleOverviewDraftChange("store_display_name", e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100" />
                 </label>
                 <label className="space-y-1.5">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como você descreveria a loja em poucas frases?</span>
-                  <textarea value={strategyDraft.storeDescription} onChange={(e) => handleStrategyDraftChange("storeDescription", e.target.value)} rows={4} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100" />
+                  <textarea value={strategyDraft.storeDescription} onChange={(e) => handleStrategyDraftChange("storeDescription", e.target.value)} rows={4} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100" />
                 </label>
               </div>
             ) : (
@@ -14140,12 +14140,12 @@ export default function ConfiguracoesPage() {
                 <div className="grid gap-3 sm:grid-cols-2">
                   <label className="space-y-1.5">
                     <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Relatório matinal</span>
-                    <input type="time" value={assistantReportScheduleDraft.morningTime} onChange={(e) => setAssistantReportScheduleDraft((current) => ({ ...current, morningTime: e.target.value }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" />
+                    <input type="time" value={assistantReportScheduleDraft.morningTime} onChange={(e) => setAssistantReportScheduleDraft((current) => ({ ...current, morningTime: e.target.value }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm" />
                     <span className="block text-xs leading-5 text-gray-500">Vazio: usar o horário padrão da loja.</span>
                   </label>
                   <label className="space-y-1.5">
                     <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Relatório noturno</span>
-                    <input type="time" value={assistantReportScheduleDraft.eveningTime} onChange={(e) => setAssistantReportScheduleDraft((current) => ({ ...current, eveningTime: e.target.value }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" />
+                    <input type="time" value={assistantReportScheduleDraft.eveningTime} onChange={(e) => setAssistantReportScheduleDraft((current) => ({ ...current, eveningTime: e.target.value }))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm" />
                     <span className="block text-xs leading-5 text-gray-500">Vazio: usar o horário padrão da loja.</span>
                   </label>
                 </div>
@@ -14310,7 +14310,7 @@ export default function ConfiguracoesPage() {
                         )
                       }
                       rows={3}
-                      className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"
+                      className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm"
                     />
                   </label>
                 ) : null}
@@ -14353,7 +14353,7 @@ export default function ConfiguracoesPage() {
                       )
                     }
                     rows={3}
-                    className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"
+                    className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm"
                   />
                 </label>
               </div>
@@ -14521,7 +14521,7 @@ export default function ConfiguracoesPage() {
                 <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Em quais situações?</div><button type="button" disabled={operationExperienceDraft.pool_replacement_enabled !== "Sim"} onClick={()=>{const all=["nova_da_loja","nova_terceiro","danificada","modelo_diferente","caso_a_caso"];updateOperationExperienceDraft("pool_replacement_situations", all.every((value)=>operationExperienceDraft.pool_replacement_situations.includes(value)) ? [] : all);}} className={`mb-2 w-full rounded-xl border px-3 py-2.5 text-left text-sm font-semibold ${["nova_da_loja","nova_terceiro","danificada","modelo_diferente","caso_a_caso"].every((value)=>operationExperienceDraft.pool_replacement_situations.includes(value)) ? "border-cyan-500 bg-cyan-50 text-cyan-950" : "border-gray-200 bg-white text-gray-700"}`}>Todas as opções</button><MultiSelectBoxGroup values={operationExperienceDraft.pool_replacement_situations} onToggle={(value)=>toggleOperationExperienceArrayValue("pool_replacement_situations",value)} options={[{value:"nova_da_loja",label:"Troca uma piscina antiga por uma nova vendida pela loja"},{value:"nova_terceiro",label:"Troca mesmo quando a nova piscina não foi comprada na loja"},{value:"danificada",label:"Substitui uma piscina danificada por uma nova"},{value:"modelo_diferente",label:"Substitui por modelo ou tamanho diferente"},{value:"caso_a_caso",label:"Aceita outros tipos de troca mediante avaliação"}]} />{operationExperienceDraft.pool_replacement_situations.includes("caso_a_caso") ? <RequiredOperationDetailField label="Quais outros tipos de troca são avaliados?" value={operationExperienceDraft.pool_replacement_situations_other} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_situations_other",value)} placeholder="Explique quais situações entram nessa avaliação." /> : null}</div>
                 <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A troca utiliza uma das mesmas equipes que fazem instalação de piscina nova?</div><ChoiceButtonGroup value={operationExperienceDraft.pool_replacement_uses_installation_team} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_uses_installation_team",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não, há outra equipe"},{value:"depende",label:"Depende do caso"}]} />{operationExperienceDraft.pool_replacement_uses_installation_team === "depende" ? <RequiredOperationDetailField label="Em quais casos usa a mesma equipe?" value={operationExperienceDraft.pool_replacement_team_rule} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_team_rule",value)} placeholder="Explique quando a troca usa a equipe de instalação nova e quando não usa." /> : null}</div>
                 <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Por quanto tempo uma troca normalmente ocupa a equipe responsável?</div><ChoiceButtonGroup value={operationExperienceDraft.pool_replacement_duration_mode} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_duration_mode",value)} options={[{value:"horas",label:"Algumas horas no mesmo dia"},{value:"dias",label:"Um ou mais dias"},{value:"varia",label:"Varia conforme o caso"}]} /></div>
-                {operationExperienceDraft.pool_replacement_duration_mode === "horas" || operationExperienceDraft.pool_replacement_duration_mode === "dias" ? <input inputMode="numeric" placeholder={operationExperienceDraft.pool_replacement_duration_mode === "horas" ? "Quantas horas?" : "Quantos dias?"} value={operationExperienceDraft.pool_replacement_duration_value} onChange={(e)=>updateOperationExperienceDraft("pool_replacement_duration_value",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/> : null}
+                {operationExperienceDraft.pool_replacement_duration_mode === "horas" || operationExperienceDraft.pool_replacement_duration_mode === "dias" ? <input inputMode="numeric" placeholder={operationExperienceDraft.pool_replacement_duration_mode === "horas" ? "Quantas horas?" : "Quantos dias?"} value={operationExperienceDraft.pool_replacement_duration_value} onChange={(e)=>updateOperationExperienceDraft("pool_replacement_duration_value",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm"/> : null}
                 {operationExperienceDraft.pool_replacement_duration_mode === "varia" ? <RequiredOperationDetailField label="O que faz o tempo da troca variar?" value={operationExperienceDraft.pool_replacement_duration_rule} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_duration_rule",value)} placeholder="Explique quais condições da troca alteram o tempo de ocupação da equipe." /> : null}
                 <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A piscina antiga é removida pela própria loja?</div><ChoiceButtonGroup value={operationExperienceDraft.pool_replacement_removes_old} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_removes_old",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"},{value:"caso_a_caso",label:"Caso a caso"}]} />{operationExperienceDraft.pool_replacement_removes_old === "caso_a_caso" ? <RequiredOperationDetailField label="Em quais casos a loja remove a piscina antiga?" value={operationExperienceDraft.pool_replacement_removes_old_rule} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_removes_old_rule",value)} placeholder="Explique as condições para a remoção." /> : null}</div>
                 <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O descarte/retirada da piscina antiga está incluído?</div><ChoiceButtonGroup value={operationExperienceDraft.pool_replacement_disposal_included} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_disposal_included",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não"},{value:"caso_a_caso",label:"Caso a caso"}]} />{operationExperienceDraft.pool_replacement_disposal_included === "caso_a_caso" ? <RequiredOperationDetailField label="Em quais casos o descarte está incluído?" value={operationExperienceDraft.pool_replacement_disposal_rule} onChange={(value)=>updateOperationExperienceDraft("pool_replacement_disposal_rule",value)} placeholder="Explique quando a loja assume o descarte e quando não assume." /> : null}</div>
@@ -14555,7 +14555,7 @@ export default function ConfiguracoesPage() {
                 {operationExperienceDraft.delivery_provider === "caso_a_caso" ? <RequiredOperationDetailField label="Como a forma de entrega é definida caso a caso?" value={operationExperienceDraft.delivery_provider_rule} onChange={(value)=>updateOperationExperienceDraft("delivery_provider_rule",value)} placeholder="Explique quem decide e com base em quais critérios." /> : null}
                 {(operationExperienceDraft.delivery_provider === "propria" || operationExperienceDraft.delivery_provider === "ambos" || operationExperienceDraft.delivery_provider === "caso_a_caso") ? <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando a própria loja faz a entrega, ela usa uma das mesmas equipes de instalação?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_uses_installation_team} onChange={(value)=>updateOperationExperienceDraft("delivery_uses_installation_team",value)} options={[{value:"Sim",label:"Sim"},{value:"Não",label:"Não, há equipe/frota separada"},{value:"depende",label:"Depende do pedido"}]} />{operationExperienceDraft.delivery_uses_installation_team === "depende" ? <RequiredOperationDetailField label="Em quais pedidos a entrega usa a equipe de instalação?" value={operationExperienceDraft.delivery_installation_team_rule} onChange={(value)=>updateOperationExperienceDraft("delivery_installation_team_rule",value)} placeholder="Explique em quais casos a equipe de instalação também fica ocupada com a entrega." /> : null}</div> : null}
                 <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como o frete é cobrado do cliente?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_pricing_mode} onChange={(value)=>updateOperationExperienceDraft("delivery_pricing_mode",value)} options={[{value:"gratuito",label:"Não há cobrança de frete"},{value:"incluido",label:"O frete já está incluído no preço da venda"},{value:"fixo",label:"A loja cobra um valor fixo"},{value:"destino",label:"O valor é calculado conforme distância ou região"},{value:"parceiro",label:"O valor é definido pela transportadora/parceiro"},{value:"caso_a_caso",label:"A equipe calcula individualmente para cada pedido"}]} /></div>
-                {operationExperienceDraft.delivery_pricing_mode === "fixo" ? <input placeholder="Valor padrão do frete (R$)" value={operationExperienceDraft.delivery_fixed_fee} onChange={(e)=>updateOperationExperienceDraft("delivery_fixed_fee",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/> : null}
+                {operationExperienceDraft.delivery_pricing_mode === "fixo" ? <input placeholder="Valor padrão do frete (R$)" value={operationExperienceDraft.delivery_fixed_fee} onChange={(e)=>updateOperationExperienceDraft("delivery_fixed_fee",e.target.value)} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm"/> : null}
                 {operationExperienceDraft.delivery_pricing_mode === "destino" ? <div className="space-y-3"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como o valor é calculado?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_pricing_destination_mode} onChange={(value)=>updateOperationExperienceDraft("delivery_pricing_destination_mode",value)} options={[{value:"distancia",label:"Por distância"},{value:"regiao",label:"Por cidade/região"},{value:"faixa",label:"Por faixa de distância"},{value:"outra",label:"Outra regra"}]} /></div>{operationExperienceDraft.delivery_pricing_destination_mode === "outra" ? <RequiredOperationDetailField label="Qual é a outra regra de cálculo?" value={operationExperienceDraft.delivery_pricing_destination_rule} onChange={(value)=>updateOperationExperienceDraft("delivery_pricing_destination_rule",value)} placeholder="Descreva claramente a outra regra usada para calcular o frete." /> : <textarea placeholder="Descreva a regra de cálculo para a IA saber quando precisa consultar a equipe." value={operationExperienceDraft.delivery_pricing_destination_rule} onChange={(e)=>updateOperationExperienceDraft("delivery_pricing_destination_rule",e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm"/>}</div> : null}
                 {operationExperienceDraft.delivery_pricing_mode === "parceiro" ? <div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Depois da cotação da transportadora/parceiro, como o valor chega ao cliente?</div><ChoiceButtonGroup value={operationExperienceDraft.delivery_partner_pricing_mode} onChange={(value)=>updateOperationExperienceDraft("delivery_partner_pricing_mode",value)} options={[{value:"repasse",label:"É repassado integralmente ao cliente"},{value:"loja_define",label:"A loja define o preço depois da cotação"},{value:"depende",label:"Depende do pedido"}]} />{operationExperienceDraft.delivery_partner_pricing_mode === "depende" ? <RequiredOperationDetailField label="De que depende o valor cobrado ao cliente?" value={operationExperienceDraft.delivery_partner_pricing_rule} onChange={(value)=>updateOperationExperienceDraft("delivery_partner_pricing_rule",value)} placeholder="Explique quando há repasse integral e quando a loja define outro valor." /> : null}</div> : null}
                 {operationExperienceDraft.delivery_pricing_mode === "caso_a_caso" ? <div className="space-y-3"><div><div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a equipe considera para definir o frete?</div><MultiSelectBoxGroup values={operationExperienceDraft.delivery_case_factors} onToggle={(value)=>toggleOperationExperienceArrayValue("delivery_case_factors",value)} options={[{value:"distancia",label:"Distância"},{value:"peso_tamanho",label:"Tamanho/peso do produto"},{value:"veiculo",label:"Necessidade de veículo especial"},{value:"regiao",label:"Região"},{value:"acesso",label:"Acesso ao local"},{value:"outro",label:"Outro"}]} /></div><RequiredOperationDetailField label={operationExperienceDraft.delivery_case_factors.includes("outro") ? "Como o frete é calculado e qual é o outro fator?" : "Como a equipe calcula o frete caso a caso?"} value={operationExperienceDraft.delivery_case_rule} onChange={(value)=>updateOperationExperienceDraft("delivery_case_rule",value)} placeholder="Explique como esses fatores são usados para chegar ao valor cobrado do cliente." /></div> : null}
@@ -14703,7 +14703,7 @@ export default function ConfiguracoesPage() {
                       <select
                         value={commercialExperienceDraft.brands_main_choice}
                         onChange={(event) => updateCommercialExperienceDraft("brands_main_choice", event.target.value)}
-                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-black"
+                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-base sm:text-sm outline-none focus:border-black"
                       >
                         <option value="">Selecione uma marca</option>
                         {POOL_MARKET_BRAND_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -15302,7 +15302,7 @@ export default function ConfiguracoesPage() {
                                       return base;
                                     });
                                   }}
-                                  className="w-full appearance-none rounded-xl border border-gray-200 bg-white py-2.5 pl-3 pr-11 text-sm text-gray-900 outline-none focus:border-black"
+                                  className="w-full appearance-none rounded-xl border border-gray-200 bg-white py-2.5 pl-3 pr-11 text-base sm:text-sm text-gray-900 outline-none focus:border-black"
                                 >
                                   <option value="">Selecione um catálogo</option>
                                   {customerCatalogEligibleFiles.map((file) => (
@@ -15546,21 +15546,21 @@ export default function ConfiguracoesPage() {
                     <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cor principal da marca</span>
                     <div className="flex items-center gap-2">
                       <input type="color" value={brandExperienceDraft.primary_color || "#111111"} onChange={(event) => updateBrandExperienceDraft("primary_color", event.target.value.toUpperCase())} className="h-11 w-14 rounded-lg border border-gray-200 bg-white p-1" />
-                      <input value={brandExperienceDraft.primary_color} onChange={(event) => updateBrandExperienceDraft("primary_color", event.target.value.toUpperCase())} className="min-w-0 flex-1 rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="#111111" />
+                      <input value={brandExperienceDraft.primary_color} onChange={(event) => updateBrandExperienceDraft("primary_color", event.target.value.toUpperCase())} className="min-w-0 flex-1 rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm" placeholder="#111111" />
                     </div>
                   </label>
                   <label className="space-y-1.5">
                     <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cor secundária</span>
                     <div className="flex items-center gap-2">
                       <input type="color" value={brandExperienceDraft.secondary_color || "#FFFFFF"} onChange={(event) => updateBrandExperienceDraft("secondary_color", event.target.value.toUpperCase())} className="h-11 w-14 rounded-lg border border-gray-200 bg-white p-1" />
-                      <input value={brandExperienceDraft.secondary_color} onChange={(event) => updateBrandExperienceDraft("secondary_color", event.target.value.toUpperCase())} className="min-w-0 flex-1 rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="#FFFFFF" />
+                      <input value={brandExperienceDraft.secondary_color} onChange={(event) => updateBrandExperienceDraft("secondary_color", event.target.value.toUpperCase())} className="min-w-0 flex-1 rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm" placeholder="#FFFFFF" />
                     </div>
                   </label>
                 </div>
 
                 <label className="block space-y-1.5">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Rodapé ou assinatura padrão dos documentos</span>
-                  <textarea value={brandExperienceDraft.document_footer} onChange={(event) => updateBrandExperienceDraft("document_footer", event.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="Opcional. Ex.: agradecimento, contato da loja ou orientação curta que deve acompanhar documentos." />
+                  <textarea value={brandExperienceDraft.document_footer} onChange={(event) => updateBrandExperienceDraft("document_footer", event.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm" placeholder="Opcional. Ex.: agradecimento, contato da loja ou orientação curta que deve acompanhar documentos." />
                 </label>
               </div>
             ) : <SummaryList items={buildBulletRows([
@@ -15611,7 +15611,7 @@ export default function ConfiguracoesPage() {
                         {contractExperienceDraft.applicability_cases.includes("alto_valor") ? (
                           <label className="mt-3 block space-y-1.5">
                             <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A partir de qual valor?</span>
-                            <input value={contractExperienceDraft.high_value_amount} onChange={(event) => updateContractExperienceDraft("high_value_amount", formatStorePaymentCurrencyInput(event.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="R$ 0,00" />
+                            <input value={contractExperienceDraft.high_value_amount} onChange={(event) => updateContractExperienceDraft("high_value_amount", formatStorePaymentCurrencyInput(event.target.value))} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm" placeholder="R$ 0,00" />
                           </label>
                         ) : null}
                         {contractExperienceDraft.applicability_cases.includes("outro") ? (
@@ -15645,7 +15645,7 @@ export default function ConfiguracoesPage() {
 
                     <label className="block space-y-1.5">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações sobre o uso do contrato</span>
-                      <textarea value={contractExperienceDraft.notes} onChange={(event) => updateContractExperienceDraft("notes", event.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm" placeholder="Opcional. Registre somente particularidades reais da loja que não estejam cobertas acima." />
+                      <textarea value={contractExperienceDraft.notes} onChange={(event) => updateContractExperienceDraft("notes", event.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base sm:text-sm" placeholder="Opcional. Registre somente particularidades reais da loja que não estejam cobertas acima." />
                     </label>
                   </>
                 ) : null}
@@ -15972,7 +15972,7 @@ export default function ConfiguracoesPage() {
                         event.target.value as "piscina" | "quimicos" | "acessorios" | "outros"
                       )
                     }
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                   >
                     <option value="piscina">Piscina</option>
                     <option value="quimicos">Químico</option>
@@ -16548,7 +16548,7 @@ export default function ConfiguracoesPage() {
                             moveSearchResult(event.shiftKey ? -1 : 1);
                           }}
                           placeholder={isTextModal ? "Buscar no contrato" : "Buscar nas regras encontradas"}
-                          className="w-full rounded-xl border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition focus:border-gray-400 focus:bg-white"
+                          className="w-full rounded-xl border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-base sm:text-sm text-gray-900 outline-none transition focus:border-gray-400 focus:bg-white"
                         />
                       </div>
                       {normalizedSearchQuery ? (
