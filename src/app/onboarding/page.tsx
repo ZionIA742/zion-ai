@@ -513,7 +513,7 @@ function BrandSelectList({
           key={`brand-row-${index}`}
           value={value}
           onChange={(event) => updateRow(index, event.target.value)}
-          className="w-full rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm outline-none focus:border-black"
+          className="w-full rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-base sm:text-sm outline-none focus:border-black"
         >
           <option value="">Selecione uma marca</option>
           {POOL_MARKET_BRAND_OPTIONS.map((option) => (

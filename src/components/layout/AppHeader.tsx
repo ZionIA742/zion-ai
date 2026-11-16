@@ -237,7 +237,7 @@ export default function AppHeader({
                       onChange={(e) =>
                         setActiveStoreId(e.target.value)
                       }
-                      className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-medium text-gray-900 outline-none transition focus:border-gray-400 focus:bg-white"
+                      className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-base sm:text-sm font-medium text-gray-900 outline-none transition focus:border-gray-400 focus:bg-white"
                     >
                       {stores.map((store) => (
                         <option
