@@ -2097,7 +2097,7 @@ function OnboardingContent() {
           />
         </div>
 
-        <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+        <div className="rounded-2xl border border-gray-200 bg-white p-3 sm:p-6 shadow-sm">
           <div className="mb-6">
             <h1 className="text-2xl font-bold text-gray-900">
               {currentStep === 1 && "Etapa 1 — Loja"}
