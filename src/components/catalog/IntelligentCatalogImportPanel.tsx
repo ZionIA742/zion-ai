@@ -14000,7 +14000,7 @@ export default function IntelligentCatalogImportPanel({
                         value={structuredReviewSearchQuery}
                         onChange={(event) => setStructuredReviewSearchQuery(event.target.value)}
                         placeholder="Buscar por nome, SKU, categoria, marca, linha ou modelo"
-                        className="w-full rounded-xl border border-emerald-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-800 outline-none ring-0 placeholder:text-slate-400"
+                        className="w-full rounded-xl border border-emerald-200 bg-white py-2 pl-9 pr-3 text-base sm:text-sm text-slate-800 outline-none ring-0 placeholder:text-slate-400"
                       />
                     </label>
                     <div className="flex flex-col gap-2 md:col-span-2 md:flex-row md:items-center md:justify-between">
@@ -14218,7 +14218,7 @@ export default function IntelligentCatalogImportPanel({
                                         };
                                       })
                                     }
-                                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none"
+                                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                                   >
                                     <option value="">Escolha o item de destino</option>
                                     {structuredDocxMediaAssociationTargets.map((target) => (
@@ -14577,7 +14577,7 @@ export default function IntelligentCatalogImportPanel({
                                     finalCategory: event.target.value as StructuredReviewCategory,
                                   })
                                 }
-                                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none"
+                                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-base sm:text-sm text-slate-800 outline-none"
                               >
                                 <option value="pool">Piscina</option>
                                 <option value="quimicos">Quimico</option>
@@ -14784,7 +14784,7 @@ export default function IntelligentCatalogImportPanel({
                                     finalCategory: event.target.value as StructuredReviewCategory,
                                   })
                                 }
-                                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none"
+                                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-base sm:text-sm text-slate-800 outline-none"
                               >
                                 <option value="pool">Piscina</option>
                                 <option value="quimicos">Quimico</option>
@@ -15201,7 +15201,7 @@ export default function IntelligentCatalogImportPanel({
                                   : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           >
                             <option value="pool">Piscina</option>
                             <option value="quimicos">Quimico</option>
@@ -15218,7 +15218,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, name: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         {editingStructuredPhotoResolution?.state === "evidence" ? (
@@ -15258,7 +15258,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, sku: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15270,7 +15270,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, brand: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15282,7 +15282,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, price: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15294,7 +15294,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, stock: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15306,7 +15306,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, modelLine: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15318,7 +15318,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, unit: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15330,7 +15330,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, variantSize: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15342,7 +15342,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, material: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15354,7 +15354,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, shape: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15366,7 +15366,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, color: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15378,7 +15378,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, finishLine: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15390,7 +15390,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, width: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15402,7 +15402,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, height: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15414,7 +15414,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, length: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15426,7 +15426,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, depth: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15438,7 +15438,7 @@ export default function IntelligentCatalogImportPanel({
                                 current ? { ...current, weight: event.target.value } : current
                               )
                             }
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                       </div>
@@ -15460,7 +15460,7 @@ export default function IntelligentCatalogImportPanel({
                               )
                             }
                             rows={5}
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15473,7 +15473,7 @@ export default function IntelligentCatalogImportPanel({
                               )
                             }
                             rows={3}
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15486,7 +15486,7 @@ export default function IntelligentCatalogImportPanel({
                               )
                             }
                             rows={3}
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15499,7 +15499,7 @@ export default function IntelligentCatalogImportPanel({
                               )
                             }
                             rows={3}
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
@@ -15512,7 +15512,7 @@ export default function IntelligentCatalogImportPanel({
                               )
                             }
                             rows={3}
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-base sm:text-sm text-slate-900 outline-none"
                           />
                         </label>
                       </div>
