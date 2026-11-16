@@ -553,7 +553,7 @@ function SelectField({
       <select
         value={value}
         onChange={onChange}
-        className="w-full appearance-none rounded-xl border border-gray-200 bg-white py-2.5 pl-3 pr-10 text-sm font-medium text-gray-700 outline-none transition hover:border-gray-300 focus:border-gray-400"
+        className="w-full appearance-none rounded-xl border border-gray-200 bg-white py-2.5 pl-3 pr-10 text-base sm:text-sm font-medium text-gray-700 outline-none transition hover:border-gray-300 focus:border-gray-400"
       >
         {children}
       </select>
@@ -1322,7 +1322,7 @@ async function handleDeleteItem(itemId: string) {
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
               placeholder={`Buscar em ${pageTitle.toLowerCase()} por nome, SKU, marca ou modelo...`}
-              className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+              className="w-full bg-transparent text-base sm:text-sm text-gray-900 outline-none placeholder:text-gray-400"
             />
           </div>
 
@@ -1550,7 +1550,7 @@ async function handleDeleteItem(itemId: string) {
                                 current ? { ...current, name: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1565,7 +1565,7 @@ async function handleDeleteItem(itemId: string) {
                                 current ? { ...current, sku: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1580,7 +1580,7 @@ async function handleDeleteItem(itemId: string) {
                                 current ? { ...current, brand: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1595,7 +1595,7 @@ async function handleDeleteItem(itemId: string) {
                                 current ? { ...current, line: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1610,7 +1610,7 @@ async function handleDeleteItem(itemId: string) {
                                 current ? { ...current, unit_label: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1625,7 +1625,7 @@ async function handleDeleteItem(itemId: string) {
                                 current ? { ...current, size_details: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1640,7 +1640,7 @@ async function handleDeleteItem(itemId: string) {
                                 current ? { ...current, width_cm: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1655,7 +1655,7 @@ async function handleDeleteItem(itemId: string) {
                                 current ? { ...current, height_cm: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1670,7 +1670,7 @@ async function handleDeleteItem(itemId: string) {
                                 current ? { ...current, length_cm: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1685,7 +1685,7 @@ async function handleDeleteItem(itemId: string) {
                                 current ? { ...current, weight_kg: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1700,7 +1700,7 @@ async function handleDeleteItem(itemId: string) {
                                 current ? { ...current, price: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                             placeholder="129,90"
                           />
                         </div>
@@ -1718,7 +1718,7 @@ async function handleDeleteItem(itemId: string) {
                                   : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                             placeholder="Ex.: 0"
                           />
                         </div>
@@ -1769,7 +1769,7 @@ async function handleDeleteItem(itemId: string) {
                               )
                             }
                             rows={3}
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1787,7 +1787,7 @@ async function handleDeleteItem(itemId: string) {
                               )
                             }
                             rows={3}
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1809,7 +1809,7 @@ async function handleDeleteItem(itemId: string) {
                               )
                             }
                             rows={5}
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
                       </div>
