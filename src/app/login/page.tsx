@@ -420,7 +420,7 @@ export default function LoginPage() {
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
+                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-base sm:text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
@@ -433,7 +433,7 @@ export default function LoginPage() {
                 <input
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  className="w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 pr-12 text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
+                  className="w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 pr-12 text-base sm:text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
                   placeholder="••••••••"
                   type={showPassword ? "text" : "password"}
                   autoComplete="current-password"
@@ -508,7 +508,7 @@ export default function LoginPage() {
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
+                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-base sm:text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
@@ -532,7 +532,7 @@ export default function LoginPage() {
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
+                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-base sm:text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
@@ -577,7 +577,7 @@ export default function LoginPage() {
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
+                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-base sm:text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
