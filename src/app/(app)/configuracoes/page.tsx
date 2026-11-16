@@ -16207,7 +16207,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.name}
                           onChange={(event) => handleCatalogFormChange("name", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: Cloro granulado premium"
                         />
                       </label>
@@ -16217,7 +16217,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.sku}
                           onChange={(event) => handleCatalogFormChange("sku", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Opcional"
                         />
                       </label>
@@ -16227,7 +16227,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.brand}
                           onChange={(event) => handleCatalogFormChange("brand", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Marca do item"
                         />
                       </label>
@@ -16237,7 +16237,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.line}
                           onChange={(event) => handleCatalogFormChange("line", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: Premium, Manutenção..."
                         />
                       </label>
@@ -16247,7 +16247,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.unit_label}
                           onChange={(event) => handleCatalogFormChange("unit_label", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Un, kg, L, kit..."
                         />
                       </label>
@@ -16257,7 +16257,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.size_details}
                           onChange={(event) => handleCatalogFormChange("size_details", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: 10kg, 1L, 1,5 polegada..."
                         />
                       </label>
@@ -16267,7 +16267,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.width_cm}
                           onChange={(event) => handleCatalogFormChange("width_cm", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Opcional"
                         />
                       </label>
@@ -16277,7 +16277,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.height_cm}
                           onChange={(event) => handleCatalogFormChange("height_cm", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Opcional"
                         />
                       </label>
@@ -16287,7 +16287,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.length_cm}
                           onChange={(event) => handleCatalogFormChange("length_cm", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Opcional"
                         />
                       </label>
@@ -16297,7 +16297,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.weight_kg}
                           onChange={(event) => handleCatalogFormChange("weight_kg", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Opcional"
                         />
                       </label>
@@ -16307,7 +16307,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.price}
                           onChange={(event) => handleCatalogFormChange("price", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="59.90"
                         />
                       </label>
@@ -16317,7 +16317,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={catalogForm.stock_quantity}
                           onChange={(event) => handleCatalogFormChange("stock_quantity", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: 0"
                         />
                       </label>
@@ -16328,7 +16328,7 @@ export default function ConfiguracoesPage() {
                           value={catalogForm.description}
                           onChange={(event) => handleCatalogFormChange("description", event.target.value)}
                           rows={4}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Descreva composição, litragem, aplicação, medidas, uso recomendado e detalhes importantes."
                         />
                       </label>
@@ -16339,7 +16339,7 @@ export default function ConfiguracoesPage() {
                           value={catalogForm.application}
                           onChange={(event) => handleCatalogFormChange("application", event.target.value)}
                           rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: tratamento semanal, aspiração, conexão hidráulica..."
                         />
                       </label>
@@ -16350,7 +16350,7 @@ export default function ConfiguracoesPage() {
                           value={catalogForm.technical_notes}
                           onChange={(event) => handleCatalogFormChange("technical_notes", event.target.value)}
                           rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: compatibilidade, concentração, conexão, restrições..."
                         />
                       </label>
