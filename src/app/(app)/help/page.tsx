@@ -307,7 +307,7 @@ export default function HelpPage() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Procure uma dúvida ou digite uma pergunta..."
-              className="h-10 w-full rounded-xl border border-gray-300 bg-white pl-9 pr-3 text-sm outline-none transition placeholder:text-gray-400 focus:border-gray-900"
+              className="h-10 w-full rounded-xl border border-gray-300 bg-white pl-9 pr-3 text-base sm:text-sm outline-none transition placeholder:text-gray-400 focus:border-gray-900"
             />
           </label>
         </div>

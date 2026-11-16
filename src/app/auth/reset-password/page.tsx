@@ -274,7 +274,7 @@ export default function ResetPasswordPage() {
                   onChange={(event) => setPassword(event.target.value)}
                   type={showPassword ? "text" : "password"}
                   disabled={status !== "ready"}
-                  className="w-full rounded-2xl border border-white/10 bg-zinc-900 px-3 py-2 pr-11 text-sm text-white outline-none focus:border-white/30 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="w-full rounded-2xl border border-white/10 bg-zinc-900 px-3 py-2 pr-11 text-base sm:text-sm text-white outline-none focus:border-white/30 disabled:cursor-not-allowed disabled:opacity-60"
                   placeholder="Digite a nova senha"
                   autoComplete="new-password"
                 />
@@ -330,7 +330,7 @@ export default function ResetPasswordPage() {
                   onChange={(event) => setConfirmPassword(event.target.value)}
                   type={showConfirmPassword ? "text" : "password"}
                   disabled={status !== "ready"}
-                  className="w-full rounded-2xl border border-white/10 bg-zinc-900 px-3 py-2 pr-11 text-sm text-white outline-none focus:border-white/30 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="w-full rounded-2xl border border-white/10 bg-zinc-900 px-3 py-2 pr-11 text-base sm:text-sm text-white outline-none focus:border-white/30 disabled:cursor-not-allowed disabled:opacity-60"
                   placeholder="Repita a nova senha"
                   autoComplete="new-password"
                 />

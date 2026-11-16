@@ -377,7 +377,7 @@ function SelectField({
       <select
         value={value}
         onChange={onChange}
-        className="w-full appearance-none rounded-xl border border-gray-200 bg-white py-2.5 pl-3 pr-10 text-sm font-medium text-gray-700 outline-none transition hover:border-gray-300 focus:border-gray-400"
+        className="w-full appearance-none rounded-xl border border-gray-200 bg-white py-2.5 pl-3 pr-10 text-base sm:text-sm font-medium text-gray-700 outline-none transition hover:border-gray-300 focus:border-gray-400"
       >
         {children}
       </select>
@@ -1069,7 +1069,7 @@ export default function PiscinasPage() {
               value={searchText}
               onChange={(event) => setSearchText(event.target.value)}
               placeholder="Buscar por nome, material, formato ou descrição..."
-              className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+              className="w-full bg-transparent text-base sm:text-sm text-gray-900 outline-none placeholder:text-gray-400"
             />
           </div>
 
@@ -1239,7 +1239,7 @@ export default function PiscinasPage() {
                         setExpandedPoolId((current) => (current === pool.id ? null : pool.id))
                       }
                       disabled={isEditing}
-                      className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 transition hover:bg-gray-50 disabled:cursor-default disabled:opacity-50"
+                      className="flex h-11 sm:h-9 w-11 sm:w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 transition hover:bg-gray-50 disabled:cursor-default disabled:opacity-50"
                       aria-label={isExpanded ? "Ocultar detalhes" : "Ver detalhes"}
                       title={isExpanded ? "Ocultar detalhes" : "Ver detalhes"}
                     >
@@ -1276,7 +1276,7 @@ export default function PiscinasPage() {
                                 current ? { ...current, name: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1296,7 +1296,7 @@ export default function PiscinasPage() {
                                   : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                             placeholder="58.900,00"
                           />
                         </div>
@@ -1312,7 +1312,7 @@ export default function PiscinasPage() {
                                 current ? { ...current, shape: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1327,7 +1327,7 @@ export default function PiscinasPage() {
                                 current ? { ...current, material: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1342,7 +1342,7 @@ export default function PiscinasPage() {
                                 current ? { ...current, width_m: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1357,7 +1357,7 @@ export default function PiscinasPage() {
                                 current ? { ...current, length_m: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1372,7 +1372,7 @@ export default function PiscinasPage() {
                                 current ? { ...current, depth_m: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1387,7 +1387,7 @@ export default function PiscinasPage() {
                                 current ? { ...current, weight_kg: event.target.value } : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
 
@@ -1404,7 +1404,7 @@ export default function PiscinasPage() {
                                   : current
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                             placeholder="Ex.: 0"
                           />
                         </div>
@@ -1455,7 +1455,7 @@ export default function PiscinasPage() {
                               )
                             }
                             rows={5}
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-base sm:text-sm outline-none focus:border-black"
                           />
                         </div>
                       </div>

@@ -513,7 +513,7 @@ function BrandSelectList({
           key={`brand-row-${index}`}
           value={value}
           onChange={(event) => updateRow(index, event.target.value)}
-          className="w-full rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm outline-none focus:border-black"
+          className="w-full rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-base sm:text-sm outline-none focus:border-black"
         >
           <option value="">Selecione uma marca</option>
           {POOL_MARKET_BRAND_OPTIONS.map((option) => (
@@ -545,7 +545,7 @@ function BrandSelectList({
           type="text"
           value={otherValue}
           onChange={(event) => onOtherChange(event.target.value)}
-          className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+          className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black text-base"
           placeholder="Qual é a outra marca? Se forem várias, separe por vírgula."
         />
       ) : null}
@@ -2097,7 +2097,7 @@ function OnboardingContent() {
           />
         </div>
 
-        <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+        <div className="rounded-2xl border border-gray-200 bg-white p-3 sm:p-6 shadow-sm">
           <div className="mb-6">
             <h1 className="text-2xl font-bold text-gray-900">
               {currentStep === 1 && "Etapa 1 — Loja"}
@@ -2130,7 +2130,7 @@ function OnboardingContent() {
                   type="text"
                   value={step1Form.store_display_name}
                   onChange={(event) => updateStep1Field("store_display_name", event.target.value)}
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black text-base"
                   placeholder="Ex.: Piscinas do Vale"
                   required
                 />
@@ -2144,7 +2144,7 @@ function OnboardingContent() {
                 <textarea
                   value={step1Form.store_description}
                   onChange={(event) => updateStep1Field("store_description", event.target.value)}
-                  className="min-h-24 w-full resize-y rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                  className="min-h-24 w-full resize-y rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black text-base"
                   placeholder="Ex.: Loja especializada em piscinas, equipamentos e serviços."
                 />
               </div>
@@ -2159,7 +2159,7 @@ function OnboardingContent() {
                     type="text"
                     value={step1Form.city}
                     onChange={(event) => updateStep1Field("city", event.target.value)}
-                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black text-base"
                     placeholder="Cidade"
                     required
                   />
@@ -2167,7 +2167,7 @@ function OnboardingContent() {
                     type="text"
                     value={step1Form.state}
                     onChange={(event) => updateStep1Field("state", event.target.value)}
-                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black text-base"
                     placeholder="Estado (ex.: São Paulo)"
                     required
                   />
@@ -2203,7 +2203,7 @@ function OnboardingContent() {
                     type="text"
                     value={step2Form.store_services_other}
                     onChange={(event) => updateStep2Field("store_services_other", event.target.value)}
-                    className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                    className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black text-base"
                     placeholder="Qual é o outro produto ou serviço?"
                   />
                 ) : null}
@@ -2251,7 +2251,7 @@ function OnboardingContent() {
                   type="text"
                   value={step3Form.responsible_name}
                   onChange={(event) => updateStep3Field("responsible_name", event.target.value)}
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black text-base"
                   placeholder="Ex.: Junior"
                   required
                 />
@@ -2269,7 +2269,7 @@ function OnboardingContent() {
                   onChange={(event) =>
                     updateStep3Field("responsible_whatsapp", formatWhatsappInput(event.target.value))
                   }
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black text-base"
                   placeholder="Ex.: +55 11 99999-9999"
                   required
                 />

@@ -3300,7 +3300,7 @@ export default function SchedulePage() {
                     disabled={timelineCounts.above === 0}
                     aria-label={`Ir ao compromisso anterior. ${timelineCounts.above} acima`}
                     title={`${timelineCounts.above} compromissos acima`}
-                    className="pointer-events-auto flex h-8 w-7 flex-col items-center justify-center rounded-md bg-white text-slate-900 shadow-md ring-1 ring-slate-300 transition hover:bg-slate-50 hover:ring-slate-400 disabled:cursor-default disabled:opacity-70"
+                    className="pointer-events-auto flex h-11 sm:h-8 w-11 sm:w-7 flex-col items-center justify-center rounded-md bg-white text-slate-900 shadow-md ring-1 ring-slate-300 transition hover:bg-slate-50 hover:ring-slate-400 disabled:cursor-default disabled:opacity-70"
                   >
                     <svg
                       aria-hidden="true"
@@ -3325,7 +3325,7 @@ export default function SchedulePage() {
                     disabled={timelineCounts.below === 0}
                     aria-label={`Ir ao proximo compromisso. ${timelineCounts.below} abaixo`}
                     title={`${timelineCounts.below} compromissos abaixo`}
-                    className="pointer-events-auto flex h-8 w-7 flex-col items-center justify-center rounded-md bg-white text-slate-900 shadow-md ring-1 ring-slate-300 transition hover:bg-slate-50 hover:ring-slate-400 disabled:cursor-default disabled:opacity-70"
+                    className="pointer-events-auto flex h-11 sm:h-8 w-11 sm:w-7 flex-col items-center justify-center rounded-md bg-white text-slate-900 shadow-md ring-1 ring-slate-300 transition hover:bg-slate-50 hover:ring-slate-400 disabled:cursor-default disabled:opacity-70"
                   >
                     <svg
                       aria-hidden="true"

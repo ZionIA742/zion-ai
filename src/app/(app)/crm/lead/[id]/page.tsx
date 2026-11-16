@@ -6557,7 +6557,7 @@ export default function LeadPage() {
                           void loadSelectedOpportunityPriority();
                           setPriorityPopoverOpen((current) => !current);
                         }}
-                        className={`inline-flex h-8 w-8 items-center justify-center rounded-full ring-1 transition ${selectedPriorityVisual.buttonClass}`}
+                        className={`inline-flex h-11 sm:h-8 w-11 sm:w-8 items-center justify-center rounded-full ring-1 transition ${selectedPriorityVisual.buttonClass}`}
                       >
                         <PriorityFlameIcon className="h-[19px] w-[19px]" />
                       </button>
@@ -8386,7 +8386,7 @@ export default function LeadPage() {
                             }
                             disabled={paymentSubmitting}
                             placeholder="0,00"
-                            className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-950 outline-none focus:border-gray-400 disabled:bg-gray-100"
+                            className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-950 outline-none focus:border-gray-400 disabled:bg-gray-100"
                           />
                         </div>
                       </div>
@@ -8403,7 +8403,7 @@ export default function LeadPage() {
                           }
                           disabled={paymentSubmitting}
                           placeholder="Ex.: pix"
-                          className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-950 outline-none focus:border-gray-400 disabled:bg-gray-100"
+                          className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-950 outline-none focus:border-gray-400 disabled:bg-gray-100"
                         />
                       </div>
 
@@ -8419,7 +8419,7 @@ export default function LeadPage() {
                           disabled={paymentSubmitting}
                           rows={3}
                           placeholder="Opcional"
-                          className="mt-1 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-950 outline-none focus:border-gray-400 disabled:bg-gray-100"
+                          className="mt-1 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-950 outline-none focus:border-gray-400 disabled:bg-gray-100"
                         />
                       </div>
 
@@ -9581,7 +9581,7 @@ export default function LeadPage() {
                 uploadingCustomerAttachment ||
                 simulatedRecordingAudio
               }
-              className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-4 text-sm outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
+              className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-4 text-base sm:text-sm outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
               placeholder="Digite como se fosse o cliente"
             />
 
@@ -9594,7 +9594,7 @@ export default function LeadPage() {
                 uploadingCustomerAttachment ||
                 simulatedRecordingAudio
               }
-              className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
+              className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-3 text-base sm:text-sm outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
             >
               <option value="customer_location_photo">Foto do local</option>
               <option value="customer_product_or_pool_photo">Foto de produto/piscina</option>
