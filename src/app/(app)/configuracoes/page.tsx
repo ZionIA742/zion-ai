@@ -16001,7 +16001,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={poolForm.name}
                           onChange={(event) => handlePoolFormChange("name", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: Piscina Fibra Premium 7x3"
                         />
                       </label>
@@ -16011,7 +16011,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={poolForm.brand}
                           onChange={(event) => handlePoolFormChange("brand", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: iGUi"
                         />
                       </label>
@@ -16021,7 +16021,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={poolForm.material}
                           onChange={(event) => handlePoolFormChange("material", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Fibra, vinil, alvenaria..."
                         />
                       </label>
@@ -16031,7 +16031,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={poolForm.shape}
                           onChange={(event) => handlePoolFormChange("shape", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Retangular, oval..."
                         />
                       </label>
@@ -16041,7 +16041,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={poolForm.color}
                           onChange={(event) => handlePoolFormChange("color", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Azul, branca, areia..."
                         />
                       </label>
@@ -16051,7 +16051,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={poolForm.finish}
                           onChange={(event) => handlePoolFormChange("finish", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Premium, borda molhada, com hidro..."
                         />
                       </label>
@@ -16061,7 +16061,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={poolForm.width_m}
                           onChange={(event) => handlePoolFormChange("width_m", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="3.00"
                         />
                       </label>
@@ -16071,7 +16071,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={poolForm.length_m}
                           onChange={(event) => handlePoolFormChange("length_m", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="7.00"
                         />
                       </label>
@@ -16081,7 +16081,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={poolForm.depth_m}
                           onChange={(event) => handlePoolFormChange("depth_m", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="1.40"
                         />
                       </label>
@@ -16091,7 +16091,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={poolForm.price}
                           onChange={(event) => handlePoolFormChange("price", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="15990.00"
                         />
                       </label>
@@ -16101,7 +16101,7 @@ export default function ConfiguracoesPage() {
                         <input
                           value={poolForm.stock_quantity}
                           onChange={(event) => handlePoolFormChange("stock_quantity", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: 0"
                         />
                       </label>
@@ -16112,7 +16112,7 @@ export default function ConfiguracoesPage() {
                           value={poolForm.description}
                           onChange={(event) => handlePoolFormChange("description", event.target.value)}
                           rows={4}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Descreva acabamento, diferenciais, instalação, cor, acessórios inclusos e qualquer detalhe importante."
                         />
                       </label>
@@ -16123,7 +16123,7 @@ export default function ConfiguracoesPage() {
                           value={poolForm.included_items}
                           onChange={(event) => handlePoolFormChange("included_items", event.target.value)}
                           rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: dispositivo, casa de máquinas, hidro, iluminação..."
                         />
                       </label>
@@ -16134,7 +16134,7 @@ export default function ConfiguracoesPage() {
                           value={poolForm.installation_notes}
                           onChange={(event) => handlePoolFormChange("installation_notes", event.target.value)}
                           rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: precisa de visita técnica, prazo médio, condições do terreno..."
                         />
                       </label>
@@ -16145,7 +16145,7 @@ export default function ConfiguracoesPage() {
                           value={poolForm.application}
                           onChange={(event) => handlePoolFormChange("application", event.target.value)}
                           rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: lazer familiar, uso residencial, instalação em áreas gourmet..."
                         />
                       </label>
@@ -16156,7 +16156,7 @@ export default function ConfiguracoesPage() {
                           value={poolForm.technical_notes}
                           onChange={(event) => handlePoolFormChange("technical_notes", event.target.value)}
                           rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900 outline-none transition focus:border-black"
                           placeholder="Ex.: espessura, reforços estruturais, requisitos técnicos..."
                         />
                       </label>
