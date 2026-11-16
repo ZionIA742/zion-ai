@@ -1209,22 +1209,22 @@ export default function PiscinasPage() {
                     </div>
                   </button>
 
-                  <div className="pl-[76px] text-sm text-gray-700 lg:pl-0">
+                  <div className="pl-0 sm:pl-[76px] text-sm text-gray-700 lg:pl-0">
                     {pool.length_m != null && pool.width_m != null && pool.depth_m != null
                       ? `${pool.length_m} × ${pool.width_m} × ${pool.depth_m} m`
                       : "Não informadas"}
                   </div>
 
-                  <div className="pl-[76px] text-sm font-bold text-gray-950 lg:pl-0">
+                  <div className="pl-0 sm:pl-[76px] text-sm font-bold text-gray-950 lg:pl-0">
                     {priceLabel}
                   </div>
 
-                  <div className="flex flex-wrap gap-1.5 pl-[76px] lg:pl-0">
+                  <div className="flex flex-wrap gap-1.5 pl-0 sm:pl-[76px] lg:pl-0">
                     <DetailChip value={pool.is_active ? "Ativa" : "Inativa"} />
                     <DetailChip value={stockLabel} />
                   </div>
 
-                  <div className="flex items-center justify-end gap-1.5 pl-[76px] lg:pl-0">
+                  <div className="flex items-center justify-end gap-1.5 pl-0 sm:pl-[76px] lg:pl-0">
                     <button
                       type="button"
                       onClick={() => startEditing(pool)}

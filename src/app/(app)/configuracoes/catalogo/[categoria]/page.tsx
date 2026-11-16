@@ -1480,7 +1480,7 @@ async function handleDeleteItem(itemId: string) {
                     </div>
                   </button>
 
-                  <div className="pl-[76px] text-sm text-gray-700 lg:pl-0">
+                  <div className="pl-0 sm:pl-[76px] text-sm text-gray-700 lg:pl-0">
                     <div className="font-medium text-gray-800">
                       {item.sku ? `SKU: ${item.sku}` : "Sem SKU"}
                     </div>
@@ -1489,16 +1489,16 @@ async function handleDeleteItem(itemId: string) {
                     </div>
                   </div>
 
-                  <div className="pl-[76px] text-sm font-bold text-gray-950 lg:pl-0">
+                  <div className="pl-0 sm:pl-[76px] text-sm font-bold text-gray-950 lg:pl-0">
                     {priceLabel}
                   </div>
 
-                  <div className="flex flex-wrap gap-1.5 pl-[76px] lg:pl-0">
+                  <div className="flex flex-wrap gap-1.5 pl-0 sm:pl-[76px] lg:pl-0">
                     <DetailChip value={item.is_active ? "Ativo" : "Inativo"} />
                     <DetailChip value={stockLabel} />
                   </div>
 
-                  <div className="flex items-center justify-end gap-1.5 pl-[76px] lg:pl-0">
+                  <div className="flex items-center justify-end gap-1.5 pl-0 sm:pl-[76px] lg:pl-0">
                     <button
                       type="button"
                       onClick={() => startEditing(item)}
