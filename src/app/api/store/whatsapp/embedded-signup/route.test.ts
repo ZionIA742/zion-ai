@@ -206,7 +206,7 @@ function createPrivilegedClientMock(args?: {
           };
         }
 
-        if (name === "materialize_store_whatsapp_embedded_signup_pending_pin_by_system") {
+        if (name === "materialize_whatsapp_first_connection_mode_by_system" && rpcArgs.p_connection_mode === "standard") {
           rpcCalls.push({ name, args: { ...rpcArgs } });
           return {
             data:
@@ -345,7 +345,13 @@ function createRouteHandler(args?: {
         await args.confirmPhoneRegistration(validated);
       }
     },
-    readActiveBinding: args?.readActiveBinding,
+    readActiveBinding:
+      args?.readActiveBinding ??
+      (async () => ({
+        ok: true as const,
+        hasActiveBinding: false,
+        existingBinding: null,
+      })),
   });
 
   return {
@@ -356,7 +362,441 @@ function createRouteHandler(args?: {
   };
 }
 
+function createRealBindingReaderHarness(config: {
+  rows?: unknown;
+  error?: string;
+  withoutFrom?: boolean;
+}) {
+  const rpc = createPrivilegedClientMock();
+  const filters: Array<[string, unknown]> = [];
+
+  let table = "";
+  let selected = "";
+  let limitValue = 0;
+  let validationCalls = 0;
+  let registerCalls = 0;
+
+  const query = {
+    select(value: string) {
+      selected = value;
+      return query;
+    },
+    eq(field: string, value: unknown) {
+      filters.push([field, value]);
+      return query;
+    },
+    async limit(value: number) {
+      limitValue = value;
+
+      if (config.error) {
+        return {
+          data: null,
+          error: { message: config.error },
+        };
+      }
+
+      return {
+        data: config.rows ?? [],
+        error: null,
+      };
+    },
+  };
+
+  const client = config.withoutFrom
+    ? rpc.client
+    : {
+        ...rpc.client,
+        from(name: string) {
+          table = name;
+          return query;
+        },
+      };
+
+  const handler = createStoreWhatsappEmbeddedSignupPostHandler({
+    resolveAccess: async () => createGrantedAccess(),
+    createPrivilegedClient: () => client as never,
+    validateEmbeddedSignup: async () => {
+      validationCalls++;
+
+      return createSuccessfulValidation({
+        whatsappBusinessAccountId: "claimed-waba",
+        phoneNumberId: "claimed-phone",
+      });
+    },
+    registerEmbeddedSignup: async () => {
+      registerCalls++;
+    },
+    confirmPhoneRegistration: async () => {},
+  });
+
+  return {
+    handler,
+    rpcCalls: rpc.rpcCalls,
+    secretRpcCalls: rpc.secretRpcCalls,
+    read: () => ({
+      table,
+      selected,
+      filters,
+      limitValue,
+    }),
+    calls: () => ({
+      validationCalls,
+      registerCalls,
+    }),
+  };
+}
 const tests: TestCase[] = [
+  {
+    name: "legacy unclassified mode returns a safe 409",
+    run: async () => {
+      const { handler, rpcCalls } = createRouteHandler({
+        rpcError: {
+          message: "ZION_WHATSAPP_CONNECTION_MODE_LEGACY_UNCLASSIFIED",
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "standard",
+        }),
+      );
+
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "WHATSAPP_EMBEDDED_SIGNUP_CONFLICT");
+      assert.equal(rpcCalls.length, 1);
+      assert.equal(
+        JSON.stringify(body).includes(
+          "ZION_WHATSAPP_CONNECTION_MODE_LEGACY_UNCLASSIFIED",
+        ),
+        false,
+      );
+    },
+  },
+  {
+    name: "connection mode replay mismatch returns a safe 409",
+    run: async () => {
+      const { handler, rpcCalls } = createRouteHandler({
+        rpcError: {
+          message: "ZION_WHATSAPP_CONNECTION_MODE_REPLAY_MISMATCH",
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "standard",
+        }),
+      );
+
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "WHATSAPP_EMBEDDED_SIGNUP_CONFLICT");
+      assert.equal(rpcCalls.length, 1);
+      assert.equal(
+        JSON.stringify(body).includes(
+          "ZION_WHATSAPP_CONNECTION_MODE_REPLAY_MISMATCH",
+        ),
+        false,
+      );
+    },
+  },
+  {
+    name: "real database reader rejects an inactive legacy integration",
+    run: async () => {
+      const harness = createRealBindingReaderHarness({
+        rows: [{
+          id: "legacy-integration",
+          status: "active",
+          is_active: false,
+          phone_number_id: "claimed-phone",
+          whatsapp_business_account_id: "claimed-waba",
+          metadata: {
+            pin_activation_pending: true,
+          },
+        }],
+      });
+
+      const response = await harness.handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "standard",
+        }),
+      );
+
+      const body = await parseBody(response);
+      const read = harness.read();
+
+      assert.equal(response.status, 409);
+      assert.equal(
+        body.error,
+        "WHATSAPP_EXISTING_INACTIVE_BINDING",
+      );
+
+      assert.equal(read.table, "external_integrations");
+      assert.equal(read.limitValue, 2);
+      assert.equal(read.selected.includes("metadata"), true);
+
+      assert.deepEqual(read.filters, [
+        ["organization_id", "access-org"],
+        ["store_id", "access-store"],
+        ["provider", "whatsapp"],
+      ]);
+
+      assert.equal(harness.calls().validationCalls, 0);
+      assert.equal(harness.calls().registerCalls, 0);
+      assert.equal(harness.rpcCalls.length, 0);
+      assert.equal(harness.secretRpcCalls.length, 0);
+    },
+  },
+  {
+    name: "real database reader fails closed on database errors",
+    run: async () => {
+      const harness = createRealBindingReaderHarness({
+        error: "synthetic database read failure",
+      });
+
+      const response = await harness.handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "standard",
+        }),
+      );
+
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 503);
+      assert.equal(
+        body.error,
+        "WHATSAPP_CONNECTION_STATE_UNAVAILABLE",
+      );
+      assert.equal(harness.calls().validationCalls, 0);
+      assert.equal(harness.calls().registerCalls, 0);
+      assert.equal(harness.rpcCalls.length, 0);
+      assert.equal(harness.secretRpcCalls.length, 0);
+    },
+  },
+  {
+    name: "real database reader fails closed when read capability is missing",
+    run: async () => {
+      const harness = createRealBindingReaderHarness({
+        withoutFrom: true,
+      });
+
+      const response = await harness.handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "standard",
+        }),
+      );
+
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 503);
+      assert.equal(
+        body.error,
+        "WHATSAPP_CONNECTION_STATE_UNAVAILABLE",
+      );
+      assert.equal(harness.calls().validationCalls, 0);
+      assert.equal(harness.calls().registerCalls, 0);
+      assert.equal(harness.rpcCalls.length, 0);
+      assert.equal(harness.secretRpcCalls.length, 0);
+    },
+  },
+  {
+    name: "real database reader permits a first connection without binding",
+    run: async () => {
+      const harness = createRealBindingReaderHarness({
+        rows: [],
+      });
+
+      const response = await harness.handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "standard",
+        }),
+      );
+
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(harness.calls().validationCalls, 1);
+      assert.equal(harness.calls().registerCalls, 1);
+      assert.equal(harness.rpcCalls.length, 1);
+      assert.equal(
+        harness.rpcCalls[0]?.name,
+        "materialize_whatsapp_first_connection_mode_by_system",
+      );
+    },
+  },
+  {
+    name: "inactive legacy binding blocks before Meta validation",
+    run: async () => {
+      let validationCalls = 0;
+      let registerCalls = 0;
+
+      const { handler, rpcCalls, candidateRpcCalls, secretRpcCalls } =
+        createRouteHandler({
+          readActiveBinding: async () => ({
+            ok: true,
+            hasActiveBinding: false,
+            existingBinding: {
+              status: "active",
+              isActive: false,
+              phoneNumberId: "claimed-phone",
+              whatsappBusinessAccountId: "claimed-waba",
+              connectionMode: null,
+              pinActivationPending: true,
+            },
+          }),
+          validate: async () => {
+            validationCalls++;
+            return createSuccessfulValidation();
+          },
+          register: async () => {
+            registerCalls++;
+          },
+        });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "standard",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "WHATSAPP_EXISTING_INACTIVE_BINDING");
+      assert.equal(validationCalls, 0);
+      assert.equal(registerCalls, 0);
+      assert.equal(rpcCalls.length, 0);
+      assert.equal(candidateRpcCalls.length, 0);
+      assert.equal(secretRpcCalls.length, 0);
+    },
+  },
+  {
+    name: "matching pending standard binding resumes with verified Meta identity",
+    run: async () => {
+      let registerCalls = 0;
+
+      const { handler, rpcCalls, secretRpcCalls } = createRouteHandler({
+        readActiveBinding: async () => ({
+          ok: true,
+          hasActiveBinding: false,
+          existingBinding: {
+            status: "active",
+            isActive: false,
+            phoneNumberId: "claimed-phone",
+            whatsappBusinessAccountId: "claimed-waba",
+            connectionMode: "standard",
+            pinActivationPending: true,
+          },
+        }),
+        validate: async () =>
+          createSuccessfulValidation({
+            phoneNumberId: "claimed-phone",
+            whatsappBusinessAccountId: "claimed-waba",
+          }),
+        register: async () => {
+          registerCalls++;
+        },
+      });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "standard",
+        }),
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(registerCalls, 1);
+      assert.equal(rpcCalls.length, 1);
+      assert.equal(
+        rpcCalls[0]?.args.p_connection_mode,
+        "standard",
+      );
+      assert.equal(
+        secretRpcCalls.some(
+          (call) =>
+            call.name ===
+            "activate_whatsapp_phone_security_secret_by_system",
+        ),
+        true,
+      );
+    },
+  },
+  {
+    name: "pending standard binding rejects divergent Meta identity before registration",
+    run: async () => {
+      let registerCalls = 0;
+
+      const { handler, rpcCalls, candidateRpcCalls, secretRpcCalls } =
+        createRouteHandler({
+          readActiveBinding: async () => ({
+            ok: true,
+            hasActiveBinding: false,
+            existingBinding: {
+              status: "active",
+              isActive: false,
+              phoneNumberId: "claimed-phone",
+              whatsappBusinessAccountId: "claimed-waba",
+              connectionMode: "standard",
+              pinActivationPending: true,
+            },
+          }),
+          validate: async () =>
+            createSuccessfulValidation({
+              phoneNumberId: "different-meta-phone",
+              whatsappBusinessAccountId: "different-meta-waba",
+            }),
+          register: async () => {
+            registerCalls++;
+          },
+        });
+
+      const response = await handler(
+        createJsonRequest({
+          code: "auth-code",
+          whatsappBusinessAccountId: "claimed-waba",
+          phoneNumberId: "claimed-phone",
+          connectionMode: "standard",
+        }),
+      );
+      const body = await parseBody(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(
+        body.error,
+        "WHATSAPP_PENDING_BINDING_META_IDENTITY_MISMATCH",
+      );
+      assert.equal(registerCalls, 0);
+      assert.equal(rpcCalls.length, 0);
+      assert.equal(candidateRpcCalls.length, 0);
+      assert.equal(secretRpcCalls.length, 0);
+    },
+  },
   {
     name: "unauthorized store access returns denied response without reading JSON",
     run: async () => {
@@ -1052,7 +1492,7 @@ const tests: TestCase[] = [
       assert.equal(rpcCalls.length, 1);
       assert.equal(
         rpcCalls[0]?.name,
-        "materialize_store_whatsapp_embedded_signup_pending_pin_by_system",
+        "materialize_whatsapp_first_connection_mode_by_system",
       );
       assert.deepEqual(secretRpcCalls.map((call) => call.name), [
         "create_whatsapp_phone_security_secret_pending_by_system",
@@ -1082,7 +1522,7 @@ const tests: TestCase[] = [
       assert.equal(registerCalls, 0);
       assert.equal(
         rpcCalls.some(
-          (call) => call.name === "materialize_store_whatsapp_embedded_signup_pending_pin_by_system",
+          (call) => call.name === "materialize_whatsapp_first_connection_mode_by_system",
         ),
         true,
       );
@@ -1625,9 +2065,10 @@ const tests: TestCase[] = [
       assert.equal(response.status, 200);
       assert.equal(candidateRpcCalls.length, 1);
       assert.equal(rpcCalls.length, 1);
+      assert.equal(rpcCalls[0]?.args.p_connection_mode, "standard");
       assert.equal(
         rpcCalls[0]?.name,
-        "materialize_store_whatsapp_embedded_signup_pending_pin_by_system",
+        "materialize_whatsapp_first_connection_mode_by_system",
       );
     },
   },
@@ -1690,6 +2131,8 @@ const tests: TestCase[] = [
       assert.equal(registrationBoundaryCalls, 1);
       assert.equal(secretRpcCalls.length, 0);
       assert.equal(rpcCalls.length, 1);
+      assert.equal(rpcCalls[0]?.name, "materialize_whatsapp_first_connection_mode_by_system");
+      assert.equal(rpcCalls[0]?.args.p_connection_mode, "business_app_coexistence");
     },
   },
   {
@@ -1998,7 +2441,7 @@ const tests: TestCase[] = [
       assert.equal(routeSource.includes("resolveStoreApiAccess"), true);
       assert.equal(routeSource.includes('requirement: "active_or_onboarding"'), true);
       assert.equal(
-        routeSource.includes("materialize_store_whatsapp_embedded_signup_by_system"),
+        routeSource.includes("materialize_whatsapp_first_connection_mode_by_system"),
         true,
       );
       assert.equal(routeSource.includes("body.storeId"), false);

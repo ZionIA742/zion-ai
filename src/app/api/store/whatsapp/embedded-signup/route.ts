@@ -67,6 +67,14 @@ type MaterializedWhatsappBindingCandidate = {
 };
 
 type PrivilegedClient = ReturnType<typeof createClient>;
+type ExistingWhatsappBinding = {
+  status: string | null;
+  isActive: boolean;
+  phoneNumberId: string | null;
+  whatsappBusinessAccountId: string | null;
+  connectionMode: string | null;
+  pinActivationPending: boolean;
+};
 type EmbeddedSignupRouteDeps = {
   resolveAccess: (params: {
     requirement: "active_or_onboarding";
@@ -86,6 +94,7 @@ type EmbeddedSignupRouteDeps = {
   readActiveBinding?: (client: PrivilegedClient, access: StoreApiAccessGranted) => Promise<{
     ok: true;
     hasActiveBinding: boolean;
+    existingBinding?: ExistingWhatsappBinding | null;
   } | { ok: false; error: string }>;
 };
 
@@ -308,7 +317,9 @@ function mapWriterError(error: { message?: string | null } | null | undefined) {
     message.includes("CANDIDATE_CONFLICT") ||
     message.includes("CANDIDATE_PHONE_ALREADY_BOUND") ||
     message.includes("ACTIVE_BINDING_AMBIGUOUS") ||
-    message.includes("ACTIVE_BINDING_CHANGED")
+    message.includes("ACTIVE_BINDING_CHANGED") ||
+    message.includes("ZION_WHATSAPP_CONNECTION_MODE_LEGACY_UNCLASSIFIED") ||
+    message.includes("ZION_WHATSAPP_CONNECTION_MODE_REPLAY_MISMATCH")
   ) {
     return {
       status: 409,
@@ -389,23 +400,66 @@ async function defaultReadActiveBinding(
   access: StoreApiAccessGranted,
 ) {
   if (typeof (client as unknown as { from?: unknown }).from !== "function") {
-    return { ok: true as const, hasActiveBinding: false };
+    return { ok: false as const, error: "WHATSAPP_BINDING_READER_UNAVAILABLE" };
   }
 
   const { data, error } = await client
     .from("external_integrations")
-    .select("id")
+    .select("id, status, is_active, phone_number_id, whatsapp_business_account_id, metadata")
     .eq("organization_id", access.organizationId)
     .eq("store_id", access.storeId)
     .eq("provider", "whatsapp")
-    .eq("is_active", true)
-    .eq("status", "active")
     .limit(2);
 
   if (error) return { ok: false as const, error: error.message };
-  return { ok: true as const, hasActiveBinding: (data || []).length > 0 };
-}
 
+  if (!Array.isArray(data) || data.length > 1) {
+    return { ok: false as const, error: "WHATSAPP_BINDING_STATE_INVALID" };
+  }
+
+  const row = (data as unknown as Array<{
+    status: string | null;
+    is_active: boolean | null;
+    phone_number_id: string | null;
+    whatsapp_business_account_id: string | null;
+    metadata: unknown;
+  }>)[0];
+  if (!row) {
+    return {
+      ok: true as const,
+      hasActiveBinding: false,
+      existingBinding: null,
+    };
+  }
+
+  const metadata =
+    row.metadata &&
+    typeof row.metadata === "object" &&
+    !Array.isArray(row.metadata)
+      ? (row.metadata as Record<string, unknown>)
+      : {};
+
+  const existingBinding: ExistingWhatsappBinding = {
+    status: row.status,
+    isActive: row.is_active === true,
+    phoneNumberId: row.phone_number_id,
+    whatsappBusinessAccountId: row.whatsapp_business_account_id,
+    connectionMode:
+      typeof metadata.connection_mode === "string"
+        ? metadata.connection_mode
+        : null,
+    pinActivationPending:
+      metadata.pin_activation_pending === true ||
+      metadata.pin_activation_pending === "true",
+  };
+
+  return {
+    ok: true as const,
+    hasActiveBinding:
+      existingBinding.isActive && existingBinding.status === "active",
+    existingBinding,
+  };
+}
 function sanitizeUnexpectedError(error: unknown) {
   if (!error || typeof error !== "object") {
     return { name: "UnknownError" };
@@ -570,6 +624,39 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
       );
     }
 
+    const existingBinding = activeBindingResult.existingBinding;
+
+    if (
+      !payloadResult.input.recovery &&
+      !authorizedNumberChangeLink &&
+      existingBinding &&
+      !activeBindingResult.hasActiveBinding
+    ) {
+      const compatiblePendingStandard =
+        existingBinding.status === "active" &&
+        existingBinding.isActive === false &&
+        existingBinding.connectionMode === "standard" &&
+        existingBinding.pinActivationPending &&
+        payloadResult.input.connectionMode === "standard" &&
+        existingBinding.whatsappBusinessAccountId ===
+          payloadResult.input.whatsappBusinessAccountId &&
+        existingBinding.phoneNumberId === payloadResult.input.phoneNumberId;
+
+      if (!compatiblePendingStandard) {
+        return createJsonResponse(
+          {
+            ok: false,
+            error: "WHATSAPP_EXISTING_INACTIVE_BINDING",
+            message:
+              "Esta loja possui uma conexao WhatsApp pendente ou antiga. Utilize o fluxo de regularizacao apropriado.",
+            connectionScenario: "existing_zion_binding",
+            canRetry: false,
+            requiresUserAction: true,
+          },
+          409,
+        );
+      }
+    }
     let validated: MetaWhatsappEmbeddedSignupValidationResult;
 
     try {
@@ -612,6 +699,31 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
       return createJsonResponse({ ok: false, error: "WHATSAPP_NUMBER_CHANGE_VALIDATED_MODE_INVALID" }, 409);
     }
 
+    // Confirma a identidade validada pela Meta antes de qualquer efeito externo.
+    if (
+      !payloadResult.input.recovery &&
+      !authorizedNumberChangeLink &&
+      existingBinding &&
+      !activeBindingResult.hasActiveBinding &&
+      (
+        validated.connectionMode !== "standard" ||
+        existingBinding.phoneNumberId !== validated.phoneNumberId ||
+        existingBinding.whatsappBusinessAccountId !==
+          validated.whatsappBusinessAccountId
+      )
+    ) {
+      return createJsonResponse(
+        {
+          ok: false,
+          error: "WHATSAPP_PENDING_BINDING_META_IDENTITY_MISMATCH",
+          message:
+            "A identidade confirmada pela Meta nao corresponde a conexao WhatsApp pendente da loja.",
+          canRetry: false,
+          requiresUserAction: true,
+        },
+        409,
+      );
+    }
     // This phone is reserved for the controlled recovery flow. The check uses
     // the server-validated Meta identity and must happen before any candidate
     // writer, temporary PIN/secret, or conventional /register operation.
@@ -812,9 +924,7 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
       pin = "";
 
       const { data, error } = await privilegedClient.rpc(
-        pendingSecret
-          ? "materialize_store_whatsapp_embedded_signup_pending_pin_by_system"
-          : "materialize_store_whatsapp_embedded_signup_by_system",
+        "materialize_whatsapp_first_connection_mode_by_system",
         {
           p_organization_id: access.organizationId,
           p_store_id: access.storeId,
@@ -825,6 +935,7 @@ export function createStoreWhatsappEmbeddedSignupPostHandler(
           p_meta_graph_api_version: validated.graphApiVersion,
           p_meta_app_id: validated.appId,
           p_validated_at: validated.validatedAt,
+          p_connection_mode: validated.connectionMode,
         },
       );
 

@@ -508,7 +508,7 @@ async function materialize(body: Record<string, unknown>, access: RecoveryAccess
   ) {
     throw new Error("WHATSAPP_PIN_RECOVERY_MATERIALIZATION_AUTHORIZATION_INVALID");
   }
-  const integrationRow = await callRpc(client, "materialize_store_whatsapp_embedded_signup_by_system", {
+  const integrationRow = await callRpc(client, "materialize_store_whatsapp_pin_recovery_by_system", {
     p_organization_id: WHATSAPP_PIN_RECOVERY_TARGET.organizationId,
     p_store_id: WHATSAPP_PIN_RECOVERY_TARGET.storeId,
     p_whatsapp_business_account_id: validated.whatsappBusinessAccountId,

@@ -3,7 +3,7 @@ begin;
 -- Conventional Cloud API first connections must not become operational while
 -- their mandatory two-step PIN is still pending. Coexistence intentionally
 -- continues to use the original materializer and never calls this function.
-create or replace function public.materialize_store_whatsapp_embedded_signup_pending_pin_by_system(
+create or replace function public.materialize_store_whatsapp_signup_pending_pin_by_system(
   p_organization_id uuid,
   p_store_id uuid,
   p_whatsapp_business_account_id text,
@@ -110,13 +110,13 @@ begin
 end;
 $function$;
 
-alter function public.materialize_store_whatsapp_embedded_signup_pending_pin_by_system(
+alter function public.materialize_store_whatsapp_signup_pending_pin_by_system(
   uuid, uuid, text, text, text, text, text, text, timestamptz
 ) owner to postgres;
-revoke all on function public.materialize_store_whatsapp_embedded_signup_pending_pin_by_system(
+revoke all on function public.materialize_store_whatsapp_signup_pending_pin_by_system(
   uuid, uuid, text, text, text, text, text, text, timestamptz
 ) from public, anon, authenticated;
-grant execute on function public.materialize_store_whatsapp_embedded_signup_pending_pin_by_system(
+grant execute on function public.materialize_store_whatsapp_signup_pending_pin_by_system(
   uuid, uuid, text, text, text, text, text, text, timestamptz
 ) to service_role;
 

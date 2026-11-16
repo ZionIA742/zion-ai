@@ -17,7 +17,7 @@ import {
 } from "@/lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 import { exchangeAndValidateMetaWhatsappBinding } from "@/lib/server/meta-whatsapp-embedded-signup";
-import type { WhatsappBindingFreshTokenValidator } from "@/lib/server/whatsapp-binding-change-operation";
+import type { WhatsappBindingFreshTokenValidator, WhatsappBindingStandardModeConfirmer } from "@/lib/server/whatsapp-binding-change-operation";
 import { hashWhatsappNumberChangeToken } from "@/lib/server/whatsapp-number-change-link";
 
 export const runtime = "nodejs";
@@ -32,6 +32,7 @@ type BindingChangeRouteDeps = {
   }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
   createPrivilegedClient: () => WhatsappBindingChangeSupabaseLike;
   validateFreshToken?: WhatsappBindingFreshTokenValidator;
+  confirmStandardConnection?: WhatsappBindingStandardModeConfirmer;
 };
 
 const FORBIDDEN_CLIENT_KEYS = new Set([
@@ -195,7 +196,7 @@ export function createWhatsappBindingChangeRouteHandler(
           storeId: access.storeId,
           requestId,
         };
-        let connectionMode: "standard" | "business_app_coexistence" = "standard";
+        let connectionMode: "standard" | "business_app_coexistence" | undefined;
         let numberChangeLinkId: string | null = null;
         if (action === "cutover" && cleanText(body.numberChangeLinkToken)) {
           const resolved = await operationArgs.supabase.rpc("resolve_whatsapp_number_change_link_by_system", {
@@ -239,6 +240,7 @@ export function createWhatsappBindingChangeRouteHandler(
                     ...operationArgs,
                     authorizationCode: cleanText(body.authorizationCode),
                     validateFreshToken,
+                    confirmStandardConnection: deps.confirmStandardConnection,
                     connectionMode,
                   })
                 : action === "cancel"

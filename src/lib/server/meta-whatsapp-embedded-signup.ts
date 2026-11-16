@@ -547,6 +547,75 @@ async function confirmMetaWhatsappBusinessAppCoexistence(
   }
 }
 
+/**
+ * Confirma modalidade convencional por evidencia explicita da Meta.
+ * Nao altera o telefone e nao realiza registro remoto.
+ * Campo ausente, identidade diferente ou coexistencia: falha fechada.
+ */
+export async function confirmMetaWhatsappStandardConnection(
+  validated: MetaWhatsappEmbeddedSignupValidationResult,
+  options?: {
+    deps?: Partial<MetaWhatsappEmbeddedSignupDeps>;
+  },
+): Promise<void> {
+  const deps: MetaWhatsappEmbeddedSignupDeps = {
+    fetch: options?.deps?.fetch ?? fetch,
+    createAbortController:
+      options?.deps?.createAbortController ?? createDefaultAbortController,
+    now: options?.deps?.now ?? (() => new Date()),
+    timeoutMs: options?.deps?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  };
+
+  const url = new URL(
+    `${graphBaseUrl(validated.graphApiVersion)}/${encodeURIComponent(validated.phoneNumberId)}`,
+  );
+  url.searchParams.set("fields", "id,is_on_biz_app,platform_type");
+
+  const response = await fetchJsonWithTimeout(
+    url.toString(),
+    {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${validated.accessToken}`,
+      },
+    },
+    deps,
+    "read_standard_connection_state",
+  );
+
+  requireMetaOk(
+    response,
+    "META_STANDARD_STATE_READ_FAILED",
+    "Nao foi possivel confirmar a modalidade convencional na Meta.",
+    "read_standard_connection_state",
+  );
+
+  const phoneId =
+    typeof response.body?.id === "string"
+      ? normalizeMetaId(response.body.id)
+      : "";
+
+  const platformType =
+    typeof response.body?.platform_type === "string"
+      ? cleanText(response.body.platform_type).toUpperCase()
+      : "";
+
+  if (
+    phoneId !== validated.phoneNumberId ||
+    platformType !== "CLOUD_API" ||
+    response.body?.is_on_biz_app !== false
+  ) {
+    throw new MetaWhatsappEmbeddedSignupError(
+      "META_STANDARD_CONNECTION_UNCONFIRMED",
+      "A Meta nao confirmou a modalidade convencional deste telefone.",
+      422,
+      {
+        operation: "read_standard_connection_state",
+      },
+    );
+  }
+}
 export async function confirmMetaWhatsappPhoneRegistration(
   validated: MetaWhatsappEmbeddedSignupValidationResult,
   options?: {

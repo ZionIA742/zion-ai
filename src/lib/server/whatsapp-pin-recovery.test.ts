@@ -107,7 +107,7 @@ function createFakeSupabase(options: FakeOptions = {}) {
         if (options.authorize) return options.authorize;
         return { data: [{ attempt_id: ATTEMPT, status: "remote_confirmed", outcome: "bound" }], error: null };
       }
-      if (name === "materialize_store_whatsapp_embedded_signup_by_system") {
+      if (name === "materialize_store_whatsapp_pin_recovery_by_system") {
         if (options.integration) return options.integration;
         return { data: [{ integration_id: "66666666-6666-4666-8666-666666666666", outcome: "inserted", provider: "whatsapp", whatsapp_business_account_id: WHATSAPP_PIN_RECOVERY_TARGET.wabaId, phone_number_id: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId, status: "active", is_active: true }], error: null };
       }
@@ -566,7 +566,7 @@ test("persistence failure after the external call cannot permit a second externa
 });
 
 test("writer, finalization, token divergence, and missing WABA all fail closed after success evidence", async () => {
-  const writerFailure = createFakeSupabase({ rpcErrors: { materialize_store_whatsapp_embedded_signup_by_system: "ZION_WRITER_FAILED" } });
+  const writerFailure = createFakeSupabase({ rpcErrors: { materialize_store_whatsapp_pin_recovery_by_system: "ZION_WRITER_FAILED" } });
   const writerResponse = await createWhatsappPinRecoveryPostHandler(baseDeps(writerFailure))(trustedRequest({ action: "materialize", attemptId: ATTEMPT, operationId: OPERATION, oauthCode: "fresh-code" }));
   assert.equal(writerResponse.status, 503);
 

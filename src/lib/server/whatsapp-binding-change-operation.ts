@@ -1,5 +1,7 @@
 import {
   exchangeAndValidateMetaWhatsappBinding,
+  confirmMetaWhatsappStandardConnection,
+  MetaWhatsappEmbeddedSignupError,
   type MetaWhatsappEmbeddedSignupConnectionMode,
   type MetaWhatsappEmbeddedSignupValidationResult,
 } from "./meta-whatsapp-embedded-signup";
@@ -75,6 +77,10 @@ export type WhatsappBindingFreshTokenValidator = (input: {
   phoneNumberId: string;
   connectionMode?: MetaWhatsappEmbeddedSignupConnectionMode;
 }) => Promise<MetaWhatsappEmbeddedSignupValidationResult>;
+
+export type WhatsappBindingStandardModeConfirmer = (
+  validated: MetaWhatsappEmbeddedSignupValidationResult,
+) => Promise<void>;
 
 export class WhatsappBindingChangeOperationError extends Error {
   readonly code: string;
@@ -370,6 +376,7 @@ export async function cutoverWhatsappBindingChangeRequest(args: {
   requestId: string;
   authorizationCode?: string | null;
   validateFreshToken?: WhatsappBindingFreshTokenValidator;
+  confirmStandardConnection?: WhatsappBindingStandardModeConfirmer;
   connectionMode?: MetaWhatsappEmbeddedSignupConnectionMode;
   now?: Date;
 }) {
@@ -455,6 +462,33 @@ export async function cutoverWhatsappBindingChangeRequest(args: {
     );
   }
 
+  if (args.connectionMode !== "business_app_coexistence") {
+    try {
+      await (
+        args.confirmStandardConnection ??
+        confirmMetaWhatsappStandardConnection
+      )(validated);
+    } catch (error) {
+      const errorCode =
+        error instanceof MetaWhatsappEmbeddedSignupError
+          ? error.code
+          : error && typeof error === "object" && "code" in error
+            ? (error as { code?: unknown }).code
+            : null;
+      if (errorCode === "META_STANDARD_CONNECTION_UNCONFIRMED") {
+        throw new WhatsappBindingChangeOperationError(
+          "WHATSAPP_BINDING_CHANGE_STANDARD_MODE_UNCONFIRMED",
+          409,
+        );
+      }
+
+      throw new WhatsappBindingChangeOperationError(
+        "WHATSAPP_BINDING_CHANGE_STANDARD_MODE_CHECK_FAILED",
+        503,
+      );
+    }
+  }
+
   const { data, error } = await args.supabase.rpc(
     "cutover_whatsapp_binding_change_request_by_system",
     {
@@ -472,6 +506,10 @@ export async function cutoverWhatsappBindingChangeRequest(args: {
       p_fresh_access_token: validated.accessToken,
       p_provenance: {
         source: "p19a_whatsapp_binding_change_operation",
+        connection_mode:
+          args.connectionMode === "business_app_coexistence"
+            ? "business_app_coexistence"
+            : "standard",
       },
     },
   );

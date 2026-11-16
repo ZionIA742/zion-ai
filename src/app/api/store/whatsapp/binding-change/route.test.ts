@@ -1,3 +1,4 @@
+import { MetaWhatsappEmbeddedSignupError } from "@/lib/server/meta-whatsapp-embedded-signup";
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
@@ -33,7 +34,11 @@ const validateFreshToken = async ({
 function createWhatsappBindingChangeRouteHandler(
   args: Parameters<typeof createRouteHandler>[0] = {},
 ) {
-  return createRouteHandler({ validateFreshToken, ...args });
+  return createRouteHandler({
+    validateFreshToken,
+    confirmStandardConnection: async () => {},
+    ...args,
+  });
 }
 
 type FakeState = {
@@ -110,6 +115,22 @@ function createSupabase(state: FakeState) {
     },
     async rpc(name: string, args: Record<string, unknown>) {
       state.calls.push({ name, args });
+      if (name === "resolve_whatsapp_number_change_link_by_system") {
+        return {
+          data: [{
+            link_id: "link-test-1",
+            organization_id: ORG,
+            store_id: STORE,
+            provider: "whatsapp",
+            responsible_user_id: "user-1",
+            binding_change_request_id: REQUEST_ID,
+          }],
+          error: null,
+        };
+      }
+      if (name === "get_pending_external_messages_v2") {
+        return { data: [], error: null };
+      }
       if (name === "advance_whatsapp_binding_change_request_by_system") {
         state.request.status = args.p_next_status;
       } else if (name === "cancel_whatsapp_binding_change_request_by_system") {
@@ -396,8 +417,44 @@ test("cutover derives active and candidate from the scoped database rows", async
   assert.equal(cutover.args.p_expected_candidate_phone_number_id, "phone-0018");
   assert.equal(cutover.args.p_expected_candidate_whatsapp_business_account_id, "waba-1");
   assert.equal(cutover.args.p_fresh_access_token, "fresh-token-sentinel");
+  assert.deepEqual(cutover.args.p_provenance, {
+    source: "p19a_whatsapp_binding_change_operation",
+    connection_mode: "standard",
+  });
 });
 
+test("authorized coexistence link forwards connection mode", async () => {
+  const state = createState({ status: "ready_to_cutover" });
+  const handler = createWhatsappBindingChangeRouteHandler({
+    resolveAccess: async () => grantedAccess(),
+    createPrivilegedClient: () => createSupabase(state),
+  });
+
+  const result = await readResponse(
+    await handler.POST(request("POST", {
+      action: "cutover",
+      requestId: REQUEST_ID,
+      numberChangeLinkToken: "synthetic-coexistence-link-token",
+    })),
+  );
+
+  assert.equal(result.status, 200);
+  assert.ok(state.calls.some(
+    (call) => call.name === "resolve_whatsapp_number_change_link_by_system",
+  ));
+  assert.ok(state.calls.some(
+    (call) => call.name === "get_pending_external_messages_v2",
+  ));
+
+  const cutover = state.calls.find(
+    (call) => call.name === "cutover_whatsapp_binding_change_request_by_system",
+  );
+  assert.ok(cutover);
+  assert.deepEqual(cutover.args.p_provenance, {
+    source: "p19a_whatsapp_binding_change_operation",
+    connection_mode: "business_app_coexistence",
+  });
+});
 test("different WABA succeeds with a freshly validated token", async () => {
   const state = createState({ status: "ready_to_cutover", candidateWaba: "waba-2" });
   const handler = createWhatsappBindingChangeRouteHandler({
@@ -478,4 +535,199 @@ test("expiry requires an elapsed request and does not use first-connection write
   assert.equal(result.status, 200);
   assert.equal(state.request.status, "expired");
   assert.equal(state.calls.some((call) => call.name.includes("materialize")), false);
+});
+
+test("standard cutover confirms Meta before the cutover RPC", async () => {
+  const state = createState({ status: "ready_to_cutover" });
+  let confirmations = 0;
+
+  const handler = createWhatsappBindingChangeRouteHandler({
+    resolveAccess: async () => grantedAccess(),
+    createPrivilegedClient: () => createSupabase(state),
+    confirmStandardConnection: async (validated) => {
+      confirmations++;
+
+      assert.equal(validated.phoneNumberId, "phone-0018");
+      assert.equal(validated.whatsappBusinessAccountId, "waba-1");
+      assert.equal(validated.connectionMode, "standard");
+
+      assert.equal(
+        state.calls.some(
+          (call) =>
+            call.name ===
+            "cutover_whatsapp_binding_change_request_by_system",
+        ),
+        false,
+      );
+    },
+  });
+
+  const result = await readResponse(
+    await handler.POST(
+      request("POST", {
+        action: "cutover",
+        requestId: REQUEST_ID,
+      }),
+    ),
+  );
+
+  assert.equal(result.status, 200);
+  assert.equal(confirmations, 1);
+
+  const cutovers = state.calls.filter(
+    (call) =>
+      call.name === "cutover_whatsapp_binding_change_request_by_system",
+  );
+
+  assert.equal(cutovers.length, 1);
+  assert.deepEqual(cutovers[0].args.p_provenance, {
+    source: "p19a_whatsapp_binding_change_operation",
+    connection_mode: "standard",
+  });
+
+  assert.equal(state.request.status, "completed");
+  assert.equal(state.active.phone_number_id, "phone-0018");
+});
+
+const standardConfirmationFailures = [
+  {
+    name: "unconfirmed standard mode blocks cutover and preserves active binding",
+    error: new MetaWhatsappEmbeddedSignupError(
+      "META_STANDARD_CONNECTION_UNCONFIRMED",
+      "synthetic-unconfirmed",
+      422,
+      { operation: "read_standard_connection_state" },
+    ),
+    expectedStatus: 409,
+    expectedCode: "WHATSAPP_BINDING_CHANGE_STANDARD_MODE_UNCONFIRMED",
+  },
+  {
+    name: "Meta unavailable blocks cutover and preserves active binding",
+    error: new MetaWhatsappEmbeddedSignupError(
+      "META_UNAVAILABLE",
+      "synthetic-unavailable",
+      502,
+      { operation: "read_standard_connection_state" },
+    ),
+    expectedStatus: 503,
+    expectedCode: "WHATSAPP_BINDING_CHANGE_STANDARD_MODE_CHECK_FAILED",
+  },
+  {
+    name: "unexpected confirmation failure blocks cutover and preserves active binding",
+    error: new Error("synthetic-unexpected-error"),
+    expectedStatus: 503,
+    expectedCode: "WHATSAPP_BINDING_CHANGE_STANDARD_MODE_CHECK_FAILED",
+  },
+];
+
+for (const scenario of standardConfirmationFailures) {
+  test(scenario.name, async () => {
+    const state = createState({ status: "ready_to_cutover" });
+
+    const originalActive = structuredClone(state.active);
+    const originalRequest = structuredClone(state.request);
+
+    let confirmations = 0;
+
+    const handler = createWhatsappBindingChangeRouteHandler({
+      resolveAccess: async () => grantedAccess(),
+      createPrivilegedClient: () => createSupabase(state),
+      confirmStandardConnection: async () => {
+        confirmations++;
+        throw scenario.error;
+      },
+    });
+
+    const result = await readResponse(
+      await handler.POST(
+        request("POST", {
+          action: "cutover",
+          requestId: REQUEST_ID,
+        }),
+      ),
+    );
+
+    assert.equal(result.status, scenario.expectedStatus);
+    assert.equal(result.body.error, scenario.expectedCode);
+    assert.equal(confirmations, 1);
+
+    assert.equal(
+      state.calls.some(
+        (call) =>
+          call.name ===
+          "cutover_whatsapp_binding_change_request_by_system",
+      ),
+      false,
+    );
+
+    assert.deepEqual(state.active, originalActive);
+    assert.deepEqual(state.request, originalRequest);
+
+    assert.equal(state.active.phone_number_id, "phone-1471");
+    assert.equal(state.active.access_token, "old-token-sentinel");
+    assert.equal(state.request.status, "ready_to_cutover");
+
+    const responseText = JSON.stringify(result.body);
+
+    assert.equal(
+      responseText.includes("synthetic-"),
+      false,
+    );
+    assert.equal(
+      responseText.includes("fresh-token-sentinel"),
+      false,
+    );
+  });
+}
+
+test("authorized coexistence bypasses standard confirmation", async () => {
+  const state = createState({ status: "ready_to_cutover" });
+  let standardConfirmations = 0;
+
+  const handler = createWhatsappBindingChangeRouteHandler({
+    resolveAccess: async () => grantedAccess(),
+    createPrivilegedClient: () => createSupabase(state),
+    confirmStandardConnection: async () => {
+      standardConfirmations++;
+      throw new Error("standard check must not run for coexistence");
+    },
+  });
+
+  const result = await readResponse(
+    await handler.POST(
+      request("POST", {
+        action: "cutover",
+        requestId: REQUEST_ID,
+        numberChangeLinkToken: "synthetic-coexistence-link-token",
+      }),
+    ),
+  );
+
+  assert.equal(result.status, 200);
+  assert.equal(standardConfirmations, 0);
+
+  assert.ok(
+    state.calls.some(
+      (call) =>
+        call.name ===
+        "resolve_whatsapp_number_change_link_by_system",
+    ),
+  );
+
+  assert.ok(
+    state.calls.some(
+      (call) => call.name === "get_pending_external_messages_v2",
+    ),
+  );
+
+  const cutovers = state.calls.filter(
+    (call) =>
+      call.name === "cutover_whatsapp_binding_change_request_by_system",
+  );
+
+  assert.equal(cutovers.length, 1);
+  assert.deepEqual(cutovers[0].args.p_provenance, {
+    source: "p19a_whatsapp_binding_change_operation",
+    connection_mode: "business_app_coexistence",
+  });
 });

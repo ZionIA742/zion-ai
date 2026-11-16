@@ -23,7 +23,7 @@ declare
     end if;$replacement$;
 begin
   select pg_catalog.to_regprocedure(
-    'public.materialize_store_whatsapp_embedded_signup_pending_pin_by_system(uuid,uuid,text,text,text,text,text,text,timestamptz)'
+    'public.materialize_store_whatsapp_signup_pending_pin_by_system(uuid,uuid,text,text,text,text,text,text,timestamptz)'
   )
     into v_function_oid;
 
