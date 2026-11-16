@@ -12278,7 +12278,7 @@ export default function IntelligentCatalogImportPanel({
                                       : positivePage
                                   );
                                 }}
-                                className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900"
                               />
                             </label>
                             <button
@@ -12333,7 +12333,7 @@ export default function IntelligentCatalogImportPanel({
                                         onChange={(event) =>
                                           updateEditableVisualCatalogDraft(draft.id, { name: event.target.value })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                     <label className="block">
@@ -12345,7 +12345,7 @@ export default function IntelligentCatalogImportPanel({
                                             category: event.target.value as EditableVisualCatalogDraft["category"],
                                           })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900"
                                       >
                                         <option value="">A revisar</option>
                                         <option value="pool">Piscina</option>
@@ -12364,7 +12364,7 @@ export default function IntelligentCatalogImportPanel({
                                             visualDimensionsText: event.target.value,
                                           })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                     <label className="block">
@@ -12375,7 +12375,7 @@ export default function IntelligentCatalogImportPanel({
                                         onChange={(event) =>
                                           updateEditableVisualCatalogDraft(draft.id, { material: event.target.value })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                     <label className="block">
@@ -12386,7 +12386,7 @@ export default function IntelligentCatalogImportPanel({
                                         onChange={(event) =>
                                           updateEditableVisualCatalogDraft(draft.id, { price: event.target.value })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                     <label className="block">
@@ -12397,7 +12397,7 @@ export default function IntelligentCatalogImportPanel({
                                         onChange={(event) =>
                                           updateEditableVisualCatalogDraft(draft.id, { stock: event.target.value })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                     <label className="block md:col-span-2">
@@ -12410,7 +12410,7 @@ export default function IntelligentCatalogImportPanel({
                                           })
                                         }
                                         rows={2}
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                   </div>
@@ -12443,7 +12443,7 @@ export default function IntelligentCatalogImportPanel({
                                     setVisualEvidencePagesInput(event.target.value);
                                   }}
                                   placeholder="3,4,5,12"
-                                  className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                  className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900"
                                 />
                               </label>
                               <button
@@ -12634,7 +12634,7 @@ export default function IntelligentCatalogImportPanel({
                                       : positivePage
                                   );
                                 }}
-                                className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900"
                               />
                             </label>
                             <button
@@ -12689,7 +12689,7 @@ export default function IntelligentCatalogImportPanel({
                                         onChange={(event) =>
                                           updateEditableVisualCatalogDraft(draft.id, { name: event.target.value })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                     <label className="block">
@@ -12701,7 +12701,7 @@ export default function IntelligentCatalogImportPanel({
                                             category: event.target.value as EditableVisualCatalogDraft["category"],
                                           })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900"
                                       >
                                         <option value="">A revisar</option>
                                         <option value="pool">Piscina</option>
@@ -12720,7 +12720,7 @@ export default function IntelligentCatalogImportPanel({
                                             visualDimensionsText: event.target.value,
                                           })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                     <label className="block">
@@ -12731,7 +12731,7 @@ export default function IntelligentCatalogImportPanel({
                                         onChange={(event) =>
                                           updateEditableVisualCatalogDraft(draft.id, { material: event.target.value })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                     <label className="block">
@@ -12742,7 +12742,7 @@ export default function IntelligentCatalogImportPanel({
                                         onChange={(event) =>
                                           updateEditableVisualCatalogDraft(draft.id, { price: event.target.value })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                     <label className="block">
@@ -12753,7 +12753,7 @@ export default function IntelligentCatalogImportPanel({
                                         onChange={(event) =>
                                           updateEditableVisualCatalogDraft(draft.id, { stock: event.target.value })
                                         }
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                     <label className="block md:col-span-2">
@@ -12766,7 +12766,7 @@ export default function IntelligentCatalogImportPanel({
                                           })
                                         }
                                         rows={2}
-                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-base sm:text-sm text-gray-900"
                                       />
                                     </label>
                                   </div>
@@ -12799,7 +12799,7 @@ export default function IntelligentCatalogImportPanel({
                                     setVisualEvidencePagesInput(event.target.value);
                                   }}
                                   placeholder="3,4,5,12"
-                                  className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                  className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-base sm:text-sm text-gray-900"
                                 />
                               </label>
                               <button
@@ -13119,7 +13119,7 @@ export default function IntelligentCatalogImportPanel({
                                                     onChange={(event) =>
                                                       updateEditableVisualReviewItem(item.id, { name: event.target.value })
                                                     }
-                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-base sm:text-sm text-gray-900"
                                                   />
                                                 </label>
                                                 <label className="block">
@@ -13131,7 +13131,7 @@ export default function IntelligentCatalogImportPanel({
                                                         category: event.target.value as EditableVisualReviewItem["category"],
                                                       })
                                                     }
-                                                    className="mt-1 w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-sm text-gray-900"
+                                                    className="mt-1 w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-base sm:text-sm text-gray-900"
                                                   >
                                                     <option value="">A revisar</option>
                                                     <option value="pool">Piscina</option>
@@ -13151,7 +13151,7 @@ export default function IntelligentCatalogImportPanel({
                                                         code: event.target.value,
                                                       })
                                                     }
-                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-base sm:text-sm text-gray-900"
                                                   />
                                                 </label>
                                                 <label className="block">
@@ -13163,7 +13163,7 @@ export default function IntelligentCatalogImportPanel({
                                                       updateEditableVisualReviewItem(item.id, { price: event.target.value })
                                                     }
                                                     placeholder="Ex.: 150.000,00"
-                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-base sm:text-sm text-gray-900"
                                                   />
                                                   <p className="mt-1 text-[11px] leading-4 text-gray-500">
                                                     Use virgula para centavos. Ex.: 129,90 ou 1.200,00
@@ -13182,7 +13182,7 @@ export default function IntelligentCatalogImportPanel({
                                                     onChange={(event) =>
                                                       updateEditableVisualReviewItem(item.id, { stock: event.target.value })
                                                     }
-                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-base sm:text-sm text-gray-900"
                                                   />
                                                 </label>
                                                 <label className="flex items-center gap-2 self-end text-xs font-medium text-gray-700">
@@ -13208,7 +13208,7 @@ export default function IntelligentCatalogImportPanel({
                                                         dimensionsText: event.target.value,
                                                       })
                                                     }
-                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-base sm:text-sm text-gray-900"
                                                   />
                                                 </label>
                                                 <label className="block">
@@ -13219,7 +13219,7 @@ export default function IntelligentCatalogImportPanel({
                                                     onChange={(event) =>
                                                       updateEditableVisualReviewItem(item.id, { material: event.target.value })
                                                     }
-                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-base sm:text-sm text-gray-900"
                                                   />
                                                 </label>
                                                 <label className="block md:col-span-2">
@@ -13232,7 +13232,7 @@ export default function IntelligentCatalogImportPanel({
                                                       })
                                                     }
                                                     rows={2}
-                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-base sm:text-sm text-gray-900"
                                                   />
                                                 </label>
                                               </div>
