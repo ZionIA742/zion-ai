@@ -16562,7 +16562,7 @@ export default function ConfiguracoesPage() {
                             disabled={searchResultCount === 0}
                             aria-label="Resultado anterior"
                             title="Resultado anterior (Shift + Enter)"
-                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-base font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-35"
+                            className="flex h-11 sm:h-9 w-11 sm:w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-base font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-35"
                           >↑</button>
                           <button
                             type="button"
@@ -16570,7 +16570,7 @@ export default function ConfiguracoesPage() {
                             disabled={searchResultCount === 0}
                             aria-label="Próximo resultado"
                             title="Próximo resultado (Enter)"
-                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-base font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-35"
+                            className="flex h-11 sm:h-9 w-11 sm:w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-base font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-35"
                           >↓</button>
                         </div>
                       ) : null}

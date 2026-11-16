@@ -2133,7 +2133,7 @@ export default function AssistantPage() {
                   setSearchOpen((current) => !current);
                   if (searchOpen) setSearchText("");
                 }}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-gray-50 text-gray-700 ring-1 ring-gray-200 transition hover:bg-gray-100 hover:text-black"
+                className="inline-flex h-11 sm:h-9 w-11 sm:w-9 items-center justify-center rounded-full bg-gray-50 text-gray-700 ring-1 ring-gray-200 transition hover:bg-gray-100 hover:text-black"
                 aria-label="Buscar na conversa"
                 title="Buscar na conversa"
               >

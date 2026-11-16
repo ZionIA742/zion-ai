@@ -289,7 +289,7 @@ function PriorityFlame({
         aria-expanded={open}
         title={`Prioridade ${visual.label.toLowerCase()}`}
         onClick={() => setOpen((current) => !current)}
-        className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full ring-1 transition ${visual.buttonClass}`}
+        className={`inline-flex h-11 sm:h-7 w-11 sm:w-7 shrink-0 items-center justify-center rounded-full ring-1 transition ${visual.buttonClass}`}
       >
         <InboxPriorityFlameIcon className="h-[18px] w-[18px]" />
       </button>

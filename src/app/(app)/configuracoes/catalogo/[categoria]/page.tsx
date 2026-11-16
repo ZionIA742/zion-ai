@@ -1513,7 +1513,7 @@ async function handleDeleteItem(itemId: string) {
                         setExpandedItemId((current) => (current === item.id ? null : item.id))
                       }
                       disabled={isEditing}
-                      className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 transition hover:bg-gray-50 disabled:cursor-default disabled:opacity-50"
+                      className="flex h-11 sm:h-9 w-11 sm:w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 transition hover:bg-gray-50 disabled:cursor-default disabled:opacity-50"
                       aria-label={isExpanded ? "Ocultar detalhes" : "Ver detalhes"}
                       title={isExpanded ? "Ocultar detalhes" : "Ver detalhes"}
                     >

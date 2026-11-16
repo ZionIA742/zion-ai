@@ -933,7 +933,7 @@ export default function CrmPage() {
                 <button
                   type="button"
                   onClick={() => setSelectedCardId(null)}
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gray-50 text-sm font-semibold text-gray-600 ring-1 ring-black/10 hover:bg-gray-100"
+                  className="grid h-11 sm:h-9 w-11 sm:w-9 shrink-0 place-items-center rounded-xl bg-gray-50 text-sm font-semibold text-gray-600 ring-1 ring-black/10 hover:bg-gray-100"
                   aria-label="Fechar detalhes da oportunidade"
                 >
                   ×

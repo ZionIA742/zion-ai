@@ -6557,7 +6557,7 @@ export default function LeadPage() {
                           void loadSelectedOpportunityPriority();
                           setPriorityPopoverOpen((current) => !current);
                         }}
-                        className={`inline-flex h-8 w-8 items-center justify-center rounded-full ring-1 transition ${selectedPriorityVisual.buttonClass}`}
+                        className={`inline-flex h-11 sm:h-8 w-11 sm:w-8 items-center justify-center rounded-full ring-1 transition ${selectedPriorityVisual.buttonClass}`}
                       >
                         <PriorityFlameIcon className="h-[19px] w-[19px]" />
                       </button>
