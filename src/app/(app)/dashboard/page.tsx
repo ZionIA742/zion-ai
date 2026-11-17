@@ -2421,7 +2421,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     loadDashboardMetrics();
-  }, [activeTab, loadDashboardMetrics]);
+  }, [loadDashboardMetrics]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
