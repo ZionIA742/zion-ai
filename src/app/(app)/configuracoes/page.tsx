@@ -4761,6 +4761,7 @@ export default function ConfiguracoesPage() {
     return `zion_configuracoes_intelligent_import:${organizationId}:${activeStoreId}`;
   }, [organizationId, activeStoreId]);
   const hasRestoredLocalDraftRef = useRef(false);
+  const userSelectedSettingsTabRef = useRef(false);
   const hasInitializedLocalDraftRef = useRef(false);
   const lastConfigDraftStorageKeyRef = useRef<string | null>(null);
 
@@ -5955,6 +5956,7 @@ export default function ConfiguracoesPage() {
   useEffect(() => {
     if (lastConfigDraftStorageKeyRef.current === configDraftStorageKey) return;
     lastConfigDraftStorageKeyRef.current = configDraftStorageKey;
+    userSelectedSettingsTabRef.current = false;
     hasRestoredLocalDraftRef.current = false;
     hasInitializedLocalDraftRef.current = false;
   }, [configDraftStorageKey]);
@@ -5975,7 +5977,7 @@ export default function ConfiguracoesPage() {
     try {
       const parsed = JSON.parse(raw) as Partial<PersistedConfiguracoesState>;
 
-      if (parsed.activeTab) setActiveTab(normalizeSettingsTabId(parsed.activeTab));
+      if (parsed.activeTab && !userSelectedSettingsTabRef.current) setActiveTab(normalizeSettingsTabId(parsed.activeTab));
       if (typeof parsed.isOverviewEditing === "boolean") setIsOverviewEditing(parsed.isOverviewEditing);
       if (typeof parsed.isStrategyEditing === "boolean") setIsStrategyEditing(parsed.isStrategyEditing);
       if (typeof parsed.isOperationEditing === "boolean") setIsOperationEditing(parsed.isOperationEditing);
@@ -13988,7 +13990,7 @@ export default function ConfiguracoesPage() {
                 active={activeTab === tab.id}
                 label={tab.label}
                 badge={tab.id === "plano-cobranca" ? "Em breve" : undefined}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => { userSelectedSettingsTabRef.current = true; setActiveTab(tab.id); }}
               />
             ))}
           </div>
@@ -14861,7 +14863,7 @@ export default function ConfiguracoesPage() {
                           <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
                             <div className="font-semibold">Nenhum item ativo dessa categoria foi encontrado no catálogo.</div>
                             <div className="mt-1 text-xs leading-5">Cadastre ou importe o catálogo antes de concluir esta seleção.</div>
-                            <button type="button" onClick={() => setActiveTab("catalogo")} className="mt-3 rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-950">Ir para Catálogo</button>
+                            <button type="button" onClick={() => { userSelectedSettingsTabRef.current = true; setActiveTab("catalogo"); }} className="mt-3 rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-950">Ir para Catálogo</button>
                           </div>
                         )}
                       </div>
