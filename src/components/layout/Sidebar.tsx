@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseBrowser";
@@ -162,6 +162,17 @@ const OPEN_COMMERCIAL_HANDOFF_STATUSES = [
 
 function isPendingReply(row: InboxRow) {
   return String(row.last_message_direction || "").toLowerCase() === "incoming";
+}
+
+function MobileNavigationPending() {
+  const { pending } = useLinkStatus();
+  if (!pending) return null;
+
+  return (
+    <span role="status" className="ml-auto shrink-0 text-xs font-semibold text-gray-500 md:hidden">
+      Abrindo...
+    </span>
+  );
 }
 
 export default function Sidebar({
@@ -437,7 +448,7 @@ export default function Sidebar({
 
                   <Link
                     href={item.href}
-                    onClick={onMobileClose}
+                    onClick={() => { if (pathname === item.href) onMobileClose(); }}
                     className={[
                       "group relative flex items-center gap-3 rounded-xl px-3.5 py-3 text-sm font-semibold transition-all duration-150",
                       isActive
@@ -471,6 +482,7 @@ export default function Sidebar({
                         {badgeCount}
                       </span>
                     ) : null}
+                  <MobileNavigationPending />
                   </Link>
                 </div>
               );
