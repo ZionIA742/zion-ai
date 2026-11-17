@@ -8898,7 +8898,7 @@ export default function LeadPage() {
           <div className="flex h-[calc(100dvh-15rem)] min-h-[280px] min-w-0 flex-col sm:h-[620px]">
             <div
               ref={messagesContainerRef}
-              className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-[#f2f0ea] px-3 py-3 sm:px-4 sm:py-4 lg:px-5"
+              className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-[#f2f0ea] px-3 pt-3 pb-[calc(5.5rem+env(safe-area-inset-bottom))] sm:px-4 sm:pt-4 sm:pb-4 lg:px-5"
             >
               {!conversation ? (
                 <div className="rounded-2xl bg-white p-4 text-sm text-gray-600 ring-1 ring-black/10">
