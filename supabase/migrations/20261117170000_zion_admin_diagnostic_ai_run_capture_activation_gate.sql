@@ -84,6 +84,17 @@ BEGIN
         RAISE EXCEPTION 'ZION_DIAGNOSTIC_BASELINE_NOT_EMPTY';
     END IF;
 
+    -- Snapshot consistente: nao utilizar fotografia antiga.
+    IF pg_catalog.current_setting('transaction_isolation')
+       <> 'read committed' THEN
+        RAISE EXCEPTION 'ZION_DIAGNOSTIC_REQUIRES_READ_COMMITTED'
+            USING ERRCODE = '25001';
+    END IF;
+
+    -- Nao aguardar gravacoes em andamento.
+    -- O bloqueio fica ativo ate o fim da transacao.
+    LOCK TABLE public.ai_runs IN SHARE MODE NOWAIT;
+
     v_cutoff := pg_catalog.clock_timestamp();
 
     INSERT INTO public.zion_admin_diagnostic_ai_run_capture_baseline (
@@ -170,24 +181,14 @@ BEGIN
         FROM public.ai_runs r
         WHERE NULLIF(pg_catalog.btrim(r.error), '') IS NOT NULL
 
-          -- Execucao existente, sem erro na ativacao.
-          AND (
-              EXISTS (
-                  SELECT 1
-                  FROM public.zion_admin_diagnostic_ai_run_capture_baseline b
-                  WHERE b.source_run_id = r.id
-                    AND b.had_error IS FALSE
-              )
-
-              -- Execucao nova, posterior a ativacao.
-              OR (
-                  r.created_at >= v_cutoff
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM public.zion_admin_diagnostic_ai_run_capture_baseline b
-                      WHERE b.source_run_id = r.id
-                  )
-              )
+          -- Exclui apenas execucoes que ja tinham erro no baseline.
+          -- IDs ausentes do baseline sao posteriores a ativacao,
+          -- independentemente do valor de created_at.
+          AND NOT EXISTS (
+              SELECT 1
+              FROM public.zion_admin_diagnostic_ai_run_capture_baseline b
+              WHERE b.source_run_id = r.id
+                AND b.had_error IS TRUE
           )
 
           AND NOT EXISTS (
