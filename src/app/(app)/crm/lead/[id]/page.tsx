@@ -6503,7 +6503,7 @@ export default function LeadPage() {
             : paymentState?.progressState || "Indisponivel";
 
   return (
-    <div className="min-h-screen min-w-0 overflow-x-clip bg-white -mx-4 -mt-4 lg:-mx-6 lg:-mt-6">
+    <div className="min-h-screen min-w-0 overflow-x-clip bg-white -mx-3 -mt-3 sm:-mx-4 sm:-mt-4 lg:-mx-6 lg:-mt-6">
       <div className="w-full min-w-0 max-w-none p-0">
         {refreshing ? (
           <div className="mb-4 flex justify-end">
@@ -9280,7 +9280,7 @@ export default function LeadPage() {
               <div ref={messagesEndRef} aria-hidden="true" />
             </div>
 
-            <div className="relative min-w-0 border-t border-gray-100 bg-white px-2 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:px-4 sm:py-3 lg:px-5">
+            <div className="sticky bottom-0 z-20 min-w-0 shrink-0 border-t border-gray-100 bg-white px-2 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:relative sm:bottom-auto sm:z-auto sm:px-4 sm:py-3 lg:px-5">
               <input
                 ref={documentInputRef}
                 type="file"
