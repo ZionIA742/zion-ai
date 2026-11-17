@@ -1313,12 +1313,26 @@ function getStoredAttachmentLabel(kind: string) {
   return "Anexo";
 }
 
+const CRM_MESSAGE_DAY_FORMATTER = new Intl.DateTimeFormat("pt-BR", {
+  timeZone: "America/Sao_Paulo",
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+});
+
+function formatMessageDay(value: string | null) {
+  if (!value) return "Data não informada";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Data não informada";
+  return CRM_MESSAGE_DAY_FORMATTER.format(date);
+}
 function formatMessageTime(value: string | null) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
 
   return date.toLocaleTimeString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -8910,8 +8924,26 @@ export default function LeadPage() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {messages.map((message) => (
-                    <div key={message.id} className="flex w-full">
+                  {messages.map((message, index) => {
+                    const dayLabel = formatMessageDay(message.created_at);
+                    const previousDayLabel = index > 0
+                      ? formatMessageDay(messages[index - 1].created_at)
+                      : null;
+
+                    return (
+                      <div key={message.id}>
+                        {dayLabel !== previousDayLabel ? (
+                          <div
+                            role="separator"
+                            aria-label={"Mensagens de " + dayLabel}
+                            className="flex justify-center py-1"
+                          >
+                            <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-600 shadow-sm ring-1 ring-black/10">
+                              {dayLabel}
+                            </span>
+                          </div>
+                        ) : null}
+                        <div className="flex w-full">
                       <div
                         className={`min-w-0 max-w-[92%] break-words rounded-2xl px-3.5 py-2.5 text-sm shadow-sm sm:max-w-[82%] ${bubbleClass(
                           message
@@ -9273,8 +9305,10 @@ export default function LeadPage() {
                           );
                         })()}
                       </div>
-                    </div>
-                  ))}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               <div ref={messagesEndRef} aria-hidden="true" />
