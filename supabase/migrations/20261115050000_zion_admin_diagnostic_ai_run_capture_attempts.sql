@@ -92,8 +92,6 @@ REVOKE ALL ON TABLE
     public.zion_admin_diagnostic_ai_run_capture_attempts
 FROM PUBLIC, anon, authenticated, service_role;
 
-GRANT SELECT, INSERT, UPDATE ON TABLE
-    public.zion_admin_diagnostic_ai_run_capture_attempts
-TO service_role;
+-- Acesso direto revogado; modificacoes somente por funcoes SECURITY DEFINER.
 
 COMMIT;
