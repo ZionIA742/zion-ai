@@ -885,7 +885,11 @@ export default function AssistantPage() {
   );
   const assistantScopeKeyRef = useRef<string | null>(assistantScopeKey);
   const assistantLoadRequestSeqRef = useRef(0);
-  const assistantLoadInFlightRef = useRef<{ scopeKey: string; token: number } | null>(null);
+  const assistantLoadInFlightRef = useRef<{
+    scopeKey: string;
+    token: number;
+    completion: Promise<void>;
+  } | null>(null);
   const assistantLoadTokenRef = useRef(0);
   const assistantPriorityRequestSeqRef = useRef(0);
   const assistantOlderMessagesRequestSeqRef = useRef(0);
@@ -1063,16 +1067,36 @@ export default function AssistantPage() {
   }, []);
 
   const loadAssistant = useCallback(
-    async (options?: { silent?: boolean; reset?: boolean }) => {
+    async (options?: { silent?: boolean; reset?: boolean; waitForInFlight?: boolean }) => {
       if (!canLoad || !organizationId || !activeStoreId) return;
 
       const scopeKey = assistantScopeKeyRef.current;
       if (!scopeKey) return;
-      if (assistantLoadInFlightRef.current?.scopeKey === scopeKey) return;
+
+      if (options?.waitForInFlight) {
+        while (true) {
+          const activeLoad = assistantLoadInFlightRef.current;
+          if (!activeLoad || activeLoad.scopeKey !== scopeKey) break;
+          await activeLoad.completion;
+          if (!isCurrentAssistantScope(scopeKey)) return;
+        }
+      } else if (assistantLoadInFlightRef.current?.scopeKey === scopeKey) {
+        return;
+      }
 
       const requestToken = assistantLoadTokenRef.current + 1;
       assistantLoadTokenRef.current = requestToken;
-      assistantLoadInFlightRef.current = { scopeKey, token: requestToken };
+
+      let resolveCompletion: () => void = () => {};
+      const completion = new Promise<void>((resolve) => {
+        resolveCompletion = resolve;
+      });
+
+      assistantLoadInFlightRef.current = {
+        scopeKey,
+        token: requestToken,
+        completion,
+      };
 
       try {
         const requestSeq = assistantLoadRequestSeqRef.current + 1;
@@ -1158,6 +1182,7 @@ export default function AssistantPage() {
         if (assistantLoadInFlightRef.current?.token === requestToken) {
           assistantLoadInFlightRef.current = null;
         }
+        resolveCompletion();
       }
     },
     [canLoad, organizationId, activeStoreId, isCurrentAssistantScope]
@@ -1427,14 +1452,14 @@ export default function AssistantPage() {
         setErrorText(null);
         setStatusText("A resposta está sendo preparada. Você poderá tentar recuperar quando estiver pronta.");
         setSending(false);
-        await loadAssistant({ silent: true });
+        await loadAssistant({ silent: true, waitForInFlight: true });
         return;
       }
 
       if (!response.ok || !result.ok) {
         setErrorText(result.message || result.error || "Erro ao gerar resposta da assistente.");
         setSending(false);
-        await loadAssistant({ silent: true });
+        await loadAssistant({ silent: true, waitForInFlight: true });
         return;
       }
 
@@ -1447,7 +1472,7 @@ export default function AssistantPage() {
       setPendingHumanMessageId(null);
       setSending(false);
       forceScrollToBottomRef.current = true;
-      await loadAssistant({ silent: true });
+      await loadAssistant({ silent: true, waitForInFlight: true });
       scrollChatToBottom("smooth");
     } catch (error: unknown) {
       if (!isCurrentAssistantScope(scopeKey)) return;
@@ -1457,7 +1482,7 @@ export default function AssistantPage() {
       );
       setSending(false);
       forceScrollToBottomRef.current = true;
-      await loadAssistant({ silent: true });
+      await loadAssistant({ silent: true, waitForInFlight: true });
       scrollChatToBottom("smooth");
     }
   }
