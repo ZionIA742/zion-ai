@@ -268,7 +268,8 @@ begin
 
   -- A modalidade do candidato precisa ser comprovada no cutover. Nunca
   -- herdar ou apagar silenciosamente a modalidade do vinculo anterior.
-  if not (p_provenance ? 'connection_mode')
+  if p_provenance is null
+     or not (p_provenance ? 'connection_mode')
      or pg_catalog.jsonb_typeof(p_provenance -> 'connection_mode')
           is distinct from 'string'
      or (p_provenance ->> 'connection_mode')

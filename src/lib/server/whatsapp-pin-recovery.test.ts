@@ -414,6 +414,72 @@ test("materialization requires a fresh OAuth token and never returns it", async 
   assert.equal(fake.calls.some((call) => call.name.includes("finalize_")), true);
 });
 
+test("standard recovery with PIN pending finalizes before reporting completion", async () => {
+  const integrationId = "66666666-6666-4666-8666-666666666666";
+  const fake = createFakeSupabase({
+    integration: { data: [{
+      integration_id: integrationId,
+      outcome: "reconnected",
+      provider: "whatsapp",
+      whatsapp_business_account_id: WHATSAPP_PIN_RECOVERY_TARGET.wabaId,
+      phone_number_id: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId,
+      status: "active",
+      is_active: false,
+    }], error: null },
+  });
+  const response = await createWhatsappPinRecoveryPostHandler(baseDeps(fake))(
+    trustedRequest({ action: "materialize", attemptId: ATTEMPT, operationId: OPERATION, oauthCode: "fresh-code" }),
+  );
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "completed");
+  const materializeIndex = fake.calls.findIndex((call) => call.name === "materialize_store_whatsapp_pin_recovery_by_system");
+  const finalizeIndex = fake.calls.findIndex((call) => call.name === "finalize_whatsapp_pin_recovery_materialization_by_system");
+  assert.ok(materializeIndex >= 0 && finalizeIndex > materializeIndex);
+  assert.equal(fake.calls[finalizeIndex].args.p_integration_id, integrationId);
+});
+
+test("standard recovery with PIN pending never reports success if finalization fails", async () => {
+  const fake = createFakeSupabase({
+    integration: { data: [{
+      integration_id: "66666666-6666-4666-8666-666666666666",
+      outcome: "reconnected",
+      provider: "whatsapp",
+      whatsapp_business_account_id: WHATSAPP_PIN_RECOVERY_TARGET.wabaId,
+      phone_number_id: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId,
+      status: "active",
+      is_active: false,
+    }], error: null },
+    rpcErrors: { finalize_whatsapp_pin_recovery_materialization_by_system: "ZION_PIN_RECOVERY_INTEGRATION_NOT_VALID" },
+  });
+  const response = await createWhatsappPinRecoveryPostHandler(baseDeps(fake))(
+    trustedRequest({ action: "materialize", attemptId: ATTEMPT, operationId: OPERATION, oauthCode: "fresh-code" }),
+  );
+  assert.equal(response.status, 503);
+  const body = await response.json();
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "ZION_PIN_RECOVERY_INTEGRATION_NOT_VALID");
+  assert.ok(fake.calls.some((call) => call.name === "finalize_whatsapp_pin_recovery_materialization_by_system"));
+});
+
+test("standard recovery rejects an indeterminate integration active flag before finalization", async () => {
+  const fake = createFakeSupabase({
+    integration: { data: [{
+      integration_id: "66666666-6666-4666-8666-666666666666",
+      outcome: "reconnected",
+      provider: "whatsapp",
+      whatsapp_business_account_id: WHATSAPP_PIN_RECOVERY_TARGET.wabaId,
+      phone_number_id: WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId,
+      status: "active",
+      is_active: null,
+    }], error: null },
+  });
+  const response = await createWhatsappPinRecoveryPostHandler(baseDeps(fake))(
+    trustedRequest({ action: "materialize", attemptId: ATTEMPT, operationId: OPERATION, oauthCode: "fresh-code" }),
+  );
+  assert.equal(response.status, 400);
+  assert.equal(fake.calls.some((call) => call.name === "finalize_whatsapp_pin_recovery_materialization_by_system"), false);
+});
+
 test("remote_confirmed can be resumed after initial authorization expiry with fresh OAuth", async () => {
   const fake = createFakeSupabase({
     resumable: {

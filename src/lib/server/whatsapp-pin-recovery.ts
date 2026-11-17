@@ -530,7 +530,14 @@ async function materialize(body: Record<string, unknown>, access: RecoveryAccess
     clean(integrationRow.phone_number_id) !== WHATSAPP_PIN_RECOVERY_TARGET.phoneNumberId ||
     materializedWaba !== WHATSAPP_PIN_RECOVERY_TARGET.wabaId ||
     clean(integrationRow.status) !== "active" ||
-    integrationRow.is_active !== true
+    // Recovery standard may return an inactive integration while its PIN is
+    // pending. The SQL finalizer exclusively validates this intermediate
+    // state and atomically activates the replacement secret + integration.
+    // Never report success until that finalizer returns "completed".
+    !(
+      integrationRow.is_active === true ||
+      (validated.connectionMode === "standard" && integrationRow.is_active === false)
+    )
   ) throw new Error("WHATSAPP_PIN_RECOVERY_INTEGRATION_INVALID");
   const finalized = await callRpc(client, "finalize_whatsapp_pin_recovery_materialization_by_system", {
     p_attempt_id: attemptId,

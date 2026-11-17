@@ -630,10 +630,32 @@ begin
   end if;
 
   v_mode := nullif(pg_catalog.btrim(coalesce(v_current.metadata ->> 'connection_mode', '')), '');
-  if v_mode not in ('standard', 'business_app_coexistence') then
+  if v_mode is null or v_mode not in ('standard', 'business_app_coexistence') then
     raise exception using
       errcode = '23514',
       message = 'ZION_WHATSAPP_PIN_RECOVERY_CONNECTION_MODE_REQUIRED';
+  end if;
+
+  -- A recuperacao da Cloud API convencional nao pode promover uma conexao
+  -- enquanto a ativacao atomica do PIN ainda estiver pendente. Reutiliza o
+  -- materializador pendente, que preserva is_active=false e a pendencia no
+  -- mesmo escopo transacional, sem modificar o fluxo de coexistencia.
+  if v_mode = 'standard'
+     and v_current.metadata ->> 'pin_activation_pending' = 'true' then
+    return query
+    select *
+      from public.materialize_store_whatsapp_signup_pending_pin_by_system(
+        p_organization_id,
+        p_store_id,
+        p_whatsapp_business_account_id,
+        p_phone_number_id,
+        p_display_phone_number,
+        p_access_token,
+        p_meta_graph_api_version,
+        p_meta_app_id,
+        p_validated_at
+      );
+    return;
   end if;
 
   return query
@@ -662,6 +684,143 @@ revoke all on function public.materialize_store_whatsapp_pin_recovery_by_system(
 
 grant execute on function public.materialize_store_whatsapp_pin_recovery_by_system(
   uuid, uuid, text, text, text, text, text, text, timestamptz
+) to service_role;
+
+
+-- A funcao de finalizacao ja existe no Supabase e foi inspecionada via
+-- pg_get_functiondef em 2026-11-16. Nunca sobrescrever uma versao divergente.
+-- Fingerprint ignora apenas espacos em branco e usa SHA-256 do corpo completo.
+do $zion_recovery_finalizer_source_guard$
+declare
+  v_oid oid;
+  v_actual text;
+begin
+  v_oid := pg_catalog.to_regprocedure(
+    'public.finalize_whatsapp_pin_recovery_materialization_by_system(uuid,uuid,uuid,uuid,text,text,text,timestamptz)'
+  );
+  if v_oid is null then
+    raise exception using errcode='55000',
+      message='ZION_PIN_RECOVERY_FINALIZER_SOURCE_NOT_FOUND';
+  end if;
+  select pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+    pg_catalog.regexp_replace(pg_catalog.pg_get_functiondef(v_oid), '[[:space:]]+', '', 'g'),
+    'UTF8')), 'hex')
+  into v_actual;
+  if v_actual is distinct from 'b772a7bbe386026ca0ed4d0e7682202c2f21ca3f2cff681471aa1a60f613b161' then
+    raise exception using errcode='55000',
+      message='ZION_PIN_RECOVERY_FINALIZER_SOURCE_DRIFT';
+  end if;
+end;
+$zion_recovery_finalizer_source_guard$;
+
+-- Redefinicao cirurgica: conserva validacoes de sessao, tentativa, token,
+-- WABA e segredo pendente; altera somente a verificacao de integracao ativa.
+CREATE OR REPLACE FUNCTION public.finalize_whatsapp_pin_recovery_materialization_by_system(p_attempt_id uuid, p_operation_id uuid, p_actor_user_id uuid, p_integration_id uuid, p_access_token_fingerprint text, p_meta_graph_api_version text, p_meta_app_id text, p_validated_at timestamp with time zone)
+ RETURNS TABLE(attempt_id uuid, status text, integration_id uuid, replacement_secret_id uuid, outcome text)
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+DECLARE v public.whatsapp_pin_recovery_attempts%ROWTYPE;
+        e public.external_integrations%ROWTYPE;
+        v_activation record;
+        v_waba text;
+        v_expected_fingerprint text;
+BEGIN
+    IF auth.role() IS DISTINCT FROM 'service_role' THEN
+        RAISE EXCEPTION 'ZION_PIN_RECOVERY_SERVICE_ROLE_REQUIRED' USING ERRCODE='42501';
+    END IF;
+    SELECT * INTO v FROM public.whatsapp_pin_recovery_attempts a
+    WHERE a.id=p_attempt_id FOR UPDATE;
+    IF NOT FOUND OR v.operation_id IS DISTINCT FROM p_operation_id
+       OR v.actor_user_id IS DISTINCT FROM p_actor_user_id THEN
+        RAISE EXCEPTION 'ZION_PIN_RECOVERY_FINALIZATION_SCOPE_INVALID' USING ERRCODE='42501';
+    END IF;
+    IF v.status='completed' THEN
+        IF v.integration_id IS DISTINCT FROM p_integration_id THEN
+            RAISE EXCEPTION 'ZION_PIN_RECOVERY_FINALIZATION_REPLAY_CONFLICT' USING ERRCODE='23505';
+        END IF;
+        RETURN QUERY SELECT v.id,v.status,v.integration_id,v.replacement_secret_id,'idempotent_replay'::text;
+        RETURN;
+    END IF;
+    v_expected_fingerprint := coalesce(v.materialization_token_fingerprint,
+                                       v.access_token_fingerprint);
+    IF v.status <> 'remote_confirmed' OR v.replacement_secret_id IS NULL
+       OR v.remote_evidence_hash IS NULL OR v.remote_http_status IS NULL OR v.remote_http_status NOT BETWEEN 200 AND 299
+       OR v_expected_fingerprint IS NULL
+       OR v_expected_fingerprint IS DISTINCT FROM p_access_token_fingerprint
+       OR p_validated_at IS NULL
+       OR p_validated_at > clock_timestamp() + interval '30 seconds'
+       OR p_validated_at < clock_timestamp() - interval '10 minutes'
+       OR (v.materialization_token_validated_at IS NOT NULL
+           AND p_validated_at < v.materialization_token_validated_at) THEN
+        RAISE EXCEPTION 'ZION_PIN_RECOVERY_FINALIZATION_NOT_AUTHORIZED' USING ERRCODE='42501';
+    END IF;
+    SELECT * INTO e FROM public.external_integrations i WHERE i.id=p_integration_id FOR SHARE;
+    -- ZION_P19A_RECOVERY_PENDING_STANDARD_FINALIZATION_V1
+    -- A integracao standard com PIN pendente pode permanecer inativa ate
+    -- a ativacao atomica abaixo. Outros estados inativos falham fechado.
+    IF NOT FOUND
+       OR e.organization_id IS DISTINCT FROM v.organization_id
+       OR e.store_id IS DISTINCT FROM v.store_id
+       OR e.provider IS DISTINCT FROM 'whatsapp'
+       OR e.status IS DISTINCT FROM 'active'
+       OR NOT (
+         e.is_active IS TRUE
+         OR (
+           e.is_active IS FALSE
+           AND e.metadata ->> 'connection_mode' IS NOT DISTINCT FROM 'standard'
+           AND e.metadata ->> 'pin_activation_pending' IS NOT DISTINCT FROM 'true'
+         )
+       )
+       OR e.phone_number_id IS DISTINCT FROM v.phone_number_id THEN
+        RAISE EXCEPTION 'ZION_PIN_RECOVERY_INTEGRATION_NOT_VALID' USING ERRCODE='42501';
+    END IF;
+    -- Ensure the token actually materialized by the CANONICAL writer is the one
+    -- validated for this attempt. SHA-256 exists in PostgreSQL 15+ / Supabase.
+    -- This is a fingerprint comparison, never a token returned or persisted here.
+    IF e.access_token IS NULL OR pg_catalog.encode(
+         pg_catalog.sha256(pg_catalog.convert_to(e.access_token,'UTF8')),'hex'
+       ) IS DISTINCT FROM p_access_token_fingerprint THEN
+        RAISE EXCEPTION 'ZION_PIN_RECOVERY_MATERIALIZED_TOKEN_MISMATCH' USING ERRCODE='42501';
+    END IF;
+    v_waba := coalesce(pg_catalog.to_jsonb(e)->>'whatsapp_business_account_id',
+                       pg_catalog.to_jsonb(e)->>'waba_id',
+                       pg_catalog.to_jsonb(e)->'metadata'->>'waba_id');
+    IF v_waba IS DISTINCT FROM v.waba_id THEN
+        RAISE EXCEPTION 'ZION_PIN_RECOVERY_WABA_MISMATCH' USING ERRCODE='42501';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.whatsapp_phone_security_secrets s
+                   WHERE s.id=v.replacement_secret_id AND s.organization_id=v.organization_id
+                     AND s.store_id=v.store_id AND s.phone_number_id=v.phone_number_id
+                     AND s.status='pending') THEN
+        RAISE EXCEPTION 'ZION_PIN_RECOVERY_PENDING_SECRET_MISSING' USING ERRCODE='42501';
+    END IF;
+    SELECT * INTO v_activation FROM public.activate_whatsapp_phone_security_secret_by_system(
+        v.organization_id,v.store_id,'whatsapp',v.phone_number_id,p_integration_id
+    );
+    IF v_activation.secret_id IS DISTINCT FROM v.replacement_secret_id
+       OR v_activation.status IS DISTINCT FROM 'active' THEN
+        RAISE EXCEPTION 'ZION_PIN_RECOVERY_SECRET_ACTIVATION_MISMATCH' USING ERRCODE='42501';
+    END IF;
+    UPDATE public.whatsapp_pin_recovery_attempts a
+       SET status='completed',integration_id=p_integration_id,
+           finalized_at=clock_timestamp(),updated_at=clock_timestamp()
+     WHERE a.id=v.id;
+    INSERT INTO public.whatsapp_pin_recovery_events(attempt_id,operation_id,actor_user_id,event_type)
+    VALUES(v.id,v.operation_id,v.actor_user_id,'completed');
+    RETURN QUERY SELECT v.id,'completed'::text,p_integration_id,v.replacement_secret_id,'completed'::text;
+END;
+$function$;
+
+alter function public.finalize_whatsapp_pin_recovery_materialization_by_system(
+  uuid, uuid, uuid, uuid, text, text, text, timestamptz
+) owner to postgres;
+revoke all on function public.finalize_whatsapp_pin_recovery_materialization_by_system(
+  uuid, uuid, uuid, uuid, text, text, text, timestamptz
+) from public, anon, authenticated;
+grant execute on function public.finalize_whatsapp_pin_recovery_materialization_by_system(
+  uuid, uuid, uuid, uuid, text, text, text, timestamptz
 ) to service_role;
 
 commit;
