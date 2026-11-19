@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   CANONICAL_CRM_STAGES,
   type CanonicalCrmStageDefinition,
@@ -212,15 +212,42 @@ export default function CrmPage() {
   }, [organizationId, storeLoading]);
 
 
+  const crmScopeKey = JSON.stringify([organizationId, activeStoreId]);
+  const currentCrmScopeRef = useRef(crmScopeKey);
+  const latestCrmFetchRef = useRef(0);
+  const activeCrmFetchRef = useRef<{ scopeKey: string; requestId: number } | null>(null);
+
+  useLayoutEffect(() => {
+    currentCrmScopeRef.current = crmScopeKey;
+    latestCrmFetchRef.current += 1;
+    return () => {
+      latestCrmFetchRef.current += 1;
+    };
+  }, [crmScopeKey]);
   const fetchPageData = useCallback(
-    async (options?: { silent?: boolean }) => {
+    async (options?: { silent?: boolean; force?: boolean }) => {
       const silent = options?.silent ?? false;
+      const force = options?.force === true;
+      const scopeKey = crmScopeKey;
 
       if (!organizationId) {
         setCards([]);
         setLoading(false);
         return;
       }
+
+      if (
+        silent && !force &&
+        activeCrmFetchRef.current?.scopeKey === scopeKey &&
+        activeCrmFetchRef.current.requestId === latestCrmFetchRef.current
+      ) return;
+
+      const requestId = ++latestCrmFetchRef.current;
+      const request = { scopeKey, requestId };
+      activeCrmFetchRef.current = request;
+      const isCurrentRequest = () =>
+        currentCrmScopeRef.current === scopeKey &&
+        latestCrmFetchRef.current === requestId;
 
       setErrorMsg(null);
       if (!silent) {
@@ -237,6 +264,8 @@ export default function CrmPage() {
             p_offset: 0,
           }
         );
+
+        if (!isCurrentRequest()) return;
 
         if (error) {
           throw error;
@@ -259,6 +288,7 @@ export default function CrmPage() {
 
         setCards(nextCards);
       } catch (error: unknown) {
+        if (!isCurrentRequest()) return;
         const message =
           error instanceof Error
             ? error.message
@@ -266,12 +296,15 @@ export default function CrmPage() {
         setErrorMsg(message || "Falha ao carregar o board canônico de oportunidades.");
         setCards([]);
       } finally {
-        if (!silent) {
+        if (activeCrmFetchRef.current === request) {
+          activeCrmFetchRef.current = null;
+        }
+        if (isCurrentRequest()) {
           setLoading(false);
         }
       }
     },
-    [organizationId, activeStoreId]
+    [organizationId, activeStoreId, crmScopeKey]
   );
 
   useEffect(() => {
@@ -561,7 +594,7 @@ export default function CrmPage() {
           phone: "",
         });
         setManualLeadCreateError(null);
-        await fetchPageData({ silent: true });
+        await fetchPageData({ silent: true, force: true });
         router.push(href);
       } catch (error) {
         setManualLeadCreateError(
