@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import IntelligentCatalogImportPanel from "@/components/catalog/IntelligentCatalogImportPanel";
+import dynamic from "next/dynamic";
 import { useStoreContext } from "@/components/StoreProvider";
 import {
   preserveContractRuleDraftAfterConflict,
@@ -98,6 +98,17 @@ import {
   type TechnicalServicesExecutionPolicy,
   type TechnicalVisitExecutionPolicy,
 } from "@/lib/store-operation-execution-policies";
+
+const IntelligentCatalogImportPanel = dynamic(
+  () => import("@/components/catalog/IntelligentCatalogImportPanel"),
+  {
+    loading: () => (
+      <div role="status" className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
+        Carregando painel de importação do catálogo...
+      </div>
+    ),
+  }
+);
 type CountState = {
   pools: number;
   quimicos: number;
