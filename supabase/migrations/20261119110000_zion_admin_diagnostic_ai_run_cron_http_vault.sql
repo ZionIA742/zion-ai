@@ -133,8 +133,7 @@ BEGIN
     INTO v_job
     FROM cron.job
     WHERE jobname =
-        'zion_admin_diagnostic_ai_runs_every_5_minutes'
-    FOR UPDATE;
+        'zion_admin_diagnostic_ai_runs_every_5_minutes';
 
     IF NOT FOUND
        OR v_job.schedule <> '*/5 * * * *'
