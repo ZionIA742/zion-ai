@@ -921,6 +921,7 @@ export default function SchedulePage() {
   const [appointmentCreateAuthEpoch, setAppointmentCreateAuthEpoch] = useState(0);
   const [leadOptions, setLeadOptions] = useState<LeadConversationOption[]>([]);
   const [loadingLeadOptions, setLoadingLeadOptions] = useState(false);
+  const leadOptionsRequestIdRef = useRef(0);
   const [leadCommercialOpportunityOptions, setLeadCommercialOpportunityOptions] =
     useState<LeadCommercialOpportunityOption[]>([]);
   const [loadingLeadCommercialOpportunityOptions, setLoadingLeadCommercialOpportunityOptions] =
@@ -1519,6 +1520,18 @@ export default function SchedulePage() {
       return;
     }
 
+    const requestId = ++leadOptionsRequestIdRef.current;
+    const sessionFence = captureAppointmentCreateSessionFence(
+      appointmentCreateSessionFenceRef.current,
+    );
+    const isCurrentLeadOptionsRequest = () =>
+      requestId === leadOptionsRequestIdRef.current &&
+      isCurrentAppointmentCreateSessionFence(
+        appointmentCreateSessionFenceRef.current,
+        sessionFence,
+      );
+
+    setLeadOptions([]);
     setLoadingLeadOptions(true);
 
     try {
@@ -1530,6 +1543,7 @@ export default function SchedulePage() {
         .order("created_at", { ascending: false })
         .limit(50);
 
+      if (!isCurrentLeadOptionsRequest()) return;
       if (leadsError) throw leadsError;
 
       const leads = (leadsData || []) as Array<{
@@ -1541,7 +1555,6 @@ export default function SchedulePage() {
 
       if (leads.length === 0) {
         setLeadOptions([]);
-        setLoadingLeadOptions(false);
         return;
       }
 
@@ -1553,6 +1566,7 @@ export default function SchedulePage() {
         .in("lead_id", leadIds)
         .order("last_message_at", { ascending: false });
 
+      if (!isCurrentLeadOptionsRequest()) return;
       if (conversationsError) throw conversationsError;
 
       const bestConversationByLead = new Map<string, {
@@ -1598,10 +1612,13 @@ export default function SchedulePage() {
         })
       );
     } catch (error) {
+      if (!isCurrentLeadOptionsRequest()) return;
       console.error("[SchedulePage] loadLeadOptions error:", error);
       setLeadOptions([]);
     } finally {
-      setLoadingLeadOptions(false);
+      if (isCurrentLeadOptionsRequest()) {
+        setLoadingLeadOptions(false);
+      }
     }
   }, [canLoadSchedule, organizationId, activeStoreId]);
 
@@ -1673,8 +1690,18 @@ export default function SchedulePage() {
 
   useEffect(() => {
     if (!canLoadSchedule) return;
+    if (!createAppointmentOpen && !selectedItem?.leadId) return;
     void loadLeadOptions();
-  }, [canLoadSchedule, loadLeadOptions]);
+    return () => {
+      leadOptionsRequestIdRef.current += 1;
+    };
+  }, [
+    canLoadSchedule,
+    createAppointmentOpen,
+    selectedItem?.leadId,
+    loadLeadOptions,
+    appointmentCreateAuthEpoch,
+  ]);
 
 
 
