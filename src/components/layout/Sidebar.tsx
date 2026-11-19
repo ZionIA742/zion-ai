@@ -2,7 +2,7 @@
 
 import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseBrowser";
 import { useStoreContext } from "@/components/StoreProvider";
 import { countActiveAssistantPendingActions } from "@/lib/assistant/active-pending-actions";
@@ -188,6 +188,35 @@ export default function Sidebar({
   const [commercialPendingConversationCount, setCommercialPendingConversationCount] = useState(0);
   const [assistantPendingCount, setAssistantPendingCount] = useState(0);
 
+  const sidebarScopeKey = JSON.stringify([storeLoading, organizationId, activeStoreId]);
+  const counterGateRef = useRef({
+    scopeKey: sidebarScopeKey,
+    inboxGeneration: 0,
+    assistantGeneration: 0,
+    inboxInFlight: false,
+    assistantInFlight: false,
+  });
+
+  useLayoutEffect(() => {
+    const gate = counterGateRef.current;
+    gate.scopeKey = sidebarScopeKey;
+    gate.inboxGeneration += 1;
+    gate.assistantGeneration += 1;
+    gate.inboxInFlight = false;
+    gate.assistantInFlight = false;
+
+    setPendingReplyCount(0);
+    setCommercialPendingConversationCount(0);
+    setAssistantPendingCount(0);
+
+    return () => {
+      gate.inboxGeneration += 1;
+      gate.assistantGeneration += 1;
+      gate.inboxInFlight = false;
+      gate.assistantInFlight = false;
+    };
+  }, [sidebarScopeKey]);
+
   const canLoadInboxCounter = useMemo(() => {
     return !storeLoading && !!organizationId;
   }, [storeLoading, organizationId]);
@@ -199,95 +228,129 @@ export default function Sidebar({
   const loadInboxCounter = useCallback(async () => {
     if (!canLoadInboxCounter || !organizationId) return;
 
-    const { data, error } = await supabase.rpc("panel_list_inbox", {
-      p_organization_id: organizationId,
-      p_store_id: activeStoreId ?? null,
-      p_limit: 100,
-      p_offset: 0,
-    });
+    const gate = counterGateRef.current;
+    if (gate.scopeKey !== sidebarScopeKey || gate.inboxInFlight) return;
+    const requestId = ++gate.inboxGeneration;
+    gate.inboxInFlight = true;
+    const isCurrentInboxCounter = () =>
+      gate.scopeKey === sidebarScopeKey &&
+      gate.inboxGeneration === requestId;
 
-    if (error) {
-      console.error("[Sidebar] panel_list_inbox error:", error);
-      return;
-    }
+    try {
+      const { data, error } = await supabase.rpc("panel_list_inbox", {
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId ?? null,
+        p_limit: 100,
+        p_offset: 0,
+      });
 
-    const rows = (data || []) as InboxRow[];
-    const count = rows.filter(isPendingReply).length;
-    setPendingReplyCount(count);
+      if (!isCurrentInboxCounter()) return;
 
-    const conversationIds = [...new Set(rows.map((row) => row.conversation_id).filter(Boolean))];
+      if (error) {
+        console.error("[Sidebar] panel_list_inbox error:", error);
+        return;
+      }
 
-    if (conversationIds.length === 0) {
-      setCommercialPendingConversationCount(0);
-      return;
-    }
+      const rows = (data || []) as InboxRow[];
+      const count = rows.filter(isPendingReply).length;
+      setPendingReplyCount(count);
 
-    let query = supabase
-      .from("store_assistant_operational_tasks")
-      .select("related_conversation_id, task_type, status")
-      .eq("organization_id", organizationId)
-      .in("related_conversation_id", conversationIds)
-      .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
-      .in("status", OPEN_COMMERCIAL_HANDOFF_STATUSES);
+      const conversationIds = [...new Set(rows.map((row) => row.conversation_id).filter(Boolean))];
 
-    if (activeStoreId) {
-      query = query.eq("store_id", activeStoreId);
-    } else {
-      const storeIds = [...new Set(rows.map((row) => row.store_id).filter(Boolean))];
-      if (storeIds.length > 0) {
-        query = query.in("store_id", storeIds);
+      if (conversationIds.length === 0) {
+        setCommercialPendingConversationCount(0);
+        return;
+      }
+
+      let query = supabase
+        .from("store_assistant_operational_tasks")
+        .select("related_conversation_id, task_type, status")
+        .eq("organization_id", organizationId)
+        .in("related_conversation_id", conversationIds)
+        .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
+        .in("status", OPEN_COMMERCIAL_HANDOFF_STATUSES);
+
+      if (activeStoreId) {
+        query = query.eq("store_id", activeStoreId);
+      } else {
+        const storeIds = [...new Set(rows.map((row) => row.store_id).filter(Boolean))];
+        if (storeIds.length > 0) {
+          query = query.in("store_id", storeIds);
+        }
+      }
+
+      const { data: tasks, error: tasksError } = await query;
+
+      if (!isCurrentInboxCounter()) return;
+
+      if (tasksError) {
+        console.warn("[Sidebar] erro ao carregar handoffs comerciais do Inbox:", tasksError);
+        setCommercialPendingConversationCount(0);
+        return;
+      }
+
+      const conversationCount = new Set(
+        ((tasks || []) as CommercialHandoffTaskRow[])
+          .map((task) => String(task.related_conversation_id || "").trim())
+          .filter(Boolean)
+      ).size;
+
+      setCommercialPendingConversationCount(conversationCount);
+    } finally {
+      if (isCurrentInboxCounter()) {
+        gate.inboxInFlight = false;
       }
     }
-
-    const { data: tasks, error: tasksError } = await query;
-
-    if (tasksError) {
-      console.warn("[Sidebar] erro ao carregar handoffs comerciais do Inbox:", tasksError);
-      setCommercialPendingConversationCount(0);
-      return;
-    }
-
-    const conversationCount = new Set(
-      ((tasks || []) as CommercialHandoffTaskRow[])
-        .map((task) => String(task.related_conversation_id || "").trim())
-        .filter(Boolean)
-    ).size;
-
-    setCommercialPendingConversationCount(conversationCount);
-  }, [canLoadInboxCounter, organizationId, activeStoreId]);
+  }, [canLoadInboxCounter, organizationId, activeStoreId, sidebarScopeKey]);
 
   const loadAssistantCounter = useCallback(async () => {
     if (!canLoadAssistantCounter || !organizationId || !activeStoreId) return;
 
-    const [{ error: summaryError }, { data: messagesData, error: messagesError }] =
-      await Promise.all([
-        supabase.rpc("assistant_get_thread_summary", {
-          p_organization_id: organizationId,
-          p_store_id: activeStoreId,
-        }),
-        supabase.rpc("assistant_list_messages", {
-          p_organization_id: organizationId,
-          p_store_id: activeStoreId,
-          p_limit: 200,
-        }),
-      ]);
+    const gate = counterGateRef.current;
+    if (gate.scopeKey !== sidebarScopeKey || gate.assistantInFlight) return;
+    const requestId = ++gate.assistantGeneration;
+    gate.assistantInFlight = true;
+    const isCurrentAssistantCounter = () =>
+      gate.scopeKey === sidebarScopeKey &&
+      gate.assistantGeneration === requestId;
 
-    if (summaryError) {
-      console.warn("[Sidebar] assistant_get_thread_summary error:", summaryError);
-      setAssistantPendingCount(0);
-      return;
+    try {
+      const [{ error: summaryError }, { data: messagesData, error: messagesError }] =
+        await Promise.all([
+          supabase.rpc("assistant_get_thread_summary", {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+          }),
+          supabase.rpc("assistant_list_messages", {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_limit: 200,
+          }),
+        ]);
+
+      if (!isCurrentAssistantCounter()) return;
+
+      if (summaryError) {
+        console.warn("[Sidebar] assistant_get_thread_summary error:", summaryError);
+        setAssistantPendingCount(0);
+        return;
+      }
+
+      if (messagesError) {
+        console.warn("[Sidebar] assistant_list_messages error:", messagesError);
+        setAssistantPendingCount(0);
+        return;
+      }
+
+      const messages = Array.isArray(messagesData) ? (messagesData as AssistantCounterMessage[]) : [];
+      const activePendingCount = countActiveAssistantPendingActions(messages);
+      setAssistantPendingCount(activePendingCount > 0 ? activePendingCount : 0);
+    } finally {
+      if (isCurrentAssistantCounter()) {
+        gate.assistantInFlight = false;
+      }
     }
-
-    if (messagesError) {
-      console.warn("[Sidebar] assistant_list_messages error:", messagesError);
-      setAssistantPendingCount(0);
-      return;
-    }
-
-    const messages = Array.isArray(messagesData) ? (messagesData as AssistantCounterMessage[]) : [];
-    const activePendingCount = countActiveAssistantPendingActions(messages);
-    setAssistantPendingCount(activePendingCount > 0 ? activePendingCount : 0);
-  }, [canLoadAssistantCounter, organizationId, activeStoreId]);
+  }, [canLoadAssistantCounter, organizationId, activeStoreId, sidebarScopeKey]);
 
   useEffect(() => {
     if (!canLoadInboxCounter && !canLoadAssistantCounter) return;
