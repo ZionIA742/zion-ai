@@ -49,7 +49,7 @@ const items: Array<{
 }> = [
   { label: "Dashboard", href: "/dashboard", icon: "dashboard" },
   { label: "CRM", href: "/crm", icon: "crm" },
-  { label: "Inbox", href: "/inbox", icon: "inbox" },
+  { label: "Follow-up", href: "/inbox", icon: "inbox" },
   { label: "Assistente", href: "/assistant", icon: "assistant" },
   { label: "Agenda", href: "/schedule", icon: "schedule" },
   { label: "Configurações", href: "/configuracoes", icon: "settings" },
