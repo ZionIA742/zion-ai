@@ -178,6 +178,30 @@ type PendingEmbeddedSignupOperation = {
   };
 };
 
+type EmbeddedSignupDiagnostic = {
+  attemptId: number;
+  phase: string;
+  reason: string;
+  mode: "standard" | "business_app_coexistence" | null;
+  oauthCodePresent: boolean;
+  metaEvent: string;
+  httpStatus: number | null;
+  outcome: "pending" | "success" | "failed";
+};
+
+function formatEmbeddedSignupDiagnostic(diagnostic: EmbeddedSignupDiagnostic) {
+  return [
+    `attemptId=${diagnostic.attemptId}`,
+    `phase=${diagnostic.phase}`,
+    `reason=${diagnostic.reason}`,
+    `mode=${diagnostic.mode || "unknown"}`,
+    `oauthCodePresent=${diagnostic.oauthCodePresent ? "yes" : "no"}`,
+    `metaEvent=${diagnostic.metaEvent}`,
+    `httpStatus=${diagnostic.httpStatus === null ? "none" : diagnostic.httpStatus}`,
+    `outcome=${diagnostic.outcome}`,
+  ].join(" | ");
+}
+
 const STORE_SERVICE_OPTIONS: Option[] = [
   { value: "venda_piscinas", label: "Venda de piscinas" },
   { value: "venda_produtos_quimicos", label: "Produtos químicos" },
@@ -596,6 +620,8 @@ function OnboardingContent() {
   const embeddedSignupRequestedModeRef = useRef<"standard" | "business_app_coexistence" | null>(null);
   const [embeddedSignupError, setEmbeddedSignupError] = useState<string | null>(null);
   const [embeddedSignupMessage, setEmbeddedSignupMessage] = useState<string | null>(null);
+  const [embeddedSignupDiagnostic, setEmbeddedSignupDiagnostic] =
+    useState<EmbeddedSignupDiagnostic | null>(null);
   const [embeddedSignupPendingOperation, setEmbeddedSignupPendingOperation] =
     useState<PendingEmbeddedSignupOperation | null>(null);
   const [siteOrFacebookPageSelection, setSiteOrFacebookPageSelection] = useState<"yes" | "no" | null>(null);
@@ -611,6 +637,25 @@ function OnboardingContent() {
     isAttemptActive: isEmbeddedSignupAttemptActive,
     isAttemptCurrent: isEmbeddedSignupAttemptCurrent,
   } = useMetaEmbeddedSignupAttempt();
+
+  const recordEmbeddedSignupDiagnostic = useCallback(
+    (input: Omit<EmbeddedSignupDiagnostic, "attemptId"> & { attemptId?: number }) => {
+      const diagnostic: EmbeddedSignupDiagnostic = {
+        ...input,
+        attemptId: input.attemptId ?? embeddedSignupAttemptIdRef.current,
+      };
+      setEmbeddedSignupDiagnostic(diagnostic);
+      if (typeof window !== "undefined") {
+        console.info("[Meta Embedded Signup]", formatEmbeddedSignupDiagnostic(diagnostic));
+      }
+    },
+    [embeddedSignupAttemptIdRef],
+  );
+
+  const copyEmbeddedSignupDiagnostic = useCallback(async () => {
+    if (!embeddedSignupDiagnostic || typeof navigator === "undefined" || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(formatEmbeddedSignupDiagnostic(embeddedSignupDiagnostic));
+  }, [embeddedSignupDiagnostic]);
 
   useEffect(() => {
     const nextScope = organizationId && activeStore?.id
@@ -1315,7 +1360,7 @@ function OnboardingContent() {
     return () => {
       embeddedSignupMountedRef.current = false;
     };
-  }, []);
+  }, [embeddedSignupMountedRef]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1331,6 +1376,28 @@ function OnboardingContent() {
       // validation and server-side WABA/phone validation.
       const diagnostic = flow.acceptMessage(event);
       const session = diagnostic === "finish_valid" ? flow.getSnapshot().session : null;
+      const safeMetaEvent = session?.connectionMode === "business_app_coexistence"
+        ? "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"
+        : diagnostic === "cancelled"
+          ? "CANCELLED"
+          : diagnostic === "other_event"
+            ? "OTHER"
+            : diagnostic === "origin_rejected"
+              ? "ORIGIN_REJECTED"
+              : diagnostic === "ignored_message"
+                ? "IGNORED"
+                : diagnostic.startsWith("finish_")
+                  ? "FINISH"
+                  : "UNKNOWN";
+      recordEmbeddedSignupDiagnostic({
+        phase: session ? "meta_event_received" : "meta_event_rejected",
+        reason: diagnostic,
+        mode: embeddedSignupRequestedModeRef.current,
+        oauthCodePresent: Boolean(flow.getSnapshot().code),
+        metaEvent: safeMetaEvent,
+        httpStatus: null,
+        outcome: session ? "pending" : "failed",
+      });
       if (session) {
         if (
           !embeddedSignupRequestedModeRef.current ||
@@ -1343,11 +1410,31 @@ function OnboardingContent() {
           clearEmbeddedSignupSensitiveState();
           embeddedSignupRequestedModeRef.current = null;
           setEmbeddedSignupError("A Meta retornou uma modalidade diferente da solicitada.");
+           recordEmbeddedSignupDiagnostic({
+             phase: "meta_event_rejected",
+             reason: "connection_mode_mismatch",
+             mode: embeddedSignupRequestedModeRef.current,
+             oauthCodePresent: Boolean(flow.getSnapshot().code),
+             metaEvent: safeMetaEvent,
+             httpStatus: null,
+             outcome: "failed",
+           });
           return;
         }
         setEmbeddedSignupSession(session);
         setEmbeddedSignupError(null);
         setEmbeddedSignupMessage("Sessao Meta recebida. Finalizando a conexao oficial.");
+        if (session.connectionMode === "business_app_coexistence") {
+          recordEmbeddedSignupDiagnostic({
+            phase: "coexistence_finish_received",
+            reason: "finish_valid",
+            mode: session.connectionMode,
+            oauthCodePresent: Boolean(flow.getSnapshot().code),
+            metaEvent: safeMetaEvent,
+            httpStatus: null,
+            outcome: "pending",
+          });
+        }
         return;
       }
 
@@ -1359,6 +1446,15 @@ function OnboardingContent() {
         clearEmbeddedSignupSensitiveState();
         setEmbeddedSignupMessage(null);
         setEmbeddedSignupError("Embedded Signup cancelado antes da conclusao.");
+        recordEmbeddedSignupDiagnostic({
+          phase: "meta_event_rejected",
+          reason: "cancelled",
+          mode: embeddedSignupRequestedModeRef.current,
+          oauthCodePresent: Boolean(flow.getSnapshot().code),
+          metaEvent: safeMetaEvent,
+          httpStatus: null,
+          outcome: "failed",
+        });
         return;
       }
 
@@ -1376,6 +1472,8 @@ function OnboardingContent() {
     closeEmbeddedSignupAttempt,
     embeddedSignupAttemptIdRef,
     embeddedSignupFlowRef,
+    embeddedSignupRequestedModeRef,
+    recordEmbeddedSignupDiagnostic,
   ]);
 
   const [onboardingActivationState, setOnboardingActivationState] = useState<string | null>(
@@ -1579,8 +1677,17 @@ function OnboardingContent() {
 
     const attemptId = beginEmbeddedSignupAttempt(connectionMode);
     embeddedSignupRequestedModeRef.current = connectionMode;
-
-    embeddedSignupRequestedModeRef.current = connectionMode;
+    setEmbeddedSignupDiagnostic(null);
+    recordEmbeddedSignupDiagnostic({
+      attemptId,
+      phase: "authorization_started",
+      reason: "user_started_embedded_signup",
+      mode: connectionMode,
+      oauthCodePresent: false,
+      metaEvent: "not_observed",
+      httpStatus: null,
+      outcome: "pending",
+    });
 
     setFormError(null);
     setSuccessMessage(null);
@@ -1609,6 +1716,18 @@ function OnboardingContent() {
       }
 
       startEmbeddedSignupTimeout(attemptId, () => {
+        recordEmbeddedSignupDiagnostic({
+          attemptId,
+          phase: "authorization_timeout",
+          reason: "meta_authorization_or_event_timeout",
+          mode: connectionMode,
+          oauthCodePresent: Boolean(embeddedSignupFlowRef.current?.getSnapshot().code),
+          metaEvent: embeddedSignupFlowRef.current?.getSnapshot().session
+            ? "finish_received"
+            : "not_observed",
+          httpStatus: null,
+          outcome: "failed",
+        });
         setEmbeddedSignupLoading(false);
         setEmbeddedSignupSubmitting(false);
         setEmbeddedSignupSession(null);
@@ -1636,6 +1755,16 @@ function OnboardingContent() {
               : "";
 
           if (!code) {
+            recordEmbeddedSignupDiagnostic({
+              attemptId,
+              phase: "oauth_code_missing",
+              reason: "facebook_login_without_authorization_code",
+              mode: connectionMode,
+              oauthCodePresent: false,
+              metaEvent: "not_observed",
+              httpStatus: null,
+              outcome: "failed",
+            });
             closeEmbeddedSignupAttempt(attemptId);
             setEmbeddedSignupLoading(false);
             setEmbeddedSignupSubmitting(false);
@@ -1645,7 +1774,29 @@ function OnboardingContent() {
             return;
           }
 
-          if (!embeddedSignupFlowRef.current.acceptOAuthCode(code)) return;
+          if (!embeddedSignupFlowRef.current.acceptOAuthCode(code)) {
+            recordEmbeddedSignupDiagnostic({
+              attemptId,
+              phase: "oauth_code_rejected",
+              reason: "attempt_not_authorizing",
+              mode: connectionMode,
+              oauthCodePresent: true,
+              metaEvent: "not_observed",
+              httpStatus: null,
+              outcome: "failed",
+            });
+            return;
+          }
+          recordEmbeddedSignupDiagnostic({
+            attemptId,
+            phase: "oauth_code_received",
+            reason: "authorization_code_accepted",
+            mode: connectionMode,
+            oauthCodePresent: true,
+            metaEvent: "not_observed",
+            httpStatus: null,
+            outcome: "pending",
+          });
           setEmbeddedSignupCode(code);
           setEmbeddedSignupMessage("Autorizacao Meta recebida. Validando a sessao.");
         },
@@ -1661,6 +1812,16 @@ function OnboardingContent() {
         },
       );
     } catch {
+      recordEmbeddedSignupDiagnostic({
+        attemptId,
+        phase: "authorization_failed",
+        reason: "sdk_or_authorization_failed",
+        mode: connectionMode,
+        oauthCodePresent: false,
+        metaEvent: "not_observed",
+        httpStatus: null,
+        outcome: "failed",
+      });
       closeEmbeddedSignupAttempt(attemptId);
       embeddedSignupRequestedModeRef.current = null;
       if (!embeddedSignupMountedRef.current) return;
@@ -1677,6 +1838,15 @@ function OnboardingContent() {
     if (embeddedSignupSession) return;
 
     const timeout = window.setTimeout(() => {
+      recordEmbeddedSignupDiagnostic({
+        phase: "event_timeout",
+        reason: "oauth_code_received_without_valid_meta_event",
+        mode: embeddedSignupRequestedModeRef.current,
+        oauthCodePresent: true,
+        metaEvent: "not_observed",
+        httpStatus: null,
+        outcome: "failed",
+      });
       setEmbeddedSignupLoading(false);
       setEmbeddedSignupSubmitting(false);
       setEmbeddedSignupSession(null);
@@ -1689,7 +1859,13 @@ function OnboardingContent() {
     return () => {
       window.clearTimeout(timeout);
     };
-  }, [clearEmbeddedSignupSensitiveState, embeddedSignupCode, embeddedSignupSession]);
+  }, [
+    clearEmbeddedSignupSensitiveState,
+    embeddedSignupCode,
+    embeddedSignupRequestedModeRef,
+    embeddedSignupSession,
+    recordEmbeddedSignupDiagnostic,
+  ]);
 
   useEffect(() => {
     if (!embeddedSignupCode || !embeddedSignupSession) return;
@@ -1701,6 +1877,18 @@ function OnboardingContent() {
     embeddedSignupSubmittingRef.current = true;
     setEmbeddedSignupSubmitting(true);
     const attemptId = embeddedSignupAttemptIdRef.current;
+    recordEmbeddedSignupDiagnostic({
+      attemptId,
+      phase: "post_started",
+      reason: "oauth_code_and_meta_event_ready",
+      mode: embeddedSignupSession.connectionMode,
+      oauthCodePresent: true,
+      metaEvent: embeddedSignupSession.connectionMode === "business_app_coexistence"
+        ? "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"
+        : "FINISH",
+      httpStatus: null,
+      outcome: "pending",
+    });
     setEmbeddedSignupError(null);
     const isRecoveryVerification = embeddedSignupIntent === "verify-existing";
     setEmbeddedSignupMessage(
@@ -1751,6 +1939,18 @@ function OnboardingContent() {
           }),
         });
         responseStatus = response.status;
+        recordEmbeddedSignupDiagnostic({
+          attemptId,
+          phase: "post_response_received",
+          reason: response.ok ? "http_response_received" : "http_response_failed",
+          mode: embeddedSignupSession.connectionMode,
+          oauthCodePresent: true,
+          metaEvent: embeddedSignupSession.connectionMode === "business_app_coexistence"
+            ? "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"
+            : "FINISH",
+          httpStatus: response.status,
+          outcome: response.ok ? "pending" : "failed",
+        });
 
         let result: {
           ok?: boolean;
@@ -1894,6 +2094,18 @@ function OnboardingContent() {
           throw new Error("WHATSAPP_STATUS_NOT_CONFIRMED");
         }
         await finalizeEmbeddedSignupConnection(attemptId, confirmedSession);
+        recordEmbeddedSignupDiagnostic({
+          attemptId,
+          phase: "post_completed",
+          reason: "integration_and_status_confirmed",
+          mode: confirmedSession.connectionMode,
+          oauthCodePresent: true,
+          metaEvent: confirmedSession.connectionMode === "business_app_coexistence"
+            ? "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"
+            : "FINISH",
+          httpStatus: responseStatus,
+          outcome: "success",
+        });
       } catch (error) {
         if (!isEmbeddedSignupAttemptCurrent(attemptId)) return;
 
@@ -1933,6 +2145,26 @@ function OnboardingContent() {
         if (!isEmbeddedSignupAttemptCurrent(attemptId)) return;
         setEmbeddedSignupMessage(null);
         const errorCode = error instanceof Error ? error.message : "";
+        recordEmbeddedSignupDiagnostic({
+          attemptId,
+          phase: "post_failed",
+          reason: responseStatus !== null && responseStatus >= 400
+            ? "backend_rejected"
+            : errorCode === "WHATSAPP_STATUS_NOT_CONFIRMED"
+              ? "status_not_confirmed"
+              : errorCode === "ONBOARDING_READINESS_NOT_CONFIRMED"
+                ? "readiness_not_confirmed"
+                : errorCode === "WHATSAPP_STATUS_RECOVERY_INCONCLUSIVE"
+                  ? "status_recovery_inconclusive"
+                  : "request_or_finalization_failed",
+          mode: embeddedSignupSession.connectionMode,
+          oauthCodePresent: true,
+          metaEvent: embeddedSignupSession.connectionMode === "business_app_coexistence"
+            ? "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"
+            : "FINISH",
+          httpStatus: responseStatus,
+          outcome: "failed",
+        });
         setEmbeddedSignupError(
           isRecoveryVerification
             ? errorCode === "WHATSAPP_RECOVERY_AUTHORIZATION_INSUFFICIENT"
@@ -1989,6 +2221,7 @@ function OnboardingContent() {
     recoverUncertainEmbeddedSignup,
     organizationId,
     refreshActivationReadinessAfterEmbeddedSignup,
+    recordEmbeddedSignupDiagnostic,
   ]);
 
   async function activateZion() {
@@ -2462,6 +2695,21 @@ function OnboardingContent() {
                     ) : null}
                     {embeddedSignupError ? (
                       <p className="text-sm leading-6 text-red-800">{embeddedSignupError}</p>
+                    ) : null}
+                    {embeddedSignupDiagnostic ? (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700">
+                        <p className="font-semibold">Diagnóstico técnico seguro</p>
+                        <code className="mt-1 block break-words leading-5">
+                          {formatEmbeddedSignupDiagnostic(embeddedSignupDiagnostic)}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => void copyEmbeddedSignupDiagnostic()}
+                          className="mt-2 rounded-lg border border-gray-300 bg-white px-3 py-1.5 font-medium text-gray-700 hover:bg-gray-100"
+                        >
+                          Copiar diagnóstico
+                        </button>
+                      </div>
                     ) : null}
                   </div>
                 ) : null}
