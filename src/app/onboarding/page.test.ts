@@ -377,6 +377,27 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "Meta Embedded Signup exposes safe correlated observability without secrets",
+    run: () => {
+      const source = readPageSource();
+      const diagnosticBlock = source.slice(
+        source.indexOf("function formatEmbeddedSignupDiagnostic"),
+        source.indexOf("const STORE_SERVICE_OPTIONS"),
+      );
+      assert.equal(source.includes("formatEmbeddedSignupDiagnostic"), true);
+      assert.equal(source.includes("attemptId="), true);
+      assert.equal(source.includes("oauthCodePresent="), true);
+      assert.equal(source.includes("meta_event_rejected"), true);
+      assert.equal(source.includes("post_started"), true);
+      assert.equal(source.includes("post_response_received"), true);
+      assert.equal(source.includes("post_completed"), true);
+      assert.equal(source.includes("post_failed"), true);
+      assert.equal(diagnosticBlock.includes("accessToken"), false);
+      assert.equal(diagnosticBlock.includes("displayPhoneNumber"), false);
+      assert.equal(diagnosticBlock.includes("payload"), false);
+    },
+  },
+  {
     name: "Facebook SDK loader observes an existing script and can retry after timeout or failure",
     run: () => {
       const source = readPageSource();
