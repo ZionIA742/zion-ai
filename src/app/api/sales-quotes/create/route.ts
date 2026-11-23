@@ -721,6 +721,8 @@ export function createCreateQuotePostHandler(deps?: {
       quote_number_prefix_snapshot: numberReservation.settings.quoteNumberPrefix,
       next_quote_number_reserved: numberReservation.reservedNumber,
       created_via: "api_sales_quotes_create",
+      creation_actor_kind: "user",
+      creation_actor_user_id: scope.user.id,
       payment_terms: null,
       delivery_terms: null,
       warranty_terms: warrantyTerms,
