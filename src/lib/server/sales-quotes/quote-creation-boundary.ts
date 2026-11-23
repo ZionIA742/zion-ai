@@ -1,7 +1,7 @@
 export type QuoteCreationIdentity = {
   organizationId: string;
   storeId: string;
-  commercialOpportunityId: string;
+  commercialOpportunityId?: string | null;
   conversationId?: string | null;
   leadId?: string | null;
 };
@@ -45,8 +45,13 @@ function requireText(value: unknown, code: string): string {
 
 function validateRequest<TQuote, TItem>(
   request: QuoteCreationRequest<TQuote, TItem>,
+  actor: QuoteCreationActor,
 ): QuoteCreationRequest<TQuote, TItem> {
   const identity = request?.identity;
+  const opportunityId =
+    typeof identity?.commercialOpportunityId === "string"
+      ? identity.commercialOpportunityId.trim()
+      : "";
 
   return {
     ...request,
@@ -56,10 +61,10 @@ function validateRequest<TQuote, TItem>(
         "QUOTE_CREATION_ORGANIZATION_REQUIRED",
       ),
       storeId: requireText(identity?.storeId, "QUOTE_CREATION_STORE_REQUIRED"),
-      commercialOpportunityId: requireText(
-        identity?.commercialOpportunityId,
-        "QUOTE_CREATION_OPPORTUNITY_REQUIRED",
-      ),
+      commercialOpportunityId:
+        actor.kind === "system"
+          ? requireText(opportunityId, "QUOTE_CREATION_OPPORTUNITY_REQUIRED")
+          : opportunityId || null,
       conversationId: identity?.conversationId ?? null,
       leadId: identity?.leadId ?? null,
     },
@@ -76,7 +81,7 @@ async function executeQuoteCreation<TQuote, TItem, TResult>(args: {
   request: QuoteCreationRequest<TQuote, TItem>;
   execute: QuoteCreationExecutor<TQuote, TItem, TResult>;
 }): Promise<TResult> {
-  const request = validateRequest(args.request);
+  const request = validateRequest(args.request, args.actor);
   return args.execute({ actor: args.actor, request });
 }
 

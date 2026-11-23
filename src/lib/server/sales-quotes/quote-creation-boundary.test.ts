@@ -60,11 +60,10 @@ test("system creation requires an internal system context", async () => {
   });
 });
 
-test("missing tenant, store, opportunity or idempotency identity fails closed", async () => {
+test("missing tenant, store or idempotency identity fails closed", async () => {
   for (const field of [
     "organizationId",
     "storeId",
-    "commercialOpportunityId",
     "creationIdempotencyKey",
   ] as const) {
     const invalid = {
@@ -115,4 +114,40 @@ test("boundary preserves quote, items and idempotency as one execution input", a
   assert.deepEqual(result.quote, request.quote);
   assert.deepEqual(result.items, request.items);
   assert.equal(result.creationIdempotencyKey, request.creationIdempotencyKey);
+});
+
+test("human creation allows standalone quote without commercial context", async () => {
+  const result = await createSalesQuoteByUser({
+    userId: "user-1",
+    request: {
+      ...request,
+      identity: {
+        organizationId: "org-1",
+        storeId: "store-1",
+        commercialOpportunityId: null,
+        conversationId: null,
+        leadId: null,
+      },
+    },
+    execute: async (execution) => execution,
+  });
+
+  assert.equal(result.actor.kind, "user");
+  assert.equal(result.request.identity.commercialOpportunityId, null);
+  assert.equal(result.request.identity.conversationId, null);
+  assert.equal(result.request.identity.leadId, null);
+});
+
+test("system creation still requires a commercial opportunity", async () => {
+  await assert.rejects(
+    createSalesQuoteBySystem({
+      system: { kind: "system", source: "internal_test" },
+      request: {
+        ...request,
+        identity: { ...request.identity, commercialOpportunityId: null },
+      },
+      execute: async (execution) => execution,
+    }),
+    /QUOTE_CREATION_OPPORTUNITY_REQUIRED/,
+  );
 });
