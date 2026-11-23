@@ -105,34 +105,6 @@ type QuoteItemRow = {
   sort_order: number | null;
   sku: string | null;
 };
-type QuoteStageProjectionRow = {
-  commercial_opportunity_id: string;
-  sales_quote_id: string;
-  stage: string;
-  lifecycle_cycle: number;
-  lifecycle_event_id: string | null;
-  event_type: string | null;
-  reason_code: string | null;
-  stage_changed: boolean;
-  outcome: string;
-  stage_changed_at: string | null;
-  updated_at: string | null;
-};
-type QuoteStageProjectionOutcome =
-  | "advanced_to_orcamento"
-  | "already_in_quote_stage"
-  | "stage_not_eligible_for_quote_projection"
-  | "idempotent_replay";
-
-const QUOTE_STAGE_PROJECTION_SOURCE = "sales_quote_create_route";
-const QUOTE_STAGE_PROJECTION_REASON_DETAILS = "sales quote created";
-const ACCEPTED_QUOTE_STAGE_PROJECTION_OUTCOMES = new Set<QuoteStageProjectionOutcome>([
-  "advanced_to_orcamento",
-  "already_in_quote_stage",
-  "stage_not_eligible_for_quote_projection",
-  "idempotent_replay",
-]);
-
 function buildErrorResponse(error: unknown) {
   if (error instanceof QuoteAccessError) {
     return NextResponse.json(
@@ -319,7 +291,7 @@ function normalizeQuoteItems(items: unknown): NormalizedCreateQuoteItem[] {
 function buildCreationRequestFingerprint(args: {
   organizationId: string;
   storeId: string;
-  commercialOpportunityId: string;
+  commercialOpportunityId: string | null;
   conversationId: string | null;
   leadId: string | null;
   title: string | null;
@@ -498,13 +470,6 @@ function buildNonIdempotentUniqueConflictError() {
   );
 }
 
-function buildQuoteStageProjectionIdempotencyKey(args: {
-  salesQuoteId: string;
-  commercialOpportunityId: string;
-}) {
-  return `sales_quote_created_stage_projection:${args.salesQuoteId}:${args.commercialOpportunityId}`;
-}
-
 function buildCreateQuoteSuccessResponse(args: {
   quote: QuoteRow;
   itemCount: number;
@@ -527,57 +492,6 @@ function buildCreateQuoteSuccessResponse(args: {
   });
 }
 
-async function projectCommercialOpportunityToQuoteStage(args: {
-  supabase: QuoteScope["supabase"];
-  organizationId: string;
-  storeId: string;
-  commercialOpportunityId: string;
-  salesQuoteId: string;
-}) {
-  const projectionIdempotencyKey = buildQuoteStageProjectionIdempotencyKey({
-    salesQuoteId: args.salesQuoteId,
-    commercialOpportunityId: args.commercialOpportunityId,
-  });
-  const { data, error } = await args.supabase.rpc(
-    "advance_commercial_opportunity_to_quote_stage_by_system",
-    {
-      p_organization_id: args.organizationId,
-      p_store_id: args.storeId,
-      p_commercial_opportunity_id: args.commercialOpportunityId,
-      p_sales_quote_id: args.salesQuoteId,
-      p_idempotency_key: projectionIdempotencyKey,
-      p_reason_details: QUOTE_STAGE_PROJECTION_REASON_DETAILS,
-      p_source: QUOTE_STAGE_PROJECTION_SOURCE,
-    }
-  );
-
-  if (error) {
-    throw new QuoteAccessError(
-      409,
-      "QUOTE_CREATED_STAGE_PROJECTION_FAILED",
-      "A quote foi criada, mas nao foi possivel concluir a projecao do stage da oportunidade comercial.",
-      {
-        quoteId: args.salesQuoteId,
-      }
-    );
-  }
-
-  const resultRow = Array.isArray(data)
-    ? ((data[0] as QuoteStageProjectionRow | undefined) ?? null)
-    : null;
-
-  if (!resultRow || !ACCEPTED_QUOTE_STAGE_PROJECTION_OUTCOMES.has(resultRow.outcome as QuoteStageProjectionOutcome)) {
-    throw new QuoteAccessError(
-      409,
-      "QUOTE_CREATED_STAGE_PROJECTION_FAILED",
-      "A quote foi criada, mas nao foi possivel concluir a projecao do stage da oportunidade comercial.",
-      {
-        quoteId: args.salesQuoteId,
-      }
-    );
-  }
-}
-
 async function resolveValidatedCommercialOpportunityId(args: {
   body: CreateQuoteBody | null;
   scope: QuoteScope;
@@ -590,11 +504,7 @@ async function resolveValidatedCommercialOpportunityId(args: {
     String(args.body?.commercialOpportunityId || "").trim() || null;
 
   if (!commercialOpportunityId) {
-    throw new QuoteAccessError(
-      400,
-      "MISSING_COMMERCIAL_OPPORTUNITY_ID",
-      "Selecione a oportunidade comercial antes de criar o orcamento."
-    );
+    return null;
   }
 
   if (!args.scope.lead?.id) {
@@ -785,14 +695,6 @@ export function createCreateQuotePostHandler(deps?: {
         items,
       });
 
-      await projectCommercialOpportunityToQuoteStage({
-        supabase: scope.supabase,
-        organizationId: scope.organizationId,
-        storeId: scope.store.id,
-        commercialOpportunityId,
-        salesQuoteId: replayQuote.id,
-      });
-
       return buildCreateQuoteSuccessResponse({
         quote: replayQuote,
         itemCount: items.length,
@@ -910,14 +812,6 @@ export function createCreateQuotePostHandler(deps?: {
               items,
             });
 
-            await projectCommercialOpportunityToQuoteStage({
-              supabase: scope.supabase,
-              organizationId: scope.organizationId,
-              storeId: scope.store.id,
-              commercialOpportunityId,
-              salesQuoteId: replayQuote.id,
-            });
-
             return {
               quote: replayQuote,
               itemCount: items.length,
@@ -942,14 +836,6 @@ export function createCreateQuotePostHandler(deps?: {
             throw new Error(itemsError.message);
           }
         }
-
-        await projectCommercialOpportunityToQuoteStage({
-          supabase: scope.supabase,
-          organizationId: scope.organizationId,
-          storeId: scope.store.id,
-          commercialOpportunityId,
-          salesQuoteId: quoteRow.id,
-        });
 
         return {
           quote: quoteRow,

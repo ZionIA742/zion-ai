@@ -964,38 +964,53 @@ const tests: TestCase[] = [
       }),
   },
   {
-    name: "commercialOpportunityId ausente rejeita e nao cria sales_quotes",
+    name: "human standalone quote without lead conversation or opportunity creates draft without CRM stage change",
     run: async () => {
       const { createCreateQuotePostHandler } = await loadRouteModule();
       const supabase = createSupabaseRecorder();
-      const scope = createScope({
-        leadId: "lead-a",
-        conversationId: "conversation-a",
-        supabase,
-      });
+      const scope = createScope({ supabase });
 
       const response = await createCreateQuotePostHandler({
         resolveQuoteScope: async () => scope as never,
         reserveQuoteNumber: async () => createNumberReservation(),
         resolveOpportunityDetail: async () => {
-          throw new Error("must not resolve opportunity when id is missing");
+          throw new Error("opportunity lookup must not run for standalone quote");
         },
       })(
         createRequest({
           organizationId: "body-org",
           storeId: "body-store",
           creationIdempotencyKey: "quote_create:key-1",
-          leadId: "lead-a",
-          conversationId: "conversation-a",
-          items: [{ item_type: "custom", name: "Piscina", quantity: 1, unit_price_cents: 1000 }],
+          items: [
+            {
+              item_type: "custom",
+              name: "Piscina",
+              quantity: 1,
+              unit_price_cents: 1000,
+            },
+          ],
         })
       );
 
       const body = await parseBody(response);
-      assert.equal(response.status, 400);
-      assert.equal(body.ok, false);
-      assert.equal(body.error, "MISSING_COMMERCIAL_OPPORTUNITY_ID");
-      assert.equal(supabase.insertCalls.length, 0);
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.quoteId, "quote-1");
+
+      const insertedQuote = supabase.insertCalls.find(
+        (call) => call.table === "sales_quotes"
+      );
+
+      assert.ok(insertedQuote);
+      assert.equal(insertedQuote.payload.organization_id, "access-org");
+      assert.equal(insertedQuote.payload.store_id, "access-store");
+      assert.equal(insertedQuote.payload.commercial_opportunity_id, null);
+      assert.equal(insertedQuote.payload.conversation_id, null);
+      assert.equal(insertedQuote.payload.lead_id, null);
+      assert.equal(insertedQuote.payload.customer_name, null);
+      assert.equal(insertedQuote.payload.customer_phone, null);
+      assert.equal(insertedQuote.payload.status, "draft");
+      assert.equal(supabase.rpcCalls.length, 0);
     },
   },
   {
@@ -1102,20 +1117,7 @@ const tests: TestCase[] = [
           metadata: supabase.insertCalls[0]?.payload.metadata,
         },
       });
-      assert.equal(supabase.rpcCalls.length, 1);
-      assert.deepEqual(supabase.rpcCalls[0], {
-        fn: "advance_commercial_opportunity_to_quote_stage_by_system",
-        args: {
-          p_organization_id: "access-org",
-          p_store_id: "access-store",
-          p_commercial_opportunity_id: "opportunity-a",
-          p_sales_quote_id: "quote-1",
-          p_idempotency_key:
-            "sales_quote_created_stage_projection:quote-1:opportunity-a",
-          p_reason_details: "sales quote created",
-          p_source: "sales_quote_create_route",
-        },
-      });
+      assert.equal(supabase.rpcCalls.length, 0);
     },
   },
   {
@@ -1674,16 +1676,7 @@ const tests: TestCase[] = [
         supabase.insertCalls.filter((call) => call.table === "sales_quotes").length,
         1
       );
-      assert.equal(supabase.rpcCalls.length, 2);
-      assert.equal(
-        supabase.rpcCalls.every(
-          (call) =>
-            call.fn === "advance_commercial_opportunity_to_quote_stage_by_system" &&
-            call.args.p_idempotency_key ===
-              "sales_quote_created_stage_projection:quote-1:opportunity-a"
-        ),
-        true
-      );
+      assert.equal(supabase.rpcCalls.length, 0);
     },
   },
   {
@@ -2051,7 +2044,7 @@ const tests: TestCase[] = [
         supabase.insertCalls.filter((call) => call.table === "sales_quote_items").length,
         1
       );
-      assert.equal(supabase.rpcCalls.length, 1);
+      assert.equal(supabase.rpcCalls.length, 0);
     },
   },
   {
@@ -2240,7 +2233,7 @@ const tests: TestCase[] = [
       assert.equal(body.ok, true);
       assert.equal(body.quoteId, "quote-existing");
       assert.equal(body.replayed, true);
-      assert.equal(supabase.rpcCalls.length, 1);
+      assert.equal(supabase.rpcCalls.length, 0);
     },
   },
   {
@@ -2511,7 +2504,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "falha da projection apos persistencia retorna erro controlado e preserva a quote",
+    name: "criacao vinculada persiste sem depender da RPC de estagio",
     run: async () => {
       const { createCreateQuotePostHandler } = await loadRouteModule();
       const supabase = createSupabaseRecorder({
@@ -2581,9 +2574,10 @@ const tests: TestCase[] = [
       );
 
       const body = await parseBody(response);
-      assert.equal(response.status, 409);
-      assert.equal(body.error, "QUOTE_CREATED_STAGE_PROJECTION_FAILED");
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
       assert.equal(body.quoteId, "quote-1");
+      assert.equal(supabase.rpcCalls.length, 0);
       assert.deepEqual(supabase.deletedQuoteIds, []);
       assert.equal(
         supabase.quoteRows.some((row) => row.id === "quote-1"),
@@ -2596,7 +2590,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "retry apos projection failure reutiliza a mesma quote e tenta projection de novo",
+    name: "criacao e replay vinculados reutilizam quote sem movimentar CRM",
     run: async () => {
       const { createCreateQuotePostHandler } = await loadRouteModule();
       const supabase = createSupabaseRecorder({
@@ -2688,8 +2682,8 @@ const tests: TestCase[] = [
       const firstBody = await parseBody(firstResponse);
       const secondBody = await parseBody(secondResponse);
 
-      assert.equal(firstResponse.status, 409);
-      assert.equal(firstBody.error, "QUOTE_CREATED_STAGE_PROJECTION_FAILED");
+      assert.equal(firstResponse.status, 200);
+      assert.equal(firstBody.ok, true);
       assert.equal(secondResponse.status, 200);
       assert.equal(secondBody.ok, true);
       assert.equal(secondBody.quoteId, "quote-1");
@@ -2702,15 +2696,7 @@ const tests: TestCase[] = [
         supabase.insertCalls.filter((call) => call.table === "sales_quote_items").length,
         1
       );
-      assert.equal(supabase.rpcCalls.length, 2);
-      assert.equal(
-        supabase.rpcCalls.every(
-          (call) =>
-            call.args.p_idempotency_key ===
-            "sales_quote_created_stage_projection:quote-1:opportunity-a"
-        ),
-        true
-      );
+      assert.equal(supabase.rpcCalls.length, 0);
     },
   },
 ];
