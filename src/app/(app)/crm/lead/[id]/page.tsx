@@ -2373,17 +2373,6 @@ export default function LeadPage() {
   }
 
   function openCreateQuoteModal() {
-    if (!selectedOpportunity) {
-      setQuoteFormError(
-        "Selecione primeiro a oportunidade comercial para criar o orcamento desta conversa."
-      );
-      setQuoteFormSuccess(null);
-      setStatusText(
-        "Escolha explicitamente a oportunidade comercial antes de seguir com o orcamento."
-      );
-      return;
-    }
-
     resetQuoteForm();
     setQuoteFormError(null);
     setQuoteFormSuccess(null);
@@ -6663,8 +6652,7 @@ export default function LeadPage() {
                         disabled={
                           working ||
                           refreshing ||
-                          simulatingCustomer ||
-                          !selectedOpportunity
+                          simulatingCustomer
                         }
                         className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-gray-900 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
                       >
