@@ -4,6 +4,7 @@ import {
   getSalesQuotesSelect,
   QuoteAccessError,
 } from "@/lib/server/sales-quotes/quote-auth";
+import { listUnlinkedSalesQuotesForLead } from "@/lib/server/sales-quotes/unlinked-quote-list";
 import type {
   QuoteLeadRow,
   SalesQuoteRow,
@@ -106,17 +107,6 @@ export function createSalesQuotesListGetHandler(deps?: {
       );
     }
 
-    if (!commercialOpportunityId) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "MISSING_COMMERCIAL_OPPORTUNITY_ID",
-          message: "Opportunity comercial nao informada.",
-        },
-        400
-      );
-    }
-
     const auth = await resolveAuth();
 
     const { data: lead, error: leadError } = await auth.supabase
@@ -191,6 +181,25 @@ export function createSalesQuotesListGetHandler(deps?: {
       );
     }
 
+    if (!commercialOpportunityId) {
+      const quotes = await listUnlinkedSalesQuotesForLead({
+        supabase: auth.supabase,
+        organizationId: lead.organization_id,
+        storeId: leadStoreId,
+        leadId: lead.id,
+      });
+
+      return buildJsonResponse({
+        ok: true,
+        leadId: lead.id,
+        commercialOpportunityId: null,
+        organizationId: lead.organization_id,
+        storeId: leadStoreId,
+        currentCommercialProposal: null,
+        currentCommercialProposalAcceptance: null,
+        quotes,
+      });
+    }
     const { data: opportunity, error: opportunityError } = await auth.supabase
       .from("commercial_opportunities")
       .select("id, organization_id, store_id, origin_lead_id")
@@ -321,7 +330,7 @@ export function createSalesQuotesListGetHandler(deps?: {
       );
     }
 
-    let quotesQuery = auth.supabase
+    const quotesQuery = auth.supabase
       .from("sales_quotes")
       .select(getSalesQuotesSelect())
       .eq("organization_id", opportunity.organization_id)
