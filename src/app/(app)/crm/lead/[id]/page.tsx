@@ -16,6 +16,14 @@ import {
   getOrCreatePendingManualQuoteCreationOperation,
 } from "./quote-create-operation";
 import QuoteCatalogPrefillPicker from "./QuoteCatalogPrefillPicker";
+import {
+  prepareHumanQuoteEditRequest,
+  submitHumanQuoteEditRequest,
+  HumanQuoteEditRequestError,
+  type HumanQuoteEditBase,
+  type HumanQuoteEditItem,
+  type HumanQuoteEditRequest,
+} from "./human-quote-edit-request";
 import CatalogProductComposerPicker, {
   type CatalogComposerProduct,
 } from "./CatalogProductComposerPicker";
@@ -465,6 +473,7 @@ type GeneratedQuoteSummary = {
   total_cents: number | null;
   created_at: string | null;
   current_version_id: string | null;
+  human_edit_eligible?: boolean;
   current_version: {
     id: string;
     status: string | null;
@@ -518,6 +527,8 @@ type SalesQuoteDetailResponse = {
     discount_cents: number | null;
     total_cents: number | null;
     current_version_id: string | null;
+    updated_at?: string | null;
+    human_edit_eligible?: boolean;
     lead_id: string | null;
     conversation_id: string | null;
     store_id: string;
@@ -1740,6 +1751,15 @@ export default function LeadPage() {
   const [editingQuoteNumber, setEditingQuoteNumber] = useState<string | null>(null);
   const [editingQuoteStatus, setEditingQuoteStatus] = useState<string | null>(null);
   const [loadingQuoteForEdit, setLoadingQuoteForEdit] = useState<string | null>(null);
+  const humanQuoteEditRef = useRef<{
+    base: HumanQuoteEditBase;
+    scopeKey: string;
+    originalTypes: Map<string, HumanQuoteEditItem["item_type"]>;
+    validity: string;
+    pending: HumanQuoteEditRequest | null;
+  } | null>(null);
+  const humanQuoteSaveInFlightRef = useRef(false);
+  const [humanQuoteEditView, setHumanQuoteEditView] = useState<Map<string, HumanQuoteEditItem["item_type"]> | null>(null);
   const [generatedQuotes, setGeneratedQuotes] = useState<GeneratedQuoteSummary[]>([]);
   const [currentCommercialProposal, setCurrentCommercialProposal] =
     useState<CurrentCommercialProposalSummary | null>(null);
@@ -2102,7 +2122,7 @@ export default function LeadPage() {
     quoteTechnicalServicesConfigured &&
     isQuoteTechnicalServicesPolicyAvailable(quoteTechnicalServicesPolicy);
   const quoteHasUnavailableService =
-    quoteItems.some((item) => item.itemType === "service") &&
+    quoteItems.some((item) => item.itemType === "service" && !humanQuoteEditView?.has(item.id)) &&
     !quoteServiceOptionEnabled;
   const quoteHasTitle = quoteTitle.trim().length > 0;
   const quoteHasAtLeastOneItem = quoteItems.length > 0;
@@ -2111,7 +2131,7 @@ export default function LeadPage() {
     const quantity = parseQuoteQuantityValue(item.quantity);
     const unitPrice = parseQuoteMoneyValue(item.unitPriceReais);
 
-    return hasName && quantity > 0 && unitPrice > 0;
+    return hasName && quantity > 0 && (humanQuoteEditView ? (item.unitPriceReais.trim() !== "" && Number.isFinite(Number(item.unitPriceReais.trim().replace(",", "."))) && Number(item.unitPriceReais.trim().replace(",", ".")) >= 0) : unitPrice > 0);
   });
   const canGenerateQuotePdf =
     quoteHasTitle &&
@@ -2313,6 +2333,9 @@ export default function LeadPage() {
     setEditingQuoteId(null);
     setEditingQuoteNumber(null);
     setEditingQuoteStatus(null);
+    humanQuoteEditRef.current = null;
+    setHumanQuoteEditView(null);
+    quoteEditScopeRef.current = null;
     setLoadingQuoteForEdit(null);
   }
 
@@ -3046,6 +3069,73 @@ export default function LeadPage() {
   }
 
   async function generateEditedQuoteVersion() {
+    const context = humanQuoteEditRef.current;
+    if (!context) {
+      await generateLegacyEditedQuoteVersion();
+      return;
+    }
+    if (humanQuoteSaveInFlightRef.current || isGeneratingManualQuote) return;
+    if (quoteFormMode !== "edit" || editingQuoteId !== context.base.id ||
+        quoteEditScopeRef.current !== context.scopeKey ||
+        `${documentScopeKey}:${editingQuoteId}` !== context.scopeKey) {
+      setQuoteFormError("Reabra o orcamento no contexto atual antes de salvar.");
+      return;
+    }
+    if (!canGenerateQuotePdf) {
+      setQuoteFormError(quoteValidationMessage || "Revise os dados do orcamento.");
+      return;
+    }
+    humanQuoteSaveInFlightRef.current = true;
+    setIsGeneratingManualQuote(true);
+    setQuoteFormError(null);
+    setQuoteFormSuccess(null);
+    try {
+      if (quoteItems.some((item) => {
+        const raw = item.discountReais.trim().replace(",", ".");
+        return raw !== "" && (!Number.isFinite(Number(raw)) || Number(raw) < 0);
+      })) throw new Error("Informe um desconto valido.");
+      const items: HumanQuoteEditItem[] = quoteItems.map((item) => ({
+        id: context.originalTypes.has(item.id) ? item.id : null,
+        item_type: context.originalTypes.get(item.id) ?? (item.itemType === "service" ? "service" : "custom"),
+        name: item.name.trim(),
+        description: item.description.trim() || null,
+        quantity: parseQuoteQuantityValue(item.quantity),
+        unit_price_cents: convertReaisToCents(item.unitPriceReais),
+        discount_cents: convertReaisToCents(item.discountReais),
+      }));
+      const request = prepareHumanQuoteEditRequest(context.base, {
+        title: quoteTitle.trim(),
+        customer_notes: quoteCustomerNotes.trim() || null,
+        warranty_terms: quoteWarrantyTerms.trim() || null,
+        validity_days: quoteValidityDays.trim() === context.validity ? undefined : quoteValidityDays.trim() || null,
+        items,
+      }, context.pending);
+      const wasPending = context.pending !== null;
+      context.pending = request;
+      try {
+        await submitHumanQuoteEditRequest(request);
+      } catch (error) {
+        if (!wasPending && error instanceof HumanQuoteEditRequestError && [400, 403, 422].includes(error.status)) {
+          context.pending = null;
+        }
+        throw error;
+      }
+      context.pending = null;
+      if (humanQuoteEditRef.current !== context || quoteEditScopeRef.current !== context.scopeKey) return;
+      closeQuoteModalAndReset();
+      setStatusText("Orcamento salvo com sucesso.");
+      void fetchGeneratedQuotes({ silent: true });
+      void fetchLeadConversationAndMessages({ silent: true });
+    } catch (error) {
+      if (humanQuoteEditRef.current !== context || quoteEditScopeRef.current !== context.scopeKey) return;
+      setQuoteFormError(error instanceof Error ? error.message : "Nao foi possivel confirmar o salvamento.");
+    } finally {
+      humanQuoteSaveInFlightRef.current = false;
+      setIsGeneratingManualQuote(false);
+    }
+  }
+
+  async function generateLegacyEditedQuoteVersion() {
     const safeQuoteId = String(editingQuoteId || "").trim();
     const normalizedStatus = String(editingQuoteStatus || "").trim().toLowerCase();
 
@@ -4800,15 +4890,7 @@ export default function LeadPage() {
       return;
     }
 
-    if (
-      normalizedStatus === "sent" ||
-      normalizedStatus === "cancelled" ||
-      normalizedStatus === "expired" ||
-      normalizedStatus === "failed"
-    ) {
-      setGeneratedQuotesError("Este orcamento nao pode ser aberto para edicao.");
-      return;
-    }
+    if (isGeneratingManualQuote || humanQuoteSaveInFlightRef.current) return;
 
     quoteEditScopeRef.current = scopedQuoteEditKey;
     setLoadingQuoteForEdit(safeQuoteId);
@@ -4835,6 +4917,37 @@ export default function LeadPage() {
         return;
       }
 
+      const isHumanEdit = result.quote.human_edit_eligible === true;
+      if (!isHumanEdit && !["pending_review", "changes_requested", "approved"].includes(normalizedStatus)) {
+        throw new Error("Este orcamento nao pode ser aberto para edicao.");
+      }
+      const originalTypes = new Map<string, HumanQuoteEditItem["item_type"]>();
+      const validity = String(result.quote.validity_days ?? "").trim() || convertQuoteValidUntilToDays(result.quote.valid_until);
+      if (isHumanEdit) {
+        if (!result.quote.updated_at || (result.quote.current_version_id === null && result.quote.status !== "draft")) {
+          throw new Error("Este orcamento precisa de regularizacao antes da edicao.");
+        }
+        if (result.quote.lead_id !== leadId || result.quote.organization_id !== lead?.organization_id || result.quote.store_id !== lead?.store_id) {
+          throw new Error("Orcamento fora do contexto atual.");
+        }
+        for (const item of result.items ?? []) {
+          const type = item.item_type === "pool_installation" ? "custom" : item.item_type;
+          if (!item.id || (type !== "pool" && type !== "catalog_item" && type !== "service" && type !== "custom")) {
+            throw new Error("Item historico precisa de regularizacao antes da edicao.");
+          }
+          originalTypes.set(item.id, type);
+        }
+        const itemDiscount = (result.items ?? []).reduce((sum, item) => sum + (item.discount_cents ?? 0), 0);
+        if ((result.quote.discount_cents ?? 0) !== itemDiscount) {
+          throw new Error("Desconto historico divergente dos itens. Regularize antes de salvar.");
+        }
+      }
+      humanQuoteEditRef.current = isHumanEdit ? {
+        base: { id: result.quote.id, status: result.quote.status, updated_at: result.quote.updated_at ?? null,
+          current_version_id: result.quote.current_version_id, human_edit_eligible: true },
+        scopeKey: scopedQuoteEditKey, originalTypes, validity, pending: null,
+      } : null;
+      setHumanQuoteEditView(isHumanEdit ? originalTypes : null);
       const formItems = Array.isArray(result.items)
         ? result.items.map((item) => {
             const normalizedItemType = String(item.item_type || "").trim().toLowerCase();
@@ -4867,10 +4980,7 @@ export default function LeadPage() {
       setQuoteTitle(result.quote.title || "");
       setQuoteCustomerNotes(result.quote.customer_notes || "");
       setQuoteWarrantyTerms(result.quote.warranty_terms || "");
-      setQuoteValidityDays(
-        String(result.quote.validity_days || "").trim() ||
-          convertQuoteValidUntilToDays(result.quote.valid_until)
-      );
+      setQuoteValidityDays(isHumanEdit ? validity : (String(result.quote.validity_days || "").trim() || convertQuoteValidUntilToDays(result.quote.valid_until)));
       setQuoteItems(formItems.length > 0 ? formItems : [createEmptyQuoteFormItem()]);
       setQuoteFormError(null);
       setQuoteFormSuccess(null);
@@ -7633,10 +7743,11 @@ export default function LeadPage() {
                                   (normalizedStatus === "approved" || normalizedStatus === "sent") &&
                                   isCurrentCommercialProposal &&
                                   !exactLinkedContract;
-                                const canEditQuote =
-                                  normalizedStatus === "pending_review" ||
-                                  normalizedStatus === "changes_requested" ||
-                                  normalizedStatus === "approved";
+                                const canEditQuote = quote.human_edit_eligible === true
+                                  ? Boolean(quote.current_version_id) || normalizedStatus === "draft"
+                                  : normalizedStatus === "pending_review" ||
+                                    normalizedStatus === "changes_requested" ||
+                                    normalizedStatus === "approved";
                                 const canPrepareDraftPdf =
                                   normalizedStatus === "draft" &&
                                   !hasPdf &&
@@ -8540,7 +8651,7 @@ export default function LeadPage() {
                     <div>
                       <p className="text-sm leading-6 text-gray-700">
                         {isEditingQuote
-                          ? "Revise os dados atuais do orcamento antes de gerar uma nova versao."
+                          ? (humanQuoteEditView ? "Revise os dados atuais e salve as alterações." : "Revise os dados atuais do orcamento antes de gerar uma nova versao.")
                           : "Crie um orçamento para este cliente."}
                       </p>
                       <p className="mt-1 text-xs text-gray-500">
@@ -8648,6 +8759,7 @@ export default function LeadPage() {
                                   </label>
                                   <select
                                     value={item.itemType}
+                                    disabled={isEditingQuote && humanQuoteEditView?.has(item.id)}
                                     onChange={(event) => {
                                       const nextItemType = event.target.value;
 
@@ -8665,7 +8777,7 @@ export default function LeadPage() {
                                     <option value="pool_installation">
                                       {getQuoteItemTypeLabel("pool_installation")}
                                     </option>
-                                    <option value="custom">{getQuoteItemTypeLabel("custom")}</option>
+                                    <option value="custom">{isEditingQuote && humanQuoteEditView?.get(item.id) === "pool" ? "Piscina" : isEditingQuote && humanQuoteEditView?.get(item.id) === "catalog_item" ? "Produto do catálogo" : getQuoteItemTypeLabel("custom")}</option>
                                     <option
                                       value="service"
                                       disabled={!quoteServiceOptionEnabled}
@@ -8883,8 +8995,8 @@ export default function LeadPage() {
                         >
                           {isEditingQuote
                             ? isGeneratingManualQuote
-                              ? "Gerando nova versao..."
-                              : "Gerar nova versao"
+                              ? (humanQuoteEditView ? "Salvando..." : "Gerando nova versao...")
+                              : (humanQuoteEditView ? "Salvar" : "Gerar nova versao")
                             : isGeneratingManualQuote
                               ? "Gerando..."
                               : "Gerar PDF"}

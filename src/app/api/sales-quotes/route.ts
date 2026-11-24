@@ -5,11 +5,17 @@ import {
   QuoteAccessError,
 } from "@/lib/server/sales-quotes/quote-auth";
 import { listUnlinkedSalesQuotesForLead } from "@/lib/server/sales-quotes/unlinked-quote-list";
+import { assertHumanQuoteEditEligibility, HumanQuoteEditProvenanceError } from "@/lib/server/sales-quotes/human-quote-edit-provenance";
 import type {
   QuoteLeadRow,
   SalesQuoteRow,
   SalesQuoteVersionRow,
 } from "@/lib/server/sales-quotes/types";
+
+function humanEditEligible(quote: SalesQuoteRow): boolean {
+  try { assertHumanQuoteEditEligibility(quote); return true; }
+  catch (error) { if (error instanceof HumanQuoteEditProvenanceError) return false; throw error; }
+}
 
 type SalesQuoteListItem = {
   id: string;
@@ -19,6 +25,7 @@ type SalesQuoteListItem = {
   total_cents: number | null;
   created_at: string | null;
   current_version_id: string | null;
+  human_edit_eligible: boolean;
   current_version: {
     id: string;
     status: string | null;
@@ -413,6 +420,7 @@ export function createSalesQuotesListGetHandler(deps?: {
         total_cents: quote.total_cents,
         created_at: quote.created_at,
         current_version_id: currentVersionId,
+        human_edit_eligible: humanEditEligible(quote),
         current_version: currentVersion
           ? {
               id: currentVersion.id,
