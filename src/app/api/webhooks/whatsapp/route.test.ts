@@ -63,6 +63,101 @@ test("coexistence echo payload is read from smb_message_echoes", () => {
   assert.equal(events[0]?.message?.to, "5511999999999");
 });
 
+test("real Meta coexistence payload reads value.message_echoes", () => {
+  const payload = {
+    entry: [{
+      id: "100000000000001",
+      changes: [{
+        field: "smb_message_echoes",
+        value: {
+          metadata: {
+            phone_number_id: "100000000000002",
+            display_phone_number: "5511900000000",
+          },
+          message_echoes: [{
+            id: "wamid.real-human-echo",
+            from: "5511900000000",
+            to: "5511999999999",
+            type: "text",
+            text: { body: "Mensagem humana de teste" },
+          }],
+        },
+      }],
+    }],
+  };
+
+  const events = extractEventsFromPayload(payload);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.eventKind, "message_echo");
+  assert.equal(events[0]?.changeField, "smb_message_echoes");
+  assert.equal(events[0]?.phoneNumberId, "100000000000002");
+  assert.equal(events[0]?.message?.text && (events[0].message?.text as { body?: string }).body, "Mensagem humana de teste");
+  assert.equal(events[0]?.externalEventId, "message:wamid.real-human-echo");
+});
+
+test("replaying the real echo keeps the same inbox identity", () => {
+  const payload = {
+    entry: [{
+      id: "entry-replay",
+      changes: [{
+        field: "smb_message_echoes",
+        value: {
+          metadata: { phone_number_id: "phone-replay" },
+          message_echoes: [{
+            id: "echo-replay-1",
+            from: "5511900000000",
+            to: "5511999999999",
+            type: "text",
+            text: { body: "replay" },
+          }],
+        },
+      }],
+    }],
+  };
+
+  const first = extractEventsFromPayload(payload);
+  const replay = extractEventsFromPayload(payload);
+  assert.equal(first[0]?.eventKind, "message_echo");
+  assert.equal(replay[0]?.externalEventId, first[0]?.externalEventId);
+});
+
+test("ordinary customer messages are not classified as echoes", () => {
+  const events = extractEventsFromPayload(
+    payload("messages", {
+      id: "customer-1",
+      from: "5511999999999",
+      type: "text",
+      text: { body: "Quero uma piscina" },
+    }),
+  );
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.eventKind, "message");
+});
+
+test("message_echoes under another field are not treated as human echoes", () => {
+  const events = extractEventsFromPayload({
+    entry: [{
+      id: "entry-wrong-field",
+      changes: [{
+        field: "messages",
+        value: {
+          metadata: { phone_number_id: "phone-1" },
+          message_echoes: [{
+            id: "not-an-echo-event",
+            from: "5511900000000",
+            to: "5511999999999",
+            type: "text",
+            text: { body: "nao classificar" },
+          }],
+        },
+      }],
+    }],
+  });
+
+  assert.equal(events[0]?.eventKind, "change");
+});
+
 test("history and app-state sync are identified but remain non-processable", () => {
   for (const field of ["history", "smb_app_state_sync", "account_update"] as const) {
     const events = extractEventsFromPayload({

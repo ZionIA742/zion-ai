@@ -245,20 +245,36 @@ export function extractEventsFromPayload(payload: unknown): ExtractedEvent[] {
         continue;
       }
 
-      const messages = Array.isArray(rawValue.messages) ? rawValue.messages : [];
-      const echoMessages = Array.isArray(rawValue.smb_message_echoes)
-        ? rawValue.smb_message_echoes
+      const isMessageEchoesField = changeField === "smb_message_echoes";
+      const messages = !isMessageEchoesField && Array.isArray(rawValue.messages)
+        ? rawValue.messages
+        : [];
+      const echoMessages = isMessageEchoesField
+        ? [
+            ...(Array.isArray(rawValue.message_echoes) ? rawValue.message_echoes : []),
+            ...(Array.isArray(rawValue.smb_message_echoes) ? rawValue.smb_message_echoes : []),
+            ...(Array.isArray(rawValue.messages) ? rawValue.messages : []),
+          ]
         : [];
       const statuses = Array.isArray(rawValue.statuses) ? rawValue.statuses : [];
 
-      for (const message of [...messages, ...echoMessages]) {
+      const messageEntries: Array<{
+        message: unknown;
+        eventKind: ExtractedEvent["eventKind"];
+      }> = [
+        ...messages.map((message) => ({ message, eventKind: "message" as const })),
+        ...echoMessages.map((message) => ({ message, eventKind: "message_echo" as const })),
+      ];
+
+      for (const entryMessage of messageEntries) {
+        const message = entryMessage.message;
         if (!isRecord(message)) continue;
         const messageId = asTrimmedString(message.id);
         if (!messageId) continue;
 
         const eventKind: ExtractedEvent["eventKind"] =
-          changeField === "smb_message_echoes"
-            ? "message_echo"
+          entryMessage.eventKind === "message_echo"
+            ? entryMessage.eventKind
             : isGroupMessage(message)
               ? "group_message"
               : "message";
