@@ -222,7 +222,7 @@ export async function PATCH(
     });
 
     if (
-      boundary.preservedStatus !== "draft" ||
+      (boundary.preservedStatus !== "draft" && boundary.preservedStatus !== "changes_requested") ||
       boundary.expectedCurrentVersionId !== null
     ) {
       return versionedFlowRequired();
@@ -271,7 +271,7 @@ export async function PATCH(
     if (
       !row ||
       row.quote_id !== scope.quote.id ||
-      row.quote_status !== "draft" ||
+      row.quote_status !== boundary.preservedStatus ||
       row.current_version_id !== null ||
       row.item_count !== rpcArgs.p_items.length ||
       row.subtotal_cents !== rpcArgs.p_subtotal_cents ||

@@ -18,8 +18,8 @@ const mocks = {
   "@/lib/server/sales-quotes/quote-auth": { QuoteAccessError, async resolveAuthorizedExistingQuote(id) {
     f.calls.push("auth"); assert.equal(id, ids.quote); if (f.authError) throw f.authError; return f.scope;
   } },
-  "@/lib/server/sales-quotes/human-quote-draft-edit-input": { HumanQuoteDraftInputError: InputError, buildHumanQuoteDraftEditRpcArgs() { throw Error("draft builder called"); } },
-  "@/lib/server/sales-quotes/human-quote-edit-boundary": { HumanQuoteEditBoundaryError: BoundaryError, prepareHumanQuoteEditBoundary() { f.calls.push("legacy-boundary"); return { preservedStatus: "sent", expectedCurrentVersionId: ids.previous }; } },
+  "@/lib/server/sales-quotes/human-quote-draft-edit-input": { HumanQuoteDraftInputError: InputError, buildHumanQuoteDraftEditRpcArgs() { if (!f.unversioned) throw Error("draft builder called"); f.calls.push("draft-builder"); return f.rpcArgs; } },
+  "@/lib/server/sales-quotes/human-quote-edit-boundary": { HumanQuoteEditBoundaryError: BoundaryError, prepareHumanQuoteEditBoundary() { f.calls.push("legacy-boundary"); return f.unversioned ? { preservedStatus: f.scope.quote.status, expectedCurrentVersionId: null } : { preservedStatus: "sent", expectedCurrentVersionId: ids.previous }; } },
   "@/lib/server/sales-quotes/human-quote-edit-provenance": { HumanQuoteEditProvenanceError: ProvenanceError },
   "@/lib/server/sales-quotes/human-quote-versioned-edit-save": { async saveHumanQuoteVersionedEdit(args) {
     f.calls.push("save"); f.received = args;
@@ -82,3 +82,22 @@ test("conflito do servico preserva HTTP 409", async () => { reset(); f.saveError
 test("erro interno nao expoe detalhes do banco", async () => { reset(); f.saveError=Error("SECRET_DATABASE_DETAIL"); const r=await invoke(); assert.equal(r.status,500); assert.equal(JSON.stringify(r.data).includes("SECRET_DATABASE_DETAIL"),false); });
 test("JSON invalido nao chama servico", async () => { reset(); const r=await invoke({raw:"{"}); assert.equal(r.status,400); assert.deepEqual(f.calls,["auth"]); });
 test("sem header continua usando fluxo anterior", async () => { reset(); const r=await invoke({operation:null}); assert.equal(r.status,409); assert.equal(r.data.error,"HUMAN_QUOTE_EDIT_VERSIONED_FLOW_REQUIRED"); assert.deepEqual(f.calls,["auth","legacy-boundary"]); });
+
+function unversionedFixture(status) {
+  reset();
+  f.scope.quote.status = status;
+  f.scope.quote.current_version_id = null;
+  f.body.expected_current_version_id = null;
+  f.unversioned = true;
+  f.rpcArgs = {p_items: [{}], p_subtotal_cents: 100, p_discount_cents: 0, p_total_cents: 100, p_expected_updated_at: f.body.expected_updated_at};
+  f.sqlResult = {quote_id: ids.quote, quote_status: status, current_version_id: null, item_count: 1, subtotal_cents: 100, discount_cents: 0, total_cents: 100, updated_at: '2026-11-24T12:01:00Z'};
+  f.scope.supabase = {
+    from(table) { assert.equal(table, 'sales_quote_items'); f.calls.push('items'); return this; },
+    select() { return this; }, eq() { return this; }, order() { return this; },
+    then(resolve) { return Promise.resolve({data: [],error:null}).then(resolve); },
+    async rpc(name,args) { assert.equal(name,'apply_human_sales_quote_draft_edit_by_system'); assert.equal(args,f.rpcArgs); f.calls.push('rpc'); return {data:[f.sqlResult],error:null}; }
+  };
+}
+test('PATCH changes requested sem versao preserva status e usa somente writer independente',async()=>{unversionedFixture('changes_requested'); const r=await invoke({operation:null}); assert.equal(r.status,200); assert.equal(r.data.quote.status,'changes_requested'); assert.equal(r.data.quote.current_version_id,null); assert.deepEqual(f.calls,['auth','legacy-boundary','items','draft-builder','rpc']);});
+test('PATCH rejeita resultado SQL com status trocado',async()=>{unversionedFixture('changes_requested');f.sqlResult.quote_status='draft'; const r=await invoke({operation:null}); assert.equal(r.status,500);assert.equal(r.data.error,'HUMAN_QUOTE_EDIT_RESULT_INVALID');});
+test('PATCH failed sem versao continua bloqueado',async()=>{unversionedFixture('failed');const r=await invoke({operation:null});assert.equal(r.status,409);assert.deepEqual(f.calls,['auth','legacy-boundary']);});

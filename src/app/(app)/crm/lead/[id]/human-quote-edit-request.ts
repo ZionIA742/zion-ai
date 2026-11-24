@@ -30,6 +30,7 @@ export type HumanQuoteEditRequest = Readonly<{
   quoteId: string;
   body: string;
   operationId: string | null;
+  unversionedStatus: string | null;
 }>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function prepareHumanQuoteEditRequest(
@@ -46,7 +47,7 @@ export function prepareHumanQuoteEditRequest(
   if (version !== null && (typeof version !== "string" || !UUID.test(version))) {
     throw new Error("Versao invalida. Recarregue o orcamento.");
   }
-  if (version === null && base.status !== "draft") {
+  if (version === null && base.status !== "draft" && base.status !== "changes_requested") {
     throw new Error("Este orcamento sem versao precisa de regularizacao antes da edicao.");
   }
   const body = JSON.stringify({
@@ -72,6 +73,7 @@ export function prepareHumanQuoteEditRequest(
   });
   if (pending) {
     if (pending.quoteId !== base.id || pending.body !== body ||
+        pending.unversionedStatus !== (version === null ? base.status : null) ||
         (version === null ? pending.operationId !== null : !UUID.test(pending.operationId ?? ""))) {
       throw new Error("Existe uma tentativa de salvamento pendente. Confirme seu resultado antes de alterar o conteudo.");
     }
@@ -79,7 +81,7 @@ export function prepareHumanQuoteEditRequest(
   }
   const operationId = version === null ? null : createOperationId();
   if (operationId !== null && !UUID.test(operationId)) throw new Error("Operacao de edicao invalida.");
-  return Object.freeze({ quoteId: base.id, body, operationId });
+  return Object.freeze({ quoteId: base.id, body, operationId, unversionedStatus: version === null ? base.status : null });
 }
 export class HumanQuoteEditRequestError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -113,7 +115,7 @@ export async function submitHumanQuoteEditRequest(
   if (q?.id !== request.quoteId || typeof q.status !== "string" ||
       typeof q.updated_at !== "string" || !q.updated_at.trim() ||
       (request.operationId === null
-        ? q.current_version_id !== null || q.status !== "draft"
+        ? q.current_version_id !== null || q.status !== request.unversionedStatus
         : result.version_id !== request.operationId || !UUID.test(q.current_version_id ?? "") ||
           !Number.isSafeInteger(result.version_number) || result.version_number <= 0)) {
     throw new HumanQuoteEditRequestError(502, "HUMAN_QUOTE_EDIT_RESULT_INVALID", "Recarregue o orcamento para confirmar o salvamento.");

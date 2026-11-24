@@ -4919,7 +4919,7 @@ export default function LeadPage() {
       const originalTypes = new Map<string, HumanQuoteEditItem["item_type"]>();
       const validity = String(result.quote.validity_days ?? "").trim() || convertQuoteValidUntilToDays(result.quote.valid_until);
       if (isHumanEdit) {
-        if (!result.quote.updated_at || (result.quote.current_version_id === null && result.quote.status !== "draft")) {
+        if (!result.quote.updated_at || (result.quote.current_version_id === null && result.quote.status !== "draft" && result.quote.status !== "changes_requested")) {
           throw new Error("Este orcamento precisa de regularizacao antes da edicao.");
         }
         if (result.quote.lead_id !== leadId || result.quote.organization_id !== lead?.organization_id || result.quote.store_id !== lead?.store_id) {
@@ -7741,7 +7741,7 @@ export default function LeadPage() {
                                   isCurrentCommercialProposal &&
                                   !exactLinkedContract;
                                 const canEditQuote = quote.human_edit_eligible === true
-                                  ? Boolean(quote.current_version_id) || normalizedStatus === "draft"
+                                  ? Boolean(quote.current_version_id) || normalizedStatus === "draft" || normalizedStatus === "changes_requested"
                                   : quote.is_unlinked !== true && (normalizedStatus === "pending_review" ||
                                     normalizedStatus === "changes_requested" ||
                                     normalizedStatus === "approved");

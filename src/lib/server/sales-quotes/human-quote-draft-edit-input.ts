@@ -150,7 +150,7 @@ function buildHumanQuoteEditRpcArgs(
   if (
     mode === "draft" &&
     (
-      boundary.preservedStatus !== "draft" ||
+      (boundary.preservedStatus !== "draft" && boundary.preservedStatus !== "changes_requested") ||
       boundary.expectedCurrentVersionId !== null
     )
   ) {
