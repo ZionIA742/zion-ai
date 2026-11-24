@@ -3,6 +3,7 @@ import {
   getSalesQuotesSelect,
   QuoteAccessError,
 } from "./quote-auth";
+import { assertHumanQuoteEditEligibility, HumanQuoteEditProvenanceError } from "./human-quote-edit-provenance";
 import type {
   SalesQuoteRow,
   SalesQuoteVersionRow,
@@ -10,6 +11,16 @@ import type {
 
 type QuoteSupabase =
   Awaited<ReturnType<typeof authenticateQuoteRequest>>["supabase"];
+
+function humanEditEligible(quote: SalesQuoteRow): boolean {
+  try {
+    assertHumanQuoteEditEligibility(quote);
+    return true;
+  } catch (error) {
+    if (error instanceof HumanQuoteEditProvenanceError) return false;
+    throw error;
+  }
+}
 
 export async function listUnlinkedSalesQuotesForLead(args: {
   supabase: QuoteSupabase;
@@ -99,6 +110,7 @@ export async function listUnlinkedSalesQuotesForLead(args: {
       total_cents: quote.total_cents,
       created_at: quote.created_at,
       current_version_id: currentVersionId,
+      human_edit_eligible: humanEditEligible(quote),
       current_version: currentVersion
         ? {
             id: currentVersion.id,

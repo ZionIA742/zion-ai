@@ -474,6 +474,7 @@ type GeneratedQuoteSummary = {
   created_at: string | null;
   current_version_id: string | null;
   human_edit_eligible?: boolean;
+  is_unlinked?: boolean;
   current_version: {
     id: string;
     status: string | null;
@@ -1835,6 +1836,8 @@ export default function LeadPage() {
 
   const leadDetailsScopeRef = useRef<string | null>(null);
   const documentScopeRef = useRef<string | null>(null);
+  const quoteListScopeRef = useRef<string | null>(null);
+  const quoteListSequenceRef = useRef(0);
   const paymentScopeRef = useRef<string | null>(null);
   const quoteEditScopeRef = useRef<string | null>(null);
   const automaticContractPreviewRef = useRef<string | null>(null);
@@ -1977,6 +1980,9 @@ export default function LeadPage() {
     leadId && selectedDocumentOpportunityId
       ? `${leadId}:${selectedDocumentOpportunityId}`
       : null;
+  const quoteDocumentScopeKey = leadId
+    ? `${leadId}:${selectedDocumentOpportunityId || "unlinked"}`
+    : null;
   const activeOpportunities = opportunities.filter(
     (opportunity) => getCanonicalCrmStage(opportunity.stage)?.area === "pipeline"
   );
@@ -2473,6 +2479,8 @@ export default function LeadPage() {
     setAppointments([]);
     setQualificationFacts(null);
     documentScopeRef.current = null;
+    quoteListScopeRef.current = null;
+    quoteListSequenceRef.current += 1;
     paymentScopeRef.current = opportunityId;
     quoteEditScopeRef.current = null;
     setPaymentState(null);
@@ -3071,13 +3079,17 @@ export default function LeadPage() {
   async function generateEditedQuoteVersion() {
     const context = humanQuoteEditRef.current;
     if (!context) {
+      if (!editingQuoteId || !quoteDocumentScopeKey || quoteEditScopeRef.current !== `${quoteDocumentScopeKey}:${editingQuoteId}`) {
+        setQuoteFormError("Reabra o orcamento no contexto atual antes de salvar.");
+        return;
+      }
       await generateLegacyEditedQuoteVersion();
       return;
     }
     if (humanQuoteSaveInFlightRef.current || isGeneratingManualQuote) return;
     if (quoteFormMode !== "edit" || editingQuoteId !== context.base.id ||
         quoteEditScopeRef.current !== context.scopeKey ||
-        `${documentScopeKey}:${editingQuoteId}` !== context.scopeKey) {
+        `${quoteDocumentScopeKey}:${editingQuoteId}` !== context.scopeKey) {
       setQuoteFormError("Reabra o orcamento no contexto atual antes de salvar.");
       return;
     }
@@ -3346,66 +3358,48 @@ export default function LeadPage() {
   async function fetchGeneratedQuotes(options?: { silent?: boolean }) {
     const scopedLeadId = leadId;
     const scopedOpportunityId = selectedDocumentOpportunityId;
-    const scopedDocumentKey = documentScopeKey;
-
-    if (!scopedLeadId || !scopedOpportunityId || !scopedDocumentKey) {
-      setGeneratedQuotes([]);
-      setCurrentCommercialProposal(null);
-      setGeneratedQuotesError(null);
-      setGeneratedQuotesLoading(false);
-      setHasLoadedGeneratedQuotes(true);
-      return;
-    }
-
-    documentScopeRef.current = scopedDocumentKey;
-
-    if (!options?.silent) {
-      setGeneratedQuotesLoading(true);
-    }
-
+    const scopedQuoteKey = quoteDocumentScopeKey;
+    if (!scopedLeadId || !scopedQuoteKey || quoteListScopeRef.current !== scopedQuoteKey) return;
+    const sequence = ++quoteListSequenceRef.current;
+    const isCurrent = () => quoteListScopeRef.current === scopedQuoteKey && quoteListSequenceRef.current === sequence;
+    if (!options?.silent) setGeneratedQuotesLoading(true);
     setGeneratedQuotesError(null);
-    setCurrentCommercialProposal(null);
+
+    async function readQuotes(opportunityId: string | null): Promise<SalesQuoteListResponse> {
+      const params = new URLSearchParams({ leadId: scopedLeadId });
+      if (opportunityId) params.set("commercialOpportunityId", opportunityId);
+      const response = await fetch(`/api/sales-quotes?${params.toString()}`, { method: "GET", cache: "no-store" });
+      const result = (await response.json()) as SalesQuoteListResponse;
+      if (!response.ok || !result?.ok || !Array.isArray(result.quotes)) {
+        throw new Error(result?.message || "Nao foi possivel carregar os orcamentos.");
+      }
+      return result;
+    }
 
     try {
-      const params = new URLSearchParams({
-        leadId: scopedLeadId,
-        commercialOpportunityId: scopedOpportunityId,
-      });
-      const response = await fetch(
-        `/api/sales-quotes?${params.toString()}`,
-        {
-          method: "GET",
-          cache: "no-store",
-        }
-      );
-      const result = (await response.json()) as SalesQuoteListResponse;
-
-      if (documentScopeRef.current !== scopedDocumentKey) {
-        return;
+      const [linked, free] = await Promise.allSettled([
+        scopedOpportunityId ? readQuotes(scopedOpportunityId) : Promise.resolve(null),
+        readQuotes(null),
+      ]);
+      if (!isCurrent()) return;
+      const linkedResult = linked.status === "fulfilled" ? linked.value : null;
+      const freeResult = free.status === "fulfilled" ? free.value : null;
+      const combined = new Map<string, GeneratedQuoteSummary>();
+      for (const quote of linkedResult?.quotes ?? []) combined.set(quote.id, { ...quote, is_unlinked: false });
+      for (const quote of freeResult?.quotes ?? []) {
+        if (!combined.has(quote.id)) combined.set(quote.id, { ...quote, is_unlinked: true });
       }
-
-      if (!response.ok || !result?.ok) {
-        throw new Error(result?.message || "Nao foi possivel carregar os PDFs gerados.");
+      setGeneratedQuotes([...combined.values()].sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""))));
+      setCurrentCommercialProposal(linkedResult ? normalizeCurrentCommercialProposalSummary(linkedResult.currentCommercialProposal) : null);
+      if (linked.status === "rejected" || free.status === "rejected") {
+        setGeneratedQuotesError(linked.status === "rejected" && free.status === "rejected"
+          ? "Nao foi possivel carregar os orcamentos. Atualize a tela."
+          : linked.status === "rejected" ? "Nao foi possivel carregar os orcamentos da oportunidade."
+          : "Nao foi possivel carregar os orcamentos livres.");
       }
-
-      setGeneratedQuotes(Array.isArray(result.quotes) ? result.quotes : []);
-      setCurrentCommercialProposal(
-        normalizeCurrentCommercialProposalSummary(result.currentCommercialProposal)
-      );
       setHasLoadedGeneratedQuotes(true);
-    } catch (error: any) {
-      if (documentScopeRef.current !== scopedDocumentKey) {
-        return [];
-      }
-
-      setCurrentCommercialProposal(null);
-      setGeneratedQuotesError(
-        error?.message || "Nao foi possivel carregar os PDFs gerados."
-      );
     } finally {
-      if (!options?.silent && documentScopeRef.current === scopedDocumentKey) {
-        setGeneratedQuotesLoading(false);
-      }
+      if (isCurrent()) setGeneratedQuotesLoading(false);
     }
   }
 
@@ -3699,7 +3693,7 @@ export default function LeadPage() {
   async function refreshCurrentScreenSnapshot() {
     await fetchLeadConversationAndMessages({ silent: true });
 
-    if (activeDetailsTab === "pdfs" && documentScopeKey) {
+    if (activeDetailsTab === "pdfs" && quoteDocumentScopeKey) {
       await Promise.all([
         fetchGeneratedQuotes({ silent: true }),
         fetchGeneratedContracts({ silent: true }),
@@ -4871,22 +4865,20 @@ export default function LeadPage() {
   ) {
     const safeQuoteId = String(quoteId || "").trim();
     const normalizedStatus = String(currentStatus || "").trim().toLowerCase();
-    const scopedOpportunityId = selectedDocumentOpportunityId;
-    const scopedDocumentKey = documentScopeKey;
-    const scopedQuoteEditKey =
-      scopedOpportunityId && scopedDocumentKey
-        ? `${scopedDocumentKey}:${safeQuoteId}`
-        : null;
+    const scopedDocumentKey = quoteDocumentScopeKey;
+    const scopedQuoteEditKey = scopedDocumentKey
+      ? `${scopedDocumentKey}:${safeQuoteId}`
+      : null;
 
-    if (!safeQuoteId || !scopedOpportunityId || !scopedQuoteEditKey) {
+    if (!safeQuoteId || !scopedQuoteEditKey || quoteListScopeRef.current !== scopedDocumentKey) {
       return;
     }
 
-    const quoteBelongsToCurrentScope = generatedQuotes.some(
+    const displayedQuote = generatedQuotes.find(
       (quote) => quote.id === safeQuoteId
     );
 
-    if (!quoteBelongsToCurrentScope) {
+    if (!displayedQuote) {
       return;
     }
 
@@ -4918,6 +4910,9 @@ export default function LeadPage() {
       }
 
       const isHumanEdit = result.quote.human_edit_eligible === true;
+      if (displayedQuote.is_unlinked === true && !isHumanEdit) {
+        throw new Error("Este documento nao esta habilitado para edicao humana independente.");
+      }
       if (!isHumanEdit && !["pending_review", "changes_requested", "approved"].includes(normalizedStatus)) {
         throw new Error("Este orcamento nao pode ser aberto para edicao.");
       }
@@ -6264,6 +6259,10 @@ export default function LeadPage() {
 
   useEffect(() => {
     documentScopeRef.current = documentScopeKey;
+    quoteListScopeRef.current = quoteDocumentScopeKey;
+    quoteListSequenceRef.current += 1;
+    quoteEditScopeRef.current = null;
+    setLoadingQuoteForEdit(null);
     setGeneratedQuotes([]);
     setCurrentCommercialProposal(null);
     setGeneratedQuotesError(null);
@@ -6295,7 +6294,7 @@ export default function LeadPage() {
     setContractTemplateSourceError(null);
     setContractTemplateSourceLoading(false);
     loadedContractDataScopeRef.current = null;
-  }, [documentScopeKey]);
+  }, [documentScopeKey, quoteDocumentScopeKey]);
 
   useEffect(() => {
     void fetchAcceptedQuoteSummary();
@@ -6306,18 +6305,16 @@ export default function LeadPage() {
       return;
     }
 
+    if (quoteDocumentScopeKey) void fetchGeneratedQuotes();
     if (!documentScopeKey) {
-      setHasLoadedGeneratedQuotes(true);
       setHasLoadedGeneratedContracts(true);
       return;
     }
-
-    void fetchGeneratedQuotes();
     void fetchGeneratedContracts();
     void loadSelectedOpportunityPayment();
     void fetchContractTemplateSource();
     void fetchContractDraftState({ silent: true });
-  }, [activeDetailsTab, documentScopeKey]);
+  }, [activeDetailsTab, documentScopeKey, quoteDocumentScopeKey]);
 
   useEffect(() => {
     if (
@@ -7698,7 +7695,7 @@ export default function LeadPage() {
                             <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
                               {selectedDocumentOpportunityId
                                 ? "Nenhum orçamento gerado ainda."
-                                : "Selecione uma oportunidade para ver os orçamentos."}
+                                : "Nenhum orçamento livre para este cliente."}
                             </div>
                           ) : null}
 
@@ -7735,8 +7732,8 @@ export default function LeadPage() {
                                 const isActionLoading = quoteActionLoadingId === quote.id;
                                 const isContractActionLoading = contractActionLoadingId === quote.id;
                                 const isLoadingForEdit = loadingQuoteForEdit === quote.id;
-                                const canApprove = normalizedStatus === "pending_review";
-                                const canSend = normalizedStatus === "approved";
+                                const canApprove = quote.is_unlinked !== true && normalizedStatus === "pending_review";
+                                const canSend = quote.is_unlinked !== true && normalizedStatus === "approved";
                                 const wasSent = normalizedStatus === "sent";
                                 const canCreateContract =
                                   hasLoadedGeneratedContracts &&
@@ -7745,10 +7742,11 @@ export default function LeadPage() {
                                   !exactLinkedContract;
                                 const canEditQuote = quote.human_edit_eligible === true
                                   ? Boolean(quote.current_version_id) || normalizedStatus === "draft"
-                                  : normalizedStatus === "pending_review" ||
+                                  : quote.is_unlinked !== true && (normalizedStatus === "pending_review" ||
                                     normalizedStatus === "changes_requested" ||
-                                    normalizedStatus === "approved";
+                                    normalizedStatus === "approved");
                                 const canPrepareDraftPdf =
+                                  quote.is_unlinked !== true &&
                                   normalizedStatus === "draft" &&
                                   !hasPdf &&
                                   quotePdfPreparationUncertainId !== quote.id;
@@ -7765,7 +7763,7 @@ export default function LeadPage() {
                                             {quote.quote_number || "Sem número"}
                                           </span>
                                           <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
-                                            {formatQuoteStatusLabel(quote.status)}
+                                            {formatQuoteStatusLabel(quote.status)}{quote.is_unlinked ? " · Sem oportunidade" : ""}
                                           </span>
                                         </div>
 

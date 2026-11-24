@@ -5,7 +5,7 @@ import { listUnlinkedSalesQuotesForLead } from "./unlinked-quote-list";
 
 type Row = Record<string, unknown>;
 
-function createFixture() {
+function createFixture(freeMetadata?: Record<string, unknown>) {
   const tables: Record<string, Row[]> = {
     leads: [
       { id: "lead-a", organization_id: "org-1", store_id: "store-1" },
@@ -19,6 +19,7 @@ function createFixture() {
     sales_quotes: [
       {
         id: "quote-free",
+        metadata: freeMetadata,
         organization_id: "org-1",
         store_id: "store-1",
         lead_id: "lead-a",
@@ -207,6 +208,7 @@ test("lista apenas orcamentos sem oportunidade da organizacao, loja e lead", asy
   );
   assert.equal(result[0].current_version?.id, "version-free");
   assert.equal(result[0].current_version?.original_filename, "quote-free.pdf");
+  assert.equal(result[0].human_edit_eligible, false);
 });
 
 test("nao associa versao pertencente a outro orcamento", async () => {
@@ -286,3 +288,21 @@ test("API continua exigindo leadId", async () => {
 
   assert.equal(response.status, 400);
 });
+
+for (const scenario of [
+  { name: "historico reconhecido", metadata: { created_via: "api_sales_quotes_create", legacy_human_edit_eligible: true }, expected: true },
+  { name: "criador humano comprovado", metadata: { created_via: "api_sales_quotes_create", creation_actor_kind: "user", creation_actor_user_id: "11111111-1111-4111-8111-111111111111" }, expected: true },
+  { name: "origem IA", metadata: { created_via: "p19a_quote_preparation", legacy_human_edit_eligible: true }, expected: false },
+]) {
+  test(`API livre: elegibilidade ${scenario.name}`, async () => {
+    const fixture = createFixture(scenario.metadata);
+    const handler = createSalesQuotesListGetHandler({ authenticateQuoteRequest: authFromFixture(fixture) });
+    const response = await handler(new Request("https://zion.test/api/sales-quotes?leadId=lead-a"));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.quotes[0].human_edit_eligible, scenario.expected);
+    assert.equal(body.quotes[1].human_edit_eligible, false);
+    assert.equal(Object.hasOwn(body.quotes[0], "metadata"), false);
+    assert.equal(fixture.queryTables.includes("commercial_opportunities"), false);
+  });
+}
