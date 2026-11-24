@@ -1,6 +1,7 @@
 
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
+import { handlePanelHumanControlCommand, type PanelHumanControlExecutor } from "@/lib/server/assistant/panel-human-control-command";
 import { createClient } from "@supabase/supabase-js";
 import { buildInformalPortugueseContextInstruction } from "@/lib/server/informal-portuguese-context";
 import type {
@@ -9745,6 +9746,7 @@ export async function generateAssistantReply(params: {
   sourceExternalMessageId?: string | null;
   panelHumanMessageId?: string | null;
   panelReplyClaim?: { runId: string; claimToken: string } | null;
+  panelHumanControlExecutor?: PanelHumanControlExecutor;
   testDependencies?: AssistantReplyTestDependencies;
 }): Promise<AssistantReplyResult> {
   try {
@@ -9786,13 +9788,6 @@ export async function generateAssistantReply(params: {
       };
     }
 
-    if (!testDependencies && !openaiApiKey) {
-      return {
-        ok: false,
-        error: "OPENAI_ENV_MISSING",
-        message: "Verifique OPENAI_API_KEY nas variáveis de ambiente.",
-      };
-    }
 
     // The injected client intentionally shares the broad Supabase surface used by this legacy route.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -9803,7 +9798,6 @@ export async function generateAssistantReply(params: {
     });
     Object.defineProperty(supabase, "__assistantOrganizationId", { value: organizationId, configurable: true });
     Object.defineProperty(supabase, "__assistantStoreId", { value: storeId, configurable: true });
-    const openai = testDependencies?.openaiClient || new OpenAI({ apiKey: openaiApiKey as string });
 
     const persistAssistantReply = testDependencies?.persistAssistantReply || (async (input: AssistantReplyPersistenceInput) => {
       if (params.panelReplyClaim) {
@@ -9837,6 +9831,42 @@ export async function generateAssistantReply(params: {
       });
       return error;
     });
+
+    // A panel command is resolved from its exact persisted message, never from recent history.
+    // The authenticated executor is supplied only by the authorized panel HTTP handler.
+    if (params.panelHumanMessageId && params.panelHumanControlExecutor) {
+      if (!params.panelReplyClaim) {
+        return { ok: false, error: "PANEL_CONTROL_CLAIM_REQUIRED", message: "Nao foi possivel confirmar a autoridade da resposta do painel." };
+      }
+      const humanMessageId = params.panelHumanMessageId;
+      const controlResult = await handlePanelHumanControlCommand({
+        organizationId,
+        storeId,
+        humanMessageId,
+        readMessage: async () => await supabase.from("store_assistant_messages")
+          .select("id, content, message_type")
+          .eq("id", humanMessageId)
+          .eq("organization_id", organizationId)
+          .eq("store_id", storeId)
+          .eq("sender", "human")
+          .eq("sender_role", "store_responsible")
+          .eq("direction", "incoming")
+          .contains("metadata", { origin: "panel", channel: "panel" })
+          .maybeSingle(),
+        execute: params.panelHumanControlExecutor,
+        persist: persistAssistantReply,
+      });
+      if (controlResult.handled) return controlResult.result;
+    }
+
+    if (!testDependencies && !openaiApiKey) {
+      return {
+        ok: false,
+        error: "OPENAI_ENV_MISSING",
+        message: "Verifique OPENAI_API_KEY nas variáveis de ambiente.",
+      };
+    }
+    const openai = testDependencies?.openaiClient || new OpenAI({ apiKey: openaiApiKey as string });
 
     const sourceExternalMessageId = String(params.sourceExternalMessageId || "").trim();
     if (sourceExternalMessageId) {
@@ -11696,6 +11726,7 @@ export function createAssistantReplyPostHandler(
         sourceExternalMessageId: humanMessageId ? `panel:${humanMessageId}` : null,
         panelHumanMessageId: humanMessageId || null,
         panelReplyClaim,
+        panelHumanControlExecutor: async (args) => await access.supabase.rpc("execute_assistant_human_control_command_scoped", args),
       });
 
       let panelMessageSync: unknown = null;
