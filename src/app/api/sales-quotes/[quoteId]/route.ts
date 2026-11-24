@@ -1,5 +1,6 @@
 import {
   assertHumanQuoteEditProvenance,
+  isLegacyHumanQuoteEditEligible,
   HumanQuoteEditProvenanceError,
 } from "@/lib/server/sales-quotes/human-quote-edit-provenance";
 
@@ -188,6 +189,7 @@ export async function GET(
         current_version_id: currentVersionId || null,
         updated_at: scope.quote.updated_at ?? null,
         human_edit_provenance_verified: hasVerifiedHumanEditProvenance(scope.quote),
+        human_edit_eligible: hasVerifiedHumanEditProvenance(scope.quote) || isLegacyHumanQuoteEditEligible(scope.quote),
         lead_id: scope.quote.lead_id || null,
         conversation_id: scope.quote.conversation_id || null,
         store_id: scope.quote.store_id,

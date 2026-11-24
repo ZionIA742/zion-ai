@@ -91,3 +91,13 @@ test("falha de render nao chama storage ou writer",async()=>{const f=fixture();f
 test("falha de storage nao chama writer",async()=>{const f=fixture();fault.store=true;await assert.rejects(save(f.args),/store failure/);assert.equal(f.writes.length,0);});
 test("conflito SQL sem replay nao e tratado como sucesso",async()=>{const f=fixture();f.state.rpcError={code:"40001"};await assert.rejects(save(f.args),e=>e.status===409);assert.equal(f.writes.length,1);});
 test("retorno divergente do writer nao e tratado como sucesso",async()=>{const f=fixture();f.state.badResult=true;await assert.rejects(save(f.args),/SAVE_RESULT_INVALID/);});
+
+test("salva revisao de legado reconhecido sem autor inventado",async()=>{
+  const f=fixture(); const m={created_via:"api_sales_quotes_create",legacy_human_edit_eligible:true};
+  f.args.scope.quote.metadata=m; const r=await save(f.args);
+  assert.equal(r.version_id,ids.operation); assert.equal(f.writes.length,1); assert.deepEqual(f.args.scope.quote.metadata,m);
+});
+test("legado sem reconhecimento nao acessa storage ou SQL",async()=>{
+  const f=fixture(); f.args.scope.quote.metadata={created_via:"api_sales_quotes_create"};
+  await assert.rejects(save(f.args)); assert.deepEqual(f.reads,[]); assert.deepEqual(calls,[]);
+});

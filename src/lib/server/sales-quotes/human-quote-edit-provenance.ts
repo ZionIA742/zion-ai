@@ -36,3 +36,27 @@ export function assertHumanQuoteEditProvenance(
 
   return { creationActorUserId: userId };
 }
+
+// Eligibility is distinct from proof of the original creator's identity.
+// The legacy marker is issued only by the administrative database guard.
+export function isLegacyHumanQuoteEditEligible(
+  quote: Parameters<typeof assertHumanQuoteEditProvenance>[0],
+): boolean {
+  const metadata = quote.metadata;
+  return Boolean(
+    metadata && typeof metadata === "object" && !Array.isArray(metadata) &&
+    metadata.created_via === "api_sales_quotes_create" &&
+    metadata.legacy_human_edit_eligible === true &&
+    !Object.prototype.hasOwnProperty.call(metadata, "creation_actor_kind") &&
+    !Object.prototype.hasOwnProperty.call(metadata, "creation_actor_user_id")
+  );
+}
+
+export function assertHumanQuoteEditEligibility(
+  quote: Parameters<typeof assertHumanQuoteEditProvenance>[0],
+): { creationActorUserId: string | null } {
+  if (isLegacyHumanQuoteEditEligible(quote)) {
+    return { creationActorUserId: null };
+  }
+  return assertHumanQuoteEditProvenance(quote);
+}

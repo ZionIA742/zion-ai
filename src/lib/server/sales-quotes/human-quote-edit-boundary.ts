@@ -1,5 +1,5 @@
 import type { SalesQuoteRow } from "./types";
-import { assertHumanQuoteEditProvenance } from "./human-quote-edit-provenance";
+import { assertHumanQuoteEditEligibility } from "./human-quote-edit-provenance";
 
 type Quote = Pick<
   SalesQuoteRow,
@@ -27,7 +27,7 @@ export function prepareHumanQuoteEditBoundary(args: {
 }) {
   const { quote } = args;
 
-  assertHumanQuoteEditProvenance(quote);
+  assertHumanQuoteEditEligibility(quote);
 
   const currentUpdatedAt = String(quote.updated_at || "").trim();
   const currentVersionId = quote.current_version_id ?? null;

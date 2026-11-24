@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { QuoteAccessError, type resolveAuthorizedExistingQuote } from "./quote-auth";
-import { assertHumanQuoteEditProvenance } from "./human-quote-edit-provenance";
+import { assertHumanQuoteEditEligibility } from "./human-quote-edit-provenance";
 import { prepareHumanQuoteVersionedSnapshot } from "./human-quote-versioned-edit-snapshot";
 import { renderHumanQuoteRevisionPdf } from "./human-quote-versioned-edit-pdf-render";
 import { storeHumanQuoteRevisionPdf } from "./human-quote-versioned-edit-pdf-storage";
@@ -37,7 +37,7 @@ export async function saveHumanQuoteVersionedEdit(args: {
 }) {
   const { scope } = args;
   const { quote, supabase } = scope;
-  assertHumanQuoteEditProvenance(quote);
+  assertHumanQuoteEditEligibility(quote);
   if (scope.organizationId !== quote.organization_id || scope.store.id !== quote.store_id) {
     throw new QuoteAccessError(403, "HUMAN_REVISION_SCOPE_MISMATCH", "Orcamento fora do escopo.");
   }
