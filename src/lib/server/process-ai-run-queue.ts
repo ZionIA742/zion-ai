@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   generateAndSaveAiSalesReply,
   recoverConfirmedSalesAiReplySetPostCommitEffects,
+  readSalesAiHumanControlState,
   type SalesAiWorkerClaimContext,
 } from "./generate-and-save-ai-sales-reply";
 import { isSalesAiConversationStatusEligible } from "./conversation-ai-sales-eligibility";
@@ -503,6 +504,66 @@ export async function processDueAiRunQueue(
         });
         skipped += 1;
         results.push({ queueId, queueKey, status: "skipped", detail: "human_active" });
+        continue;
+      }
+
+      let humanControl: Awaited<ReturnType<typeof readSalesAiHumanControlState>>;
+      try {
+        humanControl = await readSalesAiHumanControlState({
+          supabase,
+          organizationId,
+          storeId,
+          conversationId,
+        });
+      } catch (humanControlError) {
+        if (row.claim_token) {
+          await finalizeWorkerTaskBySystem(supabase, {
+            kind: "ai_run_queue",
+            organizationId,
+            storeId,
+            id: queueId,
+            claimToken: row.claim_token,
+            outcome: "retryable",
+            errorText: "human_control_state_unavailable",
+          });
+        }
+        skipped += 1;
+        results.push({
+          queueId,
+          queueKey,
+          status: "skipped",
+          detail:
+            humanControlError instanceof Error
+              ? humanControlError.message
+              : "human_control_state_unavailable",
+        });
+        continue;
+      }
+
+      if (humanControl.blocked) {
+        await markQueueProcessed({
+          supabase,
+          id: queueId,
+          organizationId,
+          storeId,
+          detail: humanControl.hardHold ? "hard_hold" : "human_active",
+          claimToken: row.claim_token,
+        });
+        await consumeMatchingSalesResumeWindowState({
+          supabase,
+          organizationId,
+          storeId,
+          conversationId,
+          reason: resumeReason,
+          resumeAt,
+        });
+        skipped += 1;
+        results.push({
+          queueId,
+          queueKey,
+          status: "skipped",
+          detail: humanControl.hardHold ? "hard_hold" : "human_active",
+        });
         continue;
       }
 

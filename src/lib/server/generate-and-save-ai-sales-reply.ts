@@ -4349,7 +4349,7 @@ export async function recoverConfirmedSalesAiReplySetPostCommitEffects(args: {
 
   const { data: lease, error: leaseError } = await args.supabase
     .from("conversation_human_takeover_leases")
-    .select("hard_hold, released_at")
+    .select("organization_id, store_id, hard_hold, released_at")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("conversation_id", args.conversationId)
@@ -4390,7 +4390,7 @@ export async function recoverConfirmedSalesAiReplySetPostCommitEffects(args: {
   return { status: "reconciled" as const, ...result };
 }
 
-async function isSalesAiHumanControlActive(args: {
+export async function readSalesAiHumanControlState(args: {
   supabase: any;
   organizationId: string;
   storeId: string;
@@ -6352,6 +6352,30 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
+    try {
+      const humanControl = await readSalesAiHumanControlState({
+        supabase,
+        organizationId: canonicalOrganizationId,
+        storeId: canonicalStoreId,
+        conversationId: canonicalConversationId,
+      });
+      if (humanControl.blocked) {
+        return {
+          ok: false,
+          error: humanControl.hardHold ? "HARD_HOLD_ACTIVE" : "HUMAN_HANDOFF_ACTIVE",
+          message: "A autoridade humana ativa bloqueia a resposta automática.",
+        };
+      }
+    } catch (humanControlError: any) {
+      return {
+        ok: false,
+        error: "HUMAN_CONTROL_STATE_UNAVAILABLE",
+        message:
+          humanControlError?.message ||
+          "Não foi possível determinar a autoridade humana da conversa.",
+      };
+    }
+
     const operationalGuard = await resolvedDeps.detectOpenAssistantOperationalFlow({
       supabase,
       organizationId: canonicalOrganizationId,
@@ -7012,6 +7036,32 @@ export async function generateAndSaveAiSalesReply(
     let crossSellSuggestionLedger: CrossSellSuggestionLedgerResult | null = null;
     let materializedReplySet: SalesAiReplySetRow | null = null;
     const materializationAiMessageTimestamp = new Date().toISOString();
+
+    try {
+      const humanControl = await readSalesAiHumanControlState({
+        supabase,
+        organizationId: canonicalOrganizationId,
+        storeId: canonicalStoreId,
+        conversationId: canonicalConversationId,
+      });
+      if (humanControl.blocked) {
+        return {
+          ok: false,
+          error: humanControl.hardHold ? "HARD_HOLD_ACTIVE" : "HUMAN_HANDOFF_ACTIVE",
+          message: "A autoridade humana foi ativada durante a execução da IA.",
+          aiText,
+        };
+      }
+    } catch (humanControlError: any) {
+      return {
+        ok: false,
+        error: "HUMAN_CONTROL_STATE_UNAVAILABLE",
+        message:
+          humanControlError?.message ||
+          "Não foi possível revalidar a autoridade humana antes da saída.",
+        aiText,
+      };
+    }
 
     if (deps?.sendAiPanelMessage && !deps?.materializeSalesAiReplySet) {
       try {
