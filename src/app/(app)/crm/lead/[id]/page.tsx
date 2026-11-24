@@ -10,6 +10,7 @@ import {
   canRenderReopenForPostSaleAction,
 } from "./conclude-opportunity-visibility";
 import {
+  resolveManualQuoteCreationContext,
   buildManualQuoteCreationSnapshot,
   buildManualQuoteCreationStorageKey,
   clearPendingManualQuoteCreationOperation,
@@ -809,6 +810,10 @@ type QuoteFormItem = {
 
 type QuoteDraftPayload = {
   isQuoteModalOpen: boolean;
+  quoteCreationOriginLeadId: string;
+  quoteCreationLinkLead: boolean;
+  quoteCreationCustomerName: string;
+  quoteCreationCustomerPhone: string;
   quoteTitle: string;
   quoteCustomerNotes: string;
   quoteWarrantyTerms: string;
@@ -1748,6 +1753,9 @@ export default function LeadPage() {
   const [quoteTechnicalServicesConfigured, setQuoteTechnicalServicesConfigured] =
     useState(false);
   const [quoteFormMode, setQuoteFormMode] = useState<"create" | "edit">("create");
+  const [quoteCreationState, setQuoteCreationState] = useState({
+    originLeadId: leadId, linkLead: false, customerName: "", customerPhone: "",
+  });
   const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
   const [editingQuoteNumber, setEditingQuoteNumber] = useState<string | null>(null);
   const [editingQuoteStatus, setEditingQuoteStatus] = useState<string | null>(null);
@@ -2155,6 +2163,10 @@ export default function LeadPage() {
       : "Preencha o t\u00edtulo, o nome do item, a quantidade e o pre\u00e7o para gerar o PDF.";
   const quoteDraftPayload: QuoteDraftPayload = {
     isQuoteModalOpen,
+    quoteCreationOriginLeadId: quoteCreationState.originLeadId,
+    quoteCreationLinkLead: quoteCreationState.linkLead,
+    quoteCreationCustomerName: quoteCreationState.linkLead ? "" : quoteCreationState.customerName,
+    quoteCreationCustomerPhone: quoteCreationState.linkLead ? "" : quoteCreationState.customerPhone,
     quoteTitle,
     quoteCustomerNotes,
     quoteWarrantyTerms,
@@ -2331,6 +2343,7 @@ export default function LeadPage() {
   }
 
   function resetQuoteForm() {
+    setQuoteCreationState({ originLeadId: leadId, linkLead: false, customerName: "", customerPhone: "" });
     setQuoteTitle("");
     setQuoteCustomerNotes("");
     setQuoteWarrantyTerms("");
@@ -2375,7 +2388,7 @@ export default function LeadPage() {
   }
 
   function persistQuoteDraftToStorage(payload: QuoteDraftPayload = quoteDraftPayload) {
-    if (typeof window === "undefined") {
+    if (typeof window === "undefined" || lead?.id !== leadId || payload.quoteCreationOriginLeadId !== leadId) {
       return;
     }
 
@@ -2959,15 +2972,31 @@ export default function LeadPage() {
       };
     });
 
+    let creationContext: ReturnType<typeof resolveManualQuoteCreationContext>;
+    try {
+      if (lead.id !== leadId || quoteCreationState.originLeadId !== leadId) {
+        throw new Error("O contexto do editor mudou. Feche e reabra o orcamento.");
+      }
+      creationContext = resolveManualQuoteCreationContext({
+        organizationId: lead.organization_id,
+        storeId: lead.store_id,
+        linkLead: quoteCreationState.linkLead,
+        currentLeadId: lead.id,
+        currentConversationId: conversation?.id || null,
+        currentOpportunityId: selectedOpportunity?.id || null,
+        currentLeadName: lead.name || null,
+        currentLeadPhone: lead.phone || null,
+        manualCustomerName: quoteCreationState.customerName,
+        manualCustomerPhone: quoteCreationState.customerPhone,
+      });
+    } catch (error) {
+      setQuoteFormError(error instanceof Error ? error.message : "Contexto do orcamento invalido.");
+      setQuoteFormSuccess(null);
+      return;
+    }
     const payload = {
-      organizationId: lead.organization_id,
-      storeId: lead.store_id,
-      conversationId: conversation?.id || null,
-      leadId: lead.id,
-      commercialOpportunityId: selectedOpportunity?.id || null,
+      ...creationContext,
       title: quoteTitle.trim(),
-      customer_name: lead.name || null,
-      customer_phone: lead.phone || null,
       customer_notes: quoteCustomerNotes.trim() || null,
       internal_notes: null,
       warranty_terms: quoteWarrantyTerms.trim() || null,
@@ -2975,27 +3004,12 @@ export default function LeadPage() {
       items: normalizedItems,
     };
     const pendingOperationStorageKey = buildManualQuoteCreationStorageKey({
-      organizationId: lead.organization_id,
-      storeId: lead.store_id,
-      leadId: lead.id,
-      conversationId: conversation?.id || null,
-      commercialOpportunityId: selectedOpportunity?.id || null,
+      ...creationContext,
+      draftOriginLeadId: leadId,
     });
     const requestSnapshot = buildManualQuoteCreationSnapshot({
-      organizationId: lead.organization_id,
-      storeId: lead.store_id,
-      leadId: lead.id,
-      conversationId: conversation?.id || null,
-      commercialOpportunityId: selectedOpportunity?.id || null,
-      title: quoteTitle.trim() || null,
-      customer_name: lead.name || null,
-      customer_phone: lead.phone || null,
-      customer_notes: quoteCustomerNotes.trim() || null,
-      internal_notes: null,
-      warranty_terms: quoteWarrantyTerms.trim() || null,
-      validity_days: quoteValidityDays.trim() || null,
+      ...payload,
       discount_cents: 0,
-      items: normalizedItems,
     });
 
     setIsGeneratingManualQuote(true);
@@ -6390,7 +6404,7 @@ export default function LeadPage() {
       return;
     }
 
-    if (!quoteDraftStorageKey || hasRestoredQuoteDraftRef.current || !lead?.id) {
+    if (!quoteDraftStorageKey || hasRestoredQuoteDraftRef.current || !lead?.id || lead.id !== leadId) {
       return;
     }
 
@@ -6410,6 +6424,18 @@ export default function LeadPage() {
 
     try {
       const parsed = JSON.parse(rawDraft) as Partial<QuoteDraftPayload> | null;
+      if (parsed?.quoteCreationOriginLeadId && parsed.quoteCreationOriginLeadId !== leadId) {
+        throw new Error("Rascunho pertence a outro contexto.");
+      }
+      // An open legacy draft used implicit linkage. Preserve its context on recovery.
+      const restoredLinkLead = typeof parsed?.quoteCreationLinkLead === "boolean"
+        ? parsed.quoteCreationLinkLead : parsed?.isQuoteModalOpen === true;
+      setQuoteCreationState({
+        originLeadId: leadId,
+        linkLead: restoredLinkLead,
+        customerName: !restoredLinkLead && typeof parsed?.quoteCreationCustomerName === "string" ? parsed.quoteCreationCustomerName : "",
+        customerPhone: !restoredLinkLead && typeof parsed?.quoteCreationCustomerPhone === "string" ? parsed.quoteCreationCustomerPhone : "",
+      });
       const draftItems = Array.isArray(parsed?.quoteItems)
         ? parsed.quoteItems
             .map((item) => {
@@ -6460,6 +6486,7 @@ export default function LeadPage() {
   }, [
     clearQuoteDraft,
     lead?.id,
+    leadId,
     quoteDraftFallbackStorageKey,
     quoteDraftPrimaryStorageKey,
     quoteFormMode,
@@ -8662,10 +8689,53 @@ export default function LeadPage() {
                 <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain p-3 sm:max-h-[80vh] sm:p-5 lg:p-7">
                   <div className="grid gap-4">
                     <div>
+                      {!isEditingQuote ? (
+                        <div className="mb-4 grid gap-3 rounded-2xl border border-gray-200 bg-gray-50 p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-sm font-semibold text-gray-800">
+                              {quoteCreationState.linkLead ? "Lead vinculado" : "Orçamento sem vínculo"}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={isGeneratingManualQuote || !lead?.id || lead.id !== leadId || quoteCreationState.originLeadId !== leadId}
+                              onClick={() => setQuoteCreationState((current) => ({
+                                originLeadId: leadId, linkLead: !current.linkLead,
+                                customerName: "", customerPhone: "",
+                              }))}
+                              className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-900 disabled:opacity-50"
+                            >
+                              {quoteCreationState.linkLead ? "Desvincular lead" : "Vincular lead ao orçamento"}
+                            </button>
+                          </div>
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <label className="grid gap-1 text-xs font-semibold text-gray-600">
+                              Nome do cliente (opcional)
+                              <input
+                                value={quoteCreationState.linkLead ? lead?.name || "" : quoteCreationState.customerName}
+                                readOnly={quoteCreationState.linkLead}
+                                disabled={isGeneratingManualQuote || quoteCreationState.originLeadId !== leadId}
+                                onChange={(event) => setQuoteCreationState((current) => ({ ...current, customerName: event.target.value }))}
+                                className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900"
+                              />
+                            </label>
+                            <label className="grid gap-1 text-xs font-semibold text-gray-600">
+                              Telefone (opcional)
+                              <input
+                                type="tel"
+                                value={quoteCreationState.linkLead ? lead?.phone || "" : quoteCreationState.customerPhone}
+                                readOnly={quoteCreationState.linkLead}
+                                disabled={isGeneratingManualQuote || quoteCreationState.originLeadId !== leadId}
+                                onChange={(event) => setQuoteCreationState((current) => ({ ...current, customerPhone: event.target.value }))}
+                                className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900"
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      ) : null}
                       <p className="text-sm leading-6 text-gray-700">
                         {isEditingQuote
                           ? (humanQuoteEditView ? "Revise os dados atuais e salve as alterações." : "Revise os dados atuais do orcamento antes de gerar uma nova versao.")
-                          : "Crie um orçamento para este cliente."}
+                          : "Crie um orçamento com ou sem vínculo com o cliente."}
                       </p>
                       <p className="mt-1 text-xs text-gray-500">
                         {isEditingQuote
