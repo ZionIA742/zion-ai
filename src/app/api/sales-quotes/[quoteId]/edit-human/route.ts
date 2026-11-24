@@ -149,6 +149,69 @@ export async function PATCH(
       );
     }
 
+    // Explicit versioned save; legacy draft callers keep their existing contract.
+    // Replay must be resolved before validating the previous version against the current one.
+    const operationId = request.headers?.get("x-zion-quote-edit-operation-id");
+    if (operationId != null) {
+      if (!UUID_RE.test(operationId)) {
+        return failure(400, "INVALID_REVISION_OPERATION_ID", "Identificador de operacao invalido.");
+      }
+      const { saveHumanQuoteVersionedEdit } = await import(
+        "@/lib/server/sales-quotes/human-quote-versioned-edit-save"
+      );
+      const result = await saveHumanQuoteVersionedEdit({
+        scope,
+        operationId,
+        body,
+        loadPresentation: async () => {
+          const [{ loadStoreQuoteSettings }, { loadStoreBrandVisualPolicy }, { loadStoreLogoForPdf }] =
+            await Promise.all([
+              import("@/lib/server/sales-quotes/quote-settings"),
+              import("@/lib/server/store-brand-visual-policy"),
+              import("@/lib/server/sales-quotes/build-quote-pdf"),
+            ]);
+          const { settings } = await loadStoreQuoteSettings({
+            supabase: scope.supabase,
+            organizationId: scope.organizationId,
+            storeId: scope.store.id,
+          });
+          const policy = await loadStoreBrandVisualPolicy({
+            supabase: scope.sessionSupabase,
+            organizationId: scope.organizationId,
+            storeId: scope.store.id,
+          });
+          const storeLogo = !policy.configured || policy.useLogoOnQuotes === true
+            ? await loadStoreLogoForPdf({
+                supabase: scope.supabase,
+                organizationId: scope.organizationId,
+                storeId: scope.store.id,
+              })
+            : null;
+          return {
+            settings,
+            storeLogo,
+            brandVisual: policy.configured ? {
+              primaryColor: policy.primaryColor,
+              secondaryColor: policy.secondaryColor,
+              documentFooter: policy.documentFooter,
+            } : null,
+          };
+        },
+      });
+      return NextResponse.json({
+        ok: true,
+        quote: {
+          id: result.quote_id,
+          status: result.quote_status,
+          current_version_id: result.current_version_id,
+          updated_at: result.updated_at,
+        },
+        version_id: result.version_id,
+        version_number: result.version_number,
+        replayed: result.replayed,
+      });
+    }
+
     const input = body as Record<string, unknown>;
 
     // Rejeita origem indevida ou edicao obsoleta antes de ler itens.
