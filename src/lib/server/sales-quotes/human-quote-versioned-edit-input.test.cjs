@@ -399,3 +399,39 @@ test("snapshot rejeita desconto global divergente dos itens", () => {
   f.body.discount_cents = 10000;
   assert.throws(() => prepareSnapshot(f), { code: "INVALID_DISCOUNT_CENTS" });
 });
+
+function globalDiscountFixture() {
+  const f = snapshotFixture();
+  Object.assign(f.quote, { subtotal_cents: 1430000, discount_cents: 70000, total_cents: 1360000 });
+  Object.assign(f.currentItems[0], { unit_price_cents: 1430000, discount_cents: 50000, subtotal_cents: 1430000, total_cents: 1380000 });
+  f.previousVersion.quote_snapshot = { quote: { subtotalCents: 1430000, discountCents: 70000, totalCents: 1360000 } };
+  return f;
+}
+test("preserva desconto global historico em edicao textual", () => {
+  const f = globalDiscountFixture(); f.body.title = "Novo titulo";
+  const r = prepareSnapshot(f);
+  assert.equal(r.rpc.p_discount_cents, 70000); assert.equal(r.rpc.p_total_cents, 1360000);
+  assert.equal(r.snapshot.quote.discountCents, 70000); assert.equal(r.snapshot.quote.totalCents, 1360000);
+  assert.equal(r.snapshot.items[0].discountCents, 50000); assert.equal(r.snapshot.items[0].totalCents, 1380000);
+});
+test("preserva desconto global ao incluir novo item", () => {
+  const f = globalDiscountFixture();
+  f.body.items = [{ id: ids.item, item_type: "custom", name: "Piscina", quantity: 1, unit_price_cents: 1430000, discount_cents: 50000 }, { item_type: "custom", name: "Servico", quantity: 1, unit_price_cents: 10000, discount_cents: 1000 }];
+  const r = prepareSnapshot(f); assert.equal(r.rpc.p_discount_cents, 71000); assert.equal(r.rpc.p_total_cents, 1369000);
+});
+test("recusa reduzir ou aumentar desconto global por JSON", () => {
+  for (const value of [50000, 90000]) { const f = globalDiscountFixture(); f.body.discount_cents = value; assert.throws(() => prepareSnapshot(f), {code:"INVALID_DISCOUNT_CENTS"}); }
+  const f = globalDiscountFixture(); f.body.discount_cents = 70000; assert.equal(prepareSnapshot(f).rpc.p_discount_cents,70000);
+});
+test("recusa subtotal insuficiente para desconto preservado", () => {
+  const f = globalDiscountFixture(); f.body.items = [{item_type:"custom",name:"Item",quantity:1,unit_price_cents:10000}];
+  assert.throws(() => prepareSnapshot(f), {code:"INVALID_DISCOUNT_CENTS"});
+});
+test("recusa historico financeiro ou snapshot divergente antes do PDF", () => {
+  const f = globalDiscountFixture(); f.quote.total_cents++; assert.throws(() => prepareSnapshot(f), {code:"INVALID_DISCOUNT_CENTS"});
+  const g = globalDiscountFixture(); g.previousVersion.quote_snapshot.quote.totalCents++; assert.throws(() => prepareSnapshot(g), /GLOBAL_DISCOUNT_HISTORY_INVALID/);
+});
+test("aceita snapshot historico com campos legados no nivel superior", () => {
+  const f = globalDiscountFixture(); f.previousVersion.quote_snapshot = {subtotal_cents:1430000,discount_cents:70000,total_cents:1360000};
+  assert.equal(prepareSnapshot(f).snapshot.quote.totalCents,1360000);
+});

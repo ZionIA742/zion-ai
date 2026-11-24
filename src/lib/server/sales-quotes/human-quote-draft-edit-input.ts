@@ -300,13 +300,43 @@ function buildHumanQuoteEditRpcArgs(
     fail("INVALID_DISCOUNT_CENTS", "Desconto invalido.");
   }
 
-  const discountCents = resolveQuoteDiscountFromItems({
-    quoteDiscountCents:
-      suppliedDiscount as number | null | undefined,
-    hasQuoteDiscountCents: hasOwn(body, "discount_cents"),
-    itemsDiscountCents: totals.discountCents,
-    errorCode: "INVALID_DISCOUNT_CENTS",
-  });
+  // Only versioned human edits can preserve an existing global discount.
+  // The amount is derived from scoped persisted data, never supplied by the client.
+  let globalDiscountCents = 0;
+  if (mode === "versioned") {
+    const oldDiscount = currentItems.reduce((sum, item) => sum + (item.discount_cents ?? 0), 0);
+    if (typeof quote.discount_cents !== "number" || !Number.isSafeInteger(quote.discount_cents)) {
+      fail("INVALID_DISCOUNT_CENTS", "Desconto historico invalido.");
+    }
+    globalDiscountCents = quote.discount_cents - oldDiscount;
+    if (!Number.isSafeInteger(globalDiscountCents) || globalDiscountCents < 0) {
+      fail("INVALID_DISCOUNT_CENTS", "Desconto historico invalido.");
+    }
+    if (globalDiscountCents > 0) {
+      const oldSubtotal = currentItems.reduce((sum, item) => sum + (item.subtotal_cents ?? 0), 0);
+      const oldTotal = currentItems.reduce((sum, item) => sum + (item.total_cents ?? 0), 0);
+      if (![oldSubtotal, oldDiscount, oldTotal].every(Number.isSafeInteger) ||
+          oldSubtotal !== quote.subtotal_cents || oldTotal !== oldSubtotal - oldDiscount ||
+          quote.total_cents !== oldTotal - globalDiscountCents) {
+        fail("INVALID_DISCOUNT_CENTS", "Historico financeiro divergente.");
+      }
+    }
+  }
+  const discountCents = globalDiscountCents === 0
+    ? resolveQuoteDiscountFromItems({
+        quoteDiscountCents: suppliedDiscount as number | null | undefined,
+        hasQuoteDiscountCents: hasOwn(body, "discount_cents"),
+        itemsDiscountCents: totals.discountCents,
+        errorCode: "INVALID_DISCOUNT_CENTS",
+      })
+    : totals.discountCents + globalDiscountCents;
+  if (globalDiscountCents > 0 && (
+      (suppliedDiscount != null && suppliedDiscount !== discountCents) ||
+      !Number.isSafeInteger(discountCents) || discountCents > totals.subtotalCents ||
+      discountCents > 2147483647 || totals.subtotalCents > 2147483647
+  )) {
+    fail("INVALID_DISCOUNT_CENTS", "O desconto historico deve ser preservado e nao pode exceder o subtotal.");
+  }
 
   const title = text(
     hasOwn(body, "title") ? body.title : quote.title,

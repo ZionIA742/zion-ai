@@ -26,6 +26,18 @@ export function prepareHumanQuoteVersionedSnapshot(args: Input & {
     throw new Error("HUMAN_REVISION_SNAPSHOT_SCOPE_MISMATCH");
   }
 
+  const oldItemDiscount = args.currentItems.reduce((sum, item) => sum + (item.discount_cents ?? 0), 0);
+  if (typeof quote.discount_cents === "number" && quote.discount_cents > oldItemDiscount) {
+    const previous = previousVersion.quote_snapshot as unknown as Record<string, unknown> | null;
+    const nested = previous?.quote as Record<string, unknown> | null | undefined;
+    const matches = (camel: string, snake: string, value: unknown) =>
+      String(nested?.[camel] ?? previous?.[camel] ?? previous?.[snake] ?? "") === String(value);
+    if (!matches("subtotalCents", "subtotal_cents", quote.subtotal_cents) ||
+        !matches("discountCents", "discount_cents", quote.discount_cents) ||
+        !matches("totalCents", "total_cents", quote.total_cents)) {
+      throw new Error("HUMAN_REVISION_GLOBAL_DISCOUNT_HISTORY_INVALID");
+    }
+  }
   const quoteKind = previousVersion.quote_kind ?? null;
   if (quoteKind !== null && quoteKind !== "preliminary" && quoteKind !== "definitive") {
     throw new Error("HUMAN_REVISION_SNAPSHOT_KIND_INVALID");

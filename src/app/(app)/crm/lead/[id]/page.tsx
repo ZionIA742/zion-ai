@@ -1761,6 +1761,7 @@ export default function LeadPage() {
   } | null>(null);
   const humanQuoteSaveInFlightRef = useRef(false);
   const [humanQuoteEditView, setHumanQuoteEditView] = useState<Map<string, HumanQuoteEditItem["item_type"]> | null>(null);
+  const [humanQuoteGlobalDiscountCents, setHumanQuoteGlobalDiscountCents] = useState(0);
   const [generatedQuotes, setGeneratedQuotes] = useState<GeneratedQuoteSummary[]>([]);
   const [currentCommercialProposal, setCurrentCommercialProposal] =
     useState<CurrentCommercialProposalSummary | null>(null);
@@ -2112,7 +2113,8 @@ export default function LeadPage() {
     return total + discount;
   }, 0);
 
-  const quoteTotalReais = Math.max(quoteSubtotalReais - quoteDiscountTotalReais, 0);
+  const quoteGlobalDiscountReais = humanQuoteEditView ? humanQuoteGlobalDiscountCents / 100 : 0;
+  const quoteTotalReais = Math.max(quoteSubtotalReais - quoteDiscountTotalReais - quoteGlobalDiscountReais, 0);
   const quoteDraftPrimaryStorageKey = lead?.id
     ? `zion:manual-quote-draft:${lead.id}`
     : null;
@@ -2143,7 +2145,8 @@ export default function LeadPage() {
     quoteHasTitle &&
     quoteHasAtLeastOneItem &&
     quoteItemsAreValid &&
-    !quoteHasUnavailableService;
+    !quoteHasUnavailableService &&
+    (quoteGlobalDiscountReais === 0 || Math.round((quoteSubtotalReais - quoteDiscountTotalReais) * 100) >= humanQuoteGlobalDiscountCents);
   const isEditingQuote = quoteFormMode === "edit";
   const quoteValidationMessage = quoteHasUnavailableService
     ? "A loja não possui serviços técnicos configurados e disponíveis para este orçamento."
@@ -2341,6 +2344,7 @@ export default function LeadPage() {
     setEditingQuoteStatus(null);
     humanQuoteEditRef.current = null;
     setHumanQuoteEditView(null);
+    setHumanQuoteGlobalDiscountCents(0);
     quoteEditScopeRef.current = null;
     setLoadingQuoteForEdit(null);
   }
@@ -4917,6 +4921,7 @@ export default function LeadPage() {
         throw new Error("Este orcamento nao pode ser aberto para edicao.");
       }
       const originalTypes = new Map<string, HumanQuoteEditItem["item_type"]>();
+      let globalDiscountCents = 0;
       const validity = String(result.quote.validity_days ?? "").trim() || convertQuoteValidUntilToDays(result.quote.valid_until);
       if (isHumanEdit) {
         if (!result.quote.updated_at || (result.quote.current_version_id === null && result.quote.status !== "draft" && result.quote.status !== "changes_requested")) {
@@ -4933,8 +4938,17 @@ export default function LeadPage() {
           originalTypes.set(item.id, type);
         }
         const itemDiscount = (result.items ?? []).reduce((sum, item) => sum + (item.discount_cents ?? 0), 0);
-        if ((result.quote.discount_cents ?? 0) !== itemDiscount) {
+        globalDiscountCents = (result.quote.discount_cents ?? 0) - itemDiscount;
+        if (!Number.isSafeInteger(globalDiscountCents) || globalDiscountCents < 0 ||
+            (globalDiscountCents > 0 && !result.quote.current_version_id)) {
           throw new Error("Desconto historico divergente dos itens. Regularize antes de salvar.");
+        }
+        if (globalDiscountCents > 0) {
+          const itemTotal = (result.items ?? []).reduce((sum, item) => sum + (item.total_cents ?? 0), 0);
+          if (result.quote.total_cents !== itemTotal - globalDiscountCents ||
+              result.quote.subtotal_cents !== itemTotal + itemDiscount) {
+            throw new Error("Historico financeiro divergente. Regularize antes de salvar.");
+          }
         }
       }
       humanQuoteEditRef.current = isHumanEdit ? {
@@ -4943,6 +4957,7 @@ export default function LeadPage() {
         scopeKey: scopedQuoteEditKey, originalTypes, validity, pending: null,
       } : null;
       setHumanQuoteEditView(isHumanEdit ? originalTypes : null);
+      setHumanQuoteGlobalDiscountCents(isHumanEdit ? globalDiscountCents : 0);
       const formItems = Array.isArray(result.items)
         ? result.items.map((item) => {
             const normalizedItemType = String(item.item_type || "").trim().toLowerCase();
@@ -8954,7 +8969,10 @@ export default function LeadPage() {
                             Desconto total
                           </div>
                           <div className="mt-1 text-lg font-bold">
-                            {formatCurrencyBRL(quoteDiscountTotalReais)}
+                            {formatCurrencyBRL(quoteDiscountTotalReais + quoteGlobalDiscountReais)}
+                            {quoteGlobalDiscountReais > 0 && (
+                              <span className="block text-xs font-normal">Inclui desconto global preservado: {formatCurrencyBRL(quoteGlobalDiscountReais)}</span>
+                            )}
                           </div>
                         </div>
 

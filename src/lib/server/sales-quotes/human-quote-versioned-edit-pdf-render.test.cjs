@@ -93,3 +93,15 @@ test("rejeita data invalida antes de renderizar", async () => {
   const f = fixture(); f.prepared.snapshot.generatedAt = "invalid";
   await assert.rejects(render(f), /HUMAN_REVISION_PDF_DATE_INVALID/);
 });
+test("PDF preserva desconto global e descontos individuais sem duplicar", async () => {
+  const f = fixture(); const s = f.prepared.snapshot;
+  Object.assign(s.quote, {subtotalCents:1430000, discountCents:70000, totalCents:1360000});
+  Object.assign(s.items[0], {quantity:1, unitPriceCents:1430000, subtotalCents:1430000, discountCents:50000, totalCents:1380000});
+  f.prepared.rpc.p_total_cents = 1360000;
+  const i = map(s, f); assert.equal(i.discountCents,70000); assert.equal(i.totalCents,1360000); assert.equal(i.items[0].discountCents,50000);
+  const r = await render(f); assert.equal(r.snapshot.quote.totalCents,1360000); assert.equal(r.rpc.p_total_cents,1360000);
+  assert.ok((await PDFDocument.load(r.pdfBytes,{updateMetadata:false})).getPageCount() >= 1);
+  const other = structuredClone(f); other.prepared.snapshot.quote.discountCents=50000; other.prepared.snapshot.quote.totalCents=1380000;
+  other.prepared.rpc.p_total_cents=1380000;
+  assert.notDeepEqual(r.pdfBytes,(await render(other)).pdfBytes);
+});
