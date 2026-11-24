@@ -319,6 +319,8 @@ export async function POST(
         "id, quote_id, organization_id, store_id, name, description, quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents, sort_order, sku, metadata, created_at, updated_at"
       )
       .eq("quote_id", scope.quote.id)
+      .eq("organization_id", scope.organizationId)
+      .eq("store_id", scope.store.id)
       .order("sort_order", { ascending: true });
 
     if (itemsError) {

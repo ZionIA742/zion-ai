@@ -560,13 +560,15 @@ export function buildUpdatedQuote(args: {
   };
 }
 
-async function loadQuoteItems(args: { supabase: any; quoteId: string }) {
+async function loadQuoteItems(args: { supabase: any; quoteId: string; organizationId: string; storeId: string }) {
   const { data, error } = await args.supabase
     .from("sales_quote_items")
     .select(
       "id, quote_id, organization_id, store_id, commercial_opportunity_id, profile_component_id, pool_id, catalog_item_id, item_type, name, description, quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents, sort_order, sku, metadata, created_at, updated_at"
     )
     .eq("quote_id", args.quoteId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
     .order("sort_order", { ascending: true });
 
   if (error) {
@@ -703,6 +705,8 @@ async function loadOpenChangeRequest(args: {
     )
     .eq("id", effectiveChangeRequestId)
     .eq("quote_id", args.quote.id)
+    .eq("organization_id", args.quote.organization_id)
+    .eq("store_id", args.quote.store_id)
     .maybeSingle();
 
   if (error) {
@@ -1128,6 +1132,8 @@ export async function POST(
     const items = await loadQuoteItems({
       supabase: scope.supabase,
       quoteId: scope.quote.id,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
     });
     const changeRequest = await loadOpenChangeRequest({
       supabase: scope.supabase,
