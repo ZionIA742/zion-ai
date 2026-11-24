@@ -1,3 +1,8 @@
+import {
+  assertHumanQuoteEditProvenance,
+  HumanQuoteEditProvenanceError,
+} from "@/lib/server/sales-quotes/human-quote-edit-provenance";
+
 import { NextResponse } from "next/server";
 import {
   QuoteAccessError,
@@ -67,6 +72,21 @@ function readOfficialOrMetadataValue(
   key: "payment_terms" | "delivery_terms" | "warranty_terms" | "valid_until"
 ) {
   return normalizeOptionalText(quote[key]) || normalizeOptionalText(readMetadataValue(metadata, key));
+}
+
+function hasVerifiedHumanEditProvenance(
+  quote: Parameters<typeof assertHumanQuoteEditProvenance>[0],
+): boolean {
+  try {
+    assertHumanQuoteEditProvenance(quote);
+    return true;
+  } catch (error) {
+    if (error instanceof HumanQuoteEditProvenanceError) {
+      return false;
+    }
+
+    throw error;
+  }
 }
 
 export async function GET(
@@ -166,6 +186,8 @@ export async function GET(
           typeof scope.quote.discount_cents === "number" ? scope.quote.discount_cents : null,
         total_cents: typeof scope.quote.total_cents === "number" ? scope.quote.total_cents : null,
         current_version_id: currentVersionId || null,
+        updated_at: scope.quote.updated_at ?? null,
+        human_edit_provenance_verified: hasVerifiedHumanEditProvenance(scope.quote),
         lead_id: scope.quote.lead_id || null,
         conversation_id: scope.quote.conversation_id || null,
         store_id: scope.quote.store_id,
