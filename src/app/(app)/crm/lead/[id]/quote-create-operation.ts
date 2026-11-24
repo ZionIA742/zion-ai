@@ -10,7 +10,7 @@ type QuoteCreationItemSnapshot = {
 export type ManualQuoteCreationSnapshotInput = {
   organizationId: string;
   storeId: string;
-  leadId: string;
+  leadId: string | null;
   conversationId: string | null;
   commercialOpportunityId: string | null;
   title: string | null;
@@ -70,6 +70,39 @@ function normalizeItems(items: QuoteCreationItemSnapshot[]) {
   }));
 }
 
+/** UI context only. The server still authorizes every linked record. */
+export function resolveManualQuoteCreationContext(args: {
+  organizationId: string;
+  storeId: string;
+  linkLead: boolean;
+  currentLeadId: string | null;
+  currentConversationId: string | null;
+  currentOpportunityId: string | null;
+  currentLeadName: string | null;
+  currentLeadPhone: string | null;
+  manualCustomerName?: string | null;
+  manualCustomerPhone?: string | null;
+}) {
+  const organizationId = normalizeText(args.organizationId);
+  const storeId = normalizeText(args.storeId);
+  if (!organizationId || !storeId) {
+    throw new Error("Escopo da loja ausente para criar o orcamento.");
+  }
+  const leadId = args.linkLead ? normalizeText(args.currentLeadId) : null;
+  if (args.linkLead && !leadId) {
+    throw new Error("Lead indisponivel para vincular ao orcamento.");
+  }
+  return {
+    organizationId,
+    storeId,
+    leadId,
+    conversationId: args.linkLead ? normalizeText(args.currentConversationId) : null,
+    commercialOpportunityId: args.linkLead ? normalizeText(args.currentOpportunityId) : null,
+    customer_name: normalizeText(args.linkLead ? args.currentLeadName : args.manualCustomerName),
+    customer_phone: normalizeText(args.linkLead ? args.currentLeadPhone : args.manualCustomerPhone),
+  };
+}
+
 export function buildManualQuoteCreationSnapshot(
   input: ManualQuoteCreationSnapshotInput,
 ) {
@@ -94,9 +127,10 @@ export function buildManualQuoteCreationSnapshot(
 export function buildManualQuoteCreationStorageKey(args: {
   organizationId: string;
   storeId: string;
-  leadId: string;
+  leadId: string | null;
   conversationId: string | null;
   commercialOpportunityId: string | null;
+  draftOriginLeadId?: string | null;
 }) {
   const conversationId = normalizeText(args.conversationId) || "no-conversation";
   const commercialOpportunityId =
@@ -110,6 +144,9 @@ export function buildManualQuoteCreationStorageKey(args: {
     normalizeText(args.leadId) || "no-lead",
     conversationId,
     commercialOpportunityId,
+    ...(!normalizeText(args.leadId) && normalizeText(args.draftOriginLeadId)
+      ? ["origin", normalizeText(args.draftOriginLeadId)]
+      : []),
   ].join(":");
 }
 

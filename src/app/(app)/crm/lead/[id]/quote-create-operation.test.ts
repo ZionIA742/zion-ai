@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import {
+  resolveManualQuoteCreationContext,
   buildManualQuoteCreationSnapshot,
   buildManualQuoteCreationStorageKey,
   clearPendingManualQuoteCreationOperation,
@@ -278,6 +279,69 @@ const tests: TestCase[] = [
     },
   },
 ];
+
+const contextInput = {
+  organizationId: "org-a", storeId: "store-a", linkLead: false,
+  currentLeadId: "lead-a", currentConversationId: "conversation-a",
+  currentOpportunityId: "opportunity-a", currentLeadName: "Cliente A",
+  currentLeadPhone: "+5511999999999",
+};
+const independentScope = { organizationId: "org-a", storeId: "store-a", leadId: null,
+  conversationId: null, commercialOpportunityId: null };
+
+tests.push(
+  { name: "sem vinculo nao herda dados do lead", run: () => {
+    assert.deepEqual(resolveManualQuoteCreationContext(contextInput), {
+      ...independentScope, customer_name: null, customer_phone: null,
+    });
+  } },
+  { name: "vinculo explicito preenche contexto e cliente", run: () => {
+    assert.deepEqual(resolveManualQuoteCreationContext({ ...contextInput, linkLead: true }), {
+      organizationId: "org-a", storeId: "store-a", leadId: "lead-a",
+      conversationId: "conversation-a", commercialOpportunityId: "opportunity-a",
+      customer_name: "Cliente A", customer_phone: "+5511999999999",
+    });
+  } },
+  { name: "cliente manual opcional nao cria vinculo", run: () => {
+    assert.deepEqual(resolveManualQuoteCreationContext({ ...contextInput, manualCustomerName: "  Outro  ", manualCustomerPhone: " " }), {
+      ...independentScope, customer_name: "Outro", customer_phone: null,
+    });
+  } },
+  { name: "lead vinculado pode nao ter dados pessoais ou oportunidade", run: () => {
+    const result = resolveManualQuoteCreationContext({ ...contextInput, linkLead: true,
+      currentLeadName: null, currentLeadPhone: null, currentConversationId: null, currentOpportunityId: null });
+    assert.equal(result.leadId, "lead-a");
+    assert.equal(result.customer_name, null); assert.equal(result.customer_phone, null);
+    assert.equal(result.conversationId, null); assert.equal(result.commercialOpportunityId, null);
+  } },
+  { name: "vinculo sem lead e escopo sem loja rejeitados", run: () => {
+    assert.throws(() => resolveManualQuoteCreationContext({ ...contextInput, linkLead: true, currentLeadId: null }));
+    assert.throws(() => resolveManualQuoteCreationContext({ ...contextInput, storeId: "" }));
+    assert.throws(() => resolveManualQuoteCreationContext({ ...contextInput, organizationId: "" }));
+  } },
+  { name: "snapshot independente tem ids e cliente nulos", run: () => {
+    const snapshot = JSON.parse(createSnapshot(resolveManualQuoteCreationContext(contextInput)));
+    for (const key of ["leadId", "conversationId", "commercialOpportunityId", "customer_name", "customer_phone"]) {
+      assert.equal(snapshot[key], null);
+    }
+  } },
+  { name: "operacoes vinculadas e independentes nao compartilham chave", run: () => {
+    const linked = resolveManualQuoteCreationContext({ ...contextInput, linkLead: true });
+    assert.notEqual(buildManualQuoteCreationStorageKey(linked), buildManualQuoteCreationStorageKey(independentScope));
+    assert.equal(buildManualQuoteCreationStorageKey(linked), "zion:manual-quote-create:org-a:store-a:lead-a:conversation-a:opportunity-a");
+  } },
+  { name: "origem do editor separa operacoes independentes", run: () => {
+    const key = buildManualQuoteCreationStorageKey({ ...independentScope, draftOriginLeadId: "lead-a" });
+    assert.notEqual(key, buildManualQuoteCreationStorageKey({ ...independentScope, draftOriginLeadId: "lead-b" }));
+    assert.notEqual(key, buildManualQuoteCreationStorageKey({ ...independentScope, storeId: "store-b", draftOriginLeadId: "lead-a" }));
+    const storage = createStorage();
+    const requestSnapshot = createSnapshot(resolveManualQuoteCreationContext(contextInput));
+    const first = getOrCreatePendingManualQuoteCreationOperation({ storage, storageKey: key, requestSnapshot, createIdempotencyKey: () => "quote_create:a" });
+    const retry = getOrCreatePendingManualQuoteCreationOperation({ storage, storageKey: key, requestSnapshot, createIdempotencyKey: () => "quote_create:b" });
+    assert.equal(first.idempotencyKey, retry.idempotencyKey);
+    assert.equal(retry.reused, true);
+  } },
+);
 
 for (const test of tests) {
   test.run();
