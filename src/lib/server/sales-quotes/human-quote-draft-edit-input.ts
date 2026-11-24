@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SalesQuoteRow, SalesQuoteItemRow } from "./types";
 import { prepareHumanQuoteEditBoundary } from "./human-quote-edit-boundary";
 import {
@@ -125,11 +126,16 @@ function positiveValidityDays(value: unknown): number | null {
   return Number(parsed);
 }
 
-export function buildHumanQuoteDraftEditRpcArgs(args: {
+type HumanQuoteEditInput = {
   quote: SalesQuoteRow;
   currentItems: SalesQuoteItemRow[];
   body: unknown;
-}) {
+};
+
+function buildHumanQuoteEditRpcArgs(
+  args: HumanQuoteEditInput,
+  mode: "draft" | "versioned",
+) {
   const { quote, currentItems } = args;
   const body = record(args.body);
 
@@ -142,12 +148,25 @@ export function buildHumanQuoteDraftEditRpcArgs(args: {
   });
 
   if (
-    boundary.preservedStatus !== "draft" ||
-    boundary.expectedCurrentVersionId !== null
+    mode === "draft" &&
+    (
+      boundary.preservedStatus !== "draft" ||
+      boundary.expectedCurrentVersionId !== null
+    )
   ) {
     fail(
       "HUMAN_QUOTE_EDIT_VERSIONED_FLOW_REQUIRED",
       "Este orcamento exige o fluxo de edicao versionada.",
+    );
+  }
+
+  if (
+    mode === "versioned" &&
+    boundary.expectedCurrentVersionId === null
+  ) {
+    fail(
+      "HUMAN_QUOTE_EDIT_DRAFT_FLOW_REQUIRED",
+      "Este orcamento ainda nao possui uma versao.",
     );
   }
 
@@ -355,5 +374,80 @@ export function buildHumanQuoteDraftEditRpcArgs(args: {
     p_valid_until: validUntil,
     p_validity_days: validityDays,
     p_items: normalized.map((item) => item.row),
+  };
+}
+
+export function buildHumanQuoteDraftEditRpcArgs(
+  args: HumanQuoteEditInput,
+) {
+  return buildHumanQuoteEditRpcArgs(args, "draft");
+}
+
+function stableRevisionItemId(
+  operationId: string,
+  quoteId: string,
+  sortOrder: number,
+): string {
+  const hex = createHash("sha256")
+    .update(`zion-human-revision:${operationId}:${quoteId}:${sortOrder}`)
+    .digest("hex");
+
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    "8" + hex.slice(13, 16),
+    "8" + hex.slice(17, 20),
+    hex.slice(20, 32),
+  ].join("-");
+}
+
+export function buildHumanQuoteVersionedEditRpcArgs(
+  args: HumanQuoteEditInput & {
+    operationId: string;
+  },
+) {
+  if (
+    typeof args.operationId !== "string" ||
+    !UUID_RE.test(args.operationId)
+  ) {
+    fail("INVALID_REVISION_OPERATION_ID",
+      "Identificador de operacao invalido.");
+  }
+
+  const operationId = args.operationId.toLowerCase();
+
+  const normalized = buildHumanQuoteEditRpcArgs(
+    args,
+    "versioned",
+  );
+
+  const previousVersionId =
+    normalized.p_expected_current_version_id;
+
+  if (!previousVersionId) {
+    fail(
+      "HUMAN_QUOTE_EDIT_DRAFT_FLOW_REQUIRED",
+      "Este orcamento ainda nao possui uma versao.",
+    );
+  }
+
+  const items = normalized.p_items.map((item) => ({
+    ...item,
+    id: item.id ?? stableRevisionItemId(
+      operationId,
+      args.quote.id.toLowerCase(),
+      item.sort_order,
+    ),
+  }));
+
+  if (new Set(items.map((item) => item.id)).size !== items.length) {
+    fail("DUPLICATE_ITEM_ID", "Item duplicado.");
+  }
+
+  return {
+    ...normalized,
+    p_expected_current_version_id: previousVersionId,
+    p_operation_id: operationId,
+    p_items: items,
   };
 }
