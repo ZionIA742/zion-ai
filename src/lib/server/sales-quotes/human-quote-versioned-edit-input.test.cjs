@@ -54,11 +54,13 @@ require.extensions[".ts"] = (module, filename) => {
 
 let buildDraft;
 let buildVersioned;
+let prepareSnapshot;
 
 try {
   const input = require("./human-quote-draft-edit-input.ts");
   buildDraft = input.buildHumanQuoteDraftEditRpcArgs;
   buildVersioned = input.buildHumanQuoteVersionedEditRpcArgs;
+  prepareSnapshot = require("./human-quote-versioned-edit-snapshot.ts").prepareHumanQuoteVersionedSnapshot;
 } finally {
   Module._load = originalLoad;
   if (previousLoader) {
@@ -271,4 +273,129 @@ test("nao modifica os objetos de entrada", () => {
   const before = JSON.stringify(f);
   buildVersioned(f);
   assert.equal(JSON.stringify(f), before);
+});
+
+function snapshotFixture() {
+  const f = fixture();
+  return {
+    ...f,
+    previousVersion: {
+      id: ids.version, quote_id: ids.quote,
+      organization_id: ids.org, store_id: ids.store,
+      quote_kind: "definitive",
+    },
+    store: { id: ids.store, name: "Loja teste" },
+    lead: null,
+    settings: {},
+    generatedAt: "2026-11-24T12:01:00.000Z",
+  };
+}
+
+test("snapshot corresponde ao writer e nao carrega status enviado", () => {
+  const f = snapshotFixture();
+  f.body.title = "Novo titulo";
+  f.body.items = [{
+    id: ids.item, item_type: "custom", name: "Piscina",
+    quantity: 1, unit_price_cents: 200000, discount_cents: 10000,
+  }];
+  f.body.discount_cents = 10000;
+  const r = prepareSnapshot(f);
+  assert.equal(r.rpc.p_subtotal_cents, 200000);
+  assert.equal(r.rpc.p_discount_cents, 10000);
+  assert.equal(r.rpc.p_total_cents, 190000);
+  assert.equal(r.snapshot.quote.title, r.rpc.p_title);
+  assert.equal(r.snapshot.quote.totalCents, r.rpc.p_total_cents);
+  assert.equal(r.snapshot.quote.subtotalCents, r.rpc.p_subtotal_cents);
+  assert.equal(r.snapshot.quote.discountCents, r.rpc.p_discount_cents);
+  assert.equal(r.snapshot.quote.status, "draft");
+  assert.equal(r.snapshot.quote.quoteKind, "definitive");
+  assert.equal(r.quote.current_version_id, ids.operation);
+  assert.equal(r.rpc.p_quote_snapshot, r.snapshot);
+  assert.equal(f.quote.status, "sent");
+});
+
+test("snapshot reproduz exatamente a projecao SQL dos itens", () => {
+  const f = snapshotFixture();
+  f.currentItems[0].sku = " P-01 ";
+  f.body.items = [
+    { id: ids.item, item_type: "custom", name: "Piscina", quantity: 2, unit_price_cents: 100000 },
+    { item_type: "custom", name: "Instalacao", quantity: 1, unit_price_cents: 50000 },
+  ];
+  const r = prepareSnapshot(f);
+  assert.deepEqual(r.snapshot.items, r.rpc.p_items.map(i => ({
+    id: i.id, name: i.name, description: i.description, quantity: i.quantity,
+    unitPriceCents: i.unit_price_cents, discountCents: i.discount_cents,
+    subtotalCents: i.subtotal_cents, totalCents: i.total_cents,
+    sku: i.sku, sortOrder: i.sort_order, metadata: i.metadata,
+  })));
+  assert.equal(r.snapshot.items[0].sku, "P-01");
+  assert.equal(r.snapshot.items[1].id, r.items[1].id);
+});
+
+test("limpeza de termos nao recupera metadata antiga", () => {
+  const f = snapshotFixture();
+  f.quote.metadata.payment_terms = "Antigo";
+  f.quote.metadata.delivery_terms = "Antigo";
+  f.quote.metadata.warranty_terms = "Antigo";
+  f.quote.metadata.valid_until = "2026-12-31";
+  Object.assign(f.body, {
+    payment_terms: null, delivery_terms: null,
+    warranty_terms: null, validity_days: null,
+  });
+  const r = prepareSnapshot(f);
+  for (const key of ["paymentTerms", "deliveryTerms", "warrantyTerms", "validUntil"]) {
+    assert.equal(r.snapshot.quote[key], null);
+  }
+});
+
+test("mantem classificacao preliminar ou ausente", () => {
+  for (const kind of ["preliminary", null]) {
+    const f = snapshotFixture();
+    f.previousVersion.quote_kind = kind;
+    const r = prepareSnapshot(f);
+    assert.equal(r.snapshot.quote.quoteKind, kind);
+    assert.equal(Boolean(r.snapshot.quote.quoteKindNotice), kind === "preliminary");
+  }
+});
+
+test("mantem dados do lead e recusa escopo divergente", () => {
+  const f = snapshotFixture();
+  f.quote.lead_id = ids.other;
+  f.lead = { id: ids.other, name: "Cliente teste", phone: null };
+  assert.equal(prepareSnapshot(f).snapshot.lead.id, ids.other);
+  f.lead = null;
+  assert.throws(() => prepareSnapshot(f), /SCOPE_MISMATCH/);
+});
+
+test("recusa versao ou loja fora do escopo", () => {
+  for (const field of ["id", "quote_id", "organization_id", "store_id"]) {
+    const f = snapshotFixture();
+    f.previousVersion[field] = ids.other;
+    assert.throws(() => prepareSnapshot(f), /SCOPE_MISMATCH/);
+  }
+  const f = snapshotFixture();
+  f.store.id = ids.other;
+  assert.throws(() => prepareSnapshot(f), /SCOPE_MISMATCH/);
+});
+
+test("snapshot reproduzivel com mesmas entradas e data", () => {
+  const f = snapshotFixture();
+  const before = JSON.stringify(f);
+  assert.deepEqual(prepareSnapshot(f), prepareSnapshot(f));
+  assert.equal(JSON.stringify(f), before);
+  assert.equal(prepareSnapshot(f).snapshot.generatedAt, f.generatedAt);
+});
+
+test("preserva referencias de fotos de itens existentes na projecao", () => {
+  const f = snapshotFixture();
+  f.currentItems[0].source_photo_storage_path = "foto-existente.png";
+  const r = prepareSnapshot(f);
+  assert.equal(r.items[0].source_photo_storage_path, "foto-existente.png");
+  assert.equal("source_photo_storage_path" in r.rpc.p_items[0], false);
+});
+
+test("snapshot rejeita desconto global divergente dos itens", () => {
+  const f = snapshotFixture();
+  f.body.discount_cents = 10000;
+  assert.throws(() => prepareSnapshot(f), { code: "INVALID_DISCOUNT_CENTS" });
 });
