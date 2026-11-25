@@ -30,12 +30,12 @@ function getContractSectionBlock(source: string) {
   return source.slice(start, end).replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
 }
 
-function loadContractSimpleVersionState(source: string) {
-  const start = source.indexOf("export function getContractSimpleVersionState(");
-  assert.equal(start > -1, true, "contract presentation helper not found");
-  const end = source.indexOf("function resolveContractRuleGroupLabel(", start);
-  assert.equal(end > start, true, "contract presentation helper end not found");
-  const compiled = transpileModule(source.slice(start, end), {
+function loadContractSimpleVersionState(_source: string) {
+  const helperSource = readFileSync(
+    join(process.cwd(), "src/app/(app)/configuracoes/contract-simple-version-state.ts"),
+    "utf8"
+  );
+  const compiled = transpileModule(helperSource, {
     compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 },
   });
   const module = { exports: {} as Record<string, unknown> };
