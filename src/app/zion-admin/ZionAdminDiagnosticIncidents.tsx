@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import ZionAdminSchedulerFailures from "./ZionAdminSchedulerFailures";
 
 type StoreOption = {
   id: string;
@@ -695,6 +696,7 @@ export default function ZionAdminDiagnosticIncidents({
           </div>
         </div>
       ) : null}
+      {result?.source === "unified" || result?.source === "unified_v2" ? <ZionAdminSchedulerFailures /> : null}
     </section>
   );
 }

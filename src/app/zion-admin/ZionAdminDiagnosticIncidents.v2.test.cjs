@@ -53,6 +53,7 @@ vm.runInNewContext(compiled.outputText, {
       };
     }
 
+    if (name === "./ZionAdminSchedulerFailures") return { __esModule: true, default: () => null };
     throw new Error("UNEXPECTED_MODULE");
   },
   console,
