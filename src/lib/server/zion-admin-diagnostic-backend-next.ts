@@ -876,7 +876,7 @@ export const handleBackendRequestError:
         enabled: true,
         knownRoutes: KNOWN_ROUTES,
         knownSourceFiles: KNOWN_SOURCE_FILES,
-        timeoutMs: 2000,
+        timeoutMs: 20000,
       }),
       schedule: task => after(task),
       rethrowFrameworkControl: unstable_rethrow,
@@ -945,7 +945,7 @@ export function withBackendDiagnosticRoute<
               knownRoutes: KNOWN_ROUTES,
               knownSourceFiles:
                 KNOWN_SOURCE_FILES,
-              timeoutMs: 2000,
+              timeoutMs: 20000,
             }),
           schedule: task => after(task),
         });

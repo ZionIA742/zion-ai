@@ -59,7 +59,7 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DEFAULT_TIMEOUT_MS = 2000;
-const MAX_TIMEOUT_MS = 5000;
+const MAX_TIMEOUT_MS = 20000;
 
 // Accept only outputs of trusted internal classification
 // and evidence extraction. Never accept request bodies here.
