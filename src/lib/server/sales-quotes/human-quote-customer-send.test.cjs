@@ -71,6 +71,38 @@ async function run(source){
         reason:"CUSTOMER_WINDOW_OPEN"
       },
       policyError:null,
+
+      projection:{
+        outcome:"moved",
+        reason:"HUMAN_QUOTE_SEND_ACCEPTED",
+        previous_stage:"novo_lead",
+        stage:"orcamento"
+      },
+
+      projectionError:null,
+      projectionThrows:false,
+
+      binding:{
+        outcome:"bound",
+        reason:"PROVEN_WHATSAPP_CONVERSATION",
+        phone_number_id:"123456789",
+        conversation_id:id(10),
+        inbound_message_id:id(11)
+      },
+
+      bindingError:null,
+      bindingThrows:false,
+
+      history:{
+        outcome:"recorded",
+        reason:"ACCEPTED_DOCUMENT_RECORDED",
+        message_id:id(12),
+        conversation_id:id(10)
+      },
+
+      historyError:null,
+      historyThrows:false,
+
       sendOutcome:{
         outcome:"accepted",
         externalMessageId:"synthetic-provider-id"
@@ -97,6 +129,78 @@ async function run(source){
           return {
             data:state.decision,
             error:state.policyError
+          };
+        }
+
+        if(name==="bind_human_quote_send_history_by_system"){
+
+          calls.push(["binding",p]);
+
+          assert.equal(kind,"lead");
+          assert.equal(state.status,"registered");
+
+          assert.deepEqual(p,{
+            p_organization_id:scope.organizationId,
+            p_store_id:scope.storeId,
+            p_actor_user_id:scope.actorUserId,
+            p_operation_id:request.operationId,
+            p_phone_number_id:"123456789"
+          });
+
+          if(state.bindingThrows){
+            throw new Error("synthetic binding exception");
+          }
+
+          return {
+            data:state.binding,
+            error:state.bindingError
+          };
+        }
+
+        if(name==="project_human_quote_send_history_by_system"){
+
+          calls.push(["history",p]);
+
+          assert.equal(kind,"lead");
+          assert.equal(state.status,"accepted");
+
+          assert.deepEqual(p,{
+            p_organization_id:scope.organizationId,
+            p_store_id:scope.storeId,
+            p_actor_user_id:scope.actorUserId,
+            p_operation_id:request.operationId
+          });
+
+          if(state.historyThrows){
+            throw new Error("synthetic history exception");
+          }
+
+          return {
+            data:state.history,
+            error:state.historyError
+          };
+        }
+
+        if(name==="project_human_quote_send_crm_by_system"){
+
+          calls.push(["projection",p]);
+
+          assert.equal(state.status,"accepted");
+
+          assert.deepEqual(p,{
+            p_organization_id:scope.organizationId,
+            p_store_id:scope.storeId,
+            p_actor_user_id:scope.actorUserId,
+            p_operation_id:request.operationId
+          });
+
+          if(state.projectionThrows){
+            throw new Error("synthetic CRM exception");
+          }
+
+          return {
+            data:state.projection,
+            error:state.projectionError
           };
         }
 
@@ -162,7 +266,27 @@ async function run(source){
 
           calls.push(["register",args]);
 
+          if(state.status!=="registered"){
+
+            return {
+              replayOnly:true,
+              registration:{
+                operationId:request.operationId,
+                quoteId:scope.quoteId,
+                quoteVersionId:request.quoteVersionId,
+                status:state.status,
+                statusReason:state.status==="blocked"
+                  ? "CUSTOMER_TEMPLATE_REQUIRED"
+                  : null
+              },
+              scope,
+              request,
+              supabase
+            };
+          }
+
           return {
+            replayOnly:false,
             registration:{
               operationId:request.operationId,
               quoteId:scope.quoteId,
@@ -254,7 +378,10 @@ async function run(source){
         x.calls.map(c=>c[0]),
         [
           "register","expiry","prepare",
-          "policy","transition","send","transition"
+          "policy",
+          ...(kind==="lead"?["binding"]:[]),
+          "transition","send","transition",
+          ...(kind==="lead"?["projection","history"]:[])
         ]
       );
 
@@ -268,8 +395,23 @@ async function run(source){
         kind==="lead"?id(8):null
       );
 
-      assert.equal(x.calls[4][1].p_action,"start");
-      assert.equal(x.calls[6][1].p_action,"accept");
+      const transitions=x.calls.filter(
+        c=>c[0]==="transition"
+      );
+
+      assert.equal(transitions.length,2);
+      assert.equal(transitions[0][1].p_action,"start");
+      assert.equal(transitions[1][1].p_action,"accept");
+
+      assert.equal(
+        result.historyProjection,
+        kind==="lead"?"recorded":"not_applicable"
+      );
+
+      assert.equal(
+        result.crmProjection,
+        kind==="lead"?"moved":"not_applicable"
+      );
 
       assert.deepEqual(
         Object.keys(result).sort(),
@@ -279,7 +421,9 @@ async function run(source){
           "quoteVersionId",
           "status",
           "reason",
-          "providerRequestAttempted"
+          "providerRequestAttempted",
+          "crmProjection",
+          "historyProjection"
         ].sort()
       );
     });
@@ -451,9 +595,451 @@ async function run(source){
     );
   });
 
-  assert.equal(count,15);
+  await check("accepted lead replay recovers CRM without resend",async()=>{
 
-  console.log("HUMAN_QUOTE_CUSTOMER_SEND: 15/15 PASS");
+    const x=fixture("lead");
+
+    x.state.projectionError={
+      message:"synthetic database failure"
+    };
+
+    const first=await x.execute();
+
+    assert.equal(first.status,"accepted");
+    assert.equal(first.crmProjection,"pending");
+
+    x.state.projectionError=null;
+
+    const second=await x.execute();
+
+    assert.equal(second.status,"accepted");
+    assert.equal(second.crmProjection,"moved");
+    assert.equal(second.providerRequestAttempted,false);
+
+    assert.equal(
+      x.calls.filter(c=>c[0]==="send").length,1
+    );
+
+    assert.equal(
+      x.calls.filter(c=>c[0]==="projection").length,2
+    );
+
+  });
+
+  await check("CRM exception preserves accepted delivery",async()=>{
+
+    const x=fixture("lead");
+
+    x.state.projectionThrows=true;
+
+    const result=await x.execute();
+
+    assert.equal(result.status,"accepted");
+    assert.equal(result.crmProjection,"pending");
+
+    assert.equal(
+      x.calls.filter(c=>c[0]==="send").length,1
+    );
+
+  });
+
+  await check("invalid CRM response remains pending",async()=>{
+
+    const x=fixture("lead");
+
+    x.state.projection={
+      outcome:"moved",
+      reason:"synthetic",
+      previous_stage:"negociacao",
+      stage:"orcamento"
+    };
+
+    const result=await x.execute();
+
+    assert.equal(result.status,"accepted");
+    assert.equal(result.crmProjection,"pending");
+
+  });
+
+  await check("advanced opportunity remains unchanged",async()=>{
+
+    const x=fixture("lead");
+
+    x.state.projection={
+      outcome:"unchanged",
+      reason:"STAGE_PRESERVED",
+      stage:"negociacao"
+    };
+
+    const result=await x.execute();
+
+    assert.equal(result.status,"accepted");
+    assert.equal(result.crmProjection,"unchanged");
+
+  });
+
+  await check("ambiguous opportunity does not invalidate delivery",async()=>{
+
+    const x=fixture("lead");
+
+    x.state.projection={
+      outcome:"skipped",
+      reason:"AMBIGUOUS_OPPORTUNITY"
+    };
+
+    const result=await x.execute();
+
+    assert.equal(result.status,"accepted");
+    assert.equal(result.crmProjection,"skipped");
+
+  });
+
+  await check("blocked or uncertain lead never projects CRM",async()=>{
+
+    const blocked=fixture("lead");
+
+    blocked.state.decision={
+      allowed:false,
+      reason:"CUSTOMER_TEMPLATE_REQUIRED"
+    };
+
+    const blockedResult=await blocked.execute();
+
+    assert.equal(blockedResult.status,"blocked");
+
+    assert.equal(
+      blockedResult.crmProjection,"not_applicable"
+    );
+
+    assert.equal(
+      blocked.calls.some(c=>c[0]==="projection"),
+      false
+    );
+
+    const uncertain=fixture("lead");
+
+    uncertain.state.sendOutcome={
+      outcome:"uncertain"
+    };
+
+    const uncertainResult=await uncertain.execute();
+
+    assert.equal(uncertainResult.status,"uncertain");
+
+    assert.equal(
+      uncertainResult.crmProjection,"not_applicable"
+    );
+
+    assert.equal(
+      uncertain.calls.some(c=>c[0]==="projection"),
+      false
+    );
+
+  });
+
+  await check("no proven conversation does not block send",async()=>{
+
+    const x=fixture("lead");
+
+    x.state.binding={
+      outcome:"skipped",
+      reason:"NO_PROVEN_CONVERSATION",
+      phone_number_id:"123456789"
+    };
+
+    x.state.history={
+      outcome:"skipped",
+      reason:"NO_PROVEN_CONVERSATION"
+    };
+
+    const result=await x.execute();
+
+    assert.equal(result.status,"accepted");
+    assert.equal(result.historyProjection,"skipped");
+    assert.equal(result.crmProjection,"moved");
+    assert.equal(x.calls.filter(c=>c[0]==="send").length,1);
+
+  });
+
+  await check("ambiguous conversation is not guessed",async()=>{
+
+    const x=fixture("lead");
+
+    x.state.binding={
+      outcome:"skipped",
+      reason:"AMBIGUOUS_CONVERSATION",
+      phone_number_id:"123456789"
+    };
+
+    x.state.history={
+      outcome:"skipped",
+      reason:"AMBIGUOUS_CONVERSATION"
+    };
+
+    const result=await x.execute();
+
+    assert.equal(result.status,"accepted");
+    assert.equal(result.historyProjection,"skipped");
+    assert.equal(x.calls.filter(c=>c[0]==="send").length,1);
+
+  });
+
+  await check("binding failure cannot authorize transport",async()=>{
+
+    for(const failure of ["rpc","exception"]){
+
+      const x=fixture("lead");
+
+      if(failure==="rpc"){
+        x.state.bindingError={message:"synthetic failure"};
+      }else{
+        x.state.bindingThrows=true;
+      }
+
+      const result=await x.execute();
+
+      assert.equal(result.status,"unconfirmed");
+      assert.equal(result.providerRequestAttempted,false);
+      assert.equal(result.historyProjection,"not_applicable");
+
+      assert.equal(
+        x.calls.some(c=>["transition","send","history"].includes(c[0])),
+        false
+      );
+    }
+
+  });
+
+  await check("invalid binding cannot authorize transport",async()=>{
+
+    const invalid=[
+      null,
+      [],
+      {outcome:"not_applicable"},
+      {
+        outcome:"bound",
+        reason:"PROVEN_WHATSAPP_CONVERSATION",
+        phone_number_id:"999",
+        conversation_id:id(10),
+        inbound_message_id:id(11)
+      },
+      {
+        outcome:"bound",
+        reason:"PROVEN_WHATSAPP_CONVERSATION",
+        phone_number_id:"123456789",
+        conversation_id:"invalid",
+        inbound_message_id:id(11)
+      },
+      {
+        outcome:"skipped",
+        reason:"AMBIGUOUS_CONVERSATION",
+        phone_number_id:"123456789",
+        conversation_id:id(10)
+      }
+    ];
+
+    for(const binding of invalid){
+
+      const x=fixture("lead");
+
+      x.state.binding=binding;
+
+      const result=await x.execute();
+
+      assert.equal(result.status,"unconfirmed");
+      assert.equal(result.providerRequestAttempted,false);
+
+      assert.equal(
+        x.calls.some(c=>["transition","send"].includes(c[0])),
+        false
+      );
+    }
+
+  });
+
+  await check("history RPC failure recovers without resending",async()=>{
+
+    const x=fixture("lead");
+
+    x.state.historyError={message:"synthetic error"};
+
+    const first=await x.execute();
+
+    assert.equal(first.status,"accepted");
+    assert.equal(first.crmProjection,"moved");
+    assert.equal(first.historyProjection,"pending");
+
+    x.state.historyError=null;
+
+    const second=await x.execute();
+
+    assert.equal(second.status,"accepted");
+    assert.equal(second.historyProjection,"recorded");
+    assert.equal(second.providerRequestAttempted,false);
+
+    assert.equal(x.calls.filter(c=>c[0]==="send").length,1);
+    assert.equal(x.calls.filter(c=>c[0]==="binding").length,1);
+    assert.equal(x.calls.filter(c=>c[0]==="history").length,2);
+
+  });
+
+  await check("malformed history response remains pending",async()=>{
+
+    const invalid=[
+      null,
+      [],
+      {
+        outcome:"recorded",
+        reason:"ACCEPTED_DOCUMENT_RECORDED",
+        message_id:"invalid",
+        conversation_id:id(10)
+      },
+      {
+        outcome:"skipped",
+        reason:"UNKNOWN_REASON"
+      },
+      {
+        outcome:"not_eligible",
+        reason:"PROVIDER_ACCEPTANCE_REQUIRED"
+      }
+    ];
+
+    for(const history of invalid){
+
+      const x=fixture("lead");
+
+      x.state.history=history;
+
+      const result=await x.execute();
+
+      assert.equal(result.status,"accepted");
+      assert.equal(result.historyProjection,"pending");
+      assert.equal(x.calls.filter(c=>c[0]==="send").length,1);
+
+    }
+
+  });
+
+  await check("CRM failure does not suppress history",async()=>{
+
+    const x=fixture("lead");
+
+    x.state.projectionThrows=true;
+
+    const result=await x.execute();
+
+    assert.equal(result.status,"accepted");
+    assert.equal(result.crmProjection,"pending");
+    assert.equal(result.historyProjection,"recorded");
+    assert.equal(x.calls.filter(c=>c[0]==="send").length,1);
+
+  });
+
+  await check("history exception does not invalidate acceptance",async()=>{
+
+    const x=fixture("lead");
+
+    x.state.historyThrows=true;
+
+    const result=await x.execute();
+
+    assert.equal(result.status,"accepted");
+    assert.equal(result.crmProjection,"moved");
+    assert.equal(result.historyProjection,"pending");
+    assert.equal(x.calls.filter(c=>c[0]==="send").length,1);
+
+  });
+
+  await check("nonaccepted sends never project history",async()=>{
+
+    for(const outcome of ["failed","uncertain"]){
+
+      const x=fixture("lead");
+
+      x.state.sendOutcome={outcome};
+
+      const result=await x.execute();
+
+      assert.equal(result.status,outcome);
+      assert.equal(result.historyProjection,"not_applicable");
+      assert.equal(x.calls.some(c=>c[0]==="history"),false);
+
+    }
+
+    const blocked=fixture("lead");
+
+    blocked.state.decision={
+      allowed:false,
+      reason:"CUSTOMER_TEMPLATE_REQUIRED"
+    };
+
+    const result=await blocked.execute();
+
+    assert.equal(result.status,"blocked");
+    assert.equal(result.historyProjection,"not_applicable");
+
+    assert.equal(
+      blocked.calls.some(c=>["binding","history","send"].includes(c[0])),
+      false
+    );
+
+  });
+
+  await check("minimal replay context never authorizes transport",async()=>{
+
+    for(const kind of ["lead","phone"]){
+
+      for(const status of [
+        "accepted",
+        "attempt_started",
+        "blocked",
+        "failed",
+        "uncertain"
+      ]){
+
+        const x=fixture(kind);
+
+        x.state.status=status;
+        x.state.expires=true;
+        x.state.quoteStatus="cancelled";
+        x.state.mismatch=true;
+
+        const result=await x.execute();
+
+        assert.equal(result.status,status);
+        assert.equal(result.providerRequestAttempted,false);
+
+        assert.equal(
+          result.quoteVersionId,
+          x.request.quoteVersionId
+        );
+
+        const project=kind==="lead" && status==="accepted";
+
+        assert.equal(
+          result.crmProjection,
+          project?"moved":"not_applicable"
+        );
+
+        assert.equal(
+          result.historyProjection,
+          project?"recorded":"not_applicable"
+        );
+
+        assert.deepEqual(
+          x.calls.map(c=>c[0]),
+          project
+            ? ["register","projection","history"]
+            : ["register"]
+        );
+      }
+    }
+
+  });
+
+  assert.equal(count,31);
+
+  console.log("HUMAN_QUOTE_CUSTOMER_SEND: 31/31 PASS");
 }
 
 module.exports=run;

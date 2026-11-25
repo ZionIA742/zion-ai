@@ -53,7 +53,7 @@ export async function executeHumanQuoteResponsibleSend(args:{
 
   const registered=context.registration;
 
-  if(registered.status!=="registered"){
+  if(context.replayOnly || registered.status!=="registered"){
     return {
       operationId:registered.operationId,
       quoteId:registered.quoteId,

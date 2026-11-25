@@ -32,6 +32,27 @@ const POLICY_DENIALS = new Set([
   "CUSTOMER_INBOUND_TIMESTAMP_INVALID",
 ]);
 
+const HISTORY_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function validHistoryUuid(value: unknown): boolean {
+  return typeof value === "string"
+    && HISTORY_UUID.test(value)
+    && value !== "00000000-0000-0000-0000-000000000000";
+}
+
+const HISTORY_BINDING_SKIPS = new Set([
+  "NO_PROVEN_CONVERSATION",
+  "AMBIGUOUS_CONVERSATION",
+]);
+
+const HISTORY_PROJECTION_SKIPS = new Set([
+  ...HISTORY_BINDING_SKIPS,
+  "PRE_SEND_BINDING_UNAVAILABLE",
+  "BOUND_CONVERSATION_UNAVAILABLE",
+  "BOUND_EVIDENCE_UNAVAILABLE",
+]);
+
 /**
  * Authorized human customer document send.
  *
@@ -59,7 +80,193 @@ export async function executeHumanQuoteCustomerSend(args: {
 
   const registered = context.registration;
 
-  if (registered.status !== "registered") {
+  const historyScope = {
+    p_organization_id: context.scope.organizationId,
+    p_store_id: context.scope.storeId,
+    p_actor_user_id: context.scope.actorUserId,
+    p_operation_id: registered.operationId,
+  };
+
+  async function bindLeadHistory(phoneNumberId: string): Promise<void> {
+
+    if (request.recipient.kind !== "lead") {
+      return;
+    }
+
+    const response = await context.supabase.rpc(
+      "bind_human_quote_send_history_by_system",
+      {
+        ...historyScope,
+        p_phone_number_id: phoneNumberId,
+      }
+    );
+
+    const binding = response.data;
+
+    if (
+      response.error ||
+      !binding ||
+      typeof binding !== "object" ||
+      Array.isArray(binding) ||
+      binding.phone_number_id !== phoneNumberId
+    ) {
+      throw new Error("HUMAN_QUOTE_HISTORY_BINDING_UNAVAILABLE");
+    }
+
+    if (
+      binding.outcome === "bound" &&
+      binding.reason === "PROVEN_WHATSAPP_CONVERSATION" &&
+      validHistoryUuid(binding.conversation_id) &&
+      validHistoryUuid(binding.inbound_message_id)
+    ) {
+      return;
+    }
+
+    if (
+      binding.outcome === "skipped" &&
+      HISTORY_BINDING_SKIPS.has(binding.reason) &&
+      !("conversation_id" in binding) &&
+      !("inbound_message_id" in binding)
+    ) {
+      return;
+    }
+
+    throw new Error("HUMAN_QUOTE_HISTORY_BINDING_INVALID");
+  }
+
+  async function projectAcceptedHistory(status: string): Promise<
+    "recorded" | "skipped" | "pending" | "not_applicable"
+  > {
+
+    if (
+      status !== "accepted" ||
+      request.recipient.kind !== "lead"
+    ) {
+      return "not_applicable";
+    }
+
+    try {
+
+      const response = await context.supabase.rpc(
+        "project_human_quote_send_history_by_system",
+        historyScope
+      );
+
+      const projection = response.data;
+
+      if (
+        response.error ||
+        !projection ||
+        typeof projection !== "object" ||
+        Array.isArray(projection)
+      ) {
+        return "pending";
+      }
+
+      if (
+        projection.outcome === "recorded" &&
+        projection.reason === "ACCEPTED_DOCUMENT_RECORDED" &&
+        validHistoryUuid(projection.message_id) &&
+        validHistoryUuid(projection.conversation_id)
+      ) {
+        return "recorded";
+      }
+
+      if (
+        projection.outcome === "skipped" &&
+        HISTORY_PROJECTION_SKIPS.has(projection.reason) &&
+        !("message_id" in projection)
+      ) {
+        return "skipped";
+      }
+
+      return "pending";
+
+    } catch {
+
+      return "pending";
+
+    }
+  }
+
+  /**
+   * The delivery ledger is the authority for acceptance.
+   * CRM projection is a separate, idempotent operation.
+   * A CRM failure must never repeat provider transport.
+   */
+  async function projectAcceptedLead(status: string): Promise<
+    "moved" |
+    "unchanged" |
+    "skipped" |
+    "pending" |
+    "not_applicable"
+  > {
+
+    if (
+      status !== "accepted" ||
+      request.recipient.kind !== "lead"
+    ) {
+      return "not_applicable";
+    }
+
+    try {
+
+      const projection = await context.supabase.rpc(
+        "project_human_quote_send_crm_by_system",
+        {
+          p_organization_id: context.scope.organizationId,
+          p_store_id: context.scope.storeId,
+          p_actor_user_id: context.scope.actorUserId,
+          p_operation_id: registered.operationId,
+        }
+      );
+
+      if (
+        projection.error ||
+        !projection.data ||
+        typeof projection.data !== "object" ||
+        Array.isArray(projection.data)
+      ) {
+        return "pending";
+      }
+
+      const decision = projection.data;
+
+      if (
+        typeof decision.reason !== "string" ||
+        !decision.reason.trim()
+      ) {
+        return "pending";
+      }
+
+      if (
+        decision.outcome === "moved" &&
+        decision.stage === "orcamento" &&
+        (
+          decision.previous_stage === "novo_lead" ||
+          decision.previous_stage === "qualificacao"
+        )
+      ) {
+        return "moved";
+      }
+
+      if (
+        decision.outcome === "unchanged" ||
+        decision.outcome === "skipped"
+      ) {
+        return decision.outcome;
+      }
+
+      return "pending";
+
+    } catch {
+
+      return "pending";
+
+    }
+  }
+
+  if (context.replayOnly || registered.status !== "registered") {
     return {
       operationId: registered.operationId,
       quoteId: registered.quoteId,
@@ -67,6 +274,12 @@ export async function executeHumanQuoteCustomerSend(args: {
       status: registered.status,
       reason: registered.statusReason,
       providerRequestAttempted: false,
+      crmProjection: await projectAcceptedLead(
+        registered.status
+      ),
+      historyProjection: await projectAcceptedHistory(
+        registered.status
+      ),
     };
   }
 
@@ -147,6 +360,9 @@ export async function executeHumanQuoteCustomerSend(args: {
         decision.allowed === true &&
         decision.reason === "CUSTOMER_WINDOW_OPEN"
       ) {
+
+        await bindLeadHistory(prepared.phoneNumberId);
+
         return {allowed:true};
       }
 
@@ -182,5 +398,11 @@ export async function executeHumanQuoteCustomerSend(args: {
         ? reason
         : null,
     providerRequestAttempted: result.providerRequestAttempted,
+    crmProjection: await projectAcceptedLead(
+      result.status
+    ),
+    historyProjection: await projectAcceptedHistory(
+      result.status
+    ),
   };
 }

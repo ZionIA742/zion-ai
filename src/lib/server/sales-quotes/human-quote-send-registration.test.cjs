@@ -112,6 +112,9 @@ async function run(source) {
       },
       rpcError:null,
       rpcPatch:{},
+      lookupError:null,
+      replayStatus:null,
+      replayPatch:{},
       recipientPatch:{},
       access:{
         ok:true,
@@ -153,6 +156,37 @@ async function run(source) {
         async rpc(name,params) {
           assert.equal(session,false);
           calls.push(["rpc",name,params]);
+
+          if(name==="lookup_human_quote_send_replay_by_system"){
+
+            if(state.lookupError){
+              return {data:null,error:state.lookupError};
+            }
+
+            if(state.replayStatus===null){
+              return {data:null,error:null};
+            }
+
+            return {
+              error:null,
+              data:{
+                outcome:"existing_operation",
+                operation_id:params.p_operation_id,
+                operation_key:params.p_operation_key,
+                quote_id:params.p_quote_id,
+                quote_version_id:params.p_quote_version_id,
+                recipient_kind:body.recipient.kind,
+                status:state.replayStatus,
+                status_reason:null,
+                created_at:"2026-11-25T12:00:00Z",
+                ...state.replayPatch
+              }
+            };
+          }
+
+          assert.equal(
+            name,"register_human_quote_send_operation_by_system"
+          );
 
           if(state.rpcError) {
             return {data:null,error:state.rpcError};
@@ -233,7 +267,17 @@ async function run(source) {
     return {
       body,state,scope,calls,
       execute:()=>module.registerHumanQuoteSend({quoteId,body}),
-      rpcCalls:()=>calls.filter(c=>c[0]==="rpc"),
+      executeInternal:()=>module.registerHumanQuoteSendInternal({
+        quoteId,body
+      }),
+      rpcCalls:()=>calls.filter(c=>
+        c[0]==="rpc" &&
+        c[1]==="register_human_quote_send_operation_by_system"
+      ),
+      lookupCalls:()=>calls.filter(c=>
+        c[0]==="rpc" &&
+        c[1]==="lookup_human_quote_send_replay_by_system"
+      ),
     };
   }
 
@@ -269,6 +313,7 @@ async function run(source) {
 
       assert.equal(result.status,"registered");
       assert.equal(result.recipientKind,kind);
+      assert.equal(x.lookupCalls().length,1);
       assert.equal(x.rpcCalls().length,1);
 
       const [,name,p]=x.rpcCalls()[0];
@@ -521,9 +566,200 @@ async function run(source) {
     );
   });
 
-  assert.equal(count,24);
+  await check("historical replay supports all recipients",async()=>{
 
-  console.log("HUMAN_QUOTE_SEND_REGISTRATION: 24/24 PASS");
+    for(const kind of ["lead","phone","responsible"]){
+
+      const x=fixture();
+
+      x.body.recipient=
+        kind==="lead"?{kind,leadId}:
+        kind==="responsible"?{kind}:{kind,phone};
+
+      x.state.replayStatus="accepted";
+
+      // Current document and recipient details have changed.
+      x.state.quote.current_version_id=id(99);
+      x.state.version=null;
+      x.state.file=null;
+      x.state.recipientPatch={
+        candidatePhone:"+5511999991235",
+        responsibleId:id(99)
+      };
+
+      const result=await x.executeInternal();
+
+      assert.equal(result.replayOnly,true);
+      assert.equal(result.registration.status,"accepted");
+      assert.equal(result.registration.quoteVersionId,versionId);
+      assert.equal(result.registration.recipientKind,kind);
+
+      assert.equal(x.rpcCalls().length,0);
+      assert.equal(x.lookupCalls().length,1);
+
+      assert.equal(
+        x.calls.some(c=>c[0]==="recipient"),
+        false
+      );
+
+      assert.equal(
+        x.calls.some(c=>c[0]==="from" && c[1]===false),
+        false
+      );
+
+      for(const field of ["recipient","pdf","pdfInput","version","quote"]){
+        assert.equal(Object.hasOwn(result,field),false);
+      }
+
+      const p=x.lookupCalls()[0][2];
+
+      const identity=contract.buildHumanQuoteSendIdentity(
+        {
+          organizationId:org,
+          storeId:store,
+          actorUserId:actor,
+          quoteId,
+        },
+        x.body
+      );
+
+      assert.deepEqual(p,{
+        p_organization_id:org,
+        p_store_id:store,
+        p_actor_user_id:actor,
+        p_operation_id:operationId,
+        p_quote_id:quoteId,
+        p_quote_version_id:versionId,
+        p_operation_key:identity.operationKey,
+        p_request_fingerprint:identity.requestFingerprint
+      });
+    }
+
+  });
+
+  await check("all nonregistered states are replay only",async()=>{
+
+    for(const status of [
+      "accepted","blocked","attempt_started","failed","uncertain"
+    ]){
+
+      const x=fixture();
+
+      x.state.replayStatus=status;
+      x.state.quote.current_version_id=id(99);
+
+      const result=await x.executeInternal();
+
+      assert.equal(result.replayOnly,true);
+      assert.equal(result.registration.status,status);
+      assert.equal(x.rpcCalls().length,0);
+    }
+
+  });
+
+  await check("new operation still requires current version",async()=>{
+
+    const x=fixture();
+
+    x.state.quote.current_version_id=id(99);
+
+    await assert.rejects(
+      x.execute,
+      e=>e.code==="HUMAN_QUOTE_SEND_VERSION_STALE"
+    );
+
+    assert.equal(x.lookupCalls().length,1);
+    assert.equal(x.rpcCalls().length,0);
+
+  });
+
+  await check("replay lookup failure never falls back to registration",async()=>{
+
+    for(const error of [
+      {code:"42501",message:"private database detail"},
+      {
+        code:"P0001",
+        message:"HUMAN_QUOTE_SEND_OPERATION_CONFLICT"
+      }
+    ]){
+
+      const x=fixture();
+
+      x.state.lookupError=error;
+
+      const expectedCode=error.code==="P0001"
+        ? error.message
+        : "HUMAN_QUOTE_SEND_REPLAY_LOOKUP_FAILED";
+
+      await assert.rejects(
+        x.execute,
+        e=>e.code===expectedCode
+      );
+
+      assert.equal(x.lookupCalls().length,1);
+      assert.equal(x.rpcCalls().length,0);
+    }
+
+  });
+
+  await check("malformed or foreign replay cannot authorize send",async()=>{
+
+    for(const response of [
+      {status:"registered"},
+      {status:"delivered"},
+      {quote_id:id(99)},
+      {quote_version_id:id(99)},
+      {operation_id:id(99)},
+      {operation_key:"wrong-key"},
+      {recipient_kind:"responsible"},
+      {created_at:"invalid"},
+      {outcome:"registered"}
+    ]){
+
+      const x=fixture();
+
+      x.state.replayStatus="accepted";
+      x.state.replayPatch=response;
+
+      await assert.rejects(
+        x.execute,
+        e=>e.code==="HUMAN_QUOTE_SEND_REPLAY_RESPONSE_INVALID"
+      );
+
+      assert.equal(x.rpcCalls().length,0);
+
+    }
+
+  });
+
+  await check("recovery never bypasses authenticated access",async()=>{
+
+    for(const change of [
+      x=>{x.state.access={ok:false,httpStatus:403};},
+      x=>{x.state.access.sessionUserId=id(99);},
+      x=>{x.state.visible=null;},
+      x=>{x.scope.store.organization_id=id(99);},
+      x=>{x.state.quote.metadata={legacy_human_edit_eligible:true};}
+    ]){
+
+      const x=fixture();
+
+      x.state.replayStatus="accepted";
+
+      change(x);
+
+      await assert.rejects(x.execute);
+
+      assert.equal(x.lookupCalls().length,0);
+      assert.equal(x.rpcCalls().length,0);
+
+    }
+
+  });
+
+  assert.equal(count,30);
+
+  console.log("HUMAN_QUOTE_SEND_REGISTRATION: 30/30 PASS");
 }
 
 module.exports=run;

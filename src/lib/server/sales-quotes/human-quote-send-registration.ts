@@ -181,6 +181,100 @@ export async function registerHumanQuoteSendInternal(args: {
     request,
   );
 
+  // Recover the immutable request before checking mutable
+  // document versions or current recipient contact details.
+  // Authentication, store access and session visibility
+  // remain mandatory for every replay.
+
+  const replay = await scope.supabase.rpc(
+    "lookup_human_quote_send_replay_by_system",
+    {
+      p_organization_id: organizationId,
+      p_store_id: storeId,
+      p_actor_user_id: actorUserId,
+      p_operation_id: request.operationId,
+      p_quote_id: quoteId,
+      p_quote_version_id: request.quoteVersionId,
+      p_operation_key: identity.operationKey,
+      p_request_fingerprint: identity.requestFingerprint,
+    }
+  );
+
+  if (replay.error) {
+
+    const code = replay.error.message;
+
+    if (
+      replay.error.code === "P0001" &&
+      typeof code === "string" &&
+      /^HUMAN_QUOTE_SEND_[A-Z0-9_]{1,100}$/.test(code)
+    ) {
+      return fail(409, code);
+    }
+
+    return fail(503, "HUMAN_QUOTE_SEND_REPLAY_LOOKUP_FAILED");
+  }
+
+  if (replay.data !== null) {
+
+    const row = replay.data;
+
+    if (
+      !row ||
+      typeof row !== "object" ||
+      Array.isArray(row) ||
+      row.outcome !== "existing_operation" ||
+      row.operation_id !== request.operationId ||
+      row.operation_key !== identity.operationKey ||
+      row.quote_id !== quoteId ||
+      row.quote_version_id !== request.quoteVersionId ||
+      row.recipient_kind !== request.recipient.kind ||
+      !OPERATION_STATES.includes(row.status) ||
+      row.status === "registered" ||
+      (
+        row.status_reason !== null &&
+        (
+          typeof row.status_reason !== "string" ||
+          !/^[A-Za-z0-9_:-]{1,160}$/.test(row.status_reason)
+        )
+      ) ||
+      typeof row.created_at !== "string" ||
+      !Number.isFinite(Date.parse(row.created_at))
+    ) {
+      return fail(
+        503,
+        "HUMAN_QUOTE_SEND_REPLAY_RESPONSE_INVALID"
+      );
+    }
+
+    const registration: HumanQuoteSendRegistrationResult = {
+      outcome: "existing_operation",
+      operationId: row.operation_id,
+      quoteId: row.quote_id,
+      quoteVersionId: row.quote_version_id,
+      recipientKind: row.recipient_kind,
+      status: row.status,
+      statusReason: row.status_reason,
+      createdAt: row.created_at,
+    };
+
+    // Deliberately omit the PDF and recipient transport
+    // context. A replay-only result cannot authorize send.
+
+    return {
+      replayOnly: true as const,
+      registration,
+      supabase: scope.supabase,
+      scope: {
+        organizationId,
+        storeId,
+        actorUserId,
+        quoteId,
+      },
+      request,
+    };
+  }
+
   if (quote.current_version_id !== request.quoteVersionId) {
     return fail(409, "HUMAN_QUOTE_SEND_VERSION_STALE");
   }
@@ -353,6 +447,7 @@ export async function registerHumanQuoteSendInternal(args: {
   };
 
   return {
+    replayOnly: false as const,
     registration,
     supabase: scope.supabase,
     scope: {

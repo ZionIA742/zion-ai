@@ -185,7 +185,25 @@ async function run(source){
 
           calls.push(["register",args]);
 
+          if(state.status!=="registered"){
+
+            return {
+              replayOnly:true,
+              registration:{
+                operationId:request.operationId,
+                quoteId:scope.quoteId,
+                quoteVersionId:request.quoteVersionId,
+                status:state.status,
+                statusReason:state.statusReason
+              },
+              scope,
+              request,
+              supabase
+            };
+          }
+
           return {
+            replayOnly:false,
             registration:{
               operationId:request.operationId,
               quoteId:scope.quoteId,
@@ -542,9 +560,53 @@ async function run(source){
     assert.equal(sent(x),1);
   });
 
-  assert.equal(count,16);
+  await check("minimal responsible replay never authorizes transport",async()=>{
 
-  console.log("HUMAN_QUOTE_RESPONSIBLE_SEND: 16/16 PASS");
+    for(const status of [
+      "accepted",
+      "attempt_started",
+      "blocked",
+      "failed",
+      "uncertain"
+    ]){
+
+      const x=fixture();
+
+      x.state.status=status;
+      x.state.expired=true;
+      x.state.quoteStatus="cancelled";
+      x.state.recipient=null;
+      x.state.signed=null;
+
+      const result=await x.execute();
+
+      assert.equal(result.status,status);
+      assert.equal(result.providerRequestAttempted,false);
+
+      assert.equal(
+        result.quoteVersionId,
+        x.request.quoteVersionId
+      );
+
+      assert.deepEqual(
+        x.calls.map(c=>c[0]),
+        ["register"]
+      );
+
+      assert.equal(
+        Object.hasOwn(result,"crmProjection"),false
+      );
+
+      assert.equal(
+        Object.hasOwn(result,"historyProjection"),false
+      );
+    }
+
+  });
+
+  assert.equal(count,17);
+
+  console.log("HUMAN_QUOTE_RESPONSIBLE_SEND: 17/17 PASS");
 }
 
 module.exports=run;
