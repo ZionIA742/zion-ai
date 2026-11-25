@@ -75,6 +75,18 @@ export async function registerHumanQuoteSend(args: {
   quoteId: string;
   body: unknown;
 }): Promise<HumanQuoteSendRegistrationResult> {
+  const registered = await registerHumanQuoteSendInternal(args);
+  return registered.registration;
+}
+
+/**
+ * Backend-only registration context.
+ * Never serialize this result to an HTTP response.
+ */
+export async function registerHumanQuoteSendInternal(args: {
+  quoteId: string;
+  body: unknown;
+}) {
 
   const quoteId =
     typeof args.quoteId === "string"
@@ -178,7 +190,7 @@ export async function registerHumanQuoteSend(args: {
     .select(
       "id,quote_id,organization_id,store_id,status," +
       "store_file_id,storage_bucket,storage_path," +
-      "original_filename,mime_type,size_bytes"
+      "original_filename,mime_type,size_bytes,quote_snapshot"
     )
     .eq("id", request.quoteVersionId)
     .eq("quote_id", quoteId)
@@ -227,7 +239,7 @@ export async function registerHumanQuoteSend(args: {
     return fail(503, "HUMAN_QUOTE_SEND_FILE_LOOKUP_FAILED");
   }
 
-  validateHumanQuoteSendPdf({
+  const pdfInput = {
     organizationId,
     storeId,
     quoteId,
@@ -235,7 +247,9 @@ export async function registerHumanQuoteSend(args: {
     quote,
     version,
     storeFile: fileResult.data as StoreFileRow | null,
-  });
+  };
+
+  const pdf = validateHumanQuoteSendPdf(pdfInput);
 
   const recipient = await resolveHumanQuoteSendRecipient({
     supabase: scope.supabase,
@@ -327,7 +341,7 @@ export async function registerHumanQuoteSend(args: {
 
   // Return a minimal status projection.
   // Do not expose destination, storage path or attempt token.
-  return {
+  const registration: HumanQuoteSendRegistrationResult = {
     outcome: row.outcome,
     operationId: row.operation_id,
     quoteId: row.quote_id,
@@ -336,5 +350,22 @@ export async function registerHumanQuoteSend(args: {
     status: row.status,
     statusReason: row.status_reason,
     createdAt: row.created_at,
+  };
+
+  return {
+    registration,
+    supabase: scope.supabase,
+    scope: {
+      organizationId,
+      storeId,
+      actorUserId,
+      quoteId,
+    },
+    request,
+    recipient,
+    pdf,
+    pdfInput,
+    quote,
+    version,
   };
 }
