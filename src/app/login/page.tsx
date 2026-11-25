@@ -8,7 +8,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { getSafeInternalLoginRedirect } from "@/lib/auth-safe-redirect";
 import { resolveAuthPublicBaseUrl } from "@/lib/auth-public-url";
-import { CodeIcon, LockIcon, MailIcon, SacredCircuitFrame } from "@/components/auth/SacredCircuitFrame";
+import { ArrowIcon, CodeIcon, LockIcon, MailIcon, SacredCircuitFrame } from "@/components/auth/SacredCircuitFrame";
 
 type LoginMode = "password" | "code" | "verifyCode" | "forgot";
 
@@ -366,7 +366,7 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="relative flex min-h-dvh w-full max-w-full flex-col overflow-x-hidden bg-[#020e15] text-slate-50">
+    <main data-login-mode={mode} className="zion-sacred-page zion-sacred-page--commercial relative flex min-h-dvh w-full max-w-full flex-col overflow-x-hidden bg-[#020e15] text-slate-50">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 bg-cover bg-center bg-no-repeat sm:hidden"
@@ -376,7 +376,7 @@ export default function LoginPage() {
       />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 hidden bg-cover bg-center bg-no-repeat sm:block"
+        className="zion-sacred-background-desktop pointer-events-none absolute inset-0 hidden bg-cover bg-center bg-no-repeat sm:block"
         style={{
           backgroundImage: 'url("/branding/zion-sacred-circuit-desktop.webp")',
         }}
@@ -389,20 +389,20 @@ export default function LoginPage() {
             "linear-gradient(180deg, rgba(1,10,16,0.03), rgba(1,10,16,0.01) 45%, rgba(1,10,16,0.18))",
         }}
       />
-      <div className="relative z-10 flex w-full min-w-0 flex-1 items-center justify-center px-3 py-8 sm:px-6 sm:py-12">
+      <div className="zion-sacred-stage relative z-10 flex w-full min-w-0 flex-1 items-center justify-center">
         <SacredCircuitFrame variant="commercial">
-        <div className="mb-5 flex items-center justify-center">
+        <div className="zion-sacred-brand">
           <h1
             className="font-serif text-[52px] font-normal leading-none tracking-[-0.045em] text-white drop-shadow-sm sm:text-[56px]"
             aria-label="ZION"
           >
             Zion
           </h1>
-          <div aria-hidden="true" className="mx-auto mt-2 h-px w-12 bg-cyan-300 shadow-[0_0_12px_3px_rgba(34,211,238,0.8)]" />
-          <p className="mt-4 text-[10px] font-medium uppercase tracking-[0.38em] text-slate-300">Plataforma de gestão</p>
+          <div aria-hidden="true" className="zion-sacred-brand-line" />
+
         </div>
 
-        <h2 className="mb-5 text-center text-[25px] font-semibold tracking-[-0.02em] text-white">{title}</h2>
+        {mode !== "password" ? <h2 className="zion-sacred-title">{title}</h2> : null}
 
         {message ? (
           <div className="mb-4 rounded-2xl border border-emerald-400/25 bg-emerald-500/[0.08] px-4 py-3 text-sm leading-6 text-emerald-100">
@@ -417,7 +417,7 @@ export default function LoginPage() {
         ) : null}
 
         {mode === "password" ? (
-          <form onSubmit={handlePasswordLogin} className="space-y-3">
+          <form onSubmit={handlePasswordLogin} className="zion-sacred-form">
             <div>
               <label className="text-xs font-medium text-slate-200">E-mail</label>
               <div className="relative mt-1.5">
@@ -486,14 +486,13 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="zion-sacred-actions">
               <button
                 type="submit"
                 disabled={busy}
                 className="flex items-center justify-center gap-2 bg-cyan-400 px-4 py-2.5 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
-                style={{ clipPath: "polygon(0 9px, 9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px))" }}
               >
-                {busy ? "Entrando..." : "Entrar"}
+                {busy ? "Entrando..." : <>Entrar <ArrowIcon /></>}
               </button>
 
               <button
@@ -501,7 +500,6 @@ export default function LoginPage() {
                 onClick={() => changeMode("code")}
                 disabled={busy}
                 className="flex items-center justify-center gap-2 border border-cyan-400/75 bg-[#0b2530]/75 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-cyan-300/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
-                style={{ clipPath: "polygon(0 9px, 9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px))" }}
               >
                 <CodeIcon /> Código
               </button>
@@ -510,9 +508,11 @@ export default function LoginPage() {
         ) : null}
 
         {mode === "code" ? (
-          <form onSubmit={handleSendCode} className="space-y-3">
+          <form onSubmit={handleSendCode} className="zion-sacred-form">
             <div>
               <label className="text-xs font-medium text-slate-200">E-mail</label>
+              <div className="relative">
+                <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-200"><MailIcon /></span>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
@@ -521,6 +521,7 @@ export default function LoginPage() {
                 type="email"
                 autoComplete="email"
               />
+              </div>
             </div>
 
             <button
@@ -534,9 +535,11 @@ export default function LoginPage() {
         ) : null}
 
         {mode === "verifyCode" ? (
-          <form onSubmit={handleVerifyCode} className="space-y-3">
+          <form onSubmit={handleVerifyCode} className="zion-sacred-form">
             <div>
               <label className="text-xs font-medium text-slate-200">E-mail</label>
+              <div className="relative">
+                <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-200"><MailIcon /></span>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
@@ -545,6 +548,7 @@ export default function LoginPage() {
                 type="email"
                 autoComplete="email"
               />
+              </div>
             </div>
 
             <div>
@@ -579,9 +583,11 @@ export default function LoginPage() {
         ) : null}
 
         {mode === "forgot" ? (
-          <form onSubmit={handleForgotPassword} className="space-y-3">
+          <form onSubmit={handleForgotPassword} className="zion-sacred-form">
             <div>
               <label className="text-xs font-medium text-slate-200">E-mail</label>
+              <div className="relative">
+                <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-200"><MailIcon /></span>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
@@ -590,6 +596,7 @@ export default function LoginPage() {
                 type="email"
                 autoComplete="email"
               />
+              </div>
             </div>
 
             <button
@@ -602,7 +609,7 @@ export default function LoginPage() {
           </form>
         ) : null}
 
-        <div className="mt-4 grid gap-2">
+        <div className="zion-sacred-links">
           {mode !== "forgot" ? (
             <button
               type="button"
@@ -626,8 +633,8 @@ export default function LoginPage() {
         </SacredCircuitFrame>
       </div>
 
-      <footer className="relative z-10 px-4 pb-5 pt-5">
-        <div className="mx-auto flex max-w-md flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-center text-[13px] text-slate-300">
+      <footer className="zion-sacred-footer relative z-10">
+        <div className="zion-sacred-footer-links">
           <Link
             href="/privacy-policy"
             className="transition hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
@@ -653,7 +660,7 @@ export default function LoginPage() {
             Exclusão de Dados
           </Link>
         </div>
-        <p className="mt-2.5 text-center text-xs text-zinc-500">
+        <p className="zion-sacred-company">
           ZION INOVA SIMPLES (I.S.)
         </p>
       </footer>
