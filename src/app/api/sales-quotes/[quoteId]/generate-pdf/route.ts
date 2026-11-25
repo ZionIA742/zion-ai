@@ -30,6 +30,10 @@ import {
   withoutVolatileQuoteSnapshotFields,
 } from "@/lib/server/sales-quotes/canonical-payload-v1";
 import { resolveSalesQuoteKindForVersion } from "@/lib/server/sales-quotes/quote-kind";
+import {
+  assertHumanQuoteEditEligibility,
+  HumanQuoteEditProvenanceError,
+} from "@/lib/server/sales-quotes/human-quote-edit-provenance";
 import type { SalesQuoteItemRow } from "@/lib/server/sales-quotes/types";
 
 export const runtime = "nodejs";
@@ -135,7 +139,18 @@ function buildPdfInputFromSnapshot(snapshot: Record<string, any>, storeLogo: {
   };
 }
 
+function isIndependentHumanQuote(quote: Parameters<typeof assertHumanQuoteEditEligibility>[0]): boolean {
+  try {
+    assertHumanQuoteEditEligibility(quote);
+    return true;
+  } catch (error) {
+    if (error instanceof HumanQuoteEditProvenanceError) return false;
+    throw error;
+  }
+}
+
 async function reconcileQuoteGenerationSideEffects(args: {
+  independentHuman: boolean;
   supabase: any;
   quote: any;
   scope: any;
@@ -144,6 +159,8 @@ async function reconcileQuoteGenerationSideEffects(args: {
   originalFilename: string;
   operationId: string;
 }) {
+  // A human-generated document is not a commercial event or an AI review request.
+  if (args.independentHuman) return;
   const findExistingEvent = async () => {
     const { data, error } = await args.supabase
       .from("conversation_events")
@@ -237,6 +254,7 @@ export async function POST(
     }
     const scope = await resolveAuthorizedExistingQuote(quoteId);
     generationScope = scope;
+    const independentHuman = isIndependentHumanQuote(scope.quote);
     const { data: lookupData, error: lookupError } = await scope.supabase.rpc(
       "get_sales_quote_pdf_generation_replay_by_system",
       {
@@ -261,6 +279,7 @@ export async function POST(
         throw new Error("P19A_PDF_REPLAY_RESULT_INVALID");
       }
       await reconcileQuoteGenerationSideEffects({
+        independentHuman,
         supabase: scope.supabase,
         quote: scope.quote,
         scope,
@@ -282,7 +301,7 @@ export async function POST(
     }
     const existingOperation = lookup.outcome === "existing_operation";
 
-    if (!existingOperation) {
+    if (!existingOperation && !independentHuman) {
       await ensureQuoteConversationReadyForQuoteEvent({
         supabase: scope.supabase,
         actorUserId: scope.user.id,
@@ -337,14 +356,29 @@ export async function POST(
       );
     }
 
-    const quoteKind = await resolveSalesQuoteKindForVersion({
-      supabase: scope.supabase,
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
-      quoteId: scope.quote.id,
-      commercialOpportunityId: scope.quote.commercial_opportunity_id,
-      fallbackQuoteKind: requestedQuoteKind,
-    });
+    let quoteKind: "preliminary" | "definitive" | null = null;
+    if (!independentHuman) {
+      quoteKind = await resolveSalesQuoteKindForVersion({
+        supabase: scope.supabase,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        quoteId: scope.quote.id,
+        commercialOpportunityId: scope.quote.commercial_opportunity_id,
+        fallbackQuoteKind: requestedQuoteKind,
+      });
+    } else if (existingOperation) {
+      // The scoped replay RPC is the authority for the persisted kind.
+      // Preserve the original operation identity without direct table access.
+      if (
+        !Object.prototype.hasOwnProperty.call(lookup, "quote_kind") ||
+        (lookup.quote_kind !== null &&
+          lookup.quote_kind !== "preliminary" &&
+          lookup.quote_kind !== "definitive")
+      ) {
+        throw new Error("P19A_PDF_EXISTING_OPERATION_KIND_INVALID");
+      }
+      quoteKind = lookup.quote_kind;
+    }
 
     const snapshot = buildQuoteSnapshot({
       quote: scope.quote,
@@ -516,6 +550,7 @@ export async function POST(
     }
 
     await reconcileQuoteGenerationSideEffects({
+      independentHuman,
       supabase: scope.supabase,
       quote: scope.quote,
       scope,
