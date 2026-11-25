@@ -55,6 +55,8 @@ const METHODS = new Set([
 const DIAGNOSTIC_ROUTES = new Set([
   "/api/zion-admin/diagnostics",
   "/api/cron/zion-admin-diagnostic-ai-runs",
+  "/api/diagnostics/client-browser",
+  "/api/zion-admin/diagnostics/scheduler",
   "/api/cron/zion-admin-diagnostic-operational",
 ]);
 

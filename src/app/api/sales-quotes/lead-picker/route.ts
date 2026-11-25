@@ -1,4 +1,11 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
+import { POST as originalPOST } from "./route-handler";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export { POST } from "./route-handler";
+export const POST = withBackendDiagnosticRoute(
+  "/api/sales-quotes/lead-picker",
+  "POST",
+  originalPOST,
+);

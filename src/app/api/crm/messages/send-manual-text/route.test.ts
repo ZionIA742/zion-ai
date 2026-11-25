@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   handleSendManualTextPost,
-} from "./route";
+} from "./route-handler";
 import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
@@ -594,7 +594,7 @@ const tests: TestCase[] = [
   {
     name: "route source uses canonical store gate and does not use legacy auth calls",
     run: () => {
-      const source = readFileSync(join(__dirname, "route.ts"), "utf8");
+      const source = readFileSync(join(__dirname, "route-handler.ts"), "utf8");
 
       assert.equal(source.includes("resolveStoreApiAccess"), true);
       assert.equal(source.includes("createStoreApiDeniedResponse"), true);

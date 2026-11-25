@@ -5,7 +5,7 @@ import test from "node:test";
 const migration = fs.readFileSync("supabase/migrations/20261124200000_p10_8_c_audio_retention_executor.sql", "utf8");
 const executor = fs.readFileSync("src/lib/server/audio-retention-executor.ts", "utf8");
 const cron = fs.readFileSync("src/app/api/cron/whatsapp-process-all/route.ts", "utf8");
-const mediaRoute = fs.readFileSync("src/app/api/crm/messages/[messageId]/signed-media-url/route.ts", "utf8");
+const mediaRoute = fs.readFileSync("src/app/api/crm/messages/[messageId]/signed-media-url/route-handler.ts", "utf8");
 
 test("executor migration claims atomically and preserves original references", () => {
   assert.match(migration, /claim_audio_retention_deletion_by_system/);
