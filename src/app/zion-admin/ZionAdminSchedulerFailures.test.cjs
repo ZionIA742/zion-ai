@@ -18,7 +18,7 @@ function setup(options={}) {
   '@/lib/server/zion-admin-api-access':{async resolveZionAdminApiAccess(args){assert.equal(args.requiredCapability,'manage_accounts');calls.push('auth');return {ok:options.authorized!==false};}},
   '@/lib/server/zion-admin-api-response':{createZionAdminApiDeniedResponse(){return Response.json({ok:false},{status:403});},createZionAdminApiJsonResponse(body,status){return Response.json(body,{status});}},
   '@/lib/diagnostics/scheduler-failure-contract':contract
- },{process:{env}});
+ },{process:{env},AbortSignal:{timeout(ms){options.onTimeout?.(ms);return options.signal??AbortSignal.timeout(ms);}}});
  return {calls,get:(query='')=>route.GET(new Request('https://fixture.invalid/api/zion-admin/diagnostics/scheduler'+query))};
 }
 test('known catalog and exact ten-field projection strips private extras',()=>{assert.equal(contract.SCHEDULER_COMPONENTS.length,19);const result=project([{...row,command:'PRIVATE',return_message:'PRIVATE'}],50);assert.equal(Object.keys(result[0]).length,10);assert(!JSON.stringify(result).includes('PRIVATE'));});
@@ -33,3 +33,77 @@ test('exact RPC, bounded result and no extra private metadata',async()=>{const s
 test('RPC errors, malformed and oversized rows fail closed',async()=>{for(const rpc of [{data:null,error:{message:'PRIVATE'}},{data:[{...row,reported_reason:'PRIVATE'}],error:null},{data:[row,row],error:null}]){const s=setup({rpc});const res=await s.get('?limit=1');assert.equal(res.status,503);assert(!(await res.text()).includes('PRIVATE'));}});
 test('empty history is distinct from an unavailable query',async()=>{const s=setup({rpc:{data:[],error:null}});const res=await s.get();assert.equal(res.status,200);assert.deepEqual((await res.json()).items,[]);});
 test('integration is mounted once with unified readers only and manual refresh',()=>{const src=fs.readFileSync('src/app/zion-admin/ZionAdminDiagnosticIncidents.tsx','utf8');assert.equal((src.match(/<ZionAdminSchedulerFailures \/>/g)||[]).length,1);assert(src.includes('result?.source === "unified" || result?.source === "unified_v2" ? <ZionAdminSchedulerFailures />'));const component=fs.readFileSync('src/app/zion-admin/ZionAdminSchedulerFailures.tsx','utf8');assert(component.includes('navigator.clipboard.writeText(buildSchedulerText(item))'));assert(!component.includes('setInterval'));assert(component.includes('Consulta geral, independente dos filtros'));});
+
+test('scheduler RPC deadline is bounded at 20 seconds',async()=>{
+ const deadlines=[];
+ const s=setup({onTimeout(ms){deadlines.push(ms);}});
+ assert.equal((await s.get('?limit=50')).status,200);
+ assert.deepEqual(deadlines,[20000]);
+});
+
+test('scheduler RPC timeout has a safe reason',async()=>{
+ const s=setup({
+  signal:AbortSignal.abort(),
+  rpc:{data:null,error:{message:'PRIVATE'}}
+ });
+ const res=await s.get();
+ assert.equal(res.status,503);
+ const body=await res.json();
+ assert.equal(body.reason,'SCHEDULER_RPC_TIMEOUT');
+ assert(!JSON.stringify(body).includes('PRIVATE'));
+});
+
+test('scheduler other RPC failures have a safe reason',async()=>{
+ const s=setup({
+  rpc:{data:null,error:{message:'PRIVATE'}}
+ });
+ const res=await s.get();
+ assert.equal(res.status,503);
+ const body=await res.json();
+ assert.equal(body.reason,'SCHEDULER_RPC_FAILED');
+ assert(!JSON.stringify(body).includes('PRIVATE'));
+});
+
+test('scheduler invalid projection has a safe reason',async()=>{
+ const s=setup({
+  rpc:{data:[{...row,component:'PRIVATE'}],error:null}
+ });
+ const res=await s.get();
+ assert.equal(res.status,503);
+ const body=await res.json();
+ assert.equal(body.reason,'SCHEDULER_INVALID_RESPONSE');
+ assert(!JSON.stringify(body).includes('PRIVATE'));
+});
+
+test('browser deadline is 45 seconds and cleanup aborts',()=>{
+ let effect,deadline,requestSignal;
+ const component=load(
+  'src/app/zion-admin/ZionAdminSchedulerFailures.tsx',
+  {
+   react:{
+    useState(initial){return [initial,()=>{}];},
+    useEffect(callback){effect=callback;}
+   },
+   'react/jsx-runtime':{
+    jsx(){return null;},
+    jsxs(){return null;}
+   },
+   '@/lib/diagnostics/scheduler-failure-contract':contract
+  },
+  {
+   setTimeout(callback,ms){deadline=ms;return 1;},
+   clearTimeout(){},
+   fetch(url,options){
+    requestSignal=options.signal;
+    return new Promise(()=>{});
+   }
+  }
+ );
+ component.default();
+ assert.equal(typeof effect,'function');
+ const cleanup=effect();
+ assert.equal(deadline,45000);
+ assert.equal(requestSignal.aborted,false);
+ cleanup();
+ assert.equal(requestSignal.aborted,true);
+});

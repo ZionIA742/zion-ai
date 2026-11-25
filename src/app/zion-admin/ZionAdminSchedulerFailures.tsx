@@ -29,7 +29,7 @@ export default function ZionAdminSchedulerFailures() {
   const [copy,setCopy] = useState<{id:number;ok:boolean}|null>(null);
   useEffect(() => {
     const controller = new AbortController();
-    const timer = setTimeout(()=>controller.abort(),12000);
+    const timer = setTimeout(()=>controller.abort(),45000);
     async function load() {
       try {
         const response = await fetch('/api/zion-admin/diagnostics/scheduler?limit=50',{credentials:'include',cache:'no-store',signal:controller.signal});
