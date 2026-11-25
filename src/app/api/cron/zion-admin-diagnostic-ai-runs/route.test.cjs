@@ -21,7 +21,7 @@ Module._extensions[".ts"] = function (mod, filename) {
 
 const {
   createDiagnosticAiRunCronGetHandler,
-} = require("./route.ts");
+} = require("./route-handler.ts");
 
 const SECRET = "Z".repeat(40);
 const URL = "https://example.invalid/api/cron/zion-admin-diagnostic-ai-runs";
