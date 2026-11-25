@@ -43,8 +43,15 @@ type DiagnosticEvidenceV2 = {
 type Diagnostic = {
   incidentId: string;
   occurrenceId: string | null;
-  organizationId: string;
-  storeId: string;
+  organizationId: string | null;
+  storeId: string | null;
+  scope: "system" | "organization" | "store";
+  sourceFamily: "ai_runs" | "operational" | "backend_api";
+  sourceSystem: string;
+  component: string | null;
+  category: string | null;
+  resolvedAt: string | null;
+  technicalLocation: string[];
   status: string | null;
   severity: string | null;
   causeConfidence: string | null;
@@ -65,6 +72,7 @@ type Diagnostic = {
 
 type LoadResult = {
   key: string;
+  source?: "ai_runs" | "unified";
   items: Diagnostic[];
   error: boolean;
 };
@@ -168,13 +176,17 @@ function parseDiagnostic(value: unknown): Diagnostic | null {
   const organizationId = optionalText(value.organization_id);
   const storeId = optionalText(value.store_id);
 
+  const scope = value.scope === undefined ? "store" : value.scope;
+  const family = value.source_family === undefined ? "ai_runs" : value.source_family;
+  const origin = value.source_system === undefined ? "ai_runs" : value.source_system;
   if (
-    !incidentId ||
-    !organizationId ||
-    !storeId ||
-    !UUID_PATTERN.test(incidentId) ||
-    !UUID_PATTERN.test(organizationId) ||
-    !UUID_PATTERN.test(storeId) ||
+    !incidentId || !UUID_PATTERN.test(incidentId) ||
+    !(scope === "system" && value.organization_id === null && value.store_id === null ||
+      scope === "organization" && !!organizationId && UUID_PATTERN.test(organizationId) && value.store_id === null ||
+      scope === "store" && !!organizationId && !!storeId && UUID_PATTERN.test(organizationId) && UUID_PATTERN.test(storeId)) ||
+    !(family === "ai_runs" && origin === "ai_runs" && scope === "store" ||
+      family === "operational" && scope === "store" && (origin === "channel_whatsapp_inbox" || origin === "ai_run_queue" || origin === "ai_sales_action_queue") ||
+      family === "backend_api" && origin === "backend_api") ||
     typeof value.last_failure_older_than_30_days !== "boolean"
   ) {
     return null;
@@ -187,6 +199,13 @@ function parseDiagnostic(value: unknown): Diagnostic | null {
     occurrenceId: optionalText(value.occurrence_id),
     organizationId,
     storeId,
+    scope,
+    sourceFamily: family,
+    sourceSystem: origin,
+    component: optionalText(value.component),
+    category: optionalText(value.category),
+    resolvedAt: optionalText(value.resolved_at),
+    technicalLocation: buildLocationLines(value, family),
     status: optionalText(value.incident_status),
     severity: optionalText(value.severity),
     causeConfidence: optionalText(value.cause_confidence),
@@ -207,8 +226,32 @@ function parseDiagnostic(value: unknown): Diagnostic | null {
         ? count
         : null,
     historical: value.last_failure_older_than_30_days,
-    v2Evidence: parseEvidenceV2(value),
+    v2Evidence: family === "ai_runs" ? parseEvidenceV2(value) : null,
   };
+}
+
+function buildLocationLines(value: Record<string, unknown>, family: string): string[] {
+  const path = (v: unknown, prefix: string, limit: number) => typeof v === "string" && v.startsWith(prefix) && v.length <= limit && /^[a-zA-Z0-9_./\[\]()-]+$/.test(v) && !v.includes("..") ? v : null;
+  const integer = (v: unknown, min: number, max: number) => typeof v === "number" && Number.isSafeInteger(v) && v >= min && v <= max ? v : null;
+  if (family === "operational") return ["Tentativas registradas: " + (integer(value.operational_attempt_count, 0, 2147483647) ?? "Indisponível")];
+  if (family !== "backend_api") return [];
+  const file = path(value.backend_source_file, "src/", 300);
+  return [
+    "Rota: " + (path(value.backend_route, "/api/", 200) ?? "Indisponível"),
+    "Método HTTP: " + (optionalText(value.backend_method) ?? "Indisponível"),
+    "Tipo de falha: " + (optionalText(value.backend_kind) ?? "Indisponível"),
+    "Status HTTP: " + (integer(value.backend_http_status, 500, 599) ?? "Indisponível"),
+    "Nome técnico: " + (optionalText(value.backend_error_name) ?? "Indisponível"),
+    "Código reportado: " + (optionalText(value.backend_reported_error_code) ?? "Indisponível"),
+    "Arquivo: " + (file ?? "Indisponível"),
+    "Linha: " + (file ? integer(value.backend_source_line, 1, 1000000) ?? "Indisponível" : "Indisponível"),
+    "Coluna: " + (file ? integer(value.backend_source_column, 1, 1000000) ?? "Indisponível" : "Indisponível"),
+  ];
+}
+function diagnosticLocation(item: Diagnostic, names: ReadonlyMap<string, string>): string {
+  if (item.scope === "system") return "Sistema ZION";
+  if (item.scope === "organization") return "Organização " + item.organizationId;
+  return names.get(item.storeId?.toLowerCase() ?? "") ?? "Loja não identificada";
 }
 
 function formatDiagnosticDate(value: string | null): string {
@@ -269,14 +312,18 @@ function buildTechnicalText(
   storeName: string,
 ): string {
   return [
-    "ZION Administrador - Diagnóstico de IA",
+    item.sourceFamily === "ai_runs" ? "ZION Administrador - Diagnóstico de IA" : "ZION Administrador - Diagnóstico de incidente",
+    `Escopo: ${item.scope}`,
     `Loja: ${storeName}`,
-    `Loja ID: ${item.storeId}`,
-    `Organização ID: ${item.organizationId}`,
+    `Loja ID: ${item.storeId ?? "Não se aplica"}`,
+    `Organização ID: ${item.organizationId ?? "Não se aplica"}`,
     `Incidente ID: ${item.incidentId}`,
     `Ocorrência ID: ${item.occurrenceId ?? "Indisponível"}`,
     `Execução de origem: ${item.sourceRecordId ?? "Indisponível"}`,
-    "Sistema de origem: ai_runs",
+    `Sistema de origem: ${item.sourceSystem}`,
+    `Componente: ${item.component ?? "Indisponível"}`,
+    `Categoria: ${item.category ?? "Indisponível"}`,
+    ...item.technicalLocation,
     `Código técnico: ${item.errorCode ?? "Indisponível"}`,
     `Situação administrativa: ${item.status ?? "Indisponível"}`,
     `Gravidade registrada: ${item.severity ?? "Indisponível"}`,
@@ -293,7 +340,9 @@ function buildTechnicalText(
     `Próxima verificação: ${item.nextAction ?? "Não informada"}`,
     "Mensagem original de erro: não armazenada nesta versão.",
     "Stack trace: não armazenado nesta versão.",
-    ...buildEvidenceV2Lines(item.v2Evidence),
+    ...(item.sourceFamily === "ai_runs" ? [...buildEvidenceV2Lines(item.v2Evidence)] : []),
+    `Resolução administrativa registrada: ${formatDiagnosticDate(item.resolvedAt)}`,
+    "Recuperação operacional: não comprovada por este registro.",
     "Situação operacional atual: não verificada por este diagnóstico.",
     "O estado aberto não comprova falha ativa.",
   ].join("\n");
@@ -305,6 +354,7 @@ export default function ZionAdminDiagnosticIncidents({
   stores: readonly StoreOption[];
 }) {
   const [storeFilter, setStoreFilter] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
   const [offset, setOffset] = useState(0);
   const [result, setResult] = useState<LoadResult | null>(null);
   const [copyStatus, setCopyStatus] = useState<{
@@ -312,7 +362,7 @@ export default function ZionAdminDiagnosticIncidents({
     success: boolean;
   } | null>(null);
 
-  const requestKey = `${storeFilter || "all"}:${offset}`;
+  const requestKey = `${storeFilter || "all"}:${sourceFilter || "all"}:${offset}`;
 
   const storeNames = useMemo(() => {
     return new Map(
@@ -333,6 +383,8 @@ export default function ZionAdminDiagnosticIncidents({
     if (storeFilter) {
       parameters.set("store_id", storeFilter);
     }
+
+    if (sourceFilter) parameters.set("source", sourceFilter);
 
     async function load() {
       try {
@@ -355,7 +407,7 @@ export default function ZionAdminDiagnosticIncidents({
         if (
           !isRecord(payload) ||
           payload.ok !== true ||
-          payload.source !== "ai_runs" ||
+          (payload.source !== "ai_runs" && payload.source !== "unified") ||
           !Array.isArray(payload.items) ||
           payload.items.length > PAGE_SIZE
         ) {
@@ -367,7 +419,7 @@ export default function ZionAdminDiagnosticIncidents({
         for (const row of payload.items) {
           const parsed = parseDiagnostic(row);
 
-          if (!parsed) {
+          if (!parsed || (payload.source === "unified" && (!isRecord(row) || row.source_family === undefined || row.scope === undefined || row.source_system === undefined)) || (payload.source === "ai_runs" && parsed.sourceFamily !== "ai_runs")) {
             throw new Error("DIAGNOSTICS_INVALID_ITEM");
           }
 
@@ -375,7 +427,7 @@ export default function ZionAdminDiagnosticIncidents({
         }
 
         if (!controller.signal.aborted) {
-          setResult({ key: requestKey, items, error: false });
+          setResult({ key: requestKey, source: payload.source, items, error: false });
         }
       } catch {
         if (!controller.signal.aborted) {
@@ -391,7 +443,7 @@ export default function ZionAdminDiagnosticIncidents({
     void load();
 
     return () => controller.abort();
-  }, [requestKey, offset, storeFilter]);
+  }, [requestKey, offset, storeFilter, sourceFilter]);
 
   const loading = result?.key !== requestKey;
   const items = loading ? [] : (result?.items ?? []);
@@ -406,8 +458,7 @@ export default function ZionAdminDiagnosticIncidents({
       await navigator.clipboard.writeText(
         buildTechnicalText(
           item,
-          storeNames.get(item.storeId.toLowerCase()) ??
-            "Loja não identificada",
+          diagnosticLocation(item, storeNames),
         ),
       );
 
@@ -425,7 +476,7 @@ export default function ZionAdminDiagnosticIncidents({
 
   return (
     <section
-      aria-label="Diagnósticos persistidos da IA"
+      aria-label="Diagnósticos persistidos"
       className="space-y-3 rounded-xl border border-[#305362] bg-[#101d27] p-3"
     >
       <div className="space-y-1">
@@ -459,6 +510,18 @@ export default function ZionAdminDiagnosticIncidents({
         </select>
       </label>
 
+      <label className="block space-y-1 text-xs text-[#bed4df]">
+        <span>Filtrar por origem</span>
+        <select value={sourceFilter} disabled={result?.source !== "unified" && !sourceFilter}
+          onChange={(event) => { setSourceFilter(event.target.value); setOffset(0); setCopyStatus(null); }}
+          className="w-full rounded-lg border border-[#385563] bg-[#0b1720] px-3 py-2 text-[#e7f2f5]">
+          <option value="">Todas as origens disponíveis</option>
+          <option value="ai_runs">Execuções de IA</option>
+          <option value="operational">Filas operacionais</option>
+          <option value="backend_api">Backend e APIs</option>
+        </select>
+      </label>
+      {result?.source === "ai_runs" && !loading ? <p className="text-xs text-[#9ab4c3]">Leitor anterior ativo: somente incidentes de IA.</p> : null}
       {loading ? (
         <p role="status" className="text-xs text-[#afc5d0]">
           Consultando diagnósticos...
@@ -481,8 +544,7 @@ export default function ZionAdminDiagnosticIncidents({
 
       {!loading && !error ? items.map((item) => {
         const storeName =
-          storeNames.get(item.storeId.toLowerCase()) ??
-          "Loja não identificada";
+          diagnosticLocation(item, storeNames);
 
         const technical = buildTechnicalText(item, storeName);
 
@@ -493,7 +555,7 @@ export default function ZionAdminDiagnosticIncidents({
           >
             <summary className="cursor-pointer text-xs text-[#e4f1f5]">
               <span className="font-semibold">
-                {item.title ?? "Erro registrado na IA"}
+                {item.title ?? "Erro registrado"}
               </span>
               <span className="block mt-1 text-[#9fb8c6]">
                 {storeName} ·{" "}
@@ -515,7 +577,7 @@ export default function ZionAdminDiagnosticIncidents({
                 </p>
                 <p>
                   {item.explanation ??
-                    "Uma execução da IA apresentou um erro. A causa ainda é desconhecida."}
+                    "Uma falha foi registrada. A causa ainda é desconhecida."}
                 </p>
               </div>
 
@@ -591,7 +653,7 @@ export default function ZionAdminDiagnosticIncidents({
             </button>
             <button
               type="button"
-              disabled={items.length < PAGE_SIZE}
+              disabled={items.length < PAGE_SIZE || offset >= 5000}
               onClick={() => {
                 setOffset(offset + PAGE_SIZE);
                 setCopyStatus(null);

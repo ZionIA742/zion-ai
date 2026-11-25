@@ -156,6 +156,7 @@ const validV2 = {
 
 async function request({
   flag,
+  unified,
   data = [base],
   error = null,
   query = "",
@@ -169,6 +170,9 @@ async function request({
   } else {
     env.ZION_ADMIN_DIAGNOSTIC_READER_V2_ENABLED = flag;
   }
+
+  if (unified === undefined) delete env.ZION_ADMIN_DIAGNOSTIC_UNIFIED_READER_ENABLED;
+  else env.ZION_ADMIN_DIAGNOSTIC_UNIFIED_READER_ENABLED = unified;
 
   accessState = allowed ? authorized : {
     ...authorized,
@@ -342,4 +346,39 @@ test("acesso negado nao chama RPC", async () => {
 
   assert.equal(result.status, 403);
   assert.equal(result.calls.length, 0);
+});
+
+const unifiedAI = { ...validV2, scope: "store", source_family: "ai_runs", source_system: "ai_runs", component: "assistant_ai", category: "ai_run_error" };
+const unifiedBackend = { ...base, scope: "system", organization_id: null, store_id: null, source_family: "backend_api", source_system: "backend_api", component: "backend", category: "backend_api_failure", technical_error_code: "BACKEND_HTTP_5XX", backend_route: "/api/crm/leads/manual", backend_method: "POST", backend_kind: "http_response", backend_http_status: 503, backend_error_name: "TypeError", backend_reported_error_code: "ETIMEDOUT", backend_source_file: "src/app/api/crm/leads/manual/route-handler.ts", backend_source_line: 12, backend_source_column: 3, raw_error: "PRIVATE_RAW", sanitized_evidence: { private: "PRIVATE_JSON" } };
+const unifiedOperational = { ...base, scope: "store", source_family: "operational", source_system: "channel_whatsapp_inbox", component: "whatsapp_inbox", category: "operational_queue_failure", technical_error_code: "WHATSAPP_STATUS_FAILED_FINAL", operational_attempt_count: 3 };
+test("unified flag strict and legacy filter denied", async () => {
+  const legacy = await request({ unified: "TRUE" }); assert.equal(legacy.calls[0].name, v1Name);
+  const denied = await request({ query: "?source=backend_api" }); assert.equal(denied.status, 400); assert.equal(denied.calls.length, 0);
+});
+test("unified AI preserves provenance and sends exact filters", async () => {
+  const r = await request({ unified: "true", data: [unifiedAI], query: "?source=ai_runs&limit=5&offset=0&store_id=" + base.store_id });
+  assert.equal(r.status, 200); assert.equal(r.body.source, "unified"); assert.equal(r.calls[0].name, "list_zion_admin_diagnostics_unified_by_system"); assert.equal(r.calls[0].args.p_source, "ai_runs"); assert.equal(r.calls[0].args.p_store_id, base.store_id); assert.equal(r.body.items[0].evidence_origin, "assistant_ai");
+});
+test("unified system and organization accept nullable scopes", async () => {
+  const r = await request({ unified: "true", data: [unifiedBackend, { ...unifiedBackend, incident_id: base.source_record_id, scope: "organization", organization_id: base.organization_id }] });
+  assert.equal(r.status, 200); assert.equal(r.body.items[0].store_id, null); assert.equal(r.body.items[0].backend_source_line, 12); assert.equal(r.body.items[0].backend_http_status, 503); assert.equal(r.body.items[1].organization_id, base.organization_id); assert.equal(JSON.stringify(r.body).includes("PRIVATE_"), false);
+});
+test("unified operational codes and attempts", async () => {
+  for (const [origin, component, code] of [["channel_whatsapp_inbox", "whatsapp_inbox", "WHATSAPP_STATUS_FAILED_FINAL"], ["ai_run_queue", "sales_ai_queue", "AI_RUN_QUEUE_FAILED_FINAL"], ["ai_sales_action_queue", "sales_action_queue", "SALES_ACTION_PROCESSING_FAILED"]]) {
+    const r = await request({ unified: "true", data: [{ ...unifiedOperational, source_system: origin, component, technical_error_code: code, backend_route: "/api/private" }] }); assert.equal(r.status, 200); assert.equal(r.body.items[0].operational_attempt_count, 3); assert.equal(r.body.items[0].backend_route, null); assert.equal("evidence_model" in r.body.items[0], false);
+  }
+});
+test("unified rejects invalid scope, duplicate incident, source and store mismatch", async () => {
+  for (const [data, query] of [[[ { ...unifiedBackend, store_id: base.store_id }], ""], [[unifiedBackend, unifiedBackend], ""], [[unifiedAI], "?source=operational"], [[unifiedBackend], "?store_id=" + base.store_id], [[{ ...unifiedOperational, technical_error_code: "FAKE" }], ""]]) {
+    const r = await request({ unified: "true", data, query }); assert.equal(r.status, 503);
+  }
+});
+test("unified sanitizes malformed backend fields and denies invalid filters", async () => {
+  const r = await request({ unified: "true", data: [{ ...unifiedBackend, backend_route: "/api/x?token=PRIVATE", backend_source_file: "../PRIVATE", backend_error_name: "PRIVATE", backend_reported_error_code: "PRIVATE", backend_http_status: 200 }] });
+  assert.equal(r.status, 200); assert.equal(r.body.items[0].backend_route, null); assert.equal(r.body.items[0].backend_source_line, null); assert.equal(JSON.stringify(r.body).includes("PRIVATE"), false);
+  for (const query of ["?source=bad", "?source=ai_runs&source=backend_api"]) { const x = await request({ unified: "true", query }); assert.equal(x.status, 400); assert.equal(x.calls.length, 0); }
+});
+test("unified failure and denial do not fall back or leak", async () => {
+  const r = await request({ unified: "true", error: { message: "PRIVATE_DB" } }); assert.equal(r.status, 503); assert.equal(r.calls.length, 1); assert.equal(JSON.stringify(r.body).includes("PRIVATE_DB"), false);
+  const denied = await request({ unified: "true", allowed: false }); assert.equal(denied.status, 403); assert.equal(denied.calls.length, 0);
 });

@@ -1172,6 +1172,7 @@ function GlobalAlertsSection({
         </nav>
       </header>
       <div className="rounded-xl border border-[#2d4654] bg-[#101923] p-3">
+        <ZionAdminDiagnosticIncidents stores={stores} />
         {category === "critical" ? <div className="space-y-2">
           <h3 className="text-sm font-semibold text-white">Lojas que exigem verificação</h3>
           <p className="text-[11px] text-[#90a7b5]">Uma pendência não significa necessariamente interrupção. Consulte os registros antes de agir.</p>
@@ -1189,7 +1190,6 @@ function GlobalAlertsSection({
         </div> : null}
         {category === "ai" ? <div className="space-y-2">
           <h3 className="text-sm font-semibold text-white">Erros registrados nas execuções de IA</h3>
-          <ZionAdminDiagnosticIncidents stores={stores} />
           {normalizeOverviewDataAvailability(availability) !== "available" ? <p className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-2 text-xs text-amber-200">A consulta pode estar parcial ou indisponível; não é possível concluir que os registros estejam completos.</p> : null}
           {aiErrors.length === 0 ? <p className="text-xs text-[#96adbb]">Nenhuma ocorrência retornada nas fontes consultadas.</p> : aiErrors.slice(0,limit).map((event)=>{
             const classification=classifyAiRunEvent(event);

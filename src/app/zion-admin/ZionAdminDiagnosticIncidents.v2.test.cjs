@@ -271,3 +271,17 @@ test("Botao continua ligado ao montador tecnico", () => {
   assert(source.includes("buildTechnicalText(item,"));
   assert(source.includes("...buildEvidenceV2Lines(item.v2Evidence)"));
 });
+
+const backend = { ...base, scope: "system", organization_id: null, store_id: null, source_family: "backend_api", source_system: "backend_api", component: "backend", backend_route: "/api/crm/leads/manual", backend_method: "POST", backend_http_status: 503, backend_source_file: "src/app/api/crm/leads/manual/route-handler.ts", backend_source_line: 12 };
+test("unified system incident shows technical location without fabricated recovery", () => {
+  const item = parse(backend); assert.equal(item.storeId, null); assert.equal(item.scope, "system"); const text = report(backend); assert.match(text, /Sistema de origem: backend_api/); assert.match(text, /Rota: \/api\/crm\/leads\/manual/); assert.match(text, /Linha: 12/); assert.match(text, /Status HTTP: 503/); assert.doesNotMatch(text, /Origem comprovada: IA/); assert.match(text, /Recupera.*o operacional: n.*o comprovada/);
+});
+test("unified organization scope and malformed scopes", () => {
+  assert.equal(parse({ ...backend, scope: "organization", organization_id: base.organization_id }).scope, "organization"); assert.equal(parseDiagnostic({ ...backend, store_id: base.store_id }), null); assert.equal(parseDiagnostic({ ...backend, source_family: "operational" }), null);
+});
+test("operational report uses real origin and attempt count", () => {
+  const r = report({ ...base, scope: "store", source_family: "operational", source_system: "ai_run_queue", operational_attempt_count: 4 }); assert.match(r, /Sistema de origem: ai_run_queue/); assert.match(r, /Tentativas registradas: 4/); assert.doesNotMatch(r, /Modelo registrado:/);
+});
+test("invalid path not copied", () => {
+  const text = report({ ...backend, backend_route: "/api/x?token=PRIVATE", backend_source_file: "../PRIVATE" }); assert.doesNotMatch(text, /PRIVATE/); assert.match(text, /Linha: Indispon/);
+});
