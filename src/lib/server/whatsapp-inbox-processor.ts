@@ -202,7 +202,6 @@ type MessageRow = {
   metadata?: Record<string, unknown> | null;
   conversation_session_id?: string | null;
   commercial_session_context_link_id?: string | null;
-  commercial_opportunity_id?: string | null;
 };
 
 type StatusMessageRow = {
@@ -312,7 +311,6 @@ type InsertMessageResult = {
   store_id?: string | null;
   conversation_session_id?: string | null;
   commercial_session_context_link_id?: string | null;
-  commercial_opportunity_id?: string | null;
   content?: string | null;
   metadata?: Record<string, unknown> | null;
 };
@@ -1446,7 +1444,7 @@ async function findExistingMessageByExternalId(
 ) {
   const { data, error } = await supabase
     .from("messages")
-    .select("id, conversation_id, lead_id, store_id, external_message_id, message_type, content, metadata, conversation_session_id, commercial_session_context_link_id, commercial_opportunity_id")
+    .select("id, conversation_id, lead_id, store_id, external_message_id, message_type, content, metadata, conversation_session_id, commercial_session_context_link_id")
     .eq("organization_id", organizationId)
     .eq("store_id", storeId)
     .eq("external_message_id", externalMessageId)

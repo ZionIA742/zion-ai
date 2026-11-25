@@ -1667,6 +1667,16 @@ test("text inbound persists context metadata and dispatches Sales AI after inser
   assert.equal(result.succeeded, 1);
   assert.equal(aiCalls.length, 1);
   assert.equal(aiMessages[0], "Ola");
+  const existingMessageLookup = calls.find(
+    (call) => call.method === "GET" && call.url.includes("/rest/v1/messages"),
+  );
+  assert.ok(existingMessageLookup);
+  const selectedColumns = new URL(existingMessageLookup.url).searchParams.get("select");
+  assert.equal(
+    selectedColumns,
+    "id,conversation_id,lead_id,store_id,external_message_id,message_type,content,metadata,conversation_session_id,commercial_session_context_link_id",
+  );
+  assert.doesNotMatch(selectedColumns || "", /commercial_opportunity_id/);
   assert.ok(insertedPayload);
   const textPayload = insertedPayload as Record<string, unknown>;
   assert.equal((textPayload.p_metadata as Record<string, unknown>).context_message_id, "quoted-text-1");
