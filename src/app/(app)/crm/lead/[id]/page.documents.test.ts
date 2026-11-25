@@ -206,6 +206,47 @@ class DocumentsHarness {
 const pagePath = join(process.cwd(), "src/app/(app)/crm/lead/[id]/page.tsx");
 const source = readFileSync(pagePath, "utf8");
 const ast = ts.createSourceFile(pagePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const financialTextOffset = source.indexOf("Financeiro da oportunidade");
+assert.ok(financialTextOffset >= 0, "production financial panel must exist");
+const financialGuardExpressions: string[] = [];
+function collectFinancialGuards(node: ts.Node) {
+  if (
+    ts.isConditionalExpression(node) &&
+    node.getStart(ast) <= financialTextOffset &&
+    node.getEnd() > financialTextOffset
+  ) {
+    financialGuardExpressions.push(node.condition.getText(ast));
+  }
+  ts.forEachChild(node, collectFinancialGuards);
+}
+collectFinancialGuards(ast);
+assert.ok(
+  financialGuardExpressions.some(
+    (expression) => expression === 'activeDetailsTab === "summary" && activeInformationSection === "financial"',
+  ),
+  "financial panel must have an exclusive Information > Financeiro render guard",
+);
+
+function financialPanelIsRendered(
+  activeDetailsTab: "summary" | "appointments" | "pdfs",
+  activeInformationSection: "summary" | "opportunity" | "context" | "tasks" | "financial",
+) {
+  return financialGuardExpressions.every((expression) =>
+    Function("activeDetailsTab", "activeInformationSection", `return Boolean(${expression});`)(
+      activeDetailsTab,
+      activeInformationSection,
+    ),
+  );
+}
+
+assert.equal(financialPanelIsRendered("summary", "financial"), true);
+assert.equal(financialPanelIsRendered("summary", "summary"), false);
+assert.equal(financialPanelIsRendered("summary", "opportunity"), false);
+assert.equal(financialPanelIsRendered("summary", "context"), false);
+assert.equal(financialPanelIsRendered("summary", "tasks"), false);
+assert.equal(financialPanelIsRendered("pdfs", "financial"), false);
+assert.equal(financialPanelIsRendered("pdfs", "summary"), false);
+assert.equal(financialPanelIsRendered("appointments", "summary"), false);
 const declarations = new Map<string, ts.FunctionDeclaration>();
 let quoteList: ts.FunctionDeclaration | undefined;
 function visit(node: ts.Node) {
