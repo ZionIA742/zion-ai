@@ -810,7 +810,7 @@ type DetailTab =
   | "summary"
   | "appointments"
   | "pdfs";
-type InformationSection = "summary" | "opportunity" | "context" | "tasks";
+type InformationSection = "summary" | "opportunity" | "context" | "tasks" | "financial";
 type GeneratedPdfTab = "quotes" | "contracts";
 const VALID_DETAIL_TABS: DetailTab[] = ["summary", "appointments", "pdfs"];
 
@@ -6192,6 +6192,11 @@ export default function LeadPage() {
   }, [documentScopeKey]);
 
   useEffect(() => {
+    if (activeDetailsTab === "summary" && activeInformationSection === "financial") {
+      void loadSelectedOpportunityPayment();
+      return;
+    }
+
     if (activeDetailsTab !== "pdfs") {
       return;
     }
@@ -6202,10 +6207,9 @@ export default function LeadPage() {
       return;
     }
     void fetchGeneratedContracts();
-    void loadSelectedOpportunityPayment();
     void fetchContractTemplateSource();
     void fetchContractDraftState({ silent: true });
-  }, [activeDetailsTab, documentScopeKey, quoteDocumentScopeKey]);
+  }, [activeDetailsTab, activeInformationSection, documentScopeKey, quoteDocumentScopeKey]);
 
   useEffect(() => {
     if (
@@ -6924,6 +6928,15 @@ export default function LeadPage() {
                         >
                           Pendências comerciais
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => setActiveInformationSection("financial")}
+                          className={`rounded-xl px-3.5 py-2 text-xs font-semibold shadow-sm transition ${activeInformationSection === "financial"
+                            ? "bg-black text-white"
+                            : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"}`}
+                        >
+                          Financeiro
+                        </button>
                       </div>
 
                       {activeInformationSection === "summary" ? (
@@ -7359,7 +7372,7 @@ export default function LeadPage() {
                     </div>
                   ) : null}
 
-                  {activeDetailsTab === "pdfs" ? (
+                  {activeDetailsTab === "pdfs" || (activeDetailsTab === "summary" && activeInformationSection === "financial") ? (
                     <div className="space-y-5">
                       <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
                         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -7535,6 +7548,9 @@ export default function LeadPage() {
                           </div>
                         )}
                       </section>
+
+                      {activeDetailsTab === "pdfs" ? (
+                        <>
 
                       <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-gray-50 p-2 ring-1 ring-black/5">
                         <button
@@ -8243,6 +8259,8 @@ export default function LeadPage() {
                           ) : null}
                         </div>
                         </div>
+                      ) : null}
+                        </>
                       ) : null}
                     </div>
                   ) : null}

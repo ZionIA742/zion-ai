@@ -252,6 +252,31 @@ assert.equal(
   false,
   "contract documents must not be listed by leadId alone",
 );
+assert.equal(
+  source.includes('type InformationSection = "summary" | "opportunity" | "context" | "tasks" | "financial";'),
+  true,
+  "financial must be an information section",
+);
+assert.equal(
+  source.includes('onClick={() => setActiveInformationSection("financial")}'),
+  true,
+  "information modal must expose the financial tab",
+);
+assert.equal(
+  source.includes('activeDetailsTab === "summary" && activeInformationSection === "financial"'),
+  true,
+  "financial panel must render from Information > Financeiro",
+);
+assert.equal(
+  /\{activeDetailsTab === "pdfs" \? \(\s*<>/.test(source),
+  true,
+  "documents-only content must remain separately gated",
+);
+assert.equal(
+  source.includes('if (activeDetailsTab === "summary" && activeInformationSection === "financial")'),
+  true,
+  "financial loading must not depend on opening Documents",
+);
 
 const harness = new DocumentsHarness();
 const pendingA = harness.openDocumentsTab();

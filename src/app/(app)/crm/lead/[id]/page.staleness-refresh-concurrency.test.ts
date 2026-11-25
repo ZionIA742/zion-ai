@@ -349,6 +349,16 @@ const source = readFileSync(pagePath, "utf8");
 assert.equal(source.includes("const paymentScopeRef = useRef<string | null>(null);"), true);
 assert.equal(source.includes("const [paymentHistory, setPaymentHistory]"), true);
 assert.equal(source.includes("setPaymentHistory([]);"), true);
+assert.equal(
+  source.includes('if (activeDetailsTab === "summary" && activeInformationSection === "financial")'),
+  true,
+  "payment loading must be triggered by the financial information section",
+);
+assert.equal(
+  source.includes('activeDetailsTab, activeInformationSection, documentScopeKey, quoteDocumentScopeKey'),
+  true,
+  "financial section changes must participate in the loading effect scope",
+);
 assert.equal(source.includes("const quoteEditScopeRef = useRef<string | null>(null);"), true);
 assert.equal(source.includes("async function refreshCurrentScreenSnapshot()"), true);
 assert.equal(source.includes("void refreshCurrentScreenSnapshot();"), true);
