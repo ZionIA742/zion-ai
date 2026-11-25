@@ -40,7 +40,7 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
   return originalResolveFilename.call(this, request, parent, isMain, options);
 };
 
-const routeModulePromise = import("./route");
+const routeModulePromise = import("./route-handler");
 
 async function loadRouteModule() {
   return routeModulePromise;
@@ -129,7 +129,7 @@ async function parseBody(response: Response) {
 }
 
 function readRouteSource() {
-  return readFileSync("src/app/api/assistant/reply/route.ts", "utf8");
+  return readFileSync("src/app/api/assistant/reply/route-handler.ts", "utf8");
 }
 
 function createOpportunityLookupSupabase(rows: Array<Record<string, unknown>>) {
@@ -2825,7 +2825,7 @@ const tests: TestCase[] = [
     name: "customer availability tratativa requires assistant thread before outbound",
     run: () => {
       const source = readFileSync(
-        join(process.cwd(), "src/app/api/assistant/reply/route.ts"),
+        join(process.cwd(), "src/app/api/assistant/reply/route-handler.ts"),
         "utf8",
       );
       const functionIndex = source.indexOf("async function resolveCustomerAvailabilityRequestFromContext");
@@ -2841,7 +2841,7 @@ const tests: TestCase[] = [
     name: "reschedule tratativa does not persist waiting context when operational task insert fails",
     run: () => {
       const source = readFileSync(
-        join(process.cwd(), "src/app/api/assistant/reply/route.ts"),
+        join(process.cwd(), "src/app/api/assistant/reply/route-handler.ts"),
         "utf8",
       );
       const taskIndex = source.indexOf('taskType: "appointment_reschedule_with_customer"');
@@ -2857,7 +2857,7 @@ const tests: TestCase[] = [
     name: "operational treatment abandonment cancels only the task and stale queue work",
     run: () => {
       const source = readFileSync(
-        join(process.cwd(), "src/app/api/assistant/reply/route.ts"),
+        join(process.cwd(), "src/app/api/assistant/reply/route-handler.ts"),
         "utf8",
       );
       const start = source.indexOf("async function resolveOperationalTreatmentAbandonmentReply(");
@@ -2878,7 +2878,7 @@ const tests: TestCase[] = [
     name: "active assistant context loader fails closed on multiple rows without latest authority",
     run: () => {
       const source = readFileSync(
-        join(process.cwd(), "src/app/api/assistant/reply/route.ts"),
+        join(process.cwd(), "src/app/api/assistant/reply/route-handler.ts"),
         "utf8",
       );
       const start = source.indexOf("async function loadAssistantContextState(");
@@ -2915,7 +2915,7 @@ const tests: TestCase[] = [
     name: "imperative create phrases route to CREATE without letting reschedule fragments win",
     run: () => {
       const source = readFileSync(
-        join(process.cwd(), "src/app/api/assistant/reply/route.ts"),
+        join(process.cwd(), "src/app/api/assistant/reply/route-handler.ts"),
         "utf8",
       );
       const start = source.indexOf("function resolveScheduleAction(text: string)");

@@ -410,7 +410,7 @@ test("temporary transcription failures remain retryable and do not produce a tra
 });
 
 test("the effective Assistant context uses transcript instead of the audio placeholder", () => {
-  const route = readFileSync("src/app/api/assistant/reply/route.ts", "utf8");
+  const route = readFileSync("src/app/api/assistant/reply/route-handler.ts", "utf8");
   const bridge = readFileSync("src/lib/server/assistant/responsible-whatsapp-conversation.ts", "utf8");
 
   assert.match(route, /message\.message_type\) === "audio"/);
@@ -507,7 +507,7 @@ test("responsible WhatsApp media accepts image, audio and document without fabri
 test("assistant panel exposes all responsible attachment kinds through scoped signed URLs", () => {
   const panel = readFileSync("src/app/(app)/assistant/page.tsx", "utf8");
   const route = readFileSync(
-    "src/app/api/assistant/messages/[messageId]/signed-media-url/route.ts",
+    "src/app/api/assistant/messages/[messageId]/signed-media-url/route-handler.ts",
     "utf8",
   );
 

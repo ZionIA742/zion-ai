@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { createRequire } from "node:module";
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
@@ -382,7 +383,7 @@ async function analyzeEvidencePage(params: {
   });
 }
 
-export async function POST(request: Request) {
+async function zionBackendOriginalPOST(request: Request) {
   const access = await resolveStoreApiAccess({
     requirement: "active_or_onboarding",
   });
@@ -512,7 +513,7 @@ export async function POST(request: Request) {
   }
 }
 
-export async function GET() {
+async function zionBackendOriginalGET() {
   const access = await resolveStoreApiAccess({
     requirement: "active_or_onboarding",
   });
@@ -526,4 +527,26 @@ export async function GET() {
     method: "POST",
     message: "Rota base para evidencias visuais de catalogo publicada.",
   });
+}
+
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/onboarding/visual-catalog-document-scan",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export async function POST(request: Request) {
+  return zionBackendObservedPOST(request);
+}
+
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/onboarding/visual-catalog-document-scan",
+  "GET",
+  (_zionRequest?: Request) => zionBackendOriginalGET(),
+);
+
+export async function GET() {
+  return zionBackendObservedGET(arguments[0] as Request | undefined);
 }

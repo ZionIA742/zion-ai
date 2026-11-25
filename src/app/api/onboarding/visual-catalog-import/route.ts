@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { createRequire } from "node:module";
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
@@ -392,7 +393,7 @@ async function analyzeVisualCatalogPage(params: {
     .filter((draft: VisualCatalogDraft | null): draft is VisualCatalogDraft => Boolean(draft));
 }
 
-export async function POST(request: Request) {
+async function zionBackendOriginalPOST(request: Request) {
   const access = await resolveStoreApiAccess({
     requirement: "active_or_onboarding",
   });
@@ -513,7 +514,7 @@ export async function POST(request: Request) {
   }
 }
 
-export async function GET() {
+async function zionBackendOriginalGET() {
   const access = await resolveStoreApiAccess({
     requirement: "active_or_onboarding",
   });
@@ -527,4 +528,26 @@ export async function GET() {
     method: "POST",
     message: "Rota base para importacao visual de catalogo publicada.",
   });
+}
+
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/onboarding/visual-catalog-import",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export async function POST(request: Request) {
+  return zionBackendObservedPOST(request);
+}
+
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/onboarding/visual-catalog-import",
+  "GET",
+  (_zionRequest?: Request) => zionBackendOriginalGET(),
+);
+
+export async function GET() {
+  return zionBackendObservedGET(arguments[0] as Request | undefined);
 }

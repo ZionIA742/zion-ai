@@ -91,8 +91,12 @@ const scenarios: Array<[string, () => void]> = [
   ["T17 panel uses canonical writer", () => assert.match(migration, /automatic_panel_human_message/)],
   ["T18 WhatsApp uses the same writer", () => assert.match(processor, /whatsapp_business_app_intervention/)],
   ["T19 duplicate echo does not call takeover again", () => {
-    const existingBranch = processor.slice(processor.indexOf("if (existing?.id)"), processor.indexOf("const inserted = await insertHumanAppEchoMessage"));
+    const normalizedProcessor = processor.replace(/\r\n/g, "\n");
+    const existingStart = normalizedProcessor.indexOf("if (existing?.id)");
+    const existingEnd = normalizedProcessor.indexOf("return {\n      messageId: existing.id", existingStart);
+    const existingBranch = normalizedProcessor.slice(existingStart, existingEnd);
     assert.equal(existingBranch.includes('"human_takeover_conversation"'), false);
+    assert.match(existingBranch, /ingestCommercialConversationFactsOrThrow/);
   }],
   ["T20 timeout uses the target state resolver", () => assert.match(migration, /resolve_human_release_target_state\(v_row\.conversation_id\)/)],
   ["T21 hard hold is durable", () => assert.match(migration, /hard_hold boolean not null default false/)],

@@ -96,6 +96,18 @@ type MessageRow = {
   media_url: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string | null;
+  conversation_session_id?: string | null;
+};
+
+type HumanResponseCommitment = {
+  id: string;
+  conversation_id: string;
+  conversation_session_id: string | null;
+  source_message_id: string;
+  responsible_user_id: string;
+  due_at: string;
+  status: "active" | "fulfilled" | "cancelled" | "expired";
+  revision: number;
 };
 
 type SelectedCatalogProduct = CatalogComposerProduct & {
@@ -1625,6 +1637,13 @@ export default function LeadPage() {
   const [priorityPopoverOpen, setPriorityPopoverOpen] = useState(false);
   const [requiresOpportunitySelection, setRequiresOpportunitySelection] = useState(false);
   const [newMessage, setNewMessage] = useState("");
+  const [humanResponseCommitments, setHumanResponseCommitments] = useState<HumanResponseCommitment[]>([]);
+  const [commitmentModalOpen, setCommitmentModalOpen] = useState(false);
+  const [commitmentDueAt, setCommitmentDueAt] = useState("");
+  const [commitmentSourceMessageId, setCommitmentSourceMessageId] = useState("");
+  const [commitmentEditingId, setCommitmentEditingId] = useState<string | null>(null);
+  const [commitmentConfirmation, setCommitmentConfirmation] = useState(false);
+  const [commitmentWorking, setCommitmentWorking] = useState(false);
   const [simulatedCustomerMessage, setSimulatedCustomerMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -3203,6 +3222,11 @@ export default function LeadPage() {
       setLead((result.lead ?? null) as Lead | null);
       setConversation((result.conversation ?? null) as Conversation | null);
       setMessages(Array.isArray(result.messages) ? result.messages : []);
+      if (result.conversation?.id) {
+        void fetchHumanResponseCommitments(result.conversation.id);
+      } else {
+        setHumanResponseCommitments([]);
+      }
       setCommercialTasks(
         Array.isArray(result.commercialTasks) ? result.commercialTasks : []
       );
@@ -3232,6 +3256,16 @@ export default function LeadPage() {
       } else {
         setLoading(false);
       }
+    }
+  }
+
+  async function fetchHumanResponseCommitments(conversationId: string) {
+    try {
+      const response = await fetch(`/api/crm/human-response-commitments?conversationId=${encodeURIComponent(conversationId)}`, { cache: "no-store" });
+      const result = (await response.json().catch(() => null)) as { ok?: boolean; commitments?: HumanResponseCommitment[] } | null;
+      if (response.ok && result?.ok) setHumanResponseCommitments(Array.isArray(result.commitments) ? result.commitments : []);
+    } catch {
+      setHumanResponseCommitments([]);
     }
   }
 
@@ -5208,6 +5242,83 @@ export default function LeadPage() {
     }
 
     return true;
+  }
+
+  function openHumanResponseCommitmentModal(commitment?: HumanResponseCommitment) {
+    setCommitmentEditingId(commitment?.id || null);
+    setCommitmentDueAt(commitment ? new Date(commitment.due_at).toISOString().slice(0, 16) : "");
+    setCommitmentSourceMessageId(commitment?.source_message_id || "");
+    setCommitmentConfirmation(false);
+    setCommitmentModalOpen(true);
+  }
+
+  function closeHumanResponseCommitmentModal() {
+    if (commitmentWorking) return;
+    setCommitmentModalOpen(false);
+    setCommitmentEditingId(null);
+    setCommitmentDueAt("");
+    setCommitmentSourceMessageId("");
+    setCommitmentConfirmation(false);
+  }
+
+  async function saveHumanResponseCommitment() {
+    if (!conversation || !commitmentDueAt || !commitmentConfirmation) return;
+    if (!commitmentEditingId && !commitmentSourceMessageId) {
+      setErrorText("Selecione a mensagem humana que comprova o compromisso.");
+      return;
+    }
+    setCommitmentWorking(true);
+    setErrorText(null);
+    try {
+      const response = await fetch("/api/crm/human-response-commitments", {
+        method: commitmentEditingId ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: conversation.id,
+          conversationSessionId: commitmentEditingId ? undefined : (messages.find((message) => message.id === commitmentSourceMessageId)?.conversation_session_id || null),
+          sourceMessageId: commitmentSourceMessageId || undefined,
+          dueAt: new Date(commitmentDueAt).toISOString(),
+          operationKey: `crm:human-response:${window.crypto.randomUUID()}`,
+          commitmentId: commitmentEditingId || undefined,
+          status: "active",
+          explicitConfirmation: true,
+        }),
+      });
+      const result = (await response.json().catch(() => null)) as { ok?: boolean; message?: string; error?: string } | null;
+      if (!response.ok || !result?.ok) throw new Error(result?.message || result?.error || "Não foi possível salvar o compromisso.");
+      closeHumanResponseCommitmentModal();
+      setStatusText(commitmentEditingId ? "Compromisso alterado." : "Compromisso registrado.");
+      await fetchHumanResponseCommitments(conversation.id);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "Não foi possível salvar o compromisso.");
+    } finally {
+      setCommitmentWorking(false);
+    }
+  }
+
+  async function cancelHumanResponseCommitment(commitment: HumanResponseCommitment) {
+    if (!conversation || !window.confirm("Cancelar este compromisso de resposta humana?")) return;
+    setCommitmentWorking(true);
+    try {
+      const response = await fetch("/api/crm/human-response-commitments", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: conversation.id,
+          commitmentId: commitment.id,
+          status: "cancelled",
+          operationKey: `crm:human-response-cancel:${window.crypto.randomUUID()}`,
+        }),
+      });
+      const result = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!response.ok || !result?.ok) throw new Error(result?.error || "Não foi possível cancelar o compromisso.");
+      setStatusText("Compromisso cancelado.");
+      await fetchHumanResponseCommitments(conversation.id);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "Não foi possível cancelar o compromisso.");
+    } finally {
+      setCommitmentWorking(false);
+    }
   }
 
   async function sendMessage() {
@@ -9032,6 +9143,72 @@ export default function LeadPage() {
                 </div>
               )}
               <div ref={messagesEndRef} aria-hidden="true" />
+            </div>
+
+            {commitmentModalOpen ? (
+              <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 p-3 sm:items-center">
+                <div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-xl ring-1 ring-black/10">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-base font-bold text-gray-900">
+                        {commitmentEditingId ? "Alterar compromisso de resposta" : "Registrar compromisso de resposta"}
+                      </h3>
+                      <p className="mt-1 text-xs leading-5 text-gray-500">
+                        Registro manual. O sistema não interpreta mensagens nem libera a IA.
+                      </p>
+                    </div>
+                    <button type="button" onClick={closeHumanResponseCommitmentModal} className="rounded-lg px-2 py-1 text-sm text-gray-500 hover:bg-gray-100">Fechar</button>
+                  </div>
+
+                  {!commitmentEditingId ? (
+                    <label className="mt-4 block text-xs font-semibold text-gray-700">
+                      Mensagem humana de origem
+                      <select
+                        value={commitmentSourceMessageId}
+                        onChange={(event) => setCommitmentSourceMessageId(event.target.value)}
+                        className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-normal text-gray-900"
+                      >
+                        <option value="">Selecione uma mensagem enviada pelo painel</option>
+                        {messages
+                          .filter((message) => message.sender === "human" && message.direction === "outgoing" && message.metadata?.source === "panel")
+                          .map((message) => (
+                            <option key={message.id} value={message.id}>
+                              {message.content?.slice(0, 80) || "Mensagem sem texto"} — {formatMessageTime(message.created_at)}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                  ) : null}
+
+                  <label className="mt-3 block text-xs font-semibold text-gray-700">
+                    Responder até
+                    <input type="datetime-local" value={commitmentDueAt} onChange={(event) => setCommitmentDueAt(event.target.value)} className="mt-1 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm font-normal text-gray-900" />
+                  </label>
+                  <label className="mt-3 flex items-start gap-2 text-xs leading-5 text-gray-600">
+                    <input type="checkbox" checked={commitmentConfirmation} onChange={(event) => setCommitmentConfirmation(event.target.checked)} className="mt-1" />
+                    Confirmo que este é um compromisso humano explícito de responder ao cliente neste prazo.
+                  </label>
+                  <div className="mt-4 flex justify-end gap-2">
+                    <button type="button" onClick={closeHumanResponseCommitmentModal} className="rounded-xl px-3 py-2 text-sm font-semibold text-gray-700 ring-1 ring-gray-200">Cancelar</button>
+                    <button type="button" onClick={() => void saveHumanResponseCommitment()} disabled={commitmentWorking || !commitmentDueAt || !commitmentConfirmation || (!commitmentEditingId && !commitmentSourceMessageId)} className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">
+                      {commitmentWorking ? "Salvando..." : commitmentEditingId ? "Salvar alteração" : "Registrar compromisso"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => openHumanResponseCommitmentModal()} disabled={!conversation || working || commitmentWorking} className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 ring-1 ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50">
+                Registrar compromisso de resposta
+              </button>
+              {humanResponseCommitments.filter((commitment) => commitment.status === "active").map((commitment) => (
+                <span key={commitment.id} className="inline-flex items-center gap-1 rounded-xl bg-gray-50 px-2 py-1 text-xs text-gray-700 ring-1 ring-gray-200">
+                  Até {new Date(commitment.due_at).toLocaleString("pt-BR")}
+                  <button type="button" onClick={() => openHumanResponseCommitmentModal(commitment)} className="font-semibold underline">Alterar</button>
+                  <button type="button" onClick={() => void cancelHumanResponseCommitment(commitment)} className="font-semibold underline">Cancelar</button>
+                </span>
+              ))}
             </div>
 
             <div className="sticky bottom-0 z-20 min-w-0 shrink-0 border-t border-gray-100 bg-white px-2 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:relative sm:bottom-auto sm:z-auto sm:px-4 sm:py-3 lg:px-5">

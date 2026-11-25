@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 const ts = require("typescript");
 
 const source = readFileSync(
-  new URL("./route.ts", import.meta.url),
+  new URL("./route-handler.ts", import.meta.url),
   "utf8",
 );
 
@@ -83,6 +83,9 @@ function setup({
         };
       }
 
+      if (id === "../../../../lib/server/zion-admin-diagnostic-backend-next") {
+        return require("../../../../lib/server/zion-admin-diagnostic-backend-next.ts");
+      }
       throw new Error(`UNEXPECTED_IMPORT:${id}`);
     },
   });

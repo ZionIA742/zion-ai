@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { createHandler } from "./route";
+import { createHandler } from "./route-handler";
 
 const messageId = "11111111-1111-4111-8111-111111111111";
 const actorId = "22222222-2222-4222-8222-222222222222";

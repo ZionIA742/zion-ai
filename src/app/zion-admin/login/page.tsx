@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { ArrowIcon, LockIcon, MailIcon, SacredCircuitFrame, ShieldLockIcon } from "@/components/auth/SacredCircuitFrame";
 
 export default function ZionAdminLoginPage() {
   const router = useRouter();
@@ -63,14 +64,14 @@ export default function ZionAdminLoginPage() {
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 bg-cover bg-center bg-no-repeat sm:hidden"
         style={{
-          backgroundImage: 'url("/branding/zion-login-mountains-mobile.webp")',
+          backgroundImage: 'url("/branding/zion-sacred-circuit-mobile.webp")',
         }}
       />
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 hidden bg-cover bg-center bg-no-repeat sm:block"
         style={{
-          backgroundImage: 'url("/branding/zion-login-mountains-desktop.webp")',
+          backgroundImage: 'url("/branding/zion-sacred-circuit-desktop.webp")',
         }}
       />
       <div
@@ -78,14 +79,17 @@ export default function ZionAdminLoginPage() {
         className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(1,10,16,0.08),rgba(1,10,16,0.03)_45%,rgba(1,10,16,0.28))]"
       />
       <div className="relative z-10 flex min-h-dvh w-full min-w-0 items-center justify-center px-4 py-8 sm:py-10">
-        <section className="w-full min-w-0 max-w-[500px] rounded-[24px] border border-cyan-400/70 bg-[#04131b]/90 p-6 shadow-[0_28px_85px_rgba(0,0,0,0.62)] backdrop-blur-lg sm:p-8">
-          <div className="mb-6 text-center font-serif text-[40px] leading-none tracking-[-0.04em] sm:text-[46px]">
+        <SacredCircuitFrame variant="admin">
+          <div className="mb-5 text-center text-cyan-300">
+            <ShieldLockIcon />
+          </div>
+          <div className="mb-3 text-center font-serif text-[40px] leading-none tracking-[-0.04em] sm:text-[46px]">
             <span className="text-white">ZION</span>{" "}
             <span className="text-cyan-400">ADM</span>
           </div>
-
-
-
+          <p className="text-center text-[10px] font-medium uppercase tracking-[0.38em] text-slate-300">Painel administrativo</p>
+          <p className="mt-3 text-center text-[9px] uppercase tracking-[0.28em] text-slate-400">Controle · Configuração · Segurança</p>
+          <h1 className="mt-5 text-center text-xl font-semibold text-white">Entrar no painel interno</h1>
 
 
         {err && (
@@ -97,36 +101,37 @@ export default function ZionAdminLoginPage() {
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
           <div>
             <label className="text-xs font-medium text-slate-200">Email</label>
-            <input
+            <div className="relative mt-1.5"><span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-200"><MailIcon /></span><input
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="mt-1.5 w-full min-w-0 rounded-[14px] border border-slate-300/35 bg-[#0b2530]/90 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-400 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
+              className="w-full min-w-0 border border-slate-300/40 bg-[#0b2530]/90 px-10 py-2.5 text-sm text-white outline-none transition placeholder:text-slate-400 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
               placeholder="admin@zion.com"
               autoComplete="email"
               type="email"
-            />
+            /></div>
           </div>
 
           <div>
             <label className="text-xs font-medium text-slate-200">Senha</label>
-            <input
+            <div className="relative mt-1.5"><span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-200"><LockIcon /></span><input
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               type="password"
-              className="mt-1.5 w-full min-w-0 rounded-[14px] border border-slate-300/35 bg-[#0b2530]/90 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-400 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
+              className="w-full min-w-0 border border-slate-300/40 bg-[#0b2530]/90 px-10 py-2.5 text-sm text-white outline-none transition placeholder:text-slate-400 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
               placeholder="••••••••"
               autoComplete="current-password"
-            />
+            /></div>
           </div>
 
           <button
             disabled={busy}
-            className="w-full rounded-[14px] bg-cyan-400 px-4 py-3 text-sm font-semibold text-[#00151e] transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex w-full items-center justify-center gap-2 bg-cyan-400 px-4 py-2.5 text-sm font-semibold text-[#00151e] transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
+            style={{ clipPath: "polygon(0 10px, 10px 0, calc(100% - 10px) 0, 100% 10px, 100% calc(100% - 10px), calc(100% - 10px) 100%, 10px 100%, 0 calc(100% - 10px))" }}
           >
-            {busy ? "Entrando..." : "Entrar no painel interno"}
+            {busy ? "Entrando..." : <> <ShieldLockIcon className="h-4 w-4" /> Entrar no painel interno <ArrowIcon /></>}
           </button>
         </form>
-        </section>
+        </SacredCircuitFrame>
       </div>
     </main>
   );

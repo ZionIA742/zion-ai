@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { createClient } from "@supabase/supabase-js";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import {
@@ -56,7 +57,7 @@ function mapCatalogError(message: string): [number, string] {
 const CATALOG_PAGE_SIZE = 500;
 const CATALOG_MAX_PAGES = 40;
 
-export async function GET(request: Request) {
+ async function zionBackendOriginalGET(request: Request) {
   const access = await resolveZionAdminApiAccess();
 
   if (!access.ok) {
@@ -182,7 +183,17 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/zion-admin/costs/catalog",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(request: Request) {
+  return zionBackendObservedGET(request);
+}
+
+ async function zionBackendOriginalPOST(request: Request) {
   const access = await resolveZionAdminApiAccess();
 
   if (!access.ok) {
@@ -325,4 +336,14 @@ export async function POST(request: Request) {
       503,
     );
   }
+}
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/zion-admin/costs/catalog",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export async function POST(request: Request) {
+  return zionBackendObservedPOST(request);
 }

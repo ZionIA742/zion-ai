@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   generateAssistantReply,
   getOrCreateAssistantThread,
-} from "@/app/api/assistant/reply/route";
+} from "@/app/api/assistant/reply/route-handler";
 import { loadCanonicalActivePrimaryStoreResponsible } from "@/lib/server/store-responsibles";
 import { sendResponsibleAssistantText } from "@/lib/server/assistant/responsible-external-notifications-sender";
 import { downloadAndStoreWhatsappInboundMedia, removeWhatsappInboundStoredMedia } from "@/lib/server/whatsapp-inbound-media";

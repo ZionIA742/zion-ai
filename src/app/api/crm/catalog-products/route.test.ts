@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createCatalogProductsGetHandler } from "./route";
+import { createCatalogProductsGetHandler } from "./route-handler";
 
 type Row = Record<string, unknown>;
 
@@ -183,7 +183,7 @@ test("catalog lookup and signing errors fail closed with generic public messages
 });
 
 test("catalog GET source contract has no invented fallback names and no per-source metadata query", () => {
-  const source = readFileSync(join(process.cwd(), "src/app/api/crm/catalog-products/route.ts"), "utf8");
+  const source = readFileSync(join(process.cwd(), "src/app/api/crm/catalog-products/route-handler.ts"), "utf8");
   assert.doesNotMatch(source, /name\) \|\| ["'](Piscina|Produto)["']/);
   assert.match(source, /\.in\("pool_id", poolIds\)/);
   assert.match(source, /\.in\("catalog_item_id", itemIds\)/);

@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
   createStoreCepGetHandler,
-} from "./route";
+} from "./route-handler";
 import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,

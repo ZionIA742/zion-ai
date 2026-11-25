@@ -35,8 +35,8 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
   return originalResolveFilename.call(this, request, parent, isMain, options);
 };
 
-const routeModulePromise = import("./route");
-const routeSource = readFileSync(join(__dirname, "route.ts"), "utf8");
+const routeModulePromise = import("./route-handler");
+const routeSource = readFileSync(join(__dirname, "route-handler.ts"), "utf8");
 
 async function loadRouteModule() {
   return routeModulePromise;

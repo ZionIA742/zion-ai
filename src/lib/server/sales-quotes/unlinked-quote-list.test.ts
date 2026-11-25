@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { createSalesQuotesListGetHandler } from "@/app/api/sales-quotes/route";
+import { createSalesQuotesListGetHandler } from "@/app/api/sales-quotes/route-handler";
 import { listUnlinkedSalesQuotesForLead } from "./unlinked-quote-list";
 
 type Row = Record<string, unknown>;

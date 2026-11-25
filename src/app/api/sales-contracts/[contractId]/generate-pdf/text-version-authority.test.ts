@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   ContractTextVersionError,
   createTextSalesContractVersionBySystem,
-} from "./route";
+} from "./route-handler";
 
 function baseArgs(overrides: Record<string, unknown> = {}) {
   return {

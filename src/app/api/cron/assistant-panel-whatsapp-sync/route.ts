@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { recoverPendingAssistantPanelSyncNotifications } from "@/lib/server/assistant/assistant-panel-whatsapp-sync";
@@ -59,7 +60,7 @@ async function listActiveWhatsappStores(supabase: ReturnType<typeof getSupabaseA
   return Array.from(stores.values());
 }
 
-export async function GET(req: Request) {
+async function zionBackendOriginalGET(req: Request) {
   if (!isCronRequestAuthorized(req)) {
     return NextResponse.json({ ok: false, error: "UNAUTHORIZED_CRON_ROUTE" }, { status: 401 });
   }
@@ -94,4 +95,15 @@ export async function GET(req: Request) {
       { status: 500 },
     );
   }
+}
+
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/cron/assistant-panel-whatsapp-sync",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(req: Request) {
+  return zionBackendObservedGET(req);
 }

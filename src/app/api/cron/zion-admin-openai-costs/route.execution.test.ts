@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   createOpenAiCostsCronGetHandler,
-} from "./route";
+} from "./route-handler";
 
 import type {
   DailyOpenAiCostExecutionOutcome,

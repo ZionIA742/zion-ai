@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import {
@@ -23,7 +24,7 @@ function getErrorDiagnostics(error: unknown) {
   };
 }
 
-export async function GET(request: Request) {
+ async function zionBackendOriginalGET(request: Request) {
   try {
     const supabase = await createSupabaseServerClient();
     const {
@@ -60,4 +61,14 @@ export async function GET(request: Request) {
       { status: 500 },
     );
   }
+}
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/account/password-flow",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(request: Request) {
+  return zionBackendObservedGET(request);
 }

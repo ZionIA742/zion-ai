@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 const routeFiles = [
   "src/app/api/sales-quotes/[quoteId]/generate-pdf/route.ts",
-  "src/app/api/sales-quotes/[quoteId]/apply-change/route.ts",
+  "src/app/api/sales-quotes/[quoteId]/apply-change/route-handler.ts",
 ];
 
 for (const routeFile of routeFiles) {
@@ -55,17 +55,39 @@ for (const routeFile of routeFiles) {
     true,
     `${routeFile} must keep privileged client for physical logo loading`
   );
-  assert.match(
-    source,
-    /brandVisual:\s*brandVisualPolicy\.configured\s*\?\s*\{\s*primaryColor:\s*brandVisualPolicy\.primaryColor,\s*secondaryColor:\s*brandVisualPolicy\.secondaryColor,\s*documentFooter:\s*brandVisualPolicy\.documentFooter,\s*\}\s*:\s*null,/m,
-    `${routeFile} must pass canonical brand colors and footer to PDF only when configured`
-  );
+  if (routeFile.endsWith("/generate-pdf/route.ts")) {
+    assert.match(source, /const brandVisual = brandVisualPolicy\.configured\s*\?\s*\{\s*primaryColor:\s*brandVisualPolicy\.primaryColor,\s*secondaryColor:\s*brandVisualPolicy\.secondaryColor,\s*documentFooter:\s*brandVisualPolicy\.documentFooter,\s*\}\s*:\s*null;/m);
+    assert.match(source, /const persistedSnapshot = \{[\s\S]*?pdfRendering:\s*\{\s*brandVisual,\s*logoSha256,\s*\}/);
+    assert.match(source, /p_quote_snapshot:\s*persistedSnapshot,/);
+    assert.match(source, /const renderSnapshot =\s*operation\.outcome === "reclaimed" && operation\.quote_snapshot && typeof operation\.quote_snapshot === "object"\s*\? operation\.quote_snapshot as Record<string, any>\s*:\s*persistedSnapshot;/);
+    assert.match(source, /const rendering = snapshot\.pdfRendering \|\| \{\};/);
+    assert.match(source, /brandVisual:\s*rendering\.brandVisual \|\| null,/);
+    assert.match(source, /const pdfBytes = await buildQuotePdf\(\s*buildPdfInputFromSnapshot\(renderSnapshot, storeLogo\),\s*\);/);
+    assert.match(source, /if \(savedLogoSha256 !== logoSha256\) \{\s*throw new Error\("P19A_PDF_RENDER_INPUT_CHANGED"\);\s*\}/);
+    const visualIndex = source.indexOf("const brandVisual = brandVisualPolicy.configured");
+    const persistedIndex = source.indexOf("const persistedSnapshot =", visualIndex);
+    const renderIndex = source.indexOf("const renderSnapshot =", persistedIndex);
+    const guardIndex = source.indexOf("if (savedLogoSha256 !== logoSha256)", renderIndex);
+    const buildIndex = source.indexOf("const pdfBytes = await buildQuotePdf(", guardIndex);
+    assert.ok(visualIndex >= 0 && persistedIndex > visualIndex && renderIndex > persistedIndex && guardIndex > renderIndex && buildIndex > guardIndex, "brand snapshot and logo integrity must precede PDF rendering");
+  } else {
+    assert.match(
+      source,
+      /brandVisual:\s*brandVisualPolicy\.configured\s*\?\s*\{\s*primaryColor:\s*brandVisualPolicy\.primaryColor,\s*secondaryColor:\s*brandVisualPolicy\.secondaryColor,\s*documentFooter:\s*brandVisualPolicy\.documentFooter,\s*\}\s*:\s*null,/m,
+      `${routeFile} must pass canonical brand colors and footer to PDF only when configured`
+    );
+  }
 
   const policyIndex = source.indexOf(
     "const brandVisualPolicy = await loadStoreBrandVisualPolicy({"
   );
   const logoIndex = source.indexOf("const storeLogo =", policyIndex);
-  const pdfIndex = source.indexOf("const pdfBytes = await buildQuotePdf({", logoIndex);
+  const pdfIndex = source.indexOf(
+    routeFile.endsWith("/generate-pdf/route.ts")
+      ? "const pdfBytes = await buildQuotePdf("
+      : "const pdfBytes = await buildQuotePdf({",
+    logoIndex,
+  );
 
   assert.ok(policyIndex >= 0, `${routeFile} policy read not found`);
   assert.ok(

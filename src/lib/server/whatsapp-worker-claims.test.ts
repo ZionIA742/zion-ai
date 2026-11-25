@@ -7,6 +7,7 @@ import {
   claimAiRunQueueTasksBySystem,
   claimWhatsappInboxEventsBySystem,
   finalizeWorkerTaskBySystem,
+  releaseAiRunQueueRecoveryClaimBySystem,
   normalizeWorkerClaimRows,
 } from "./whatsapp-worker-claims";
 import { getWhatsappProcessAllHttpStatus } from "./whatsapp-process-all-status";
@@ -99,6 +100,24 @@ test("finalization rejects an ambiguous success response", async () => {
     }),
     /divergente/,
   );
+});
+
+test("recovery deferral uses a dedicated database release authority", async () => {
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const client = {
+    async rpc(name: string, args: Record<string, unknown>) {
+      calls.push({ name, args });
+      return { data: [{ ok: true, id: "queue-1", claim_token: "token-1", attempt_count: 0 }], error: null };
+    },
+  };
+  await releaseAiRunQueueRecoveryClaimBySystem(client, {
+    organizationId: "org-1",
+    storeId: "store-1",
+    queueId: "queue-1",
+    claimToken: "token-1",
+  });
+  assert.equal(calls[0]?.name, "release_ai_run_queue_recovery_claim_by_system");
+  assert.equal(calls[0]?.args.p_claim_token, "token-1");
 });
 
 test("active-claim assertion rejects an expired or different token", async () => {

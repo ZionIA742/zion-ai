@@ -5,7 +5,7 @@ import {
   createStoreBrandingLogoDeleteHandler,
   createStoreBrandingLogoGetHandler,
   createStoreBrandingLogoPostHandler,
-} from "./route";
+} from "./route-handler";
 import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
@@ -560,7 +560,7 @@ const tests: TestCase[] = [
   {
     name: "route source uses canonical resolver and active requirement",
     run: async () => {
-      const source = readFileSync(join(process.cwd(), "src/app/api/store-branding/logo/route.ts"), "utf8");
+      const source = readFileSync(join(process.cwd(), "src/app/api/store-branding/logo/route-handler.ts"), "utf8");
 
       assert.equal(source.includes("resolveStoreApiAccess"), true);
       assert.equal(source.includes("createStoreApiDeniedResponse"), true);

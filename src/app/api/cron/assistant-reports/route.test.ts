@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createAssistantReportsCronGetHandler } from "./route";
+import { createAssistantReportsCronGetHandler } from "./route-handler";
 
 test("keeps the reports cron disabled without invoking report processing", async () => {
   const previousSecret = process.env.CRON_SECRET;

@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { NextResponse } from "next/server";
 import {
   QuoteAccessError,
@@ -111,7 +112,7 @@ function databaseFailure(error: {
   }
 }
 
-export async function PATCH(
+async function zionBackendOriginalPATCH(
   request: Request,
   context: { params: Promise<{ quoteId: string }> },
 ) {
@@ -330,4 +331,14 @@ export async function PATCH(
       "Nao foi possivel concluir a edicao.",
     );
   }
+}
+
+const zionBackendObservedPATCH = withBackendDiagnosticRoute(
+  "/api/sales-quotes/[quoteId]/edit-human",
+  "PATCH",
+  zionBackendOriginalPATCH,
+);
+
+export async function PATCH(request: Request, context: { params: Promise<{ quoteId: string }> }) {
+  return zionBackendObservedPATCH(request, context);
 }

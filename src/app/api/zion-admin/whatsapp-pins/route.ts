@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import {
   createZionAdminApiDeniedResponse,
@@ -15,7 +16,7 @@ function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_RE.test(value.trim());
 }
 
-export async function GET(request: Request) {
+async function zionBackendOriginalGET(request: Request) {
   const access = await resolveZionAdminApiAccess({
     requiredCapability: "manage_whatsapp_pins",
   });
@@ -96,4 +97,15 @@ export async function GET(request: Request) {
       500,
     );
   }
+}
+
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/zion-admin/whatsapp-pins",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(request: Request) {
+  return zionBackendObservedGET(request);
 }

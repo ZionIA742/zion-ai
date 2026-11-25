@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { createClient } from "@supabase/supabase-js";
 
 import {
@@ -20,7 +21,7 @@ export const dynamic = "force-dynamic";
 const PAGE_SIZE = 500;
 const MAX_ROWS = 50000;
 
-export async function GET(request: Request) {
+async function zionBackendOriginalGET(request: Request) {
   const access = await resolveZionAdminApiAccess();
 
   if (!access.ok) {
@@ -102,4 +103,14 @@ export async function GET(request: Request) {
       503,
     );
   }
+}
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/zion-admin/meta-cost-evidence",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(request: Request) {
+  return zionBackendObservedGET(request);
 }

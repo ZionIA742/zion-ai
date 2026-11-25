@@ -185,6 +185,16 @@ export function createSignedMediaUrlGetHandler(
       }
 
       const metadata = isObjectRecord(message.metadata) ? message.metadata : null;
+      if (metadata?.audio_retention_file_deleted === true || metadata?.audio_retention_deletion_status === "deleted") {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "AUDIO_RETENTION_EXPIRED",
+            message: "O arquivo original deste audio nao esta mais disponivel.",
+          },
+          410,
+        );
+      }
       const mediaPurpose = String(metadata?.media_purpose || "").trim().toLowerCase();
       const storageBucket = String(metadata?.storage_bucket || "").trim();
       const metadataStoragePath = String(metadata?.storage_path || "").trim();

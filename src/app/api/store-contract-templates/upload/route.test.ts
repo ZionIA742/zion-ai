@@ -9,7 +9,7 @@ import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";
-import { createStoreContractTemplateUploadPostHandler } from "./route";
+import { createStoreContractTemplateUploadPostHandler } from "./route-handler";
 
 type TestCase = { name: string; run: () => Promise<void> | void };
 

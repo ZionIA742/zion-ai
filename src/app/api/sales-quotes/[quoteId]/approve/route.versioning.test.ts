@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const routeSource = readFileSync(join(__dirname, "route.ts"), "utf8");
+const routeSource = readFileSync(join(__dirname, "route-handler.ts"), "utf8");
 
 assert.match(
   routeSource,

@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import { writeZionAdminAuditEvent } from "@/lib/server/zion-admin-audit";
 import {
@@ -1175,7 +1176,7 @@ Object.assign(globalThis as Record<string, unknown>, {
   __zionAdminAccountsCreateRouteTestHooks: testHooks,
 });
 
-export async function POST(request: Request) {
+ async function zionBackendOriginalPOST(request: Request) {
   const access = await resolveZionAdminApiAccess({
     requiredCapability: "manage_accounts",
   });
@@ -1193,4 +1194,14 @@ export async function POST(request: Request) {
   });
 
   return createZionAdminApiJsonResponse(result.body, result.status);
+}
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/zion-admin/accounts/create",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export async function POST(request: Request) {
+  return zionBackendObservedPOST(request);
 }

@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { createTechnicalVisitPostHandler } from "./route";
+import { createTechnicalVisitPostHandler } from "./route-handler";
 import type { StoreApiAccessGranted } from "@/lib/server/store-api-access";
 
 const calls: Array<{ name: string; payload: Record<string, unknown> }> = [];

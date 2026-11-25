@@ -339,6 +339,50 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "human response scanner alerts use the canonical internal and WhatsApp delivery allowlist",
+    run: async () => {
+      const {
+        shouldEnqueueResponsibleExternalNotification,
+        enqueueResponsibleExternalNotificationFromAssistantNotification,
+        renderResponsibleExternalNotificationMessage,
+      } = await modulePromise;
+      for (const [threshold, priority] of [[10, "normal"], [30, "high"]] as const) {
+        const notification = {
+          ...createMandatoryNotification(),
+          priority,
+          context: {
+            source: "assistant_enqueue_internal_notification",
+            reason: "human_response_pending",
+            commitment_id: "commitment-1",
+            event_key: `human-response:commitment-1:${threshold}`,
+            threshold_minutes: threshold,
+            needs_human_action: true,
+          },
+        };
+        assert.deepEqual(shouldEnqueueResponsibleExternalNotification(notification), {
+          eligible: true,
+          requiresResponsibleNotification: true,
+        });
+        const supabase = createSupabaseRecorder();
+        const result = await enqueueResponsibleExternalNotificationFromAssistantNotification({
+          supabase: supabase.client as never,
+          internalNotification: notification,
+        });
+        assert.equal(result.created, true);
+        assert.equal(supabase.insertCalls[0]?.payload.channel, "whatsapp_responsible");
+        assert.equal(supabase.insertCalls[0]?.payload.priority, priority);
+        assert.match(
+          renderResponsibleExternalNotificationMessage({
+            title: notification.title,
+            body: notification.body,
+            context: notification.context,
+          }),
+          /WhatsApp cadastrado/i,
+        );
+      }
+    },
+  },
+  {
     name: "informational notifications are not universalized as mandatory escalations",
     run: async () => {
       const { shouldEnqueueResponsibleExternalNotification } = await modulePromise;

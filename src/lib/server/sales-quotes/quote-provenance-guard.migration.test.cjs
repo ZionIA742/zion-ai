@@ -16,7 +16,7 @@ const sql = read(
 );
 
 const createRoute = read(
-  "src/app/api/sales-quotes/create/route.ts"
+  "src/app/api/sales-quotes/create/route-handler.ts"
 );
 
 const quoteAuth = read(
@@ -28,7 +28,7 @@ const writer = read(
 );
 
 const applyRoute = read(
-  "src/app/api/sales-quotes/[quoteId]/apply-change/route.ts"
+  "src/app/api/sales-quotes/[quoteId]/apply-change/route-handler.ts"
 );
 
 test("migration possui transacao e preflight", () => {

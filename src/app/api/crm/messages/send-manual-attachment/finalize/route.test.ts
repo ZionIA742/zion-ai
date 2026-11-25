@@ -5,7 +5,7 @@ import {
   createManualAttachmentAuthorization,
   MANUAL_ATTACHMENT_STORAGE_BUCKET,
 } from "@/lib/server/manual-attachment-contract";
-import { handleManualAttachmentFinalizePost } from "./route";
+import { handleManualAttachmentFinalizePost } from "./route-handler";
 import type { StoreApiAccessGranted } from "@/lib/server/store-api-access";
 
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
@@ -103,7 +103,7 @@ const successResponse = await run(
 assert.equal(successResponse.status, 200);
 assert.deepEqual(successRemovals, []);
 
-const source = readFileSync(join(process.cwd(), "src/app/api/crm/messages/send-manual-attachment/finalize/route.ts"), "utf8");
+const source = readFileSync(join(process.cwd(), "src/app/api/crm/messages/send-manual-attachment/finalize/route-handler.ts"), "utf8");
 assert.doesNotMatch(source, /cleanupManualAttachment/);
 assert.doesNotMatch(source, /from\("messages"\)/);
 

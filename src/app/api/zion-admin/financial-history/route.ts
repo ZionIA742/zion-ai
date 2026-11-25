@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { createClient } from "@supabase/supabase-js";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import {
@@ -35,7 +36,7 @@ function recentMonths(): string[] {
   });
 }
 
-export async function GET() {
+ async function zionBackendOriginalGET() {
   const access = await resolveZionAdminApiAccess();
 
   if (!access.ok) {
@@ -120,4 +121,14 @@ export async function GET() {
       error: "Historico financeiro indisponivel. Nenhum valor foi presumido.",
     }, 503);
   }
+}
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/zion-admin/financial-history",
+  "GET",
+  (_zionRequest?: Request) => zionBackendOriginalGET(),
+);
+
+export async function GET() {
+  return zionBackendObservedGET(arguments[0] as Request | undefined);
 }

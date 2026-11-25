@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
-import { createSalesContractCustomerSignPostHandler } from "./route";
+import { createSalesContractCustomerSignPostHandler } from "./route-handler";
 
 type Row = Record<string, unknown>;
 
@@ -233,7 +233,7 @@ test("customer-sign preserves ContractAccessError and unexpected error mapping",
 
 test("customer-sign source contract uses canonical access/resolver and no direct writes", () => {
   const source = readFileSync(
-    join(process.cwd(), "src/app/api/sales-contracts/[contractId]/customer-sign/route.ts"),
+    join(process.cwd(), "src/app/api/sales-contracts/[contractId]/customer-sign/route-handler.ts"),
     "utf8",
   );
   assert.match(source, /resolveStoreApiAccess/);

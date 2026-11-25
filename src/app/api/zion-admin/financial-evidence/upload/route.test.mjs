@@ -56,12 +56,15 @@ const privateIntegrity = loadTs(
       return nativeRequire(name);
     }
 
+    if (name === "./zion-admin-financial-evidence-private-bytes") {
+      return nativeRequire("../../../../../lib/server/zion-admin-financial-evidence-private-bytes.ts");
+    }
     throw new Error(`UNEXPECTED_INTEGRITY_IMPORT: ${name}`);
   },
 );
 
 const route = loadTs(
-  "src/app/api/zion-admin/financial-evidence/upload/route.ts",
+  "src/app/api/zion-admin/financial-evidence/upload/route-handler.ts",
   (name) => {
     if (name === "node:crypto") return nativeRequire(name);
 
@@ -122,6 +125,9 @@ const route = loadTs(
           throw new Error("REAL_REGISTRATION_FORBIDDEN");
         },
       };
+    }
+    if (name === "../../../../../lib/server/zion-admin-diagnostic-backend-next") {
+      return nativeRequire("../../../../../lib/server/zion-admin-diagnostic-backend-next.ts");
     }
     throw new Error(`UNEXPECTED_IMPORT: ${name}`);
   },

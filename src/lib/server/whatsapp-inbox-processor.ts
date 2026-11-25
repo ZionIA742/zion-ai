@@ -8,6 +8,7 @@ import { routeIncomingCustomerReplyToOperationalTask } from "@/lib/server/proces
 import {
   downloadAndStoreWhatsappInboundMedia,
   removeWhatsappInboundStoredMedia,
+  type DownloadAndStoreWhatsappInboundMediaResult,
 } from "@/lib/server/whatsapp-inbound-media";
 import {
   recordPostTechnicalVisitResponsibleInbound,
@@ -21,6 +22,11 @@ import {
 } from "@/lib/server/store-responsibles";
 import { classifyIncomingMediaMessage } from "@/lib/server/media-classification";
 import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
+import { ingestCommercialConversationFactsFromMessage } from "@/lib/server/ingest-commercial-conversation-facts";
+import {
+  markAudioRetentionEligibleBySystem,
+  resolveAudioFactExtractionStatus,
+} from "@/lib/server/audio-retention-eligibility";
 import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
 import { decideQuoteApprovalFromPersistedInbound } from "@/lib/server/sales-quotes/quote-approval-decision";
 import { tryHandlePaymentProofDecision } from "@/lib/server/assistant/payment-proof-decision";
@@ -194,6 +200,9 @@ type MessageRow = {
   message_type?: string | null;
   content?: string | null;
   metadata?: Record<string, unknown> | null;
+  conversation_session_id?: string | null;
+  commercial_session_context_link_id?: string | null;
+  commercial_opportunity_id?: string | null;
 };
 
 type StatusMessageRow = {
@@ -301,6 +310,11 @@ type InsertMessageResult = {
   conversation_id?: string | null;
   lead_id?: string | null;
   store_id?: string | null;
+  conversation_session_id?: string | null;
+  commercial_session_context_link_id?: string | null;
+  commercial_opportunity_id?: string | null;
+  content?: string | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type ResolveWhatsappInboundThreadArgs = {
@@ -1432,7 +1446,7 @@ async function findExistingMessageByExternalId(
 ) {
   const { data, error } = await supabase
     .from("messages")
-    .select("id, conversation_id, lead_id, store_id, external_message_id, message_type, content, metadata")
+    .select("id, conversation_id, lead_id, store_id, external_message_id, message_type, content, metadata, conversation_session_id, commercial_session_context_link_id, commercial_opportunity_id")
     .eq("organization_id", organizationId)
     .eq("store_id", storeId)
     .eq("external_message_id", externalMessageId)
@@ -1616,7 +1630,42 @@ async function insertHumanAppEchoMessage(args: {
   whatsappBusinessAccountId: string | null;
   displayPhoneNumber: string | null;
   humanActivityAt: string;
+  storedMedia?: DownloadAndStoreWhatsappInboundMediaResult | null;
+  whatsappMediaId?: string | null;
 }) {
+  const isAudio = args.rawMessageType === "audio";
+  const metadata = {
+    source: "meta_whatsapp_webhook",
+    external_channel: "whatsapp",
+    channel: "whatsapp",
+    provider: "meta",
+    origin: "whatsapp_business_app",
+    event_kind: "message_echo",
+    inbox_id: args.inbox.id,
+    external_event_id: args.inbox.external_event_id,
+    whatsapp_from: args.fromPhone,
+    whatsapp_to: args.toPhone,
+    phone_number_id: args.phoneNumberId,
+    whatsapp_business_account_id: args.whatsappBusinessAccountId,
+    display_phone_number: args.displayPhoneNumber,
+    contact_name: args.contactName,
+    human_activity_key: args.messageId,
+    human_activity_at: args.humanActivityAt,
+    ...(isAudio
+      ? {
+          media_origin: "human",
+          attachment_kind: "audio",
+          whatsapp_media_id: args.whatsappMediaId || args.messageId,
+          mime_type: args.storedMedia?.mimeType || null,
+          storage_bucket: args.storedMedia?.storageBucket || null,
+          storage_path: args.storedMedia?.storagePath || null,
+          original_file_name: args.storedMedia?.originalFileName || null,
+          size_bytes: args.storedMedia?.sizeBytes || null,
+          sha256: args.storedMedia?.sha256 || null,
+          transcription_status: "not_requested",
+        }
+      : {}),
+  };
   const { data, error } = await args.supabase.rpc("insert_message", {
     p_conversation_id: args.conversationId,
     p_sender: "human",
@@ -1624,30 +1673,105 @@ async function insertHumanAppEchoMessage(args: {
     p_message_type: args.rawMessageType,
     p_content: args.content,
     p_external_message_id: args.messageId,
-    p_media_url: null,
-    p_metadata: {
-      source: "meta_whatsapp_webhook",
-      external_channel: "whatsapp",
-      channel: "whatsapp",
-      provider: "meta",
-      origin: "whatsapp_business_app",
-      event_kind: "message_echo",
-      inbox_id: args.inbox.id,
-      external_event_id: args.inbox.external_event_id,
-      whatsapp_from: args.fromPhone,
-      whatsapp_to: args.toPhone,
-      phone_number_id: args.phoneNumberId,
-      whatsapp_business_account_id: args.whatsappBusinessAccountId,
-      display_phone_number: args.displayPhoneNumber,
-      contact_name: args.contactName,
-      human_activity_key: args.messageId,
-      human_activity_at: args.humanActivityAt,
-    },
+    p_media_url: args.storedMedia?.storagePath || null,
+    p_metadata: metadata,
   });
   if (error) throw error;
   const row = Array.isArray(data) ? data[0] : data;
   if (!row?.id) throw new Error("insert_message nao retornou message.id.");
-  return row as InsertMessageResult;
+  return { ...(row as InsertMessageResult), metadata };
+}
+
+async function ensureHumanAppEchoAudioTranscript(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  messageId: string;
+  metadata: Record<string, unknown>;
+}) {
+  const metadata = { ...args.metadata };
+  const existingTranscript = asTrimmedString(metadata.audio_transcript);
+  if (
+    existingTranscript &&
+    String(metadata.transcription_status || "").trim().toLowerCase() === "succeeded"
+  ) {
+    return { transcript: existingTranscript, metadata };
+  }
+
+  const bucket = asTrimmedString(metadata.storage_bucket);
+  const storagePath = asTrimmedString(metadata.storage_path);
+  if (!bucket || !storagePath) throw new Error("human_audio_storage_identity_missing");
+
+  const transcription = await transcribeCustomerAudioFromStorage({
+    supabase: args.supabase,
+    bucket,
+    storagePath,
+    fileName: asTrimmedString(metadata.original_file_name) || "whatsapp-human-audio.ogg",
+    mimeType: asTrimmedString(metadata.mime_type) || "audio/ogg",
+  });
+  const nextMetadata: Record<string, unknown> = {
+    ...metadata,
+    transcription_provider: transcription.provider,
+    transcription_model: transcription.model,
+    transcription_attempted_at: new Date().toISOString(),
+  };
+  if (!transcription.ok) {
+    Object.assign(nextMetadata, {
+      transcription_status: "failed",
+      transcription_error: transcription.error,
+      transcription_retryable: true,
+    });
+    await updateCustomerMediaMetadata({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      messageId: args.messageId,
+      metadata: nextMetadata,
+    });
+    throw new Error(`human_audio_transcription_failed: ${transcription.error}`);
+  }
+
+  const transcript = asTrimmedString(transcription.transcript);
+  if (!transcript) throw new Error("human_audio_transcription_empty");
+  Object.assign(nextMetadata, {
+    audio_transcript: transcript,
+    transcription_status: "succeeded",
+    transcription_error: null,
+    transcription_retryable: false,
+    transcription_completed_at: new Date().toISOString(),
+  });
+  await updateCustomerMediaMetadata({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    messageId: args.messageId,
+    metadata: nextMetadata,
+  });
+  return { transcript, metadata: nextMetadata };
+}
+
+async function ingestCommercialConversationFactsOrThrow(args: Parameters<typeof ingestCommercialConversationFactsFromMessage>[0]) {
+  const result = await ingestCommercialConversationFactsFromMessage(args);
+  if (result.errors.length > 0) {
+    throw new Error("commercial_conversation_fact_ingestion_failed");
+  }
+  if (String(args.message.message_type || "").trim().toLowerCase() === "audio") {
+    const factExtractionStatus = resolveAudioFactExtractionStatus(result);
+    if (factExtractionStatus) {
+      await markAudioRetentionEligibleBySystem({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        messageId: args.message.id,
+        factExtractionStatus,
+      });
+    }
+  }
+  return result;
 }
 
 async function processHumanAppEcho(args: {
@@ -1657,11 +1781,15 @@ async function processHumanAppEcho(args: {
 }) {
   const { extracted } = args;
   const businessPhone = normalizePhone(extracted.displayPhoneNumber || "");
+  const hasValidPayload = extracted.rawMessageType === "text"
+    ? Boolean(extracted.textBody)
+    : extracted.rawMessageType === "audio"
+      ? Boolean(extracted.audioMediaId)
+      : false;
   if (
     !extracted.toPhoneNormalized ||
     !businessPhone ||
-    extracted.fromPhoneNormalized !== businessPhone ||
-    !extracted.textBody
+    extracted.fromPhoneNormalized !== businessPhone
   ) {
     throw new Error("invalid_business_app_message_echo_identity");
   }
@@ -1685,6 +1813,35 @@ async function processHumanAppEcho(args: {
   }
 
   if (existing?.id) {
+    let existingMessage = existing;
+    if (extracted.rawMessageType === "audio") {
+      const transcript = await ensureHumanAppEchoAudioTranscript({
+        supabase: args.supabase,
+        organizationId: args.inbox.organization_id,
+        storeId: args.inbox.store_id,
+        conversationId: existing.conversation_id,
+        messageId: existing.id,
+        metadata: existing.metadata || {},
+      });
+      existingMessage = {
+        ...existing,
+        content: transcript.transcript,
+        metadata: transcript.metadata,
+      };
+    }
+    await ingestCommercialConversationFactsOrThrow({
+      supabase: args.supabase,
+      organizationId: args.inbox.organization_id,
+      storeId: args.inbox.store_id,
+      leadId: existing.lead_id || thread.leadId,
+      conversationId: existing.conversation_id,
+      message: {
+        ...existingMessage,
+        sender: "human",
+        message_type: existingMessage.message_type || extracted.rawMessageType,
+        content: existingMessage.content || extracted.textBody || null,
+      },
+    });
     return {
       messageId: existing.id,
       leadId: existing.lead_id || thread.leadId,
@@ -1692,12 +1849,42 @@ async function processHumanAppEcho(args: {
     };
   }
 
+  if (extracted.rawMessageType === "audio") {
+    const { error: takeoverError } = await args.supabase.rpc(
+      "human_takeover_conversation",
+      {
+        p_conversation_id: thread.conversationId,
+        p_reason: "whatsapp_business_app_intervention",
+      },
+    );
+    if (takeoverError) throw takeoverError;
+    if (!hasValidPayload) {
+      throw new Error("invalid_business_app_message_echo_payload");
+    }
+  } else if (!hasValidPayload) {
+    throw new Error("invalid_business_app_message_echo_payload");
+  }
+
+  let storedMedia: DownloadAndStoreWhatsappInboundMediaResult | null = null;
+  if (extracted.rawMessageType === "audio") {
+    storedMedia = await downloadAndStoreWhatsappInboundMedia({
+      supabase: args.supabase,
+      organizationId: args.inbox.organization_id,
+      storeId: args.inbox.store_id,
+      conversationId: thread.conversationId,
+      mediaId: extracted.audioMediaId!,
+      mediaKind: "audio",
+      preferredMimeType: extracted.audioMimeType,
+      fallbackBaseName: "whatsapp-human-audio",
+    });
+  }
+
   const inserted = await insertHumanAppEchoMessage({
     supabase: args.supabase,
     conversationId: thread.conversationId,
     inbox: args.inbox,
     messageId: extracted.messageId || args.inbox.external_event_id,
-    content: extracted.textBody,
+    content: extracted.textBody || "Funcionário enviou um áudio.",
     fromPhone: extracted.fromPhoneRaw || "",
     toPhone: extracted.toPhoneRaw || "",
     phoneNumberId: extracted.phoneNumberId || "",
@@ -1706,16 +1893,53 @@ async function processHumanAppEcho(args: {
     whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
     displayPhoneNumber: extracted.displayPhoneNumber,
     humanActivityAt: extracted.messageTimestampIso,
+    storedMedia,
+    whatsappMediaId: extracted.audioMediaId,
   });
 
-  const { error: takeoverError } = await args.supabase.rpc(
-    "human_takeover_conversation",
-    {
-      p_conversation_id: thread.conversationId,
-      p_reason: "whatsapp_business_app_intervention",
+  if (extracted.rawMessageType !== "audio") {
+    const { error: takeoverError } = await args.supabase.rpc(
+      "human_takeover_conversation",
+      {
+        p_conversation_id: thread.conversationId,
+        p_reason: "whatsapp_business_app_intervention",
+      },
+    );
+    if (takeoverError) throw takeoverError;
+  }
+
+  let persistedHumanMessage: InsertMessageResult = inserted;
+  if (extracted.rawMessageType === "audio") {
+    const transcript = await ensureHumanAppEchoAudioTranscript({
+      supabase: args.supabase,
+      organizationId: args.inbox.organization_id,
+      storeId: args.inbox.store_id,
+      conversationId: inserted.conversation_id || thread.conversationId,
+      messageId: inserted.id!,
+      metadata: inserted.metadata || {},
+    });
+    persistedHumanMessage = {
+      ...inserted,
+      content: transcript.transcript,
+      metadata: transcript.metadata,
+    };
+  }
+
+  await ingestCommercialConversationFactsOrThrow({
+    supabase: args.supabase,
+    organizationId: args.inbox.organization_id,
+    storeId: args.inbox.store_id,
+    leadId: persistedHumanMessage.lead_id || thread.leadId,
+    conversationId: persistedHumanMessage.conversation_id || thread.conversationId,
+    message: {
+      id: persistedHumanMessage.id!,
+      sender: "human",
+      content: persistedHumanMessage.content || args.extracted.textBody || null,
+      message_type: args.extracted.rawMessageType,
+      metadata: persistedHumanMessage.metadata || null,
+      conversation_session_id: (persistedHumanMessage as InsertMessageResult & { conversation_session_id?: string | null }).conversation_session_id,
     },
-  );
-  if (takeoverError) throw takeoverError;
+  });
 
   return {
     messageId: inserted.id,
@@ -2958,7 +3182,7 @@ async function processSingleInboxRow(
   }
 
   if (eventKind === "message_echo") {
-    if (extracted.rawMessageType !== "text") {
+    if (extracted.rawMessageType !== "text" && extracted.rawMessageType !== "audio") {
       await markInboxProcessed(supabase, inbox);
       return {
         inbox_id: inbox.id,
@@ -3115,6 +3339,14 @@ async function processSingleInboxRow(
           extracted.documentCaption ||
           existingMessage.content ||
           null,
+      });
+      await ingestCommercialConversationFactsOrThrow({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        leadId: existingMessage.lead_id || "",
+        conversationId: existingMessage.conversation_id,
+        message: { ...existingMessage, sender: "user", metadata: processedMetadata },
       });
 
       if (existingMessageType === "document" || existingMessageType === "image") {
@@ -3545,6 +3777,15 @@ async function processSingleInboxRow(
         recentConversationText,
       });
 
+      await ingestCommercialConversationFactsOrThrow({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        leadId: persistedMessage.lead_id || lead.id,
+        conversationId: conversation.id,
+        message: { ...persistedMessage, sender: "user", metadata: processedMediaMetadata },
+      });
+
       const commercialIntent = await enqueueCustomerCommercialIntent({
         supabase,
         organizationId: inbox.organization_id,
@@ -3602,6 +3843,17 @@ async function processSingleInboxRow(
           ai_error: null,
         };
       }
+    }
+
+    if (extracted.rawMessageType === "text") {
+      await ingestCommercialConversationFactsOrThrow({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        leadId: persistedMessage.lead_id || lead.id,
+        conversationId: conversation.id,
+        message: { ...persistedMessage, sender: "user" },
+      });
     }
 
     if (extracted.rawMessageType === "text") {

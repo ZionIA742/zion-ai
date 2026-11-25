@@ -5,7 +5,7 @@ import {
   ContractAccessError,
   resolveExistingContractForAuthorizedStoreScope,
 } from "@/lib/server/sales-contracts/contract-auth";
-import { createSalesContractDetailGetHandler } from "./route";
+import { createSalesContractDetailGetHandler } from "./route-handler";
 
 type Row = Record<string, unknown>;
 type Filter = { column: string; value: unknown };
@@ -461,7 +461,7 @@ const tests: Array<{ name: string; run: () => Promise<void> | void }> = [
     name: "detail route source uses active canonical access and not legacy resolver",
     run: () => {
       const source = readFileSync(
-        join(process.cwd(), "src/app/api/sales-contracts/[contractId]/route.ts"),
+        join(process.cwd(), "src/app/api/sales-contracts/[contractId]/route-handler.ts"),
         "utf8",
       );
       assert.match(source, /resolveStoreApiAccess/);

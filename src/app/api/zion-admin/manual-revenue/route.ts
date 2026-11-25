@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { createClient } from "@supabase/supabase-js";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import {
@@ -38,7 +39,7 @@ function validUuid(value: unknown): value is string {
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
-export async function GET(request: Request) {
+ async function zionBackendOriginalGET(request: Request) {
   const access = await resolveZionAdminApiAccess();
   if (!access.ok) return createZionAdminApiDeniedResponse(access);
 
@@ -99,7 +100,17 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/zion-admin/manual-revenue",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(request: Request) {
+  return zionBackendObservedGET(request);
+}
+
+ async function zionBackendOriginalPOST(request: Request) {
   const access = await resolveZionAdminApiAccess();
   if (!access.ok) return createZionAdminApiDeniedResponse(access);
 
@@ -188,4 +199,14 @@ export async function POST(request: Request) {
       { error: "Servico de receitas indisponivel." }, 503,
     );
   }
+}
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/zion-admin/manual-revenue",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export async function POST(request: Request) {
+  return zionBackendObservedPOST(request);
 }

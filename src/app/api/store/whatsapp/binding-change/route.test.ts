@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
   createWhatsappBindingChangeRouteHandler as createRouteHandler,
-} from "./route";
+} from "./route-handler";
 import type {
   StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";

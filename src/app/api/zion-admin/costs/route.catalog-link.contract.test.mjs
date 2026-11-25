@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const api = readFileSync(
-  "src/app/api/zion-admin/costs/route.ts",
+  "src/app/api/zion-admin/costs/route-handler.ts",
   "utf8",
 );
 

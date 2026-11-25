@@ -49,7 +49,7 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
   return originalResolveFilename.call(this, request, parent, isMain, options);
 };
 
-const routeModulePromise = import("./route");
+const routeModulePromise = import("./route-handler");
 
 async function loadRouteModule() {
   return routeModulePromise;
@@ -369,7 +369,7 @@ const tests: TestCase[] = [
     name: "production route uses resolveStoreApiAccess and ignores query tenant ids",
     run: () => {
       const source = readFileSync(
-        join(process.cwd(), "src/app/api/schedule/route.ts"),
+        join(process.cwd(), "src/app/api/schedule/route-handler.ts"),
         "utf8",
       );
 

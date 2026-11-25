@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createSalesContractSendPostHandler } from "./route";
+import { createSalesContractSendPostHandler } from "./route-handler";
 
 type Row = Record<string, unknown>;
 const VERSION_1 = "11111111-1111-4111-8111-111111111111";
@@ -188,7 +188,7 @@ async function testReplayAndAuthorityFailureClosed() {
 }
 
 async function testSourceContract() {
-  const source = readFileSync(join(process.cwd(), "src/app/api/sales-contracts/[contractId]/send/route.ts"), "utf8");
+  const source = readFileSync(join(process.cwd(), "src/app/api/sales-contracts/[contractId]/send/route-handler.ts"), "utf8");
   assert.match(source, /materializeSalesContractSendBySystem/); assert.match(source, /requirement: "active"/); assert.match(source, /buildSalesContractSendIdempotencyKey/); assert.doesNotMatch(source, /insert_message/); assert.doesNotMatch(source, /from\("sales_contracts"\)\.update/); assert.doesNotMatch(source, /from\("sales_contract_versions"\)\.update/);
 }
 

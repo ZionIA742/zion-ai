@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createContractTemplateEditSourceGetHandler } from "./route";
+import { createContractTemplateEditSourceGetHandler } from "./route-handler";
 
 type Row = Record<string, unknown>;
 
@@ -195,11 +195,11 @@ async function main() {
   }
   {
     const existingPdfRoute = readFileSync(
-      join(process.cwd(), "src/app/api/sales-contracts/template-source/route.ts"), "utf8",
+      join(process.cwd(), "src/app/api/sales-contracts/template-source/route-handler.ts"), "utf8",
     );
     assert.equal(existingPdfRoute.includes("raw_extracted_text"), false);
     const editorRoute = readFileSync(
-      join(process.cwd(), "src/app/api/sales-contracts/template-edit-source/route.ts"), "utf8",
+      join(process.cwd(), "src/app/api/sales-contracts/template-edit-source/route-handler.ts"), "utf8",
     );
     assert.equal(editorRoute.includes(".insert("), false);
     assert.equal(editorRoute.includes(".update("), false);

@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import {
   assertHumanQuoteEditProvenance,
   isLegacyHumanQuoteEditEligible,
@@ -90,7 +91,7 @@ function hasVerifiedHumanEditProvenance(
   }
 }
 
-export async function GET(
+async function zionBackendOriginalGET(
   _request: Request,
   context: { params: Promise<{ quoteId: string }> }
 ) {
@@ -217,4 +218,14 @@ export async function GET(
   } catch (error) {
     return buildErrorResponse(error);
   }
+}
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/sales-quotes/[quoteId]",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(_request: Request, context: { params: Promise<{ quoteId: string }> }) {
+  return zionBackendObservedGET(_request, context);
 }

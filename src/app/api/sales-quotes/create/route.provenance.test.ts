@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const route = readFileSync(
-  join(process.cwd(), "src/app/api/sales-quotes/create/route.ts"),
+  join(process.cwd(), "src/app/api/sales-quotes/create/route-handler.ts"),
   "utf8",
 );
 

@@ -82,6 +82,7 @@ let rpcResult = null;
 let calls = [];
 
 const api = load(paths.api, {
+  "../../../../lib/server/zion-admin-diagnostic-backend-next": { withBackendDiagnosticRoute: (_route, _method, handler) => handler },
   "@supabase/supabase-js": {
     createClient() {
       return {

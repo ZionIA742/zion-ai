@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const routeFile =
-  "src/app/api/sales-contracts/[contractId]/generate-pdf/route.ts";
+  "src/app/api/sales-contracts/[contractId]/generate-pdf/route-handler.ts";
 
 const source = readFileSync(
   join(process.cwd(), routeFile),
@@ -81,10 +81,18 @@ const logoIndex = source.indexOf(
   policyIndex
 );
 
-const pdfIndex = source.indexOf(
-  "const pdfBytes = await buildContractPdf(",
+const rendererIndex = source.indexOf(
+  "const rendererInput = buildCanonicalContractRendererInput({",
   logoIndex
 );
+const pdfIndex = source.indexOf(
+  "const pdfBytes = renderedTextDraft?.pdfBytes ?? await buildContractPdf(rendererInput);",
+  rendererIndex
+);
+assert.ok(rendererIndex > logoIndex && pdfIndex > rendererIndex,
+  "contract renderer input must follow policy/logo and precede the canonical PDF fallback");
+assert.match(source.slice(rendererIndex, pdfIndex), /logo:\s*storeLogo,/,
+  "canonical renderer input must receive the resolved logo");
 
 assert.ok(
   policyIndex >= 0,

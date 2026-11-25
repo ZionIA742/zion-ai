@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { NextResponse } from "next/server";
 import { randomUUID, createHash } from "node:crypto";
 import {
@@ -111,7 +112,7 @@ async function resolveHistorical(scope: Awaited<ReturnType<typeof resolveExistin
   return { snapshot, provenance, text, opportunityId, templateVersionId, revision, currentVersion, previousPdfSha256 };
 }
 
-export async function GET(_request: Request, context: { params: Promise<{ contractId: string }> }) {
+async function zionBackendOriginalGET(_request: Request, context: { params: Promise<{ contractId: string }> }) {
   try {
     const access = await resolveStoreApiAccess({ requirement: "active" });
     if (!access.ok) return createStoreApiDeniedResponse(access);
@@ -127,7 +128,7 @@ export async function GET(_request: Request, context: { params: Promise<{ contra
   } catch (error) { return errorResponse(error); }
 }
 
-export async function POST(request: Request, context: { params: Promise<{ contractId: string }> }) {
+async function zionBackendOriginalPOST(request: Request, context: { params: Promise<{ contractId: string }> }) {
   let storedFile: { storeFileId: string; storageBucket: string; storagePath: string } | null = null;
   let cleanupSupabase: Awaited<ReturnType<typeof resolveExistingContractForAuthorizedStoreScope>>["supabase"] | null = null;
   let cleanupOrganizationId = "";
@@ -227,4 +228,26 @@ export async function POST(request: Request, context: { params: Promise<{ contra
     }
     return errorResponse(error);
   }
+}
+
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/sales-contracts/[contractId]/correct-text",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(_request: Request, context: { params: Promise<{ contractId: string }> }) {
+  return zionBackendObservedGET(_request, context);
+}
+
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/sales-contracts/[contractId]/correct-text",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export async function POST(request: Request, context: { params: Promise<{ contractId: string }> }) {
+  return zionBackendObservedPOST(request, context);
 }

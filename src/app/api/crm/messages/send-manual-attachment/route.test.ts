@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { handleSendManualAttachmentPost } from "./route";
+import { handleSendManualAttachmentPost } from "./route-handler";
 import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
@@ -1025,7 +1025,7 @@ const tests: TestCase[] = [
   {
     name: "route source uses canonical store gate and finalize materializer",
     run: () => {
-      const source = readFileSync(join(__dirname, "route.ts"), "utf8");
+      const source = readFileSync(join(__dirname, "route-handler.ts"), "utf8");
 
       assert.equal(source.includes("resolveStoreApiAccess"), true);
       assert.equal(source.includes("createStoreApiDeniedResponse"), true);

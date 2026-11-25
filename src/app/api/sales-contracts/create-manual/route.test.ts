@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import type { StoreApiAccessDenied } from "@/lib/server/store-api-access";
-import { createCreateManualContractPostHandler } from "./route";
+import { createCreateManualContractPostHandler } from "./route-handler";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const STORE = "22222222-2222-4222-8222-222222222222";
@@ -102,7 +102,7 @@ async function main() {
     const result = await responseOf(createCreateManualContractPostHandler({ resolveAccess: () => authorized(h), createServiceClient: () => h.service as never }), input({ draftSha256: "a".repeat(64) }));
     assert.equal(result.response.status, 409); assert.equal(h.calls.length, 0);
   }
-  const source = readFileSync(join(process.cwd(), "src/app/api/sales-contracts/create-manual/route.ts"), "utf8");
+  const source = readFileSync(join(process.cwd(), "src/app/api/sales-contracts/create-manual/route-handler.ts"), "utf8");
   assert.match(source, /create_sales_contract_manual_by_system/); assert.doesNotMatch(source, /generate-pdf|approve|whatsapp|insert_message/);
   console.log("PASS manual contract creation route tests");
 }

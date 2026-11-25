@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAssistantSignedMediaUrlGetHandler } from "./route";
+import { createAssistantSignedMediaUrlGetHandler } from "./route-handler";
 
 function client(
   messagePath: string,

@@ -113,6 +113,15 @@ async function run(source) {
       rpcError:null,
       rpcPatch:{},
       recipientPatch:{},
+      access:{
+        ok:true,
+        sessionUserId:actor,
+        organizationId:org,
+        storeId:store,
+        resolution:{
+          status:"store_ready_active",
+        },
+      },
     };
 
     function client(session) {
@@ -182,6 +191,14 @@ async function run(source) {
       if(name==="./human-quote-send-contract")return contract;
       if(name==="./human-quote-send-pdf")return pdf;
       if(name==="./human-quote-edit-provenance")return provenance;
+
+      if(name==="../store-api-access")return {
+        async resolveStoreApiAccess(args) {
+          calls.push(["store_access",args.requirement]);
+          assert.equal(args.requirement,"active");
+          return state.access;
+        }
+      };
 
       if(name==="./quote-auth")return {
         async resolveAuthorizedExistingQuote(value) {
@@ -446,9 +463,67 @@ async function run(source) {
     );
   });
 
-  assert.equal(count,19);
+  await check("commercial access denial blocks privileged lookup",async()=>{
+    const x=fixture();
 
-  console.log("HUMAN_QUOTE_SEND_REGISTRATION: 19/19 PASS");
+    x.state.access={
+      ok:false,
+      httpStatus:403,
+    };
+
+    await assert.rejects(
+      x.execute,
+      e=>e.code==="HUMAN_QUOTE_SEND_STORE_ACCESS_DENIED"
+        && e.status===403
+    );
+
+    assert.equal(x.rpcCalls().length,0);
+
+    assert.equal(
+      x.calls.some(c=>c[0]==="auth"),
+      false
+    );
+
+    assert.equal(
+      x.calls.some(c=>c[0]==="from"),
+      false
+    );
+  });
+
+  await check("onboarding is not active commercial access",async()=>{
+    await denied(
+      x=>{
+        x.state.access.resolution.status=
+          "store_ready_onboarding_required";
+      },
+      "HUMAN_QUOTE_SEND_STORE_ACCESS_DENIED"
+    );
+  });
+
+  await check("different authenticated actor is blocked",async()=>{
+    await denied(
+      x=>{x.state.access.sessionUserId=id(99);},
+      "HUMAN_QUOTE_SEND_STORE_ACCESS_SCOPE_MISMATCH"
+    );
+  });
+
+  await check("different authorized organization is blocked",async()=>{
+    await denied(
+      x=>{x.state.access.organizationId=id(99);},
+      "HUMAN_QUOTE_SEND_STORE_ACCESS_SCOPE_MISMATCH"
+    );
+  });
+
+  await check("different authorized store is blocked",async()=>{
+    await denied(
+      x=>{x.state.access.storeId=id(99);},
+      "HUMAN_QUOTE_SEND_STORE_ACCESS_SCOPE_MISMATCH"
+    );
+  });
+
+  assert.equal(count,24);
+
+  console.log("HUMAN_QUOTE_SEND_REGISTRATION: 24/24 PASS");
 }
 
 module.exports=run;

@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import { createServiceSupabaseClient } from "@/lib/server/zion-account-provisioning";
 import { resolveWhatsappPinRotationPhoneTarget, type RotationTargetDatabase } from "@/lib/server/zion-admin-whatsapp-pin-rotation-target";
@@ -9,7 +10,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Both flags are OFF by default. This route does not change existing PIN flows.
-export const POST = createWhatsappPinRotationExecuteHandler({
+const zionBackendOriginalPOST = createWhatsappPinRotationExecuteHandler({
   resolveAccess: () => resolveZionAdminApiAccess({ requiredCapability: "manage_whatsapp_pins" }) as Promise<RotationAccessResult>,
   createServiceClient: () => createServiceSupabaseClient(),
   resolvePhoneTarget: (target) => resolveWhatsappPinRotationPhoneTarget(
@@ -24,3 +25,13 @@ export const POST = createWhatsappPinRotationExecuteHandler({
   isExecutionEnabled: () => process.env.ZION_ADMIN_WHATSAPP_PIN_ROTATION_EXECUTION_ENABLED === "true",
   isTrustedOrigin: isTrustedRotationOrigin,
 });
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/zion-admin/whatsapp-pins/rotation/execute",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export const POST: typeof zionBackendOriginalPOST = async function POST(request: Parameters<typeof zionBackendOriginalPOST>[0]) {
+  return zionBackendObservedPOST(request);
+};

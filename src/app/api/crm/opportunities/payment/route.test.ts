@@ -45,7 +45,7 @@ moduleWithResolveFilename._resolveFilename = function (
   );
 };
 
-const routeModulePromise = import("./route");
+const routeModulePromise = import("./route-handler");
 
 function denied(): StoreApiAccessDenied {
   return {

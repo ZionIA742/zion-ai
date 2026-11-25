@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { createContractTextDraftHandlers } from "./route";
+import { createContractTextDraftHandlers } from "./route-handler";
 
 type Row = Record<string, unknown>;
 type Tables = Record<string, Row | null>;
@@ -186,9 +186,9 @@ async function main() {
     assert.deepEqual(h.privateReads, []); passed++;
   }
   {
-    const source = readFileSync(join(process.cwd(), "src/app/api/sales-contracts/template-source/route.ts"), "utf8");
+    const source = readFileSync(join(process.cwd(), "src/app/api/sales-contracts/template-source/route-handler.ts"), "utf8");
     assert.equal(source.includes("raw_extracted_text"), false);
-    const route = readFileSync(join(process.cwd(), "src/app/api/sales-contracts/text-draft/route.ts"), "utf8");
+    const route = readFileSync(join(process.cwd(), "src/app/api/sales-contracts/text-draft/route-handler.ts"), "utf8");
     assert.equal(route.includes(".delete("), false);
     assert.equal(route.includes(".from(\"sales_contracts\")"), false);
     assert.equal(route.includes(".from(\"sales_contract_versions\")"), false);

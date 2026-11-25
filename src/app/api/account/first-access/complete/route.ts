@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import {
@@ -23,7 +24,7 @@ function getErrorDiagnostics(error: unknown) {
   };
 }
 
-export async function POST(request: Request) {
+ async function zionBackendOriginalPOST(request: Request) {
   try {
     const supabase = await createSupabaseServerClient();
     const {
@@ -86,4 +87,14 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+}
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/account/first-access/complete",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export async function POST(request: Request) {
+  return zionBackendObservedPOST(request);
 }

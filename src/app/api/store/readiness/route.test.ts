@@ -4,7 +4,7 @@ import { join } from "node:path";
 import {
   GET,
   createStoreReadinessGetHandler,
-} from "./route";
+} from "./route-handler";
 import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
@@ -357,7 +357,7 @@ const tests: TestCase[] = [
   {
     name: "production route is read only uses service role after access and ignores arbitrary request scope inputs",
     run: async () => {
-      const source = readFileSync(join(process.cwd(), "src/app/api/store/readiness/route.ts"), "utf8");
+      const source = readFileSync(join(process.cwd(), "src/app/api/store/readiness/route-handler.ts"), "utf8");
 
       const accessIndex = source.indexOf("const access = await resolveAccess(");
       const deniedIndex = source.indexOf("return createStoreApiDeniedResponse(access);");

@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createContractTemplateSourceGetHandler } from "./route";
+import { createContractTemplateSourceGetHandler } from "./route-handler";
 
 const ORGANIZATION_ID = "org-1";
 const STORE_ID = "store-1";
@@ -230,7 +230,7 @@ test("denies an unauthenticated or unavailable store session before reading file
 
 test("is a read-and-sign path only; it has no generation or mutation fallback", () => {
   const source = readFileSync(
-    join(process.cwd(), "src/app/api/sales-contracts/template-source/route.ts"),
+    join(process.cwd(), "src/app/api/sales-contracts/template-source/route-handler.ts"),
     "utf8",
   );
 

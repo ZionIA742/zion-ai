@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { NextResponse } from "next/server";
 import {
   executeAssistantDocumentAction,
@@ -32,7 +33,7 @@ function isValidUuid(value: string) {
   );
 }
 
-export async function POST(request: Request) {
+async function zionBackendOriginalPOST(request: Request) {
   try {
     const body = (await request.json().catch(() => ({}))) as DocumentActionRequestBody;
     const action = String(body.action || "").trim();
@@ -116,4 +117,15 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
+}
+
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/assistant/actions/document",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export async function POST(request: Request) {
+  return zionBackendObservedPOST(request);
 }

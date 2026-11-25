@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { createClient } from "@supabase/supabase-js";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import { createZionAdminApiDeniedResponse, createZionAdminApiJsonResponse } from "@/lib/server/zion-admin-api-response";
@@ -9,7 +10,7 @@ export const dynamic = "force-dynamic";
 const MAX_INTEGRATIONS = 500;
 
 /** Admin-only list. No token, WABA ID or full phone ever enters the response. */
-export async function GET() {
+async function zionBackendOriginalGET() {
   const access = await resolveZionAdminApiAccess();
   if (!access.ok) return createZionAdminApiDeniedResponse(access);
 
@@ -32,4 +33,15 @@ export async function GET() {
   } catch {
     return createZionAdminApiJsonResponse({ ok: false, code: "META_INTEGRATIONS_UNAVAILABLE" }, 503);
   }
+}
+
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/zion-admin/meta-integrations",
+  "GET",
+  (_zionRequest?: Request) => zionBackendOriginalGET(),
+);
+
+export async function GET() {
+  return zionBackendObservedGET(arguments[0] as Request | undefined);
 }

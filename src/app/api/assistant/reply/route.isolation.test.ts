@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { generateAssistantReply, type AssistantReplyTestDependencies } from "./route";
+import { generateAssistantReply, type AssistantReplyTestDependencies } from "./route-handler";
 
 const ids = { organizationId: "org-test", storeId: "store-test" };
 

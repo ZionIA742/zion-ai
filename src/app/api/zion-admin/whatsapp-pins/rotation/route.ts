@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { randomUUID } from "node:crypto";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import { createServiceSupabaseClient } from "@/lib/server/zion-account-provisioning";
@@ -8,7 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** Prepare or authorize only. No PIN generation, no call to Meta, no activation. */
-export const POST = createPinRotationPreparationHandler({
+const zionBackendOriginalPOST = createPinRotationPreparationHandler({
   resolveAccess: () => resolveZionAdminApiAccess({ requiredCapability: "manage_whatsapp_pins" }) as Promise<RotationAccessResult>,
   createServiceClient: () => createServiceSupabaseClient() as unknown as RotationRpc,
   isEnabled: () => process.env.ZION_ADMIN_WHATSAPP_PIN_ROTATION_ENABLED === "true",
@@ -20,3 +21,13 @@ export const POST = createPinRotationPreparationHandler({
     createServiceSupabaseClient() as unknown as RotationTargetDatabase, target,
   ),
 });
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/zion-admin/whatsapp-pins/rotation",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export const POST: typeof zionBackendOriginalPOST = async function POST(request: Parameters<typeof zionBackendOriginalPOST>[0]) {
+  return zionBackendObservedPOST(request);
+};

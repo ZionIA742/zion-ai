@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { createContractTextDraftHandlers } from "./route";
+import { createContractTextDraftHandlers } from "./route-handler";
 
 type Row = Record<string, unknown>;
 const recoveredText = "CLAUSULA 1\nTexto conferido.\nCLAUSULA 2\nValores e prazos.";

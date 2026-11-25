@@ -44,19 +44,19 @@ require.extensions[".ts"] = function compileTypeScript(module, filename) {
 
 const {
   createResponsibleExternalNotificationsGetHandler,
-} = require("./route.ts");
+} = require("./route-handler.ts");
 const {
   createResponsibleExternalNotificationsPreparePostHandler,
-} = require("./prepare/route.ts");
+} = require("./prepare/route-handler.ts");
 const {
   createResponsibleExternalNotificationsSendPostHandler,
-} = require("./send/route.ts");
+} = require("./send/route-handler.ts");
 const {
   createResponsibleExternalNotificationsCancelPostHandler,
-} = require("./cancel/route.ts");
+} = require("./cancel/route-handler.ts");
 const {
   createResponsibleExternalNotificationsUnlockPostHandler,
-} = require("./unlock-processing/route.ts");
+} = require("./unlock-processing/route-handler.ts");
 
 type StoreApiAccessDenied =
   import("@/lib/server/store-api-access").StoreApiAccessDenied;
@@ -173,11 +173,11 @@ async function parseBody(response: Response): Promise<Record<string, unknown>> {
 }
 
 const ROUTE_SOURCES = [
-  "src/app/api/assistant/responsible-external-notifications/route.ts",
-  "src/app/api/assistant/responsible-external-notifications/prepare/route.ts",
-  "src/app/api/assistant/responsible-external-notifications/send/route.ts",
-  "src/app/api/assistant/responsible-external-notifications/cancel/route.ts",
-  "src/app/api/assistant/responsible-external-notifications/unlock-processing/route.ts",
+  "src/app/api/assistant/responsible-external-notifications/route-handler.ts",
+  "src/app/api/assistant/responsible-external-notifications/prepare/route-handler.ts",
+  "src/app/api/assistant/responsible-external-notifications/send/route-handler.ts",
+  "src/app/api/assistant/responsible-external-notifications/cancel/route-handler.ts",
+  "src/app/api/assistant/responsible-external-notifications/unlock-processing/route-handler.ts",
 ];
 
 const tests = [

@@ -297,6 +297,7 @@ const tests: TestCase[] = [
         { notificationTypes: ["morning_report", "evening_report"], limit: 20 },
         { notificationTypes: ["important_alert"], limit: 20 },
         { notificationTypes: ["important_alert"], limit: 20 },
+        { notificationTypes: ["important_alert"], limit: 20 },
       ]);
 
       const calls: string[] = [];
@@ -416,6 +417,39 @@ const tests: TestCase[] = [
         limit: 3,
       });
       assert.deepEqual(selected.map((row) => row.id), ["approval-0", "approval-1", "approval-2"]);
+    },
+  },
+  {
+    name: "allowlist accepts human response scanner alerts with stable event identity",
+    run: () => {
+      assert.equal(
+        isResponsibleOperationalApprovalAutoDrainCandidate(
+          candidate({
+            priority: "normal",
+            context: {
+              source: "assistant_enqueue_internal_notification",
+              reason: "human_response_pending",
+              commitment_id: "commitment-1",
+              event_key: "human-response:commitment-1:10",
+              needs_human_action: true,
+            },
+          }) as any,
+        ),
+        true,
+      );
+      assert.equal(
+        isResponsibleOperationalApprovalAutoDrainCandidate(
+          candidate({
+            context: {
+              source: "assistant_enqueue_internal_notification",
+              reason: "human_response_pending",
+              commitment_id: "commitment-1",
+              needs_human_action: true,
+            },
+          }) as any,
+        ),
+        false,
+      );
     },
   },
   {

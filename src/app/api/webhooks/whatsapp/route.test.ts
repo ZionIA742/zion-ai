@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractEventsFromPayload } from "./route";
+import { extractEventsFromPayload } from "./route-handler";
 
 function payload(field: string, message: Record<string, unknown>) {
   return {

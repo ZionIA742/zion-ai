@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { createClient } from "@supabase/supabase-js";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import { createZionAdminApiDeniedResponse, createZionAdminApiJsonResponse } from "@/lib/server/zion-admin-api-response";
@@ -12,7 +13,7 @@ type MetaIntegration = {
   access_token: string | null;
 };
 
-export async function GET(request: Request) {
+async function zionBackendOriginalGET(request: Request) {
   const access = await resolveZionAdminApiAccess();
   if (!access.ok) return createZionAdminApiDeniedResponse(access);
 
@@ -106,4 +107,14 @@ export async function GET(request: Request) {
       503,
     );
   }
+}
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/zion-admin/meta-pricing",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(request: Request) {
+  return zionBackendObservedGET(request);
 }

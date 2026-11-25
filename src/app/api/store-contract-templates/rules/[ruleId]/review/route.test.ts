@@ -4,7 +4,7 @@ import {
   StoreContractTemplateAccessError,
   reviewStoreContractTemplateRule,
 } from "@/lib/server/store-contract-templates/template-management";
-import { createStoreContractTemplateRuleReviewPatchHandler } from "./route";
+import { createStoreContractTemplateRuleReviewPatchHandler } from "./route-handler";
 
 const baseResult = {
   store: { id: "store-1", organization_id: "org-1", name: "Loja" },

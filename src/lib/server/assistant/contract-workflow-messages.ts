@@ -53,6 +53,13 @@ export type PushAssistantContractWorkflowDecisionMessageInput = {
   sourceOverride?: string | null;
   availableActionsOverride?: AssistantContractWorkflowAction[] | null;
   recoveryResponseSetId?: string | null;
+  recoveryBinding?: {
+    responseSetId: string;
+    queueId: string;
+    claimToken: string;
+    anchorMessageId: string;
+    leadId: string | null;
+  };
 };
 
 function cleanText(value: unknown) {
@@ -558,6 +565,137 @@ async function enqueueContractWorkflowNotification(args: {
   }
 }
 
+
+async function pushRecoveryContractWorkflow(
+  input: PushAssistantContractWorkflowDecisionMessageInput
+) {
+  const binding = input.recoveryBinding;
+
+  if (!binding ||
+      !binding.responseSetId ||
+      !binding.leadId ||
+      !binding.anchorMessageId ||
+      binding.responseSetId !== input.recoveryResponseSetId ||
+      binding.leadId !== input.leadId ||
+      binding.anchorMessageId !== input.sourceMessageId ||
+      !binding.queueId ||
+      !binding.claimToken ||
+      !input.conversationId ||
+      !input.commercialOpportunityId) {
+    throw new Error("P9_RECOVERY_CONTRACT_BINDING_INVALID");
+  }
+
+  async function write(
+    operation: "card" | "report" | "notification",
+    payload: Record<string, unknown>
+  ) {
+    const { data, error } = await input.supabase.rpc(
+      "p9_10_4_d_write_assistant_effect_by_system",
+      {
+        p_response_set_id: binding!.responseSetId,
+        p_queue_id: binding!.queueId,
+        p_claim_token: binding!.claimToken,
+        p_organization_id: input.organizationId,
+        p_store_id: input.storeId,
+        p_conversation_id: input.conversationId,
+        p_anchor_message_id: binding!.anchorMessageId,
+        p_lead_id: binding!.leadId,
+        p_commercial_opportunity_id: input.commercialOpportunityId,
+        p_operation: operation,
+        p_payload: payload,
+      }
+    );
+
+    if (error) {
+      throw new Error(
+        error.message || "P9_RECOVERY_ASSISTANT_EFFECT_FAILED"
+      );
+    }
+
+    if (!data || typeof data.created !== "boolean") {
+      throw new Error("P9_RECOVERY_ASSISTANT_RESULT_INVALID");
+    }
+
+    return data;
+  }
+
+  const source =
+    cleanText(input.sourceOverride) || CONTRACT_WORKFLOW_SOURCE;
+
+  const metadata = await buildContractWorkflowMetadata(input);
+
+  const card = await write("card", {
+    content: buildContractWorkflowContent(input),
+    metadata,
+  });
+
+  if (!cleanText(card.messageId) || !cleanText(card.threadId)) {
+    throw new Error("P9_RECOVERY_CARD_NOT_CONFIRMED");
+  }
+
+  const descriptor = getContractWorkflowNotificationDescriptor(metadata);
+
+  const eventKey = [
+    "assistant_contract_workflow_decision",
+    source,
+    input.quoteId,
+    input.quoteVersionId,
+    input.trigger,
+  ].join(":");
+
+  const notification = await write("notification", {
+    title: descriptor.title,
+    body: descriptor.body,
+    context: {
+      source,
+      event_key: eventKey,
+      kind: "contract_workflow_decision",
+      quote_id: input.quoteId,
+      quote_version_id: input.quoteVersionId,
+      quote_number: input.quoteNumber || null,
+      customer_name: input.customerName || null,
+      trigger: input.trigger,
+      decision: metadata.decision,
+    },
+  });
+
+  if (!cleanText(notification.id)) {
+    throw new Error("P9_RECOVERY_NOTIFICATION_NOT_CONFIRMED");
+  }
+
+  const reportMetadata = await buildCustomerContextReportMetadata({
+    supabase: input.supabase,
+    organizationId: input.organizationId,
+    storeId: input.storeId,
+    leadId: input.leadId,
+    conversationId: input.conversationId,
+    quoteId: input.quoteId,
+    quoteNumber: input.quoteNumber,
+    customerName: input.customerName,
+    trigger: input.trigger,
+    source,
+    relatedMessageId: card.messageId,
+  });
+
+  const report = await write("report", {
+    content: cleanText(reportMetadata.narrative) ||
+      "Relatorio do cliente disponivel.",
+    metadata: reportMetadata,
+  });
+
+  if (!cleanText(report.messageId)) {
+    throw new Error("P9_RECOVERY_REPORT_NOT_CONFIRMED");
+  }
+
+  return {
+    ok: true as const,
+    created: card.created === true,
+    deduped: card.created !== true,
+    threadId: String(card.threadId),
+    messageId: String(card.messageId),
+  };
+}
+
 export async function pushAssistantContractWorkflowDecisionMessage(
   input: PushAssistantContractWorkflowDecisionMessageInput
 ) {
@@ -565,6 +703,10 @@ export async function pushAssistantContractWorkflowDecisionMessage(
   const quoteVersionId = cleanText(input.quoteVersionId);
   if (!quoteVersionId) {
     throw new Error("QUOTE_VERSION_REFERENCE_MISSING");
+  }
+
+  if (input.recoveryResponseSetId || input.recoveryBinding) {
+    return pushRecoveryContractWorkflow(input);
   }
 
   const threadId = await getOrCreateAssistantPrimaryThread({

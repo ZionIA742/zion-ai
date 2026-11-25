@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
   createContractTemplateDownloadGetHandler,
-} from "./route";
+} from "./route-handler";
 
 type Version = Record<string, unknown> | null;
 

@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { getSafeInternalLoginRedirect } from "@/lib/auth-safe-redirect";
 import { resolveAuthPublicBaseUrl } from "@/lib/auth-public-url";
+import { CodeIcon, LockIcon, MailIcon, SacredCircuitFrame } from "@/components/auth/SacredCircuitFrame";
 
 type LoginMode = "password" | "code" | "verifyCode" | "forgot";
 
@@ -370,14 +371,14 @@ export default function LoginPage() {
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 bg-cover bg-center bg-no-repeat sm:hidden"
         style={{
-          backgroundImage: 'url("/branding/zion-login-mountains-mobile.webp")',
+          backgroundImage: 'url("/branding/zion-sacred-circuit-mobile.webp")',
         }}
       />
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 hidden bg-cover bg-center bg-no-repeat sm:block"
         style={{
-          backgroundImage: 'url("/branding/zion-login-mountains-desktop.webp")',
+          backgroundImage: 'url("/branding/zion-sacred-circuit-desktop.webp")',
         }}
       />
       <div
@@ -385,11 +386,11 @@ export default function LoginPage() {
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "linear-gradient(180deg, rgba(1,10,16,0.07), rgba(1,10,16,0.02) 45%, rgba(1,10,16,0.30))",
+            "linear-gradient(180deg, rgba(1,10,16,0.03), rgba(1,10,16,0.01) 45%, rgba(1,10,16,0.18))",
         }}
       />
-      <div className="relative z-10 flex w-full min-w-0 flex-1 items-center justify-center px-3 py-5 sm:px-4 sm:py-8">
-        <section className="w-full min-w-0 max-w-[420px] rounded-[22px] border border-cyan-400/65 bg-[#04131b]/90 p-5 shadow-[0_26px_85px_rgba(0,0,0,0.60)] backdrop-blur-lg sm:p-6">
+      <div className="relative z-10 flex w-full min-w-0 flex-1 items-center justify-center px-3 py-8 sm:px-6 sm:py-12">
+        <SacredCircuitFrame variant="commercial">
         <div className="mb-5 flex items-center justify-center">
           <h1
             className="font-serif text-[52px] font-normal leading-none tracking-[-0.045em] text-white drop-shadow-sm sm:text-[56px]"
@@ -397,6 +398,8 @@ export default function LoginPage() {
           >
             Zion
           </h1>
+          <div aria-hidden="true" className="mx-auto mt-2 h-px w-12 bg-cyan-300 shadow-[0_0_12px_3px_rgba(34,211,238,0.8)]" />
+          <p className="mt-4 text-[10px] font-medium uppercase tracking-[0.38em] text-slate-300">Plataforma de gestão</p>
         </div>
 
         <h2 className="mb-5 text-center text-[25px] font-semibold tracking-[-0.02em] text-white">{title}</h2>
@@ -417,23 +420,26 @@ export default function LoginPage() {
           <form onSubmit={handlePasswordLogin} className="space-y-3">
             <div>
               <label className="text-xs font-medium text-slate-200">E-mail</label>
+              <div className="relative mt-1.5">
+                <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-200"><MailIcon /></span>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-1.5 w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 text-base sm:text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
+                className="w-full border border-slate-300/40 bg-[#0b2530]/90 px-10 py-2.5 text-base text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/90 focus:ring-2 focus:ring-cyan-300/20 sm:text-sm"
                 placeholder="seu@email.com"
                 type="email"
                 autoComplete="email"
-              />
+              /></div>
             </div>
 
             <div>
               <label className="text-xs font-medium text-slate-200">Senha</label>
               <div className="relative mt-1.5">
+                <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-200"><LockIcon /></span>
                 <input
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  className="w-full rounded-[14px] border border-slate-300/35 bg-[#0b2530]/85 px-4 py-3 pr-12 text-base sm:text-sm text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/80 focus:ring-2 focus:ring-cyan-300/15"
+                  className="w-full border border-slate-300/40 bg-[#0b2530]/90 px-10 py-2.5 pr-12 text-base text-zinc-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/90 focus:ring-2 focus:ring-cyan-300/20 sm:text-sm"
                   placeholder="••••••••"
                   type={showPassword ? "text" : "password"}
                   autoComplete="current-password"
@@ -484,7 +490,8 @@ export default function LoginPage() {
               <button
                 type="submit"
                 disabled={busy}
-                className="rounded-[14px] bg-cyan-400 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+                className="flex items-center justify-center gap-2 bg-cyan-400 px-4 py-2.5 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                style={{ clipPath: "polygon(0 9px, 9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px))" }}
               >
                 {busy ? "Entrando..." : "Entrar"}
               </button>
@@ -493,9 +500,10 @@ export default function LoginPage() {
                 type="button"
                 onClick={() => changeMode("code")}
                 disabled={busy}
-                className="rounded-[14px] border border-cyan-400/65 bg-[#0b2530]/75 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+                className="flex items-center justify-center gap-2 border border-cyan-400/75 bg-[#0b2530]/75 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-cyan-300/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
+                style={{ clipPath: "polygon(0 9px, 9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px))" }}
               >
-                Código
+                <CodeIcon /> Código
               </button>
             </div>
           </form>
@@ -615,7 +623,7 @@ export default function LoginPage() {
             </button>
           ) : null}
         </div>
-        </section>
+        </SacredCircuitFrame>
       </div>
 
       <footer className="relative z-10 px-4 pb-5 pt-5">

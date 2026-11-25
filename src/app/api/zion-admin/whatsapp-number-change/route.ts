@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import { createServiceSupabaseClient } from "@/lib/server/zion-account-provisioning";
 import { createWhatsappNumberChangeRouteHandler } from "./route-handler";
@@ -10,4 +11,14 @@ const handler = createWhatsappNumberChangeRouteHandler({
   createServiceSupabase: () => createServiceSupabaseClient() as never,
 });
 
-export const POST = handler;
+const zionBackendOriginalPOST = handler;
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/zion-admin/whatsapp-number-change",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export const POST: typeof zionBackendOriginalPOST = async function POST(request: Parameters<typeof zionBackendOriginalPOST>[0]) {
+  return zionBackendObservedPOST(request);
+};

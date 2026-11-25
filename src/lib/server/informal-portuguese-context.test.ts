@@ -4,7 +4,7 @@ import test from "node:test";
 import { buildInformalPortugueseContextInstruction } from "./informal-portuguese-context";
 
 const salesSource = readFileSync("src/lib/server/generate-ai-sales-reply.ts", "utf8");
-const assistantSource = readFileSync("src/app/api/assistant/reply/route.ts", "utf8");
+const assistantSource = readFileSync("src/app/api/assistant/reply/route-handler.ts", "utf8");
 
 test("a politica cobre linguagem informal sem transformar contexto em autorizacao", () => {
   const policy = buildInformalPortugueseContextInstruction();

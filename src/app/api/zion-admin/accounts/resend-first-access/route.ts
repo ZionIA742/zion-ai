@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
 import {
   createFirstAccessAttemptId,
@@ -16,7 +17,7 @@ import {
 import { writeZionAdminAuditEvent } from "@/lib/server/zion-admin-audit";
 import { handleResendFirstAccess } from "./route-handler";
 
-export async function POST(request: Request) {
+ async function zionBackendOriginalPOST(request: Request) {
   return handleResendFirstAccess(request, {
     resolveAccess: () =>
       resolveZionAdminApiAccess({ requiredCapability: "manage_accounts" }),
@@ -34,4 +35,14 @@ export async function POST(request: Request) {
     readFirstAccessInviteId,
     writeAuditEvent: writeZionAdminAuditEvent,
   });
+}
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/zion-admin/accounts/resend-first-access",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export async function POST(request: Request) {
+  return zionBackendObservedPOST(request);
 }

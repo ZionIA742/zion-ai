@@ -70,7 +70,7 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
   return originalResolveFilename.call(this, request, parent, isMain, options);
 };
 
-const routeModulePromise = import("./route");
+const routeModulePromise = import("./route-handler");
 
 async function loadRouteModule() {
   return routeModulePromise;

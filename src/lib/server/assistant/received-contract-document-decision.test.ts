@@ -750,7 +750,7 @@ test("os dois canais chamam o resolvedor antes do fluxo normal", () => {
     "utf8",
   );
   const assistantSource = readFileSync(
-    join(process.cwd(), "src/app/api/assistant/reply/route.ts"),
+    join(process.cwd(), "src/app/api/assistant/reply/route-handler.ts"),
     "utf8",
   );
 

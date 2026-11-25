@@ -121,6 +121,17 @@ function isPostMaterializationRecoveryCandidate(row: AiRunQueueRow): boolean {
   return input.type === "sales_ai_post_materialization_recovery";
 }
 
+function classifyRecoveryFailure(error: unknown): string {
+  const detail = safeError(error);
+  if (/claim.*(expired|missing|invalid|different)|AI_RUN_QUEUE.*CLAIM|claim.*authority/i.test(detail)) {
+    return /expired/i.test(detail) ? "recovery_claim_expired" : "recovery_claim_authority_unavailable";
+  }
+  if (/human_control|HUMAN_CONTROL|takeover|hard_hold|humano_assumiu/i.test(detail)) {
+    return "recovery_human_control_blocked";
+  }
+  return "recovery_execution_failed";
+}
+
 function hasPersistedAiSalesReply(
   result: Awaited<ReturnType<typeof generateAndSaveAiSalesReply>>,
 ): boolean {
@@ -216,6 +227,78 @@ async function consumeMatchingSalesResumeWindowState(args: {
   }
 }
 
+
+async function settleRecoveryQueueFailure(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  queueId: string;
+  claimToken: string;
+  detail: string;
+  invalidIdentity?: boolean;
+}): Promise<{
+  status: "failed" | "skipped";
+  detail: string;
+}> {
+  try {
+    const { data,error } = await args.supabase.rpc(
+      "p9_10_4_d_settle_recovery_failure_by_system",
+      {
+        p_organization_id: args.organizationId,
+        p_store_id: args.storeId,
+        p_queue_id: args.queueId,
+        p_claim_token: args.claimToken,
+        p_error_text: args.detail,
+        p_invalid_identity: args.invalidIdentity === true,
+      }
+    );
+
+    if (error) {
+      throw new Error(error.message || "RECOVERY_SETTLEMENT_FAILED");
+    }
+
+    switch (data?.outcome) {
+      case "deferred":
+        return {
+          status: "skipped",
+          detail: "human_control_active",
+        };
+
+      case "claim_lost":
+        return {
+          status: "skipped",
+          detail: "recovery_claim_lost",
+        };
+
+      case "retryable":
+        return {
+          status: "failed",
+          detail: args.detail,
+        };
+
+      case "failed_final":
+        return {
+          status: "failed",
+          detail: "recovery_failed_final:" + args.detail,
+        };
+
+      default:
+        throw new Error("RECOVERY_SETTLEMENT_RESULT_INVALID");
+    }
+  } catch (error) {
+    console.warn("[sales-ai-recovery] settlement unavailable", {
+      queueId: args.queueId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    // Do not issue a second, unprotected finalization.
+    return {
+      status: "failed",
+      detail: "recovery_settlement_unconfirmed",
+    };
+  }
+}
+
 export async function processDueAiRunQueue(
   input: ProcessAiRunQueueInput,
 ): Promise<ProcessAiRunQueueResult> {
@@ -280,60 +363,102 @@ export async function processDueAiRunQueue(
     }
     if (isPostMaterializationRecoveryCandidate(row)) {
       const queueId = String(row.id || "").trim();
-      const queueInput = row.input && typeof row.input === "object" ? row.input : {};
+      const queueInput = row.input && typeof row.input === "object"
+        ? row.input : {};
+
       const conversationId = String(row.conversation_id || "").trim();
       const anchorMessageId = String(queueInput.anchorMessageId || "").trim();
+      const responseSetId = String(queueInput.responseSetId || "").trim();
 
-      if (!queueId || !conversationId || !anchorMessageId) {
-        await markQueueProcessed({
-          supabase,
-          id: queueId,
-          organizationId,
-          storeId,
-          detail: "post_materialization_recovery_identity_missing",
-          claimToken: row.claim_token,
-        });
+      if (input.requireClaim !== true || !row.claim_token) {
         skipped += 1;
         results.push({
           queueId,
           queueKey: row.queue_key || null,
           status: "skipped",
-          detail: "post_materialization_recovery_identity_missing",
+          detail: "recovery_claim_required",
         });
         continue;
       }
 
-      try {
-        const recovery = await recoverConfirmedSalesAiReplySetPostCommitEffects({
+      const claimToken = row.claim_token;
+
+      const settleFailure = async (
+        detail: string,
+        invalidIdentity = false,
+      ) => {
+        const outcome = await settleRecoveryQueueFailure({
           supabase,
           organizationId,
           storeId,
-          conversationId,
-          anchorMessageId,
+          queueId,
+          claimToken,
+          detail,
+          invalidIdentity,
         });
-        if (recovery.status === "deferred" || recovery.complete === false) {
-          if (row.claim_token) {
-            await finalizeWorkerTaskBySystem(supabase, {
-              kind: "ai_run_queue",
-              organizationId,
-              storeId,
-              id: queueId,
-              claimToken: row.claim_token,
-              outcome: "retryable",
-              errorText: recovery.status === "deferred"
-                ? "human_control_active"
-                : "post_materialization_recovery_incomplete",
-            });
-          }
+
+        if (outcome.status === "skipped") {
+          skipped += 1;
+        } else {
           failed += 1;
-          results.push({
-            queueId,
-            queueKey: row.queue_key || null,
-            status: "failed",
-            detail: recovery.status === "deferred"
-              ? "human_control_active"
-              : "post_materialization_recovery_incomplete",
+        }
+
+        results.push({
+          queueId,
+          queueKey: row.queue_key || null,
+          ...outcome,
+        });
+      };
+
+      const uuidPattern =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+      if (
+        !uuidPattern.test(queueId) ||
+        !uuidPattern.test(conversationId) ||
+        !uuidPattern.test(anchorMessageId) ||
+        !uuidPattern.test(responseSetId)
+      ) {
+        await settleFailure(
+          "post_materialization_recovery_identity_invalid",
+          true,
+        );
+        continue;
+      }
+
+      try {
+        await assertWorkerClaimActiveBySystem(supabase, {
+          kind: "ai_run_queue",
+          organizationId,
+          storeId,
+          id: queueId,
+          claimToken,
+        });
+
+        const recovery =
+          await recoverConfirmedSalesAiReplySetPostCommitEffects({
+            supabase,
+            organizationId,
+            storeId,
+            conversationId,
+            anchorMessageId,
+            responseSetId,
+            workerClaim: {
+              kind: "ai_run_queue",
+              id: queueId,
+              token: claimToken,
+            },
           });
+
+        if (recovery.status === "deferred") {
+          await settleFailure("recovery_human_control_observed");
+          continue;
+        }
+
+        if (recovery.complete !== true) {
+          await settleFailure(
+            "post_materialization_recovery_incomplete"
+          );
           continue;
         }
 
@@ -343,8 +468,9 @@ export async function processDueAiRunQueue(
           organizationId,
           storeId,
           detail: null,
-          claimToken: row.claim_token,
+          claimToken,
         });
+
         succeeded += 1;
         results.push({
           queueId,
@@ -353,26 +479,9 @@ export async function processDueAiRunQueue(
           detail: null,
         });
       } catch (error) {
-        const detail = safeError(error);
-        if (row.claim_token) {
-          await finalizeWorkerTaskBySystem(supabase, {
-            kind: "ai_run_queue",
-            organizationId,
-            storeId,
-            id: queueId,
-            claimToken: row.claim_token,
-            outcome: "retryable",
-            errorText: detail,
-          });
-        }
-        failed += 1;
-        results.push({
-          queueId,
-          queueKey: row.queue_key || null,
-          status: "failed",
-          detail,
-        });
+        await settleFailure(classifyRecoveryFailure(error));
       }
+
       continue;
     }
 

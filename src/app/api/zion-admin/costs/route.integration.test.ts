@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   createZionAdminCostsGetHandler,
   type ZionAdminCostsGetHandlerDeps,
-} from "./route";
+} from "./route-handler";
 
 const URL = "https://zion.example/api/zion-admin/costs";
 const TODAY = "2026-11-30";

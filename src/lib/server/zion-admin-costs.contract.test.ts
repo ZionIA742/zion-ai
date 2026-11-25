@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 const read = (name: string) => readFileSync(`${process.cwd()}/${name}`, "utf8");
-const api = read("src/app/api/zion-admin/costs/route.ts");
+const api = read("src/app/api/zion-admin/costs/route-handler.ts");
 const ui = read("src/app/zion-admin/ZionAdminCostsSection.tsx");
 const dashboard = read("src/app/zion-admin/ZionAdminDashboardClient.tsx");
 const sql = read("supabase/migrations/20261020235900_zion_admin_cost_ledger.sql");

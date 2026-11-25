@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { processWhatsappInbox } from "@/lib/server/whatsapp-inbox-processor";
@@ -7,6 +8,8 @@ import { processPostTechnicalVisitFollowups } from "@/lib/server/post-technical-
 import { drainResponsibleOperationalApprovalNotifications } from "@/lib/server/assistant/responsible-external-notifications-drainer";
 import { recoverPendingAssistantPanelSyncNotifications } from "@/lib/server/assistant/assistant-panel-whatsapp-sync";
 import { resumeEligiblePersistedResponsibleWhatsappEvents } from "@/lib/server/assistant/responsible-whatsapp-conversation";
+import { scanHumanResponseAlerts } from "@/lib/server/human-response-alert-scanner";
+import { executeAudioRetention, type AudioRetentionExecutorResult } from "@/lib/server/audio-retention-executor";
 import { getWhatsappProcessAllHttpStatus } from "@/lib/server/whatsapp-process-all-status";
 
 export const runtime = "nodejs";
@@ -53,6 +56,10 @@ type StoreExecutionSummary = {
     uncertain: number;
     skipped: number;
   };
+  humanResponseAlerts?: {
+    alerted: number;
+    fulfilled: number;
+  };
   assistantPanelSync?: {
     scanned: number;
     sent: number;
@@ -66,6 +73,7 @@ type StoreExecutionSummary = {
     failed: number;
     skipped: number;
   };
+  audioRetention?: AudioRetentionExecutorResult;
   error?: string;
 };
 
@@ -152,7 +160,7 @@ async function listActiveWhatsappStores() {
   return Array.from(deduped.values());
 }
 
-export async function GET(req: Request) {
+async function zionBackendOriginalGET(req: Request) {
   const auth = isCronRequestAuthorized(req);
 
   if (!auth.ok) {
@@ -253,6 +261,15 @@ export async function GET(req: Request) {
           requireClaim: true,
         });
 
+        const humanResponseAlertResult = await scanHumanResponseAlerts({
+          supabase: timeoutSupabase,
+          organizationId: store.organizationId,
+          storeId: store.storeId,
+        });
+        if (!humanResponseAlertResult.ok && humanResponseAlertResult.reason !== "human_authority_unavailable") {
+          throw new Error(`Falha ao verificar alertas de resposta humana: ${humanResponseAlertResult.reason}`);
+        }
+
         const responsibleAssistantRecovery = await resumeEligiblePersistedResponsibleWhatsappEvents({
           organizationId: store.organizationId,
           storeId: store.storeId,
@@ -292,6 +309,15 @@ export async function GET(req: Request) {
           requireClaim: true,
         });
 
+        const audioRetentionResult = process.env.ZION_AUDIO_RETENTION_EXECUTOR_ENABLED === "true"
+          ? await executeAudioRetention({
+              supabase: timeoutSupabase,
+              organizationId: store.organizationId,
+              storeId: store.storeId,
+              limit: parseEnvLimit(process.env.ZION_AUDIO_RETENTION_LIMIT, 50),
+            })
+          : null;
+
         processedStores += 1;
         inboxProcessed += inboxResult.processed;
         inboxSucceeded += inboxResult.succeeded;
@@ -315,6 +341,12 @@ export async function GET(req: Request) {
             skipped: inboxResult.skipped,
           },
           responsibleAssistantRecovery,
+          humanResponseAlerts: humanResponseAlertResult.ok
+            ? {
+                alerted: humanResponseAlertResult.alerted,
+                fulfilled: humanResponseAlertResult.fulfilled,
+              }
+            : { alerted: 0, fulfilled: 0 },
           pending: {
             processed: pendingResult.processed,
             sent: pendingResult.sent,
@@ -329,6 +361,7 @@ export async function GET(req: Request) {
             failed: aiQueueResult.failed,
             skipped: aiQueueResult.skipped,
           },
+          ...(audioRetentionResult ? { audioRetention: audioRetentionResult } : {}),
         });
       } catch (error) {
         storeErrors += 1;
@@ -424,4 +457,15 @@ export async function GET(req: Request) {
       500,
     );
   }
+}
+
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/cron/whatsapp-process-all",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(req: Request) {
+  return zionBackendObservedGET(req);
 }

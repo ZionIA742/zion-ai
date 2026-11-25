@@ -91,7 +91,7 @@ test("missing tenant, store or idempotency identity fails closed", async () => {
 
 test("by_system is not exposed by the HTTP creation route", async () => {
   const source = await readFile(
-    new URL("../../../app/api/sales-quotes/create/route.ts", import.meta.url),
+    new URL("../../../app/api/sales-quotes/create/route-handler.ts", import.meta.url),
     "utf8",
   );
 

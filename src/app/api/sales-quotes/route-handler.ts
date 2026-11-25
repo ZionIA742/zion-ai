@@ -1,0 +1,484 @@
+import { withBackendDiagnosticRoute } from "../../../lib/server/zion-admin-diagnostic-backend-next";
+import { NextResponse } from "next/server";
+import {
+  authenticateQuoteRequest,
+  getSalesQuotesSelect,
+  QuoteAccessError,
+} from "@/lib/server/sales-quotes/quote-auth";
+import { listUnlinkedSalesQuotesForLead } from "@/lib/server/sales-quotes/unlinked-quote-list";
+import { assertHumanQuoteEditEligibility, HumanQuoteEditProvenanceError } from "@/lib/server/sales-quotes/human-quote-edit-provenance";
+import type {
+  QuoteLeadRow,
+  SalesQuoteRow,
+  SalesQuoteVersionRow,
+} from "@/lib/server/sales-quotes/types";
+
+function humanEditEligible(quote: SalesQuoteRow): boolean {
+  try { assertHumanQuoteEditEligibility(quote); return true; }
+  catch (error) { if (error instanceof HumanQuoteEditProvenanceError) return false; throw error; }
+}
+
+type SalesQuoteListItem = {
+  id: string;
+  quote_number: string | null;
+  title: string | null;
+  status: string | null;
+  total_cents: number | null;
+  created_at: string | null;
+  current_version_id: string | null;
+  human_edit_eligible: boolean;
+  current_version: {
+    id: string;
+    status: string | null;
+    original_filename: string | null;
+    mime_type: string | null;
+    size_bytes: number | null;
+    storage_bucket: string | null;
+    storage_path: string | null;
+  } | null;
+};
+
+type CommercialOpportunityScopeRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  origin_lead_id: string | null;
+};
+
+type CurrentCommercialProposalSummary = {
+  proposal_state: string | null;
+  current_quote_id: string | null;
+  current_quote_version_id: string | null;
+  commercial_opportunity_id: string | null;
+  reason_code: string | null;
+};
+
+type CurrentCommercialProposalAcceptanceSummary = {
+  acceptance_state: string | null;
+  reason_code: string | null;
+  current_quote_id: string | null;
+  current_quote_version_id: string | null;
+  accepted_at: string | null;
+};
+
+function cleanText(value: unknown) {
+  const text = String(value || "").trim();
+  return text || null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeCurrentCommercialProposalRows(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.filter(isRecord);
+  }
+
+  if (isRecord(value)) {
+    return [value];
+  }
+
+  return [];
+}
+
+function buildJsonResponse(body: unknown, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+export function createSalesQuotesListGetHandler(deps?: {
+  authenticateQuoteRequest?: typeof authenticateQuoteRequest;
+}) {
+  const resolveAuth = deps?.authenticateQuoteRequest ?? authenticateQuoteRequest;
+
+  return async function GET(request: Request) {
+  try {
+    const url = new URL(request.url);
+    const leadId = String(url.searchParams.get("leadId") || "").trim();
+    const commercialOpportunityId = String(
+      url.searchParams.get("commercialOpportunityId") || ""
+    ).trim();
+
+    if (!leadId) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "MISSING_LEAD_ID",
+          message: "Lead ID nao informado.",
+        },
+        400
+      );
+    }
+
+    const auth = await resolveAuth();
+
+    const { data: lead, error: leadError } = await auth.supabase
+      .from("leads")
+      .select("id, organization_id, store_id, name, phone")
+      .eq("id", leadId)
+      .in("organization_id", auth.organizationIds)
+      .maybeSingle<QuoteLeadRow>();
+
+    if (leadError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_LEAD_FAILED",
+          message: leadError.message,
+        },
+        500
+      );
+    }
+
+    if (!lead) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LEAD_NOT_FOUND",
+          message: "Lead nao encontrada ou fora do escopo do usuario.",
+        },
+        404
+      );
+    }
+
+    const leadStoreId = String(lead.store_id || "").trim();
+
+    if (!leadStoreId) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LEAD_STORE_REQUIRED_FOR_COMMERCIAL_OPPORTUNITY",
+          message: "A lead informada nao possui loja para validar a opportunity.",
+        },
+        403
+      );
+    }
+
+    const { data: store, error: storeError } = await auth.supabase
+      .from("stores")
+      .select("id, organization_id")
+      .eq("id", leadStoreId)
+      .eq("organization_id", lead.organization_id)
+      .in("organization_id", auth.organizationIds)
+      .maybeSingle<{ id: string; organization_id: string }>();
+
+    if (storeError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_STORE_FAILED",
+          message: storeError.message,
+        },
+        500
+      );
+    }
+
+    if (!store) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "STORE_SCOPE_INVALID",
+          message: "A lead informada pertence a uma loja fora do escopo autorizado.",
+        },
+        403
+      );
+    }
+
+    if (!commercialOpportunityId) {
+      const quotes = await listUnlinkedSalesQuotesForLead({
+        supabase: auth.supabase,
+        organizationId: lead.organization_id,
+        storeId: leadStoreId,
+        leadId: lead.id,
+      });
+
+      return buildJsonResponse({
+        ok: true,
+        leadId: lead.id,
+        commercialOpportunityId: null,
+        organizationId: lead.organization_id,
+        storeId: leadStoreId,
+        currentCommercialProposal: null,
+        currentCommercialProposalAcceptance: null,
+        quotes,
+      });
+    }
+    const { data: opportunity, error: opportunityError } = await auth.supabase
+      .from("commercial_opportunities")
+      .select("id, organization_id, store_id, origin_lead_id")
+      .eq("id", commercialOpportunityId)
+      .eq("organization_id", lead.organization_id)
+      .eq("store_id", leadStoreId)
+      .eq("origin_lead_id", lead.id)
+      .maybeSingle<CommercialOpportunityScopeRow>();
+
+    if (opportunityError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_COMMERCIAL_OPPORTUNITY_FAILED",
+          message: opportunityError.message,
+        },
+        500
+      );
+    }
+
+    if (!opportunity) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "COMMERCIAL_OPPORTUNITY_NOT_FOUND_OR_FORBIDDEN",
+          message: "Opportunity comercial nao encontrada no escopo da lead.",
+        },
+        403
+      );
+    }
+
+    const { data: currentProposalData, error: currentProposalError } =
+      await auth.supabase.rpc("read_current_commercial_proposal_by_system", {
+        p_organization_id: opportunity.organization_id,
+        p_store_id: opportunity.store_id,
+        p_commercial_opportunity_id: opportunity.id,
+      });
+
+    if (currentProposalError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_CURRENT_COMMERCIAL_PROPOSAL_FAILED",
+          message: currentProposalError.message,
+        },
+        500
+      );
+    }
+
+    const currentProposalRows =
+      normalizeCurrentCommercialProposalRows(currentProposalData);
+    const currentProposalRow =
+      currentProposalRows.length === 1 ? currentProposalRows[0] : null;
+
+    if (
+      !currentProposalRow ||
+      cleanText(currentProposalRow.organization_id) !== opportunity.organization_id ||
+      cleanText(currentProposalRow.store_id) !== opportunity.store_id ||
+      cleanText(currentProposalRow.commercial_opportunity_id) !== opportunity.id
+    ) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "CURRENT_COMMERCIAL_PROPOSAL_SCOPE_INVALID",
+          message: "Proposta comercial atual invalida para a opportunity informada.",
+        },
+        409
+      );
+    }
+
+    const currentCommercialProposal: CurrentCommercialProposalSummary = {
+      proposal_state: cleanText(currentProposalRow.proposal_state),
+      current_quote_id: cleanText(currentProposalRow.current_quote_id),
+      current_quote_version_id: cleanText(currentProposalRow.current_quote_version_id),
+      commercial_opportunity_id: cleanText(currentProposalRow.commercial_opportunity_id),
+      reason_code: cleanText(currentProposalRow.reason_code),
+    };
+
+    let currentCommercialProposalAcceptance: CurrentCommercialProposalAcceptanceSummary = {
+      acceptance_state: "error",
+      reason_code: "acceptance_reader_unavailable",
+      current_quote_id: null,
+      current_quote_version_id: null,
+      accepted_at: null,
+    };
+
+    const { data: acceptanceData, error: acceptanceError } =
+      await auth.supabase.rpc("read_current_commercial_proposal_acceptance_by_system", {
+        p_organization_id: opportunity.organization_id,
+        p_store_id: opportunity.store_id,
+        p_commercial_opportunity_id: opportunity.id,
+      });
+
+    if (!acceptanceError) {
+      const acceptanceRows = normalizeCurrentCommercialProposalRows(acceptanceData);
+      const acceptanceRow = acceptanceRows.length === 1 ? acceptanceRows[0] : null;
+      const acceptanceState = cleanText(acceptanceRow?.acceptance_state);
+      const acceptanceReasonCode = cleanText(acceptanceRow?.reason_code);
+      const acceptanceScopeMatches =
+        acceptanceRow &&
+        cleanText(acceptanceRow.commercial_opportunity_id) === opportunity.id &&
+        (acceptanceState === "none" || acceptanceState === "accepted") &&
+        Boolean(acceptanceReasonCode);
+
+      if (acceptanceScopeMatches) {
+        currentCommercialProposalAcceptance = {
+          acceptance_state: acceptanceState,
+          reason_code: acceptanceReasonCode,
+          current_quote_id: cleanText(acceptanceRow.current_quote_id),
+          current_quote_version_id: cleanText(acceptanceRow.current_quote_version_id),
+          accepted_at: cleanText(acceptanceRow.accepted_at),
+        };
+      }
+    }
+
+    if (
+      currentCommercialProposal.proposal_state === "available" &&
+      (!currentCommercialProposal.current_quote_id ||
+        !currentCommercialProposal.current_quote_version_id)
+    ) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "CURRENT_COMMERCIAL_PROPOSAL_MALFORMED",
+          message: "Proposta comercial atual sem quote/version canonica.",
+        },
+        409
+      );
+    }
+
+    const quotesQuery = auth.supabase
+      .from("sales_quotes")
+      .select(getSalesQuotesSelect())
+      .eq("organization_id", opportunity.organization_id)
+      .eq("store_id", opportunity.store_id)
+      .eq("lead_id", lead.id)
+      .eq("commercial_opportunity_id", opportunity.id)
+      .order("created_at", { ascending: false });
+
+    const { data: quotesData, error: quotesError } = await quotesQuery;
+
+    if (quotesError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_QUOTES_FAILED",
+          message: quotesError.message,
+        },
+        500
+      );
+    }
+
+    const quotes = ((quotesData || []) as unknown) as SalesQuoteRow[];
+    const currentVersionIds = Array.from(
+      new Set(
+        quotes
+          .map((quote) => String(quote.current_version_id || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    let versionsById = new Map<string, SalesQuoteVersionRow>();
+
+    if (currentVersionIds.length > 0) {
+      const { data: versionsData, error: versionsError } = await auth.supabase
+        .from("sales_quote_versions")
+        .select(
+          "id, quote_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, quote_snapshot, created_at, sent_at"
+        )
+        .in("id", currentVersionIds)
+        .eq("organization_id", opportunity.organization_id)
+        .eq("store_id", opportunity.store_id);
+
+      if (versionsError) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "LOAD_QUOTE_VERSIONS_FAILED",
+            message: versionsError.message,
+          },
+          500
+        );
+      }
+
+      versionsById = new Map(
+        (((versionsData || []) as unknown) as SalesQuoteVersionRow[]).map((version) => [
+          version.id,
+          version,
+        ])
+      );
+    }
+
+    const quotesList: SalesQuoteListItem[] = quotes.map((quote) => {
+      const currentVersionId = String(quote.current_version_id || "").trim() || null;
+      const currentVersionCandidate = currentVersionId
+        ? versionsById.get(currentVersionId) || null
+        : null;
+      const currentVersion =
+        currentVersionCandidate &&
+        currentVersionCandidate.quote_id === quote.id &&
+        currentVersionCandidate.organization_id === quote.organization_id &&
+        currentVersionCandidate.store_id === quote.store_id
+          ? currentVersionCandidate
+          : null;
+
+      return {
+        id: quote.id,
+        quote_number: quote.quote_number,
+        title: quote.title,
+        status: quote.status,
+        total_cents: quote.total_cents,
+        created_at: quote.created_at,
+        current_version_id: currentVersionId,
+        human_edit_eligible: humanEditEligible(quote),
+        current_version: currentVersion
+          ? {
+              id: currentVersion.id,
+              status: currentVersion.status,
+              original_filename: currentVersion.original_filename || null,
+              mime_type: currentVersion.mime_type || null,
+              size_bytes:
+                typeof currentVersion.size_bytes === "number" ? currentVersion.size_bytes : null,
+              storage_bucket: currentVersion.storage_bucket || null,
+              storage_path: currentVersion.storage_path || null,
+            }
+          : null,
+      };
+    });
+
+    return buildJsonResponse({
+      ok: true,
+      leadId: lead.id,
+      commercialOpportunityId: opportunity.id,
+      organizationId: opportunity.organization_id,
+      storeId: opportunity.store_id,
+      currentCommercialProposal,
+      currentCommercialProposalAcceptance,
+      quotes: quotesList,
+    });
+  } catch (error: unknown) {
+    if (error instanceof QuoteAccessError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: error.code,
+          message: error.message,
+        },
+        error.status
+      );
+    }
+
+    return buildJsonResponse(
+      {
+        ok: false,
+        error: "SALES_QUOTES_LIST_FAILED",
+        message: error instanceof Error ? error.message : "Erro interno ao listar orcamentos.",
+      },
+      500
+    );
+  }
+  };
+}
+
+const zionBackendOriginalGET = createSalesQuotesListGetHandler();
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/sales-quotes",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export const GET: typeof zionBackendOriginalGET = async function GET(request: Parameters<typeof zionBackendOriginalGET>[0]) {
+  return zionBackendObservedGET(request);
+};

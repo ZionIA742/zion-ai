@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { AssistantReplyTestDependencies } from "@/app/api/assistant/reply/route";
-import { generateAssistantReply } from "@/app/api/assistant/reply/route";
+import type { AssistantReplyTestDependencies } from "@/app/api/assistant/reply/route-handler";
+import { generateAssistantReply } from "@/app/api/assistant/reply/route-handler";
 import { generateAiSalesReply } from "@/lib/server/generate-ai-sales-reply";
 
 export type SimulationTurn = {
@@ -448,6 +448,7 @@ export function createFixtureSupabase() {
     "read_store_settings_experience_policies_scoped",
     "read_store_channel_settings_by_system",
     "read_store_discount_counterpart_policy_scoped",
+    "read_commercial_conversation_fact_events_by_system",
   ]);
   const readMethods = new Set(["select", "eq", "in", "contains", "order", "limit", "gte", "lte", "gt", "lt", "neq", "is", "not", "maybeSingle"]);
   const makeQuery = (table: string) => {
@@ -462,12 +463,19 @@ export function createFixtureSupabase() {
     };
     const data = dynamicRows[table] || rows[table] || [];
     const query: Record<string, unknown> = {};
+    let rangeFrom = 0;
+    let rangeTo = data.length - 1;
     for (const method of readMethods) {
       query[method] = (...args: unknown[]) => {
         void args;
         return query;
       };
     }
+    query.range = (from: number, to: number) => {
+      rangeFrom = from;
+      rangeTo = to;
+      return query;
+    };
     for (const method of ["insert", "update", "upsert", "delete", "single"] as const) {
       query[method] = () => {
         events.push(`blocked:${table}.${method}`);
@@ -517,7 +525,8 @@ export function createFixtureSupabase() {
     }
 
     query.maybeSingle = async () => ({ data: data[0] || null, error: null });
-    query.then = (resolve: (value: unknown) => unknown) => resolve({ data, error: null });
+    query.then = (resolve: (value: unknown) => unknown) =>
+      resolve({ data: data.slice(rangeFrom, rangeTo + 1), error: null });
     return query;
   };
   return {
@@ -571,6 +580,7 @@ export function createFixtureSupabase() {
         events.push(`rpc:${name}`);
         if (!allowedRpcs.has(name)) throw new Error(`UNEXPECTED_SUPABASE_OPERATION:${name}`);
         if (name === "assistant_list_messages") return { data: activeMessages, error: null };
+        if (name === "read_commercial_conversation_fact_events_by_system") return { data: [], error: null };
         return { data: null, error: null };
       },
     },

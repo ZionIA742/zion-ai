@@ -21,6 +21,7 @@ export const AI_RUN_QUEUE_CLAIM_RPC = "claim_ai_run_queue_tasks_by_system";
 export const AI_RUN_QUEUE_FINALIZE_RPC = "finalize_ai_run_queue_task_by_system";
 export const WHATSAPP_INBOX_ASSERT_RPC = "assert_whatsapp_inbox_event_claim_by_system";
 export const AI_RUN_QUEUE_ASSERT_RPC = "assert_ai_run_queue_task_claim_by_system";
+export const AI_RUN_QUEUE_RECOVERY_RELEASE_RPC = "release_ai_run_queue_recovery_claim_by_system";
 
 export const WORKER_MAX_ATTEMPTS = 3;
 export const WORKER_LEASE_SECONDS = 120;
@@ -158,6 +159,33 @@ export async function finalizeWorkerTaskBySystem(
   }
   if (String(result.outcome || "") !== args.outcome) {
     throw new Error(`${rpc} confirmou outcome divergente para ${args.id}.`);
+  }
+}
+
+/**
+ * Recovery deferrals are control-flow, not failures. The claim RPC may have
+ * reserved an attempt before human control was observed; this authority
+ * releases that claim and restores the reservation atomically.
+ */
+export async function releaseAiRunQueueRecoveryClaimBySystem(
+  client: WorkerClaimRpcClient,
+  args: { organizationId: string; storeId: string; queueId: string; claimToken: string },
+) {
+  const { data, error } = await client.rpc(AI_RUN_QUEUE_RECOVERY_RELEASE_RPC, {
+    p_organization_id: args.organizationId,
+    p_store_id: args.storeId,
+    p_queue_id: args.queueId,
+    p_claim_token: args.claimToken,
+  });
+  if (error) throw new Error(`${AI_RUN_QUEUE_RECOVERY_RELEASE_RPC} falhou: ${error.message || "erro desconhecido"}`);
+  const rows = Array.isArray(data) ? data : [data];
+  const row = rows[0];
+  if (!row || typeof row !== "object" || Array.isArray(row) || (row as Record<string, unknown>).ok !== true) {
+    throw new Error(`${AI_RUN_QUEUE_RECOVERY_RELEASE_RPC} recusou a liberacao para ${args.queueId}.`);
+  }
+  const result = row as Record<string, unknown>;
+  if (String(result.id || "") !== args.queueId || String(result.claim_token || "") !== args.claimToken) {
+    throw new Error(`${AI_RUN_QUEUE_RECOVERY_RELEASE_RPC} confirmou registro ou token divergente para ${args.queueId}.`);
   }
 }
 

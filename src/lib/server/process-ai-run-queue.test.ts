@@ -87,6 +87,20 @@ function createQueueSupabase(
           return builder;
         }
 
+        if (table === "conversation_human_takeover_leases") {
+          return {
+            select(_selection: string) {
+              return this;
+            },
+            eq(_column: string, _value: unknown) {
+              return this;
+            },
+            async maybeSingle() {
+              return { data: null, error: null };
+            },
+          };
+        }
+
         assert.equal(table, "ai_run_queue");
         const state = {
           payload: {} as Record<string, unknown>,
@@ -245,6 +259,34 @@ const tests: TestCase[] = [
       assert.deepEqual(recorder.updates[0]?.is, [
         { column: "processed_at", value: null },
       ]);
+    },
+  },
+  {
+    name: "recovery queue rows cannot enter the legacy processor without a live claim",
+    run: async () => {
+      const recorder = createQueueSupabase([
+        queueRow({
+          input: {
+            type: "sales_ai_post_materialization_recovery",
+            responseSetId: "set-1",
+            anchorMessageId: "msg-customer-1",
+          },
+        }),
+      ]);
+      let flowCalls = 0;
+      const result = await processDueAiRunQueue({
+        organizationId: "org-1",
+        storeId: "store-1",
+        supabaseClient: recorder.supabase,
+        runAiFlow: async () => {
+          flowCalls += 1;
+          throw new Error("legacy AI flow must not run");
+        },
+      });
+
+      assert.equal(flowCalls, 0);
+      assert.equal(result.skipped, 1);
+      assert.equal(result.results[0]?.detail, "recovery_claim_required");
     },
   },
   {

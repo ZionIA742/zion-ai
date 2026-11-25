@@ -16,14 +16,14 @@ import {
   toKnownNumber,
   updateAiUsageCompleteness,
   getPeriodBoundaries,
-} from "./route";
+} from "./route-handler";
 
 type TestCase = {
   name: string;
   run: () => void | Promise<void>;
 };
 
-const routePath = join(fileURLToPath(new URL(".", import.meta.url)), "route.ts");
+const routePath = join(fileURLToPath(new URL(".", import.meta.url)), "route-handler.ts");
 const pagePath = join(process.cwd(), "src/app/zion-admin/page.tsx");
 
 function readSource(path: string) {
@@ -31,12 +31,16 @@ function readSource(path: string) {
 }
 
 function getGetFunctionSource(source: string) {
-  const marker = "export async function GET()";
+  const marker = "async function zionBackendOriginalGET()";
   const start = source.indexOf(marker);
 
   assert.notEqual(start, -1, "GET function must exist");
 
-  return source.slice(start);
+  const end = source.indexOf("const zionBackendObservedGET", start);
+  assert.ok(end > start, "Observed GET must follow original GET");
+  assert.match(source, /const zionBackendObservedGET = withBackendDiagnosticRoute\(\s*"\/api\/zion-admin\/overview",\s*"GET",\s*\(_zionRequest\?: Request\) => zionBackendOriginalGET\(\),?\s*\)/);
+  assert.match(source, /export async function GET\(\)\s*\{\s*return zionBackendObservedGET\(arguments\[0\] as Request \| undefined\);\s*\}/);
+  return source.slice(start, end);
 }
 
 function countOccurrences(source: string, token: string) {

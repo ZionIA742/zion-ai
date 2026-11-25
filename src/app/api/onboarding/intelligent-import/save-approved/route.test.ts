@@ -6,7 +6,7 @@ import { join } from "node:path";
 import {
   createSaveApprovedIntelligentImportGetHandler,
   createSaveApprovedIntelligentImportPostHandler,
-} from "./route";
+} from "./route-handler";
 import {
   IntelligentImportSaveAccessError,
   type IntelligentImportSaveAuthorizedScope,
@@ -229,7 +229,7 @@ test("GET uses the canonical access gate for denied and granted access", async (
 });
 
 test("route and helper keep the canonical authority contract", () => {
-  const routePath = join(process.cwd(), "src/app/api/onboarding/intelligent-import/save-approved/route.ts");
+  const routePath = join(process.cwd(), "src/app/api/onboarding/intelligent-import/save-approved/route-handler.ts");
   const helperPath = join(process.cwd(), "src/lib/server/onboarding-intelligent-import-save.ts");
   const routeSource = readFileSync(routePath, "utf8");
   const helperSource = readFileSync(helperPath, "utf8");

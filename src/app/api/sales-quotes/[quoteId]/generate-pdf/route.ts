@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { NextResponse } from "next/server";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createHash } from "node:crypto";
@@ -227,7 +228,7 @@ async function reconcileQuoteGenerationSideEffects(args: {
   });
 }
 
-export async function POST(
+async function zionBackendOriginalPOST(
   request: Request,
   context: { params: Promise<{ quoteId: string }> }
 ) {
@@ -588,4 +589,14 @@ export async function POST(
 
     return buildErrorResponse(error);
   }
+}
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/sales-quotes/[quoteId]/generate-pdf",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export async function POST(request: Request, context: { params: Promise<{ quoteId: string }> }) {
+  return zionBackendObservedPOST(request, context);
 }

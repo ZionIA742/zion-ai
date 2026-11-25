@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { NextResponse } from "next/server";
 import { processAssistantOperationalTasks } from "@/lib/server/process-assistant-operational-tasks";
 
@@ -19,7 +20,7 @@ function isCronRequestAuthorized(req: Request) {
   return { ok: true, mode: "authorized_by_cron_secret" as const };
 }
 
-export async function GET(req: Request) {
+async function zionBackendOriginalGET(req: Request) {
   const auth = isCronRequestAuthorized(req);
 
   if (!auth.ok) {
@@ -55,4 +56,15 @@ export async function GET(req: Request) {
       { status: 500 }
     );
   }
+}
+
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/cron/assistant-operational-tasks",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(req: Request) {
+  return zionBackendObservedGET(req);
 }

@@ -12,6 +12,7 @@ import {
 } from "./responsible-external-notifications-sender";
 
 const RESPONSIBLE_CHANNEL = "whatsapp_responsible";
+const HUMAN_RESPONSE_ALERT_REASON = "human_response_pending";
 const OPERATIONAL_APPROVAL_REASON =
   "customer_suggested_available_time_requires_approval";
 const OPERATIONAL_APPROVAL_SOURCE = "assistant_operational_task_worker";
@@ -122,6 +123,17 @@ export function isResponsibleOperationalApprovalAutoDrainCandidate(
   );
 
   if (operationalApproval) return true;
+
+  const humanResponseAlert = (
+    cleanText(row.channel) === RESPONSIBLE_CHANNEL &&
+    normalizeText(row.notification_type) === "important_alert" &&
+    normalizeText(context.reason) === HUMAN_RESPONSE_ALERT_REASON &&
+    context.needs_human_action === true &&
+    cleanText(context.commitment_id) !== "" &&
+    cleanText(context.event_key) !== ""
+  );
+
+  if (humanResponseAlert) return true;
 
   const receivedContractDocument = (
     cleanText(row.channel) === RESPONSIBLE_CHANNEL &&
@@ -274,6 +286,20 @@ export async function loadResponsibleOperationalApprovalCandidates(args: {
     );
   }
 
+  const humanResponseAlertsResult = await baseQuery()
+    .eq("notification_type", "important_alert")
+    .eq("context->>reason", HUMAN_RESPONSE_ALERT_REASON)
+    .eq("context->>needs_human_action", "true")
+    .neq("context->>commitment_id", "")
+    .neq("context->>event_key", "")
+    .limit(args.limit);
+
+  if (humanResponseAlertsResult.error) {
+    throw new Error(
+      `Falha ao carregar alertas de resposta humana do responsavel: ${humanResponseAlertsResult.error.message}`,
+    );
+  }
+
   // The production Supabase builder supports `or`; the lightweight legacy
   // harness intentionally does not, so it continues to exercise the original
   // three-query contract while production also loads these alerts.
@@ -297,6 +323,7 @@ export async function loadResponsibleOperationalApprovalCandidates(args: {
   const alerts = [
     ...((operationalApprovalsResult.data || []) as ResponsibleOperationalApprovalOutboxRow[]),
     ...((receivedDocumentsResult.data || []) as ResponsibleOperationalApprovalOutboxRow[]),
+    ...((humanResponseAlertsResult.data || []) as ResponsibleOperationalApprovalOutboxRow[]),
     ...customerCommercialAlerts,
   ]
     .filter((row, index, rows) => rows.findIndex((candidate) => candidate.id === row.id) === index)
@@ -363,6 +390,7 @@ async function materializeResponsibleOperationalApprovalNotifications(args: {
   for (const notification of notifications) {
     if (
       !isOperationalApprovalInternalNotification(notification) &&
+      !isHumanResponseAlertInternalNotification(notification) &&
       !isReceivedContractDocumentInternalNotification(notification) &&
       !isCustomerCommercialInternalNotification(notification) &&
       !isAutomaticReportInternalNotification(notification)
@@ -433,6 +461,20 @@ function isCustomerCommercialInternalNotification(
     context.needs_human_action === true &&
     [PAYMENT_PROOF_SOURCE, CANCELLATION_REQUEST_SOURCE].includes(cleanText(context.source)) &&
     cleanText(context.source_message_id),
+  );
+}
+
+function isHumanResponseAlertInternalNotification(
+  notification: OperationalApprovalInternalNotificationRow,
+) {
+  const context = isRecord(notification.context) ? notification.context : {};
+  return Boolean(
+    cleanText(notification.notification_type) === "important_alert" &&
+    cleanText(notification.status) !== "cancelled" &&
+    cleanText(context.reason) === HUMAN_RESPONSE_ALERT_REASON &&
+    context.needs_human_action === true &&
+    cleanText(context.commitment_id) &&
+    cleanText(context.event_key),
   );
 }
 

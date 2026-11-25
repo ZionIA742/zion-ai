@@ -10,7 +10,7 @@ const sql = readFileSync(
 );
 
 const route = readFileSync(
-  join(process.cwd(), "src/app/api/zion-admin/costs/route.ts"),
+  join(process.cwd(), "src/app/api/zion-admin/costs/route-handler.ts"),
   "utf8",
 );
 

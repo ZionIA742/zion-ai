@@ -4,7 +4,7 @@ import { join } from "node:path";
 import {
   GET,
   createStoreWhatsappStatusGetHandler,
-} from "./route";
+} from "./route-handler";
 import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
@@ -622,7 +622,7 @@ const tests: TestCase[] = [
   {
     name: "source uses canonical wrapper and never reads query tenant ids",
     run: () => {
-      const source = readFileSync(join(__dirname, "route.ts"), "utf8");
+      const source = readFileSync(join(__dirname, "route-handler.ts"), "utf8");
 
       assert.equal(source.includes("resolveStoreApiAccess"), true);
       assert.equal(source.includes("createStoreApiDeniedResponse"), true);

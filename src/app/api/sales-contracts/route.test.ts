@@ -90,7 +90,7 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
   return originalResolveFilename.call(this, request, parent, isMain, options);
 };
 
-const routeModulePromise = import("./route");
+const routeModulePromise = import("./route-handler");
 
 function createFixtureSupabase() {
   const tables: Record<string, Row[]> = {
@@ -694,7 +694,7 @@ const tests: TestCase[] = [
   {
     name: "source contract uses canonical active access and base tenant filters",
     run: () => {
-      const source = readFileSync(join(process.cwd(), "src/app/api/sales-contracts/route.ts"), "utf8");
+      const source = readFileSync(join(process.cwd(), "src/app/api/sales-contracts/route-handler.ts"), "utf8");
 
       assert.match(source, /resolveStoreApiAccess/);
       assert.match(source, /createStoreApiDeniedResponse/);

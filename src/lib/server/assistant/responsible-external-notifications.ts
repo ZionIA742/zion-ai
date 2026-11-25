@@ -105,6 +105,7 @@ export type ResponsibleExternalNotificationListItem = {
 };
 
 const RESPONSIBLE_CHANNEL = "whatsapp_responsible";
+const HUMAN_RESPONSE_ALERT_REASON = "human_response_pending";
 const DEFAULT_LIMIT = 50;
 const AUTOMATIC_REPORT_TYPES = ["morning_report", "evening_report"] as const;
 const AUTOMATIC_REPORT_SOURCE = "assistant_automatic_reports";
@@ -271,6 +272,22 @@ export function shouldEnqueueResponsibleExternalNotification(
     return { eligible: false as const, reason: "notification_type_not_supported" };
   }
 
+  const source = normalizeText(context?.source);
+  const reason = normalizeText(context?.reason);
+
+  // Human-response alerts intentionally use normal priority at 10 minutes;
+  // their canonical source/context is the authorization for this exception.
+  if (reason === HUMAN_RESPONSE_ALERT_REASON) {
+    if (
+      context?.needs_human_action !== true ||
+      !cleanText(context.commitment_id) ||
+      !cleanText(context.event_key)
+    ) {
+      return { eligible: false as const, reason: "human_response_alert_context_incomplete" };
+    }
+    return { eligible: true as const, requiresResponsibleNotification: true as const };
+  }
+
   if (priority !== "high" && priority !== "urgent") {
     return { eligible: false as const, reason: "priority_not_supported" };
   }
@@ -282,9 +299,6 @@ export function shouldEnqueueResponsibleExternalNotification(
   if (!context) {
     return { eligible: false as const, reason: "missing_context" };
   }
-
-  const reason = normalizeText(context.reason);
-  const source = normalizeText(context.source);
 
   if (source === "customer_payment_proof_v1") {
     if (
@@ -379,6 +393,13 @@ export function renderResponsibleExternalNotificationMessage(args: {
 
   if (source === "customer_cancellation_request_v1") {
     return [cleanText(args.body), "Nenhum cancelamento, reembolso ou estorno foi executado automaticamente."].filter(Boolean).join("\n\n");
+  }
+
+  if (reason === HUMAN_RESPONSE_ALERT_REASON) {
+    return [
+      cleanText(args.body) || "Existe uma conversa aguardando resposta humana.",
+      "Responda pelo painel ou pelo WhatsApp cadastrado da loja.",
+    ].join("\n\n");
   }
 
   if (reason === "customer_suggested_available_time_requires_approval") {

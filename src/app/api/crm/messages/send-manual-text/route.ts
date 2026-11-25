@@ -7,6 +7,10 @@ import {
   type StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
+import {
+  ingestCommercialConversationFactsFromMessage,
+  type CommercialFactMessage,
+} from "@/lib/server/ingest-commercial-conversation-facts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,6 +52,7 @@ type SendManualTextDeps = {
     storeId: string;
     conversationId: string;
   }) => Promise<boolean>;
+  ingestCommercialFacts?: typeof ingestCommercialConversationFactsFromMessage;
 };
 
 function createServiceSupabaseClient() {
@@ -99,6 +104,32 @@ function extractMessageId(data: unknown) {
   }
 
   return null;
+}
+
+function extractPersistedFactMessage(data: unknown, fallback: {
+  id: string | null;
+  content: string;
+  metadata: Record<string, unknown>;
+}): CommercialFactMessage | null {
+  const row = Array.isArray(data) ? data[0] : data;
+  const record = isRecord(row) ? row : {};
+  const id = String(record.id || fallback.id || "").trim();
+  if (!id) return null;
+  return {
+    id,
+    sender: "human",
+    content: typeof record.content === "string" ? record.content : fallback.content,
+    message_type: typeof record.message_type === "string" ? record.message_type : "text",
+    metadata: isRecord(record.metadata) ? record.metadata : fallback.metadata,
+    conversation_session_id:
+      typeof record.conversation_session_id === "string" ? record.conversation_session_id : null,
+    commercial_session_context_link_id:
+      typeof record.commercial_session_context_link_id === "string"
+        ? record.commercial_session_context_link_id
+        : null,
+    commercial_opportunity_id:
+      typeof record.commercial_opportunity_id === "string" ? record.commercial_opportunity_id : null,
+  };
 }
 
 async function defaultIsRealWhatsappConversation(args: {
@@ -325,6 +356,7 @@ export async function handleSendManualTextPost(
         external_channel: "whatsapp",
         send_external: true,
         outbound_origin: "crm_manual_text",
+        sent_by_user_id: access.sessionUserId,
         whatsapp_detected_from_conversation: true,
       };
 
@@ -348,6 +380,22 @@ export async function handleSendManualTextPost(
           },
           500,
         );
+      }
+
+      const persistedFactMessage = extractPersistedFactMessage(data, {
+        id: extractMessageId(data),
+        content: text,
+        metadata,
+      });
+      if (persistedFactMessage) {
+        await (deps.ingestCommercialFacts || ingestCommercialConversationFactsFromMessage)({
+          supabase: serviceSupabase,
+          organizationId: access.organizationId,
+          storeId: access.storeId,
+          leadId: leadResult.lead.id,
+          conversationId,
+          message: persistedFactMessage,
+        });
       }
 
       return createJsonResponse({
@@ -383,6 +431,22 @@ export async function handleSendManualTextPost(
           ? (data as { metadata: Record<string, unknown> }).metadata
           : null
         : null;
+
+    const persistedFactMessage = extractPersistedFactMessage(data, {
+      id: messageId,
+      content: text,
+      metadata: metadata || { source: "panel" },
+    });
+    if (persistedFactMessage) {
+      await (deps.ingestCommercialFacts || ingestCommercialConversationFactsFromMessage)({
+        supabase: access.supabase,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        leadId: leadResult.lead.id,
+        conversationId,
+        message: persistedFactMessage,
+      });
+    }
 
     return createJsonResponse({
       ok: true,

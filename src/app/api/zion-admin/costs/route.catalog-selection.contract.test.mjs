@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(
-  new URL("./route.ts", import.meta.url),
+  new URL("./route-handler.ts", import.meta.url),
   "utf8",
 );
 
-const post = source.slice(
-  source.indexOf("export async function POST("),
-);
+const start = source.indexOf("async function zionBackendOriginalPOST(");
+const end = source.indexOf("const zionBackendObservedPOST", start);
+if (start < 0 || end <= start) throw new Error("ORIGINAL_POST_BODY_NOT_FOUND");
+const post = source.slice(start, end);
 
 test("new expenses require a canonical catalog ID", () => {
   assert.match(

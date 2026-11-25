@@ -55,7 +55,7 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
   return originalResolveFilename.call(this, request, parent, isMain, options);
 };
 
-const routeModulePromise = import("./route");
+const routeModulePromise = import("./route-handler");
 
 async function loadRouteModule() {
   return routeModulePromise;
@@ -517,7 +517,7 @@ const tests: TestCase[] = [
       const source = readFileSync(
         join(
           process.cwd(),
-          "src/app/api/crm/opportunities/reopen-for-post-sale/route.ts",
+          "src/app/api/crm/opportunities/reopen-for-post-sale/route-handler.ts",
         ),
         "utf8",
       );

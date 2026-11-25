@@ -4,7 +4,7 @@ import { join } from "node:path";
 import {
   GET,
   createStorePrimaryResponsibleGetHandler,
-} from "./route";
+} from "./route-handler";
 import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
@@ -306,7 +306,7 @@ const tests: TestCase[] = [
     name: "route is read only and does not accept request tenant ids as authority",
     run: () => {
       const source = readFileSync(
-        join(process.cwd(), "src/app/api/store/primary-responsible/route.ts"),
+        join(process.cwd(), "src/app/api/store/primary-responsible/route-handler.ts"),
         "utf8",
       );
 

@@ -2,6 +2,8 @@ import {
   resolveAuthorizedExistingQuote,
 } from "./quote-auth";
 
+import { resolveStoreApiAccess } from "../store-api-access";
+
 import {
   parseHumanQuoteSendRequest,
   buildHumanQuoteSendIdentity,
@@ -88,6 +90,22 @@ export async function registerHumanQuoteSend(args: {
 
   const request = parseHumanQuoteSendRequest(args.body);
 
+  // Validate commercial access before privileged quote lookup.
+  const access = await resolveStoreApiAccess({
+    requirement: "active",
+  });
+
+  if (!access.ok) {
+    return fail(
+      access.httpStatus,
+      "HUMAN_QUOTE_SEND_STORE_ACCESS_DENIED",
+    );
+  }
+
+  if (access.resolution.status !== "store_ready_active") {
+    return fail(403, "HUMAN_QUOTE_SEND_STORE_ACCESS_DENIED");
+  }
+
   // The actor and privileged client come from server authentication.
   // Neither is accepted from the request body.
   const scope = await resolveAuthorizedExistingQuote(quoteId);
@@ -96,6 +114,15 @@ export async function registerHumanQuoteSend(args: {
   const storeId = scope.store.id;
   const actorUserId = scope.user.id;
   const quote = scope.quote;
+
+  // Both authenticated authorities must resolve the same scope.
+  if (
+    access.sessionUserId !== actorUserId ||
+    access.organizationId !== organizationId ||
+    access.storeId !== storeId
+  ) {
+    return fail(403, "HUMAN_QUOTE_SEND_STORE_ACCESS_SCOPE_MISMATCH");
+  }
 
   if (
     quote.id !== quoteId ||

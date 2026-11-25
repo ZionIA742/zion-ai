@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import {
   createOpenAiCostManualTargetedHandler,
 } from "@/lib/server/zion-admin-openai-cost-manual-targeted-handler";
@@ -14,6 +15,16 @@ export const dynamic = "force-dynamic";
  * Disabled by default through a separate manual flag.
  * No cron or automatic retry is registered.
  */
-export const POST = createOpenAiCostManualTargetedHandler({
+const zionBackendOriginalPOST = createOpenAiCostManualTargetedHandler({
   run: createProtectedOpenAiCostTargetedRunner(),
 });
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/zion-admin/costs/openai-manual-run",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export const POST: typeof zionBackendOriginalPOST = async function POST(request: Parameters<typeof zionBackendOriginalPOST>[0]) {
+  return zionBackendObservedPOST(request);
+};

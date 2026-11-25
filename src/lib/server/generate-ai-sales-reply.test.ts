@@ -21,6 +21,13 @@ import {
   loadAnchoredCanonicalCommercialContext,
   loadCanonicalCommercialOpportunityStage,
   loadEffectiveReplyCommercialOpportunityId,
+  loadUniquePrimaryCommercialOpportunityIdBySystem,
+  loadHistoricalDeclaredCustomerEvidence,
+  buildHistoricalDeclaredEvidenceBlock,
+  mergeHistoricalDeclaredEvidenceIntoConversationFacts,
+  loadCommercialConversationFactMemory,
+  buildCommercialConversationFactMemoryBlock,
+  mergeCommercialConversationFactMemoryIntoConversationFacts,
   loadCanonicalQualificationSnapshotBySystem,
   loadCommercialSnapshotBatch,
   materializeCommercialOpportunityProfileFromQualificationBySystem,
@@ -304,12 +311,21 @@ test("8.3 runtime strategy adapter covers the commercial scenarios", () => {
 
 class FakeQuery {
   private filters: Array<(row: Row) => boolean> = [];
+  private orders: Array<{ field: string; ascending: boolean }> = [];
+  private limitValue: number | null = null;
+  private rangeValue: { from: number; to: number } | null = null;
   private readonly rows: Row[];
   private readonly error: { message: string } | null;
+  private readonly applyQuerySemantics: boolean;
 
-  constructor(rows: Row[], error?: { message: string } | null) {
+  constructor(
+    rows: Row[],
+    error?: { message: string } | null,
+    applyQuerySemantics = false,
+  ) {
     this.rows = rows;
     this.error = error || null;
+    this.applyQuerySemantics = applyQuerySemantics;
   }
 
   select(columns: string) {
@@ -338,8 +354,9 @@ class FakeQuery {
   }
 
   order(field: string, options?: { ascending?: boolean }) {
-    void field;
-    void options;
+    if (this.applyQuerySemantics) {
+      this.orders.push({ field, ascending: options?.ascending !== false });
+    }
     return this;
   }
 
@@ -352,7 +369,12 @@ class FakeQuery {
   }
 
   limit(value: number) {
-    void value;
+    if (this.applyQuerySemantics) this.limitValue = value;
+    return this;
+  }
+
+  range(from: number, to: number) {
+    if (this.applyQuerySemantics) this.rangeValue = { from, to };
     return this;
   }
 
@@ -381,6 +403,26 @@ class FakeQuery {
       result = result.filter(filter);
     }
 
+    if (this.applyQuerySemantics && this.orders.length > 0) {
+      result = [...result].sort((left, right) => {
+        for (const order of this.orders) {
+          const leftValue = String(left[order.field] ?? "");
+          const rightValue = String(right[order.field] ?? "");
+          const comparison = leftValue.localeCompare(rightValue);
+          if (comparison !== 0) return order.ascending ? comparison : -comparison;
+        }
+        return 0;
+      });
+    }
+
+    if (this.applyQuerySemantics && this.limitValue !== null) {
+      result = result.slice(0, this.limitValue);
+    }
+
+    if (this.applyQuerySemantics && this.rangeValue !== null) {
+      result = result.slice(this.rangeValue.from, this.rangeValue.to + 1);
+    }
+
     return {
       data: result,
       error: null,
@@ -400,21 +442,28 @@ class FakeSupabase {
     | Array<{ data: unknown; error: { message: string } | null }>
     | ((payload: Record<string, unknown>) => { data: unknown; error: { message: string } | null })
   >;
+  private readonly applyQuerySemantics: boolean;
 
   constructor(
     tables: Record<string, Row[]>,
     tableErrors?: Record<string, { message: string } | null>,
-    rpcResults?: Record<string, RpcMockEntry>
+    rpcResults?: Record<string, RpcMockEntry>,
+    options?: { applyQuerySemantics?: boolean },
   ) {
     this.tables = tables;
     this.tableErrors = tableErrors || {};
     this.rpcResults = rpcResults || {};
+    this.applyQuerySemantics = options?.applyQuerySemantics === true;
   }
 
   from(table: string) {
     this.fromCalls.push(table);
     this.events.push(`from:${table}`);
-    return new FakeQuery(this.tables[table] || [], this.tableErrors[table] || null);
+    return new FakeQuery(
+      this.tables[table] || [],
+      this.tableErrors[table] || null,
+      this.applyQuerySemantics,
+    );
   }
 
   async rpc(fn: string, payload: Record<string, unknown>) {
@@ -422,6 +471,9 @@ class FakeSupabase {
     this.rpcCalls.push({ fn, payload });
     const configured = this.rpcResults[fn];
 
+    if (fn === "read_commercial_conversation_fact_events_by_system" && !configured) {
+      return { data: [], error: null };
+    }
 
     if (Array.isArray(configured)) {
       return (
@@ -853,6 +905,8 @@ function createGenerateAiSalesReplySupabase(args?: {
   currentIntentDecisionKind?: CommercialMessageIntentDecisionKind;
   currentIntentResolvedOpportunityId?: string | null;
   additionalMessages?: Row[];
+  applyQuerySemantics?: boolean;
+  anchorHistoricalContext?: "captured" | "no_active_session";
 
 }) {
   const anchorMessageId = args?.anchorMessageId ?? "msg-anchor";
@@ -872,6 +926,8 @@ function createGenerateAiSalesReplySupabase(args?: {
     )
       ? (args?.currentIntentResolvedOpportunityId ?? null)
       : commercialOpportunityId;
+  const anchorHistoricalContext =
+    args?.anchorHistoricalContext ?? (commercialOpportunityId ? "captured" : "no_active_session");
 
   const defaultReaderRow = createCanonicalQualificationReaderRow({
     commercialOpportunityId: commercialOpportunityId ?? "opp-none",
@@ -952,9 +1008,11 @@ function createGenerateAiSalesReplySupabase(args?: {
           id: anchorMessageId,
           content: args?.anchorMessageContent ?? "quero uma visita tecnica para um espaco 3x4",
           created_at: "2026-08-24T10:00:00.000Z",
-          commercial_session_context_link_id: commercialOpportunityId ? "context-1" : null,
-          commercial_context_capture_state: commercialOpportunityId ? "captured" : "no_active_session",
-          conversation_session_id: commercialOpportunityId ? "session-1" : null,
+          commercial_session_context_link_id:
+            commercialOpportunityId && anchorHistoricalContext === "captured" ? "context-1" : null,
+          commercial_context_capture_state: anchorHistoricalContext,
+          conversation_session_id:
+            commercialOpportunityId && anchorHistoricalContext === "captured" ? "session-1" : null,
         }),
         ...(args?.additionalMessages ?? []),
       ],
@@ -1229,8 +1287,889 @@ function createGenerateAiSalesReplySupabase(args?: {
           error: null,
         })),
     },
+    { applyQuerySemantics: args?.applyQuerySemantics === true },
   );
 }
+
+function buildEtapa105LongHistory(anchorMessageId = "msg-14"): Row[] {
+  const messages: Row[] = [
+    createMessage({
+      id: "msg-01",
+      sender: "user",
+      content: "Quero uma piscina de 6 por 3 metros para lazer com meus filhos",
+      created_at: "2026-11-17T10:00:00.000Z",
+      conversation_session_id: "session-1",
+      commercial_session_context_link_id: "context-1",
+      commercial_context_capture_state: "captured",
+    }),
+  ];
+
+  for (let index = 2; index <= 13; index += 1) {
+    messages.push(
+      createMessage({
+        id: `msg-${String(index).padStart(2, "0")}`,
+        sender: index % 2 === 0 ? "ai_sales" : "user",
+        direction: index % 2 === 0 ? "outgoing" : "incoming",
+        content: index % 2 === 0 ? "Perfeito, vamos avançar." : "Certo, pode continuar.",
+        created_at: `2026-11-17T10:${String(index).padStart(2, "0")}:00.000Z`,
+        conversation_session_id: "session-1",
+        commercial_session_context_link_id: "context-1",
+        commercial_context_capture_state: "captured",
+      }),
+    );
+  }
+
+  messages.push(
+    createMessage({
+      id: anchorMessageId,
+      sender: "user",
+      content: "Agora pode me mostrar as melhores opções?",
+      created_at: "2026-11-17T10:14:00.000Z",
+      conversation_session_id: "session-1",
+      commercial_session_context_link_id: "context-1",
+      commercial_context_capture_state: "captured",
+    }),
+  );
+
+  return messages;
+}
+
+function createEtapa105CanonicalMissingSpace() {
+  return createCanonicalQualificationReaderRow({
+    commercialOpportunityId: "opp-1",
+    knownFacts: [],
+    missingFactGroups: [
+      createCanonicalMissingGroup({
+        groupKey: "space",
+        factKeys: ["space_text", "requested_area_m2"],
+      }),
+    ],
+    canAskNextQuestion: true,
+  });
+}
+
+test("10.5 reproduces anchored context loss after the 12-message window", async () => {
+  const messages = buildEtapa105LongHistory();
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageId: "msg-14",
+    anchorMessageContent: "Agora pode me mostrar as melhores opções?",
+    additionalMessages: messages.slice(0, -1),
+    canonicalReaderResponses: [
+      { data: [createEtapa105CanonicalMissingSpace()], error: null },
+      { data: [createEtapa105CanonicalMissingSpace()], error: null },
+    ],
+    applyQuerySemantics: true,
+  });
+  const recent = await loadScopedRecentMessages({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+  });
+
+  assert.equal(recent.error, null);
+  assert.equal(recent.data?.length, 12);
+  assert.equal(recent.data?.some((message) => message.id === "msg-01"), false);
+
+  const scenario = resolveScenario({
+    anchorMessageId: "msg-14",
+    messages: recent.data as TestMessage[],
+    sessions: [
+      {
+        id: "session-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        conversation_id: "conv-1",
+        status: "active",
+      },
+    ],
+    links: [
+      {
+        id: "context-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        conversation_session_id: "session-1",
+        customer_id: "customer-1",
+        commercial_opportunity_id: "opp-1",
+        lead_customer_link_id: "lead-customer-link-1",
+        status: "active",
+      },
+    ],
+  });
+  assert.equal(scenario.inferenceMessages.some((message) => message.id === "msg-01"), false);
+
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Vou te mostrar algumas opções.",
+      usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+    },
+  ]);
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-14",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true, result.ok ? "" : JSON.stringify(result));
+  const finalCall = openai.calls.at(-1) as { instructions?: string; input?: unknown };
+  const modelText = JSON.stringify(finalCall);
+  assert.equal(modelText.includes("6 por 3 metros"), false);
+  assert.match(modelText, /fato alvo: space_text/);
+  assert.match(modelText, /target_missing_and_relevant/);
+});
+
+test("10.5 anchored canonical snapshot prevents repetition after history truncation", async () => {
+  const knownSpace = createCanonicalKnownFact({
+    factKey: "space_text",
+    normalizedValueText: "6 por 3 metros",
+    value: "6 por 3 metros",
+    state: "confirmed",
+  });
+  const knownArea = createCanonicalKnownFact({
+    factKey: "requested_area_m2",
+    valueKind: "number",
+    normalizedValueText: "18 m2",
+    value: 18,
+    state: "confirmed",
+  });
+  const canonical = createCanonicalQualificationReaderRow({
+    commercialOpportunityId: "opp-1",
+    knownFacts: [knownSpace, knownArea],
+    missingFactGroups: [],
+    canAskNextQuestion: false,
+  });
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageId: "msg-14",
+    anchorMessageContent: "Agora pode me mostrar as melhores opções?",
+    additionalMessages: buildEtapa105LongHistory().slice(0, -1),
+    canonicalReaderResponses: [
+      { data: [canonical], error: null },
+      { data: [canonical], error: null },
+    ],
+    applyQuerySemantics: true,
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Vou te mostrar as opções compatíveis.",
+      usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-14",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true, result.ok ? "" : JSON.stringify(result));
+  const finalCall = openai.calls.at(-1) as { instructions?: string };
+  const instructions = String(finalCall.instructions || "");
+  assert.match(instructions, /6 por 3 metros/);
+  assert.doesNotMatch(instructions, /target_missing_and_relevant/);
+  assert.match(instructions, /target_already_known/);
+});
+
+test("10.5.2-A: linked primary opportunity restores canonical facts when anchor context fell outside the recent window", async () => {
+  const canonical = createCanonicalQualificationReaderRow({
+    commercialOpportunityId: "opp-1",
+    knownFacts: [
+      createCanonicalKnownFact({
+        factKey: "space_text",
+        normalizedValueText: "6 por 3 metros",
+        value: "6 por 3 metros",
+        state: "confirmed",
+      }),
+      createCanonicalKnownFact({
+        factKey: "requested_area_m2",
+        valueKind: "number",
+        normalizedValueText: "18 m2",
+        value: 18,
+        state: "confirmed",
+      }),
+    ],
+    missingFactGroups: [],
+    canAskNextQuestion: false,
+  });
+  const supabase = createGenerateAiSalesReplySupabase({
+    anchorMessageId: "msg-14",
+    anchorMessageContent: "Agora pode me mostrar as melhores opcoes?",
+    additionalMessages: buildEtapa105LongHistory().slice(0, -1),
+    anchorHistoricalContext: "no_active_session",
+    canonicalReaderResponses: [{ data: [canonical], error: null }],
+    includeCurrentIntentResolution: false,
+    applyQuerySemantics: true,
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: "Vou te mostrar as opcoes compativeis.",
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-14",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true, result.ok ? "" : JSON.stringify(result));
+  assert.equal(
+    supabase.rpcCalls.some(
+      (call) => call.fn === "read_commercial_opportunity_qualification_facts_by_system",
+    ),
+    true,
+    "a uniquely linked primary opportunity must restore its canonical snapshot",
+  );
+  const modelText = JSON.stringify(openai.calls.at(-1));
+  assert.match(modelText, /6 por 3 metros/);
+  assert.doesNotMatch(modelText, /target_missing_and_relevant/);
+});
+
+test("10.5 without anchored opportunity uses declared history without canonical fact authority", async () => {
+  const messages = buildEtapa105LongHistory().map((message) => ({
+    ...message,
+    conversation_session_id: null,
+    commercial_session_context_link_id: null,
+    commercial_context_capture_state: "no_active_session",
+  }));
+  const supabase = createGenerateAiSalesReplySupabase({
+    commercialOpportunityId: null,
+    anchorMessageId: "msg-14",
+    anchorMessageContent: "Agora pode me mostrar as melhores opções?",
+    additionalMessages: messages.slice(0, -1),
+    applyQuerySemantics: true,
+  });
+  const recent = await loadScopedRecentMessages({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+  });
+
+  assert.equal(recent.error, null);
+  assert.equal(recent.data?.some((message) => message.content.includes("6 por 3 metros")), false);
+
+  const openai = new FakeOpenAi([
+    { output_text: "Vou te mostrar as opções.", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+  ]);
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-14",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true, result.ok ? "" : JSON.stringify(result));
+  if (!result.ok) return;
+  assert.equal(result.context.resolvedCommercialOpportunityId, null);
+  assert.equal(
+    supabase.rpcCalls.some(
+      (call) => call.fn === "read_commercial_opportunity_qualification_facts_by_system",
+    ),
+    false,
+  );
+  const modelText = JSON.stringify(openai.calls.at(-1));
+  assert.equal(modelText.includes("6 por 3 metros"), true);
+});
+
+test("10.5.3 reader recovers persisted facts beyond the recent-message window", async () => {
+  const event = {
+    event_id: "event-area",
+    organization_id: "org-1",
+    store_id: "store-1",
+    conversation_id: "conv-1",
+    lead_id: "lead-1",
+    conversation_session_id: "session-1",
+    commercial_session_context_link_id: null,
+    commercial_opportunity_id: null,
+    fact_key: "requested_area_m2",
+    value_json: 18,
+    operation_key: "op-area",
+    event_kind: "assertion",
+    supersedes_event_id: null,
+    source_message_id: "message-301",
+    source_media_type: "audio",
+    actor_type: "customer",
+    evidence_level: "confirmed",
+    created_at: "2026-11-19T12:00:00.000Z",
+    conflict_state: "consistent",
+  };
+  const supabase = new FakeSupabase({}, {}, {
+    read_commercial_conversation_fact_events_by_system: {
+      data: [event],
+      error: null,
+    },
+  });
+  const memory = await loadCommercialConversationFactMemory({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    leadId: "lead-1",
+    annotatedMessages: [{
+      id: "recent",
+      sender: "user",
+      direction: "incoming",
+      historicalContextStatus: "captured",
+      conversationSessionIdResolved: "session-1",
+      commercialSessionContextLinkIdResolved: null,
+      commercialOpportunityIdResolved: null,
+    }] as never,
+  });
+  assert.equal(memory.ok, true);
+  if (!memory.ok) return;
+  assert.equal(memory.events[0]?.value, 18);
+  assert.match(buildCommercialConversationFactMemoryBlock({ memory }), /requested_area_m2/);
+  assert.equal(supabase.rpcCalls.length, 1);
+});
+
+test("10.5.3 opportunity canonical facts override conversation memory and conflicts stay explicit", () => {
+  const memory = {
+    ok: true as const,
+    groupCount: 1,
+    events: [
+      {
+        eventId: "event-area",
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conv-1",
+        leadId: "lead-1",
+        conversationSessionId: "session-1",
+        commercialSessionContextLinkId: "link-1",
+        commercialOpportunityId: "opp-1",
+        factKey: "requested_area_m2",
+        value: 99,
+        operationKey: "op-area",
+        eventKind: "assertion",
+        supersedesEventId: null,
+        sourceMessageId: "message-old",
+        sourceMediaType: "text",
+        actorType: "customer",
+        evidenceLevel: "declared",
+        createdAt: "2026-11-19T12:00:00.000Z",
+        conflictState: "consistent" as const,
+      },
+      {
+        eventId: "event-need-conflict",
+        organizationId: "org-1",
+        storeId: "store-1",
+        conversationId: "conv-1",
+        leadId: "lead-1",
+        conversationSessionId: "session-1",
+        commercialSessionContextLinkId: "link-1",
+        commercialOpportunityId: "opp-1",
+        factKey: "need_summary",
+        value: "lazer",
+        operationKey: "op-need",
+        eventKind: "conflict_resolution",
+        supersedesEventId: null,
+        sourceMessageId: "message-old-2",
+        sourceMediaType: "text",
+        actorType: "customer",
+        evidenceLevel: "conflict",
+        createdAt: "2026-11-19T12:01:00.000Z",
+        conflictState: "conflict" as const,
+      },
+    ],
+  };
+  const block = buildCommercialConversationFactMemoryBlock({
+    memory,
+    canonicalFactKeys: new Set(["requested_area_m2"]),
+    canonicalConflictKeys: new Set(["need_summary"]),
+  });
+  assert.equal(block, "");
+  const facts = mergeCommercialConversationFactMemoryIntoConversationFacts({
+    facts: {
+      budgetKnown: false,
+      authorityKnown: false,
+      needKnown: false,
+      timingKnown: false,
+      locationKnown: false,
+      sizeKnown: false,
+      installationInterestKnown: false,
+      paymentInterestKnown: false,
+      visitInterestKnown: false,
+    },
+    memory,
+    canonicalFactKeys: new Set(["requested_area_m2"]),
+  });
+  assert.equal(facts.sizeKnown, false);
+  assert.equal(facts.needKnown, false);
+});
+
+test("10.5.2-C1 historical reader paginates 14+ messages and preserves declared evidence", async () => {
+  const messages = Array.from({ length: 15 }, (_, index) =>
+    createMessage({
+      id: `history-${String(index + 1).padStart(2, "0")}`,
+      content:
+        index === 0
+          ? "Tenho um espaco de 6 por 3 metros e quero o modelo Caribe para lazer"
+          : `mensagem historica ${index + 1}`,
+      created_at: `2026-11-17T10:${String(index).padStart(2, "0")}:00.000Z`,
+      commercial_context_capture_state: "no_active_session",
+    }),
+  );
+  const supabase = new FakeSupabase(
+    { messages, conversation_sessions: [], commercial_session_context_links: [] },
+    {},
+    {},
+    { applyQuerySemantics: true },
+  );
+
+  const result = await loadHistoricalDeclaredCustomerEvidence({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    pageSize: 5,
+    maxMessages: 30,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.scannedMessageCount, 15);
+  assert.equal(result.pageCount, 3);
+  assert.equal(result.conflicts.length, 0);
+  assert.equal(
+    result.evidence.some((item) =>
+      ["space_text", "requested_area_m2"].includes(item.factKey),
+    ),
+    true,
+  );
+  assert.equal(
+    result.evidence.some((item) => item.factKey === "interested_product_reference"),
+    true,
+  );
+  assert.match(buildHistoricalDeclaredEvidenceBlock(result), /evidencias textuais historicas/i);
+});
+
+test("10.5.2-C1 historical reader detects conflicts without selecting a value", async () => {
+  const messages = [
+    createMessage({
+      id: "conflict-1",
+      content: "Tenho um espaco de 6 por 3 metros",
+      created_at: "2026-11-17T10:00:00.000Z",
+      commercial_context_capture_state: "legacy_unknown",
+    }),
+    createMessage({
+      id: "conflict-2",
+      content: "Na verdade o espaco tem 8 por 4 metros",
+      created_at: "2026-11-17T10:01:00.000Z",
+      commercial_context_capture_state: "legacy_unknown",
+    }),
+  ];
+  const result = await loadHistoricalDeclaredCustomerEvidence({
+    supabase: new FakeSupabase(
+      { messages, conversation_sessions: [], commercial_session_context_links: [] },
+      {},
+      {},
+      { applyQuerySemantics: true },
+    ),
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.evidence.some((item) => item.factKey === "space_text"), false);
+  assert.equal(result.conflicts.some((item) => item.factKey === "space_text"), true);
+  assert.match(buildHistoricalDeclaredEvidenceBlock(result), /CONFLITO space_text/);
+});
+
+test("10.5.2-C1 historical reader ignores another tenant and opportunity context", async () => {
+  const result = await loadHistoricalDeclaredCustomerEvidence({
+    supabase: new FakeSupabase(
+      {
+        messages: [
+          createMessage({
+            id: "same-scope",
+            content: "Tenho 6 por 3 metros",
+            created_at: "2026-11-17T10:00:00.000Z",
+            commercial_context_capture_state: "legacy_unknown",
+          }),
+          createMessage({
+            id: "other-org",
+            organization_id: "org-other",
+            content: "Tenho 99 por 99 metros",
+            created_at: "2026-11-17T10:01:00.000Z",
+            commercial_context_capture_state: "legacy_unknown",
+          }),
+        ],
+        conversation_sessions: [],
+        commercial_session_context_links: [],
+      },
+      {},
+      {},
+      { applyQuerySemantics: true },
+    ),
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.scannedMessageCount, 1);
+  assert.equal(result.evidence.some((item) => String(item.value).includes("99")), false);
+
+  const opportunityContext = await loadHistoricalDeclaredCustomerEvidence({
+    supabase: new FakeSupabase(
+      {
+        messages: [
+          createMessage({
+            id: "linked-message",
+            content: "Tenho 6 por 3 metros",
+            conversation_session_id: "session-1",
+            commercial_session_context_link_id: "context-1",
+            commercial_context_capture_state: "captured",
+          }),
+        ],
+        conversation_sessions: [
+          {
+            id: "session-1",
+            organization_id: "org-1",
+            store_id: "store-1",
+            conversation_id: "conv-1",
+            status: "active",
+          },
+        ],
+        commercial_session_context_links: [
+          {
+            id: "context-1",
+            organization_id: "org-1",
+            store_id: "store-1",
+            conversation_session_id: "session-1",
+            customer_id: "customer-1",
+            commercial_opportunity_id: "opp-1",
+            lead_customer_link_id: "lead-link-1",
+            status: "active",
+            unlinked_at: null,
+          },
+        ],
+      },
+      {},
+      {},
+      { applyQuerySemantics: true },
+    ),
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+  });
+  assert.equal(opportunityContext.ok, true);
+  if (!opportunityContext.ok) return;
+  assert.equal(opportunityContext.reason, "opportunity_context_ambiguous");
+  assert.equal(opportunityContext.evidence.length, 0);
+});
+
+test("10.5.2-C1 historical reader rejects ambiguous sessions, preserves canonical priority, and is retry-stable", async () => {
+  const sessionRows = [
+    {
+      id: "session-a",
+      organization_id: "org-1",
+      store_id: "store-1",
+      conversation_id: "conv-1",
+      status: "active",
+    },
+    {
+      id: "session-b",
+      organization_id: "org-1",
+      store_id: "store-1",
+      conversation_id: "conv-1",
+      status: "active",
+    },
+  ];
+  const ambiguousSupabase = new FakeSupabase(
+    {
+      messages: [
+        createMessage({
+          id: "session-message-a",
+          conversation_session_id: "session-a",
+          commercial_context_capture_state: "pending_context",
+          content: "Tenho 6 por 3 metros",
+        }),
+        createMessage({
+          id: "session-message-b",
+          conversation_session_id: "session-b",
+          commercial_context_capture_state: "pending_context",
+          content: "Tenho 8 por 4 metros",
+          created_at: "2026-11-17T10:01:00.000Z",
+        }),
+      ],
+      conversation_sessions: sessionRows,
+      commercial_session_context_links: [],
+    },
+    {},
+    {},
+    { applyQuerySemantics: true },
+  );
+  const ambiguous = await loadHistoricalDeclaredCustomerEvidence({
+    supabase: ambiguousSupabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+  });
+  assert.equal(ambiguous.ok, true);
+  if (!ambiguous.ok) return;
+  assert.equal(ambiguous.reason, "session_context_ambiguous");
+  assert.equal(ambiguous.evidence.length, 0);
+
+  const canonicalSupabase = new FakeSupabase(
+    { messages: [] },
+    {},
+    {},
+    { applyQuerySemantics: true },
+  );
+  const canonical = await loadHistoricalDeclaredCustomerEvidence({
+    supabase: canonicalSupabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    commercialOpportunityId: "opp-current",
+  });
+  assert.equal(canonical.ok, true);
+  if (!canonical.ok) return;
+  assert.equal(canonical.reason, "canonical_opportunity_priority");
+  assert.deepEqual(canonicalSupabase.fromCalls, []);
+
+  const retrySupabase = new FakeSupabase(
+    {
+      messages: [
+        createMessage({
+          id: "retry-message",
+          content: "Tenho 6 por 3 metros",
+          commercial_context_capture_state: "legacy_unknown",
+        }),
+      ],
+      conversation_sessions: [],
+      commercial_session_context_links: [],
+    },
+    {},
+    {},
+    { applyQuerySemantics: true },
+  );
+  const first = await loadHistoricalDeclaredCustomerEvidence({
+    supabase: retrySupabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+  });
+  const second = await loadHistoricalDeclaredCustomerEvidence({
+    supabase: retrySupabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+  });
+  assert.deepEqual(second, first);
+});
+
+test("10.5.2-B missing lead never falls back to another lead's opportunity", async () => {
+  const supabase = new FakeSupabase(
+    {
+      commercial_opportunities: [
+        {
+          id: "opp-other-lead",
+          organization_id: "org-1",
+          store_id: "store-1",
+          origin_lead_id: "lead-other",
+          primary_conversation_id: "conv-1",
+        },
+      ],
+    },
+    {},
+    {},
+    { applyQuerySemantics: true },
+  );
+
+  assert.equal(
+    await loadUniquePrimaryCommercialOpportunityIdBySystem({
+      supabase,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: null,
+    }),
+    null,
+  );
+  assert.deepEqual(
+    supabase.fromCalls,
+    [],
+    "missing lead identity must not query or recover an opportunity",
+  );
+});
+
+test("10.5.2-A primary opportunity fallback is scoped and rejects ambiguity", async () => {
+  const scoped = new FakeSupabase(
+    {
+      commercial_opportunities: [
+        {
+          id: "opp-1",
+          organization_id: "org-1",
+          store_id: "store-1",
+          origin_lead_id: "lead-1",
+          primary_conversation_id: "conv-1",
+        stage: "qualificacao",
+        lifecycle_cycle: 1,
+        lost_at: null,
+        current_loss_event_id: null,
+        },
+        {
+          id: "opp-other-org",
+          organization_id: "org-2",
+          store_id: "store-1",
+          origin_lead_id: "lead-1",
+          primary_conversation_id: "conv-1",
+        stage: "qualificacao",
+        lifecycle_cycle: 1,
+        lost_at: null,
+        current_loss_event_id: null,
+        },
+      ],
+    },
+    {},
+    {},
+    { applyQuerySemantics: true },
+  );
+
+  assert.equal(
+    await loadUniquePrimaryCommercialOpportunityIdBySystem({
+      supabase: scoped,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+    }),
+    "opp-1",
+  );
+
+  const ambiguous = new FakeSupabase(
+    {
+      commercial_opportunities: [
+        {
+          id: "opp-a",
+          organization_id: "org-1",
+          store_id: "store-1",
+          origin_lead_id: "lead-1",
+          primary_conversation_id: "conv-1",
+          stage: "qualificacao",
+          lifecycle_cycle: 1,
+          lost_at: null,
+          current_loss_event_id: null,
+        },
+        {
+          id: "opp-b",
+          organization_id: "org-1",
+          store_id: "store-1",
+          origin_lead_id: "lead-1",
+          primary_conversation_id: "conv-1",
+          stage: "qualificacao",
+          lifecycle_cycle: 1,
+          lost_at: null,
+          current_loss_event_id: null,
+        },
+      ],
+    },
+    {},
+    {},
+    { applyQuerySemantics: true },
+  );
+
+  assert.equal(
+    await loadUniquePrimaryCommercialOpportunityIdBySystem({
+      supabase: ambiguous,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+    }),
+    null,
+  );
+});
+
+test("10.5.2-B2 fallback rejects a unique historical opportunity and accepts a valid reopening", async () => {
+  const historical = new FakeSupabase(
+    {
+      commercial_opportunities: [
+        {
+          id: "opp-lost",
+          organization_id: "org-1",
+          store_id: "store-1",
+          origin_lead_id: "lead-1",
+          primary_conversation_id: "conv-1",
+          stage: "perdido",
+          lifecycle_cycle: 1,
+          lost_at: "2026-11-01T10:00:00.000Z",
+          current_loss_event_id: "loss-event-1",
+        },
+      ],
+    },
+    {},
+    {},
+    { applyQuerySemantics: true },
+  );
+
+  assert.equal(
+    await loadUniquePrimaryCommercialOpportunityIdBySystem({
+      supabase: historical,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+    }),
+    null,
+  );
+
+  const reopened = new FakeSupabase(
+    {
+      commercial_opportunities: [
+        {
+          id: "opp-reopened",
+          organization_id: "org-1",
+          store_id: "store-1",
+          origin_lead_id: "lead-1",
+          primary_conversation_id: "conv-1",
+          stage: "qualificacao",
+          lifecycle_cycle: 2,
+          lost_at: null,
+          current_loss_event_id: null,
+        },
+      ],
+    },
+    {},
+    {},
+    { applyQuerySemantics: true },
+  );
+
+  assert.equal(
+    await loadUniquePrimaryCommercialOpportunityIdBySystem({
+      supabase: reopened,
+      organizationId: "org-1",
+      storeId: "store-1",
+      conversationId: "conv-1",
+      leadId: "lead-1",
+    }),
+    "opp-reopened",
+  );
+});
 
 function createWriterRow(args?: {
   commercialOpportunityId?: string;

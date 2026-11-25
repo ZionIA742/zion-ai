@@ -13,7 +13,7 @@ resolver._resolveFilename = function patched(request: string, parent: unknown, i
   return originalResolveFilename.call(this, request.startsWith("@/") ? join(projectSrcPath, request.slice(2)) : request, parent, isMain, options);
 };
 
-const routeModulePromise = import("./route");
+const routeModulePromise = import("./route-handler");
 
 function createRequest(body: unknown) {
   return { json: async () => body } as unknown as Request;

@@ -1463,6 +1463,189 @@ test("business app echo resolves the customer target, records human outgoing and
   }
 });
 
+test("business app audio echo records human takeover without dispatching Sales AI", async () => {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+  process.env.META_WHATSAPP_ACCESS_TOKEN = "meta-token-test";
+  process.env.OPENAI_API_KEY = "openai-test";
+  const previousFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method: string; body: string }> = [];
+  let persistedMetadata: Record<string, unknown> | null = null;
+  const audioBytes = new Uint8Array([0x4f, 0x67, 0x67, 0x53, 0x00, 0x01, 0x02, 0x03]);
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    const body = typeof init?.body === "string" ? init.body : "";
+    calls.push({ url, method, body });
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "inbox-audio-echo-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        provider: "meta",
+        external_event_id: "message:audio-echo-1",
+        payload: {
+          source: "meta_whatsapp_webhook",
+          event_kind: "message_echo",
+          phone_number_id: "phone-1",
+          display_phone_number: "+55 11 90000-0000",
+          message: {
+            id: "audio-echo-1",
+            from: "5511900000000",
+            to: "5511999999999",
+            type: "audio",
+            audio: { id: "audio-media-1", mime_type: "audio/ogg", voice: true },
+          },
+        },
+        received_at: "2026-11-06T12:00:00.000Z",
+        processed_at: null,
+        processing_error: null,
+      }]);
+    }
+    if (url.includes("/rest/v1/messages") && method === "GET") {
+      return persistedMetadata
+        ? jsonFetchResponse([{
+            id: "message-audio-echo-1",
+            conversation_id: "conversation-1",
+            lead_id: "lead-1",
+            store_id: "store-1",
+            external_message_id: "audio-echo-1",
+            message_type: "audio",
+            content: "FuncionÃ¡rio enviou um Ã¡udio.",
+            metadata: persistedMetadata,
+          }])
+        : jsonFetchResponse([]);
+    }
+    if (url.includes("/rest/v1/messages") && method === "PATCH") {
+      persistedMetadata = JSON.parse(body).metadata as Record<string, unknown>;
+      return jsonFetchResponse({ id: "message-audio-echo-1" });
+    }
+    if (url.includes("/rest/v1/rpc/resolve_whatsapp_inbound_thread_by_system")) {
+      return jsonFetchResponse([{ lead_id: "lead-1", conversation_id: "conversation-1", normalized_whatsapp_identity: "5511999999999", thread_state: "existing_active_thread" }]);
+    }
+    if (url.includes("/rest/v1/rpc/insert_message")) {
+      const payload = JSON.parse(body) as Record<string, unknown>;
+      assert.equal(payload.p_sender, "human");
+      assert.equal(payload.p_direction, "outgoing");
+      assert.equal(payload.p_message_type, "audio");
+      assert.equal(payload.p_media_url, "org-1/store-1/whatsapp-inbound/conversation-1/audio-media-1-whatsapp-human-audio.ogg");
+      assert.equal((payload.p_metadata as Record<string, unknown>).media_origin, "human");
+      assert.equal((payload.p_metadata as Record<string, unknown>).whatsapp_media_id, "audio-media-1");
+      persistedMetadata = payload.p_metadata as Record<string, unknown>;
+      return jsonFetchResponse({ id: "message-audio-echo-1" });
+    }
+    if (url.includes("/rest/v1/rpc/human_takeover_conversation")) return jsonFetchResponse(null);
+    if (url.includes("graph.facebook.com") && method === "GET") {
+      if (url.endsWith("/audio-media-1")) {
+        return jsonFetchResponse({ url: "https://media.test/audio-media-1", mime_type: "audio/ogg" });
+      }
+      if (url.includes("media.test/audio-media-1")) {
+        return new Response(audioBytes, { status: 200, headers: { "content-type": "audio/ogg" } });
+      }
+    }
+    if (url.includes("media.test/audio-media-1")) {
+      return new Response(audioBytes, { status: 200, headers: { "content-type": "audio/ogg" } });
+    }
+    if (url.includes("/storage/v1/object/") && method === "GET") return new Response(audioBytes, { status: 200, headers: { "content-type": "audio/ogg" } });
+    if (url.includes("/storage/v1/object/") && method === "POST") return jsonFetchResponse({ Key: "stored" });
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") return jsonFetchResponse([]);
+    if (url.includes("/v1/audio/transcriptions") && method === "POST") return jsonFetchResponse({ text: "A medida e dez metros quadrados." });
+    if (url.includes("api.openai.com")) throw new Error("Sales AI must not run for human audio takeover");
+    throw new Error(`unexpected audio echo fetch: ${method} ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await processWhatsappInbox({ organizationId: "org-1", storeId: "store-1", limit: 1 });
+    assert.equal(result.succeeded, 1, JSON.stringify(result));
+    assert.equal(result.results[0]?.ai_status, "skipped_human_active");
+    assert.equal(calls.some((call) => call.url.includes("/v1/responses")), false);
+    assert.equal(calls.filter((call) => call.url.includes("insert_message")).length, 1);
+    assert.equal(calls.some((call) => call.url.includes("/v1/audio/transcriptions")), true);
+    const transcriptUpdate = calls.find((call) => call.url.includes("/rest/v1/messages") && call.method === "PATCH");
+    assert.ok(transcriptUpdate);
+    assert.match(transcriptUpdate.body, /A medida e dez metros quadrados/);
+    assert.equal(
+      calls.findIndex((call) => call.url.includes("/rpc/human_takeover_conversation")) <
+        calls.findIndex((call) => call.url.includes("/rpc/insert_message")),
+      true,
+    );
+    assert.equal(
+      calls.findIndex((call) => call.url.includes("/rest/v1/messages") && call.method === "PATCH") <
+        calls.findIndex((call) => call.url.includes("/rpc/insert_message")),
+      false,
+    );
+    const firstTranscriptionCount = calls.filter((call) => call.url.includes("/v1/audio/transcriptions")).length;
+    const retry = await processWhatsappInbox({ organizationId: "org-1", storeId: "store-1", limit: 1 });
+    assert.equal(retry.succeeded, 1, JSON.stringify(retry));
+    assert.equal(calls.filter((call) => call.url.includes("/rpc/insert_message")).length, 1);
+    assert.equal(calls.filter((call) => call.url.includes("/v1/audio/transcriptions")).length, firstTranscriptionCount);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("business app audio echo takes over before a media download failure", async () => {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
+  process.env.META_WHATSAPP_ACCESS_TOKEN = "meta-token-test";
+  const previousFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method: string }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    calls.push({ url, method });
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "GET") {
+      return jsonFetchResponse([{
+        id: "inbox-audio-timeout-1",
+        organization_id: "org-1",
+        store_id: "store-1",
+        provider: "meta",
+        external_event_id: "message:audio-timeout-1",
+        payload: {
+          source: "meta_whatsapp_webhook",
+          event_kind: "message_echo",
+          phone_number_id: "phone-1",
+          display_phone_number: "+55 11 90000-0000",
+          message: {
+            id: "audio-timeout-1",
+            from: "5511900000000",
+            to: "5511999999999",
+            type: "audio",
+            audio: { id: "audio-timeout-media-1", mime_type: "audio/ogg" },
+          },
+        },
+        received_at: "2026-11-06T12:00:00.000Z",
+        processed_at: null,
+        processing_error: null,
+      }]);
+    }
+    if (url.includes("/rest/v1/messages") && method === "GET") return jsonFetchResponse([]);
+    if (url.includes("/rest/v1/rpc/resolve_whatsapp_inbound_thread_by_system")) {
+      return jsonFetchResponse([{ lead_id: "lead-1", conversation_id: "conversation-1", normalized_whatsapp_identity: "5511999999999", thread_state: "existing_active_thread" }]);
+    }
+    if (url.includes("/rest/v1/rpc/human_takeover_conversation")) return jsonFetchResponse(null);
+    if (url.includes("graph.facebook.com") && method === "GET") {
+      return jsonFetchResponse({ url: "https://media.test/audio-timeout-media-1", mime_type: "audio/ogg" });
+    }
+    if (url.includes("media.test/audio-timeout-media-1")) throw new Error("media download timeout");
+    if (url.includes("/rest/v1/channel_whatsapp_inbox") && method === "PATCH") return jsonFetchResponse([]);
+    if (url.includes("api.openai.com")) throw new Error("Sales AI must not run for human audio takeover");
+    throw new Error(`unexpected audio timeout fetch: ${method} ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await processWhatsappInbox({ organizationId: "org-1", storeId: "store-1", limit: 1 });
+    assert.equal(result.failed, 1, JSON.stringify(result));
+    const takeoverIndex = calls.findIndex((call) => call.url.includes("/rpc/human_takeover_conversation"));
+    const mediaIndex = calls.findIndex((call) => call.url.includes("media.test/audio-timeout-media-1"));
+    assert.notEqual(takeoverIndex, -1, JSON.stringify(calls));
+    assert.equal(takeoverIndex < mediaIndex, true, JSON.stringify(calls));
+    assert.equal(calls.some((call) => call.url.includes("api.openai.com")), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("extractIncomingMessage preserves context id for customer inbound messages", () => {
   const extracted = extractIncomingMessage({
     source: "meta_whatsapp_webhook",

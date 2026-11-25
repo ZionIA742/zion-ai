@@ -240,6 +240,7 @@ const tests: TestCase[] = [
         },
       });
       const panelRpcCalls: Array<Record<string, unknown>> = [];
+      const ingestionCalls: Array<Record<string, unknown>> = [];
       let createServiceCalls = 0;
 
       const response = await handleSendManualTextPost(
@@ -277,6 +278,10 @@ const tests: TestCase[] = [
             return serviceSupabase as never;
           },
           isRealWhatsappConversation: async () => false,
+          ingestCommercialFacts: async (args) => {
+            ingestionCalls.push(args as unknown as Record<string, unknown>);
+            return { status: "skipped", writes: [], errors: [] };
+          },
         },
       );
 
@@ -307,6 +312,9 @@ const tests: TestCase[] = [
         p_conversation_id: "conversation-1",
         p_text: "hello",
       });
+      assert.equal(ingestionCalls.length, 1);
+      assert.equal((ingestionCalls[0].leadId as string), "lead-1");
+      assert.equal((ingestionCalls[0].conversationId as string), "conversation-1");
     },
   },
   {
@@ -480,6 +488,7 @@ const tests: TestCase[] = [
           error: null,
         },
       });
+      const ingestionCalls: Array<Record<string, unknown>> = [];
 
       const response = await handleSendManualTextPost(
         createJsonRequest(
@@ -493,6 +502,10 @@ const tests: TestCase[] = [
           resolveStoreAccess: async () => createGrantedAccess(),
           createServiceSupabaseClient: () => serviceSupabase as never,
           isRealWhatsappConversation: async () => true,
+          ingestCommercialFacts: async (args) => {
+            ingestionCalls.push(args as unknown as Record<string, unknown>);
+            return { status: "skipped", writes: [], errors: [] };
+          },
         },
       );
 
@@ -509,11 +522,13 @@ const tests: TestCase[] = [
           external_channel: "whatsapp",
           send_external: true,
           outbound_origin: "crm_manual_text",
+          sent_by_user_id: "user-1",
           whatsapp_detected_from_conversation: true,
         },
       });
       assert.equal(serviceSupabase.rpcCalls.length, 1);
       assert.equal(serviceSupabase.rpcCalls[0]?.name, "insert_message");
+      assert.equal(ingestionCalls.length, 1);
       assert.equal(response.headers.get("Cache-Control"), "no-store");
     },
   },

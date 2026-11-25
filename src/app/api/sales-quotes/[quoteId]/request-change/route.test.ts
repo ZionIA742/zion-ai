@@ -30,7 +30,7 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
   return originalResolveFilename.call(this, request, parent, isMain, options);
 };
 
-const routeModulePromise = import("./route");
+const routeModulePromise = import("./route-handler");
 const writerModulePromise = import("@/lib/server/sales-quotes/quote-change-requests");
 
 async function loadRouteModule() {

@@ -7,9 +7,9 @@ import {
   mapVariableExpenseRpcError,
   parseDate,
   parseMinorAmount,
-} from "./route";
+} from "./route-handler";
 
-const source = readFileSync("src/app/api/zion-admin/costs/route.ts", "utf8");
+const source = readFileSync("src/app/api/zion-admin/costs/route-handler.ts", "utf8");
 
 test("manual variable expense amounts preserve cents and reject imprecise values", () => {
   assert.equal(parseMinorAmount("10.50"), 1050);

@@ -215,6 +215,11 @@ export async function issueQuotePreparationTaskAuthorizationBySystem(args: {
   taskId: string;
   requestMessageId: string;
   recoveryResponseSetId?: string | null;
+  recoveryBinding?: {
+    queueId: string;
+    claimToken: string;
+    anchorMessageId: string;
+  };
   supabase?: QuotePreparationTaskAuthorizationSupabase;
 }): Promise<QuotePreparationTaskAuthorizationResult> {
   const identity = {
@@ -238,6 +243,44 @@ export async function issueQuotePreparationTaskAuthorizationBySystem(args: {
         }),
   };
 
+  const recoveryBinding = args.recoveryBinding;
+
+  if (Boolean(identity.recoveryResponseSetId) !== Boolean(recoveryBinding)) {
+    throw new QuotePreparationTaskAuthorizationError(
+      "P9_10_4_D_RECOVERY_BINDING_REQUIRED",
+      "P9_10_4_D_RECOVERY_BINDING_REQUIRED",
+      "input"
+    );
+  }
+
+  const validatedRecoveryBinding = recoveryBinding
+    ? {
+        queueId: requireUuid(
+          recoveryBinding.queueId,
+          "P9_10_4_D_RECOVERY_QUEUE_ID_INVALID"
+        ),
+        claimToken: requireUuid(
+          recoveryBinding.claimToken,
+          "P9_10_4_D_RECOVERY_CLAIM_TOKEN_INVALID"
+        ),
+        anchorMessageId: requireUuid(
+          recoveryBinding.anchorMessageId,
+          "P9_10_4_D_RECOVERY_ANCHOR_INVALID"
+        ),
+      }
+    : null;
+
+  if (
+    validatedRecoveryBinding &&
+    validatedRecoveryBinding.anchorMessageId !== identity.requestMessageId
+  ) {
+    throw new QuotePreparationTaskAuthorizationError(
+      "P9_10_4_D_RECOVERY_ANCHOR_MISMATCH",
+      "P9_10_4_D_RECOVERY_ANCHOR_MISMATCH",
+      "input"
+    );
+  }
+
   const supabase = args?.supabase ?? createServiceRoleClient();
   let response: { data: unknown; error: RpcError | null };
 
@@ -250,6 +293,8 @@ export async function issueQuotePreparationTaskAuthorizationBySystem(args: {
     };
     if (identity.recoveryResponseSetId) {
       payload.p_recovery_response_set_id = identity.recoveryResponseSetId;
+      payload.p_recovery_queue_id = validatedRecoveryBinding!.queueId;
+      payload.p_recovery_claim_token = validatedRecoveryBinding!.claimToken;
     }
     response = await supabase.rpc(ISSUE_QUOTE_PREPARATION_AUTHORIZATION_RPC, payload);
   } catch (error) {

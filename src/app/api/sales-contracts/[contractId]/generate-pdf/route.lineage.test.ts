@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ContractTextVersionError, createGenerateContractPdfPostHandler } from "./route";
+import { ContractTextVersionError, createGenerateContractPdfPostHandler } from "./route-handler";
 import { ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
 
 type TestCase = {
@@ -985,7 +985,7 @@ const tests: TestCase[] = [
     name: "generation source has no legacy version or direct version-row authority",
     run: () => {
       const routeSource = readFileSync(
-        join(process.cwd(), "src/app/api/sales-contracts/[contractId]/generate-pdf/route.ts"),
+        join(process.cwd(), "src/app/api/sales-contracts/[contractId]/generate-pdf/route-handler.ts"),
         "utf8",
       );
       const versioningSource = readFileSync(

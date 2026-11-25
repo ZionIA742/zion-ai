@@ -44,7 +44,7 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
   return originalResolveFilename.call(this, request, parent, isMain, options);
 };
 
-const routeModulePromise = import("./route");
+const routeModulePromise = import("./route-handler");
 
 async function loadRouteModule() {
   return routeModulePromise;
@@ -498,7 +498,7 @@ const tests: TestCase[] = [
     name: "production route uses store access and only the by_user manual writer",
     run: async () => {
       const source = readFileSync(
-        join(process.cwd(), "src/app/api/crm/leads/manual/route.ts"),
+        join(process.cwd(), "src/app/api/crm/leads/manual/route-handler.ts"),
         "utf8",
       );
 

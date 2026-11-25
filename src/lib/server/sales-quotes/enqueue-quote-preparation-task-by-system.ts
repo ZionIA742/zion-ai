@@ -16,6 +16,11 @@ export type QuotePreparationQueueInput = {
   commercialOpportunityId: string;
   authorizationId: string;
   recoveryResponseSetId?: string | null;
+  recoveryBinding?: {
+    queueId: string;
+    claimToken: string;
+    anchorMessageId: string;
+  };
   supabase?: QuotePreparationQueueSupabase;
 };
 
@@ -134,6 +139,31 @@ export async function enqueueQuotePreparationTaskBySystem(
   rawInput: QuotePreparationQueueInput,
 ): Promise<QuotePreparationQueueResult> {
   const identity = validateInput(rawInput);
+  const binding = identity.recoveryBinding;
+
+  if (Boolean(identity.recoveryResponseSetId) !== Boolean(binding)) {
+    throw new QuotePreparationQueueError(
+      "P9_RECOVERY_QUEUE_BINDING_REQUIRED",
+      "P9_RECOVERY_QUEUE_BINDING_REQUIRED",
+      "input"
+    );
+  }
+
+  if (binding) {
+    requireUuid(identity.recoveryResponseSetId, "P9_RECOVERY_SET_INVALID");
+    requireUuid(binding.queueId, "P9_RECOVERY_QUEUE_ID_INVALID");
+    requireUuid(binding.claimToken, "P9_RECOVERY_CLAIM_INVALID");
+
+    if (requireUuid(binding.anchorMessageId, "P9_RECOVERY_ANCHOR_INVALID")
+        !== identity.requestMessageId) {
+      throw new QuotePreparationQueueError(
+        "P9_RECOVERY_QUEUE_ANCHOR_MISMATCH",
+        "P9_RECOVERY_QUEUE_ANCHOR_MISMATCH",
+        "input"
+      );
+    }
+  }
+
   const supabase = identity.supabase ?? createServiceRoleClient();
   const now = new Date().toISOString();
   const row = {
@@ -153,7 +183,12 @@ export async function enqueueQuotePreparationTaskBySystem(
       lead_id: identity.leadId,
       commercial_opportunity_id: identity.commercialOpportunityId,
       ...(identity.recoveryResponseSetId
-        ? { p9_recovery_response_set_id: identity.recoveryResponseSetId }
+        ? {
+            p9_recovery_response_set_id: identity.recoveryResponseSetId,
+            p9_recovery_queue_id: binding!.queueId,
+            p9_recovery_claim_token: binding!.claimToken,
+            p9_recovery_anchor_message_id: binding!.anchorMessageId,
+          }
         : {}),
     },
     created_at: now,
@@ -179,6 +214,15 @@ export async function enqueueQuotePreparationTaskBySystem(
   if (!insertResponse.error) {
     const created = requireRow(insertResponse.data, identity);
     return { ...created, outcome: "created" };
+  }
+
+  if (binding && insertResponse.error.code !== "23505") {
+    throw new QuotePreparationQueueError(
+      String(insertResponse.error.message || "P9_RECOVERY_QUEUE_REJECTED"),
+      String(insertResponse.error.code || "P9_RECOVERY_QUEUE_REJECTED"),
+      "rejected",
+      insertResponse.error
+    );
   }
 
   let replayResponse: { data: unknown; error: RpcLikeError | null };
@@ -212,6 +256,23 @@ export async function enqueueQuotePreparationTaskBySystem(
       "rejected",
       insertError,
     );
+  }
+
+  if (binding) {
+    const replayRow = replayResponse.data as Record<string, unknown>;
+    const payload = replayRow.payload as Record<string, unknown> | null;
+
+    if (!payload ||
+        payload.authorization_id !== identity.authorizationId ||
+        payload.lead_id !== identity.leadId ||
+        payload.commercial_opportunity_id !== identity.commercialOpportunityId ||
+        payload.p9_recovery_response_set_id !== identity.recoveryResponseSetId) {
+      throw new QuotePreparationQueueError(
+        "P9_RECOVERY_QUEUE_REPLAY_SCOPE_MISMATCH",
+        "P9_RECOVERY_QUEUE_REPLAY_SCOPE_MISMATCH",
+        "uncertain"
+      );
+    }
   }
 
   const replay = requireRow(replayResponse.data, identity);

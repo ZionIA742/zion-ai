@@ -4,7 +4,7 @@ import { join } from "node:path";
 import {
   POST,
   createStoreWhatsappEmbeddedSignupPostHandler,
-} from "./route";
+} from "./route-handler";
 import {
   exchangeAndValidateMetaWhatsappEmbeddedSignup,
   MetaWhatsappEmbeddedSignupError,
@@ -2432,7 +2432,7 @@ const tests: TestCase[] = [
   {
     name: "source uses canonical store access, canonical writer RPC, and no real secrets",
     run: () => {
-      const routeSource = readFileSync(join(__dirname, "route.ts"), "utf8");
+      const routeSource = readFileSync(join(__dirname, "route-handler.ts"), "utf8");
       const helperSource = readFileSync(
         join(process.cwd(), "src/lib/server/meta-whatsapp-embedded-signup.ts"),
         "utf8",

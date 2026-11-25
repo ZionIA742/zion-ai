@@ -4,7 +4,7 @@ import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";
-import { handleManualAttachmentAuthorizePost } from "./route";
+import { handleManualAttachmentAuthorizePost } from "./route-handler";
 
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 

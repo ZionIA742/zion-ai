@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createSendManualCatalogProductPostHandler } from "./route";
+import { createSendManualCatalogProductPostHandler } from "./route-handler";
 
 type Row = Record<string, unknown>;
 const sourceId = "550e8400-e29b-41d4-a716-446655440000";
@@ -185,7 +185,7 @@ test("same operation is idempotent while caption, source, and external flag chan
 });
 
 test("send route source contract does not expose internal RPC errors", () => {
-  const source = readFileSync(join(process.cwd(), "src/app/api/crm/messages/send-manual-catalog-product/route.ts"), "utf8");
+  const source = readFileSync(join(process.cwd(), "src/app/api/crm/messages/send-manual-catalog-product/route-handler.ts"), "utf8");
   assert.match(source, /finalize_manual_catalog_photo_message/);
   assert.match(source, /buildManualCatalogIdempotencyKey/);
   assert.match(source, /buildManualCatalogPayloadFingerprint/);

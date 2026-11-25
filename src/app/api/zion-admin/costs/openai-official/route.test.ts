@@ -5,7 +5,7 @@ import {
   createOpenAiOfficialCostsGetHandler,
   dynamic,
   runtime,
-} from "./route";
+} from "./route-handler";
 import type { OfficialCostClient, OfficialCostReport } from "@/lib/server/zion-admin-openai-official-cost-report";
 
 const OP = "11111111-1111-4111-8111-111111111111";

@@ -10,7 +10,7 @@ import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
 } from "@/lib/server/store-api-access";
-import { createStoreContractTemplateExtractRulesPostHandler } from "./route";
+import { createStoreContractTemplateExtractRulesPostHandler } from "./route-handler";
 
 function granted(): StoreApiAccessGranted {
   return {

@@ -1,9 +1,10 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 // src/app/api/ai/reply/route.ts
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-export async function POST() {
+async function zionBackendOriginalPOST() {
   return NextResponse.json(
     {
       ok: false,
@@ -13,4 +14,14 @@ export async function POST() {
     },
     { status: 410 }
   );
+}
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/ai/reply",
+  "POST",
+  (_zionRequest?: Request) => zionBackendOriginalPOST(),
+);
+
+export async function POST() {
+  return zionBackendObservedPOST(arguments[0] as Request | undefined);
 }

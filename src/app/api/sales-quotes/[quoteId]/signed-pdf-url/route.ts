@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { NextResponse } from "next/server";
 import {
   QuoteAccessError,
@@ -16,7 +17,7 @@ function buildJsonResponse(body: unknown, status = 200) {
   });
 }
 
-export async function GET(
+async function zionBackendOriginalGET(
   _request: Request,
   context: { params: Promise<{ quoteId: string }> }
 ) {
@@ -141,4 +142,14 @@ export async function GET(
       500
     );
   }
+}
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/sales-quotes/[quoteId]/signed-pdf-url",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(_request: Request, context: { params: Promise<{ quoteId: string }> }) {
+  return zionBackendObservedGET(_request, context);
 }

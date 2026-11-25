@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 // src/app/api/crm/lead-details/[id]/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
@@ -147,7 +148,7 @@ const OPEN_COMMERCIAL_HANDOFF_STATUSES = [
   "in_progress",
 ];
 
-export async function GET(request: Request) {
+ async function zionBackendOriginalGET(request: Request) {
   try {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
@@ -562,4 +563,15 @@ export async function GET(request: Request) {
       { status: 500 }
     );
   }
+}
+
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/crm/lead-details/[id]",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(request: Request) {
+  return zionBackendObservedGET(request);
 }

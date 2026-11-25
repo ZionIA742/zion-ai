@@ -9,7 +9,7 @@ import ts from "typescript";
 const nativeRequire = createRequire(import.meta.url);
 
 const original = readFileSync(
-  new URL("./route.ts", import.meta.url),
+  new URL("./route-handler.ts", import.meta.url),
   "utf8",
 );
 
@@ -54,6 +54,9 @@ const sharedVerifierContext = {
       return nativeRequire(name);
     }
 
+    if (name === "./zion-admin-financial-evidence-private-bytes") {
+      return nativeRequire("../../../../../lib/server/zion-admin-financial-evidence-private-bytes.ts");
+    }
     throw new Error(`UNEXPECTED_SHARED_IMPORT: ${name}`);
   },
 };
@@ -98,6 +101,9 @@ function setup(options = {}) {
       },
     },
     require(name) {
+      if (name === "../../../../../lib/server/zion-admin-diagnostic-backend-next") {
+        return nativeRequire("../../../../../lib/server/zion-admin-diagnostic-backend-next.ts");
+      }
       if (name === "node:crypto") {
         return nativeRequire(name);
       }

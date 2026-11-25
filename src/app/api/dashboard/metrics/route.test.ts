@@ -4,7 +4,7 @@ import { join } from "node:path";
 import {
   createDashboardMetricsGetHandler,
   type DashboardMetricsRouteDeps,
-} from "./route";
+} from "./route-handler";
 import type {
   StoreApiAccessDenied,
   StoreApiAccessGranted,
@@ -825,13 +825,16 @@ const tests: TestCase[] = [
   {
     name: "route source keeps canonical access integration and avoids forbidden shortcuts",
     run: () => {
-      const source = readFileSync(join(__dirname, "route.ts"), "utf8");
+      const source = readFileSync(join(__dirname, "route-handler.ts"), "utf8");
 
       assert.equal(source.includes("resolveStoreApiAccess"), true);
       assert.equal(source.includes('resolveAccess({ requirement: "active" })'), true);
       assert.equal(source.includes("createStoreApiDeniedResponse(access)"), true);
       assert.equal(
-        source.includes("export const GET = createDashboardMetricsGetHandler();"),
+        source.includes("const zionBackendOriginalGET = createDashboardMetricsGetHandler();") &&
+        /const zionBackendObservedGET = withBackendDiagnosticRoute\(\s*"\/api\/dashboard\/metrics",\s*"GET",\s*zionBackendOriginalGET,?\s*\)/.test(source) &&
+        source.includes("export const GET: typeof zionBackendOriginalGET = async function GET(request: Request)") &&
+        source.includes("return zionBackendObservedGET(request);"),
         true,
       );
       assert.equal(source.includes('searchParams.get("organizationId")'), false);

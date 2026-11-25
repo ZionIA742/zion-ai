@@ -1,0 +1,909 @@
+EVIDENCIA REMOTA - P19A 4-T3-N.15
+Somente para leitura e testes de compatibilidade. NAO EXECUTAR.
+Definicoes reconstruidas da exportacao Markdown; os MD5 abaixo sao os reportados pelo banco, nao hashes do texto exportado.
+
+========================================================================
+materialize_sales_ai_reply_set_by_worker_by_system(uuid,uuid,uuid,uuid,uuid,uuid,text,text,boolean,text,uuid,uuid,jsonb,jsonb,jsonb)
+MD5 remoto: 6f849efbeb5b000e1ae5ec8f84e75a3f
+Config: ["search_path=\\"\\"","row_security=off"]
+
+CREATE OR REPLACE FUNCTION public.materialize_sales_ai_reply_set_by_worker_by_system(p_organization_id uuid, p_store_id uuid, p_conversation_id uuid, p_lead_id uuid, p_anchor_message_id uuid, p_commercial_opportunity_id uuid, p_ai_text text, p_outbound_kind text, p_external_authorized boolean, p_claim_kind text, p_claim_id uuid, p_claim_token uuid, p_document_actions jsonb DEFAULT '[]'::jsonb, p_photo_action jsonb DEFAULT NULL::jsonb, p_payload jsonb DEFAULT '{}'::jsonb)
+ RETURNS TABLE(response_set_id uuid, text_message_id uuid, document_message_ids uuid[], photo_message_id uuid, request_fingerprint text, replayed boolean)
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+ SET row_security TO 'off'
+AS $function$
+DECLARE
+  v_expires_at timestamptz;
+BEGIN
+  IF auth.role() IS DISTINCT FROM 'service_role' THEN
+    RAISE EXCEPTION USING ERRCODE = '42501',
+      MESSAGE = 'ZION_WORKER_SERVICE_ROLE_REQUIRED';
+  END IF;
+
+  IF p_organization_id IS NULL OR p_store_id IS NULL
+     OR p_claim_id IS NULL OR p_claim_token IS NULL
+     OR p_claim_kind IS NULL
+     OR p_claim_kind NOT IN ('inbox', 'ai_run_queue') THEN
+    RAISE EXCEPTION USING ERRCODE = '22023',
+      MESSAGE = 'ZION_WORKER_FENCE_INVALID_ARGUMENTS';
+  END IF;
+
+  -- O lock permanece ate o fim da transacao.
+  -- Outro worker nao pode reclamar o registro
+  -- enquanto esta materializacao estiver ativa.
+
+  IF p_claim_kind = 'inbox' THEN
+    SELECT i.claim_expires_at INTO v_expires_at
+    FROM public.channel_whatsapp_inbox AS i
+    WHERE i.id = p_claim_id
+      AND i.organization_id = p_organization_id
+      AND i.store_id = p_store_id
+      AND i.claim_token = p_claim_token
+      AND i.processed_at IS NULL
+      AND i.payload ->> 'source' = 'meta_whatsapp_webhook'
+      AND i.attempt_count BETWEEN 1 AND 3
+    FOR UPDATE OF i;
+  ELSE
+    SELECT q.claim_expires_at INTO v_expires_at
+    FROM public.ai_run_queue AS q
+    WHERE q.id = p_claim_id
+      AND q.organization_id = p_organization_id
+      AND q.store_id = p_store_id
+      AND q.claim_token = p_claim_token
+      AND q.processed_at IS NULL
+      AND q.attempt_count BETWEEN 1 AND 3
+    FOR UPDATE OF q;
+  END IF;
+
+  IF NOT FOUND OR v_expires_at IS NULL
+     OR v_expires_at <= pg_catalog.clock_timestamp() THEN
+    RAISE EXCEPTION USING ERRCODE = '42501',
+      MESSAGE = 'ZION_WORKER_FENCE_CLAIM_INVALID_OR_EXPIRED';
+  END IF;
+
+  -- Reutiliza integralmente a autoridade atual.
+  RETURN QUERY
+  SELECT
+    m.response_set_id,
+    m.text_message_id,
+    m.document_message_ids,
+    m.photo_message_id,
+    m.request_fingerprint,
+    m.replayed
+  FROM public.materialize_sales_ai_reply_set_by_system(
+    p_organization_id,
+    p_store_id,
+    p_conversation_id,
+    p_lead_id,
+    p_anchor_message_id,
+    p_commercial_opportunity_id,
+    p_ai_text,
+    p_outbound_kind,
+    p_external_authorized,
+    p_document_actions,
+    p_photo_action,
+    p_payload
+  ) AS m;
+END;
+$function$
+
+
+========================================================================
+validate_or_cancel_whatsapp_external_send_by_system(uuid,uuid,uuid)
+MD5 remoto: c06d5e33137ae662cb5f93da0c410d0b
+Config: ["search_path=pg_catalog, pg_temp, public","row_security=off"]
+
+CREATE OR REPLACE FUNCTION public.validate_or_cancel_whatsapp_external_send_by_system(p_organization_id uuid, p_store_id uuid, p_message_id uuid)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'pg_temp', 'public'
+ SET row_security TO 'off'
+AS $function$
+declare
+  v_request_role text := coalesce(
+    nullif(pg_catalog.current_setting('request.jwt.claim.role', true), ''),
+    nullif(auth.jwt() ->> 'role', '')
+  );
+
+  v_message public.messages;
+  v_source_message public.messages;
+
+  v_outbound_kind text;
+  v_outbound_origin text;
+
+  v_opportunity_id uuid;
+  v_followup_id uuid;
+  v_followup_cycle integer;
+  v_action_queue_id uuid;
+  v_source_message_id uuid;
+
+  v_context_opportunity_id uuid;
+  v_source_context_opportunity_id uuid;
+
+  v_followup public.commercial_opportunity_followups;
+  v_queue public.ai_sales_action_queue;
+
+  v_block_reason text;
+  v_stop_event_exists boolean := false;
+  v_any_opt_out_exists boolean := false;
+  v_newer_incoming_exists boolean := false;
+  v_newer_human_exists boolean := false;
+  v_real_whatsapp boolean := false;
+  v_conversation_is_human_active boolean;
+  v_conversation_status text;
+
+  v_initial_sender text;
+  v_initial_outbound_kind text;
+  v_initial_opportunity_id uuid;
+  v_initial_followup_id uuid;
+  v_initial_followup_cycle integer;
+  v_initial_action_queue_id uuid;
+
+  v_opportunity public.commercial_opportunities;
+begin
+  if (v_request_role is distinct from 'service_role')
+     and session_user <> 'postgres' then
+    raise exception using
+      errcode = '42501',
+      message = 'whatsapp external send gate is not authorized';
+  end if;
+
+  if p_organization_id is null
+     or p_store_id is null
+     or p_message_id is null then
+    raise exception using
+      errcode = '22023',
+      message = 'WHATSAPP_EXTERNAL_SEND_GATE_ARGUMENTS_REQUIRED';
+  end if;
+
+  /*
+   * Initial identity read.
+   *
+   * No SEND authority is granted from this read. For Sales AI outbound we use
+   * its identities only to acquire the same commercial locks used by the
+   * opt-out/follow-up writers. The message is re-read after those locks and
+   * the conversation lock are held.
+   */
+  select message_row.*
+  into v_message
+  from public.messages message_row
+  where message_row.id = p_message_id
+    and message_row.organization_id = p_organization_id
+    and message_row.store_id = p_store_id;
+
+  if not found then
+    raise exception using
+      errcode = 'P0002',
+      message = 'WHATSAPP_EXTERNAL_SEND_GATE_MESSAGE_NOT_FOUND_IN_SCOPE';
+  end if;
+
+  if v_message.conversation_id is null then
+    raise exception using
+      errcode = '23514',
+      message = 'WHATSAPP_EXTERNAL_SEND_GATE_CONVERSATION_REQUIRED';
+  end if;
+
+  v_initial_sender := v_message.sender;
+
+  v_initial_outbound_kind :=
+    nullif(
+      pg_catalog.btrim(
+        coalesce(v_message.metadata ->> 'outbound_kind', '')
+      ),
+      ''
+    );
+
+  /*
+   * Every external Sales AI message must carry an explicit outbound kind.
+   * There is deliberately no permissive legacy AI fallback.
+   */
+  if v_message.sender = 'ai' then
+    if v_initial_outbound_kind is null then
+      v_block_reason := 'sales_ai_outbound_kind_required';
+    elsif v_initial_outbound_kind not in (
+      'reactive_ai_reply',
+      'stop_contact_ack',
+      'canonical_followup',
+      'received_contract_document_ack',
+      'received_contract_document_confirmation'
+    ) then
+      v_block_reason := 'unsupported_sales_ai_outbound_kind';
+    end if;
+  end if;
+
+  /*
+   * C.5: an operational document ACK is authorized by its exact inbound
+   * document source, not by a commercial opportunity.
+   */
+  if v_block_reason is null
+     and v_message.sender = 'ai'
+     and v_initial_outbound_kind = 'received_contract_document_ack' then
+    if nullif(
+      pg_catalog.btrim(
+        coalesce(v_message.metadata ->> 'outbound_origin', '')
+      ),
+      ''
+    ) is distinct from 'received_contract_document_ack' then
+      v_block_reason := 'received_document_ack_origin_mismatch';
+    end if;
+
+    begin
+      v_source_message_id :=
+        nullif(v_message.metadata ->> 'source_message_id', '')::uuid;
+    exception
+      when invalid_text_representation then
+        v_block_reason := 'invalid_received_document_ack_source';
+    end;
+
+    if v_block_reason is null and v_source_message_id is null then
+      v_block_reason := 'received_document_ack_source_required';
+    end if;
+
+    if v_block_reason is null then
+      select source_row.*
+        into v_source_message
+        from public.messages source_row
+       where source_row.id = v_source_message_id
+         and source_row.organization_id = p_organization_id
+         and source_row.store_id = p_store_id
+         and source_row.conversation_id = v_message.conversation_id
+         and source_row.sender = 'user'
+         and source_row.direction = 'incoming'
+         and source_row.message_type = 'document'
+         and source_row.deleted_at is null
+       for share;
+
+      if not found then
+        v_block_reason := 'received_document_ack_source_scope_mismatch';
+      end if;
+    end if;
+  end if;
+
+  /*
+   * Serialize every recognized Sales AI outbound against its exact commercial
+   * opportunity. The opt-out writer locks this same opportunity.
+   */
+  if v_block_reason is null
+     and v_message.sender = 'ai'
+     and v_initial_outbound_kind <> 'received_contract_document_ack'
+     and v_initial_outbound_kind <> 'received_contract_document_confirmation' then
+    begin
+      v_initial_opportunity_id :=
+        nullif(
+          v_message.metadata ->> 'commercial_opportunity_id',
+          ''
+        )::uuid;
+    exception
+      when invalid_text_representation then
+        v_block_reason := 'invalid_sales_ai_opportunity_identity';
+    end;
+
+    if v_block_reason is null
+       and v_initial_opportunity_id is null then
+      v_block_reason := 'sales_ai_opportunity_identity_required';
+    end if;
+
+    if v_block_reason is null then
+      select opportunity_row.*
+      into v_opportunity
+      from public.commercial_opportunities opportunity_row
+      where opportunity_row.id = v_initial_opportunity_id
+        and opportunity_row.organization_id = p_organization_id
+        and opportunity_row.store_id = p_store_id
+      for update;
+
+      if not found then
+        v_block_reason := 'sales_ai_opportunity_scope_mismatch';
+      elsif v_opportunity.primary_conversation_id
+              is distinct from v_message.conversation_id then
+        v_block_reason := 'sales_ai_opportunity_conversation_mismatch';
+      end if;
+    end if;
+  end if;
+
+  /*
+   * Canonical follow-up adds its exact follow-up identity.
+   * Lock order matches commercial writers:
+   *
+   *   opportunity -> followup -> conversation
+   */
+  if v_block_reason is null
+     and v_message.sender = 'ai'
+     and v_initial_outbound_kind = 'canonical_followup' then
+    begin
+      v_initial_followup_id :=
+        nullif(v_message.metadata ->> 'followup_id', '')::uuid;
+
+      v_initial_followup_cycle :=
+        nullif(v_message.metadata ->> 'followup_cycle', '')::integer;
+
+      v_initial_action_queue_id :=
+        nullif(v_message.metadata ->> 'action_queue_id', '')::uuid;
+    exception
+      when invalid_text_representation then
+        v_block_reason := 'invalid_canonical_followup_identity';
+    end;
+
+    if v_block_reason is null
+       and (
+         v_initial_followup_id is null
+         or v_initial_followup_cycle is null
+         or v_initial_action_queue_id is null
+       ) then
+      v_block_reason := 'canonical_followup_identity_required';
+    end if;
+
+    if v_block_reason is null then
+      select followup_row.*
+      into v_followup
+      from public.commercial_opportunity_followups followup_row
+      where followup_row.id = v_initial_followup_id
+        and followup_row.organization_id = p_organization_id
+        and followup_row.store_id = p_store_id
+        and followup_row.commercial_opportunity_id =
+              v_initial_opportunity_id
+        and followup_row.cycle = v_initial_followup_cycle
+      for update;
+
+      if not found then
+        v_block_reason := 'canonical_followup_scope_mismatch';
+      elsif v_followup.status <> 'active' then
+        v_block_reason := 'stale_followup';
+      end if;
+    end if;
+  end if;
+
+  /*
+   * Same transaction-level conversation lock used by insert_message.
+   */
+  perform public.private_acquire_sales_contract_conversation_xact_lock(
+    v_message.conversation_id
+  );
+
+  /*
+   * The canonical takeover writer locks the same conversation row.
+   * Read it while locked so a human takeover cannot race the final
+   * processing -> uncertain transition for an AI message.
+   */
+  if v_block_reason is null
+     and v_message.sender = 'ai' then
+    select conversation_row.is_human_active, conversation_row.status
+    into v_conversation_is_human_active, v_conversation_status
+    from public.conversations conversation_row
+    join public.leads lead_row
+      on lead_row.id = conversation_row.lead_id
+     and lead_row.organization_id = p_organization_id
+     and lead_row.store_id = p_store_id
+    where conversation_row.id = v_message.conversation_id
+      and conversation_row.organization_id = p_organization_id
+    for update of conversation_row;
+
+    if not found then
+      v_block_reason := 'human_takeover_conversation_scope_mismatch';
+    elsif coalesce(v_conversation_is_human_active, false)
+       or pg_catalog.lower(pg_catalog.btrim(coalesce(v_conversation_status, '')))
+            = 'humano_assumiu' then
+      v_block_reason := 'human_takeover_active';
+    end if;
+  end if;
+
+  /*
+   * Fresh authority read after all required serialization locks are held.
+   */
+  select message_row.*
+  into v_message
+  from public.messages message_row
+  where message_row.id = p_message_id
+    and message_row.organization_id = p_organization_id
+    and message_row.store_id = p_store_id
+    and message_row.conversation_id = v_message.conversation_id
+  for update;
+
+  if not found then
+    raise exception using
+      errcode = 'P0002',
+      message = 'WHATSAPP_EXTERNAL_SEND_GATE_MESSAGE_DISAPPEARED';
+  end if;
+
+  v_outbound_kind :=
+    nullif(
+      pg_catalog.btrim(
+        coalesce(v_message.metadata ->> 'outbound_kind', '')
+      ),
+      ''
+    );
+
+  v_outbound_origin :=
+    nullif(
+      pg_catalog.btrim(
+        coalesce(v_message.metadata ->> 'outbound_origin', '')
+      ),
+      ''
+    );
+
+  if v_block_reason is null
+     and v_message.sender is distinct from v_initial_sender then
+    v_block_reason := 'message_sender_changed_during_gate';
+  end if;
+
+  if v_block_reason is null
+     and v_outbound_kind is distinct from v_initial_outbound_kind then
+    v_block_reason := 'message_authority_metadata_changed_during_gate';
+  end if;
+
+  if v_block_reason is null then
+    if v_message.deleted_at is not null
+       or v_message.direction <> 'outgoing'
+       or v_message.external_message_id is not null
+       or coalesce(v_message.metadata ->> 'send_external', 'false') <> 'true'
+       or coalesce(v_message.metadata ->> 'external_channel', '') <> 'whatsapp'
+       or coalesce(v_message.outbound_delivery_state, '') <> 'processing'
+       or v_message.outbound_attempt_started_at is not null then
+      v_block_reason := 'message_not_claimed_for_external_send';
+    end if;
+  end if;
+
+  /*
+   * Fresh Sales AI opportunity identity must equal the identity whose row
+   * lock is held.
+   */
+  if v_block_reason is null
+     and v_message.sender = 'ai'
+     and v_outbound_kind <> 'received_contract_document_ack'
+     and v_outbound_kind <> 'received_contract_document_confirmation' then
+    begin
+      v_opportunity_id :=
+        nullif(
+          v_message.metadata ->> 'commercial_opportunity_id',
+          ''
+        )::uuid;
+    exception
+      when invalid_text_representation then
+        v_block_reason := 'invalid_sales_ai_opportunity_identity';
+    end;
+
+    if v_block_reason is null
+       and (
+         v_opportunity_id is null
+         or v_opportunity_id is distinct from v_initial_opportunity_id
+       ) then
+      v_block_reason := 'sales_ai_opportunity_identity_changed_during_gate';
+    end if;
+  end if;
+
+  if v_block_reason is null
+     and v_message.sender = 'ai'
+     and v_outbound_kind = 'received_contract_document_ack' then
+    begin
+      v_source_message_id :=
+        nullif(v_message.metadata ->> 'source_message_id', '')::uuid;
+    exception
+      when invalid_text_representation then
+        v_block_reason := 'invalid_received_document_ack_source';
+    end;
+
+    if v_block_reason is null
+       and v_source_message_id is null then
+      v_block_reason := 'received_document_ack_source_required';
+    elsif v_block_reason is null
+       and v_source_message_id is distinct from v_source_message.id then
+      v_block_reason := 'received_document_ack_source_changed_during_gate';
+    end if;
+  end if;
+
+  /*
+   * At the final controlled boundary, Sales AI external transport must still
+   * belong to a proven real Meta WhatsApp conversation.
+   */
+  if v_block_reason is null
+     and v_message.sender = 'ai' then
+    v_real_whatsapp :=
+      public.is_real_whatsapp_conversation_for_external_send(
+        p_organization_id,
+        p_store_id,
+        v_message.conversation_id
+      );
+
+    if not v_real_whatsapp then
+      v_block_reason := 'real_whatsapp_authority_missing';
+    end if;
+  end if;
+
+  /*
+   * Fresh canonical identities must equal the identities whose locks are held.
+   */
+  if v_block_reason is null
+     and v_message.sender = 'ai'
+     and v_outbound_kind = 'canonical_followup' then
+    begin
+      v_followup_id :=
+        nullif(v_message.metadata ->> 'followup_id', '')::uuid;
+
+      v_followup_cycle :=
+        nullif(v_message.metadata ->> 'followup_cycle', '')::integer;
+
+      v_action_queue_id :=
+        nullif(v_message.metadata ->> 'action_queue_id', '')::uuid;
+    exception
+      when invalid_text_representation then
+        v_block_reason := 'invalid_canonical_followup_identity';
+    end;
+
+    if v_block_reason is null
+       and (
+         v_followup_id is distinct from v_initial_followup_id
+         or v_followup_cycle is distinct from v_initial_followup_cycle
+         or v_action_queue_id is distinct from v_initial_action_queue_id
+       ) then
+      v_block_reason := 'canonical_followup_identity_changed_during_gate';
+    end if;
+  end if;
+  /*
+   * Human/manual/quote paths remain outside the P9 Sales AI gate.
+   * Their existing transport contract is preserved.
+   */
+  if v_block_reason is null and v_message.sender = 'ai' then
+    if v_outbound_kind = 'received_contract_document_confirmation' then
+      if nullif(pg_catalog.btrim(coalesce(v_message.metadata ->> 'outbound_origin', '')), '') is distinct from 'received_contract_document_confirmation' then
+        v_block_reason := 'received_contract_confirmation_origin_mismatch';
+      elsif nullif(pg_catalog.btrim(coalesce(v_message.metadata ->> 'confirmation_event_id', '')), '') is null
+         or nullif(pg_catalog.btrim(coalesce(v_message.metadata ->> 'source_message_id', '')), '') is null
+         or nullif(pg_catalog.btrim(coalesce(v_message.metadata ->> 'contract_id', '')), '') is null
+         or nullif(pg_catalog.btrim(coalesce(v_message.metadata ->> 'contract_version_id', '')), '') is null then
+        v_block_reason := 'received_contract_confirmation_identity_required';
+      elsif not exists (
+        select 1
+        from public.store_business_events event_row
+        where event_row.id::text = v_message.metadata ->> 'confirmation_event_id'
+          and event_row.organization_id = p_organization_id
+          and event_row.store_id = p_store_id
+          and event_row.conversation_id = v_message.conversation_id
+          and event_row.event_key = 'contrato_conferencia_documental'
+          and event_row.event_payload ->> 'schema' = 'received_contract_document_decision_v1'
+          and event_row.event_payload ->> 'decision' = 'confirmed'
+          and event_row.event_payload ->> 'contract_id' = v_message.metadata ->> 'contract_id'
+          and event_row.event_payload ->> 'contract_version_id' = v_message.metadata ->> 'contract_version_id'
+          and event_row.event_payload ->> 'evidence_source_message_id' = v_message.metadata ->> 'source_message_id'
+      ) then
+        v_block_reason := 'received_contract_confirmation_event_scope_mismatch';
+      elsif not exists (
+        select 1
+        from public.sales_contracts contract_row
+        where contract_row.id::text = v_message.metadata ->> 'contract_id'
+          and contract_row.organization_id = p_organization_id
+          and contract_row.store_id = p_store_id
+          and contract_row.conversation_id = v_message.conversation_id
+          and contract_row.status = 'completed'
+          and contract_row.current_version_id::text = v_message.metadata ->> 'contract_version_id'
+      ) then
+        v_block_reason := 'received_contract_confirmation_contract_not_completed';
+      elsif not exists (
+        select 1
+        from public.sales_contract_versions version_row
+        where version_row.id::text = v_message.metadata ->> 'contract_version_id'
+          and version_row.contract_id::text = v_message.metadata ->> 'contract_id'
+          and version_row.organization_id = p_organization_id
+          and version_row.store_id = p_store_id
+          and version_row.status = 'completed'
+      ) then
+        v_block_reason := 'received_contract_confirmation_version_not_completed';
+      elsif not exists (
+        select 1
+        from public.messages source_row
+        where source_row.id::text = v_message.metadata ->> 'source_message_id'
+          and source_row.organization_id = p_organization_id
+          and source_row.store_id = p_store_id
+          and source_row.conversation_id = v_message.conversation_id
+          and source_row.sender = 'user'
+          and source_row.direction = 'incoming'
+          and source_row.message_type = 'document'
+          and source_row.deleted_at is null
+      ) then
+        v_block_reason := 'received_contract_confirmation_source_scope_mismatch';
+      end if;
+    elsif v_outbound_kind in ('reactive_ai_reply', 'stop_contact_ack') then
+      begin
+        v_source_message_id :=
+          nullif(v_message.metadata ->> 'source_message_id', '')::uuid;
+      exception
+        when invalid_text_representation then
+          v_block_reason := 'invalid_reactive_ai_identity';
+      end;
+
+      if v_block_reason is null
+         and (
+           v_source_message_id is null
+           or v_opportunity_id is null
+           or v_message.commercial_session_context_link_id is null
+         ) then
+        v_block_reason := 'reactive_ai_identity_required';
+      end if;
+
+      if v_block_reason is null then
+        select context_link_row.commercial_opportunity_id
+        into v_context_opportunity_id
+        from public.commercial_session_context_links context_link_row
+        where context_link_row.id =
+              v_message.commercial_session_context_link_id
+          and context_link_row.organization_id = p_organization_id
+          and context_link_row.store_id = p_store_id;
+
+        if not found
+           or v_context_opportunity_id is distinct from v_opportunity_id then
+          v_block_reason := 'outbound_commercial_context_mismatch';
+        end if;
+      end if;
+
+      if v_block_reason is null then
+        select source_row.*
+        into v_source_message
+        from public.messages source_row
+        where source_row.id = v_source_message_id
+          and source_row.organization_id = p_organization_id
+          and source_row.store_id = p_store_id
+          and source_row.conversation_id = v_message.conversation_id
+          and source_row.sender = 'user'
+          and source_row.direction = 'incoming'
+          and source_row.deleted_at is null;
+
+        if not found
+           or v_source_message.commercial_session_context_link_id is null then
+          v_block_reason := 'reactive_source_message_scope_mismatch';
+        end if;
+      end if;
+
+      if v_block_reason is null then
+        select context_link_row.commercial_opportunity_id
+        into v_source_context_opportunity_id
+        from public.commercial_session_context_links context_link_row
+        where context_link_row.id =
+              v_source_message.commercial_session_context_link_id
+          and context_link_row.organization_id = p_organization_id
+          and context_link_row.store_id = p_store_id;
+
+        if not found
+           or v_source_context_opportunity_id is distinct from v_opportunity_id then
+          v_block_reason := 'reactive_source_opportunity_mismatch';
+        end if;
+      end if;
+
+      if v_block_reason is null then
+        select exists (
+          select 1
+          from public.messages incoming_row
+          where incoming_row.organization_id = p_organization_id
+            and incoming_row.store_id = p_store_id
+            and incoming_row.conversation_id = v_message.conversation_id
+            and incoming_row.sender = 'user'
+            and incoming_row.direction = 'incoming'
+            and incoming_row.deleted_at is null
+            and incoming_row.id <> v_source_message.id
+            and incoming_row.created_at >= v_source_message.created_at
+        )
+        into v_newer_incoming_exists;
+
+        if v_newer_incoming_exists then
+          v_block_reason := 'superseded_by_new_customer_message';
+        end if;
+      end if;
+
+      -- I8: this check is specific to the reactive response source, not
+      -- the similarly named canonical-followup supersession branch.
+      if v_block_reason is null then
+        select exists (
+          select 1
+          from public.messages human_row
+          where human_row.organization_id = p_organization_id
+            and human_row.store_id = p_store_id
+            and human_row.conversation_id = v_message.conversation_id
+            and human_row.sender = 'human'
+            and human_row.direction = 'outgoing'
+            and human_row.deleted_at is null
+            and coalesce(human_row.metadata ->> 'outbound_origin', '') in (
+              'crm_manual_text',
+              'crm_manual_image',
+              'crm_manual_document',
+              'sales_contract_send',
+              'sales_quote_send'
+            )
+            and (
+              human_row.created_at > v_source_message.created_at
+              or (
+                human_row.outbound_delivery_state = 'sent'
+                and human_row.external_message_id is not null
+                and human_row.outbound_provider_accepted_at
+                    > v_source_message.created_at
+              )
+            )
+        ) into v_newer_human_exists;
+
+        if v_newer_human_exists then
+          v_block_reason := 'superseded_by_human_response';
+        end if;
+      end if;
+
+      if v_block_reason is null then
+        select exists (
+          select 1
+          from public.commercial_opportunity_followups followup_row
+          where followup_row.organization_id = p_organization_id
+            and followup_row.store_id = p_store_id
+            and followup_row.commercial_opportunity_id = v_opportunity_id
+            and followup_row.status = 'opted_out'
+        )
+        into v_any_opt_out_exists;
+
+        select exists (
+          select 1
+          from public.commercial_opportunity_followup_events event_row
+          where event_row.organization_id = p_organization_id
+            and event_row.store_id = p_store_id
+            and event_row.commercial_opportunity_id = v_opportunity_id
+            and event_row.event_type = 'opted_out'
+            and event_row.actor_type = 'system'
+            and event_row.metadata ->> 'source_conversation_id'
+                  = v_message.conversation_id::text
+            and event_row.metadata ->> 'source_message_id'
+                  = v_source_message_id::text
+        )
+        into v_stop_event_exists;
+
+        if v_outbound_kind = 'stop_contact_ack' then
+          if not v_stop_event_exists then
+            v_block_reason :=
+              'stop_contact_ack_without_exact_opt_out_source';
+          end if;
+        end if;
+      end if;
+    elsif v_outbound_kind = 'canonical_followup' then
+      if v_message.commercial_session_context_link_id is null then
+        v_block_reason := 'canonical_followup_context_required';
+      end if;
+
+      if v_block_reason is null then
+        select context_link_row.commercial_opportunity_id
+        into v_context_opportunity_id
+        from public.commercial_session_context_links context_link_row
+        where context_link_row.id =
+              v_message.commercial_session_context_link_id
+          and context_link_row.organization_id = p_organization_id
+          and context_link_row.store_id = p_store_id;
+
+        if not found
+           or v_context_opportunity_id is distinct from v_opportunity_id then
+          v_block_reason := 'canonical_followup_context_mismatch';
+        end if;
+      end if;
+
+      if v_block_reason is null then
+        select queue_row.*
+        into v_queue
+        from public.ai_sales_action_queue queue_row
+        where queue_row.id = v_action_queue_id
+          and queue_row.organization_id = p_organization_id
+          and queue_row.store_id = p_store_id
+          and queue_row.conversation_id = v_message.conversation_id;
+
+        if not found
+           or v_queue.next_action not in ('followup_offer', 'followup_visit')
+           or v_queue.payload ->> 'commercial_opportunity_id'
+                is distinct from v_opportunity_id::text
+           or v_queue.payload ->> 'followup_id'
+                is distinct from v_followup_id::text
+           or v_queue.payload ->> 'followup_cycle'
+                is distinct from v_followup_cycle::text then
+          v_block_reason := 'canonical_followup_queue_scope_mismatch';
+        end if;
+      end if;
+
+      if v_block_reason is null then
+        select exists (
+          select 1
+          from public.messages incoming_row
+          where incoming_row.organization_id = p_organization_id
+            and incoming_row.store_id = p_store_id
+            and incoming_row.conversation_id = v_message.conversation_id
+            and incoming_row.sender = 'user'
+            and incoming_row.direction = 'incoming'
+            and incoming_row.deleted_at is null
+            and incoming_row.created_at > v_queue.enqueued_at
+        )
+        into v_newer_incoming_exists;
+
+        if v_newer_incoming_exists then
+          v_block_reason := 'superseded_by_new_customer_message';
+        end if;
+      end if;
+
+      if v_block_reason is null then
+        select exists (
+          select 1
+          from public.commercial_opportunity_followups followup_row
+          where followup_row.organization_id = p_organization_id
+            and followup_row.store_id = p_store_id
+            and followup_row.commercial_opportunity_id = v_opportunity_id
+            and followup_row.status = 'opted_out'
+        )
+        into v_any_opt_out_exists;
+
+        if v_any_opt_out_exists then
+          v_block_reason := 'commercial_opportunity_opted_out';
+        end if;
+      end if;
+    end if;
+  end if;
+
+  if v_block_reason is not null then
+    update public.messages message_row
+    set
+      outbound_delivery_state = 'failed',
+      outbound_claimed_at = null,
+      outbound_claimed_by = null,
+      outbound_attempt_started_at = null,
+      outbound_uncertain_at = null,
+      outbound_error_text =
+        ('ZION_EXTERNAL_SEND_BLOCKED:' || v_block_reason)::text
+    where message_row.id = p_message_id
+      and message_row.organization_id = p_organization_id
+      and message_row.store_id = p_store_id
+      and message_row.outbound_delivery_state = 'processing'
+      and message_row.outbound_attempt_started_at is null;
+
+    if not found then
+      raise exception using
+        errcode = 'P0001',
+        message = 'WHATSAPP_EXTERNAL_SEND_GATE_BLOCK_TRANSITION_LOST';
+    end if;
+
+    return pg_catalog.jsonb_build_object(
+      'ok', true,
+      'decision', 'blocked',
+      'reason', v_block_reason,
+      'message_id', p_message_id,
+      'conversation_id', v_message.conversation_id
+    );
+  end if;
+
+  /*
+   * Linearization point for the controlled outbound attempt.
+   *
+   * The same RPC that authorizes SEND moves processing -> uncertain before
+   * returning to Node. After this persisted transition there is never a blind
+   * retry. The HTTP POST happens immediately after this RPC returns.
+   */
+  update public.messages message_row
+  set
+    outbound_delivery_state = 'uncertain',
+    outbound_attempt_started_at = pg_catalog.clock_timestamp(),
+    outbound_uncertain_at = pg_catalog.clock_timestamp(),
+    outbound_claimed_at = null,
+    outbound_claimed_by = null,
+    outbound_error_text = null
+  where message_row.id = p_message_id
+    and message_row.organization_id = p_organization_id
+    and message_row.store_id = p_store_id
+    and message_row.outbound_delivery_state = 'processing'
+    and message_row.outbound_attempt_started_at is null
+    and message_row.external_message_id is null
+    and message_row.deleted_at is null;
+
+  if not found then
+    raise exception using
+      errcode = 'P0001',
+      message = 'WHATSAPP_EXTERNAL_SEND_GATE_ATTEMPT_TRANSITION_LOST';
+  end if;
+
+  return pg_catalog.jsonb_build_object(
+    'ok', true,
+    'decision', 'send',
+    'reason', 'authorized',
+    'message_id', p_message_id,
+    'conversation_id', v_message.conversation_id,
+    'outbound_kind', v_outbound_kind
+  );
+end;
+$function$
+

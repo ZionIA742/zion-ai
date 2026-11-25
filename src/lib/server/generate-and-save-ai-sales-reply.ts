@@ -40,6 +40,11 @@ import {
   enqueueQuotePreparationTaskBySystem,
   type QuotePreparationQueueResult,
 } from "./sales-quotes/enqueue-quote-preparation-task-by-system";
+import {
+  isCommercialMemoryCrmPromotionEnabled,
+  promoteCommercialMemoryToOpportunity,
+  shouldPromoteCommercialMemoryForDecision,
+} from "./promote-commercial-memory-to-opportunity";
 import { recordDetectedPhysicalSignaturePreference } from "./physical-contract-signature";
 import type { PhysicalSignatureSupabase } from "./physical-contract-signature";
 
@@ -130,6 +135,49 @@ type GenerateAndSaveAiSalesReplyDeps = {
 
 const QUOTE_PREPARATION_AUTHORIZATION_ENABLED_ENV =
   "P19A_QUOTE_PREPARATION_AUTHORIZATION_ENABLED";
+
+function buildDurableCommercialMemoryPromotionPayload(args: {
+  organizationId: string;
+  storeId: string;
+  leadId: string;
+  conversationId: string;
+  responseAnchorCommercialContext: ResponseAnchorCommercialContext | null;
+  commercialMessageIntentResolution: {
+    decisionKind: string | null;
+    resolvedCommercialOpportunityId: string | null;
+  } | null;
+}) {
+  const context = args.responseAnchorCommercialContext;
+  const resolution = args.commercialMessageIntentResolution;
+  const conversationSessionId = String(context?.conversationSessionId || "").trim();
+  const commercialOpportunityId = String(
+    resolution?.resolvedCommercialOpportunityId || "",
+  ).trim();
+  if (
+    !isCommercialMemoryCrmPromotionEnabled() ||
+    !args.leadId.trim() ||
+    !args.conversationId.trim() ||
+    !conversationSessionId ||
+    !commercialOpportunityId ||
+    !shouldPromoteCommercialMemoryForDecision({
+      enabled: true,
+      decisionKind: resolution?.decisionKind || null,
+      resolvedCommercialOpportunityId: commercialOpportunityId,
+    })
+  ) {
+    return null;
+  }
+
+  return {
+    organization_id: args.organizationId,
+    store_id: args.storeId,
+    lead_id: args.leadId,
+    conversation_id: args.conversationId,
+    conversation_session_id: conversationSessionId,
+    commercial_opportunity_id: commercialOpportunityId,
+    decision_kind: resolution?.decisionKind || null,
+  };
+}
 
 export function isQuotePreparationTaskAuthorizationEnabled() {
   return process.env[QUOTE_PREPARATION_AUTHORIZATION_ENABLED_ENV] === "true";
@@ -353,6 +401,14 @@ function normalizeCrossSellSuggestionsActuallyIncluded(
   return suggestions;
 }
 
+type RecoveryWriteBinding = {
+  responseSetId: string;
+  queueId: string;
+  claimToken: string;
+  anchorMessageId: string;
+  leadId: string | null;
+};
+
 async function recordIncludedCrossSellSuggestionsBySystem(args: {
   systemSupabase: any;
   organizationId: string;
@@ -363,6 +419,7 @@ async function recordIncludedCrossSellSuggestionsBySystem(args: {
   sourceMessageId: string;
   suggestions: CrossSellSuggestionIncluded[];
   recoveryResponseSetId?: string | null;
+  recoveryBinding?: RecoveryWriteBinding;
 }): Promise<CrossSellSuggestionLedgerResult> {
   if (
     !args.commercialOpportunityId ||
@@ -381,6 +438,27 @@ async function recordIncludedCrossSellSuggestionsBySystem(args: {
     registered: 0,
     failed: 0,
   };
+
+  if (
+    Boolean(args.recoveryResponseSetId) !==
+    Boolean(args.recoveryBinding) ||
+    (
+      args.recoveryBinding &&
+      (
+        args.recoveryBinding.responseSetId !== args.recoveryResponseSetId ||
+        args.recoveryBinding.anchorMessageId !== args.sourceMessageId ||
+        !args.recoveryBinding.queueId ||
+        !args.recoveryBinding.claimToken ||
+        !args.recoveryBinding.leadId
+      )
+    )
+  ) {
+    return {
+      attempted: args.suggestions.length,
+      registered: 0,
+      failed: args.suggestions.length,
+    };
+  }
 
   for (const suggestion of args.suggestions) {
     const operationKey = buildCrossSellSuggestionLedgerOperationKey({
@@ -416,6 +494,13 @@ async function recordIncludedCrossSellSuggestionsBySystem(args: {
             source_message_id: args.sourceMessageId,
             ...(args.recoveryResponseSetId
               ? { p9_recovery_response_set_id: args.recoveryResponseSetId }
+              : {}),
+            ...(args.recoveryBinding
+              ? {
+                  p9_recovery_queue_id: args.recoveryBinding.queueId,
+                  p9_recovery_claim_token: args.recoveryBinding.claimToken,
+                  p9_recovery_anchor_message_id: args.recoveryBinding.anchorMessageId,
+                }
               : {}),
           },
         },
@@ -1345,6 +1430,7 @@ async function reconcileExistingQuotePreparationTask(args: {
   storeId: string;
   deps: CommercialAssistantHandoffDeps;
   recoveryResponseSetId?: string | null;
+  recoveryBinding?: RecoveryWriteBinding;
 }): Promise<{
   authorization: QuotePreparationAuthorizationAttempt;
   queue: QuotePreparationQueueAttempt;
@@ -1460,6 +1546,9 @@ async function reconcileExistingQuotePreparationTask(args: {
       ...(args.recoveryResponseSetId
         ? { recoveryResponseSetId: args.recoveryResponseSetId }
         : {}),
+      ...(args.recoveryBinding
+        ? { recoveryBinding: args.recoveryBinding }
+        : {}),
       supabase: args.supabase,
     });
   } catch (error: unknown) {
@@ -1500,6 +1589,7 @@ async function reconcileExistingQuotePreparationTask(args: {
       ...(args.recoveryResponseSetId
         ? { recoveryResponseSetId: args.recoveryResponseSetId }
         : {}),
+        ...(args.recoveryBinding ? { recoveryBinding: args.recoveryBinding } : {}),
       supabase: args.supabase,
     });
     return {
@@ -1607,7 +1697,12 @@ async function findExistingCommercialHandoffNotification(args: {
       row.context && typeof row.context === "object" ? row.context : null;
     const sameTaskId = String(context?.["task_id"] || "").trim() === args.taskId;
     const sameSource = String(context?.["source"] || "").trim() === "ai_sales";
-    return sameTaskId && sameSource;
+    const sameEventKey = String(context?.["event_key"] || "") ===
+      "ai_sales_handoff:" +
+      String(context?.["task_type"] || "") +
+      ":" + args.taskId;
+
+    return sameTaskId && (sameSource || sameEventKey);
   });
 }
 
@@ -1620,7 +1715,15 @@ async function enqueueCommercialHandoffNotification(args: {
   taskId: string;
   handoff: CommercialHandoffContext;
   recoveryResponseSetId?: string | null;
+  recoveryBinding?: RecoveryWriteBinding;
 }) {
+  if (
+    Boolean(args.recoveryResponseSetId) !==
+    Boolean(args.recoveryBinding)
+  ) {
+    throw new Error("P9_RECOVERY_NOTIFICATION_BINDING_REQUIRED");
+  }
+
   const notificationType = "important_alert";
   const title =
     args.handoff.taskType === "commercial_quote_request"
@@ -1702,7 +1805,16 @@ async function enqueueCommercialHandoffNotification(args: {
       p_title: title,
       p_body: body,
       p_priority: "high",
-      p_context: context,
+      p_context: {
+        ...context,
+        ...(args.recoveryBinding
+          ? {
+              p9_recovery_queue_id: args.recoveryBinding.queueId,
+              p9_recovery_claim_token: args.recoveryBinding.claimToken,
+              p9_recovery_anchor_message_id: args.recoveryBinding.anchorMessageId,
+            }
+          : {}),
+      },
       p_related_lead_id: args.leadId || null,
       p_related_conversation_id: args.conversationId,
       p_related_appointment_id: null,
@@ -2722,6 +2834,7 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical(args: {
   taskId: string;
   handoff: CommercialHandoffContext;
   generationAnchorMessageId?: string | null;
+  recoveryBinding?: RecoveryWriteBinding;
 }): Promise<CrmAutoProgressResult> {
   if (args.handoff.taskType !== "commercial_quote_request") {
     console.info("[zion-ai-sales-handoff] crm auto progress skipped", {
@@ -2774,6 +2887,20 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical(args: {
   const handoffEvidenceSummary = summarizeCommercialHandoffEvidence(args.handoff);
   const evidenceMessageId = cleanText(args.generationAnchorMessageId) || null;
 
+  if (
+    args.recoveryBinding &&
+    (
+      !args.recoveryBinding.responseSetId ||
+      !args.recoveryBinding.queueId ||
+      !args.recoveryBinding.claimToken ||
+      !args.recoveryBinding.leadId ||
+      args.recoveryBinding.leadId !== args.leadId ||
+      args.recoveryBinding.anchorMessageId !== evidenceMessageId
+    )
+  ) {
+    throw new Error("P9_RECOVERY_BUDGET_BINDING_INVALID");
+  }
+
   const stageSnapshot = await loadCanonicalCommercialOpportunityStage({
     supabase: args.supabase,
     organizationId: args.organizationId,
@@ -2812,6 +2939,8 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical(args: {
       | "crm_transition_to_budget_failed_after_qualification"
       | "crm_transition_rpc_failed";
   }) => {
+    if (args.recoveryBinding) return null;
+
     const { error } = await transitionConversationStateAsInternalActor({
       supabase: args.supabase,
       conversationId: args.conversationId,
@@ -2854,7 +2983,29 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical(args: {
       | "canonical_transition_to_budget_failed_after_qualification"
       | "canonical_transition_to_budget_failed";
   }) => {
-    const { error } = await transitionCommercialOpportunityStageBySystem({
+    const { error } = args.recoveryBinding
+      ? await args.systemSupabase.rpc(
+          "p9_10_4_d_transition_recovery_stage_by_system",
+          {
+            p_response_set_id: args.recoveryBinding.responseSetId,
+            p_queue_id: args.recoveryBinding.queueId,
+            p_claim_token: args.recoveryBinding.claimToken,
+            p_organization_id: args.organizationId,
+            p_store_id: args.storeId,
+            p_conversation_id: args.conversationId,
+            p_anchor_message_id: args.recoveryBinding.anchorMessageId,
+            p_lead_id: args.recoveryBinding.leadId,
+            p_commercial_opportunity_id: commercialOpportunityId,
+            p_idempotency_key: args2.idempotencyKey,
+            p_target_stage: args2.targetStage,
+            p_reason_details: handoffReasonDetails,
+            p_evidence_type: "commercial_handoff_task",
+            p_evidence_message_id: evidenceMessageId,
+            p_evidence_summary: handoffEvidenceSummary,
+            p_source: "ai_sales_auto_progress",
+          }
+        )
+      : await transitionCommercialOpportunityStageBySystem({
       supabase: args.systemSupabase,
       organizationId: args.organizationId,
       storeId: args.storeId,
@@ -3001,6 +3152,13 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignalCanonical(args:
   lastCustomerMessage: string | null | undefined;
   commercialOpportunityId: string | null;
   generationAnchorMessageId: string | null;
+  recoveryAuthority?: {
+    responseSetId: string;
+    queueId: string;
+    claimToken: string;
+    leadId: string;
+    commercialOpportunityId: string;
+  };
 }): Promise<CrmAutoProgressResult> {
   if (!args.organizationId || !args.conversationId) {
     return {
@@ -3078,8 +3236,26 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignalCanonical(args:
     generationAnchorMessageId,
     targetStage: "qualificacao",
   });
-  const { error: canonicalError } =
-    await transitionCommercialOpportunityStageBySystem({
+  const canonicalTransition = args.recoveryAuthority
+    ? await args.systemSupabase.rpc("p9_10_4_d_transition_recovery_stage_by_system", {
+        p_response_set_id: args.recoveryAuthority.responseSetId,
+        p_queue_id: args.recoveryAuthority.queueId,
+        p_claim_token: args.recoveryAuthority.claimToken,
+        p_organization_id: args.organizationId,
+        p_store_id: args.storeId,
+        p_conversation_id: args.conversationId,
+        p_anchor_message_id: generationAnchorMessageId,
+        p_lead_id: args.recoveryAuthority.leadId,
+        p_commercial_opportunity_id: commercialOpportunityId,
+        p_idempotency_key: qualificationSignalEventKey,
+        p_target_stage: "qualificacao",
+        p_reason_details: "clear_customer_qualification_signal_detected",
+        p_evidence_type: "incoming_customer_message",
+        p_evidence_message_id: generationAnchorMessageId,
+        p_evidence_summary: "Mensagem do cliente contém sinal comercial claro para qualificação.",
+        p_source: "ai_sales_auto_progress",
+      })
+    : await transitionCommercialOpportunityStageBySystem({
       supabase: args.systemSupabase,
       organizationId: args.organizationId,
       storeId: args.storeId,
@@ -3093,6 +3269,7 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignalCanonical(args:
         "Mensagem do cliente contém sinal comercial claro para qualificação.",
       source: "ai_sales_auto_progress",
     });
+  const canonicalError = canonicalTransition.error;
 
   if (canonicalError) {
     console.warn("[zion-ai-sales-qualification] canonical transition failed", {
@@ -3112,7 +3289,9 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignalCanonical(args:
     };
   }
 
-  const { error: legacyError } = await transitionConversationStateAsInternalActor({
+  const { error: legacyError } = args.recoveryAuthority
+    ? { error: null }
+    : await transitionConversationStateAsInternalActor({
     supabase: args.supabase,
     conversationId: args.conversationId,
     toState: "qualificacao",
@@ -4072,7 +4251,28 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
   storeId: string;
   conversationId: string;
   anchorMessageId: string;
+  expectedResponseSetId?: string;
+  workerClaim?: SalesAiWorkerClaimContext;
 }) {
+  if (args.expectedResponseSetId && args.row.response_set_id !== args.expectedResponseSetId) {
+    return { status: "stale" as const, complete: true };
+  }
+  const isRecovery = args.expectedResponseSetId !== undefined;
+
+  if (isRecovery) {
+    if (!args.expectedResponseSetId ||
+        !UUID_PATTERN.test(args.expectedResponseSetId) ||
+        args.workerClaim?.kind !== "ai_run_queue" ||
+        !UUID_PATTERN.test(args.workerClaim.id) ||
+        !UUID_PATTERN.test(args.workerClaim.token) ||
+        !args.leadId ||
+        !UUID_PATTERN.test(args.leadId)) {
+      throw new Error("P9_RECOVERY_WORKER_BINDING_REQUIRED");
+    }
+  } else if (args.workerClaim) {
+    throw new Error("P9_REPLAY_UNEXPECTED_WORKER_CLAIM");
+  }
+
   const payload = isRecord(args.row.payload) ? args.row.payload : {};
   const callerPayload = isRecord(payload.caller_payload)
     ? payload.caller_payload
@@ -4102,22 +4302,36 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
     operationalFollowUpDecisionRecovery.attempted = true;
     try {
       if (!(await recoveryWriteStillAuthorized({
-        supabase: args.supabase,
+        supabase: args.workerClaim ? args.systemSupabase : args.supabase,
         organizationId: args.organizationId,
         storeId: args.storeId,
         conversationId: args.conversationId,
+        workerClaim: args.workerClaim,
       }))) {
         return { status: "deferred" as const, complete: false };
       }
       await persistOperationalFollowUpDecision({
-        supabase: args.supabase,
+        supabase: args.workerClaim
+          ? args.systemSupabase
+          : args.supabase,
         canonicalScope: args.canonicalScope,
         leadId: args.leadId,
         decision: persistedDecision,
         anchorMessageId: args.anchorMessageId,
         lastCustomerMessageAt: persistedLastCustomerMessageAt,
         lastAiMessageAt: persistedLastAiMessageAt,
-        recoveryResponseSetId: args.row.response_set_id,
+        ...(args.workerClaim
+            ? {
+              recoveryResponseSetId: args.row.response_set_id,
+              recoveryBinding: {
+                responseSetId: args.row.response_set_id,
+                queueId: args.workerClaim.id,
+                claimToken: args.workerClaim.token,
+                anchorMessageId: args.anchorMessageId,
+                leadId: args.leadId,
+              },
+            }
+          : {}),
       });
       operationalFollowUpDecisionRecovery.recovered = true;
     } catch (error: unknown) {
@@ -4132,10 +4346,11 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
 
   try {
     if (!(await recoveryWriteStillAuthorized({
-      supabase: args.supabase,
+      supabase: args.workerClaim ? args.systemSupabase : args.supabase,
       organizationId: args.organizationId,
       storeId: args.storeId,
       conversationId: args.conversationId,
+      workerClaim: args.workerClaim,
     }))) {
       return { status: "deferred" as const, complete: false };
     }
@@ -4151,7 +4366,18 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
       suggestionMessageId: args.row.text_message_id,
       sourceMessageId: args.anchorMessageId,
       suggestions,
-      recoveryResponseSetId: args.row.response_set_id,
+      ...(args.workerClaim
+          ? {
+            recoveryResponseSetId: args.row.response_set_id,
+            recoveryBinding: {
+              responseSetId: args.row.response_set_id,
+              queueId: args.workerClaim.id,
+              claimToken: args.workerClaim.token,
+              anchorMessageId: args.anchorMessageId,
+              leadId: args.leadId,
+            },
+          }
+        : {}),
     });
     if (crossSellSuggestionLedger.failed > 0) complete = false;
 
@@ -4161,6 +4387,106 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
     const hasDurablePostCommitRecovery = isRecord(
       callerPayload.post_commit_recovery,
     );
+    const persistedCommercialMemoryPromotion = isRecord(
+      postCommitRecovery.commercial_memory_promotion,
+    )
+      ? postCommitRecovery.commercial_memory_promotion
+      : null;
+    if (persistedCommercialMemoryPromotion) {
+      const promotionOrganizationId = String(
+        persistedCommercialMemoryPromotion.organization_id || "",
+      ).trim();
+      const promotionStoreId = String(
+        persistedCommercialMemoryPromotion.store_id || "",
+      ).trim();
+      const promotionLeadId = String(
+        persistedCommercialMemoryPromotion.lead_id || "",
+      ).trim();
+      const promotionConversationId = String(
+        persistedCommercialMemoryPromotion.conversation_id || "",
+      ).trim();
+      const promotionSessionId = String(
+        persistedCommercialMemoryPromotion.conversation_session_id || "",
+      ).trim();
+      const promotionOpportunityId = String(
+        persistedCommercialMemoryPromotion.commercial_opportunity_id || "",
+      ).trim();
+      const promotionDecisionKind = String(
+        persistedCommercialMemoryPromotion.decision_kind || "",
+      ).trim();
+      const promotionPayloadValid =
+        promotionOrganizationId === args.organizationId &&
+        promotionStoreId === args.storeId &&
+        promotionLeadId === (args.leadId || "") &&
+        promotionConversationId === args.conversationId &&
+        Boolean(promotionSessionId) &&
+        Boolean(promotionOpportunityId) &&
+        shouldPromoteCommercialMemoryForDecision({
+          enabled: true,
+          decisionKind: promotionDecisionKind,
+          resolvedCommercialOpportunityId: promotionOpportunityId,
+        });
+
+      if (!promotionPayloadValid) {
+        complete = false;
+        console.warn("[zion-commercial-memory] Durable promotion payload invalid", {
+          responseSetId: args.row.response_set_id,
+        });
+      } else {
+        try {
+          if (!(await recoveryWriteStillAuthorized({
+            supabase: args.workerClaim ? args.systemSupabase : args.supabase,
+            organizationId: args.organizationId,
+            storeId: args.storeId,
+            conversationId: args.conversationId,
+            workerClaim: args.workerClaim,
+          }))) {
+            return { status: "deferred" as const, complete: false };
+          }
+          const promotion = await promoteCommercialMemoryToOpportunity({
+            supabase: args.systemSupabase,
+            organizationId: promotionOrganizationId,
+            storeId: promotionStoreId,
+            leadId: promotionLeadId,
+            conversationId: promotionConversationId,
+            conversationSessionId: promotionSessionId,
+            commercialOpportunityId: promotionOpportunityId,
+            enabled: isCommercialMemoryCrmPromotionEnabled(),
+            ...(args.workerClaim
+              ? {
+                  recoveryAuthority: {
+                    responseSetId: args.row.response_set_id,
+                    queueId: args.workerClaim.id,
+                    claimToken: args.workerClaim.token,
+                    anchorMessageId: args.anchorMessageId,
+                    conversationId: args.conversationId,
+                    leadId: promotionLeadId,
+                    commercialOpportunityId: promotionOpportunityId,
+                  },
+                }
+              : {}),
+          });
+          if (
+            promotion.status === "failed" ||
+            promotion.status === "partial" ||
+            promotion.status === "disabled"
+          ) {
+            complete = false;
+            console.warn("[zion-commercial-memory] Durable promotion recovery deferred", {
+              responseSetId: args.row.response_set_id,
+              status: promotion.status,
+              errors: promotion.errors,
+            });
+          }
+        } catch (error: unknown) {
+          complete = false;
+          console.warn("[zion-commercial-memory] Durable promotion recovery failed", {
+            responseSetId: args.row.response_set_id,
+            error: error instanceof Error ? error.message : String(error || ""),
+          });
+        }
+      }
+    }
     const persistedHandoff = isRecord(postCommitRecovery.commercial_handoff)
       ? (postCommitRecovery.commercial_handoff as CommercialHandoffContext)
       : null;
@@ -4168,10 +4494,11 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
     if (hasDurablePostCommitRecovery && persistedHandoff?.shouldCreateTask === true) {
       try {
         if (!(await recoveryWriteStillAuthorized({
-          supabase: args.supabase,
+          supabase: args.workerClaim ? args.systemSupabase : args.supabase,
           organizationId: args.organizationId,
           storeId: args.storeId,
           conversationId: args.conversationId,
+          workerClaim: args.workerClaim,
         }))) {
           return { status: "deferred" as const, complete: false };
         }
@@ -4191,12 +4518,27 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
             conversationId: args.conversationId,
             anchorMessageId: args.anchorMessageId,
           }),
-          recoveryResponseSetId: args.row.response_set_id,
+          ...(args.workerClaim
+              ? {
+                recoveryResponseSetId: args.row.response_set_id,
+                recoveryBinding: {
+                  responseSetId: args.row.response_set_id,
+                  queueId: args.workerClaim.id,
+                  claimToken: args.workerClaim.token,
+                  anchorMessageId: args.anchorMessageId,
+                  leadId: args.leadId,
+                },
+              }
+            : {}),
         });
         if (
+          handoffResult.error ||
           handoffResult.notificationError ||
           handoffResult.crmAutoProgressError ||
-          handoffResult.quotePreparationQueue?.outcome === "uncertain"
+          handoffResult.quotePreparationQueue?.outcome === "uncertain" ||
+          handoffResult.quotePreparationQueue?.outcome === "rejected" ||
+          handoffResult.quotePreparationAuthorization?.outcome === "uncertain" ||
+          handoffResult.quotePreparationAuthorization?.outcome === "rejected"
         ) {
           complete = false;
         }
@@ -4219,10 +4561,11 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
         complete,
       };
       if (!(await recoveryWriteStillAuthorized({
-        supabase: args.supabase,
+        supabase: args.workerClaim ? args.systemSupabase : args.supabase,
         organizationId: args.organizationId,
         storeId: args.storeId,
         conversationId: args.conversationId,
+        workerClaim: args.workerClaim,
       }))) {
         return { status: "deferred" as const, complete: false };
       }
@@ -4241,7 +4584,18 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
           typeof persistedPreContract.source_message_id === "string"
             ? persistedPreContract.source_message_id
             : args.anchorMessageId,
-        recoveryResponseSetId: args.row.response_set_id,
+        ...(args.workerClaim
+            ? {
+              recoveryResponseSetId: args.row.response_set_id,
+              recoveryBinding: {
+                responseSetId: args.row.response_set_id,
+                queueId: args.workerClaim.id,
+                claimToken: args.workerClaim.token,
+                anchorMessageId: args.anchorMessageId,
+                leadId: args.leadId,
+              },
+            }
+          : {}),
         customerName:
           typeof persistedPreContract.customer_name === "string"
             ? persistedPreContract.customer_name
@@ -4265,10 +4619,11 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
       : {};
     try {
       if (!(await recoveryWriteStillAuthorized({
-        supabase: args.supabase,
+        supabase: args.workerClaim ? args.systemSupabase : args.supabase,
         organizationId: args.organizationId,
         storeId: args.storeId,
         conversationId: args.conversationId,
+        workerClaim: args.workerClaim,
       }))) {
         return { status: "deferred" as const, complete: false };
       }
@@ -4289,6 +4644,20 @@ export async function reconcileConfirmedSalesAiReplySetPostCommitEffects(args: {
           typeof persistedQualification.last_customer_message === "string"
             ? persistedQualification.last_customer_message
             : null,
+        ...(args.workerClaim
+          ? {
+              recoveryAuthority: {
+                responseSetId: args.row.response_set_id,
+                queueId: args.workerClaim.id,
+                claimToken: args.workerClaim.token,
+                leadId: args.leadId || "",
+                commercialOpportunityId:
+                  typeof persistedQualification.commercial_opportunity_id === "string"
+                    ? persistedQualification.commercial_opportunity_id
+                    : "",
+              },
+            }
+          : {}),
         });
       if (qualificationResult.error) complete = false;
     } catch (error: unknown) {
@@ -4325,7 +4694,19 @@ export async function recoverConfirmedSalesAiReplySetPostCommitEffects(args: {
   storeId: string;
   conversationId: string;
   anchorMessageId: string;
+  responseSetId?: string;
+  workerClaim?: SalesAiWorkerClaimContext;
 }) {
+  if (
+    !args.responseSetId ||
+    !UUID_PATTERN.test(args.responseSetId) ||
+    args.workerClaim?.kind !== "ai_run_queue" ||
+    !UUID_PATTERN.test(args.workerClaim.id) ||
+    !UUID_PATTERN.test(args.workerClaim.token)
+  ) {
+    throw new Error("P9_RECOVERY_WORKER_BINDING_REQUIRED");
+  }
+
   const systemSupabase = args.systemSupabase || args.supabase;
   const row = await readSalesAiReplySetByAnchor({
     supabase: systemSupabase,
@@ -4334,7 +4715,12 @@ export async function recoverConfirmedSalesAiReplySetPostCommitEffects(args: {
     conversationId: args.conversationId,
     anchorMessageId: args.anchorMessageId,
   });
-  if (!row) return { status: "missing" as const, complete: true };
+  if (!row) {
+    return { status: "missing" as const, complete: false };
+  }
+  if (args.responseSetId && row.response_set_id !== args.responseSetId) {
+    return { status: "stale" as const, complete: true };
+  }
 
   const scope = await resolveConversationAiWindowStateScope({
     supabase: args.supabase,
@@ -4349,9 +4735,7 @@ export async function recoverConfirmedSalesAiReplySetPostCommitEffects(args: {
 
   const { data: lease, error: leaseError } = await args.supabase
     .from("conversation_human_takeover_leases")
-    .select("organization_id, store_id, hard_hold, released_at")
-    .eq("organization_id", args.organizationId)
-    .eq("store_id", args.storeId)
+    .select("organization_id, store_id, conversation_id, hard_hold, released_at")
     .eq("conversation_id", args.conversationId)
     .maybeSingle();
   if (leaseError) throw new Error(`HUMAN_CONTROL_STATE_READ_FAILED: ${leaseError.message}`);
@@ -4386,6 +4770,8 @@ export async function recoverConfirmedSalesAiReplySetPostCommitEffects(args: {
     storeId: args.storeId,
     conversationId: args.conversationId,
     anchorMessageId: args.anchorMessageId,
+    expectedResponseSetId: args.responseSetId,
+    workerClaim: args.workerClaim,
   });
   return { status: "reconciled" as const, ...result };
 }
@@ -4398,13 +4784,30 @@ export async function readSalesAiHumanControlState(args: {
 }) {
   const { data, error } = await args.supabase
     .from("conversation_human_takeover_leases")
-    .select("hard_hold, released_at")
-    .eq("organization_id", args.organizationId)
-    .eq("store_id", args.storeId)
+    .select("organization_id, store_id, hard_hold, released_at")
     .eq("conversation_id", args.conversationId)
     .maybeSingle();
   if (error) throw new Error(`HUMAN_CONTROL_STATE_READ_FAILED: ${error.message}`);
-  return Boolean(data && (data.hard_hold === true || !data.released_at));
+  if (!data) return { blocked: false, hardHold: false, takeoverActive: false };
+  if (data.organization_id != null && data.organization_id !== args.organizationId) {
+    throw new Error("HUMAN_CONTROL_SCOPE_MISMATCH");
+  }
+  if (data.store_id != null && data.store_id !== args.storeId) {
+    throw new Error("HUMAN_CONTROL_SCOPE_MISMATCH");
+  }
+  const hardHold = data.hard_hold === true;
+  const takeoverActive = !data.released_at;
+  return { blocked: hardHold || takeoverActive, hardHold, takeoverActive };
+}
+
+async function isSalesAiHumanControlActive(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}) {
+  const state = await readSalesAiHumanControlState(args);
+  return state.blocked;
 }
 
 async function recoveryWriteStillAuthorized(args: {
@@ -4412,7 +4815,25 @@ async function recoveryWriteStillAuthorized(args: {
   organizationId: string;
   storeId: string;
   conversationId: string;
+  workerClaim?: SalesAiWorkerClaimContext;
 }) {
+  if (args.workerClaim) {
+    const { data: claim, error: claimError } = await args.supabase.rpc(
+      "assert_ai_run_queue_task_claim_by_system",
+      {
+        p_organization_id: args.organizationId,
+        p_store_id: args.storeId,
+        p_queue_id: args.workerClaim.id,
+        p_claim_token: args.workerClaim.token,
+      },
+    );
+    if (claimError) {
+      throw new Error(`RECOVERY_CLAIM_AUTHORITY_UNAVAILABLE:${claimError.message || "unknown"}`);
+    }
+    if (!Array.isArray(claim) || claim[0]?.ok !== true) {
+      throw new Error("RECOVERY_CLAIM_INVALID_OR_EXPIRED");
+    }
+  }
   const scope = await resolveConversationAiWindowStateScope({
     supabase: args.supabase,
     conversationId: args.conversationId,
@@ -4429,19 +4850,18 @@ async function recoveryWriteStillAuthorized(args: {
   const { data: lease, error } = await args.supabase
     .from("conversation_human_takeover_leases")
     .select("organization_id, store_id, conversation_id, hard_hold, released_at")
-    .eq("organization_id", args.organizationId)
-    .eq("store_id", args.storeId)
     .eq("conversation_id", args.conversationId)
     .maybeSingle();
   if (error) throw new Error(`HUMAN_CONTROL_STATE_READ_FAILED: ${error.message}`);
   if (!lease) return true;
-  return (
-    lease.organization_id === args.organizationId &&
-    lease.store_id === args.storeId &&
-    lease.conversation_id === args.conversationId &&
-    lease.hard_hold !== true &&
-    Boolean(lease.released_at)
-  );
+  if (
+    lease.organization_id !== args.organizationId ||
+    lease.store_id !== args.storeId ||
+    lease.conversation_id !== args.conversationId
+  ) {
+    throw new Error("HUMAN_CONTROL_SCOPE_MISMATCH");
+  }
+  return lease.hard_hold !== true && Boolean(lease.released_at);
 }
 
 async function recoveryAnchorStillCurrent(args: {
@@ -4453,20 +4873,31 @@ async function recoveryAnchorStillCurrent(args: {
 }) {
   const { data, error } = await args.supabase
     .from("messages")
-    .select("id, organization_id, store_id, conversation_id, sender, direction")
-    .eq("id", args.anchorMessageId)
+    .select("id, organization_id, store_id, conversation_id, sender, direction, deleted_at")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("conversation_id", args.conversationId)
+    .eq("sender", "user")
+    .eq("direction", "incoming")
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1)
     .maybeSingle();
-  if (error) throw new Error(`RECOVERY_ANCHOR_READ_FAILED: ${error.message}`);
+
+  if (error) {
+    throw new Error(`RECOVERY_ANCHOR_READ_FAILED: ${error.message}`);
+  }
+
   return Boolean(
     data &&
       data.id === args.anchorMessageId &&
       data.organization_id === args.organizationId &&
       data.store_id === args.storeId &&
       data.conversation_id === args.conversationId &&
-      (data.sender === "human" || data.direction === "inbound"),
+      data.sender === "user" &&
+      data.direction === "incoming" &&
+      data.deleted_at === null
   );
 }
 
@@ -4823,6 +5254,35 @@ async function clearPendingResumeArtifacts(args: {
   }
 }
 
+async function writeRecoveryWindowState(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string;
+  responseSetId: string;
+  queueId: string;
+  claimToken: string;
+  anchorMessageId: string;
+  patch: Record<string, unknown>;
+}) {
+  const { error } = await args.supabase.rpc(
+    "p9_10_4_d_write_recovery_window_state_by_system",
+    {
+      p_response_set_id: args.responseSetId,
+      p_queue_id: args.queueId,
+      p_claim_token: args.claimToken,
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_conversation_id: args.conversationId,
+      p_anchor_message_id: args.anchorMessageId,
+      p_lead_id: args.leadId,
+      p_patch: args.patch,
+    },
+  );
+  if (error) throw new Error(`Falha ao persistir janela recovery: ${error.message}`);
+}
+
 async function persistOperationalFollowUpDecision(args: {
   supabase: any;
   canonicalScope: Awaited<
@@ -4834,6 +5294,7 @@ async function persistOperationalFollowUpDecision(args: {
   lastCustomerMessageAt: string | null;
   lastAiMessageAt: string | null;
   recoveryResponseSetId?: string | null;
+  recoveryBinding?: RecoveryWriteBinding;
 }) {
   const {
     supabase,
@@ -4855,6 +5316,115 @@ async function persistOperationalFollowUpDecision(args: {
     storeId: canonicalScope.storeId,
   });
 
+
+  if (args.recoveryResponseSetId || args.recoveryBinding) {
+    const binding = args.recoveryBinding;
+
+    if (!binding ||
+        !args.recoveryResponseSetId ||
+        binding.responseSetId !== args.recoveryResponseSetId ||
+        !binding.queueId ||
+        !binding.claimToken ||
+        !leadId ||
+        binding.leadId !== leadId ||
+        canonicalScope.leadId !== leadId ||
+        binding.anchorMessageId !== anchorMessageId) {
+      throw new Error("P9_RECOVERY_FOLLOWUP_BINDING_INVALID");
+    }
+
+    const originalTime = Date.parse(
+      lastAiMessageAt || lastCustomerMessageAt || ""
+    );
+
+    if (decision.kind === "schedule_resume" &&
+        !Number.isFinite(originalTime)) {
+      throw new Error("P9_RECOVERY_RESUME_ORIGINAL_TIME_MISSING");
+    }
+
+    const now = new Date();
+
+    const resumeAt = resolveResumeAtFromDecision({
+      decision,
+      timeZone,
+      now: Number.isFinite(originalTime)
+        ? new Date(originalTime)
+        : now,
+    });
+
+    if (decision.kind === "schedule_resume" && !resumeAt) {
+      throw new Error("P9_RECOVERY_RESUME_TIME_INVALID");
+    }
+
+    const patch: Record<string, unknown> = {
+      resume_reason: decision.reason,
+      waiting_next_day:
+        decision.kind === "schedule_resume" &&
+        decision.reason === "customer_requested_tomorrow",
+      pending_supervisor: false,
+      last_ai_message_at: lastAiMessageAt,
+      next_resume_at: resumeAt,
+      updated_at: now.toISOString(),
+    };
+
+    if (lastCustomerMessageAt ||
+        decision.kind !== "stop_contact") {
+      patch.last_customer_message_at = lastCustomerMessageAt;
+    }
+
+    const queueKey = resumeAt
+      ? `resume:${canonicalScope.conversationId}:${decision.reason}:${formatQueueTimestamp(resumeAt,timeZone)}`
+      : null;
+
+    const resumeInput = queueKey ? {
+      type: "resume_sales_conversation",
+      reason: decision.reason,
+      resumeAt,
+      anchorMessageId,
+      system_event: "ai_window_resume",
+      resume_mode: decision.reason,
+      style_hint: "Retomar de forma natural, humana e sem pressao. Nao justificar atraso.",
+      created_at_iso: now.toISOString(),
+      created_at_local: formatLocalAuditStamp(now,timeZone),
+      created_at_sp: formatLocalAuditStamp(now,"America/Sao_Paulo"),
+      queue_key: queueKey,
+      next_resume_at: resumeAt,
+      timing_label: decision.timingLabel || null,
+      requested_timing: decision.requestedTiming || null,
+      timezone_name: timeZone,
+    } : null;
+
+    const { data,error } = await supabase.rpc(
+      "p9_10_4_d_apply_recovery_followup_by_system",
+      {
+        p_response_set_id: binding.responseSetId,
+        p_queue_id: binding.queueId,
+        p_claim_token: binding.claimToken,
+        p_organization_id: canonicalScope.organizationId,
+        p_store_id: canonicalScope.storeId,
+        p_conversation_id: canonicalScope.conversationId,
+        p_anchor_message_id: anchorMessageId,
+        p_lead_id: leadId,
+        p_decision_kind: decision.kind,
+        p_patch: patch,
+        p_queue_key: queueKey,
+        p_resume_input: resumeInput,
+      }
+    );
+
+    if (error) {
+      throw new Error(
+        error.message || "P9_RECOVERY_FOLLOWUP_FAILED"
+      );
+    }
+
+    if (!data ||
+        !["applied","idempotent_replay"].includes(data.outcome)) {
+      throw new Error("P9_RECOVERY_FOLLOWUP_RESULT_INVALID");
+    }
+
+    return;
+  }
+
   if (decision.kind === "stop_contact") {
     await clearPendingResumeArtifacts({
       supabase,
@@ -4865,21 +5435,23 @@ async function persistOperationalFollowUpDecision(args: {
       queueCancelReason: "cancelled_by_stop_contact",
     });
 
-    const { error: stopWindowError } = await supabase
-      .from("conversation_ai_window_state")
-      .update({
-        resume_reason: decision.reason,
-        last_ai_message_at: lastAiMessageAt,
-        pending_supervisor: false,
-        waiting_next_day: false,
-        updated_at: new Date().toISOString(),
-        ...(args.recoveryResponseSetId
-          ? { p9_recovery_response_set_id: args.recoveryResponseSetId }
-          : {}),
-      })
-      .eq("conversation_id", canonicalScope.conversationId)
-      .eq("organization_id", canonicalScope.organizationId)
-      .eq("store_id", canonicalScope.storeId);
+    const stopPatch = {
+      resume_reason: decision.reason,
+      last_ai_message_at: lastAiMessageAt,
+      pending_supervisor: false,
+      waiting_next_day: false,
+      updated_at: new Date().toISOString(),
+    };
+    let stopWindowError: { message: string } | null = null;
+    {
+      const result = await supabase
+        .from("conversation_ai_window_state")
+        .update(stopPatch)
+        .eq("conversation_id", canonicalScope.conversationId)
+        .eq("organization_id", canonicalScope.organizationId)
+        .eq("store_id", canonicalScope.storeId);
+      stopWindowError = result.error;
+    }
 
     if (stopWindowError) {
       throw new Error(
@@ -4902,18 +5474,19 @@ async function persistOperationalFollowUpDecision(args: {
     waiting_next_day: decision.reason === "customer_requested_tomorrow",
     pending_supervisor: false,
     last_ai_message_at: lastAiMessageAt,
-    ...(args.recoveryResponseSetId
-      ? { p9_recovery_response_set_id: args.recoveryResponseSetId }
-      : {}),
     last_customer_message_at: lastCustomerMessageAt,
     next_resume_at: nextResumeAt,
     resume_reason: decision.reason,
     updated_at: new Date().toISOString(),
   };
 
-  const { error: upsertError } = await supabase
-    .from("conversation_ai_window_state")
-    .upsert(windowPayload, { onConflict: "conversation_id" });
+  let upsertError: { message: string } | null = null;
+  {
+    const result = await supabase
+      .from("conversation_ai_window_state")
+      .upsert(windowPayload, { onConflict: "conversation_id" });
+    upsertError = result.error;
+  }
 
   if (upsertError) {
     throw new Error(
@@ -5594,6 +6167,7 @@ export async function createCommercialAssistantHandoff(
   generationAnchorMessageId?: string | null;
   quotePreparationAnchorStillCurrent?: boolean;
   recoveryResponseSetId?: string | null;
+  recoveryBinding?: RecoveryWriteBinding;
 },
   deps: CommercialAssistantHandoffDeps = {
     findExistingTask: findExistingCommercialHandoffTask,
@@ -5601,6 +6175,13 @@ export async function createCommercialAssistantHandoff(
     autoProgressBudgetFromQuote: maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical,
   },
 ): Promise<CommercialHandoffCreationResult> {
+  if (
+    Boolean(args.recoveryResponseSetId) !==
+    Boolean(args.recoveryBinding)
+  ) {
+    throw new Error("P9_RECOVERY_COMMERCIAL_TASK_BINDING_REQUIRED");
+  }
+
   const handoff = args.handoff;
 
   if (!handoff || !handoff.shouldCreateTask) {
@@ -5620,6 +6201,38 @@ export async function createCommercialAssistantHandoff(
   });
 
   if (similarTask) {
+    const recoveredCrm =
+      args.recoveryBinding &&
+      similarTask.id &&
+      handoff.taskType === "commercial_quote_request"
+        ? await deps.autoProgressBudgetFromQuote({
+            supabase: args.supabase,
+            systemSupabase: args.systemSupabase || args.supabase,
+            organizationId: args.organizationId,
+            storeId: args.storeId,
+            conversationId: args.conversationId,
+            leadId: args.leadId || null,
+            taskId: String(similarTask.id),
+            handoff,
+            generationAnchorMessageId: args.generationAnchorMessageId || null,
+            recoveryBinding: args.recoveryBinding,
+          })
+        : null;
+
+    const recoveredNotification =
+      args.recoveryBinding && similarTask.id
+        ? await deps.enqueueNotification({
+            supabase: args.systemSupabase || args.supabase,
+            organizationId: args.organizationId,
+            storeId: args.storeId,
+            conversationId: args.conversationId,
+            leadId: args.leadId || null,
+            taskId: String(similarTask.id),
+            handoff,
+            recoveryResponseSetId: args.recoveryResponseSetId,
+            recoveryBinding: args.recoveryBinding,
+          })
+        : null;
     if (handoff.taskType === "commercial_quote_request" && isQuotePreparationTaskAuthorizationEnabled()) {
       const recovery = await reconcileExistingQuotePreparationTask({
         supabase: args.systemSupabase || args.supabase,
@@ -5630,12 +6243,30 @@ export async function createCommercialAssistantHandoff(
         ...(args.recoveryResponseSetId
           ? { recoveryResponseSetId: args.recoveryResponseSetId }
           : {}),
+        ...(args.recoveryBinding
+          ? { recoveryBinding: args.recoveryBinding }
+          : {}),
       });
       return {
         created: false,
         skipped: true,
         reason: "similar_open_handoff_already_exists",
         taskId: similarTask.id || null,
+        ...(recoveredCrm
+          ? {
+              crmAutoProgressAttempted: recoveredCrm.attempted,
+              crmAutoProgressed: recoveredCrm.progressed,
+              crmAutoProgressReason: recoveredCrm.reason,
+              crmAutoProgressError: recoveredCrm.error || null,
+              crmAutoProgressResult: recoveredCrm,
+            }
+          : {}),
+        ...(recoveredNotification
+          ? {
+              notificationCreated: recoveredNotification.created,
+              notificationError: recoveredNotification.error,
+            }
+          : {}),
         quotePreparationAuthorization: recovery.authorization,
         quotePreparationQueue: recovery.queue,
       };
@@ -5646,6 +6277,21 @@ export async function createCommercialAssistantHandoff(
       skipped: true,
       reason: "similar_open_handoff_already_exists",
       taskId: similarTask.id || null,
+        ...(recoveredCrm
+          ? {
+              crmAutoProgressAttempted: recoveredCrm.attempted,
+              crmAutoProgressed: recoveredCrm.progressed,
+              crmAutoProgressReason: recoveredCrm.reason,
+              crmAutoProgressError: recoveredCrm.error || null,
+              crmAutoProgressResult: recoveredCrm,
+            }
+          : {}),
+        ...(recoveredNotification
+          ? {
+              notificationCreated: recoveredNotification.created,
+              notificationError: recoveredNotification.error,
+            }
+          : {}),
     };
   }
 
@@ -5676,6 +6322,13 @@ export async function createCommercialAssistantHandoff(
     ...(args.recoveryResponseSetId
       ? { p9_recovery_response_set_id: args.recoveryResponseSetId }
       : {}),
+    ...(args.recoveryBinding
+      ? {
+          p9_recovery_queue_id: args.recoveryBinding.queueId,
+          p9_recovery_claim_token: args.recoveryBinding.claimToken,
+          p9_recovery_anchor_message_id: args.recoveryBinding.anchorMessageId,
+        }
+      : {}),
   };
 
   if (handoff.taskType === "commercial_quote_request") {
@@ -5687,7 +6340,11 @@ export async function createCommercialAssistantHandoff(
     }
   }
 
-  const { data, error } = await args.supabase
+  const { data, error } = await (
+    args.recoveryBinding
+      ? (args.systemSupabase || args.supabase)
+      : args.supabase
+  )
     .from("store_assistant_operational_tasks")
     .insert({
       organization_id: args.organizationId,
@@ -5775,6 +6432,9 @@ export async function createCommercialAssistantHandoff(
             ...(args.recoveryResponseSetId
               ? { recoveryResponseSetId: args.recoveryResponseSetId }
               : {}),
+            ...(args.recoveryBinding
+              ? { recoveryBinding: args.recoveryBinding }
+              : {}),
             supabase: args.systemSupabase || args.supabase,
           });
         quotePreparationAuthorization = {
@@ -5831,6 +6491,7 @@ export async function createCommercialAssistantHandoff(
         ...(args.recoveryResponseSetId
           ? { recoveryResponseSetId: args.recoveryResponseSetId }
           : {}),
+        ...(args.recoveryBinding ? { recoveryBinding: args.recoveryBinding } : {}),
         supabase: args.systemSupabase || args.supabase,
       });
       quotePreparationQueue = {
@@ -5870,7 +6531,12 @@ export async function createCommercialAssistantHandoff(
   }
 
   const notificationResult = await deps.enqueueNotification({
-    supabase: args.supabase,
+    supabase: args.recoveryBinding
+      ? (args.systemSupabase || args.supabase)
+      : args.supabase,
+    ...(args.recoveryBinding
+      ? { recoveryBinding: args.recoveryBinding }
+      : {}),
     organizationId: args.organizationId,
     storeId: args.storeId,
     conversationId: args.conversationId,
@@ -5895,6 +6561,9 @@ export async function createCommercialAssistantHandoff(
       taskId: String(data.id),
       handoff,
       generationAnchorMessageId: args.generationAnchorMessageId || null,
+      ...(args.recoveryBinding
+        ? { recoveryBinding: args.recoveryBinding }
+        : {}),
     });
   } catch (error: any) {
     console.warn("[zion-ai-sales-handoff] falha inesperada no autoavanço do CRM", {
@@ -6018,6 +6687,7 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
   commercialOpportunityId?: string | null;
   sourceMessageId?: string | null;
   recoveryResponseSetId?: string | null;
+  recoveryBinding?: RecoveryWriteBinding;
   customerName: string | null;
   lastCustomerMessage: string | null | undefined;
 }) : Promise<ContractWorkflowCardCreationResult> {
@@ -6204,7 +6874,12 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
       : "O cliente deu sinal de aceite/fechamento na conversa comercial.";
 
   const pushResult = await pushAssistantContractWorkflowDecisionMessage({
-    supabase: args.supabase,
+    supabase: args.recoveryBinding
+      ? args.systemSupabase
+      : args.supabase,
+    ...(args.recoveryBinding
+      ? { recoveryBinding: args.recoveryBinding }
+      : {}),
     organizationId: args.organizationId,
     storeId: args.storeId,
     leadId: selectedQuote.lead_id || args.leadId,
@@ -7203,6 +7878,17 @@ export async function generateAndSaveAiSalesReply(
         simulationAnchorMessageId,
         generationAnchorMessageId,
       });
+      const durableCommercialMemoryPromotion =
+        buildDurableCommercialMemoryPromotionPayload({
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          leadId: normalizedConversation.lead_id || "",
+          conversationId: canonicalConversationId,
+          responseAnchorCommercialContext:
+            generationResponseAnchorCommercialContext,
+          commercialMessageIntentResolution:
+            generationResult.context?.commercialMessageIntentResolution || null,
+        });
       try {
         materializedReplySet = await resolvedDeps.materializeSalesAiReplySet!({
           supabase: systemSupabase,
@@ -7243,6 +7929,7 @@ export async function generateAndSaveAiSalesReply(
                 generationResult.context?.commercialHandoff?.lastCustomerMessage ||
                 null,
             },
+            commercial_memory_promotion: durableCommercialMemoryPromotion,
           },
           workerClaim: params.workerClaim,
         });

@@ -5,7 +5,7 @@ import {
   ContractAccessError,
   type ContractAuthorizedStoreScope,
 } from "@/lib/server/sales-contracts/contract-auth";
-import { createSignedContractPdfUrlGetHandler } from "./route";
+import { createSignedContractPdfUrlGetHandler } from "./route-handler";
 
 type Row = Record<string, unknown>;
 
@@ -460,7 +460,7 @@ async function testErrorContracts() {
 
 async function testSourceContract() {
   const source = readFileSync(
-    join(process.cwd(), "src/app/api/sales-contracts/[contractId]/signed-pdf-url/route.ts"),
+    join(process.cwd(), "src/app/api/sales-contracts/[contractId]/signed-pdf-url/route-handler.ts"),
     "utf8",
   );
   assert.match(source, /resolveStoreApiAccess/);

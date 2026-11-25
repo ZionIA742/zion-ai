@@ -55,7 +55,7 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
   return originalResolveFilename.call(this, request, parent, isMain, options);
 };
 
-const routeModulePromise = import("./route");
+const routeModulePromise = import("./route-handler");
 
 async function loadRouteModule() {
   return routeModulePromise;
@@ -694,7 +694,7 @@ const tests: TestCase[] = [
   {
     name: "production route uses resolveStoreApiAccess and only the user conclusion writer",
     run: async () => {
-      const source = readFileSync(join(process.cwd(), "src/app/api/crm/opportunities/conclude/route.ts"), "utf8");
+      const source = readFileSync(join(process.cwd(), "src/app/api/crm/opportunities/conclude/route-handler.ts"), "utf8");
 
       assert.equal(source.includes("resolveStoreApiAccess"), true);
       assert.equal(source.includes('requirement: "active"'), true);

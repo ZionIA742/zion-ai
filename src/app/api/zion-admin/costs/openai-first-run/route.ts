@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../../lib/server/zion-admin-diagnostic-backend-next";
 import {
   createFirstOpenAiCostCollectionHandler,
 } from "@/lib/server/zion-admin-openai-cost-first-collection-handler";
@@ -23,6 +24,16 @@ export const dynamic = "force-dynamic";
  * No cron, automatic retry or batch endpoint.
  * Construction performs no financial I/O.
  */
-export const POST = createFirstOpenAiCostCollectionHandler({
+const zionBackendOriginalPOST = createFirstOpenAiCostCollectionHandler({
   run: createProtectedOpenAiCostTargetedRunner(),
 });
+
+const zionBackendObservedPOST = withBackendDiagnosticRoute(
+  "/api/zion-admin/costs/openai-first-run",
+  "POST",
+  zionBackendOriginalPOST,
+);
+
+export const POST: typeof zionBackendOriginalPOST = async function POST(request: Parameters<typeof zionBackendOriginalPOST>[0]) {
+  return zionBackendObservedPOST(request);
+};

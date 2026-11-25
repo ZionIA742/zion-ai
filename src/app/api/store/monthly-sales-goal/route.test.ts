@@ -97,7 +97,7 @@ const tests: TestCase[] = [
   {
     name: "GET returns denied access before reading canonical table",
     run: async () => {
-      const { createStoreMonthlySalesGoalGetHandler } = await import("./route");
+      const { createStoreMonthlySalesGoalGetHandler } = await import("./route-handler");
       const handler = createStoreMonthlySalesGoalGetHandler({
         resolveAccess: async () => createDeniedAccess(),
       });
@@ -112,7 +112,7 @@ const tests: TestCase[] = [
   {
     name: "GET scopes canonical read with server organization and store ids",
     run: async () => {
-      const { createStoreMonthlySalesGoalGetHandler } = await import("./route");
+      const { createStoreMonthlySalesGoalGetHandler } = await import("./route-handler");
       const filters: Array<{ column: string; value: unknown }> = [];
       const supabase = {
         from(table: string) {
@@ -160,7 +160,7 @@ const tests: TestCase[] = [
   {
     name: "POST validates enabled amount before canonical writer",
     run: async () => {
-      const { createStoreMonthlySalesGoalPostHandler } = await import("./route");
+      const { createStoreMonthlySalesGoalPostHandler } = await import("./route-handler");
       let rpcCalls = 0;
       const supabase = {
         rpc() {
@@ -188,7 +188,7 @@ const tests: TestCase[] = [
   {
     name: "POST sends canonical server scope to RPC",
     run: async () => {
-      const { createStoreMonthlySalesGoalPostHandler } = await import("./route");
+      const { createStoreMonthlySalesGoalPostHandler } = await import("./route-handler");
       let rpcPayload: Record<string, unknown> | null = null;
       const supabase = {
         async rpc(fn: string, payload: Record<string, unknown>) {

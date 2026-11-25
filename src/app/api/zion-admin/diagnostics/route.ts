@@ -1,3 +1,4 @@
+import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { projectSafeDiagnosticReaderV2Evidence } from "@/lib/server/zion-admin-diagnostic-reader-v2-projection";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -307,7 +308,7 @@ function projectUnifiedRows(value: unknown, query: DiagnosticQuery, browserEnabl
   return result;
 }
 
-export async function GET(request: Request) {
+async function zionBackendOriginalGET(request: Request) {
   try {
     const access = await resolveZionAdminApiAccess({
       requiredCapability: "manage_accounts",
@@ -398,4 +399,15 @@ export async function GET(request: Request) {
       503,
     );
   }
+}
+
+
+const zionBackendObservedGET = withBackendDiagnosticRoute(
+  "/api/zion-admin/diagnostics",
+  "GET",
+  zionBackendOriginalGET,
+);
+
+export async function GET(request: Request) {
+  return zionBackendObservedGET(request);
 }

@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createApproveContractPostHandler } from "./route";
+import { createApproveContractPostHandler } from "./route-handler";
 import { ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
 
 type Row = Record<string, unknown>;
@@ -607,7 +607,7 @@ const tests: Array<{ name: string; run: () => Promise<void> | void }> = [
     name: "source contract removes direct updates and keeps customer sign untouched",
     run: () => {
       const routeSource = readFileSync(
-        join(process.cwd(), "src/app/api/sales-contracts/[contractId]/approve/route.ts"),
+        join(process.cwd(), "src/app/api/sales-contracts/[contractId]/approve/route-handler.ts"),
         "utf8",
       );
       assert.match(routeSource, /approve_sales_contract_by_user_atomic/);

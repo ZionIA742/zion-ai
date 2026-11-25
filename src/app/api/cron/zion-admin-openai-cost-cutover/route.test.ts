@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   createOpenAiCostCutoverCronGetHandler,
-} from "./route";
+} from "./route-handler";
 
 import {
   createOpenAiCostCutoverRunner,

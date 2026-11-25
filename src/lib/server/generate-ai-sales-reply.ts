@@ -83,6 +83,7 @@ import {
   extractDeterministicQualificationCandidates,
   extractStructuredQualificationCandidates,
   mergeQualificationFactCandidates,
+  type QualificationFactCandidate,
   validateQualificationFactCandidate,
 } from "./sales-qualification-fact-extraction";
 import {
@@ -94,6 +95,19 @@ import {
   buildCustomerIdentityNameOperationKey,
   extractCustomerSelfDeclaredName,
 } from "./customer-identity-name-extraction";
+import {
+  reconcileCommercialConversationFactsFromMessages,
+} from "./ingest-commercial-conversation-facts";
+import {
+  isCommercialMemoryCrmPromotionEnabled,
+  promoteCommercialMemoryToOpportunity,
+  shouldPromoteCommercialMemoryForDecision,
+} from "./promote-commercial-memory-to-opportunity";
+import {
+  readCommercialConversationFactEvents,
+  type CommercialConversationFactRpcClient,
+  type CommercialConversationFactEvent,
+} from "./commercial-conversation-fact-events";
 
 type ConversationRow = {
   id: string;
@@ -255,6 +269,7 @@ type SupabaseQueryChainLike = {
   in(field: string, values: string[]): unknown;
   order(field: string, options?: { ascending?: boolean }): unknown;
   limit(value: number): unknown;
+  range(from: number, to: number): unknown;
   maybeSingle(): Promise<{
     data: MessageRow | null;
     error: QueryErrorLike | null;
@@ -263,6 +278,7 @@ type SupabaseQueryChainLike = {
 
 type SupabaseBatchClientLike = {
   from(table: string): unknown;
+  rpc: CommercialConversationFactRpcClient["rpc"];
 };
 
 type EffectiveReplyQueryLike = {
@@ -2640,6 +2656,485 @@ export async function loadScopedRecentMessages(args: {
 const MESSAGE_SCOPE_SELECT =
   "id, organization_id, store_id, conversation_id, sender, content, direction, message_type, media_url, metadata, created_at, conversation_session_id, commercial_session_context_link_id, commercial_context_capture_state";
 
+export type HistoricalDeclaredEvidence = {
+  factKey: string;
+  valueKind: "text" | "number" | "boolean";
+  value: string | number | boolean;
+  evidenceText: string;
+  sourceMessageId: string;
+  createdAt: string | null;
+};
+
+export type HistoricalDeclaredConflict = {
+  factKey: string;
+  candidates: Array<{
+    value: string | number | boolean;
+    evidenceText: string;
+    sourceMessageId: string;
+    createdAt: string | null;
+  }>;
+};
+
+export type HistoricalDeclaredEvidenceResult =
+  | {
+      ok: true;
+      evidence: HistoricalDeclaredEvidence[];
+      conflicts: HistoricalDeclaredConflict[];
+      scannedMessageCount: number;
+      pageCount: number;
+      reason:
+        | "historical_evidence_loaded"
+        | "canonical_opportunity_priority"
+        | "opportunity_context_ambiguous"
+        | "session_context_ambiguous"
+        | "no_eligible_customer_evidence";
+    }
+  | {
+      ok: false;
+      error: "LOAD_HISTORICAL_MESSAGES_FAILED" | "HISTORICAL_CONTEXT_INCONSISTENT";
+      message: string;
+    };
+
+export type CommercialConversationFactMemoryResult =
+  | { ok: true; events: CommercialConversationFactEvent[]; groupCount: number }
+  | { ok: false; error: "LOAD_COMMERCIAL_FACT_MEMORY_FAILED"; message: string };
+
+const HISTORICAL_EVIDENCE_PAGE_SIZE = 50;
+const HISTORICAL_EVIDENCE_MAX_MESSAGES = 300;
+
+function commercialFactMemoryValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+export async function loadCommercialConversationFactMemory(args: {
+  supabase: CommercialConversationFactRpcClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string;
+  annotatedMessages: MessageWithCommercialContext[];
+}): Promise<CommercialConversationFactMemoryResult> {
+  const groups = new Map<string, {
+    conversationSessionId: string;
+    commercialSessionContextLinkId: string | null;
+    commercialOpportunityId: string | null;
+  }>();
+  for (const message of args.annotatedMessages) {
+    const sessionId = String(message.conversationSessionIdResolved || "").trim();
+    if (!sessionId || message.historicalContextStatus === "inconsistent") continue;
+    const linkId = String(message.commercialSessionContextLinkIdResolved || "").trim() || null;
+    const opportunityId = String(message.commercialOpportunityIdResolved || "").trim() || null;
+    groups.set([sessionId, linkId || "", opportunityId || ""].join(":"), {
+      conversationSessionId: sessionId,
+      commercialSessionContextLinkId: linkId,
+      commercialOpportunityId: opportunityId,
+    });
+  }
+  const events: CommercialConversationFactEvent[] = [];
+  try {
+    for (const group of groups.values()) {
+      events.push(...await readCommercialConversationFactEvents({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        leadId: args.leadId,
+        conversationSessionId: group.conversationSessionId,
+        commercialSessionContextLinkId: group.commercialSessionContextLinkId,
+        commercialOpportunityId: group.commercialOpportunityId,
+      }));
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      error: "LOAD_COMMERCIAL_FACT_MEMORY_FAILED",
+      message: error instanceof Error ? error.message : "Commercial fact memory reader failed.",
+    };
+  }
+  return { ok: true, events, groupCount: groups.size };
+}
+
+export function buildCommercialConversationFactMemoryBlock(args: {
+  memory: CommercialConversationFactMemoryResult | null;
+  canonicalFactKeys?: ReadonlySet<string>;
+  canonicalConflictKeys?: ReadonlySet<string>;
+}): string {
+  if (!args.memory?.ok || args.memory.events.length === 0) return "";
+  const canonicalKeys = args.canonicalFactKeys || new Set<string>();
+  const canonicalConflicts = args.canonicalConflictKeys || new Set<string>();
+  const events = args.memory.events.filter((event) =>
+    !canonicalKeys.has(event.factKey) && !canonicalConflicts.has(event.factKey),
+  );
+  if (events.length === 0) return "";
+  const lines = [
+    "MEMORIA COMERCIAL PERSISTIDA DA SESSAO",
+    "- fatos abaixo vieram do reader persistido; respeite proveniencia e nao transforme inferencia em confirmacao",
+  ];
+  for (const event of events) {
+    const state = event.conflictState === "conflict" || event.evidenceLevel === "conflict"
+      ? "CONFLITO"
+      : event.evidenceLevel === "inferred"
+        ? "INFERIDO, nao confirmado"
+        : event.evidenceLevel === "confirmed"
+          ? "CONFIRMADO"
+          : "DECLARADO";
+    lines.push(`- ${event.factKey}: ${commercialFactMemoryValue(event.value)} | ${state} | origem ${event.actorType}/${event.sourceMediaType} | mensagem ${event.sourceMessageId}`);
+  }
+  return lines.join("\n");
+}
+
+export function mergeCommercialConversationFactMemoryIntoConversationFacts(args: {
+  facts: ConversationFactState;
+  memory: CommercialConversationFactMemoryResult | null;
+  canonicalFactKeys?: ReadonlySet<string>;
+}): ConversationFactState {
+  const next = { ...args.facts };
+  if (!args.memory?.ok) return next;
+  const canonicalKeys = args.canonicalFactKeys || new Set<string>();
+  const conflicted = new Set(args.memory.events.filter((event) =>
+    event.conflictState === "conflict" || event.evidenceLevel === "conflict",
+  ).map((event) => event.factKey));
+  for (const event of args.memory.events) {
+    if (canonicalKeys.has(event.factKey) || conflicted.has(event.factKey) || event.evidenceLevel === "inferred") continue;
+    if (event.factKey === "space_text" || event.factKey === "requested_area_m2") next.sizeKnown = true;
+    if (event.factKey === "need_summary" || event.factKey === "interested_product_reference" || event.factKey === "customer_preferences_text") next.needKnown = true;
+    if (event.factKey === "preferred_period_text") next.timingKnown = true;
+    if (event.factKey === "location_text" || event.factKey === "customer_city" || event.factKey === "customer_state_code") next.locationKnown = true;
+    if (event.factKey === "budget_text") next.budgetKnown = true;
+    if (event.factKey === "installation_interest") next.installationInterestKnown = true;
+    if (event.factKey === "payment_interest") next.paymentInterestKnown = true;
+    if (event.factKey === "technical_visit_interest") next.visitInterestKnown = true;
+  }
+  return next;
+}
+
+function historicalEvidenceValueKey(candidate: QualificationFactCandidate): string {
+  if (typeof candidate.valueJson === "string") {
+    return candidate.valueJson.trim().toLocaleLowerCase();
+  }
+  return JSON.stringify(candidate.valueJson);
+}
+
+function historicalEvidenceCandidateFromPoolReference(
+  message: MessageRow,
+): QualificationFactCandidate | null {
+  const content = getEffectiveMessageContent(message);
+  const requestedPool = extractRequestedPoolReference(content);
+  if (!requestedPool) return null;
+
+  return {
+    factKey: "interested_product_reference",
+    valueKind: "text",
+    valueJson: requestedPool.raw,
+    assertionLevel: "confirmed",
+    sourceType: "incoming_customer_message",
+    evidenceText: content,
+  };
+}
+
+function normalizeHistoricalEvidenceCandidate(args: {
+  candidate: QualificationFactCandidate;
+  message: MessageRow;
+}): HistoricalDeclaredEvidence {
+  return {
+    factKey: args.candidate.factKey,
+    valueKind: args.candidate.valueKind,
+    value: args.candidate.valueJson,
+    evidenceText: args.candidate.evidenceText,
+    sourceMessageId: args.message.id,
+    createdAt: args.message.created_at || null,
+  };
+}
+
+export function buildHistoricalDeclaredEvidenceBlock(
+  result: HistoricalDeclaredEvidenceResult | null,
+): string {
+  if (!result || !result.ok) return "";
+
+  const lines = [
+    "EVIDENCIAS TEXTUAIS HISTORICAS DECLARADAS PELO CLIENTE",
+    "- estas evidencias vieram de mensagens antigas da mesma conversa e nao sao fatos canonicos",
+    "- use uma evidencia sem conflito para evitar repetir a mesma pergunta; nao invente nem confirme alem do texto",
+  ];
+
+  for (const evidence of result.evidence) {
+    lines.push(
+      `- ${evidence.factKey}: ${String(evidence.value)} | evidencia: ${evidence.evidenceText}`,
+    );
+  }
+
+  for (const conflict of result.conflicts) {
+    lines.push(
+      `- CONFLITO ${conflict.factKey}: existem declaracoes divergentes; nao escolha um valor silenciosamente e nao trate o fato como confirmado`,
+    );
+  }
+
+  return lines.length > 3 ? lines.join("\n") : "";
+}
+
+export async function loadHistoricalDeclaredCustomerEvidence(args: {
+  supabase: SupabaseBatchClientLike;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  commercialOpportunityId?: string | null;
+  pageSize?: number;
+  maxMessages?: number;
+}): Promise<HistoricalDeclaredEvidenceResult> {
+  if (args.commercialOpportunityId) {
+    return {
+      ok: true,
+      evidence: [],
+      conflicts: [],
+      scannedMessageCount: 0,
+      pageCount: 0,
+      reason: "canonical_opportunity_priority",
+    };
+  }
+
+  const pageSize = Math.max(
+    1,
+    Math.min(args.pageSize || HISTORICAL_EVIDENCE_PAGE_SIZE, HISTORICAL_EVIDENCE_PAGE_SIZE),
+  );
+  const maxMessages = Math.max(
+    pageSize,
+    Math.min(args.maxMessages || HISTORICAL_EVIDENCE_MAX_MESSAGES, HISTORICAL_EVIDENCE_MAX_MESSAGES),
+  );
+  const messages: MessageRow[] = [];
+  let offset = 0;
+  let pageCount = 0;
+
+  while (messages.length < maxMessages) {
+    const query = args.supabase.from("messages") as SupabaseQueryChainLike;
+    const selectedQuery = query.select(MESSAGE_SCOPE_SELECT) as SupabaseQueryChainLike;
+    const organizationScopedQuery = selectedQuery.eq(
+      "organization_id",
+      args.organizationId,
+    ) as SupabaseQueryChainLike;
+    const storeScopedQuery = organizationScopedQuery.eq(
+      "store_id",
+      args.storeId,
+    ) as SupabaseQueryChainLike;
+    const conversationScopedQuery = storeScopedQuery.eq(
+      "conversation_id",
+      args.conversationId,
+    ) as SupabaseQueryChainLike;
+    const orderedQuery = conversationScopedQuery.order("created_at", {
+      ascending: true,
+    }) as SupabaseQueryChainLike;
+    const fullyOrderedQuery = orderedQuery.order("id", {
+      ascending: true,
+    }) as SupabaseQueryChainLike;
+    const pageResult = (await fullyOrderedQuery
+      .range(offset, offset + Math.min(pageSize, maxMessages - messages.length) - 1)) as {
+      data: MessageRow[] | null;
+      error: QueryErrorLike | null;
+    };
+
+    if (pageResult.error) {
+      return {
+        ok: false,
+        error: "LOAD_HISTORICAL_MESSAGES_FAILED",
+        message: pageResult.error.message,
+      };
+    }
+
+    const page = Array.isArray(pageResult.data) ? pageResult.data : [];
+    if (page.length === 0) break;
+    pageCount += 1;
+    messages.push(...page);
+
+    if (page.length < pageSize) break;
+    offset += page.length;
+  }
+
+  if (
+    messages.some(
+      (message) =>
+        message.organization_id !== args.organizationId ||
+        message.store_id !== args.storeId ||
+        message.conversation_id !== args.conversationId ||
+        typeof message.id !== "string" ||
+        !message.id.trim(),
+    )
+  ) {
+    return {
+      ok: false,
+      error: "HISTORICAL_CONTEXT_INCONSISTENT",
+      message: "A leitura historica retornou mensagem fora do escopo solicitado.",
+    };
+  }
+
+  if (messages.length === 0) {
+    return {
+      ok: true,
+      evidence: [],
+      conflicts: [],
+      scannedMessageCount: 0,
+      pageCount,
+      reason: "no_eligible_customer_evidence",
+    };
+  }
+
+  const snapshots = await loadCommercialSnapshotBatch({
+    supabase: args.supabase,
+    messages,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+  });
+
+  if (snapshots.resolutionFailed) {
+    return {
+      ok: false,
+      error: "HISTORICAL_CONTEXT_INCONSISTENT",
+      message: "Nao foi possivel comprovar o escopo de sessao/contexto comercial.",
+    };
+  }
+
+  const resolved = resolveMessagesWithCommercialContext({
+    messages,
+    anchorMessageId: messages.at(-1)?.id || null,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    conversationSessions: snapshots.conversationSessions,
+    commercialContextLinks: snapshots.commercialContextLinks,
+  });
+  const annotated = resolved.annotatedMessages;
+  const opportunityIds = new Set(
+    annotated
+      .map((message) => message.commercialOpportunityIdResolved)
+      .filter((value): value is string => !!value),
+  );
+
+  if (opportunityIds.size > 0) {
+    return {
+      ok: true,
+      evidence: [],
+      conflicts: [],
+      scannedMessageCount: messages.length,
+      pageCount,
+      reason: "opportunity_context_ambiguous",
+    };
+  }
+
+  const sessionIds = new Set(
+    annotated
+      .map((message) => message.conversationSessionIdResolved)
+      .filter((value): value is string => !!value),
+  );
+  const contextLinkIds = new Set(
+    annotated
+      .map((message) => message.commercialSessionContextLinkIdResolved)
+      .filter((value): value is string => !!value),
+  );
+  const hasUnscopedHistory = annotated.some(
+    (message) =>
+      message.historicalContextStatus === "legacy_unknown" ||
+      message.historicalContextStatus === "no_active_session",
+  );
+  const hasScopedHistory = sessionIds.size > 0 || contextLinkIds.size > 0;
+  if (
+    sessionIds.size > 1 ||
+    contextLinkIds.size > 1 ||
+    (hasUnscopedHistory && hasScopedHistory)
+  ) {
+    return {
+      ok: true,
+      evidence: [],
+      conflicts: [],
+      scannedMessageCount: messages.length,
+      pageCount,
+      reason: "session_context_ambiguous",
+    };
+  }
+
+  const eligibleMessages = annotated.filter(
+    (message) =>
+      message.historicalContextStatus !== "inconsistent" &&
+      message.commercialOpportunityIdResolved == null &&
+      (message.historicalContextStatus === "no_active_session" ||
+        message.historicalContextStatus === "legacy_unknown" ||
+        message.historicalContextStatus === "pending_context" ||
+        message.historicalContextStatus === "captured"),
+  );
+  const grouped = new Map<string, HistoricalDeclaredEvidence[]>();
+
+  for (const message of eligibleMessages) {
+    if (
+      message.sender !== "user" ||
+      message.direction !== "incoming"
+    ) {
+      continue;
+    }
+
+    const candidates = [
+      ...extractDeterministicQualificationCandidates(
+        getEffectiveMessageContent(message),
+      ),
+      historicalEvidenceCandidateFromPoolReference(message),
+    ]
+      .filter((candidate): candidate is QualificationFactCandidate => !!candidate)
+      .map((candidate) =>
+        validateQualificationFactCandidate({
+          candidate,
+          anchorMessage: getEffectiveMessageContent(message),
+        }),
+      )
+      .filter((candidate): candidate is QualificationFactCandidate => !!candidate);
+
+    for (const candidate of candidates) {
+      const evidence = normalizeHistoricalEvidenceCandidate({ candidate, message });
+      const key = `${candidate.factKey}:${historicalEvidenceValueKey(candidate)}`;
+      const values = grouped.get(key) || [];
+      values.push(evidence);
+      grouped.set(key, values);
+    }
+  }
+
+  const byFactKey = new Map<string, HistoricalDeclaredEvidence[]>();
+  for (const values of grouped.values()) {
+    const factKey = values[0]?.factKey;
+    if (!factKey) continue;
+    byFactKey.set(factKey, [...(byFactKey.get(factKey) || []), ...values]);
+  }
+
+  const evidence: HistoricalDeclaredEvidence[] = [];
+  const conflicts: HistoricalDeclaredConflict[] = [];
+  for (const [factKey, values] of byFactKey) {
+    const distinctValues = new Set(
+      values.map((value) => `${value.valueKind}:${String(value.value).trim().toLocaleLowerCase()}`),
+    );
+    if (distinctValues.size > 1) {
+      conflicts.push({
+        factKey,
+        candidates: values.map((value) => ({
+          value: value.value,
+          evidenceText: value.evidenceText,
+          sourceMessageId: value.sourceMessageId,
+          createdAt: value.createdAt,
+        })),
+      });
+      continue;
+    }
+
+    evidence.push(values[values.length - 1]);
+  }
+
+  return {
+    ok: true,
+    evidence,
+    conflicts,
+    scannedMessageCount: messages.length,
+    pageCount,
+    reason: evidence.length > 0 || conflicts.length > 0
+      ? "historical_evidence_loaded"
+      : "no_eligible_customer_evidence",
+  };
+}
+
 export async function loadScopedMessageById(args: {
   supabase: SupabaseBatchClientLike;
   organizationId: string;
@@ -3149,6 +3644,53 @@ export async function loadEffectiveReplyCommercialOpportunityId(args: {
   }
 
   return opportunityId;
+}
+
+export async function loadUniquePrimaryCommercialOpportunityIdBySystem(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+}): Promise<string | null> {
+  const leadId = typeof args.leadId === "string" ? args.leadId.trim() : "";
+  if (!leadId) return null;
+
+  let query = args.supabase
+    .from("commercial_opportunities")
+    .select(
+      "id, organization_id, store_id, origin_lead_id, primary_conversation_id, stage, lifecycle_cycle, lost_at, current_loss_event_id",
+    )
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("primary_conversation_id", args.conversationId)
+    .eq("origin_lead_id", leadId);
+
+  const { data, error } = await query.limit(2);
+  if (error || !Array.isArray(data) || data.length !== 1) return null;
+
+  const row = data[0];
+  if (
+    !row ||
+    row.organization_id !== args.organizationId ||
+    row.store_id !== args.storeId ||
+    row.primary_conversation_id !== args.conversationId ||
+    row.origin_lead_id !== leadId ||
+    typeof row.id !== "string" ||
+    !row.id.trim() ||
+    getCanonicalCrmStage(
+      typeof row.stage === "string" ? row.stage : null,
+    )?.area !== "pipeline" ||
+    typeof row.lifecycle_cycle !== "number" ||
+    !Number.isInteger(row.lifecycle_cycle) ||
+    row.lifecycle_cycle < 1 ||
+    row.lost_at != null ||
+    row.current_loss_event_id != null
+  ) {
+    return null;
+  }
+
+  return row.id.trim();
 }
 
 type CanonicalQualificationWriterRow = {
@@ -4208,6 +4750,51 @@ function collectConversationFacts(messages: MessageRow[]): ConversationFactState
     paymentInterestKnown: looksLikePaymentQuestion(history) || text.includes("pix") || text.includes("parcelado"),
     visitInterestKnown: looksLikeTechnicalVisitQuestion(history),
   };
+}
+
+export function mergeHistoricalDeclaredEvidenceIntoConversationFacts(args: {
+  facts: ConversationFactState;
+  historicalEvidence: HistoricalDeclaredEvidenceResult | null;
+}): ConversationFactState {
+  const next = { ...args.facts };
+  if (!args.historicalEvidence?.ok) return next;
+
+  const conflictKeys = new Set(
+    args.historicalEvidence.conflicts.map((conflict) => conflict.factKey),
+  );
+  for (const evidence of args.historicalEvidence.evidence) {
+    if (conflictKeys.has(evidence.factKey)) continue;
+
+    if (
+      evidence.factKey === "space_text" ||
+      evidence.factKey === "requested_area_m2"
+    ) {
+      next.sizeKnown = true;
+    }
+    if (
+      evidence.factKey === "need_summary" ||
+      evidence.factKey === "interested_product_reference" ||
+      evidence.factKey === "customer_preferences_text"
+    ) {
+      next.needKnown = true;
+    }
+    if (evidence.factKey === "preferred_period_text") next.timingKnown = true;
+    if (
+      evidence.factKey === "location_text" ||
+      evidence.factKey === "customer_city" ||
+      evidence.factKey === "customer_state_code"
+    ) {
+      next.locationKnown = true;
+    }
+    if (evidence.factKey === "budget_text") next.budgetKnown = true;
+    if (evidence.factKey === "installation_interest") {
+      next.installationInterestKnown = true;
+    }
+    if (evidence.factKey === "payment_interest") next.paymentInterestKnown = true;
+    if (evidence.factKey === "technical_visit_interest") next.visitInterestKnown = true;
+  }
+
+  return next;
 }
 
 function countQuestionIntents(lastCustomerMessage: string): number {
@@ -12985,6 +13572,49 @@ export async function generateAiSalesReply(
     }
 
     let orderedMessages = ([...(recentMessages || [])] as MessageRow[]).reverse();
+    const hasHumanPanelMessages = orderedMessages.some(
+      (message) => message.sender === "human" && message.direction === "outgoing",
+    );
+
+    const commercialSnapshotBatch = await loadCommercialSnapshotBatch({
+      supabase,
+      messages: orderedMessages,
+      organizationId,
+      storeId: resolvedStoreId,
+      conversationId,
+    });
+    if (hasHumanPanelMessages && commercialSnapshotBatch.resolutionFailed) {
+      return {
+        ok: false,
+        error: "COMMERCIAL_FACT_RECONCILIATION_FAILED",
+        message: "Nao foi possivel validar o contexto comercial antes da retomada da IA.",
+      };
+    }
+
+    if (hasHumanPanelMessages) {
+      const contextOpportunities = new Map(
+        commercialSnapshotBatch.commercialContextLinks.map((link) => [
+          link.id,
+          link.commercial_opportunity_id,
+        ]),
+      );
+      const factReconciliation = await reconcileCommercialConversationFactsFromMessages({
+        supabase,
+        organizationId,
+        storeId: resolvedStoreId,
+        leadId: lead.id,
+        conversationId,
+        messages: orderedMessages,
+        commercialOpportunityByContextLinkId: contextOpportunities,
+      });
+      if (factReconciliation.status === "failed") {
+        return {
+          ok: false,
+          error: "COMMERCIAL_FACT_RECONCILIATION_FAILED",
+          message: "Nao foi possivel reconciliar os fatos comerciais persistidos antes da retomada da IA.",
+        };
+      }
+    }
 
     const anchorResolution = await resolveGenerationAnchorMessageWithRecovery({
       supabase,
@@ -13051,13 +13681,6 @@ export async function generateAiSalesReply(
       }
     }
 
-    const commercialSnapshotBatch = await loadCommercialSnapshotBatch({
-      supabase,
-      messages: orderedMessages,
-      organizationId,
-      storeId: resolvedStoreId,
-      conversationId,
-    });
     const { annotatedMessages, responseAnchorCommercialContext } =
       resolveMessagesWithCommercialContext({
         messages: orderedMessages,
@@ -13105,6 +13728,43 @@ export async function generateAiSalesReply(
 
     const commercialMessageIntentResolution =
       commercialIntentResolutionResult.context;
+    const promotionCommercialOpportunityId =
+      commercialMessageIntentResolution.resolvedCommercialOpportunityId;
+
+    if (
+      shouldPromoteCommercialMemoryForDecision({
+        enabled: isCommercialMemoryCrmPromotionEnabled(),
+        decisionKind: commercialMessageIntentResolution.decisionKind,
+        resolvedCommercialOpportunityId: promotionCommercialOpportunityId,
+      }) &&
+      promotionCommercialOpportunityId &&
+      responseAnchorCommercialContext?.conversationSessionId &&
+      lead.id
+    ) {
+      const promotion = await promoteCommercialMemoryToOpportunity({
+        supabase,
+        organizationId,
+        storeId: resolvedStoreId,
+        leadId: lead.id,
+        conversationId,
+        conversationSessionId: responseAnchorCommercialContext.conversationSessionId,
+        commercialOpportunityId: promotionCommercialOpportunityId,
+        enabled: true,
+      });
+      if (promotion.status === "failed" || promotion.status === "partial") {
+        console.warn("[zion-commercial-memory] CRM promotion deferred", {
+          organizationId,
+          storeId: resolvedStoreId,
+          leadId: lead.id,
+          conversationId,
+          commercialOpportunityId:
+            commercialMessageIntentResolution.resolvedCommercialOpportunityId,
+          status: promotion.status,
+          errors: promotion.errors,
+        });
+      }
+    }
+
     const resolvedCommercialOpportunityId =
       commercialMessageIntentResolution.resolvedCommercialOpportunityId;
 
@@ -13124,6 +13784,40 @@ export async function generateAiSalesReply(
           responseAnchorCommercialContext,
           commercialContextLinks: commercialSnapshotBatch.commercialContextLinks,
         });
+    }
+
+    if (
+      !effectiveReplyCommercialOpportunityId &&
+      commercialMessageIntentResolution.decisionKind === null
+    ) {
+      effectiveReplyCommercialOpportunityId =
+        await loadUniquePrimaryCommercialOpportunityIdBySystem({
+          supabase,
+          organizationId,
+          storeId: resolvedStoreId,
+          conversationId,
+          leadId: lead.id || null,
+        });
+    }
+
+    let historicalDeclaredEvidence: HistoricalDeclaredEvidenceResult | null = null;
+    if (!effectiveReplyCommercialOpportunityId) {
+      historicalDeclaredEvidence =
+        await loadHistoricalDeclaredCustomerEvidence({
+          supabase,
+          organizationId,
+          storeId: resolvedStoreId,
+          conversationId,
+        });
+      if (!historicalDeclaredEvidence.ok) {
+        console.warn(
+          "[generateAiSalesReply] historical declared evidence unavailable",
+          {
+            conversationId,
+            reason: historicalDeclaredEvidence.error,
+          },
+        );
+      }
     }
 
     let canonicalCommercialContextResult =
@@ -13162,6 +13856,32 @@ export async function generateAiSalesReply(
 
     let canonicalQualificationSnapshot =
       canonicalCommercialContextResult.canonicalQualificationSnapshot;
+    const canonicalFactKeys = new Set(
+      canonicalQualificationSnapshot?.knownFacts.map((fact) => fact.factKey) || [],
+    );
+    const canonicalConflictKeys = new Set(
+      canonicalQualificationSnapshot?.conflicts.map((conflict) => conflict.factKey) || [],
+    );
+    const commercialFactMemory = await loadCommercialConversationFactMemory({
+      supabase,
+      organizationId,
+      storeId: resolvedStoreId,
+      conversationId,
+      leadId: lead.id,
+      annotatedMessages,
+    });
+    if (!commercialFactMemory.ok) {
+      return {
+        ok: false,
+        error: commercialFactMemory.error,
+        message: "Nao foi possivel carregar a memoria comercial persistida antes da resposta.",
+      };
+    }
+    const commercialFactMemoryBlock = buildCommercialConversationFactMemoryBlock({
+      memory: commercialFactMemory,
+      canonicalFactKeys,
+      canonicalConflictKeys,
+    });
     let customerGeographyLookupStatus: CustomerGeographyLookupStatus | null = null;
     const crmStageForReply = canonicalCommercialContextResult.crmStageForReply;
     const qualificationFactWriteCommercialOpportunityId =
@@ -13513,9 +14233,16 @@ export async function generateAiSalesReply(
       crossSellInboundHandlingResult.context;
     const crossSellInboundHandlingBlock =
       buildCrossSellInboundHandlingPromptBlock(crossSellInboundHandling);
-    const historicalCommercialContextBlock = buildHistoricalCommercialContextBlock(
-      messagesForConversationContinuity
+    const historicalDeclaredEvidenceBlock = buildHistoricalDeclaredEvidenceBlock(
+      historicalDeclaredEvidence,
     );
+    const historicalCommercialContextBlock = [
+      buildHistoricalCommercialContextBlock(messagesForConversationContinuity),
+      historicalDeclaredEvidenceBlock,
+      commercialFactMemoryBlock,
+    ]
+      .filter(Boolean)
+      .join("\n");
     const lastAiMessage = detectLastAiMessage(messagesForCurrentCommercialInference);
     const lastAiListedPools = detectLastAiListedPools(lastAiMessage);
     const lastAiOfferedPoolOptions = detectLastAiOfferedPoolOptions(lastAiMessage);
@@ -13549,10 +14276,16 @@ export async function generateAiSalesReply(
     const explicitSuperiorOptionRequest =
       looksLikeExplicitSuperiorOptionRequest(lastCustomerMessage);
     const requestedPoolReference = extractRequestedPoolReference(lastCustomerMessage);
-    const customerConversationText = buildCustomerConversationText(
-      messagesForCurrentCommercialInference,
-      lastCustomerMessage
-    );
+    const customerConversationText = [
+      buildCustomerConversationText(
+        messagesForCurrentCommercialInference,
+        lastCustomerMessage,
+      ),
+      historicalDeclaredEvidenceBlock,
+      commercialFactMemoryBlock,
+    ]
+      .filter(Boolean)
+      .join("\n");
     const latestLocationPhotoAnalysis = getLatestLocationPhotoAnalysis(
       messagesForCurrentCommercialInference
     );
@@ -13568,9 +14301,14 @@ export async function generateAiSalesReply(
         catalogIntent,
         requestedPoolReference,
       });
-    const conversationFacts = collectConversationFacts(
-      messagesForCurrentCommercialInference
-    );
+    const conversationFacts = mergeCommercialConversationFactMemoryIntoConversationFacts({
+      facts: mergeHistoricalDeclaredEvidenceIntoConversationFacts({
+        facts: collectConversationFacts(messagesForCurrentCommercialInference),
+        historicalEvidence: historicalDeclaredEvidence,
+      }),
+      memory: commercialFactMemory,
+      canonicalFactKeys,
+    });
     const affirmativeContinuation = isAffirmativeReply(lastCustomerMessage);
     const customerAskedToRepeatPoolOptions =
       asksToRepeatPoolOptions(lastCustomerMessage);

@@ -35,12 +35,12 @@ moduleWithResolveFilename._resolveFilename = function resolveFilenamePatched(
   return originalResolveFilename.call(this, request, parent, isMain, options);
 };
 
-const routeModulePromise = import("./route");
+const routeModulePromise = import("./route-handler");
 const contractAuthModulePromise = import("@/lib/server/sales-contracts/contract-auth");
-type RouteFactory = typeof import("./route")["createCreateContractFromQuotePostHandler"];
+type RouteFactory = typeof import("./route-handler")["createCreateContractFromQuotePostHandler"];
 let routeFactory: RouteFactory | null = null;
 const routeSource = readFileSync(
-  join(process.cwd(), "src/app/api/sales-contracts/create-from-quote/route.ts"),
+  join(process.cwd(), "src/app/api/sales-contracts/create-from-quote/route-handler.ts"),
   "utf8",
 );
 const contractAuthSource = readFileSync(
