@@ -46,7 +46,7 @@ type Diagnostic = {
   organizationId: string | null;
   storeId: string | null;
   scope: "system" | "organization" | "store";
-  sourceFamily: "ai_runs" | "operational" | "backend_api";
+  sourceFamily: "ai_runs" | "operational" | "backend_api" | "client_browser";
   sourceSystem: string;
   component: string | null;
   category: string | null;
@@ -72,7 +72,7 @@ type Diagnostic = {
 
 type LoadResult = {
   key: string;
-  source?: "ai_runs" | "unified";
+  source?: "ai_runs" | "unified" | "unified_v2";
   items: Diagnostic[];
   error: boolean;
 };
@@ -186,7 +186,8 @@ function parseDiagnostic(value: unknown): Diagnostic | null {
       scope === "store" && !!organizationId && !!storeId && UUID_PATTERN.test(organizationId) && UUID_PATTERN.test(storeId)) ||
     !(family === "ai_runs" && origin === "ai_runs" && scope === "store" ||
       family === "operational" && scope === "store" && (origin === "channel_whatsapp_inbox" || origin === "ai_run_queue" || origin === "ai_sales_action_queue") ||
-      family === "backend_api" && origin === "backend_api") ||
+      family === "backend_api" && origin === "backend_api" ||
+      family === "client_browser" && origin === "client_browser" && (scope === "system" || scope === "store") && value.category === "client_browser_failure" && value.component === "browser" && (value.technical_error_code === "BROWSER_UNCAUGHT_ERROR" || value.technical_error_code === "BROWSER_UNHANDLED_REJECTION")) ||
     typeof value.last_failure_older_than_30_days !== "boolean"
   ) {
     return null;
@@ -230,10 +231,38 @@ function parseDiagnostic(value: unknown): Diagnostic | null {
   };
 }
 
+// Browser evidence is reported by the client, not proof of root cause.
+function safeBrowserEvidence(r: Record<string, unknown>) {
+  const pages = r.scope === "system" ? ["/zion-admin", "/zion-admin/login"] : r.scope === "store" ? ["/assistant", "/configuracoes", "/configuracoes/catalogo/[categoria]", "/configuracoes/piscinas", "/crm", "/crm/lead/[id]", "/crm/opportunity/[id]", "/dashboard", "/help", "/inbox", "/schedule"] : [];
+  const pick = (v: unknown, allowed: readonly string[]) => typeof v === "string" && allowed.includes(v) ? v : null;
+  const asset = typeof r.browser_asset === "string" && /^\/_next\/static\/chunks\/([0-9]{1,8}-)?[a-f0-9]{8,64}\.js$/.test(r.browser_asset) ? r.browser_asset : null;
+  const pos = (v: unknown) => asset && typeof v === "number" && Number.isSafeInteger(v) && v >= 1 && v <= 1000000 ? v : null;
+  return {
+    browser_page: pick(r.browser_page, pages),
+    browser_kind: pick(r.browser_kind, r.technical_error_code === "BROWSER_UNCAUGHT_ERROR" ? ["uncaught_error"] : r.technical_error_code === "BROWSER_UNHANDLED_REJECTION" ? ["unhandled_rejection"] : []),
+    browser_error_name: pick(r.browser_error_name, ["Error", "TypeError", "ReferenceError", "RangeError", "SyntaxError", "URIError", "EvalError", "AggregateError"]),
+    browser_asset: asset,
+    browser_line: pos(r.browser_line),
+    browser_column: pos(r.browser_column),
+  };
+}
+
 function buildLocationLines(value: Record<string, unknown>, family: string): string[] {
   const path = (v: unknown, prefix: string, limit: number) => typeof v === "string" && v.startsWith(prefix) && v.length <= limit && /^[a-zA-Z0-9_./\[\]()-]+$/.test(v) && !v.includes("..") ? v : null;
   const integer = (v: unknown, min: number, max: number) => typeof v === "number" && Number.isSafeInteger(v) && v >= min && v <= max ? v : null;
   if (family === "operational") return ["Tentativas registradas: " + (integer(value.operational_attempt_count, 0, 2147483647) ?? "Indisponível")];
+  if (family === "client_browser") {
+    const b = safeBrowserEvidence(value);
+    return [
+      "Origem: relato do navegador, causa não comprovada.",
+      "Página: " + (b.browser_page ?? "Indisponível"),
+      "Tipo de falha: " + (b.browser_kind ?? "Indisponível"),
+      "Nome técnico: " + (b.browser_error_name ?? "Indisponível"),
+      "Arquivo compilado: " + (b.browser_asset ?? "Indisponível"),
+      "Linha compilada: " + (b.browser_line ?? "Indisponível"),
+      "Coluna compilada: " + (b.browser_column ?? "Indisponível"),
+    ];
+  }
   if (family !== "backend_api") return [];
   const file = path(value.backend_source_file, "src/", 300);
   return [
@@ -407,7 +436,7 @@ export default function ZionAdminDiagnosticIncidents({
         if (
           !isRecord(payload) ||
           payload.ok !== true ||
-          (payload.source !== "ai_runs" && payload.source !== "unified") ||
+          (payload.source !== "ai_runs" && payload.source !== "unified" && payload.source !== "unified_v2") ||
           !Array.isArray(payload.items) ||
           payload.items.length > PAGE_SIZE
         ) {
@@ -419,7 +448,7 @@ export default function ZionAdminDiagnosticIncidents({
         for (const row of payload.items) {
           const parsed = parseDiagnostic(row);
 
-          if (!parsed || (payload.source === "unified" && (!isRecord(row) || row.source_family === undefined || row.scope === undefined || row.source_system === undefined)) || (payload.source === "ai_runs" && parsed.sourceFamily !== "ai_runs")) {
+          if (!parsed || (payload.source !== "ai_runs" && (!isRecord(row) || row.source_family === undefined || row.scope === undefined || row.source_system === undefined)) || (payload.source === "ai_runs" && parsed.sourceFamily !== "ai_runs") || (payload.source !== "unified_v2" && parsed.sourceFamily === "client_browser")) {
             throw new Error("DIAGNOSTICS_INVALID_ITEM");
           }
 
@@ -512,13 +541,14 @@ export default function ZionAdminDiagnosticIncidents({
 
       <label className="block space-y-1 text-xs text-[#bed4df]">
         <span>Filtrar por origem</span>
-        <select value={sourceFilter} disabled={result?.source !== "unified" && !sourceFilter}
+        <select value={sourceFilter} disabled={result?.source !== "unified" && result?.source !== "unified_v2" && !sourceFilter}
           onChange={(event) => { setSourceFilter(event.target.value); setOffset(0); setCopyStatus(null); }}
           className="w-full rounded-lg border border-[#385563] bg-[#0b1720] px-3 py-2 text-[#e7f2f5]">
           <option value="">Todas as origens disponíveis</option>
           <option value="ai_runs">Execuções de IA</option>
           <option value="operational">Filas operacionais</option>
           <option value="backend_api">Backend e APIs</option>
+          {result?.source === "unified_v2" || sourceFilter === "client_browser" ? <option value="client_browser">Erros do navegador</option> : null}
         </select>
       </label>
       {result?.source === "ai_runs" && !loading ? <p className="text-xs text-[#9ab4c3]">Leitor anterior ativo: somente incidentes de IA.</p> : null}

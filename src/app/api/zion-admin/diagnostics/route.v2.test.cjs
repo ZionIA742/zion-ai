@@ -157,6 +157,7 @@ const validV2 = {
 async function request({
   flag,
   unified,
+  browser,
   data = [base],
   error = null,
   query = "",
@@ -173,6 +174,9 @@ async function request({
 
   if (unified === undefined) delete env.ZION_ADMIN_DIAGNOSTIC_UNIFIED_READER_ENABLED;
   else env.ZION_ADMIN_DIAGNOSTIC_UNIFIED_READER_ENABLED = unified;
+
+  if (browser === undefined) delete env.ZION_ADMIN_DIAGNOSTIC_UNIFIED_READER_V2_ENABLED;
+  else env.ZION_ADMIN_DIAGNOSTIC_UNIFIED_READER_V2_ENABLED = browser;
 
   accessState = allowed ? authorized : {
     ...authorized,
@@ -381,4 +385,22 @@ test("unified sanitizes malformed backend fields and denies invalid filters", as
 test("unified failure and denial do not fall back or leak", async () => {
   const r = await request({ unified: "true", error: { message: "PRIVATE_DB" } }); assert.equal(r.status, 503); assert.equal(r.calls.length, 1); assert.equal(JSON.stringify(r.body).includes("PRIVATE_DB"), false);
   const denied = await request({ unified: "true", allowed: false }); assert.equal(denied.status, 403); assert.equal(denied.calls.length, 0);
+});
+const browserRow = { ...base, scope: "store", source_family: "client_browser", source_system: "client_browser", component: "browser", category: "client_browser_failure", technical_error_code: "BROWSER_UNCAUGHT_ERROR", browser_page: "/crm/lead/[id]", browser_kind: "uncaught_error", browser_error_name: "TypeError", browser_asset: "/_next/static/chunks/abcdef123456.js", browser_line: 20, browser_column: 3 };
+test("browser gate requires both exact true flags", async () => {
+  for (const flags of [{browser:"true"}, {unified:"true",browser:"TRUE"}, {unified:"true"}]) { const r=await request({...flags,query:"?source=client_browser"}); assert.equal(r.status,400); assert.equal(r.calls.length,0); }
+  const r=await request({unified:"true",data:[browserRow]}); assert.equal(r.status,503);
+});
+test("V2 selects exact RPC and returns browser projection", async () => {
+  const r=await request({unified:"true",browser:"true",data:[browserRow],query:"?source=client_browser"}); assert.equal(r.status,200); assert.equal(r.body.source,"unified_v2"); assert.equal(r.calls[0].name,"list_zion_admin_diagnostics_unified_v2_by_system"); assert.equal(r.calls[0].args.p_source,"client_browser"); assert.equal(r.body.items[0].browser_page,"/crm/lead/[id]"); assert.equal(r.body.items[0].browser_line,20);
+});
+test("V2 system scope and malformed browser identity", async () => {
+  const system={...browserRow,scope:"system",organization_id:null,store_id:null,browser_page:"/zion-admin"}; const r=await request({unified:"true",browser:"true",data:[system]}); assert.equal(r.status,200); assert.equal(r.body.items[0].browser_page,"/zion-admin");
+  for(const bad of [{...system,scope:"organization",organization_id:base.organization_id},{...browserRow,component:"backend"},{...browserRow,technical_error_code:"PRIVATE"}]) {const x=await request({unified:"true",browser:"true",data:[bad]}); assert.equal(x.status,503);}
+});
+test("V2 suppresses private and malformed fields", async () => {
+  const r=await request({unified:"true",browser:"true",data:[{...browserRow,browser_page:"/crm/lead/PRIVATE",browser_asset:"/_next/static/chunks/abcdef123456.js?PRIVATE",browser_kind:"unhandled_rejection",browser_error_name:"PRIVATE",raw_error:"PRIVATE"}]}); assert.equal(r.status,200); for(const k of ["browser_page","browser_asset","browser_line","browser_column","browser_kind","browser_error_name"]) assert.equal(r.body.items[0][k],null); assert.equal(JSON.stringify(r.body).includes("PRIVATE"),false);
+});
+test("V2 legacy evidence unaffected and RPC failure has no fallback", async () => {
+  const old=await request({unified:"true",data:[unifiedAI]}); const next=await request({unified:"true",browser:"true",data:[{...unifiedAI,browser_asset:browserRow.browser_asset}]}); assert.deepEqual(next.body.items,old.body.items); const bad=await request({unified:"true",browser:"true",error:{message:"PRIVATE"}}); assert.equal(bad.status,503); assert.equal(bad.calls.length,1); assert.equal(JSON.stringify(bad.body).includes("PRIVATE"),false);
 });

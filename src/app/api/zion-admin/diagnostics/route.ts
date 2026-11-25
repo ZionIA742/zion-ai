@@ -42,7 +42,7 @@ const READER_FIELDS = [
   "last_failure_older_than_30_days",
 ] as const;
 
-const SOURCE_FAMILIES = ["ai_runs", "operational", "backend_api"] as const;
+const SOURCE_FAMILIES = ["ai_runs", "operational", "backend_api", "client_browser"] as const;
 type SourceFamily = (typeof SOURCE_FAMILIES)[number];
 function isSourceFamily(value: unknown): value is SourceFamily {
   return SOURCE_FAMILIES.some((family) => family === value);
@@ -78,6 +78,7 @@ function parseBoundedInteger(
 function parseDiagnosticQuery(
   request: Request,
   unified: boolean,
+  browserEnabled: boolean,
 ): DiagnosticQuery | null {
   const params = new URL(request.url).searchParams;
   const allowedKeys = new Set([
@@ -88,7 +89,7 @@ function parseDiagnosticQuery(
 
   if (unified) allowedKeys.add("source");
   const source = params.get("source");
-  if (source !== null && !isSourceFamily(source)) return null;
+  if (source !== null && (!isSourceFamily(source) || source === "client_browser" && !browserEnabled)) return null;
 
   for (const key of params.keys()) {
     if (!allowedKeys.has(key)) return null;
@@ -225,7 +226,23 @@ const OPERATIONAL_CODES: Record<string, readonly string[]> = {
   ai_run_queue: ["AI_RUN_QUEUE_FAILED_FINAL"],
   ai_sales_action_queue: ["SALES_ACTION_PROCESSING_FAILED"],
 };
-function projectUnifiedRows(value: unknown, query: DiagnosticQuery): Record<string, unknown>[] | null {
+// Browser evidence is reported by the client, not proof of root cause.
+function safeBrowserEvidence(r: Record<string, unknown>) {
+  const pages = r.scope === "system" ? ["/zion-admin", "/zion-admin/login"] : r.scope === "store" ? ["/assistant", "/configuracoes", "/configuracoes/catalogo/[categoria]", "/configuracoes/piscinas", "/crm", "/crm/lead/[id]", "/crm/opportunity/[id]", "/dashboard", "/help", "/inbox", "/schedule"] : [];
+  const pick = (v: unknown, allowed: readonly string[]) => typeof v === "string" && allowed.includes(v) ? v : null;
+  const asset = typeof r.browser_asset === "string" && /^\/_next\/static\/chunks\/([0-9]{1,8}-)?[a-f0-9]{8,64}\.js$/.test(r.browser_asset) ? r.browser_asset : null;
+  const pos = (v: unknown) => asset && typeof v === "number" && Number.isSafeInteger(v) && v >= 1 && v <= 1000000 ? v : null;
+  return {
+    browser_page: pick(r.browser_page, pages),
+    browser_kind: pick(r.browser_kind, r.technical_error_code === "BROWSER_UNCAUGHT_ERROR" ? ["uncaught_error"] : r.technical_error_code === "BROWSER_UNHANDLED_REJECTION" ? ["unhandled_rejection"] : []),
+    browser_error_name: pick(r.browser_error_name, ["Error", "TypeError", "ReferenceError", "RangeError", "SyntaxError", "URIError", "EvalError", "AggregateError"]),
+    browser_asset: asset,
+    browser_line: pos(r.browser_line),
+    browser_column: pos(r.browser_column),
+  };
+}
+
+function projectUnifiedRows(value: unknown, query: DiagnosticQuery, browserEnabled: boolean): Record<string, unknown>[] | null {
   if (!Array.isArray(value) || value.length > query.limit) return null;
   const result: Record<string, unknown>[] = [];
   const seen = new Set<string>();
@@ -245,6 +262,7 @@ function projectUnifiedRows(value: unknown, query: DiagnosticQuery): Record<stri
     const operational = family === "operational";
     const ai = family === "ai_runs";
     const backend = family === "backend_api";
+    const browser = family === "client_browser";
     const origin = r.source_system;
     const component = r.component;
     const code = r.technical_error_code;
@@ -253,6 +271,7 @@ function projectUnifiedRows(value: unknown, query: DiagnosticQuery): Record<stri
         !(origin === "channel_whatsapp_inbox" && component === "whatsapp_inbox" || origin === "ai_run_queue" && component === "sales_ai_queue" || origin === "ai_sales_action_queue" && component === "sales_action_queue") ||
         typeof origin !== "string" || !safeEnum(code, OPERATIONAL_CODES[origin] ?? []))) return null;
     if (backend && (origin !== "backend_api" || component !== "backend" || r.category !== "backend_api_failure" || !safeEnum(code, ["BACKEND_HTTP_5XX", "BACKEND_UNHANDLED_EXCEPTION"]))) return null;
+    if (browser && (!browserEnabled || (scope !== "store" && scope !== "system") || origin !== "client_browser" || component !== "browser" || r.category !== "client_browser_failure" || !safeEnum(code, ["BROWSER_UNCAUGHT_ERROR", "BROWSER_UNHANDLED_REJECTION"]))) return null;
     const safe: Record<string, unknown> = {};
     for (const field of READER_FIELDS) safe[field] = r[field] ?? null;
     for (const field of ["title_simple", "explanation_simple", "impact_simple", "next_action_simple"] as const) {
@@ -281,6 +300,7 @@ function projectUnifiedRows(value: unknown, query: DiagnosticQuery): Record<stri
       backend_source_column: file ? safeInt(r.backend_source_column, 1, 1000000) : null,
       operational_attempt_count: operational ? safeInt(r.operational_attempt_count, 0, 2147483647) : null,
     });
+    if (browser) Object.assign(safe, safeBrowserEvidence(r));
     if (ai) Object.assign(safe, projectSafeDiagnosticReaderV2Evidence(r));
     result.push(safe);
   }
@@ -298,7 +318,8 @@ export async function GET(request: Request) {
     }
 
     const unified = process.env.ZION_ADMIN_DIAGNOSTIC_UNIFIED_READER_ENABLED === "true";
-    const query = parseDiagnosticQuery(request, unified);
+    const browserEnabled = unified && process.env.ZION_ADMIN_DIAGNOSTIC_UNIFIED_READER_V2_ENABLED === "true";
+    const query = parseDiagnosticQuery(request, unified, browserEnabled);
 
     if (!query) {
       return createZionAdminApiJsonResponse(
@@ -318,7 +339,7 @@ export async function GET(request: Request) {
     const serviceSupabase = createServiceClient();
 
     const { data, error } = await serviceSupabase.rpc(
-      unified ? "list_zion_admin_diagnostics_unified_by_system" : useReaderV2
+      browserEnabled ? "list_zion_admin_diagnostics_unified_v2_by_system" : unified ? "list_zion_admin_diagnostics_unified_by_system" : useReaderV2
         ? "list_zion_admin_ai_run_diagnostics_v2_by_system"
         : "list_zion_admin_ai_run_diagnostics_by_system",
       {
@@ -339,7 +360,7 @@ export async function GET(request: Request) {
       );
     }
 
-    const items = unified ? projectUnifiedRows(data, query) : projectSafeRows(
+    const items = unified ? projectUnifiedRows(data, query, browserEnabled) : projectSafeRows(
       data,
       query.limit,
       useReaderV2,
@@ -358,7 +379,7 @@ export async function GET(request: Request) {
     return createZionAdminApiJsonResponse(
       {
         ok: true,
-        source: unified ? "unified" : "ai_runs",
+        source: browserEnabled ? "unified_v2" : unified ? "unified" : "ai_runs",
         items,
         pagination: {
           limit: query.limit,
