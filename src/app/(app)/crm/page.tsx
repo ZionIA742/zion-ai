@@ -19,6 +19,7 @@ import {
   getOrCreatePendingManualCommercialLeadCreationOperation,
 } from "./manual-lead-create-operation";
 import { formatManualLeadPhone } from "./manual-lead-phone";
+import GeneralQuoteEditor from "./GeneralQuoteEditor";
 
 type CrmOpportunityCardRow = {
   commercial_opportunity_id: string;
@@ -213,6 +214,18 @@ export default function CrmPage() {
 
 
   const crmScopeKey = JSON.stringify([organizationId, activeStoreId]);
+  const [quoteEditorScope, setQuoteEditorScope] = useState<string | null>(null);
+  const canOpenGeneralQuoteEditor = Boolean(!storeLoading && organizationId && activeStoreId);
+
+  // Loading changes must not close an already open quote.
+  // Only a real change of organization or store invalidates it.
+  useLayoutEffect(() => {
+    setQuoteEditorScope(null);
+  }, [crmScopeKey]);
+
+  const closeGeneralQuoteEditor = useCallback(() => {
+    setQuoteEditorScope(null);
+  }, []);
   const currentCrmScopeRef = useRef(crmScopeKey);
   const latestCrmFetchRef = useRef(0);
   const activeCrmFetchRef = useRef<{ scopeKey: string; requestId: number } | null>(null);
@@ -709,6 +722,15 @@ export default function CrmPage() {
 
                   <button
                     type="button"
+                    onClick={() => setQuoteEditorScope(crmScopeKey)}
+                    disabled={!canOpenGeneralQuoteEditor || isCreateModalOpen}
+                    className="rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    + Orçamento
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={openManualLeadModal}
                     disabled={!canOpenManualLeadModal}
                     className="rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1180,6 +1202,15 @@ export default function CrmPage() {
             </form>
           </div>
         </div>
+      ) : null}
+      {quoteEditorScope === crmScopeKey &&
+      organizationId && activeStoreId ? (
+        <GeneralQuoteEditor
+          key={crmScopeKey}
+          organizationId={organizationId}
+          storeId={activeStoreId}
+          onClose={closeGeneralQuoteEditor}
+        />
       ) : null}
     </div>
   );

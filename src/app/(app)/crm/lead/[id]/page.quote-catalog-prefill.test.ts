@@ -7,6 +7,11 @@ const source = readFileSync(
   "utf8",
 );
 
+const modalSource = readFileSync(
+  join(__dirname, "..", "..", "QuoteEditorModal.tsx"),
+  "utf8",
+);
+
 assert.equal(
   source.includes(
     '"read_store_operation_execution_policies_scoped"',
@@ -23,7 +28,7 @@ assert.equal(
 );
 
 assert.equal(
-  source.includes(
+  modalSource.includes(
     "disabled={!quoteServiceOptionEnabled}",
   ),
   true,
@@ -31,7 +36,7 @@ assert.equal(
 );
 
 assert.equal(
-  source.includes(
+  modalSource.includes(
     'nextItemType === "service" &&',
   ),
   true,
@@ -39,7 +44,7 @@ assert.equal(
 );
 
 assert.equal(
-  source.includes(
+  modalSource.includes(
     "itemType={item.itemType}",
   ),
   true,
@@ -47,7 +52,7 @@ assert.equal(
 );
 
 assert.equal(
-  source.includes(
+  modalSource.includes(
     "technicalServicesPolicy={quoteTechnicalServicesPolicy}",
   ),
   true,
@@ -95,6 +100,21 @@ assert.equal(
   true,
   "generation must fail closed for stale unavailable service drafts",
 );
+
+// Verify that the lead page configures the shared editor.
+for (const expected of [
+  "<QuoteEditorModal",
+  "quoteServiceOptionEnabled={quoteServiceOptionEnabled}",
+  "quoteTechnicalServicesPolicy={quoteTechnicalServicesPolicy}",
+  "applyCatalogPrefillToQuoteItem={applyCatalogPrefillToQuoteItem}",
+  "catalogScope={",
+]) {
+  assert.equal(
+    source.includes(expected),
+    true,
+    `missing shared editor integration: ${expected}`,
+  );
+}
 
 console.log(
   "ok - CRM quote type-aware catalog integration contract",

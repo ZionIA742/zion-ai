@@ -4,9 +4,42 @@ const ast=ts.createSourceFile(file,src,ts.ScriptTarget.Latest,true,ts.ScriptKind
 function getFunction(name){let matches=[];function visit(n){if(ts.isFunctionDeclaration(n)&&n.name?.text===name)matches.push(n.getText(ast));ts.forEachChild(n,visit);}visit(ast);assert.equal(matches.length,1);return ts.transpileModule(matches[0],{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;}
 const helpers={exports:{}};new Function('exports','module','require',ts.transpileModule(fs.readFileSync(path.join(__dirname,'quote-create-operation.ts'),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText)(helpers.exports,helpers,require);
 const h=helpers.exports;
+// Load the actual shared quote creation modules.
+function loadSharedModule(filename, resolver) {
+ const source = fs.readFileSync(filename, 'utf8');
+ const compiled = ts.transpileModule(source, {
+  fileName: filename,
+  compilerOptions: {
+   target: ts.ScriptTarget.ES2022,
+   module: ts.ModuleKind.CommonJS
+  }
+ }).outputText;
+ const m = { exports: {} };
+ new Function('require', 'module', 'exports', compiled)(
+  resolver, m, m.exports
+ );
+ return m.exports;
+}
+const sharedModel = loadSharedModule(
+ path.resolve(__dirname, '..', '..', 'quote-editor-model.ts'),
+ require
+);
+const sharedPdf = loadSharedModule(
+ path.resolve(__dirname, '..', '..', 'manual-quote-pdf.ts'),
+ name => {
+  if (name === './lead/[id]/quote-create-operation') return h;
+  if (name === './quote-editor-model') return sharedModel;
+  throw Error('Unexpected shared module import: ' + name);
+ }
+);
 async function run(state,overrides={}){
  let captured=[],errors=[],keys=[];const noop=()=>{};const storage=new Map();
  const env={...h,isGeneratingManualQuote:false,quoteFormMode:'create',lead:{id:'lead-a',organization_id:'org-a',store_id:'store-a',name:'Cliente A',phone:'11999999999'},leadId:'lead-a',conversation:{id:'conv-a'},selectedOpportunity:{id:'opp-a'},quoteCreationState:{originLeadId:'lead-a',linkLead:false,customerName:'',customerPhone:'',...state},canGenerateQuotePdf:true,quoteValidationMessage:null,quoteItems:[{itemType:'custom',name:'Piscina',description:'',quantity:'1',unitPriceReais:'100',discountReais:'0'}],parseQuoteQuantityValue:Number,convertReaisToCents:v=>Math.round(Number(v)*100),quoteTitle:'Piscina',quoteCustomerNotes:'',quoteWarrantyTerms:'',quoteValidityDays:'15',setQuoteFormError:e=>{if(e)errors.push(e)},setQuoteFormSuccess:noop,setIsGeneratingManualQuote:noop,setStatusText:noop,window:{sessionStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>{keys.push(k);storage.set(k,v)},removeItem:k=>storage.delete(k)}},crypto:{randomUUID:()=> '00000000-0000-4000-8000-000000000001'},fetch:async (url,opts)=>{captured.push({url,body:JSON.parse(opts.body)});throw Error('TEST_STOP_BEFORE_NETWORK');},...overrides};
+ env.normalizeManualQuoteItems = sharedPdf.normalizeManualQuoteItems;
+ env.submitManualQuotePdf = args => sharedPdf.submitManualQuotePdf({
+  ...args,
+  fetcher: env.fetch
+ });
  const f=new Function(...Object.keys(env),getFunction('generateManualQuotePdf')+'\nreturn generateManualQuotePdf;')(...Object.values(env));await f();return {captured,errors,keys};
 }
 (async()=>{
