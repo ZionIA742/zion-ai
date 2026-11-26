@@ -41,6 +41,8 @@ import {
 import CatalogProductComposerPicker, {
   type CatalogComposerProduct,
 } from "./CatalogProductComposerPicker";
+import { buildCatalogCommercialMessage } from "./catalog-commercial-message";
+import { useStoreContext } from "@/components/StoreProvider";
 import {
   isQuoteTechnicalServicesPolicyAvailable,
   type QuoteCatalogPrefillValues,
@@ -110,8 +112,13 @@ type HumanResponseCommitment = {
   revision: number;
 };
 
+const CATALOG_COMMERCIAL_CAPTION_LIMIT = 1024;
+
 type SelectedCatalogProduct = CatalogComposerProduct & {
   operationId: string;
+  scopeKey: string;
+  caption: string;
+  originalDraft: string;
 };
 
 
@@ -1594,6 +1601,12 @@ function EmptyState({ text }: { text: string }) {
 }
 
 export default function LeadPage() {
+  const {
+    organizationId: catalogOrganizationId,
+    activeStoreId: catalogStoreId,
+    error: catalogStoreError,
+  } = useStoreContext();
+
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -1653,7 +1666,6 @@ export default function LeadPage() {
   const [catalogPickerOpen, setCatalogPickerOpen] = useState(false);
   const [selectedCatalogProduct, setSelectedCatalogProduct] =
     useState<SelectedCatalogProduct | null>(null);
-  const [catalogPlaceholderOpen, setCatalogPlaceholderOpen] = useState(false);
   const [uploadingCustomerAttachment, setUploadingCustomerAttachment] = useState(false);
   const [uploadingManualAttachment, setUploadingManualAttachment] = useState(false);
   const [recordingAudio, setRecordingAudio] = useState(false);
@@ -1795,6 +1807,8 @@ export default function LeadPage() {
   const automaticContractPreviewRef = useRef<string | null>(null);
   const loadedContractDataScopeRef = useRef<string | null>(null);
   const manualSendInFlightRef = useRef(false);
+  const catalogPickerScopeRef = useRef<string | null>(null);
+  const currentCatalogScopeRef = useRef<string | null>(null);
   const contractSendInFlightRef = useRef(false);
   const manualContractCreateInFlightRef = useRef(false);
   const simulatedCustomerSubmitInFlightRef = useRef(false);
@@ -2027,12 +2041,63 @@ export default function LeadPage() {
     hasConversation && !isHumanActive && !working && !simulatingCustomer;
   const canReleaseToAI =
     hasConversation && isHumanActive && !working && !simulatingCustomer;
+  const catalogScopeKey =
+    !catalogStoreError &&
+    catalogOrganizationId &&
+    catalogStoreId &&
+    lead?.id === leadId &&
+    lead.organization_id === catalogOrganizationId &&
+    lead.store_id === catalogStoreId &&
+    conversation?.id &&
+    (!requestedConversationId ||
+      requestedConversationId === conversation.id)
+      ? JSON.stringify([
+          catalogOrganizationId,
+          catalogStoreId,
+          leadId,
+          conversation.id,
+        ])
+      : null;
+
+  const catalogSelectionCurrent =
+    selectedCatalogProduct !== null &&
+    catalogScopeKey !== null &&
+    selectedCatalogProduct.scopeKey === catalogScopeKey;
+
+  useEffect(() => {
+    currentCatalogScopeRef.current = catalogScopeKey;
+
+    if (
+      catalogPickerScopeRef.current !== null &&
+      catalogPickerScopeRef.current !== catalogScopeKey
+    ) {
+      catalogPickerScopeRef.current = null;
+      setCatalogPickerOpen(false);
+    }
+
+    if (
+      selectedCatalogProduct &&
+      selectedCatalogProduct.scopeKey !== catalogScopeKey
+    ) {
+      setSelectedCatalogProduct(null);
+      setNewMessage("");
+    }
+  }, [catalogScopeKey, selectedCatalogProduct]);
+
   const canSendMessage =
     hasConversation &&
     !working &&
     !simulatingCustomer &&
     !uploadingManualAttachment &&
-    (newMessage.trim().length > 0 || manualPendingAttachment !== null);
+    (
+      selectedCatalogProduct
+        ? catalogSelectionCurrent &&
+          !recordingAudio &&
+          manualPendingAttachment === null &&
+          selectedCatalogProduct.caption.trim().length > 0 &&
+          selectedCatalogProduct.caption.length <= CATALOG_COMMERCIAL_CAPTION_LIMIT
+        : (newMessage.trim().length > 0 || manualPendingAttachment !== null)
+    );
 
   const canSimulateCustomerMessage =
     hasConversation &&
@@ -5321,15 +5386,36 @@ export default function LeadPage() {
     }
   }
 
-  async function sendMessage() {
+  async function sendMessage(catalogConfirmed = false) {
     if (manualSendInFlightRef.current || working) {
       return;
     }
 
-    const text = newMessage.trim();
+    const text = (
+      selectedCatalogProduct
+        ? selectedCatalogProduct.caption
+        : newMessage
+    ).trim();
+
     const pendingAttachment = manualPendingAttachment;
 
     if (selectedCatalogProduct) {
+      if (
+        catalogConfirmed !== true ||
+        !catalogSelectionCurrent ||
+        !canSendMessage ||
+        currentCatalogScopeRef.current !== catalogScopeKey
+      ) {
+        return;
+      }
+
+      if (
+        selectedCatalogProduct.caption.length >
+        CATALOG_COMMERCIAL_CAPTION_LIMIT
+      ) {
+        setErrorText("A mensagem excede o limite permitido.");
+        return;
+      }
       if (!text) {
         setErrorText("Digite uma legenda antes de enviar o produto do catalogo.");
         return;
@@ -5350,8 +5436,27 @@ export default function LeadPage() {
         setWorking(false);
       }
       if (!sent) return;
-      clearSelectedCatalogProduct();
-      setStatusText("Produto enviado com sucesso.");
+
+      if (
+        currentCatalogScopeRef.current !==
+        selectedCatalogProduct.scopeKey
+      ) {
+        return;
+      }
+
+      setSelectedCatalogProduct((current) =>
+        current?.operationId === selectedCatalogProduct.operationId
+          ? null
+          : current,
+      );
+
+      setNewMessage((current) =>
+        current === selectedCatalogProduct.originalDraft
+          ? ""
+          : current,
+      );
+
+      setStatusText("Mensagem do produto registrada no CRM.");
       await fetchLeadConversationAndMessages({ silent: true });
       return;
     }
@@ -5709,38 +5814,111 @@ export default function LeadPage() {
     });
   }
 
-  function openCatalogPlaceholder() {
+  function openCatalogPicker() {
     setAttachmentMenuOpen(false);
+
+    if (
+      !catalogScopeKey ||
+      working ||
+      manualSendInFlightRef.current ||
+      uploadingManualAttachment ||
+      recordingAudio ||
+      selectedCatalogProduct ||
+      manualPendingAttachment
+    ) {
+      setErrorText(
+        "Conclua ou remova o anexo atual antes de selecionar outro produto.",
+      );
+      return;
+    }
+
+    catalogPickerScopeRef.current = catalogScopeKey;
     setCatalogPickerOpen(true);
-    setCatalogPlaceholderOpen(true);
     setErrorText(null);
     setStatusText(null);
   }
 
   function handleComposerTextChange(value: string) {
     setNewMessage(value);
-    if (selectedCatalogProduct) {
-      setSelectedCatalogProduct((current) =>
-        current ? { ...current, operationId: globalThis.crypto.randomUUID() } : current,
+  }
+
+  function handleCatalogCaptionChange(value: string) {
+    if (
+      !catalogSelectionCurrent ||
+      working ||
+      manualSendInFlightRef.current
+    ) {
+      return;
+    }
+
+    setSelectedCatalogProduct((current) => {
+      if (!current || current.scopeKey !== catalogScopeKey) {
+        return current;
+      }
+
+      if (current.caption === value) return current;
+
+      return {
+        ...current,
+        caption: value,
+        operationId: globalThis.crypto.randomUUID(),
+      };
+    });
+  }
+
+  function selectCatalogProduct(product: CatalogComposerProduct) {
+    const openingScope = catalogPickerScopeRef.current;
+
+    catalogPickerScopeRef.current = null;
+    setCatalogPickerOpen(false);
+
+    if (
+      !catalogScopeKey ||
+      openingScope !== catalogScopeKey ||
+      working ||
+      manualSendInFlightRef.current ||
+      uploadingManualAttachment ||
+      recordingAudio ||
+      selectedCatalogProduct ||
+      manualPendingAttachment
+    ) {
+      setErrorText(
+        "O contexto da conversa mudou. Abra novamente o cat\u00e1logo.",
+      );
+      return;
+    }
+
+    try {
+      const originalDraft = newMessage;
+
+      const prefix = originalDraft.trim()
+        ? originalDraft + "\n\n"
+        : "";
+
+      const commercialMessage = buildCatalogCommercialMessage(
+        product.commercialDetails,
+        CATALOG_COMMERCIAL_CAPTION_LIMIT - prefix.length,
+      );
+
+      setSelectedCatalogProduct({
+        ...product,
+        scopeKey: catalogScopeKey,
+        caption: prefix + commercialMessage,
+        originalDraft,
+        operationId: globalThis.crypto.randomUUID(),
+      });
+
+      setErrorText(null);
+      setStatusText(null);
+    } catch {
+      setErrorText(
+        "N\u00e3o foi poss\u00edvel preparar a mensagem. Revise o texto existente ou os dados do produto.",
       );
     }
   }
 
-  function selectCatalogProduct(product: CatalogComposerProduct) {
-    cancelPendingManualAttachment();
-    setSelectedCatalogProduct({
-      ...product,
-      operationId: globalThis.crypto.randomUUID(),
-    });
-    setNewMessage(product.name.trim());
-    setCatalogPickerOpen(false);
-    setErrorText(null);
-    setStatusText(null);
-  }
-
   function clearSelectedCatalogProduct() {
     setSelectedCatalogProduct(null);
-    setNewMessage("");
   }
 
   async function sendCatalogProduct(product: SelectedCatalogProduct, caption: string) {
@@ -5753,7 +5931,7 @@ export default function LeadPage() {
           sourceKind: product.sourceKind,
           sourceId: product.sourceId,
           content: caption,
-          operationId: product.operationId,
+          operationId: product.operationId, mode: product.previewUrl ? "photo" : "text",
         }),
       });
       const result = (await response.json().catch(() => null)) as {
@@ -6052,6 +6230,10 @@ export default function LeadPage() {
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (selectedCatalogProduct || event.nativeEvent.isComposing) {
+      return;
+    }
+
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (!working) {
@@ -9305,16 +9487,22 @@ export default function LeadPage() {
               <CatalogProductComposerPicker
                 open={catalogPickerOpen}
                 onSelect={selectCatalogProduct}
-                onClose={() => setCatalogPickerOpen(false)}
+                onClose={() => {
+                  catalogPickerScopeRef.current = null;
+                  setCatalogPickerOpen(false);
+                }}
               />
 
-              {selectedCatalogProduct ? (
-                <div className="mb-3 flex items-center gap-3 rounded-2xl bg-gray-50 p-3 ring-1 ring-black/5">
-                  <img
-                    src={selectedCatalogProduct.previewUrl}
-                    alt={selectedCatalogProduct.name}
-                    className="h-16 w-16 rounded-xl object-cover ring-1 ring-black/10"
-                  />
+              {selectedCatalogProduct && catalogSelectionCurrent ? (
+                <div className="mb-3 flex flex-col gap-3 rounded-2xl bg-gray-50 p-3 ring-1 ring-black/5">
+                  <div className="flex items-center gap-3">
+                  {selectedCatalogProduct.previewUrl ? (
+                    <img
+                      src={selectedCatalogProduct.previewUrl}
+                      alt={selectedCatalogProduct.name}
+                      className="h-16 w-16 rounded-xl object-cover ring-1 ring-black/10"
+                    />
+                  ) : null}
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-semibold text-gray-900">
                       {selectedCatalogProduct.name}
@@ -9329,37 +9517,58 @@ export default function LeadPage() {
                     disabled={working}
                     className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100 disabled:opacity-50"
                   >
-                    Remover
+                    Remover produto
                   </button>
-                </div>
-              ) : null}
+                  </div>
 
-              {catalogPlaceholderOpen ? (
-                <div className="mb-3 rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-4">
-                  <div className="flex items-start gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-gray-700 ring-1 ring-black/10">
-                      <CatalogComposerIcon />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-semibold text-gray-900">
-                        Produto do catálogo
-                      </div>
-                      <p className="mt-1 text-xs leading-5 text-gray-600">
-                        A seleção de produtos será disponibilizada em uma próxima etapa. Nenhum produto foi selecionado ou enviado.
-                      </p>
-                    </div>
+                  <textarea
+                    aria-label="Mensagem comercial do produto"
+                    value={selectedCatalogProduct.caption}
+                    onChange={(event) =>
+                      handleCatalogCaptionChange(event.target.value)
+                    }
+                    disabled={
+                      working ||
+                      simulatingCustomer ||
+                      uploadingManualAttachment ||
+                      !catalogSelectionCurrent
+                    }
+                    maxLength={CATALOG_COMMERCIAL_CAPTION_LIMIT}
+                    rows={8}
+                    className="w-full min-w-0 resize-y rounded-xl border border-gray-200 bg-white p-3 text-sm leading-6 text-gray-900 outline-none focus:border-gray-600 disabled:opacity-50"
+                  />
+
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <span className="text-xs text-gray-500">
+                      {selectedCatalogProduct.caption.length}/
+                      {CATALOG_COMMERCIAL_CAPTION_LIMIT} caracteres
+                    </span>
+
                     <button
                       type="button"
-                      onClick={() => setCatalogPlaceholderOpen(false)}
-                      className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                      onClick={() => void sendMessage(true)}
+                      disabled={!canSendMessage}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-gray-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      Fechar
+                      {working ? (
+                        "Enviando..."
+                      ) : (
+                        <>
+                          <SendComposerIcon />
+                          {selectedCatalogProduct.previewUrl ? "Enviar mensagem e foto" : "Enviar mensagem sem foto"}
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>
               ) : null}
 
-              <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+
+              <div className={
+                selectedCatalogProduct
+                  ? "hidden"
+                  : "flex min-w-0 items-center gap-1.5 sm:gap-2"
+              }>
                 <button
                   type="button"
                   onClick={() => setAttachmentMenuOpen((current) => !current)}
@@ -9405,7 +9614,7 @@ export default function LeadPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={openCatalogPlaceholder}
+                      onClick={openCatalogPicker}
                       className="flex items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-semibold text-gray-800 hover:bg-gray-50"
                     >
                       <CatalogComposerIcon />

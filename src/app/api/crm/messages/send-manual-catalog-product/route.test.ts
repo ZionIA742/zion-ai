@@ -192,3 +192,59 @@ test("send route source contract does not expose internal RPC errors", () => {
   assert.doesNotMatch(source, /message: error\.message/);
   assert.doesNotMatch(source, /insert_message/);
 });
+
+
+test("catalog text uses the scoped text writer and preserves operation identity", async () => {
+  for (const external of [false, true]) {
+    const client = createClient();
+    const response = await createHandler(client, external)(
+      buildRequest({ ...baseBody, mode: "text" })
+    );
+    assert.equal(response.status, 200);
+
+    const result = await response.json();
+    assert.equal(result.messageId, "message-1");
+    assert.equal(result.sendExternal, external);
+
+    const calls = client.calls.filter(call => call.table.startsWith("rpc:"));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].table, "rpc:finalize_manual_catalog_text_message");
+
+    const args = Object.fromEntries(
+      calls[0].filters.map(filter => [filter.column, filter.value])
+    );
+
+    assert.equal(args.p_organization_id, "org-1");
+    assert.equal(args.p_store_id, "store-1");
+    assert.equal(args.p_actor_user_id, "session-user-1");
+    assert.equal(args.p_catalog_source_id, sourceId);
+    assert.equal(args.p_send_external, external);
+    assert.equal(args.p_outbound_idempotency_key, `crm_manual_catalog_photo:${operationId}`);
+  }
+});
+
+test("catalog rejects invalid mode and oversized text", async () => {
+  for (const body of [
+    { ...baseBody, mode: "invalid" },
+    { ...baseBody, mode: "text", content: "a".repeat(1025) },
+  ]) {
+    const client = createClient();
+    const response = await createHandler(client)(buildRequest(body));
+    assert.equal(response.status, 400);
+    assert.equal(client.calls.some(call => call.table.startsWith("rpc:")), false);
+  }
+});
+
+test("catalog text writer failure never falls back to photo transport", async () => {
+  const client = createClient({
+    rpcError: { message: "CATALOG_PHOTO_AVAILABLE" },
+  });
+  const response = await createHandler(client)(
+    buildRequest({ ...baseBody, mode: "text" })
+  );
+
+  assert.equal(response.status, 500);
+  const calls = client.calls.filter(call => call.table.startsWith("rpc:"));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].table, "rpc:finalize_manual_catalog_text_message");
+});

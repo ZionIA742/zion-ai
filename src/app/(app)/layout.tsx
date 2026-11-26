@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 import AppShellClient from "./AppShellClient";
+import StoreSessionBoundary from "./StoreSessionBoundary";
 import { resolveAccountAccessPageGate } from "@/lib/account-access-page-gate";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import { resolveAccessForRequest } from "@/lib/server/account-access-resolver";
@@ -30,5 +31,16 @@ export default async function AppLayout({
     redirect(gate.destination);
   }
 
-  return <AppShellClient>{children}</AppShellClient>;
+  if (!resolution.sessionUserId) {
+    redirect("/account/access-unavailable");
+  }
+
+  return (
+    <StoreSessionBoundary
+      key={resolution.sessionUserId}
+      expectedUserId={resolution.sessionUserId}
+    >
+      <AppShellClient>{children}</AppShellClient>
+    </StoreSessionBoundary>
+  );
 }

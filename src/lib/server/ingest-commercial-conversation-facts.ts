@@ -147,6 +147,14 @@ export type CommercialConversationFactReconciliationResult = {
 
 function extractValidatedCandidates(message: CommercialFactMessage) {
   const actorType = actorFor(message.sender);
+
+  if (
+    actorType === "human" &&
+    message.metadata?.source === "panel" &&
+    message.metadata?.catalog_message_purpose === "catalog_product_presentation"
+  ) {
+    return null;
+  }
   const source = transcriptOrText(message);
   if (!actorType || !source) return null;
 

@@ -377,3 +377,45 @@ test("migration is append-only, server-only and scoped by all commercial identit
   assert.match(migration, /grant execute on function public\.read_commercial_conversation_fact_events_by_system/);
   assert.match(migration, /revoke all on table public\.commercial_conversation_fact_events from public, anon, authenticated, service_role/);
 });
+
+
+test("catalog presentation does not create or reconcile confirmed customer facts", async () => {
+  const supabase = {
+    rpc: async () => {
+      throw new Error("CATALOG_PRESENTATION_MUST_NOT_WRITE_FACTS");
+    },
+  } as never;
+
+  const message = {
+    id: "catalog-presentation-test",
+    sender: "human",
+    direction: "outgoing",
+    message_type: "text",
+    content: "Separei uma piscina de 6 metros para voce.",
+    metadata: {
+      source: "panel",
+      source_channel: "panel_manual",
+      catalog_message_purpose: "catalog_product_presentation",
+      catalog_message_mode: "text",
+    },
+    conversation_session_id: scope.conversationSessionId,
+  };
+
+  const ingestion = await ingestCommercialConversationFactsFromMessage({
+    supabase,
+    ...scope,
+    message,
+  });
+
+  assert.equal(ingestion.status, "skipped");
+  assert.equal(ingestion.writes.length, 0);
+
+  const reconciliation = await reconcileCommercialConversationFactsFromMessages({
+    supabase,
+    ...scope,
+    messages: [message],
+  });
+
+  assert.equal(reconciliation.status, "skipped");
+  assert.equal(reconciliation.attempted, 0);
+});

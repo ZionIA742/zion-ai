@@ -64,6 +64,15 @@ export function createSendManualCatalogProductPostHandler(deps: Partial<SendCata
       const sourceId = normalizeManualCatalogText(body?.sourceId);
       const content = normalizeManualCatalogText(body?.content);
       const operationId = normalizeManualCatalogOperationId(body?.operationId);
+      const mode = body?.mode === undefined ? "photo" : body.mode;
+
+      if (mode !== "photo" && mode !== "text") {
+        return json({ ok: false, error: "INVALID_CATALOG_MESSAGE_MODE" }, 400);
+      }
+
+      if (mode === "text" && content.length > 1024) {
+        return json({ ok: false, error: "CATALOG_MESSAGE_TOO_LONG" }, 400);
+      }
 
       if (!conversationId || !sourceKind || !isUuid(sourceId) || !content) return json({ ok: false, error: "INVALID_CATALOG_MESSAGE_INPUT", message: "Informe conversa, produto e uma legenda nao vazia." }, 400);
       if (!operationId) return json({ ok: false, error: "INVALID_OPERATION_ID", message: "operationId invalido." }, 400);
@@ -90,7 +99,7 @@ export function createSendManualCatalogProductPostHandler(deps: Partial<SendCata
       const sendExternal = await isRealWhatsapp({ supabase, organizationId: access.organizationId, storeId: access.storeId, conversationId });
       const idempotencyKey = buildManualCatalogIdempotencyKey(operationId);
       const payloadFingerprint = buildManualCatalogPayloadFingerprint({ organizationId: access.organizationId, storeId: access.storeId, conversationId, leadId, actorUserId: access.sessionUserId, sourceKind, sourceId, content, sendExternal });
-      const { data, error } = await supabase.rpc("finalize_manual_catalog_photo_message", {
+      const { data, error } = await supabase.rpc(mode === "text" ? "finalize_manual_catalog_text_message" : "finalize_manual_catalog_photo_message", {
         p_organization_id: access.organizationId,
         p_store_id: access.storeId,
         p_conversation_id: conversationId,
