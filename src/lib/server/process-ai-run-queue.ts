@@ -150,6 +150,9 @@ async function markQueueProcessed(args: {
   storeId: string;
   detail: string | null;
   claimToken?: string | null;
+  recoveryEvidence?:
+    | "ai_queue_reply_persisted"
+    | "ai_queue_recovery_completed";
 }) {
   if (args.claimToken) {
     await finalizeWorkerTaskBySystem(args.supabase, {
@@ -160,6 +163,9 @@ async function markQueueProcessed(args: {
       claimToken: args.claimToken,
       outcome: "processed",
       errorText: args.detail,
+      ...(args.recoveryEvidence
+        ? { recoveryEvidence: args.recoveryEvidence }
+        : {}),
     });
     return;
   }
@@ -469,6 +475,7 @@ export async function processDueAiRunQueue(
           storeId,
           detail: null,
           claimToken,
+          recoveryEvidence: "ai_queue_recovery_completed",
         });
 
         succeeded += 1;
@@ -734,6 +741,12 @@ export async function processDueAiRunQueue(
         storeId,
         detail,
         claimToken: row.claim_token,
+        ...(aiResult.ok && hasPersistedAiSalesReply(aiResult)
+          ? {
+              recoveryEvidence:
+                "ai_queue_reply_persisted" as const,
+            }
+          : {}),
       });
 
       await consumeMatchingSalesResumeWindowState({

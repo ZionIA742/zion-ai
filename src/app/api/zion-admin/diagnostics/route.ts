@@ -1,3 +1,4 @@
+import { safeOperationalRecovery } from "@/lib/zion-admin-diagnostic-recovery";
 import { withBackendDiagnosticRoute } from "../../../../lib/server/zion-admin-diagnostic-backend-next";
 import { projectSafeDiagnosticReaderV2Evidence } from "@/lib/server/zion-admin-diagnostic-reader-v2-projection";
 import { createClient } from "@supabase/supabase-js";
@@ -290,6 +291,13 @@ function projectUnifiedRows(value: unknown, query: DiagnosticQuery, browserEnabl
     Object.assign(safe, {
       scope, source_system: origin, source_family: family, component, category: r.category,
       resolved_at: safeDate(r.resolved_at),
+      operational_recovery: operational
+        ? safeOperationalRecovery(
+            r.operational_recovery,
+            r.incident_status,
+            r.resolved_at,
+          )
+        : null,
       backend_route: backend ? safePath(r.backend_route, "/api/", 200) : null,
       backend_method: backend ? safeEnum(r.backend_method, ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]) : null,
       backend_kind: backend ? safeEnum(r.backend_kind, ["unhandled_exception", "http_response"]) : null,
@@ -340,7 +348,7 @@ async function zionBackendOriginalGET(request: Request) {
     const serviceSupabase = createServiceClient();
 
     const { data, error } = await serviceSupabase.rpc(
-      browserEnabled ? "list_zion_admin_diagnostics_unified_v2_by_system" : unified ? "list_zion_admin_diagnostics_unified_by_system" : useReaderV2
+      browserEnabled ? "list_zion_admin_diagnostics_recovery_by_system" : unified ? "list_zion_admin_diagnostics_unified_by_system" : useReaderV2
         ? "list_zion_admin_ai_run_diagnostics_v2_by_system"
         : "list_zion_admin_ai_run_diagnostics_by_system",
       {

@@ -1223,9 +1223,9 @@ async function updateResponsibleExternalWhatsappStatus(args: {
     updatePayload.error_text = "whatsapp_delivery_failed";
   }
 
-  const { error } = await args.supabase
+  const { error, count } = await args.supabase
     .from("store_responsible_external_notifications")
-    .update(updatePayload)
+    .update(updatePayload, { count: "exact" })
     .eq("id", args.notification.id)
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId);
@@ -1233,6 +1233,8 @@ async function updateResponsibleExternalWhatsappStatus(args: {
   if (error) {
     throw new Error(`Falha ao atualizar status da notificacao externa: ${error.message}`);
   }
+
+  return count === 1;
 }
 
 async function updateMessageWhatsappStatus(args: {
@@ -1317,9 +1319,9 @@ async function updateMessageWhatsappStatus(args: {
     }
   }
 
-  const { error } = await args.supabase
+  const { error, count } = await args.supabase
     .from("messages")
-    .update(updatePayload)
+    .update(updatePayload, { count: "exact" })
     .eq("id", args.message.id)
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
@@ -1328,11 +1330,17 @@ async function updateMessageWhatsappStatus(args: {
   if (error) {
     throw new Error(`Falha ao atualizar status WhatsApp da message: ${error.message}`);
   }
+
+  return count === 1;
 }
 
 async function markInboxProcessed(
   supabase: SupabaseClient,
   inbox: InboxRow | string,
+  recoveryEvidence?:
+    | "whatsapp_status_applied"
+    | "whatsapp_quote_status_reconciled"
+    | "whatsapp_sales_ai_reply_persisted",
 ) {
   if (typeof inbox !== "string" && inbox.claim_token) {
     await finalizeWorkerTaskBySystem(supabase, {
@@ -1342,6 +1350,9 @@ async function markInboxProcessed(
       id: inbox.id,
       claimToken: inbox.claim_token,
       outcome: "processed",
+      ...(recoveryEvidence
+        ? { recoveryEvidence }
+        : {}),
     });
     return;
   }
@@ -2743,6 +2754,7 @@ export async function dispatchAiSalesReplyForConversation(args: {
   customerMessage?: string | null;
   runAiFlow?: typeof generateAndSaveAiSalesReply;
   workerClaim?: SalesAiWorkerClaimContext;
+  onPersistedReply?: (messageId: string) => void;
 }) {
   const messageId = String(args.messageId || "").trim();
   const customerMessage = String(args.customerMessage || "").trim();
@@ -2832,6 +2844,12 @@ export async function dispatchAiSalesReplyForConversation(args: {
         ai_error: "AI_REPLY_NOT_PERSISTED",
         ai_message_id: null,
       };
+    }
+
+    if (aiResult.persisted === true) {
+      args.onPersistedReply?.(
+        String(aiResult.messageId).trim(),
+      );
     }
 
     return {
@@ -3183,7 +3201,13 @@ async function processHumanQuoteStatusEvidence(
     };
   }
 
-  await markInboxProcessed(supabase, inbox);
+  await markInboxProcessed(
+    supabase,
+    inbox,
+    messageId
+      ? "whatsapp_quote_status_reconciled"
+      : undefined,
+  );
 
   return {
     inbox_id: inbox.id,
@@ -3248,7 +3272,7 @@ async function processStatusInboxRow(
     );
 
     if (externalNotification?.id) {
-      await updateResponsibleExternalWhatsappStatus({
+      const notificationStatusApplied = await updateResponsibleExternalWhatsappStatus({
         supabase,
         organizationId: inbox.organization_id,
         storeId: inbox.store_id,
@@ -3261,7 +3285,13 @@ async function processStatusInboxRow(
         errors: extracted.errors,
         rawStatusPayload: extracted.rawStatusPayload,
       });
-      await markInboxProcessed(supabase, inbox);
+      await markInboxProcessed(
+        supabase,
+        inbox,
+        notificationStatusApplied === true
+          ? "whatsapp_status_applied"
+          : undefined,
+      );
       return {
         inbox_id: inbox.id,
         external_event_id: inbox.external_event_id,
@@ -3329,7 +3359,7 @@ async function processStatusInboxRow(
     throw new Error("HUMAN_QUOTE_HISTORY_IDENTITY_UNRESOLVED");
   }
 
-  await updateMessageWhatsappStatus({
+  const statusApplied = await updateMessageWhatsappStatus({
     supabase,
     organizationId: inbox.organization_id,
     storeId: inbox.store_id,
@@ -3343,7 +3373,13 @@ async function processStatusInboxRow(
     rawStatusPayload: extracted.rawStatusPayload,
   });
 
-  await markInboxProcessed(supabase, inbox);
+  await markInboxProcessed(
+    supabase,
+    inbox,
+    statusApplied === true
+      ? "whatsapp_status_applied"
+      : undefined,
+  );
 
   return {
     inbox_id: inbox.id,
@@ -3362,6 +3398,62 @@ async function processSingleInboxRow(
   runAiFlow?: typeof generateAndSaveAiSalesReply,
   workerClaim?: SalesAiWorkerClaimContext,
 ): Promise<ProcessorResultItem> {
+
+  let persistedReplyForRecovery: string | null = null;
+
+  function rememberPersistedReply(messageId: string) {
+    persistedReplyForRecovery = messageId;
+  }
+
+  async function recoveryEvidenceForReply(
+    result: {
+      ai_status?: string;
+      ai_message_id?: string | null;
+    },
+    originalMessageId: string | null | undefined,
+  ): Promise<"whatsapp_sales_ai_reply_persisted" | undefined> {
+
+    if (
+      !inbox.claim_token ||
+      result.ai_status !== "called" ||
+      !persistedReplyForRecovery ||
+      !originalMessageId ||
+      result.ai_message_id !== persistedReplyForRecovery
+    ) {
+      return undefined;
+    }
+
+    try {
+      const proof = await supabase
+        .from("messages")
+        .select("id")
+        .eq("id", persistedReplyForRecovery)
+        .eq("organization_id", inbox.organization_id)
+        .eq("store_id", inbox.store_id)
+        .eq("sender", "ai")
+        .is("deleted_at", null)
+        .eq("metadata->>source", "ai_sales_reply_set")
+        .eq(
+          "metadata->>p19a_response_set_anchor_message_id",
+          originalMessageId,
+        )
+        .abortSignal(AbortSignal.timeout(1200))
+        .maybeSingle();
+
+      if (
+        !proof.error &&
+        proof.data?.id === persistedReplyForRecovery
+      ) {
+        return "whatsapp_sales_ai_reply_persisted";
+      }
+    } catch {
+      // Diagnostic verification must not fail the operation.
+    }
+
+    return undefined;
+  }
+
+
   const payload = isRecord(inbox.payload)
     ? (inbox.payload as StoredInboxPayload)
     : null;
@@ -3658,6 +3750,7 @@ async function processSingleInboxRow(
       }
 
       const mediaAiResult = await dispatchAiSalesReplyForConversation({
+        onPersistedReply: rememberPersistedReply,
         supabase,
         organizationId: inbox.organization_id,
         storeId: inbox.store_id,
@@ -3688,7 +3781,14 @@ async function processSingleInboxRow(
           ...mediaAiResult,
         };
       }
-      await markInboxProcessed(supabase, inbox);
+      await markInboxProcessed(
+        supabase,
+        inbox,
+        await recoveryEvidenceForReply(
+          mediaAiResult,
+          existingMessage.id,
+        ),
+      );
       return {
         inbox_id: inbox.id,
         external_event_id: inbox.external_event_id,
@@ -3702,7 +3802,8 @@ async function processSingleInboxRow(
     }
 
     const duplicateAiResult = await dispatchAiSalesReplyForConversation({
-      supabase,
+      onPersistedReply: rememberPersistedReply,
+        supabase,
       organizationId: inbox.organization_id,
       storeId: inbox.store_id,
       conversationId: existingMessage.conversation_id,
@@ -3729,7 +3830,14 @@ async function processSingleInboxRow(
       };
     }
 
-    await markInboxProcessed(supabase, inbox);
+    await markInboxProcessed(
+        supabase,
+        inbox,
+        await recoveryEvidenceForReply(
+          duplicateAiResult,
+          existingMessage.id,
+        ),
+      );
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -4179,6 +4287,7 @@ async function processSingleInboxRow(
 
     try {
       aiDispatchResult = await dispatchAiSalesReplyForConversation({
+        onPersistedReply: rememberPersistedReply,
         supabase,
         organizationId: inbox.organization_id,
         storeId: inbox.store_id,
@@ -4223,7 +4332,14 @@ async function processSingleInboxRow(
       };
     }
 
-    await markInboxProcessed(supabase, inbox);
+    await markInboxProcessed(
+        supabase,
+        inbox,
+        await recoveryEvidenceForReply(
+          aiDispatchResult,
+          persistedMessage.id,
+        ),
+      );
 
     return {
       inbox_id: inbox.id,

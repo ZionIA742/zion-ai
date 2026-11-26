@@ -1,5 +1,6 @@
 "use client";
 
+import { safeOperationalRecovery, recoveryElapsed, recoveryEvidenceLabel, type OperationalRecovery } from "@/lib/zion-admin-diagnostic-recovery";
 import { useEffect, useMemo, useState } from "react";
 import ZionAdminSchedulerFailures from "./ZionAdminSchedulerFailures";
 
@@ -52,6 +53,7 @@ type Diagnostic = {
   component: string | null;
   category: string | null;
   resolvedAt: string | null;
+  operationalRecovery: OperationalRecovery | null;
   technicalLocation: string[];
   status: string | null;
   severity: string | null;
@@ -207,6 +209,13 @@ function parseDiagnostic(value: unknown): Diagnostic | null {
     component: optionalText(value.component),
     category: optionalText(value.category),
     resolvedAt: optionalText(value.resolved_at),
+    operationalRecovery: family === "operational"
+      ? safeOperationalRecovery(
+          value.operational_recovery,
+          value.incident_status,
+          value.resolved_at,
+        )
+      : null,
     technicalLocation: buildLocationLines(value, family),
     status: optionalText(value.incident_status),
     severity: optionalText(value.severity),
@@ -372,10 +381,73 @@ function buildTechnicalText(
     "Stack trace: não armazenado nesta versão.",
     ...(item.sourceFamily === "ai_runs" ? [...buildEvidenceV2Lines(item.v2Evidence)] : []),
     `Resolução administrativa registrada: ${formatDiagnosticDate(item.resolvedAt)}`,
-    "Recuperação operacional: não comprovada por este registro.",
+    ...buildRecoveryLines(item),
     "Situação operacional atual: não verificada por este diagnóstico.",
     "O estado aberto não comprova falha ativa.",
   ].join("\n");
+}
+
+
+function buildRecoveryLines(
+  item: Diagnostic,
+): string[] {
+
+  const recovery = item.operationalRecovery;
+
+  if (item.sourceFamily !== "operational") {
+    return [
+      "Recupera\u00e7\u00e3o operacional: n\u00e3o comprovada por este registro.",
+    ];
+  }
+
+  if (!recovery) {
+    return [
+      "Recupera\u00e7\u00e3o operacional: evid\u00eancia indispon\u00edvel.",
+    ];
+  }
+
+  const lines = [
+    recovery.confirmed
+      ? "Recupera\u00e7\u00e3o operacional: comprovada."
+      : "Recupera\u00e7\u00e3o operacional: ainda n\u00e3o comprovada.",
+  ];
+
+  if (recovery.confirmed) {
+
+    lines.push(
+      "Recuperado em: " +
+        formatDiagnosticDate(recovery.recovered_at),
+      "Evid\u00eancia: " +
+        recoveryEvidenceLabel(recovery.evidence_kind),
+      "Intervalo entre a \u00faltima falha e a recupera\u00e7\u00e3o: " +
+        (recoveryElapsed(recovery) ?? "Indispon\u00edvel"),
+    );
+
+  }
+
+  if (recovery.events.length > 0) {
+
+    lines.push(
+      "Hist\u00f3rico operacional (at\u00e9 20 eventos mais recentes):"
+    );
+
+    for (const event of recovery.events) {
+
+      lines.push(
+        formatDiagnosticDate(event.at) + " - " +
+          (
+            event.kind === "recovery"
+              ? recoveryEvidenceLabel(event.code)
+              : "Falha registrada: " + event.code
+          )
+      );
+
+    }
+
+  }
+
+  return lines;
+
 }
 
 export default function ZionAdminDiagnosticIncidents({
@@ -599,7 +671,29 @@ export default function ZionAdminDiagnosticIncidents({
                   ? "Última falha registrada há mais de 30 dias"
                   : "Registro recente — atividade atual não confirmada"}
               </span>
+
+              {item.sourceFamily === "operational" && (
+                <span
+                  className={
+                    item.operationalRecovery?.confirmed
+                      ? "block mt-2 text-emerald-400 font-semibold"
+                      : "block mt-2 text-[#9fb8c6]"
+                  }
+                >
+                  {item.operationalRecovery?.confirmed
+                    ? "Recupera\u00e7\u00e3o comprovada"
+                    : "Recupera\u00e7\u00e3o n\u00e3o comprovada"}
+                </span>
+              )}
             </summary>
+
+            {item.sourceFamily === "operational" && (
+              <div className="mt-3 mb-3 space-y-1 text-sm text-[#b8ced8]">
+                {buildRecoveryLines(item).map((line, index) => (
+                  <p key={index}>{line}</p>
+                ))}
+              </div>
+            )}
 
             <div className="mt-3 space-y-3 border-t border-[#304550] pt-3 text-xs leading-5 text-[#b8ccd5]">
               <div className="space-y-1">

@@ -135,10 +135,37 @@ export async function finalizeWorkerTaskBySystem(
     claimToken: string;
     outcome: "processed" | "retryable" | "failed_final";
     errorText?: string | null;
+    recoveryEvidence?:
+      | "ai_queue_reply_persisted"
+      | "ai_queue_recovery_completed"
+      | "whatsapp_status_applied"
+      | "whatsapp_quote_status_reconciled"
+      | "whatsapp_sales_ai_reply_persisted";
   },
 ) {
-  const rpc = args.kind === "inbox" ? WHATSAPP_INBOX_FINALIZE_RPC : AI_RUN_QUEUE_FINALIZE_RPC;
-  const { data, error } = await client.rpc(rpc, {
+  const recoveryEvidence =
+    args.outcome === "processed" && !args.errorText
+      ? args.recoveryEvidence
+      : undefined;
+
+  const rpc = recoveryEvidence
+    ? "finalize_zion_admin_recovery_worker_by_system"
+    : args.kind === "inbox"
+      ? WHATSAPP_INBOX_FINALIZE_RPC
+      : AI_RUN_QUEUE_FINALIZE_RPC;
+
+  const { data, error } = await client.rpc(rpc, recoveryEvidence ? {
+    p_source_system:
+      args.kind === "inbox"
+        ? "channel_whatsapp_inbox"
+        : "ai_run_queue",
+    p_source_record_id: args.id,
+    p_organization_id: args.organizationId,
+    p_store_id: args.storeId,
+    p_claim_token: args.claimToken,
+    p_max_attempts: WORKER_MAX_ATTEMPTS,
+    p_evidence_kind: recoveryEvidence,
+  } : {
     p_organization_id: args.organizationId,
     p_store_id: args.storeId,
     [args.kind === "inbox" ? "p_inbox_id" : "p_queue_id"]: args.id,
