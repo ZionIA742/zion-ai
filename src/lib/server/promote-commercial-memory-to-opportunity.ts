@@ -10,6 +10,11 @@ type CanonicalQualificationFact = {
   value: unknown;
 };
 
+type AtomicPromotionResult = {
+  outcome: "promoted_created" | "ignored_existing_current" | "ignored_existing_event";
+  eventId: string | null;
+};
+
 export type PromoteCommercialMemoryResult = {
   status: "disabled" | "skipped" | "promoted" | "partial" | "failed";
   attempted: number;
@@ -29,6 +34,22 @@ function sameJson(left: unknown, right: unknown): boolean {
 function readSingleRow(value: unknown): Record<string, unknown> | null {
   const row = Array.isArray(value) ? value[0] : value;
   return row && typeof row === "object" ? row as Record<string, unknown> : null;
+}
+
+function parseAtomicPromotionResult(value: unknown): AtomicPromotionResult {
+  const row = readSingleRow(value);
+  const outcome = clean(row?.outcome);
+  if (
+    outcome !== "promoted_created" &&
+    outcome !== "ignored_existing_current" &&
+    outcome !== "ignored_existing_event"
+  ) {
+    throw new Error("COMMERCIAL_MEMORY_PROMOTION_ATOMIC_RESPONSE_INVALID");
+  }
+  return {
+    outcome,
+    eventId: clean(row?.event_id) || null,
+  };
 }
 
 function parseCanonicalFacts(value: unknown, organizationId: string, storeId: string, opportunityId: string) {
@@ -174,10 +195,8 @@ export async function promoteCommercialMemoryToOpportunity(args: {
       const sourceType = event.actorType === "human"
         ? "human_message"
         : "incoming_customer_message";
-      const { error } = await args.supabase.rpc(
-        args.recoveryAuthority
-          ? "p9_10_4_d_write_recovery_qualification_fact_by_system"
-          : "write_commercial_opportunity_qualification_fact_by_system",
+      const { data, error } = await args.supabase.rpc(
+        "promote_commercial_memory_fact_if_absent_by_system",
         {
           p_organization_id: args.organizationId,
           p_store_id: args.storeId,
@@ -197,8 +216,8 @@ export async function promoteCommercialMemoryToOpportunity(args: {
                 p_queue_id: args.recoveryAuthority.queueId,
                 p_claim_token: args.recoveryAuthority.claimToken,
                 p_anchor_message_id: args.recoveryAuthority.anchorMessageId,
-                p_conversation_id: args.recoveryAuthority.conversationId,
-                p_lead_id: args.recoveryAuthority.leadId,
+                p_recovery_conversation_id: args.recoveryAuthority.conversationId,
+                p_recovery_lead_id: args.recoveryAuthority.leadId,
               }
             : {}),
         },
@@ -207,7 +226,12 @@ export async function promoteCommercialMemoryToOpportunity(args: {
         errors.push(`${event.eventId}:${error.message || "COMMERCIAL_MEMORY_PROMOTION_WRITE_FAILED"}`);
         continue;
       }
-      promoted += 1;
+      const result = parseAtomicPromotionResult(data);
+      if (result.outcome === "promoted_created") {
+        promoted += 1;
+      } else {
+        skipped += 1;
+      }
     }
 
     return {

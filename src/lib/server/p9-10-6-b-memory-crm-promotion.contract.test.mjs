@@ -15,7 +15,7 @@ const salesSource = readFileSync(
 
 assert.match(moduleSource, /readCommercialConversationFactEvents/);
 assert.match(moduleSource, /read_commercial_opportunity_qualification_facts_by_system/);
-assert.match(moduleSource, /write_commercial_opportunity_qualification_fact_by_system/);
+assert.match(moduleSource, /promote_commercial_memory_fact_if_absent_by_system/);
 assert.match(moduleSource, /human_message/);
 assert.match(moduleSource, /sourceMessageId/);
 assert.match(moduleSource, /conflictState === "consistent"/);

@@ -103,16 +103,14 @@ function makeHarness(recovery = false) {
       }
       assert.equal(
         name,
-        recovery
-          ? "p9_10_4_d_write_recovery_qualification_fact_by_system"
-          : "write_commercial_opportunity_qualification_fact_by_system",
+        "promote_commercial_memory_fact_if_absent_by_system",
       );
       if (failNextWriter) {
         failNextWriter = false;
         return { data: null, error: { message: "simulated writer failure" } };
       }
       canonical.set(String(payload.p_fact_key), payload.p_value_json);
-      return { data: [{ outcome: "created" }], error: null };
+      return { data: [{ outcome: "promoted_created" }], error: null };
     },
   };
   return { supabase, calls, canonical };
@@ -146,11 +144,11 @@ test("10.6-B promove fatos pré-oportunidade e recupera falha em nova geração"
   assert.equal(third.status, "skipped");
   assert.equal(third.promoted, 0);
   assert.equal(
-    harness.calls.filter((call) => call.name === "write_commercial_opportunity_qualification_fact_by_system").length,
+    harness.calls.filter((call) => call.name === "promote_commercial_memory_fact_if_absent_by_system").length,
     3,
   );
 
-  const writes = harness.calls.filter((call) => call.name === "write_commercial_opportunity_qualification_fact_by_system");
+  const writes = harness.calls.filter((call) => call.name === "promote_commercial_memory_fact_if_absent_by_system");
   assert.equal(writes.every((call) => call.payload.p_organization_id === scope.organizationId), true);
   assert.equal(writes.every((call) => call.payload.p_store_id === scope.storeId), true);
   assert.equal(writes.every((call) => call.payload.p_commercial_opportunity_id === scope.commercialOpportunityId), true);
@@ -178,11 +176,13 @@ test("10.6-B recovery promotion uses the transactional recovery writer", async (
     },
   });
   assert.equal(result.status, "partial");
-  const recoveryWrites = harness.calls.filter((call) => call.name === "p9_10_4_d_write_recovery_qualification_fact_by_system");
+  const recoveryWrites = harness.calls.filter((call) => call.name === "promote_commercial_memory_fact_if_absent_by_system");
   assert.equal(recoveryWrites.length, 2);
   assert.equal(recoveryWrites.every((call) => call.payload.p_response_set_id), true);
   assert.equal(recoveryWrites.every((call) => call.payload.p_queue_id), true);
   assert.equal(recoveryWrites.every((call) => call.payload.p_claim_token), true);
+  assert.equal(recoveryWrites.every((call) => call.payload.p_recovery_conversation_id), true);
+  assert.equal(recoveryWrites.every((call) => call.payload.p_recovery_lead_id), true);
 });
 
 test("10.6-B flag desativado não lê nem escreve", async () => {

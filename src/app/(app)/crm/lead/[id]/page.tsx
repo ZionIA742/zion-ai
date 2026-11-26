@@ -206,6 +206,7 @@ type QualificationKnownFact = {
   value?: unknown;
   normalizedValueText?: string | null;
   updatedAt?: string | null;
+  lastEventId?: string | null;
 };
 
 type QualificationConflictFact = {
@@ -213,6 +214,7 @@ type QualificationConflictFact = {
   valueKind?: string | null;
   candidates?: unknown;
   updatedAt?: string | null;
+  lastEventId?: string | null;
 };
 
 type QualificationFactsSnapshot = {
@@ -834,6 +836,22 @@ type DetailTab =
 type InformationSection = "summary" | "opportunity" | "context" | "tasks" | "financial";
 type GeneratedPdfTab = "quotes" | "contracts";
 const VALID_DETAIL_TABS: DetailTab[] = ["summary", "appointments", "pdfs"];
+
+const EDITABLE_INFORMATION_FACTS = [
+  { key: "interested_product_reference", label: "Produto citado", kind: "text" },
+  { key: "requested_area_m2", label: "Área informada", kind: "number" },
+  { key: "space_text", label: "Espaço informado", kind: "text" },
+  { key: "location_text", label: "Localização mencionada", kind: "text" },
+  { key: "installation_interest", label: "Interesse em instalação", kind: "boolean" },
+  { key: "technical_visit_interest", label: "Interesse em visita técnica", kind: "boolean" },
+  { key: "payment_interest", label: "Pagamento/parcelamento mencionado", kind: "boolean" },
+  { key: "budget_text", label: "Orçamento ou faixa mencionada", kind: "text" },
+  { key: "decision_context", label: "Contexto de decisão", kind: "text" },
+  { key: "preferred_period_text", label: "Período preferido", kind: "text" },
+  { key: "customer_preferences_text", label: "Preferências do cliente", kind: "text" },
+  { key: "relevant_objection_text", label: "Objeção relevante", kind: "text" },
+  { key: "need_summary", label: "Necessidade principal", kind: "text" },
+] as const;
 
 function formatSender(message: MessageRow) {
   const sender = String(message.sender || "").toLowerCase();
@@ -1535,14 +1553,27 @@ function InfoCard({
   label,
   value,
   help,
+  onEdit,
 }: {
   label: string;
   value: string;
   help?: string | null;
+  onEdit?: () => void;
 }) {
   return (
     <div className="rounded-xl bg-gray-50 p-4 ring-1 ring-black/5">
-      <div className="text-sm text-gray-500">{label}</div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-sm text-gray-500">{label}</div>
+        {onEdit ? (
+          <button
+            type="button"
+            onClick={onEdit}
+            className="shrink-0 rounded-lg bg-white px-2.5 py-1 text-[11px] font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-100"
+          >
+            Editar
+          </button>
+        ) : null}
+      </div>
       <div className="mt-1 break-words font-semibold text-gray-900">{value}</div>
       {help ? <div className="mt-2 text-xs text-gray-500">{help}</div> : null}
     </div>
@@ -1683,6 +1714,16 @@ export default function LeadPage() {
   const [activeDetailsTab, setActiveDetailsTab] = useState<DetailTab | null>(null);
   const [activeInformationSection, setActiveInformationSection] =
     useState<InformationSection>("summary");
+  const [editingFactKey, setEditingFactKey] = useState<string | null>(null);
+  const [editingFactRevision, setEditingFactRevision] = useState<{
+    leadId: string;
+    opportunityId: string;
+    lastEventId: string | null;
+    resolvesConflict: boolean;
+  } | null>(null);
+  const [editingFactValue, setEditingFactValue] = useState<string | boolean>("");
+  const [editingFactWorking, setEditingFactWorking] = useState(false);
+  const [editingFactError, setEditingFactError] = useState<string | null>(null);
   const [commercialActionsOpen, setCommercialActionsOpen] = useState(false);
   const [activeGeneratedPdfTab, setActiveGeneratedPdfTab] =
     useState<GeneratedPdfTab>("quotes");
@@ -2077,6 +2118,126 @@ export default function LeadPage() {
     qualificationFacts,
     "relevant_objection_text"
   );
+  const editingFactConfig = EDITABLE_INFORMATION_FACTS.find(
+    (fact) => fact.key === editingFactKey,
+  ) || null;
+
+  function beginEditingFact(factKey: string) {
+    if (!selectedOpportunity || requiresOpportunitySelection) {
+      setErrorText("Selecione uma única oportunidade antes de editar as informações.");
+      return;
+    }
+    const { knownFact, conflict } = findQualificationFact(qualificationFacts, factKey);
+    const source = conflict ? null : knownFact?.value;
+    setEditingFactRevision({
+      leadId: String(leadId),
+      opportunityId: selectedOpportunity.id,
+      lastEventId: conflict?.lastEventId || knownFact?.lastEventId || null,
+      resolvesConflict: Boolean(conflict),
+    });
+    setEditingFactKey(factKey);
+    setEditingFactError(null);
+    setCatalogPickerOpen(false);
+    setEditingFactValue(
+      typeof source === "boolean"
+        ? source
+        : typeof source === "number"
+          ? String(source)
+        : typeof source === "string"
+          ? source
+          : "",
+    );
+  }
+
+  function closeEditingFact() {
+    setEditingFactRevision(null);
+    setEditingFactKey(null);
+    setEditingFactValue("");
+    setEditingFactError(null);
+    setCatalogPickerOpen(false);
+  }
+
+  async function saveEditingFact() {
+    if (!editingFactKey || !editingFactConfig || !selectedOpportunity || requiresOpportunitySelection) {
+      setEditingFactError("O contexto da oportunidade não está disponível.");
+      return;
+    }
+
+    if (
+      !editingFactRevision ||
+      editingFactRevision.leadId !== String(leadId) ||
+      editingFactRevision.opportunityId !== selectedOpportunity.id
+    ) {
+      setEditingFactError("O contexto da oportunidade mudou. Feche a edicao e tente novamente.");
+      return;
+    }
+
+    const expectedLastEventId = editingFactRevision.lastEventId;
+    let value: string | number | boolean = editingFactValue;
+
+    if (editingFactConfig.kind === "boolean") {
+      if (editingFactValue !== true && editingFactValue !== false) {
+        setEditingFactError("Escolha Sim ou Não.");
+        return;
+      }
+      value = editingFactValue;
+    } else if (editingFactConfig.kind === "number") {
+      if (!String(editingFactValue).trim()) {
+        setEditingFactError("Informe um numero antes de salvar.");
+        return;
+      }
+      const numericValue = Number(String(editingFactValue).replace(",", "."));
+      if (!Number.isFinite(numericValue) || numericValue < 0) {
+        setEditingFactError("Informe um número válido maior ou igual a zero.");
+        return;
+      }
+      value = numericValue;
+    } else {
+      value = String(editingFactValue).trim();
+      if (!value) {
+        setEditingFactError("Informe um valor antes de salvar.");
+        return;
+      }
+    }
+
+    setEditingFactWorking(true);
+    setEditingFactError(null);
+    try {
+      const response = await fetch("/api/crm/qualification-facts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          leadId,
+          commercialOpportunityId: selectedOpportunity.id,
+          factKey: editingFactKey,
+          value,
+          expectedLastEventId,
+          resolvesConflict: editingFactRevision.resolvesConflict,
+          operationKey: `crm:qualification-fact:${selectedOpportunity.id}:${editingFactKey}:${expectedLastEventId || "empty"}:${window.crypto.randomUUID()}`,
+        }),
+      });
+      const result = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+        message?: string;
+      } | null;
+      if (!response.ok || !result?.ok) {
+        if (result?.error === "QUALIFICATION_FACT_STALE") {
+          throw new Error("Esta informação foi atualizada por outro processo. Recarregue e tente novamente.");
+        }
+        throw new Error(result?.message || result?.error || "Não foi possível salvar a informação.");
+      }
+
+      closeEditingFact();
+      setStatusText("Informação comercial salva.");
+      await fetchLeadConversationAndMessages({ silent: true });
+    } catch (error) {
+      setEditingFactError(error instanceof Error ? error.message : "Não foi possível salvar a informação.");
+    } finally {
+      setEditingFactWorking(false);
+    }
+  }
+
   const contractsByQuoteId = generatedContracts.reduce<Record<string, GeneratedContractSummary>>(
     (acc, contract) => {
       const quoteId = String(contract.quote_id || "").trim();
@@ -7640,61 +7801,73 @@ export default function LeadPage() {
                                                     label="Produto citado"
                                                     value={productReferenceDisplay.value}
                                                     help={productReferenceDisplay.help}
+                                                    onEdit={() => beginEditingFact("interested_product_reference")}
                                                   />
                                                   <InfoCard
                                                     label="Área informada"
                                                     value={requestedAreaDisplay.value}
                                                     help={requestedAreaDisplay.help}
+                                                    onEdit={() => beginEditingFact("requested_area_m2")}
                                                   />
                                                   <InfoCard
                                                     label="Espaço informado"
                                                     value={spaceTextDisplay.value}
                                                     help={spaceTextDisplay.help}
+                                                    onEdit={() => beginEditingFact("space_text")}
                                                   />
                                                   <InfoCard
                                                     label="Localização mencionada"
                                                     value={locationTextDisplay.value}
                                                     help={locationTextDisplay.help}
+                                                    onEdit={() => beginEditingFact("location_text")}
                                                   />
                                                   <InfoCard
                                                     label="Interesse em instalação"
                                                     value={installationInterestDisplay.value}
                                                     help={installationInterestDisplay.help}
+                                                    onEdit={() => beginEditingFact("installation_interest")}
                                                   />
                                                   <InfoCard
                                                     label="Interesse em visita técnica"
                                                     value={technicalVisitInterestDisplay.value}
                                                     help={technicalVisitInterestDisplay.help}
+                                                    onEdit={() => beginEditingFact("technical_visit_interest")}
                                                   />
                                                   <InfoCard
                                                     label="Pagamento/parcelamento mencionado"
                                                     value={paymentInterestDisplay.value}
                                                     help={paymentInterestDisplay.help}
+                                                    onEdit={() => beginEditingFact("payment_interest")}
                                                   />
                                                   <InfoCard
                                                     label="Orçamento ou faixa mencionada"
                                                     value={budgetTextDisplay.value}
                                                     help={budgetTextDisplay.help}
+                                                    onEdit={() => beginEditingFact("budget_text")}
                                                   />
                                                   <InfoCard
                                                     label="Contexto de decisão"
                                                     value={decisionContextDisplay.value}
                                                     help={decisionContextDisplay.help}
+                                                    onEdit={() => beginEditingFact("decision_context")}
                                                   />
                                                   <InfoCard
                                                     label="Período preferido"
                                                     value={preferredPeriodDisplay.value}
                                                     help={preferredPeriodDisplay.help}
+                                                    onEdit={() => beginEditingFact("preferred_period_text")}
                                                   />
                                                   <InfoCard
                                                     label="Preferências do cliente"
                                                     value={customerPreferencesDisplay.value}
                                                     help={customerPreferencesDisplay.help}
+                                                    onEdit={() => beginEditingFact("customer_preferences_text")}
                                                   />
                                                   <InfoCard
                                                     label="Objeção relevante"
                                                     value={relevantObjectionDisplay.value}
                                                     help={relevantObjectionDisplay.help}
+                                                    onEdit={() => beginEditingFact("relevant_objection_text")}
                                                   />
                                                 </div>
                                               </section>
@@ -9622,7 +9795,10 @@ export default function LeadPage() {
 
               <CatalogProductComposerPicker
                 open={catalogPickerOpen}
-                onSelect={selectCatalogProduct}
+                onSelect={editingFactKey === "interested_product_reference" ? (product) => {
+                  setEditingFactValue(product.name);
+                  setCatalogPickerOpen(false);
+                } : selectCatalogProduct}
                 onClose={() => {
                   catalogPickerScopeRef.current = null;
                   setCatalogPickerOpen(false);
@@ -9992,6 +10168,64 @@ export default function LeadPage() {
             </button>
           </div>
         </div>
+
+        {editingFactKey && editingFactConfig ? (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl ring-1 ring-black/10">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-bold text-gray-950">Editar informação comercial</h2>
+                  <p className="mt-1 text-xs leading-5 text-gray-500">
+                    O registro será confirmado pelo responsável e ficará no histórico da oportunidade.
+                  </p>
+                </div>
+                <button type="button" onClick={closeEditingFact} disabled={editingFactWorking} className="rounded-lg px-2 py-1 text-sm text-gray-500 hover:bg-gray-100 disabled:opacity-50">Fechar</button>
+              </div>
+
+              {editingFactKey === "interested_product_reference" ? (
+                <div className="mt-4">
+                  <button type="button" onClick={() => setCatalogPickerOpen((current) => !current)} disabled={editingFactWorking} className="rounded-xl bg-gray-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">
+                    Selecionar produto do catálogo
+                  </button>
+                </div>
+              ) : null}
+
+              <label className="mt-4 block text-xs font-semibold text-gray-700">
+                {editingFactConfig.label}
+                {editingFactConfig.kind === "boolean" ? (
+                  <select
+                    value={typeof editingFactValue === "boolean" ? String(editingFactValue) : ""}
+                    onChange={(event) => setEditingFactValue(event.target.value === "true" ? true : event.target.value === "false" ? false : "")}
+                    disabled={editingFactWorking}
+                    className="mt-2 h-11 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm font-normal outline-none focus:border-black"
+                  >
+                    <option value="">Selecione</option>
+                    <option value="true">Sim</option>
+                    <option value="false">Não</option>
+                  </select>
+                ) : (
+                  <input
+                    type={editingFactConfig.kind === "number" ? "number" : "text"}
+                    min={editingFactConfig.kind === "number" ? "0" : undefined}
+                    step={editingFactConfig.kind === "number" ? "any" : undefined}
+                    value={String(editingFactValue)}
+                    onChange={(event) => setEditingFactValue(event.target.value)}
+                    readOnly={editingFactKey === "interested_product_reference"}
+                    placeholder={editingFactKey === "interested_product_reference" ? "Selecione no catálogo" : undefined}
+                    disabled={editingFactWorking}
+                    className="mt-2 h-11 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm font-normal outline-none focus:border-black"
+                  />
+                )}
+              </label>
+
+              {editingFactError ? <div className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-800">{editingFactError}</div> : null}
+              <div className="mt-5 flex justify-end gap-2">
+                <button type="button" onClick={closeEditingFact} disabled={editingFactWorking} className="rounded-xl px-3 py-2 text-xs font-semibold text-gray-700 ring-1 ring-black/10 disabled:opacity-50">Cancelar</button>
+                <button type="button" onClick={() => void saveEditingFact()} disabled={editingFactWorking} className="rounded-xl bg-black px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{editingFactWorking ? "Salvando..." : "Salvar informação"}</button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
