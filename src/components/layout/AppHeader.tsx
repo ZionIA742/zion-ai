@@ -8,6 +8,7 @@ import { useStoreContext } from "../StoreProvider";
 function getTitulo(pathname: string) {
   if (pathname.startsWith("/dashboard")) return "Dashboard";
   if (pathname.startsWith("/crm")) return "CRM";
+  if (pathname === "/documentos" || pathname.startsWith("/documentos/")) return "Documentos";
   if (pathname.startsWith("/configuracoes")) return "Configurações";
   if (pathname.startsWith("/inbox")) return "Inbox";
   if (pathname.startsWith("/assistant")) return "Assistente";

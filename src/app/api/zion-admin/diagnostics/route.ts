@@ -230,7 +230,7 @@ const OPERATIONAL_CODES: Record<string, readonly string[]> = {
 };
 // Browser evidence is reported by the client, not proof of root cause.
 function safeBrowserEvidence(r: Record<string, unknown>) {
-  const pages = r.scope === "system" ? ["/zion-admin", "/zion-admin/login"] : r.scope === "store" ? ["/assistant", "/configuracoes", "/configuracoes/catalogo/[categoria]", "/configuracoes/piscinas", "/crm", "/crm/lead/[id]", "/crm/opportunity/[id]", "/dashboard", "/help", "/inbox", "/schedule"] : [];
+  const pages = r.scope === "system" ? ["/zion-admin", "/zion-admin/login"] : r.scope === "store" ? ["/assistant", "/configuracoes", "/configuracoes/catalogo/[categoria]", "/configuracoes/piscinas", "/crm", "/crm/lead/[id]", "/crm/opportunity/[id]", "/dashboard", "/documentos", "/help", "/inbox", "/schedule"] : [];
   const pick = (v: unknown, allowed: readonly string[]) => typeof v === "string" && allowed.includes(v) ? v : null;
   const asset = typeof r.browser_asset === "string" && /^\/_next\/static\/chunks\/([0-9]{1,8}-)?[a-f0-9]{8,64}\.js$/.test(r.browser_asset) ? r.browser_asset : null;
   const pos = (v: unknown) => asset && typeof v === "number" && Number.isSafeInteger(v) && v >= 1 && v <= 1000000 ? v : null;

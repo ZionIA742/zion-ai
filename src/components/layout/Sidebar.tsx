@@ -36,6 +36,7 @@ type NavIconName =
   | "dashboard"
   | "crm"
   | "inbox"
+  | "documents"
   | "assistant"
   | "schedule"
   | "settings"
@@ -50,6 +51,7 @@ const items: Array<{
   { label: "Dashboard", href: "/dashboard", icon: "dashboard" },
   { label: "CRM", href: "/crm", icon: "crm" },
   { label: "Follow-up", href: "/inbox", icon: "inbox" },
+  { label: "Documentos", href: "/documentos", icon: "documents" },
   { label: "Assistente", href: "/assistant", icon: "assistant" },
   { label: "Agenda", href: "/schedule", icon: "schedule" },
   { label: "Configurações", href: "/configuracoes", icon: "settings" },
@@ -67,6 +69,16 @@ function NavIcon({ name }: { name: NavIconName }) {
     strokeLinejoin: "round" as const,
     "aria-hidden": true,
   };
+
+  if (name === "documents") {
+    return (
+      <svg {...commonProps}>
+        <path d="M3 7V5a2 2 0 0 1 2-2h4l3 4h7a2 2 0 0 1 2 2v2" />
+        <path d="M3 7v12a2 2 0 0 0 2 2h13a2 2 0 0 0 2-1.5L23 11H8l-3 8" />
+      </svg>
+    );
+  }
+
 
   if (name === "dashboard") {
     return (

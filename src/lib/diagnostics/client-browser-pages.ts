@@ -33,6 +33,10 @@ export const CLIENT_BROWSER_PAGES = [
     "domain": "store_area"
   },
   {
+    "page": "/documentos",
+    "domain": "store_area"
+  },
+  {
     "page": "/help",
     "domain": "store_area"
   },
