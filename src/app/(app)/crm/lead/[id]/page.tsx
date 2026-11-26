@@ -9380,10 +9380,7 @@ export default function LeadPage() {
               </div>
             ) : null}
 
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <button type="button" onClick={() => openHumanResponseCommitmentModal()} disabled={!conversation || working || commitmentWorking} className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 ring-1 ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50">
-                Registrar compromisso de resposta
-              </button>
+            <div className={humanResponseCommitments.some((commitment) => commitment.status === "active") ? "mb-3 flex flex-wrap items-center gap-2" : "hidden"}>
               {humanResponseCommitments.filter((commitment) => commitment.status === "active").map((commitment) => (
                 <span key={commitment.id} className="inline-flex items-center gap-1 rounded-xl bg-gray-50 px-2 py-1 text-xs text-gray-700 ring-1 ring-gray-200">
                   Até {new Date(commitment.due_at).toLocaleString("pt-BR")}
@@ -9578,6 +9575,25 @@ export default function LeadPage() {
                   title="Anexar arquivo"
                 >
                   <PaperclipComposerIcon />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => openHumanResponseCommitmentModal()}
+                  disabled={!conversation || working || commitmentWorking}
+                  className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label="Registrar compromisso de resposta"
+                  title="Registrar compromisso de resposta"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M19 10V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h5"/>
+                    <path d="M7 2v4M15 2v4M3 9h16"/>
+                    <circle cx="17" cy="17" r="5"/>
+                    <path d="M17 14v3l2 1"/>
+                  </svg>
+                  {humanResponseCommitments.some((commitment) => commitment.status === "active") ? (
+                    <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-gray-900 ring-2 ring-white" aria-hidden="true" />
+                  ) : null}
                 </button>
 
                 {attachmentMenuOpen ? (
