@@ -2707,6 +2707,17 @@ function commercialFactMemoryValue(value: unknown): string {
   try { return JSON.stringify(value); } catch { return String(value); }
 }
 
+function sanitizeCommercialFactMemoryError(message: string): string {
+  return String(message || "Commercial fact memory reader failed.")
+    .replace(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]")
+    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[JWT_REDACTED]")
+    .replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "[UUID]")
+    .replace(/https?:\/\/[^\s]+/gi, "[URL]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+}
+
 export async function loadCommercialConversationFactMemory(args: {
   supabase: CommercialConversationFactRpcClient;
   organizationId: string;
@@ -13874,7 +13885,7 @@ export async function generateAiSalesReply(
       return {
         ok: false,
         error: commercialFactMemory.error,
-        message: "Nao foi possivel carregar a memoria comercial persistida antes da resposta.",
+        message: `Nao foi possivel carregar a memoria comercial persistida antes da resposta: ${sanitizeCommercialFactMemoryError(commercialFactMemory.message)}`,
       };
     }
     const commercialFactMemoryBlock = buildCommercialConversationFactMemoryBlock({

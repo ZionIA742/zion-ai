@@ -7349,6 +7349,38 @@ export async function generateAndSaveAiSalesReply(
       return buildAiReplySupersededResult(aiText);
     }
 
+    // A takeover can arrive while generation is in flight. Re-read the
+    // canonical human authority before materialization or any outbound
+    // effect; the earlier pre-generation check is not sufficient.
+    try {
+      const humanControlBeforeSave = await readSalesAiHumanControlState({
+        supabase,
+        organizationId: canonicalOrganizationId,
+        storeId: canonicalStoreId,
+        conversationId: canonicalConversationId,
+      });
+      if (humanControlBeforeSave.blocked) {
+        return {
+          ok: false,
+          error: humanControlBeforeSave.hardHold
+            ? "HARD_HOLD_ACTIVE"
+            : "HUMAN_HANDOFF_ACTIVE",
+          message:
+            "A autoridade humana foi ativada durante a geração; a resposta automática foi descartada.",
+          aiText,
+        };
+      }
+    } catch (humanControlError: any) {
+      return {
+        ok: false,
+        error: "HUMAN_CONTROL_STATE_UNAVAILABLE",
+        message:
+          humanControlError?.message ||
+          "Não foi possível revalidar a autoridade humana antes de salvar a resposta.",
+        aiText,
+      };
+    }
+
     const aiBoundaryChangedDuringGeneration =
       boundaryBeforeSave.lastAiMessageId !==
         boundaryBeforeGeneration.lastAiMessageId ||

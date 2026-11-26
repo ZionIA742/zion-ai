@@ -246,7 +246,8 @@ export function extractEventsFromPayload(payload: unknown): ExtractedEvent[] {
         continue;
       }
 
-      const isMessageEchoesField = changeField === "smb_message_echoes";
+      const isMessageEchoesField =
+        changeField === "message_echoes" || changeField === "smb_message_echoes";
       const messages = !isMessageEchoesField && Array.isArray(rawValue.messages)
         ? rawValue.messages
         : [];

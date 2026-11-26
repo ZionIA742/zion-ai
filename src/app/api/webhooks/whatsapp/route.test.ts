@@ -95,6 +95,31 @@ test("real Meta coexistence payload reads value.message_echoes", () => {
   assert.equal(events[0]?.externalEventId, "message:wamid.real-human-echo");
 });
 
+test("message_echoes change field is also classified as a human echo", () => {
+  const events = extractEventsFromPayload({
+    entry: [{
+      id: "entry-message-echoes",
+      changes: [{
+        field: "message_echoes",
+        value: {
+          metadata: { phone_number_id: "phone-1" },
+          message_echoes: [{
+            id: "echo-message-echoes-1",
+            from: "5511900000000",
+            to: "5511999999999",
+            type: "text",
+            text: { body: "intervenção" },
+          }],
+        },
+      }],
+    }],
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.eventKind, "message_echo");
+  assert.equal(events[0]?.changeField, "message_echoes");
+});
+
 test("replaying the real echo keeps the same inbox identity", () => {
   const payload = {
     entry: [{
