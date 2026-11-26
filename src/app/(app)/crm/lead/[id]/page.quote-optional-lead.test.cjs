@@ -35,6 +35,19 @@ const sharedPdf = loadSharedModule(
 async function run(state,overrides={}){
  let captured=[],errors=[],keys=[];const noop=()=>{};const storage=new Map();
  const env={...h,isGeneratingManualQuote:false,quoteFormMode:'create',lead:{id:'lead-a',organization_id:'org-a',store_id:'store-a',name:'Cliente A',phone:'11999999999'},leadId:'lead-a',conversation:{id:'conv-a'},selectedOpportunity:{id:'opp-a'},quoteCreationState:{originLeadId:'lead-a',linkLead:false,customerName:'',customerPhone:'',...state},canGenerateQuotePdf:true,quoteValidationMessage:null,quoteItems:[{itemType:'custom',name:'Piscina',description:'',quantity:'1',unitPriceReais:'100',discountReais:'0'}],parseQuoteQuantityValue:Number,convertReaisToCents:v=>Math.round(Number(v)*100),quoteTitle:'Piscina',quoteCustomerNotes:'',quoteWarrantyTerms:'',quoteValidityDays:'15',setQuoteFormError:e=>{if(e)errors.push(e)},setQuoteFormSuccess:noop,setIsGeneratingManualQuote:noop,setStatusText:noop,window:{sessionStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>{keys.push(k);storage.set(k,v)},removeItem:k=>storage.delete(k)}},crypto:{randomUUID:()=> '00000000-0000-4000-8000-000000000001'},fetch:async (url,opts)=>{captured.push({url,body:JSON.parse(opts.body)});throw Error('TEST_STOP_BEFORE_NETWORK');},...overrides};
+ env.catalogOrganizationId ??= "org-a";
+ env.catalogStoreId ??= "store-a";
+ env.catalogStoreError ??= null;
+ env.manualQuoteContextKey ??= "test-context";
+ env.manualQuoteContextRef ??= {
+  current:{key:env.manualQuoteContextKey,userId:null}
+ };
+ env.supabase ??= {
+  auth:{getUser:async()=>({
+   data:{user:{id:"test-user"}},error:null
+  })}
+ };
+ env.setManualQuoteSuccess ??= noop;
  env.normalizeManualQuoteItems = sharedPdf.normalizeManualQuoteItems;
  env.submitManualQuotePdf = args => sharedPdf.submitManualQuotePdf({
   ...args,

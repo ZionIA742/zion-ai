@@ -45,6 +45,7 @@ const pdf=load(
 );
 
 const quoteId="11111111-1111-4111-8111-111111111111";
+const versionId="22222222-2222-4222-8222-222222222222";
 
 function storage() {
   const entries=new Map();
@@ -132,7 +133,16 @@ function setup(overrides={}) {
           {status:503}
         );
 
-      return Response.json({ok:true,quoteId});
+      if(mode==="missing-version")
+        return Response.json({ok:true,quoteId});
+
+      if(mode==="invalid-version")
+        return Response.json({ok:true,quoteId,versionId:"invalid"});
+
+      if(mode==="foreign-quote")
+        return Response.json({ok:true,quoteId:versionId,versionId});
+
+      return Response.json({ok:true,quoteId,versionId});
     };
   }
 
@@ -184,7 +194,7 @@ function setup(overrides={}) {
   await test("unlinked creation calls only create and PDF",async()=>{
     const r=setup();
 
-    assert.deepEqual(await r.run(),{quoteId});
+    assert.deepEqual(await r.run(),{quoteId,quoteVersionId:versionId});
     assert.equal(r.calls.length,2);
 
     const body=JSON.parse(r.calls[0].init.body);
@@ -334,9 +344,37 @@ function setup(overrides={}) {
     assert.equal(s.entries.size,0);
   });
 
-  assert.equal(count,10);
+  for(const mode of [
+    "missing-version","invalid-version","foreign-quote"
+  ]){
+    await test("invalid PDF identity preserves retries: "+mode,async()=>{
+      const r=setup();
 
-  console.log("MANUAL_QUOTE_PDF: "+count+"/10 PASS");
+      await assert.rejects(r.run(mode));
+      assert.equal(r.store.entries.size,2);
+
+      const firstCreate=r.calls[0].init.body;
+      const firstPdf=r.calls[1].init.headers[
+        "x-zion-quote-operation-id"
+      ];
+
+      assert.deepEqual(await r.run(),{
+        quoteId,quoteVersionId:versionId
+      });
+
+      assert.equal(r.calls[2].init.body,firstCreate);
+      assert.equal(
+        r.calls[3].init.headers["x-zion-quote-operation-id"],
+        firstPdf
+      );
+
+      assert.equal(r.store.entries.size,0);
+    });
+  }
+
+  assert.equal(count,13);
+
+  console.log("MANUAL_QUOTE_PDF: "+count+"/13 PASS");
 
 })().catch(error=>{
   console.error(error.stack);

@@ -178,7 +178,10 @@ export async function submitManualQuotePdf(
 
   if (
     !generatePdfResponse.ok ||
-    !generatePdfResult?.ok
+    generatePdfResult?.ok !== true ||
+    generatePdfResult.quoteId !== quoteId ||
+    typeof generatePdfResult.versionId !== "string" ||
+    !UUID_PATTERN.test(generatePdfResult.versionId)
   ) {
     throw new Error(
       generatePdfResult?.message ||
@@ -196,5 +199,8 @@ export async function submitManualQuotePdf(
     storageKey: pendingOperationStorageKey,
   });
 
-  return { quoteId };
+  return {
+    quoteId,
+    quoteVersionId: generatePdfResult.versionId.toLowerCase(),
+  };
 }

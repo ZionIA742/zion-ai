@@ -206,7 +206,7 @@ function setup(options={}) {
           {ok:false,message:"PDF_TEST_FAILURE"},
           {status:503}
         )
-      : Response.json({ok:true,quoteId});
+      : Response.json({ok:true,quoteId,versionId:"33333333-3333-4333-8333-333333333333"});
   }
 
   const generate=extract(editorFile,"generate",{
@@ -239,6 +239,13 @@ function setup(options={}) {
       general.buildGeneralQuoteSubmission,
     revalidateGeneralQuoteLead:(s,l)=>
       general.revalidateGeneralQuoteLead(s,l,fetcher),
+    setGeneratedQuote:value=>{
+      assert.deepEqual(value,{
+        quoteId,
+        quoteVersionId:"33333333-3333-4333-8333-333333333333"
+      });
+      state.generatedQuote=value;
+    },
     submitManualQuotePdf:args=>
       pdf.submitManualQuotePdf({...args,fetcher})
   });

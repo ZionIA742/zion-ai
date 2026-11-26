@@ -9,6 +9,7 @@ import {
 
 import { supabase } from "@/lib/supabaseBrowser";
 import QuoteEditorModal from "./QuoteEditorModal";
+import ManualQuoteSuccessPanel from "./ManualQuoteSuccessPanel";
 import GeneralQuoteLeadPicker from "./GeneralQuoteLeadPicker";
 
 import {
@@ -44,12 +45,14 @@ type Props = {
   organizationId: string;
   storeId: string;
   onClose: () => void;
+  onLeadQuoteAccepted?: () => void | Promise<void>;
 };
 
 export default function GeneralQuoteEditor({
   organizationId,
   storeId,
   onClose,
+  onLeadQuoteAccepted,
 }: Props) {
   const [draft, setDraft] =
     useState<GeneralQuoteDraft>(createGeneralQuoteDraft);
@@ -66,6 +69,9 @@ export default function GeneralQuoteEditor({
 
   const [success, setSuccess] =
     useState<string | null>(null);
+
+  const [generatedQuote, setGeneratedQuote] =
+    useState<Awaited<ReturnType<typeof submitManualQuotePdf>> | null>(null);
 
   const [storageFailed, setStorageFailed] =
     useState(false);
@@ -419,7 +425,7 @@ export default function GeneralQuoteEditor({
       const submission =
         buildGeneralQuoteSubmission(scope, draft);
 
-      await submitManualQuotePdf({
+      const generated = await submitManualQuotePdf({
         ...submission,
         storage: window.sessionStorage,
         createUuid: () => window.crypto.randomUUID(),
@@ -443,6 +449,7 @@ export default function GeneralQuoteEditor({
         userRef.current !== userId
       ) return;
 
+      setGeneratedQuote(generated);
       setSuccess("Or\u00e7amento gerado com sucesso.");
     } catch (cause) {
       if (mounted.current) {
@@ -476,6 +483,27 @@ export default function GeneralQuoteEditor({
           </button>
         </div>
       </div>
+    );
+  }
+
+  if (success && generatedQuote && userId) {
+    return (
+      <ManualQuoteSuccessPanel
+        scope={{ organizationId, storeId, userId }}
+        quoteId={generatedQuote.quoteId}
+        quoteVersionId={generatedQuote.quoteVersionId}
+        onClose={onClose}
+        onAccepted={async (recipient, result) => {
+          if (
+            recipient.kind === "lead" &&
+            result.providerAccepted &&
+            mounted.current &&
+            userRef.current === userId
+          ) {
+            await onLeadQuoteAccepted?.();
+          }
+        }}
+      />
     );
   }
 

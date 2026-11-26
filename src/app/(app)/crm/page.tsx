@@ -1210,6 +1210,14 @@ export default function CrmPage() {
           organizationId={organizationId}
           storeId={activeStoreId}
           onClose={closeGeneralQuoteEditor}
+          onLeadQuoteAccepted={async () => {
+            if (currentCrmScopeRef.current !== crmScopeKey) return;
+
+            await fetchPageData({
+              silent: true,
+              force: true,
+            });
+          }}
         />
       ) : null}
     </div>

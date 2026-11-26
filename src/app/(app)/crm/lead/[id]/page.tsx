@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, KeyboardEvent, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useLayoutEffect } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { getCanonicalCrmStage } from "@/config/crm";
 import {
@@ -15,6 +16,7 @@ import {
   buildManualQuoteCreationStorageKey,
 } from "./quote-create-operation";
 import QuoteEditorModal from "../../QuoteEditorModal";
+import ManualQuoteSuccessPanel from "../../ManualQuoteSuccessPanel";
 import {
   normalizeManualQuoteItems,
   submitManualQuotePdf,
@@ -1703,6 +1705,22 @@ export default function LeadPage() {
   const [isGeneratingManualQuote, setIsGeneratingManualQuote] = useState(false);
   const [quoteFormError, setQuoteFormError] = useState<string | null>(null);
   const [quoteFormSuccess, setQuoteFormSuccess] = useState<string | null>(null);
+
+  const [manualQuoteSuccess, setManualQuoteSuccess] = useState<{
+    contextKey: string;
+    scope: {
+      organizationId: string;
+      storeId: string;
+      userId: string;
+    };
+    quoteId: string;
+    quoteVersionId: string;
+  } | null>(null);
+
+  const manualQuoteContextRef = useRef<{
+    key: string;
+    userId: string | null;
+  } | null>(null);
   const [quoteTechnicalServicesPolicy, setQuoteTechnicalServicesPolicy] =
     useState<QuoteTechnicalServicesPolicy | null>(null);
   const [quoteTechnicalServicesConfigured, setQuoteTechnicalServicesConfigured] =
@@ -1949,6 +1967,47 @@ export default function LeadPage() {
   const quoteDocumentScopeKey = leadId
     ? `${leadId}:${selectedDocumentOpportunityId || "unlinked"}`
     : null;
+  const manualQuoteContextKey = JSON.stringify([
+    leadDetailsScopeKey,
+    quoteDocumentScopeKey,
+    catalogOrganizationId,
+    catalogStoreId,
+    lead?.id,
+    lead?.organization_id,
+    lead?.store_id,
+  ]);
+
+  useLayoutEffect(() => {
+    manualQuoteContextRef.current = {
+      key: manualQuoteContextKey,
+      userId: null,
+    };
+
+    setManualQuoteSuccess(null);
+
+    const { data: { subscription } } =
+      supabase.auth.onAuthStateChange((_event, session) => {
+        const current = manualQuoteContextRef.current;
+
+        if (
+          current?.userId &&
+          session?.user.id !== current.userId
+        ) {
+          manualQuoteContextRef.current = {
+            key: manualQuoteContextKey,
+            userId: null,
+          };
+
+          setManualQuoteSuccess(null);
+        }
+      });
+
+    return () => {
+      manualQuoteContextRef.current = null;
+      subscription.unsubscribe();
+    };
+  }, [manualQuoteContextKey]);
+
   const activeOpportunities = opportunities.filter(
     (opportunity) => getCanonicalCrmStage(opportunity.stage)?.area === "pipeline"
   );
@@ -3013,7 +3072,34 @@ export default function LeadPage() {
     setQuoteFormSuccess(null);
 
     try {
-      await submitManualQuotePdf({
+      const contextToken = manualQuoteContextRef.current;
+
+      if (
+        !contextToken ||
+        contextToken.key !== manualQuoteContextKey ||
+        catalogStoreError ||
+        catalogOrganizationId !== payload.organizationId ||
+        catalogStoreId !== payload.storeId
+      ) {
+        throw new Error("A loja ou o contexto do orcamento mudou.");
+      }
+
+      const { data, error: authError } =
+        await supabase.auth.getUser();
+
+      const userId = data.user?.id;
+
+      if (
+        authError ||
+        !userId ||
+        manualQuoteContextRef.current !== contextToken
+      ) {
+        throw new Error("Sessao indisponivel. Reabra o editor.");
+      }
+
+      contextToken.userId = userId;
+
+      const generated = await submitManualQuotePdf({
         payload,
         pendingOperationStorageKey,
         requestSnapshot,
@@ -3021,14 +3107,39 @@ export default function LeadPage() {
         createUuid: () => crypto.randomUUID(),
       });
 
-      setQuoteFormSuccess("Orcamento gerado com sucesso.");
-      setQuoteFormError(null);
+      if (manualQuoteContextRef.current !== contextToken) return;
+
+      const verified = await supabase.auth.getUser();
+
+      if (
+        manualQuoteContextRef.current !== contextToken ||
+        verified.error ||
+        verified.data.user?.id !== userId
+      ) {
+        return;
+      }
+
+      closeQuoteModalAndReset();
+
+      setManualQuoteSuccess({
+        contextKey: manualQuoteContextKey,
+        scope: {
+          organizationId: payload.organizationId,
+          storeId: payload.storeId,
+          userId,
+        },
+        quoteId: generated.quoteId,
+        quoteVersionId: generated.quoteVersionId,
+      });
+
       setStatusText("Orcamento gerado com sucesso.");
-      await fetchLeadConversationAndMessages({ silent: true });
+
+      void fetchLeadConversationAndMessages({ silent: true })
+        .catch(() => {});
+
       if (hasLoadedGeneratedQuotes || activeDetailsTab === "pdfs") {
         void fetchGeneratedQuotes({ silent: true });
       }
-      closeQuoteModalAndReset();
     } catch (error: any) {
       setQuoteFormError(
         error?.message || "Nao foi possivel gerar o orcamento agora."
@@ -8836,6 +8947,34 @@ export default function LeadPage() {
                 </div>
               </div>
             </div>
+          ) : null}
+
+          {manualQuoteSuccess &&
+          manualQuoteSuccess.contextKey === manualQuoteContextKey &&
+          !isQuoteModalOpen ? (
+            <ManualQuoteSuccessPanel
+              scope={manualQuoteSuccess.scope}
+              quoteId={manualQuoteSuccess.quoteId}
+              quoteVersionId={manualQuoteSuccess.quoteVersionId}
+              onClose={() => setManualQuoteSuccess(null)}
+              onAccepted={async (recipient) => {
+                if (
+                  recipient.kind === "lead" &&
+                  recipient.leadId === leadId
+                ) {
+                  await fetchLeadConversationAndMessages({
+                    silent: true,
+                  });
+
+                  if (
+                    hasLoadedGeneratedQuotes ||
+                    activeDetailsTab === "pdfs"
+                  ) {
+                    await fetchGeneratedQuotes({ silent: true });
+                  }
+                }
+              }}
+            />
           ) : null}
 
           {isQuoteModalOpen ? (

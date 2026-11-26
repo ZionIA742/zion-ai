@@ -39,6 +39,32 @@ async function zionBackendOriginalGET(
     const scope = await resolveAuthorizedExistingQuote(quoteId);
     const currentVersionId = String(scope.quote.current_version_id || "").trim();
 
+    const expectedVersions = new URL(_request.url)
+      .searchParams.getAll("expectedQuoteVersionId");
+
+    if (
+      expectedVersions.length > 1 ||
+      (expectedVersions.length === 1 &&
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(expectedVersions[0]))
+    ) {
+      return buildJsonResponse({
+        ok: false,
+        error: "INVALID_EXPECTED_QUOTE_VERSION",
+        message: "Identidade da versao do PDF invalida.",
+      }, 400);
+    }
+
+    if (
+      expectedVersions.length === 1 &&
+      currentVersionId.toLowerCase() !== expectedVersions[0].toLowerCase()
+    ) {
+      return buildJsonResponse({
+        ok: false,
+        error: "QUOTE_VERSION_STALE",
+        message: "O orcamento possui outra versao atual. Abra a versao vigente.",
+      }, 409);
+    }
+
     if (!currentVersionId) {
       return buildJsonResponse(
         {
@@ -115,6 +141,8 @@ async function zionBackendOriginalGET(
 
     return buildJsonResponse({
       ok: true,
+      quoteId: scope.quote.id,
+      quoteVersionId: version.id,
       signedUrl: signedData.signedUrl,
       originalFilename: version.original_filename || null,
       mimeType: version.mime_type || "application/pdf",
