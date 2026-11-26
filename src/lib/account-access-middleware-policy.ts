@@ -13,6 +13,8 @@ export type MiddlewarePolicyDecision =
 
 const PUBLIC_PATHS = new Set([
   "/login",
+  "/branding/zion-sacred-circuit-desktop.webp",
+  "/branding/zion-sacred-circuit-mobile.webp",
   "/auth/callback",
   "/auth/reset-password",
   "/auth/set-initial-password",
