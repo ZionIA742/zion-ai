@@ -1,5 +1,22 @@
 @import "tailwindcss";
 
+/* ZION - Official visual identity */
+@theme static {
+  --color-zion-brand: #0C1730;
+  --color-zion-primary: #073B66;
+  --color-zion-primary-hover: #052D50;
+  --color-zion-accent: #0563E8;
+  --color-zion-canvas: #F4F6FA;
+  --color-zion-surface: #FFFFFF;
+  --color-zion-border: #DCE2EB;
+  --color-zion-selected: #DCE9FB;
+  --color-zion-ink: #0F172A;
+  --color-zion-muted: #475569;
+  --color-zion-success: #15803D;
+  --color-zion-warning: #B45309;
+  --color-zion-danger: #B91C1C;
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;

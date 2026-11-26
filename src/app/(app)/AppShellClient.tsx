@@ -96,7 +96,7 @@ export default function AppShellClient({
 
   return (
     <StoreProvider>
-      <div className="flex h-dvh min-w-0 bg-gray-50">
+      <div className="flex h-dvh min-w-0 bg-zion-canvas text-zion-ink">
         <Sidebar
           collapsed={isSidebarCollapsed}
           onToggle={handleSidebarToggle}
