@@ -77,6 +77,13 @@ async function run(source){
     const state={
       status:"registered",
       statusReason:null,
+      integration:{
+        data:[{
+          phone_number_id:"123456789",
+          access_token:"synthetic-only"
+        }],
+        error:null
+      },
       quoteStatus:"pending_review",
       expired:false,
       recipient:{
@@ -118,9 +125,80 @@ async function run(source){
 
       async rpc(name,p){
 
+      if (
+        name === "recover_human_quote_status_ingress_by_system"
+      ) {
+        assert.equal(state.status,"accepted");
+
+        assert.deepEqual(p,{
+          p_organization_id:scope.organizationId,
+          p_store_id:scope.storeId,
+          p_actor_user_id:scope.actorUserId,
+          p_operation_id:request.operationId
+        });
+
+        state.ingressRecoveryCalls =
+          (state.ingressRecoveryCalls || 0)+1;
+
+        return {
+          error:state.ingressRecoveryError
+            ? {message:"synthetic recovery failure"}
+            : null,
+          data:{
+            outcome:"unchanged",
+            reason:"SCOPED_STATUS_INGRESS_RECOVERY",
+            recovered_count:0,
+            existing_count:0,
+            conflict_count:0
+          }
+        };
+      }
+
+      if (
+        name === "reconcile_human_quote_status_inbox_by_system"
+      ) {
+
+        assert.equal(state.status,"accepted");
+
+        assert.deepEqual(p,{
+          p_organization_id:scope.organizationId,
+          p_store_id:scope.storeId,
+          p_actor_user_id:scope.actorUserId,
+          p_operation_id:request.operationId
+        });
+
+        calls.push(["reconciliation",p]);
+
+        return {
+          error:null,
+          data:{
+            outcome:"unchanged",
+            reason:"SCOPED_STATUS_RECONCILIATION",
+            reconciled_count:0
+          }
+        };
+      }
+
+
+        if(
+          name==="get_active_whatsapp_integration_for_external_send_by_system"
+        ){
+
+          assert.deepEqual(p,{
+            p_organization_id:scope.organizationId,
+            p_store_id:scope.storeId
+          });
+
+          calls.push(["integration",p]);
+
+          return state.integration;
+        }
+
         assert.equal(
-          name,"transition_human_quote_send_by_system"
+          name,"transition_bound_human_quote_send_by_system"
         );
+
+        assert.equal(p.p_phone_number_id,"123456789");
 
         calls.push(["transition",p]);
 
@@ -289,6 +367,41 @@ async function run(source){
     return x.calls.filter(c=>c[0]==="send").length;
   }
 
+
+  await check("ingress failure preserves acceptance and replay repairs without resend",async()=>{
+
+    const x=fixture();
+
+    x.state.ingressRecoveryError=true;
+
+    const first=await x.execute();
+
+    assert.equal(first.status,"accepted");
+    assert.equal(first.inboxReconciliation,"pending");
+    assert.equal(x.state.ingressRecoveryCalls,1);
+
+    assert.equal(
+      x.calls.filter(c=>c[0]==="reconciliation").length,0
+    );
+
+    assert.equal(
+      x.calls.filter(c=>c[0]==="send").length,1
+    );
+
+    x.state.ingressRecoveryError=false;
+
+    const second=await x.execute();
+
+    assert.equal(second.status,"accepted");
+    assert.equal(second.providerRequestAttempted,false);
+    assert.equal(second.inboxReconciliation,"unchanged");
+    assert.equal(x.state.ingressRecoveryCalls,2);
+
+    assert.equal(
+      x.calls.filter(c=>c[0]==="send").length,1
+    );
+  });
+
   await check("complete responsible PDF send",async()=>{
 
     const x=fixture();
@@ -299,13 +412,15 @@ async function run(source){
     assert.deepEqual(
       x.calls.map(c=>c[0]),
       [
-        "register","expiry","sign","policy",
-        "transition","send","transition"
+        "register","expiry","sign","integration","policy",
+        "transition","send","transition",
+        "reconciliation"
       ]
     );
 
-    const policy=x.calls[3][1];
+    const policy=x.calls[4][1];
 
+    assert.equal(policy.expectedPhoneNumberId,"123456789");
     assert.equal(policy.responsibleId,responsibleId);
     assert.equal(policy.destination,destination);
     assert.equal(policy.organizationId,x.scope.organizationId);
@@ -315,11 +430,12 @@ async function run(source){
       Object.hasOwn(policy,"templateContext"),false
     );
 
-    assert.deepEqual(x.calls[5][1],{
+    assert.deepEqual(x.calls[6][1],{
       organizationId:x.scope.organizationId,
       storeId:x.scope.storeId,
       responsibleId,
       destination,
+      expectedPhoneNumberId:"123456789",
       payload:{
         type:"document",
         link:url,
@@ -333,22 +449,16 @@ async function run(source){
       ["sign","zion-store-files",x.path,900]
     );
 
-    assert.equal(x.calls[4][1].p_action,"start");
-    assert.equal(x.calls[6][1].p_action,"accept");
+    assert.equal(x.calls[5][1].p_action,"start");
+    assert.equal(x.calls[7][1].p_action,"accept");
 
     assert.equal(result.providerRequestAttempted,true);
 
     assert.deepEqual(
       Object.keys(result).sort(),
-      [
-        "operationId",
-        "quoteId",
-        "quoteVersionId",
-        "status",
-        "reason",
-        "providerRequestAttempted",
-      ].sort()
+      ["operationId","quoteId","quoteVersionId","status","reason","providerRequestAttempted","inboxReconciliation"].sort()
     );
+      assert.equal(result.inboxReconciliation,"unchanged");
   });
 
   await check("customer recipient cannot use responsible service",async()=>{
@@ -590,7 +700,16 @@ async function run(source){
 
       assert.deepEqual(
         x.calls.map(c=>c[0]),
-        ["register"]
+        result.status==="accepted"
+          ? ["register","reconciliation"]
+          : ["register"]
+      );
+
+      assert.equal(
+        result.inboxReconciliation,
+        result.status==="accepted"
+          ? "unchanged"
+          : "not_applicable"
       );
 
       assert.equal(
@@ -604,9 +723,61 @@ async function run(source){
 
   });
 
-  assert.equal(count,17);
+  await check("invalid integration cannot acquire attempt",async()=>{
 
-  console.log("HUMAN_QUOTE_RESPONSIBLE_SEND: 17/17 PASS");
+    for(const integration of [
+
+      {data:[],error:null},
+
+      {
+        data:[
+          {phone_number_id:"123",access_token:"synthetic"},
+          {phone_number_id:"456",access_token:"synthetic"}
+        ],
+        error:null
+      },
+
+      {
+        data:[{
+          phone_number_id:"123456789",
+          access_token:null
+        }],
+        error:null
+      },
+
+      {
+        data:[{
+          phone_number_id:"invalid",
+          access_token:"synthetic"
+        }],
+        error:null
+      },
+
+      {data:null,error:{message:"synthetic RPC failure"}}
+
+    ]){
+
+      const x=fixture();
+
+      x.state.integration=integration;
+
+      await assert.rejects(
+        x.execute,
+        /HUMAN_QUOTE_RESPONSIBLE_CHANNEL_/
+      );
+
+      assert.equal(sent(x),0);
+
+      assert.equal(
+        x.calls.some(c=>c[0]==="transition"),
+        false
+      );
+    }
+  });
+
+  assert.equal(count,19);
+
+  console.log("HUMAN_QUOTE_RESPONSIBLE_SEND: 19/19 PASS");
 }
 
 module.exports=run;

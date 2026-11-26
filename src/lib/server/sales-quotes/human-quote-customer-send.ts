@@ -80,6 +80,134 @@ export async function executeHumanQuoteCustomerSend(args: {
 
   const registered = context.registration;
 
+
+  async function recoverAcceptedIngress(status: string): Promise<boolean> {
+
+    if (status !== "accepted") {
+      return true;
+    }
+
+    try {
+
+      const response = await context.supabase.rpc(
+        "recover_human_quote_status_ingress_by_system",
+        {
+          p_organization_id: context.scope.organizationId,
+          p_store_id: context.scope.storeId,
+          p_actor_user_id: context.scope.actorUserId,
+          p_operation_id: registered.operationId,
+        }
+      );
+
+      const data = response.data;
+
+      if (
+        response.error ||
+        !data ||
+        typeof data !== "object" ||
+        Array.isArray(data) ||
+        data.reason !== "SCOPED_STATUS_INGRESS_RECOVERY" ||
+        ![
+          data.recovered_count,
+          data.existing_count,
+          data.conflict_count
+        ].every(n =>
+          typeof n === "number" &&
+          Number.isSafeInteger(n) &&
+          n >= 0
+        ) ||
+        data.conflict_count !== 0
+      ) {
+        return false;
+      }
+
+      return (
+        (
+          data.outcome === "recovered" &&
+          data.recovered_count > 0
+        ) ||
+        (
+          data.outcome === "unchanged" &&
+          data.recovered_count === 0
+        )
+      );
+
+    } catch {
+
+      return false;
+    }
+  }
+
+  /**
+   * Reconcile only persisted, proven status evidence.
+   * A reconciliation failure cannot invalidate acceptance
+   * or authorize another provider request.
+   */
+  async function reconcileAcceptedInbox(
+    status: string,
+    ready = true
+  ): Promise<
+    "reconciled" | "unchanged" | "pending" | "not_applicable"
+  > {
+
+    if (status !== "accepted") {
+      return "not_applicable";
+    }
+
+    if (!ready) {
+      return "pending";
+    }
+
+    try {
+
+      const response = await context.supabase.rpc(
+        "reconcile_human_quote_status_inbox_by_system",
+        {
+          p_organization_id: context.scope.organizationId,
+          p_store_id: context.scope.storeId,
+          p_actor_user_id: context.scope.actorUserId,
+          p_operation_id: registered.operationId,
+        }
+      );
+
+      const data = response.data;
+
+      if (
+        response.error ||
+        !data ||
+        typeof data !== "object" ||
+        Array.isArray(data) ||
+        data.reason !== "SCOPED_STATUS_RECONCILIATION" ||
+        typeof data.reconciled_count !== "number" ||
+        !Number.isSafeInteger(data.reconciled_count) ||
+        data.reconciled_count < 0
+      ) {
+        return "pending";
+      }
+
+      if (
+        data.outcome === "reconciled" &&
+        data.reconciled_count > 0
+      ) {
+        return "reconciled";
+      }
+
+      if (
+        data.outcome === "unchanged" &&
+        data.reconciled_count === 0
+      ) {
+        return "unchanged";
+      }
+
+      return "pending";
+
+    } catch {
+
+      return "pending";
+    }
+  }
+
+
   const historyScope = {
     p_organization_id: context.scope.organizationId,
     p_store_id: context.scope.storeId,
@@ -169,6 +297,49 @@ export async function executeHumanQuoteCustomerSend(args: {
         validHistoryUuid(projection.message_id) &&
         validHistoryUuid(projection.conversation_id)
       ) {
+
+        // Reconcile provider events that arrived before
+        // the history message became available.
+        // This never repeats the provider transport.
+
+        const deliveryResponse = await context.supabase.rpc(
+          "project_human_quote_history_delivery_by_system",
+          historyScope
+        );
+
+        const delivery = deliveryResponse.data;
+
+        if (
+          deliveryResponse.error ||
+          !delivery ||
+          typeof delivery !== "object" ||
+          Array.isArray(delivery) ||
+          delivery.message_id !== projection.message_id
+        ) {
+          return "pending";
+        }
+
+        const noEvidence =
+          delivery.outcome === "unchanged" &&
+          delivery.reason === "NO_DELIVERY_EVIDENCE";
+
+        const reconciled =
+          (
+            delivery.outcome === "projected" ||
+            delivery.outcome === "unchanged"
+          ) &&
+          delivery.reason === "DELIVERY_EVIDENCE_RECONCILED" &&
+          ["sent", "delivered", "read", "failed"].includes(
+            delivery.delivery_status
+          ) &&
+          typeof delivery.evidence_count === "number" &&
+          Number.isSafeInteger(delivery.evidence_count) &&
+          delivery.evidence_count > 0;
+
+        if (!noEvidence && !reconciled) {
+          return "pending";
+        }
+
         return "recorded";
       }
 
@@ -267,6 +438,10 @@ export async function executeHumanQuoteCustomerSend(args: {
   }
 
   if (context.replayOnly || registered.status !== "registered") {
+    const ingressReady = await recoverAcceptedIngress(registered.status);
+    const crmProjection = await projectAcceptedLead(registered.status);
+    const historyProjection = await projectAcceptedHistory(registered.status);
+
     return {
       operationId: registered.operationId,
       quoteId: registered.quoteId,
@@ -274,12 +449,9 @@ export async function executeHumanQuoteCustomerSend(args: {
       status: registered.status,
       reason: registered.statusReason,
       providerRequestAttempted: false,
-      crmProjection: await projectAcceptedLead(
-        registered.status
-      ),
-      historyProjection: await projectAcceptedHistory(
-        registered.status
-      ),
+      crmProjection: crmProjection,
+      historyProjection: historyProjection,
+      inboxReconciliation: await reconcileAcceptedInbox(registered.status, ingressReady && historyProjection !== "pending"),
     };
   }
 
@@ -325,6 +497,7 @@ export async function executeHumanQuoteCustomerSend(args: {
     request,
     storeFileId: context.pdf.storeFileId,
     destinationPhone: context.recipient.candidatePhone,
+    phoneNumberId: prepared.phoneNumberId,
 
     async authorizeStart() {
 
@@ -388,6 +561,10 @@ export async function executeHumanQuoteCustomerSend(args: {
     send: prepared.send,
   });
 
+  const ingressReady = await recoverAcceptedIngress(result.status);
+  const crmProjection = await projectAcceptedLead(result.status);
+  const historyProjection = await projectAcceptedHistory(result.status);
+
   return {
     operationId: registered.operationId,
     quoteId: registered.quoteId,
@@ -398,11 +575,8 @@ export async function executeHumanQuoteCustomerSend(args: {
         ? reason
         : null,
     providerRequestAttempted: result.providerRequestAttempted,
-    crmProjection: await projectAcceptedLead(
-      result.status
-    ),
-    historyProjection: await projectAcceptedHistory(
-      result.status
-    ),
+    crmProjection: crmProjection,
+    historyProjection: historyProjection,
+    inboxReconciliation: await reconcileAcceptedInbox(result.status, ingressReady && historyProjection !== "pending"),
   };
 }

@@ -59,6 +59,7 @@ async function run(source) {
     };
 
     const args={
+      phoneNumberId:"123456789",
       scope:{
         organizationId:id(1),
         storeId:id(2),
@@ -88,7 +89,7 @@ async function run(source) {
           calls.push(["rpc",name,p]);
 
           assert.equal(
-            name,"transition_human_quote_send_by_system"
+            name,"transition_bound_human_quote_send_by_system"
           );
 
           if(state.rpcError) {

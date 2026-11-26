@@ -61,6 +61,7 @@ export function createHumanQuoteSendAttemptCallbacks(args:{
   request:unknown;
   storeFileId:string;
   destinationPhone:string;
+  phoneNumberId:string;
   authorizeStart:()=>Promise<AuthorizationDecision>;
 }):AttemptCallbacks {
 
@@ -95,6 +96,15 @@ export function createHumanQuoteSendAttemptCallbacks(args:{
     throw new Error("HUMAN_QUOTE_ATTEMPT_DESTINATION_MISMATCH");
   }
 
+  const phoneNumberId=args.phoneNumberId;
+
+  if(
+    typeof phoneNumberId!=="string" ||
+    !/^[0-9]{1,128}$/.test(phoneNumberId)
+  ){
+    throw new Error("HUMAN_QUOTE_ATTEMPT_CHANNEL_INVALID");
+  }
+
   const identity=buildHumanQuoteSendIdentity(
     scope,request
   );
@@ -110,6 +120,7 @@ export function createHumanQuoteSendAttemptCallbacks(args:{
     p_quote_version_id:request.quoteVersionId,
     p_store_file_id:args.storeFileId,
     p_destination_phone:destinationPhone,
+    p_phone_number_id:phoneNumberId,
   };
 
   async function transition(
@@ -120,7 +131,7 @@ export function createHumanQuoteSendAttemptCallbacks(args:{
   ):Promise<Record<string,unknown>> {
 
     const result=await args.supabase.rpc(
-      "transition_human_quote_send_by_system",
+      "transition_bound_human_quote_send_by_system",
       {
         ...baseParams,
         p_action:action,

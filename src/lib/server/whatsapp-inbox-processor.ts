@@ -2967,6 +2967,233 @@ export async function bootstrapCommercialContextBeforeInsert(
   };
 }
 
+
+/**
+ * Independent human quote status events are resolved
+ * from persisted provider evidence, never by phone alone.
+ */
+async function processHumanQuoteStatusEvidence(
+  supabase: SupabaseClient,
+  inbox: InboxRow,
+  afterMissingMessageFailure = false,
+): Promise<ProcessorResultItem | null> {
+
+  const identity = await supabase.rpc(
+    "identify_human_quote_status_event_by_system",
+    {
+      p_organization_id: inbox.organization_id,
+      p_store_id: inbox.store_id,
+      p_inbox_id: inbox.id,
+    },
+  );
+
+  if (identity.error) {
+    throw new Error("HUMAN_QUOTE_STATUS_IDENTITY_RPC_FAILED");
+  }
+
+  const result: unknown = identity.data;
+
+  const validUuid = (value: unknown): value is string =>
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+
+  if (!isRecord(result)) {
+    throw new Error("HUMAN_QUOTE_STATUS_IDENTITY_INVALID");
+  }
+
+  if (
+    result.outcome === "unmatched" &&
+    (
+      result.reason === "NO_ACCEPTED_HUMAN_QUOTE_OPERATION" ||
+      result.reason === "STATUS_ID_UNAVAILABLE"
+    )
+  ) {
+    return null;
+  }
+
+  if (
+    result.outcome === "rejected" &&
+    (
+      result.reason === "HUMAN_QUOTE_EVENT_PROVIDER_INVALID" ||
+      result.reason === "HUMAN_QUOTE_EVENT_EVIDENCE_INVALID"
+    )
+  ) {
+
+    // Preserve the original finalized failure.
+    // Do not reuse a released worker claim.
+    if (afterMissingMessageFailure) {
+      return null;
+    }
+
+    const detail = String(result.reason);
+
+    await markInboxError(supabase, inbox, detail);
+
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "failed",
+      detail,
+    };
+  }
+
+  if (
+    result.outcome !== "matched" ||
+    result.reason !== "PROVEN_HUMAN_QUOTE_STATUS_EVENT" ||
+    !validUuid(result.operation_id) ||
+    !validUuid(result.actor_user_id) ||
+    !["lead", "phone", "responsible"].includes(
+      String(result.recipient_kind)
+    ) ||
+    !["sent", "delivered", "read", "failed"].includes(
+      String(result.status_value)
+    ) ||
+    typeof result.status_at !== "string" ||
+    !Number.isFinite(Date.parse(result.status_at))
+  ) {
+    throw new Error("HUMAN_QUOTE_STATUS_IDENTITY_INVALID");
+  }
+
+  let projectionOutcome = "not_applicable";
+
+  let messageId: string | undefined;
+
+  if (result.recipient_kind === "lead") {
+
+    const projection = await supabase.rpc(
+      "project_human_quote_history_delivery_by_system",
+      {
+        p_organization_id: inbox.organization_id,
+        p_store_id: inbox.store_id,
+        p_actor_user_id: result.actor_user_id,
+        p_operation_id: result.operation_id,
+      },
+    );
+
+    if (projection.error || !isRecord(projection.data)) {
+      throw new Error("HUMAN_QUOTE_STATUS_PROJECTION_FAILED");
+    }
+
+    const data = projection.data;
+
+    const reconciled =
+      (
+        data.outcome === "projected" ||
+        data.outcome === "unchanged"
+      ) &&
+      data.reason === "DELIVERY_EVIDENCE_RECONCILED" &&
+      validUuid(data.message_id) &&
+      ["sent", "delivered", "read", "failed"].includes(
+        String(data.delivery_status)
+      ) &&
+      typeof data.evidence_count === "number" &&
+      Number.isSafeInteger(data.evidence_count) &&
+      data.evidence_count > 0;
+
+    const deferred =
+      data.outcome === "pending" &&
+      data.reason === "HISTORY_PROJECTION_PENDING";
+
+    const skipped =
+      (
+        data.outcome === "not_applicable" &&
+        data.reason === "HISTORY_PROJECTION_SKIPPED"
+      ) ||
+      (
+        data.outcome === "skipped" &&
+        (
+          data.reason === "BOUND_CONVERSATION_UNAVAILABLE" ||
+          data.reason === "BOUND_HISTORY_MESSAGE_UNAVAILABLE"
+        )
+      );
+
+    if (!reconciled && !deferred && !skipped) {
+      throw new Error("HUMAN_QUOTE_STATUS_PROJECTION_INVALID");
+    }
+
+    projectionOutcome = String(data.outcome);
+
+    if (reconciled && validUuid(data.message_id)) {
+      messageId = data.message_id;
+    }
+  }
+
+  // The inbox remains the provider evidence authority.
+  // Pending history is recovered by the send/replay path.
+
+  if (afterMissingMessageFailure) {
+
+    const reconciliation = await supabase.rpc(
+      "reconcile_human_quote_status_inbox_by_system",
+      {
+        p_organization_id: inbox.organization_id,
+        p_store_id: inbox.store_id,
+        p_actor_user_id: result.actor_user_id,
+        p_operation_id: result.operation_id,
+      },
+    );
+
+    const data = reconciliation.data;
+
+    if (
+      reconciliation.error ||
+      !isRecord(data) ||
+      data.reason !== "SCOPED_STATUS_RECONCILIATION" ||
+      typeof data.reconciled_count !== "number" ||
+      !Number.isSafeInteger(data.reconciled_count) ||
+      data.reconciled_count < 0 ||
+      (
+        data.reconciled_count === 0
+          ? data.outcome !== "unchanged"
+          : data.outcome !== "reconciled"
+      )
+    ) {
+      return null;
+    }
+
+    // A positive batch count does not prove that this
+    // particular event was reconciled.
+
+    const persisted = await supabase
+      .from("channel_whatsapp_inbox")
+      .select("processed_at, processing_error")
+      .eq("organization_id", inbox.organization_id)
+      .eq("store_id", inbox.store_id)
+      .eq("id", inbox.id)
+      .maybeSingle();
+
+    if (
+      persisted.error ||
+      !persisted.data ||
+      typeof persisted.data.processed_at !== "string" ||
+      !Number.isFinite(
+        Date.parse(persisted.data.processed_at)
+      ) ||
+      persisted.data.processing_error !== null
+    ) {
+      return null;
+    }
+
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "succeeded",
+      ...(messageId ? { message_id: messageId } : {}),
+      detail: "human_quote_status_reconciled_after_failure",
+    };
+  }
+
+  await markInboxProcessed(supabase, inbox);
+
+  return {
+    inbox_id: inbox.id,
+    external_event_id: inbox.external_event_id,
+    status: "succeeded",
+    ...(messageId ? { message_id: messageId } : {}),
+    detail: "human_quote_status_" + projectionOutcome,
+  };
+}
+
 async function processStatusInboxRow(
   supabase: SupabaseClient,
   inbox: InboxRow,
@@ -2996,6 +3223,13 @@ async function processStatusInboxRow(
       status: "skipped",
       detail,
     };
+  }
+
+  const humanQuoteResult =
+    await processHumanQuoteStatusEvidence(supabase, inbox);
+
+  if (humanQuoteResult) {
+    return humanQuoteResult;
   }
 
   const message = await findMessageByExternalIdForStatus(
@@ -3036,14 +3270,63 @@ async function processStatusInboxRow(
       };
     }
 
+    // Acceptance may have become visible after the first lookup.
+    const lateQuoteResult =
+      await processHumanQuoteStatusEvidence(supabase, inbox);
+
+    if (lateQuoteResult) {
+      return lateQuoteResult;
+    }
+
     const detail = "status_message_not_found_by_external_message_id";
     await markInboxError(supabase, inbox, detail);
+
+    // Close the race where provider acceptance becomes
+    // visible immediately after the worker records failure.
+    // The old claim is already finalized.
+
+    try {
+
+      const recovered =
+        await processHumanQuoteStatusEvidence(
+          supabase,
+          inbox,
+          true
+        );
+
+      if (recovered) {
+        return recovered;
+      }
+
+    } catch {
+      // Do not finalize an already released claim again.
+      // Preserve the original result for later reconciliation.
+    }
+
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
       status: "failed",
       detail,
     };
+  }
+
+  // Never route independent quote history through the
+  // conventional non-atomic status updater.
+  if (
+    message.metadata?.source === "human_quote_send_history" ||
+    message.metadata?.outbound_origin === "human_quote_send_history" ||
+    typeof message.metadata?.human_quote_send_operation_key === "string"
+  ) {
+
+    const lateQuoteResult =
+      await processHumanQuoteStatusEvidence(supabase, inbox);
+
+    if (lateQuoteResult) {
+      return lateQuoteResult;
+    }
+
+    throw new Error("HUMAN_QUOTE_HISTORY_IDENTITY_UNRESOLVED");
   }
 
   await updateMessageWhatsappStatus({

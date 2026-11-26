@@ -53,7 +53,137 @@ export async function executeHumanQuoteResponsibleSend(args:{
 
   const registered=context.registration;
 
+
+  async function recoverAcceptedIngress(status: string): Promise<boolean> {
+
+    if (status !== "accepted") {
+      return true;
+    }
+
+    try {
+
+      const response = await context.supabase.rpc(
+        "recover_human_quote_status_ingress_by_system",
+        {
+          p_organization_id: context.scope.organizationId,
+          p_store_id: context.scope.storeId,
+          p_actor_user_id: context.scope.actorUserId,
+          p_operation_id: registered.operationId,
+        }
+      );
+
+      const data = response.data;
+
+      if (
+        response.error ||
+        !data ||
+        typeof data !== "object" ||
+        Array.isArray(data) ||
+        data.reason !== "SCOPED_STATUS_INGRESS_RECOVERY" ||
+        ![
+          data.recovered_count,
+          data.existing_count,
+          data.conflict_count
+        ].every(n =>
+          typeof n === "number" &&
+          Number.isSafeInteger(n) &&
+          n >= 0
+        ) ||
+        data.conflict_count !== 0
+      ) {
+        return false;
+      }
+
+      return (
+        (
+          data.outcome === "recovered" &&
+          data.recovered_count > 0
+        ) ||
+        (
+          data.outcome === "unchanged" &&
+          data.recovered_count === 0
+        )
+      );
+
+    } catch {
+
+      return false;
+    }
+  }
+
+  /**
+   * Reconcile only persisted, proven status evidence.
+   * A reconciliation failure cannot invalidate acceptance
+   * or authorize another provider request.
+   */
+  async function reconcileAcceptedInbox(
+    status: string,
+    ready = true
+  ): Promise<
+    "reconciled" | "unchanged" | "pending" | "not_applicable"
+  > {
+
+    if (status !== "accepted") {
+      return "not_applicable";
+    }
+
+    if (!ready) {
+      return "pending";
+    }
+
+    try {
+
+      const response = await context.supabase.rpc(
+        "reconcile_human_quote_status_inbox_by_system",
+        {
+          p_organization_id: context.scope.organizationId,
+          p_store_id: context.scope.storeId,
+          p_actor_user_id: context.scope.actorUserId,
+          p_operation_id: registered.operationId,
+        }
+      );
+
+      const data = response.data;
+
+      if (
+        response.error ||
+        !data ||
+        typeof data !== "object" ||
+        Array.isArray(data) ||
+        data.reason !== "SCOPED_STATUS_RECONCILIATION" ||
+        typeof data.reconciled_count !== "number" ||
+        !Number.isSafeInteger(data.reconciled_count) ||
+        data.reconciled_count < 0
+      ) {
+        return "pending";
+      }
+
+      if (
+        data.outcome === "reconciled" &&
+        data.reconciled_count > 0
+      ) {
+        return "reconciled";
+      }
+
+      if (
+        data.outcome === "unchanged" &&
+        data.reconciled_count === 0
+      ) {
+        return "unchanged";
+      }
+
+      return "pending";
+
+    } catch {
+
+      return "pending";
+    }
+  }
+
+
   if(context.replayOnly || registered.status!=="registered"){
+    const ingressReady = await recoverAcceptedIngress(registered.status);
+
     return {
       operationId:registered.operationId,
       quoteId:registered.quoteId,
@@ -61,6 +191,7 @@ export async function executeHumanQuoteResponsibleSend(args:{
       status:registered.status,
       reason:registered.statusReason,
       providerRequestAttempted:false,
+      inboxReconciliation: await reconcileAcceptedInbox(registered.status, ingressReady),
     };
   }
 
@@ -118,6 +249,46 @@ export async function executeHumanQuoteResponsibleSend(args:{
     throw new Error("HUMAN_QUOTE_RESPONSIBLE_PDF_URL_INVALID");
   }
 
+  // Resolve the exact provider channel before acquiring
+  // an attempt. Never use an environment-token fallback.
+
+  const integration=await context.supabase.rpc(
+    "get_active_whatsapp_integration_for_external_send_by_system",
+    {
+      p_organization_id:context.scope.organizationId,
+      p_store_id:context.scope.storeId,
+    }
+  );
+
+  if(integration.error){
+    throw new Error("HUMAN_QUOTE_RESPONSIBLE_CHANNEL_UNAVAILABLE");
+  }
+
+  const rows=Array.isArray(integration.data)
+    ? integration.data
+    : integration.data
+      ? [integration.data]
+      : [];
+
+  if(rows.length!==1){
+    throw new Error("HUMAN_QUOTE_RESPONSIBLE_CHANNEL_UNAVAILABLE");
+  }
+
+  const channel=rows[0];
+
+  const phoneNumberId=
+    typeof channel?.phone_number_id==="string"
+      ? channel.phone_number_id.trim()
+      : "";
+
+  if(
+    !/^[0-9]{1,128}$/.test(phoneNumberId) ||
+    typeof channel?.access_token!=="string" ||
+    !channel.access_token.trim()
+  ){
+    throw new Error("HUMAN_QUOTE_RESPONSIBLE_CHANNEL_INVALID");
+  }
+
   let reason:string|null=null;
 
   const callbacks=createHumanQuoteSendAttemptCallbacks({
@@ -126,6 +297,7 @@ export async function executeHumanQuoteResponsibleSend(args:{
     request,
     storeFileId:context.pdf.storeFileId,
     destinationPhone:phone,
+    phoneNumberId,
 
     async authorizeStart(){
 
@@ -135,6 +307,7 @@ export async function executeHumanQuoteResponsibleSend(args:{
         storeId:context.scope.storeId,
         responsibleId,
         destination,
+        expectedPhoneNumberId:phoneNumberId,
       });
 
       if(!policy.ok){
@@ -188,6 +361,7 @@ export async function executeHumanQuoteResponsibleSend(args:{
         storeId:context.scope.storeId,
         responsibleId,
         destination,
+        expectedPhoneNumberId:phoneNumberId,
         payload:{
           type:"document",
           link:documentUrl,
@@ -221,6 +395,8 @@ export async function executeHumanQuoteResponsibleSend(args:{
     },
   });
 
+  const ingressReady = await recoverAcceptedIngress(result.status);
+
   return {
     operationId:registered.operationId,
     quoteId:registered.quoteId,
@@ -228,5 +404,6 @@ export async function executeHumanQuoteResponsibleSend(args:{
     status:result.status,
     reason:result.status==="blocked"?reason:null,
     providerRequestAttempted:result.providerRequestAttempted,
+    inboxReconciliation: await reconcileAcceptedInbox(result.status, ingressReady),
   };
 }

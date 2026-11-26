@@ -373,8 +373,13 @@ function buildStoredPayload(args: {
   integrationId: string | null;
   whatsappBusinessAccountId: string | null;
   resolutionError?: string | null;
+  signatureVerified?: boolean;
 }) {
   return toJson({
+    ...(args.signatureVerified === true &&
+       args.event.eventKind === "status"
+      ? { human_quote_signature_verified_v1: true }
+      : {}),
     raw_payload: args.parsedPayload,
     event_kind: args.event.eventKind,
     phone_number_id: args.event.phoneNumberId,
@@ -405,6 +410,7 @@ async function insertExternalWebhookAudit(args: {
   organizationId: string | null;
   storeId: string | null;
   payload: Json;
+  requirePersisted?: boolean;
 }) {
   const { error } = await args.supabase.from("external_webhooks").insert({
     provider: args.provider,
@@ -415,7 +421,259 @@ async function insertExternalWebhookAudit(args: {
 
   if (error) {
     console.error("[webhooks/whatsapp] Falha segura ao gravar auditoria em external_webhooks.");
+
+    if (args.requirePersisted === true) {
+      throw new Error("VERIFIED_STATUS_AUDIT_PERSISTENCE_FAILED");
+    }
   }
+}
+
+
+/**
+ * Only called for status events with verified Meta signatures.
+ * The original accepted operation owns the destination scope.
+ */
+async function processVerifiedHumanQuoteStatusIngress(args: {
+  supabase: ReturnType<typeof getSupabaseAdmin>;
+  event: ExtractedEvent;
+  integration: IntegrationRow | null;
+  payload: Json;
+}): Promise<"unmatched" | "unresolved" | "saved" | "duplicate"> {
+
+  const {supabase,event,integration,payload}=args;
+
+  if (
+    event.eventKind !== "status" ||
+    !isRecord(payload) ||
+    payload.human_quote_signature_verified_v1 !== true ||
+    typeof payload.received_at_iso !== "string" ||
+    !Number.isFinite(Date.parse(payload.received_at_iso))
+  ) {
+    throw new Error("HUMAN_QUOTE_VERIFIED_INGRESS_REQUIRED");
+  }
+
+  function validId(value:unknown):value is string {
+
+    return (
+      typeof value==="string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) &&
+      value!=="00000000-0000-0000-0000-000000000000"
+    );
+  }
+
+
+  const receivedAt = payload.received_at_iso;
+
+  async function resolveOriginal(){
+
+    const resolution=await supabase.rpc(
+      "resolve_human_quote_status_ingress_by_system",
+      {
+        p_payload:payload,
+        p_received_at:receivedAt,
+      }
+    );
+
+    if (resolution.error || !isRecord(resolution.data)) {
+      throw new Error("HUMAN_QUOTE_STATUS_RESOLUTION_FAILED");
+    }
+
+    const resolved=resolution.data;
+
+    const unmatched=
+      resolved.outcome==="unmatched" &&
+      resolved.reason==="ACCEPTED_OPERATION_NOT_FOUND";
+
+    const rejected=
+      resolved.outcome==="rejected" &&
+      resolved.reason==="ORIGINAL_OPERATION_EVIDENCE_INVALID";
+
+    const matched=
+      resolved.outcome==="matched" &&
+      resolved.reason==="ORIGINAL_ACCEPTED_OPERATION_PROVEN";
+
+    if (!unmatched && !rejected && !matched) {
+      throw new Error("HUMAN_QUOTE_STATUS_RESOLUTION_INVALID");
+    }
+
+
+    if (
+      matched &&
+      (
+        !validId(resolved.organization_id) ||
+        !validId(resolved.store_id) ||
+        !validId(resolved.actor_user_id) ||
+        !validId(resolved.operation_id)
+      )
+    ) {
+      throw new Error("HUMAN_QUOTE_STATUS_SCOPE_INVALID");
+    }
+
+    return {resolved,unmatched,rejected,matched};
+  }
+
+  let {resolved,unmatched,rejected,matched} =
+    await resolveOriginal();
+
+  // Do not attribute raw multi-event payloads to an unrelated
+  // tenant when the original operation proves a different scope.
+
+  const retainAuditScope=
+
+    (
+      matched &&
+      integration?.organization_id===resolved.organization_id &&
+      integration?.store_id===resolved.store_id
+    );
+
+  await insertExternalWebhookAudit({
+    supabase,
+    provider:"meta_whatsapp",
+    organizationId:retainAuditScope
+      ? integration?.organization_id || null
+      : null,
+    storeId:retainAuditScope
+      ? integration?.store_id || null
+      : null,
+    payload,
+    requirePersisted:true,
+  });
+
+  if (unmatched) {
+
+    // Evidence is durable before this second lookup.
+    // Acceptance that raced with the first lookup can
+    // now be resolved without guessing a tenant.
+
+    ({resolved,unmatched,rejected,matched} =
+      await resolveOriginal());
+  }
+
+  if (unmatched) {
+    return "unmatched";
+  }
+
+  if (rejected) {
+    return "unresolved";
+  }
+
+  async function readExactEvent(){
+
+    const response=await supabase
+      .from("channel_whatsapp_inbox")
+      .select("id,store_id,provider,payload")
+      .eq("organization_id",resolved.organization_id)
+      .eq("external_event_id",event.externalEventId)
+      .maybeSingle();
+
+    if (response.error) {
+      throw new Error("HUMAN_QUOTE_STATUS_INBOX_LOOKUP_FAILED");
+    }
+
+    return response.data;
+  }
+
+  function isExactEvent(row:unknown):boolean {
+
+    if (!isRecord(row)) return false;
+
+    const stored=row.payload;
+
+    if (
+      !isRecord(stored) ||
+      !isRecord(stored.status) ||
+      !isRecord(event.status)
+    ) {
+      return false;
+    }
+
+    const storedStatus = stored.status;
+    const incomingStatus = event.status;
+
+    return (
+
+      validId(row.id) &&
+
+      row.store_id===resolved.store_id &&
+
+      row.provider==="meta" &&
+
+      stored.source==="meta_whatsapp_webhook" &&
+
+      stored.event_kind==="status" &&
+
+      stored.phone_number_id===event.phoneNumberId &&
+
+      ["id","status","timestamp","recipient_id"].every(
+        key=>
+          typeof incomingStatus[key]==="string" &&
+          storedStatus[key]===incomingStatus[key]
+      )
+    );
+  }
+
+  const before=await readExactEvent();
+
+  if (before && !isExactEvent(before)) {
+
+    // Never overwrite another store or a conflicting event.
+    return "unresolved";
+  }
+
+  const recovery=await supabase.rpc(
+    "recover_human_quote_status_ingress_by_system",
+    {
+      p_organization_id:resolved.organization_id,
+      p_store_id:resolved.store_id,
+      p_actor_user_id:resolved.actor_user_id,
+      p_operation_id:resolved.operation_id,
+    }
+  );
+
+  if (recovery.error || !isRecord(recovery.data)) {
+    throw new Error("HUMAN_QUOTE_STATUS_RECOVERY_FAILED");
+  }
+
+  const data=recovery.data;
+
+  if (
+    data.reason!=="SCOPED_STATUS_INGRESS_RECOVERY" ||
+    typeof data.recovered_count!=="number" ||
+    typeof data.existing_count!=="number" ||
+    typeof data.conflict_count!=="number" ||
+    ![
+      data.recovered_count,
+      data.existing_count,
+      data.conflict_count
+    ].every(n=>Number.isSafeInteger(n) && n>=0)
+  ) {
+    throw new Error("HUMAN_QUOTE_STATUS_RECOVERY_INVALID");
+  }
+
+  const expectedOutcome=
+    data.conflict_count>0
+      ? "conflict"
+      : data.recovered_count>0
+        ? "recovered"
+        : "unchanged";
+
+  if (data.outcome!==expectedOutcome) {
+    throw new Error("HUMAN_QUOTE_STATUS_RECOVERY_INVALID");
+  }
+
+  const after=await readExactEvent();
+
+  if (after && !isExactEvent(after)) {
+    return "unresolved";
+  }
+
+  if (!after) {
+
+    // Batch counts cannot prove this specific event was stored.
+    throw new Error("HUMAN_QUOTE_STATUS_RECOVERY_UNCONFIRMED");
+  }
+
+  return before ? "duplicate" : "saved";
 }
 
 async function zionBackendOriginalGET(request: Request) {
@@ -459,10 +717,15 @@ async function zionBackendOriginalPOST(request: Request) {
     const signatureHeader = request.headers.get("x-hub-signature-256") || "";
     const rawBody = await request.text();
 
+    let signatureVerified = false;
+
     if (appSecret) {
       if (!signatureHeader || !verifyMetaSignature(rawBody, signatureHeader, appSecret)) {
         return safeWebhookError("INVALID_WEBHOOK_SIGNATURE", 401);
       }
+
+      signatureVerified = true;
+
     } else if (isProductionEnvironment()) {
       return safeWebhookError("META_APP_SECRET ausente no servidor.", 500);
     }
@@ -497,15 +760,39 @@ async function zionBackendOriginalPOST(request: Request) {
         integrationId: integration?.id || null,
         whatsappBusinessAccountId: integration?.whatsapp_business_account_id || null,
         resolutionError: integration ? null : "ACTIVE_INTEGRATION_NOT_FOUND",
+        signatureVerified,
       });
 
-      await insertExternalWebhookAudit({
-        supabase,
-        provider: "meta_whatsapp",
-        organizationId: integration?.organization_id || null,
-        storeId: integration?.store_id || null,
-        payload: payloadToStore,
-      });
+      if (signatureVerified && event.eventKind === "status") {
+
+        const disposition=
+          await processVerifiedHumanQuoteStatusIngress({
+            supabase,
+            event,
+            integration,
+            payload:payloadToStore,
+          });
+
+        if (disposition !== "unmatched") {
+
+          if (disposition === "saved") saved += 1;
+          else if (disposition === "duplicate") duplicates += 1;
+          else unresolved += 1;
+
+          continue;
+        }
+
+      } else {
+
+        await insertExternalWebhookAudit({
+          supabase,
+          provider: "meta_whatsapp",
+          organizationId: integration?.organization_id || null,
+          storeId: integration?.store_id || null,
+          payload: payloadToStore,
+        });
+
+      }
 
       if (
         event.eventKind !== "message" &&

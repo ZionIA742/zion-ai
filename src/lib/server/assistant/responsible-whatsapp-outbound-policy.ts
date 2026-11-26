@@ -260,6 +260,7 @@ async function hasRecentValidInbound(args: {
   storeId: string;
   responsible: CanonicalStoreResponsible;
   now: Date;
+  expectedPhoneNumberId?: string;
 }): Promise<{ allowed: boolean; messageId: string | null }> {
   const { data, error } = await args.supabase
     .from("store_assistant_messages")
@@ -268,7 +269,16 @@ async function hasRecentValidInbound(args: {
     .eq("store_id", args.storeId)
     .eq("sender_role", "store_responsible")
     .eq("direction", "incoming")
-    .contains("metadata", { origin: "whatsapp", responsible_id: args.responsible.id })
+    .contains("metadata", {
+      origin: "whatsapp",
+      responsible_id: args.responsible.id,
+      ...(args.expectedPhoneNumberId !== undefined
+        ? {
+            channel: "whatsapp",
+            phone_number_id: args.expectedPhoneNumberId,
+          }
+        : {}),
+    })
     .order("created_at", { ascending: false })
     .order("id", { ascending: false })
     .limit(1);
@@ -278,6 +288,25 @@ async function hasRecentValidInbound(args: {
   const message = ((data || []) as InboundMessageRow[])[0];
   if (!message) return { allowed: false, messageId: null };
   const metadata = message.metadata || {};
+
+  // Strict quote sends require inbound evidence from
+  // the exact commercial provider channel.
+  // Legacy callers retain their existing behavior.
+
+  if (
+    args.expectedPhoneNumberId !== undefined &&
+    (
+      metadata.origin !== "whatsapp" ||
+      metadata.channel !== "whatsapp" ||
+      metadata.responsible_id !== args.responsible.id ||
+      metadata.phone_number_id !== args.expectedPhoneNumberId ||
+      typeof message.id !== "string" ||
+      !message.id.trim()
+    )
+  ) {
+    return { allowed: false, messageId: null };
+  }
+
   const sourcePhone = normalizeResponsibleWhatsappDestination(cleanText(metadata.from_phone));
   const createdAt = Date.parse(cleanText(message.created_at));
   const age = args.now.getTime() - createdAt;
@@ -337,7 +366,21 @@ export async function resolveResponsibleWhatsappOutboundPolicy(args: {
   responsibleId: string;
   destination: string;
   templateContext?: ResponsibleWhatsappTemplateContext;
+  expectedPhoneNumberId?: string;
 }, dependencies: PolicyDependencies = {}): Promise<ResponsibleWhatsappOutboundPolicy> {
+  if (
+    args.expectedPhoneNumberId !== undefined &&
+    (
+      typeof args.expectedPhoneNumberId !== "string" ||
+      !/^[0-9]{1,128}$/.test(args.expectedPhoneNumberId)
+    )
+  ) {
+    return {
+      ok: false,
+      reason: "RESPONSIBLE_WHATSAPP_CHANNEL_INVALID",
+    };
+  }
+
   const loadResponsible = dependencies.loadResponsible || loadCanonicalActivePrimaryStoreResponsible;
   const responsibleResult = await loadResponsible({
     supabase: args.supabase,
@@ -358,6 +401,7 @@ export async function resolveResponsibleWhatsappOutboundPolicy(args: {
     storeId: args.storeId,
     responsible: responsibleResult.responsible,
     now: dependencies.now ? dependencies.now() : new Date(),
+    expectedPhoneNumberId: args.expectedPhoneNumberId,
   });
   if (recentInbound.allowed) {
     return { ok: true, mode: "free_form", responsible: responsibleResult.responsible, template: null, lastInboundMessageId: recentInbound.messageId };

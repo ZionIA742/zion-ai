@@ -521,6 +521,7 @@ export async function sendResponsibleWhatsappPayload(args: {
   responsibleId: string;
   destination: string;
   payload: ResponsibleWhatsappPayload;
+  expectedPhoneNumberId?: string;
 }): Promise<
   | { ok: true; externalMessageId: string }
   | { ok: false; reason: string }
@@ -547,11 +548,95 @@ export async function sendResponsibleWhatsappPayload(args: {
       return { ok: false, reason: "RESPONSIBLE_WHATSAPP_DESTINATION_CHANGED" };
     }
 
-    const integration = await getResponsibleSendWhatsappIntegration({
-      supabase,
-      organizationId,
-      storeId,
-    });
+    let integration: WhatsappIntegration;
+
+    if (args.expectedPhoneNumberId !== undefined) {
+
+      // Independent quote sends must use the exact provider
+      // channel previously authorized by the operation ledger.
+      // No environment-token fallback or alternative channel.
+
+      const expectedPhoneNumberId = args.expectedPhoneNumberId;
+
+      if (
+        typeof expectedPhoneNumberId !== "string" ||
+        !/^[0-9]{1,128}$/.test(expectedPhoneNumberId)
+      ) {
+        return {
+          ok: false,
+          reason: "RESPONSIBLE_WHATSAPP_CHANNEL_INVALID",
+        };
+      }
+
+      const result = await supabase.rpc(
+        "get_active_whatsapp_integration_for_external_send_by_system",
+        {
+          p_organization_id: organizationId,
+          p_store_id: storeId,
+        }
+      );
+
+      if (result.error) {
+        return {
+          ok: false,
+          reason: "RESPONSIBLE_WHATSAPP_CHANNEL_UNAVAILABLE",
+        };
+      }
+
+      const rows = Array.isArray(result.data)
+        ? result.data
+        : result.data
+          ? [result.data]
+          : [];
+
+      if (rows.length !== 1) {
+        return {
+          ok: false,
+          reason: "RESPONSIBLE_WHATSAPP_CHANNEL_UNAVAILABLE",
+        };
+      }
+
+      const row = rows[0];
+
+      if (
+        typeof row?.phone_number_id !== "string" ||
+        row.phone_number_id.trim() !== expectedPhoneNumberId
+      ) {
+        return {
+          ok: false,
+          reason: "RESPONSIBLE_WHATSAPP_CHANNEL_MISMATCH",
+        };
+      }
+
+      const accessToken =
+        typeof row?.access_token === "string"
+          ? row.access_token.trim()
+          : "";
+
+      if (!accessToken) {
+        return {
+          ok: false,
+          reason: "RESPONSIBLE_WHATSAPP_CHANNEL_UNAVAILABLE",
+        };
+      }
+
+      integration = {
+        accessToken,
+        phoneNumberId: expectedPhoneNumberId,
+      };
+
+    } else {
+
+      // Existing assistant workflows retain their behavior.
+
+      integration = await getResponsibleSendWhatsappIntegration({
+        supabase,
+        organizationId,
+        storeId,
+      });
+
+    }
+
     const externalMessageId = args.payload.type === "text"
       ? await sendWhatsappTextMessage({ ...integration, to: destination, body: args.payload.body })
       : args.payload.type === "template"

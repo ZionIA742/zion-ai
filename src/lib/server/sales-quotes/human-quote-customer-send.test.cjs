@@ -1,3 +1,4 @@
+const zionRecoveryMockEvidence = new WeakMap();
 const fs=require("node:fs");
 const assert=require("node:assert/strict");
 const ts=require("typescript");
@@ -120,7 +121,86 @@ async function run(source){
     };
 
     const supabase={
-      async rpc(name,p){
+      async rpc(name,p)
+    {
+
+      if (
+        name === "recover_human_quote_status_ingress_by_system"
+      ) {
+        assert.equal(state.status,"accepted");
+
+        assert.deepEqual(p,{
+          p_organization_id:scope.organizationId,
+          p_store_id:scope.storeId,
+          p_actor_user_id:scope.actorUserId,
+          p_operation_id:request.operationId
+        });
+
+        state.ingressRecoveryCalls =
+          (state.ingressRecoveryCalls || 0)+1;
+
+        return {
+          error:state.ingressRecoveryError
+            ? {message:"synthetic recovery failure"}
+            : null,
+          data:{
+            outcome:"unchanged",
+            reason:"SCOPED_STATUS_INGRESS_RECOVERY",
+            recovered_count:0,
+            existing_count:0,
+            conflict_count:0
+          }
+        };
+      }
+
+      if (
+        name === "reconcile_human_quote_status_inbox_by_system"
+      ) {
+
+        assert.equal(state.status,"accepted");
+
+        assert.deepEqual(p,{
+          p_organization_id:scope.organizationId,
+          p_store_id:scope.storeId,
+          p_actor_user_id:scope.actorUserId,
+          p_operation_id:request.operationId
+        });
+
+        calls.push(["reconciliation",p]);
+
+        return {
+          error:null,
+          data:{
+            outcome:"unchanged",
+            reason:"SCOPED_STATUS_RECONCILIATION",
+            reconciled_count:0
+          }
+        };
+      }
+
+      if (
+        name ===
+        "project_human_quote_history_delivery_by_system"
+      ) {
+        const messageId =
+          zionRecoveryMockEvidence.get(p);
+
+        assert.ok(
+          messageId,
+          "delivery recovery must follow recorded history"
+        );
+
+        return {
+          error:null,
+          data:{
+            outcome:"unchanged",
+            reason:"NO_DELIVERY_EVIDENCE",
+            message_id:messageId
+          }
+        };
+      }
+
+      const reply=await (async()=>{
 
         if(name==="read_human_quote_customer_send_policy_by_system"){
 
@@ -205,10 +285,24 @@ async function run(source){
         }
 
         assert.equal(
-          name,"transition_human_quote_send_by_system"
+          name,"transition_bound_human_quote_send_by_system"
         );
 
+        assert.equal(p.p_phone_number_id,"123456789");
+
         calls.push(["transition",p]);
+
+        if(
+          p.p_action==="start" &&
+          state.channelMismatch
+        ){
+          return {
+            data:null,
+            error:{
+              message:"HUMAN_QUOTE_CHANNEL_INTEGRATION_MISMATCH"
+            }
+          };
+        }
 
         let outcome="transitioned";
         let attemptToken=null;
@@ -250,7 +344,28 @@ async function run(source){
             new_attempt:newAttempt
           }
         };
+      })();
+
+      if (
+        name ===
+        "project_human_quote_send_history_by_system"
+      ) {
+        zionRecoveryMockEvidence.delete(p);
+
+        if (
+          !reply?.error &&
+          reply?.data?.outcome==="recorded" &&
+          reply.data.message_id
+        ) {
+          zionRecoveryMockEvidence.set(
+            p,
+            reply.data.message_id
+          );
+        }
       }
+
+      return reply;
+    }
     };
 
     const module=load(source,name=>{
@@ -365,6 +480,41 @@ async function run(source){
     console.log("ok - "+name);
   }
 
+
+  await check("ingress failure preserves acceptance and replay repairs without resend",async()=>{
+
+    const x=fixture("lead");
+
+    x.state.ingressRecoveryError=true;
+
+    const first=await x.execute();
+
+    assert.equal(first.status,"accepted");
+    assert.equal(first.inboxReconciliation,"pending");
+    assert.equal(x.state.ingressRecoveryCalls,1);
+
+    assert.equal(
+      x.calls.filter(c=>c[0]==="reconciliation").length,0
+    );
+
+    assert.equal(
+      x.calls.filter(c=>c[0]==="send").length,1
+    );
+
+    x.state.ingressRecoveryError=false;
+
+    const second=await x.execute();
+
+    assert.equal(second.status,"accepted");
+    assert.equal(second.providerRequestAttempted,false);
+    assert.equal(second.inboxReconciliation,"unchanged");
+    assert.equal(x.state.ingressRecoveryCalls,2);
+
+    assert.equal(
+      x.calls.filter(c=>c[0]==="send").length,1
+    );
+  });
+
   for(const kind of ["lead","phone"]){
 
     await check("complete customer send: "+kind,async()=>{
@@ -381,7 +531,8 @@ async function run(source){
           "policy",
           ...(kind==="lead"?["binding"]:[]),
           "transition","send","transition",
-          ...(kind==="lead"?["projection","history"]:[])
+          ...(kind==="lead"?["projection","history"]:[]),
+          "reconciliation"
         ]
       );
 
@@ -415,17 +566,9 @@ async function run(source){
 
       assert.deepEqual(
         Object.keys(result).sort(),
-        [
-          "operationId",
-          "quoteId",
-          "quoteVersionId",
-          "status",
-          "reason",
-          "providerRequestAttempted",
-          "crmProjection",
-          "historyProjection"
-        ].sort()
+        ["operationId","quoteId","quoteVersionId","status","reason","providerRequestAttempted","crmProjection","historyProjection","inboxReconciliation"].sort()
       );
+      assert.equal(result.inboxReconciliation,"unchanged");
     });
   }
 
@@ -1028,18 +1171,59 @@ async function run(source){
 
         assert.deepEqual(
           x.calls.map(c=>c[0]),
-          project
-            ? ["register","projection","history"]
-            : ["register"]
+          [
+            ...(project
+              ? ["register","projection","history"]
+              : ["register"]),
+            ...(result.status==="accepted"
+              ? ["reconciliation"]
+              : [])
+          ]
+        );
+
+        assert.equal(
+          result.inboxReconciliation,
+          result.status==="accepted"
+            ? "unchanged"
+            : "not_applicable"
         );
       }
     }
 
   });
 
-  assert.equal(count,31);
+  await check("channel mismatch denies both customer destinations",async()=>{
 
-  console.log("HUMAN_QUOTE_CUSTOMER_SEND: 31/31 PASS");
+    for(const kind of ["lead","phone"]){
+
+      const x=fixture(kind);
+      x.state.channelMismatch=true;
+
+      const result=await x.execute();
+
+      assert.equal(result.status,"unconfirmed");
+      assert.equal(result.providerRequestAttempted,false);
+
+      assert.equal(
+        x.calls.some(c=>c[0]==="send"),
+        false
+      );
+
+      assert.equal(
+        x.calls.some(c=>c[0]==="projection" || c[0]==="history"),
+        false
+      );
+
+      assert.equal(
+        x.calls.filter(c=>c[0]==="transition").length,
+        1
+      );
+    }
+  });
+
+  assert.equal(count,33);
+
+  console.log("HUMAN_QUOTE_CUSTOMER_SEND: 33/33 PASS");
 }
 
 module.exports=run;
